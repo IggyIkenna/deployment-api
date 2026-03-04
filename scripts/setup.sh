@@ -457,7 +457,6 @@ else
         ISSUES=$((ISSUES + 1))
     fi
 fi
-fi
 
 # ── [11] RUFF VERSION ──────────────────────────────────────────────────────
 log_step "ruff version (workspace standard: $REQUIRED_RUFF)"
