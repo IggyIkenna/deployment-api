@@ -1,0 +1,63 @@
+# Cloud Build for deployment-api
+
+steps:
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'configure-docker'
+    args: ['auth', 'configure-docker', 'asia-northeast1-docker.pkg.dev', '--quiet']
+    waitFor: ['-']
+
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'ensure-repo'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud artifacts repositories describe deployment-api \
+          --location=asia-northeast1 &>/dev/null || \
+        gcloud artifacts repositories create deployment-api \
+          --repository-format=docker \
+          --location=asia-northeast1 \
+          --description="deployment-api Docker images"
+    waitFor: ['-']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile'
+      - '-t'
+      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:$SHORT_SHA'
+      - '-t'
+      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:latest'
+      - '.'
+    waitFor: ['ensure-repo']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'quality-gates'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        docker run --rm \
+          --entrypoint "" \
+          -e CLOUD_BUILD=true \
+          asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:$SHORT_SHA \
+          /bin/bash -c "pip install uv --quiet && uv pip install --system -e .[dev] && scripts/quality-gates.sh --no-fix --quick"
+    waitFor: ['build']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    args: ['push', '--all-tags', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api']
+    waitFor: ['quality-gates']
+
+images:
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:$SHORT_SHA'
+  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_MEDIUM'
+
+timeout: '1200s'
