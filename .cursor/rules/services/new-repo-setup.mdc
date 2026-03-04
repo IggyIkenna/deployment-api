@@ -1,0 +1,22 @@
+---
+priority: 35
+---
+
+# New Repo Setup
+
+RULE: Follow standard workflow for creating repos: GitHub CLI creation, team access (CosmicTrader, datado), scaffold, quality gates, workspace manifest, workspace venv install, dependency chain updates.
+WHY: Consistent setup prevents missing steps (gitignore, venv, permissions, branch protection). Dependency chain ensures all repos can import new packages.
+CODEX: 05-infrastructure/new-repo-setup.md
+
+DO:
+ gh repo create IggyIkenna/<repo> --private --clone
+ gh api /repos/IggyIkenna/<repo>/collaborators/<user> -f permission='push'
+ uv lock && uv pip install -e <repo>/ (from workspace root with venv active)
+ Update workspace-manifest.json, dependent repos' pyproject.toml
+ bash scripts/quickmerge.sh per repo
+
+NEVER:
+ Create repo without team access setup
+ Skip workspace venv install (breaks imports in other repos)
+ Skip uv lock after adding dependencies
+ Forget to remove from .gitignore if previously ignored

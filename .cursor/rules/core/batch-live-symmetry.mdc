@@ -1,0 +1,31 @@
+---
+description: "Services share 90% code between batch and live modes — only 4 seams differ"
+alwaysApply: true
+priority: 75
+tags: [architecture, batch-live, symmetry]
+---
+
+# Batch-Live Symmetry: 90% Shared
+
+RULE: Services MUST support `--mode batch|live` with a shared engine. Only 4 seams differ between modes.
+WHY: Eliminates code drift between backtest and production; changes to logic apply to both modes automatically.
+CODEX: 04-architecture/batch-live-symmetry.md
+
+The 4 mode-specific seams:
+  1. Data source   — batch: GCS historical; live: WebSocket/REST stream
+  2. Data sink     — batch: GCS write; live: Pub/Sub publish
+  3. Persistence   — batch: no thread; live: background persistence thread
+  4. Trigger       — batch: date range loop; live: event-driven callback
+
+The shared engine (90%):
+  Business logic, feature calculation, validation, schema, event logging,
+  error handling, config loading, instrument resolution — ALL mode-agnostic.
+
+DO:
+  class MyEngine:  # mode-agnostic, receives data via injected adapter
+      def process(self, record: MySchema) -> None: ...
+
+NEVER:
+  if mode == "batch": ... else: ...  # inside engine logic
+  Duplicate business logic between batch and live paths
+  Mode-specific imports at engine level

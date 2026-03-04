@@ -1,0 +1,50 @@
+---
+description: "No technical debt after refactor — delete old code, no parallel paths, single source of truth"
+alwaysApply: true
+priority: 95
+tags:
+  - refactoring
+  - deletion
+  - technical-debt
+  - critical
+---
+
+# Refactor Cleanup — No Technical Debt, No Parallel Code Paths
+
+When refactoring or replacing something, DELETE the old implementation completely. There must be exactly one source of truth for functionality — no parallel code paths (old schema + new schema, old import + new import). Tests run only under the new structure.
+
+## Core rule
+
+- **No parallel code paths.** If you switch to a different schema, only the new schema exists; if a script switches to import from a different place, only that import path exists. The old implementation is completely removed so it is never unclear which code is authoritative.
+- **Tests under new structure only.** After refactor, tests must pass under the new structure; do not keep tests or code paths for the old behavior.
+- **Safe rollback:** Commit just before starting the refactor so you can roll back if the implementation fails. That is safer than keeping parallel code paths.
+
+## No backward compatibility
+
+- Never add fallbacks, legacy aliases, or dual-format support. Fail fast with clear error.
+- NEVER: try/except import fallbacks; config.old or config.new; alias for backward compat.
+- DO: Bump version; update all consumers; remove old code; document migration in codex if needed.
+
+## Never leave old code in place
+
+NEVER:
+- Leave `# deprecated`, `# legacy`, `# kept for backward compat` comments
+- Create `_old.py`, `_legacy.py`, `_deprecated.py` copies
+- Archive in the same directory where consumers can still import it
+- Keep both old and new schema/import paths "for compatibility"
+
+RULE: A deleted function that causes a FAILING TEST is BETTER than a deprecated
+function that causes SILENT WRONG BEHAVIOR.
+
+## When to delete (examples)
+
+- Removing a duplicate config class → delete it immediately
+- Moving ConfigStore from UCI to UCS → delete from UCI immediately
+- Replacing `os.getenv()` with config class → delete the `os.getenv()` call
+- Replacing custom venue connector with UMI → delete the custom connector
+- Switching to a new schema → remove old schema and all code that used it
+- Switching a script to import from a new module → remove old import and old module usage
+
+Only safe fallback: git history. Code is never truly gone — use `git blame`.
+
+CODEX: 06-coding-standards/error-handling.md. See also: no-backward-compatibility.mdc (pointer).

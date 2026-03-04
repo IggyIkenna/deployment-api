@@ -1,0 +1,90 @@
+---
+description: GCP authentication pattern for tests — use google.auth.default(), never pytest.skip for missing credentials
+globs: ["**/tests/conftest.py", "**/tests/**/*.py"]
+alwaysApply: true
+priority: 70
+---
+# GCP Authentication in Tests
+
+## NEVER Skip Tests for Missing GCP Credentials
+
+```python
+# ❌ WRONG — breaks CI and local dev without SA key file
+if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    pytest.skip("GCP credentials required")
+
+if not cred_file_exists():
+    pytest.skip("GCP credentials file not found")
+```
+
+## ALWAYS Use google.auth.default()
+
+`google.auth.default()` auto-detects credentials in every environment:
+- **Local:** ADC via `gcloud auth application-default login`
+- **GitHub Actions:** `GOOGLE_APPLICATION_CREDENTIALS` secret
+- **Cloud Build / Cloud Run:** attached service account via metadata server
+
+```python
+# ✅ CORRECT — conftest.py pattern (copy verbatim)
+from google.auth import default
+from google.auth.exceptions import DefaultCredentialsError
+
+@pytest.fixture(scope="session")
+def gcp_auth_info():
+    # 1. SA key file (GitHub Actions)
+    creds_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds_file and Path(creds_file).exists():
+        credentials = service_account.Credentials.from_service_account_file(creds_file)
+        return credentials, json.load(open(creds_file)).get("project_id"), creds_file
+
+    # 2. ADC (local dev + Cloud Build)
+    try:
+        credentials, project = default()
+        project_id = project or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+        return credentials, project_id or "test-project", None
+    except DefaultCredentialsError:
+        pass
+
+    # 3. No credentials → unit tests use mocks (never skip)
+    return None, "test-project", None
+```
+
+## Integration Test Marker
+
+Use `@pytest.mark.integration` for tests needing real GCP. Skip gracefully via an
+`autouse` fixture — never at fixture level:
+
+```python
+@pytest.fixture(autouse=True)
+def _skip_integration_without_creds(request, gcp_auth_info):
+    if "integration" in request.keywords:
+        credentials, _, _ = gcp_auth_info
+        if credentials is None:
+            pytest.skip("No GCP credentials — skipping integration test")
+```
+
+Unit tests must run without any credentials — use mocks (`pytest-mock`, `unittest.mock`).
+
+## Project ID
+
+```python
+# ✅ Always use GCP_PROJECT_ID (primary env var)
+project_id = os.getenv("GCP_PROJECT_ID") or "test-project"
+
+# ❌ Never use GOOGLE_CLOUD_PROJECT as primary (Cloud Run internal only)
+```
+
+## AWS: Cloud-Agnostic Unit Tests
+
+- AWS unit tests: mock boto3 fully with MagicMock(spec=...) — must pass without AWS credentials
+- CLOUD_PROVIDER=aws unit tests use MagicMock(spec=S3StorageClient)
+- NEVER skip AWS unit tests due to missing credentials — if a test requires boto3 calls, mock them
+- NEVER delete AWS unit tests
+- Real AWS endpoint tests: mark with @pytest.mark.integration; acceptable to skip without creds
+
+## Existing SSOT
+
+The canonical implementation lives in `unified-trading-library/tests/conftest.py`.
+Copy `gcp_auth_info`, `gcp_credentials`, and `gcp_project_id` fixtures from there.
+
+CODEX: 06-coding-standards/testing.md#gcp-authentication-in-tests-standard

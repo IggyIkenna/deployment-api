@@ -1,0 +1,20 @@
+---
+description: "Use ConfigStore for runtime config - persistence and hot reload"
+alwaysApply: false
+priority: 55
+tags:
+  - configuration
+  - config-store
+---
+# ConfigStore Usage
+RULE: Use ConfigStore for runtime config (service params). Import from unified_trading_services (moved from unified_config_interface in v1.1.0).
+WHY: Enables persistence and hot reload for service parameters. UCI is now Level 0 (no cloud deps); UCS owns cloud persistence.
+CODEX: 06-coding-standards/config-types.md, 05-infrastructure/unified-libraries/LIBRARY-DEPENDENCY-MATRIX.md
+DO:
+  from unified_trading_services import ConfigStore, ConfigReloader, TimeSeriesConfigStore
+  store = ConfigStore(bucket_name, service_name, schema_version)
+  reloader = ConfigReloader(MyServiceConfig, service_name, callback, project_id=config.gcp_project_id)
+NEVER:
+  from unified_config_interface import ConfigStore  # MOVED to unified_trading_services
+  from unified_config_interface import ConfigReloader  # MOVED to unified_trading_services
+  Use grid config for runtime params; skip ConfigStore for services with hot-reloadable config

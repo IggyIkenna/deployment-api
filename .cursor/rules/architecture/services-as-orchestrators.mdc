@@ -1,0 +1,15 @@
+---
+description: "Services are thin orchestrators, not business logic containers"
+alwaysApply: false
+priority: 50
+tags:
+  - service
+  - architecture
+  - separation
+---
+# Services as Thin Orchestrators
+RULE: Services are pure orchestrators using ServiceCLI. Delegate ALL business logic to unified libraries. No algorithms, parsers, or complex logic in services.
+WHY: Business logic in libraries enables reuse across services. Services become thin adapters that compose library functions.
+CODEX: 05-infrastructure/service-setup-checklist.md
+DO: Delegate to UMI for market data; delegate to UTEI for execution; delegate to UDC for domain data; delegate to UTS for storage/secrets
+NEVER: Implement business logic in services; duplicate code from libraries; parse API responses in services (use unified-api-contracts); complex algorithms in handlers

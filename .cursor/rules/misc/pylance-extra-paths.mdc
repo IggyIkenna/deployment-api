@@ -1,0 +1,14 @@
+---
+description: "Use python.analysis.extraPaths in settings.json for local package resolution"
+alwaysApply: false
+priority: 20
+tags:
+  - ide
+  - pylance
+---
+# Pylance Extra Paths
+RULE: Use python.analysis.extraPaths in .vscode/settings.json for local package resolution — not pyproject.toml.
+WHY: Centralizes IDE config; resolves unified_trading_services etc.; no "Unresolved import" squiggles.
+CODEX: .cursor/workspace-configs/, .cursor/rules/pylance-extra-paths.mdc
+DO: extraPaths: ["${workspaceFolder}/unified-trading-library", ...]; autoSearchPaths: true
+NEVER: Rely on [tool.pyright] in pyproject for import resolution; fragment config across repos

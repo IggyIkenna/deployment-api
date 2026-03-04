@@ -1,0 +1,23 @@
+---
+description: "Use prek (pre-commit) for git hooks — not custom hook scripts"
+alwaysApply: true
+priority: 70
+tags: [hooks, git, pre-commit, prek]
+---
+
+# Hook Tooling Policy
+
+RULE: Use `prek` (pre-commit wrapper) for all git hook management. Config in `.pre-commit-config.yaml`.
+WHY: Consistent hook execution across all repos; prek normalizes pre-commit behavior and supports workspace-level config.
+CODEX: 06-coding-standards/quality-gates.md
+
+DO:
+  prek install                              # after updating .pre-commit-config.yaml
+  pre-commit install --install-hooks       # legacy repos only (without prek)
+  Use pre-commit-hooks v6+ for new repos
+
+NEVER:
+  Custom shell scripts in .git/hooks/ (not portable, not tracked)
+  pre-commit install without --install-hooks (hooks won't run until triggered)
+  Mix prek and raw pre-commit in the same repo
+  Older pre-commit-hooks versions unless repo-specific constraint requires it

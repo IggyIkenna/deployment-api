@@ -1,0 +1,14 @@
+---
+description: "PR review checklist - quickmerge, dependencies, environment"
+alwaysApply: false
+priority: 45
+tags:
+  - pr
+  - review
+---
+# PR Review Checklist
+RULE: Verify quickmerge usage; dependency matrix alignment; --dep-branch when deps differ; no hardcoded project IDs.
+WHY: LLM-enhanced watcher checks compliance; manual review catches gaps.
+CODEX: .cursor/rules/always-use-quickmerge.mdc, unified-trading-pm/workspace-manifest.json
+DO: PR via quickmerge; consult canonical matrix; use --dep-branch for differential branching
+NEVER: Manual git push main; dependency changes without matrix update; skip quality gates evidence

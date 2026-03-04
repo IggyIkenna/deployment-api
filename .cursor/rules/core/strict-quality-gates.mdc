@@ -1,0 +1,15 @@
+---
+description: "Comprehensive strict quality gate standards - all BLOCKING violations"
+alwaysApply: true
+priority: 100
+tags:
+  - quality-gates
+  - blocking
+  - enforcement
+---
+# Strict Quality Gates
+RULE: All listed violations are BLOCKING — they fail quality gates. Never add E722 to global ignore; imports at top; no empty fallbacks; no hardcoded project IDs.
+WHY: Stricter standards eliminate anti-patterns and enforce fail-fast principles.
+CODEX: 06-coding-standards/quality-gates.md, QUALITY_GATE_BYPASS_AUDIT.md
+DO: Use specific exceptions (not bare except); document per-file ignores in QUALITY_GATE_BYPASS_AUDIT.md; use config classes for required values
+NEVER: Global E722 ignore; empty string/dict/list fallbacks; os.getenv with ""; hardcoded central-element-*

@@ -1,0 +1,26 @@
+---
+description: "Every repo must have scripts/setup.sh from canonical template"
+alwaysApply: true
+priority: 85
+globs:
+  - "**/scripts/setup.sh"
+  - "**/pyproject.toml"
+tags:
+  - infrastructure
+  - blocking
+---
+# Mandatory setup.sh
+RULE: Every repo MUST have scripts/setup.sh copied from the canonical SSOT template. No repo may define its own ad-hoc setup flow.
+SSOT: unified-trading-pm/scripts/setup.sh
+CODEX: 06-coding-standards/setup-standards.md
+KEY PROPERTIES:
+  - Idempotent — safe to re-run at any time without side effects.
+  - Skips completed steps — the .setup-stamp file tracks when deps were last installed; setup.sh skips reinstall if the stamp is current.
+  - No interactive prompts — must run unattended in CI and locally.
+  - CI-aware — detects CI environments and adjusts behavior accordingly.
+FORBIDDEN:
+  - `pip install` — always use `uv`.
+  - Manual venv creation outside setup.sh.
+  - Interactive `read` prompts or any user input.
+  - `os.getenv()` fallbacks in setup logic — use UnifiedCloudConfig.
+RELATIONSHIP: quality-gates.sh and quickmerge.sh may source setup.sh for bootstrap. setup.sh is the single owner of environment preparation — no other script may duplicate its responsibilities.

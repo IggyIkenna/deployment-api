@@ -1,0 +1,63 @@
+---
+description: .cursor/ folder contains IDE config only — no scripts, plans, or manifests
+globs: [".cursor/**"]
+alwaysApply: true
+priority: 65
+---
+
+# .cursor/ = IDE Config Working Copies Only
+
+The `.cursor/` folder is for Cursor IDE to read. It is NOT for workspace tooling.
+
+## What belongs in .cursor/
+
+✅ `rules/` — SYMLINK to `unified-trading-pm/cursor-rules/` (edits go directly to git)
+✅ `plans/` — SYMLINK to `unified-trading-pm/plans/cursor-plans/`
+✅ `skills-cursor/` — Cursor skill files
+✅ `workspace-configs/` — Cursor/VSCode workspace .json configs
+✅ `plugins/` — Cursor plugin cache (auto-managed)
+
+## What does NOT belong in .cursor/
+
+❌ Scripts that do real work → `unified-trading-pm/scripts/`
+❌ Execution plans or AI plans → `unified-trading-pm/plans/ai/`
+❌ Manifests or config files → `unified-trading-pm/workspace-manifest.json`
+❌ Bad-release annotations → `unified-trading-pm/manifest_warnings.yaml`
+❌ Archives → `unified-trading-pm/archive/`
+❌ Git operations or CI/CD logic
+
+## How Rules and Plans Work
+
+Both `.cursor/rules/` and `.cursor/plans/` are **symlinks** into the PM repo:
+
+```
+.cursor/rules/ -> unified-trading-pm/cursor-rules/     (symlink)
+.cursor/plans/ -> unified-trading-pm/plans/cursor-plans/ (symlink)
+```
+
+This means edits in `.cursor/rules/` directly modify git-tracked files. No sync needed.
+
+**To share rule changes with the team:**
+```bash
+cd unified-trading-pm
+bash scripts/quickmerge.sh "feat: add rule for X"
+# Your edits are already in cursor-rules/ — quickmerge commits them directly
+```
+
+**To pull latest rules from the team:**
+```bash
+cd unified-trading-pm && git pull
+# Done — symlink means you immediately see the team's changes
+```
+
+## Why symlinks?
+
+- Edits go directly to git-tracked files — no sync drift possible
+- `git pull` immediately gives you the team's latest rules
+- No manual sync scripts needed
+- Same pattern for both rules and plans (consistency)
+
+## Reference
+
+Codex: `unified-trading-codex/05-infrastructure/workspace-setup.md`
+CODEX: 05-infrastructure/workspace-root-variable.md

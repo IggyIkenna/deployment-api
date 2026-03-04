@@ -1,0 +1,14 @@
+---
+description: "Always run ruff/linters with timeout and specific source dir"
+alwaysApply: false
+priority: 75
+tags:
+  - linting
+  - safety
+---
+# Safe Linting Execution
+RULE: Always use timeout for linters. Never run ruff/basedpyright on workspace root or without source dir.
+WHY: Linters can hang; 30+ repo workspace causes resource exhaustion and zombie processes.
+CODEX: 06-coding-standards/quality-gates-service-template.sh, .cursor/rules/basedpyright-safety.mdc
+DO: `timeout 30 ruff check <source_dir>/`; `timeout 120 basedpyright <source_dir>/`; `run_timeout 120 basedpyright <source_dir>/` # use run_timeout helper — see codex QG template SSOT; job-level timeout in CI
+NEVER: `ruff check .`; `basedpyright .`; run linters without timeout

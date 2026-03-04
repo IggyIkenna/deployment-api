@@ -1,0 +1,23 @@
+---
+description: "Always use UTC datetime — never naive or utcnow()"
+alwaysApply: true
+priority: 80
+tags: [datetime, utc, timezone]
+---
+
+# UTC Datetime: Always
+
+RULE: All datetime objects must be timezone-aware UTC. Never use naive datetimes or deprecated utcnow().
+WHY: Naive datetimes cause silent DST bugs, incorrect comparisons, and partition misalignment in GCS time-series data.
+CODEX: 06-coding-standards/README.md
+
+DO:
+  from datetime import datetime, timezone
+  now = datetime.now(timezone.utc)
+  ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+NEVER:
+  datetime.now()         # naive — no timezone
+  datetime.utcnow()      # deprecated since Python 3.12
+  datetime.today()       # naive
+  timezone-naive timestamps in any GCS schema or event metadata

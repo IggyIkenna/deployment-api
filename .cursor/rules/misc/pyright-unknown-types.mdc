@@ -1,0 +1,17 @@
+---
+description: "Use basedpyright, never pyright; enable Unknown type detection"
+alwaysApply: false
+priority: 65
+globs:
+  - "**/pyrightconfig.json"
+  - "**/*.py"
+tags:
+  - type-checking
+  - basedpyright
+---
+# basedpyright Unknown Types Detection
+RULE: Always use basedpyright (never pyright). Enable reportUnknown* in pyrightconfig.json. Only audited bypasses in QUALITY_GATE_BYPASS_AUDIT.md may pass.
+WHY: pyright is deprecated; basedpyright aligns with Pylance and catches Unknown types that hide bugs.
+CODEX: 06-coding-standards/quality-gates.md, .cursor/rules/quality-gates-audit-factors.mdc
+DO: Set reportUnknownVariableType, reportUnknownParameterType, reportUnknownArgumentType to "warning" or "error"; use `basedpyright <source_dir>/ --level warning`
+NEVER: Use pyright; set reportUnknown* to "none"; relax rules without audit

@@ -1,0 +1,48 @@
+---
+description: "Install deps at repo and workspace venv levels for IDE health"
+alwaysApply: false
+priority: 30
+globs: ["**/pyproject.toml"]
+---
+
+# Workspace Venv Sync
+
+When adding dependencies to any repo's pyproject.toml, ALWAYS install at BOTH levels:
+
+1. **Repo level**: `cd repo && uv pip install -e ".[dev]"`
+2. **Workspace level**: `cd /Users/ikennaigboaka/Documents/Documents - Mac/repos/unified-trading-system-repos && source .venv-workspace/bin/activate && uv pip install package-name`
+
+This ensures IDE health (Pylance, type checking) works across the workspace.
+
+---
+
+## Execution Libraries (Renamed/New - Feb 2026)
+
+**Rename:** `unified-order-interface` → `unified-trade-execution-interface`
+
+**Install order** (dependency order for workspace venv IDE type hints):
+
+```bash
+cd /Users/ikennaigboaka/Documents/Documents - Mac/repos/unified-trading-system-repos
+source .venv-workspace/bin/activate
+
+# 1. matching-engine-library (no deps on other local libs)
+uv pip install -e matching-engine-library
+
+# 2. unified-trade-execution-interface (was unified-order-interface)
+#    If version constraints fail: pip install -e unified-trade-execution-interface --no-deps
+pip install -e unified-trade-execution-interface --no-deps
+
+# 3. unified-defi-execution-interface
+uv pip install -e unified-defi-execution-interface
+
+# 4. execution-algo-library
+uv pip install -e execution-algo-library
+
+# 5. Re-install execution-service to pick up new deps
+pip install -e execution-service --no-deps
+```
+
+**Uninstall old:** `uv pip uninstall unified-order-interface` (no longer exists)
+
+CODEX: 05-infrastructure/workspace-root-variable.md

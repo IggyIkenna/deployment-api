@@ -1,0 +1,33 @@
+---
+description: "MAX_WORKERS concurrency limits — I/O vs CPU bound, adaptive RAM thresholds"
+alwaysApply: true
+priority: 75
+tags: [concurrency, performance, max-workers]
+---
+
+# Concurrency: MAX_WORKERS
+
+RULE: Set MAX_WORKERS based on workload type and monitor RAM. Never hardcode worker counts without type-based rationale.
+WHY: Wrong worker counts cause OOM kills (CPU-bound with 16 workers) or underutilization (I/O-bound with 1 worker).
+CODEX: 04-architecture/concurrency.md
+
+Batch mode (parallel dates):
+  I/O-bound (GCS read/write, API calls): MAX_WORKERS = 16
+  CPU-bound (feature calculation, ML inference): MAX_WORKERS = 1–3
+
+Live mode (parallel venues):
+  One thread per WebSocket connection (never share a WebSocket across threads)
+
+Adaptive RAM thresholds (required for all batch workers):
+  85% RAM → reduce active workers by 50%
+  90% RAM → emergency shutdown of non-critical workers
+  Monitor via: psutil.virtual_memory().percent
+
+DO:
+  MAX_WORKERS = config.max_workers  # from UnifiedCloudConfig field
+  with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor: ...
+
+NEVER:
+  ThreadPoolExecutor()  # no max_workers limit
+  Hardcode max_workers=16 for CPU-bound workloads
+  Share WebSocket connections across threads

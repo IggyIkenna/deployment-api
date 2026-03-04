@@ -1,0 +1,17 @@
+---
+description: "Empty directories in core packages fail quality gates"
+alwaysApply: false
+priority: 70
+globs:
+  - "**/__init__.py"
+  - "**/quality-gates.sh"
+tags:
+  - code-hygiene
+  - quality-gates
+---
+# No Empty Directories
+RULE: Core package paths must not have empty dirs (only __pycache__/.DS_Store). Quality gates fail if found.
+WHY: Indicates deleted code not cleaned up; confuses developers.
+CODEX: 06-coding-standards/quality-gates.md, quality-gates-service-template.sh
+DO: Remove empty dirs; add .gitkeep if intentionally empty for structure
+NEVER: Leave empty service/package dirs; ignore in quality gates

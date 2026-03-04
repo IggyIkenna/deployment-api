@@ -1,0 +1,14 @@
+---
+description: "Strategy for remediating audit findings and technical debt"
+alwaysApply: false
+priority: 35
+tags:
+  - audits
+  - technical-debt
+---
+# Audit Remediation Strategy
+RULE: Empty fallbacks → fix ALL (fail loud). Low coverage → tests + linters in parallel. Any types → replace with specific. Lazy imports → keep for optional deps.
+WHY: Systematic approach prioritizes work; parallel execution speeds remediation.
+CODEX: 06-coding-standards/audit-remediation-guide.md, .cursor/rules/no-empty-fallbacks.mdc
+DO: Use parallel agents for cross-repo; run quality gates before commit; check QUALITY_GATE_BYPASS_AUDIT for exceptions
+NEVER: Fix only critical config; skip tests to pass gates; add baselines instead of fixing

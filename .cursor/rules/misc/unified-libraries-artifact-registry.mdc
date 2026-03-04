@@ -1,0 +1,16 @@
+---
+description: "Unified libraries publish to Artifact Registry with idempotent version validation"
+alwaysApply: false
+priority: 45
+globs:
+  - "**/unified-*/"
+tags:
+  - libraries
+  - artifact-registry
+---
+# Unified Libraries Artifact Registry
+RULE: Declare unified libs explicitly in pyproject.toml. Path deps for local; pip.conf for Artifact Registry. Version bump before code changes.
+WHY: No transitive deps; Cloud Build validates version→commit; idempotent uploads.
+CODEX: 05-infrastructure/unified-libraries/, 06-coding-standards/quality-gates.md#cloud-build
+DO: Explicit deps; path = "../repo-name"; bump version before changes; pip.conf for auth
+NEVER: Rely on transitive deps; skip version bump; use deps/ for path (use ../)

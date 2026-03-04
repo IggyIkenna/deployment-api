@@ -1,0 +1,23 @@
+---
+description: "Agents must have a Python venv before Python work (workspace OR single-repo)"
+alwaysApply: true
+priority: 80
+globs:
+  - "**/*.py"
+  - "bootstrap.sh"
+tags:
+  - infrastructure
+  - agents
+---
+# Agent venv bootstrap
+TWO SCENARIOS — support both; do not assume one.
+
+**Scenario A (full workspace):** Workspace root exists, `.venv-workspace/bin/python` present.
+→ Use it. If missing: `./bootstrap.sh --no-clone --no-tools` from workspace root.
+
+**Scenario B (single-repo agent):** Agent has one repo only; no workspace root.
+→ Use repo's `.venv/` from `bash scripts/setup.sh` (or `setup.sh --isolated` if no siblings).
+→ setup.sh installs deps from pyproject.toml + .dependency-matrix.json.
+
+RULE: Before Python work, ensure a venv exists. Prefer `.venv-workspace` if at workspace root; else use repo `.venv` (run `bash scripts/setup.sh` if missing).
+DOC: unified-trading-pm/docs/workspace-setup.md § Cursor background agents

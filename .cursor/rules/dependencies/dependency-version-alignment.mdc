@@ -1,0 +1,15 @@
+---
+description: "All repos must use aligned dependency versions from codex"
+alwaysApply: false
+priority: 60
+tags:
+  - dependencies
+  - versioning
+---
+# Dependency Version Alignment
+RULE: Check codex before adding/updating deps. Use standard versions: ruff==0.15.0, pytest>=9.0.1, numpy>=2.1.0, pandas>=2.2.3.
+WHY: Prevents import failures, test incompatibilities, deployment issues across 30+ repos.
+CODEX: 06-coding-standards/dependency-management.md, .cursor/workspace-configs/check-dependency-alignment.sh
+DO: Update codex first if new dep; update ALL repos; run `uv lock`; use resolve-version-conflicts.py to detect drift
+NEVER: Add dep without codex check; update one repo only; skip uv.lock
+See also: `uv-lock-file.mdc` — how to maintain the lock file (lock file mechanics); this rule covers version selection only.

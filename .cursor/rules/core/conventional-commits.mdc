@@ -1,0 +1,81 @@
+---
+description: "Conventional commit format required on all repos"
+alwaysApply: true
+priority: 85
+tags: [git, versioning, ci-cd]
+---
+
+# Conventional Commits — Required
+
+RULE: ALL commit messages MUST use conventional commit format. This is the ONLY way auto version bumping on main merge works.
+WHY: GitHub Action reads the squash-merge commit prefix to determine semver bump type. Free-form messages produce no bump → Cloud Build idempotent conflict on next build.
+CODEX: 06-coding-standards/feature-branch-workflow.md
+
+## Format
+
+```
+<type>(<scope>): <description>
+
+BREAKING CHANGE: <description>  # in footer, triggers major bump
+```
+
+## Types and Version Bumps
+
+| Type | Bump | When to use |
+|------|------|-------------|
+| `feat:` | minor | New feature, new API, new behaviour |
+| `fix:` | patch | Bug fix, incorrect behaviour corrected |
+| `BREAKING CHANGE:` | major | API removed/changed incompatibly (in footer or `feat!:`) |
+| `chore:` | none | Tooling, config, non-code changes |
+| `docs:` | none | Documentation only |
+| `refactor:` | none | Code restructure, no behaviour change |
+| `test:` | none | Tests only |
+| `ci:` | none | CI/CD pipeline changes |
+
+## DO
+
+```bash
+bash scripts/quickmerge.sh "feat: add ConfigReloader to UTS"
+bash scripts/quickmerge.sh "fix: correct tier boundary in path-dependency-ci rule"
+bash scripts/quickmerge.sh "chore: update .gitignore"
+bash scripts/quickmerge.sh "feat!: remove ConfigStore from UCI (BREAKING CHANGE: import from UTS)"
+```
+
+## NEVER
+
+```bash
+bash scripts/quickmerge.sh "update stuff"          # no type prefix → no version bump
+bash scripts/quickmerge.sh "wip"                   # not conventional
+bash scripts/quickmerge.sh "fixed the thing"       # not conventional
+bash scripts/quickmerge.sh "bump version to 1.3.0" # NEVER bump locally — CI does this on merge
+```
+
+## Local Version Bumping
+
+NEVER bump version in pyproject.toml or package.json locally on a branch.
+The GitHub Action bumps version automatically on merge to main, based on the commit message type.
+Manual bumps on branches create double-bumps (branch bump + CI bump = skipped semver).
+
+## Scope (optional but encouraged)
+
+Scope identifies which component changed:
+- `feat(ConfigReloader): extract from UCI to UTS`
+- `fix(quality-gates): remove git reset --hard suggestion from Option 1`
+- `chore(quickmerge): add --no-pr flag`
+
+## Enforcement
+
+- commit-msg hook (pre-commit): validates format before commit is created
+- quickmerge.sh Stage 0: validates COMMIT_MSG format, exits 1 if not conventional
+- GitHub Actions version-bump.yml: reads type prefix from squash-merge commit
+
+## Breaking Changes in Internal Libraries/Services
+
+When a library or service makes a breaking API change that forces consumers to update their code,
+use `feat!:` (bang) or include `BREAKING CHANGE:` in the commit footer. This triggers a **major**
+version bump (e.g. `1.4.2` → `2.0.0`) in the CI.
+
+Consumers of that library MUST then update their `pyproject.toml` version constraint and fix
+call sites before their next merge to main.
+
+See full protocol: `cursor-rules/dependencies/breaking-change-major-version-protocol.mdc`

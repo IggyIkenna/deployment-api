@@ -1,0 +1,14 @@
+---
+description: "Adapters must be thin - delegate to unified libraries"
+alwaysApply: false
+priority: 60
+tags:
+  - adapters
+  - architecture
+---
+# Thin Adapters
+RULE: Adapters <100 lines. Delegate to UCS, UMI, UCI, UEI. No business logic in adapters.
+WHY: Keeps adapters maintainable; logic belongs in engines/libraries.
+CODEX: 06-coding-standards/thin-adapters-pattern.md, 05-infrastructure/unified-libraries/
+DO: Use get_storage_client, @handle_api_errors, get_venue_config, log_event; keep adapter <50 lines
+NEVER: Put validation/transformation in adapter; exceed 100 lines; duplicate library logic

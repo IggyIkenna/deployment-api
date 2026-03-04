@@ -1,0 +1,31 @@
+---
+description: "Import from top-level package only, never from internal modules"
+alwaysApply: true
+priority: 50
+tags: [imports, dependencies, refactoring]
+globs: ["**/*.py"]
+---
+
+# External Import Standards
+
+RULE: Import from package root (e.g. `from unified_config_interface import UnifiedCloudConfig`). Never from nested modules (e.g. `from unified_config_interface.core.config import ...`).
+WHY: Top-level imports allow upstream refactoring without breaking 30+ downstream repos.
+CODEX: 06-coding-standards/README.md#imports, 06-coding-standards/cursor-rules-system.md
+
+DO:
+  from unified_config_interface import UnifiedCloudConfig       # schema, validation, enums (Level 0 leaf)
+  from unified_trading_services import ConfigStore, ConfigReloader # cloud persistence + hot-reload (moved from UCI v1.1.0)
+  from unified_trading_services import get_secret_client    # secrets
+  from unified_events_interface import setup_events, log_event
+  from unified_domain_client import InstrumentsDomainClient
+  from unified_api_contracts import DataSourceMapping
+  from unified_api_contracts.databento.schemas import DatabentoOhlcvBar
+  from unified_api_contracts.ccxt.schemas import CcxtOrder
+
+NEVER:
+  from unified_config_interface import ConfigStore              # MOVED to unified_trading_services
+  from unified_config_interface import ConfigReloader           # MOVED to unified_trading_services
+  from unified_events_interface.core.lifecycle import log_event
+  from unified_trading_services.storage.gcs import get_storage_client
+
+See also: `search-before-implementing.mdc` — search unified libraries before writing any new code.

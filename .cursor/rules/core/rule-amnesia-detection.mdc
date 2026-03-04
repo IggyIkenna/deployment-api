@@ -1,0 +1,20 @@
+---
+description: "Stop session if Cursor forgets rules (pip, os.getenv, git push, etc.)"
+alwaysApply: true
+priority: 90
+tags: [session-management, rules]
+---
+
+# Rule Amnesia Detection
+
+RULE: Stop session if Cursor uses os.getenv(), pip install, git push, setup_cloud_logging, or suggests skipping tests. Start fresh chat or explicitly remind rules.
+WHY: Continuing with forgotten rules wastes time and produces broken code.
+CODEX: 06-coding-standards/README.md
+
+DO:
+  Remind: "Configuration MUST use UnifiedCloudConfig. Package manager MUST be uv. Git MUST use quickmerge."
+
+NEVER:
+  Use os.getenv() after correction
+  Suggest git push origin main
+  Create *_SUMMARY.md without being asked

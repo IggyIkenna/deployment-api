@@ -1,0 +1,41 @@
+---
+description: "4-layer integration testing strategy — contract alignment, schema robustness, infra verification, pipeline E2E"
+alwaysApply: false
+priority: 70
+tags:
+  - testing
+  - integration
+  - quality-gates
+---
+# Integration Testing Layers
+
+RULE: 4 testing layers, cumulative (Layer N+1 meaningless if Layer N fails). Each layer has a defined location, trigger, and credential requirement.
+WHY: Prevents silent schema drift, infrastructure provisioning gaps, and pipeline wire mismatches from reaching production.
+CODEX: 06-coding-standards/integration-testing-layers.md (SSOT)
+
+## Quick Reference
+
+| Layer | What | Where | In quickmerge? | Credentials |
+|-------|------|-------|----------------|-------------|
+| 0 | Contract alignment (AC↔UIC schema pairs) | unified-api-contracts + unified-internal-contracts tests/ | Yes | None |
+| 1 | Schema robustness (fail-fast, corner cases) | Each repo: tests/unit/test_schema_robustness.py | Yes | None |
+| 2 | Infrastructure verify (buckets, topics, IAM) | deployment-service/scripts/verify_infra.py | No (post-deploy) | GCP |
+| 3a | Pipeline smoke (happy path, fast) | system-integration-tests/ `@pytest.mark.smoke` | No (post-deploy) | GCP sandbox |
+| 3b | Full E2E (corner cases, auth, perf) | system-integration-tests/ `@pytest.mark.full_e2e` | No (post-deploy) | GCP sandbox |
+
+## When Writing Tests
+
+Layer 0: If you change a schema in AC or UIC, add or update a contract alignment test in that repo.
+Layer 1: If you add/change a Pydantic model any service consumes, add test_schema_robustness.py tests.
+Layer 2: If you add a new GCS bucket or PubSub topic, add it to verify_infra.py resource list.
+Layer 3: If you add a new service-to-service data flow, add a smoke test in system-integration-tests.
+
+DO:
+  Layer 0 in AC/UIC; Layer 1 per-service; Layer 2 in deployment-service; Layer 3 in system-integration-tests
+  Sequential: 3a passes before 3b runs
+  system-integration-tests interacts via HTTP/GCS/PubSub only — zero Python imports from services
+
+NEVER:
+  Layer 3 tests that import service internals (creates cross-service Python dependency)
+  Skip Layer 0 when modifying schemas ("it's just a field rename")
+  Put infra verification in quickmerge (needs cloud credentials)

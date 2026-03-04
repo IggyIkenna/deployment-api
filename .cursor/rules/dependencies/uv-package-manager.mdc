@@ -1,0 +1,18 @@
+---
+description: "Use uv for all Python package installs, never pip (except pip install uv)"
+alwaysApply: false
+priority: 30
+globs:
+  - "**/pyproject.toml"
+  - "**/*.sh"
+  - "**/Dockerfile"
+tags:
+  - tooling
+  - package-manager
+---
+# UV Package Manager
+RULE: Always use uv. No exceptions — not in Docker, not in CI, not in scripts.
+WHY: uv 10-100x faster; consistent tooling everywhere eliminates environment drift.
+CODEX: 06-coding-standards/dependency-management.md
+DO: uv pip install -e ".[dev]"; RUN uv pip install --system in Dockerfile; uv lock
+NEVER: pip install -e .; pip install ruff; python -m pip install; RUN pip install in Dockerfiles

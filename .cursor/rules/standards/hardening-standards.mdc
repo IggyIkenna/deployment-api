@@ -1,0 +1,19 @@
+---
+description: "No defensive programming - fail fast with clear error messages"
+alwaysApply: false
+priority: 50
+tags:
+  - code-quality
+  - error-handling
+---
+# Hardening Standards
+RULE: Fail loudly for unexpected missing data. Use explicit conditionals for known missing data (trading days, delistings).
+WHY: Try-except hiding business logic masks pipeline failures; defensive checks hide bugs.
+CODEX: 06-coding-standards/validation-patterns.md, .cursor/rules/no-empty-fallbacks.mdc
+DO: Explicit `if not is_trading_day: return`; raise with clear message for unexpected missing; validate before use
+NEVER: Bare except; try-except for business logic; empty fallbacks; defensive isinstance to hide type errors
+
+RULE: All repos must use `typeCheckingMode: "strict"` in pyrightconfig.json. Cloud SDK repos keep `reportUnknown*` and `reportMissingParameterType` as `"warning"` (SDK stub noise); all other rules must be `"error"`.
+NEVER: `typeCheckingMode: "basic"`; setting real-error rules to `"none"`; `--level warning` in basedpyright invocations
+DO: `run_timeout 120 basedpyright "$SOURCE_DIR/"` — no `--level warning`; let pyrightconfig.json control severity
+CODEX: 06-coding-standards/quality-gates.md#type-checking-standards

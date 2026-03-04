@@ -1,0 +1,14 @@
+---
+description: "Check canonical dependency matrix before dependency changes"
+alwaysApply: false
+priority: 55
+tags:
+  - dependencies
+  - quickmerge
+---
+# Dependency-Aware Development
+RULE: Check unified-trading-pm/workspace-manifest.json before adding/removing deps. Use --dep-branch when deps differ from main.
+WHY: Quickmerge uses matrix for cascade; wrong order breaks CI.
+CODEX: unified-trading-pm/workspace-manifest.json, .cursor/rules/always-use-quickmerge.mdc
+DO: Consult matrix before changes; use --dep-branch for differential branching; merge dependency before consumer
+NEVER: Change deps without matrix check; push consumer before dependency; skip cascade

@@ -1,0 +1,14 @@
+---
+description: "Separate AI-doable from human-required epic tasks"
+alwaysApply: false
+priority: 30
+tags:
+  - epics
+  - ai-tasks
+---
+# AI Task Classification
+RULE: AI can complete IMPLEMENT/VALIDATE (code, tests, docs, config) with quality gates. Human required for strategy testing, e2e deployment, production validation.
+WHY: Quality gates validate code; humans must validate profitability and production behavior.
+CODEX: 11-project-management/epic-execution-with-sub-agents.md, .cursor/rules/ai-task-classification.mdc
+DO: Complete Harsh-owned IMPLEMENT tasks; skip Ikenna-owned D6/D7 blockers; use /run-smoke-tests for UI
+NEVER: Claim strategy logic validated without human; skip quality gates for AI tasks

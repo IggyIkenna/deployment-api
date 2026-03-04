@@ -1,0 +1,14 @@
+---
+description: "Data sync system patterns and best practices"
+alwaysApply: false
+priority: 20
+tags:
+  - data-sync
+  - infrastructure
+---
+# Sync System
+RULE: Docs, cursor rules, and configs must stay aligned. Use sync-mapping-registry.yaml and sync-rules-and-docs.py to detect drift.
+WHY: Drift causes inconsistent patterns, rule amnesia, and conflicting guidance.
+CODEX: 10-audit/sync-mapping-registry.yaml, scripts/sync-rules-and-docs.py
+DO: Run `python unified-trading-codex/scripts/sync-rules-and-docs.py`; use auto-sync-fixes.py for simple fixes; run pre-commit sync validation
+NEVER: Ignore sync drift; bypass sync-check workflow; manually duplicate patterns across sources

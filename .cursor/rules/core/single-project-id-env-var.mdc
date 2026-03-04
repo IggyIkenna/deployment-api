@@ -1,0 +1,19 @@
+---
+description: "GCP_PROJECT_ID is the ONLY project ID variable — GOOGLE_CLOUD_PROJECT is fully removed"
+alwaysApply: true
+priority: 60
+globs:
+  - "**/*.py"
+  - "**/*.sh"
+tags:
+  - configuration
+  - project-id
+---
+# Single Project ID Environment Variable — No Backward Compatibility
+RULE: Use GCP_PROJECT_ID everywhere. GOOGLE_CLOUD_PROJECT is REMOVED — no exceptions, no config.py workarounds.
+WHY: Backward compatibility causes bugs in dev/prod environment switching. Clean break required.
+CODEX: 06-coding-standards/README.md#configuration
+DO: Replace any GOOGLE_CLOUD_PROJECT with GCP_PROJECT_ID across all files including config classes
+NEVER: GOOGLE_CLOUD_PROJECT anywhere — not even in config.py, not even as AliasChoices
+ENFORCED BY: quality-gates codex compliance check (blocks merge)
+See also: `no-backward-compatibility.mdc` for the general principle.

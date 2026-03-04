@@ -1,0 +1,22 @@
+---
+description: "Never claim done without running code and checking terminal output"
+alwaysApply: true
+priority: 95
+tags: [verification, blocking, quality]
+---
+
+# Runtime Verification Required (P0 BLOCKING)
+
+RULE: Never claim "done" or "it works" without running the code, waiting 8-10s, reading terminal output, and grepping for errors.
+WHY: Claiming success without verification wastes user time; incident 2026-02-21.
+CODEX: 06-coding-standards/README.md
+
+DO:
+  Run code (npm run dev, uvicorn, python script)
+  Wait 8-10s, read terminal, grep -i "error\|failed\|exception"
+  Verify success message (ready, startup complete)
+
+NEVER:
+  "The code compiles, so it works"
+  "Process started, so it works"
+  Claim success without checking terminal output

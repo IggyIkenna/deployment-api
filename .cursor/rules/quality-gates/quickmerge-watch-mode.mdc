@@ -1,0 +1,14 @@
+---
+description: "Quickmerge watch mode - auto-fix pre-push failures via LLM"
+alwaysApply: false
+priority: 40
+tags:
+  - quickmerge
+  - ci-cd
+---
+# Quickmerge Watch Mode
+RULE: Watch mode default. If act fails, LLM auto-fixes (max 3 attempts). Use --no-watch only when user requests.
+WHY: Reduces manual fix cycles; catches CI failures before push.
+CODEX: .cursor/rules/always-use-quickmerge.mdc, scripts/quickmerge.sh
+DO: bash scripts/quickmerge.sh "message" (watch enabled); let LLM fix act failures
+NEVER: Use --no-watch unless user asks; skip act simulation

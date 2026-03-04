@@ -1,0 +1,54 @@
+---
+description: "Never git reset/revert local changes without explicit user approval"
+alwaysApply: true
+priority: 95
+tags: [git, safety]
+---
+
+# Never Revert Local Changes
+
+RULE: Never run git reset --hard, git clean -fd, git restore, or checkout that discards uncommitted work without explicit user request. This includes NEVER suggesting these commands as "Option 1" in error messages or guidance.
+WHY: Parallel agents or branch switches can permanently lose hours of work. Feature branches DEPEND on local changes being preserved — that is the entire point of the feature branch.
+CODEX: 06-coding-standards/README.md, 06-coding-standards/feature-branch-workflow.md
+
+## DO
+
+```bash
+git status                          # check state first
+git stash push -u -m "Save work"    # save before branch switch
+bash scripts/quickmerge.sh "feat: ..." --dep-branch "feat/X"  # ALWAYS use branch isolation
+```
+
+## NEVER
+
+```bash
+git reset --hard
+git reset --hard origin/main        # destroys uncommitted dep changes
+git clean -fd
+git checkout <branch>               # when uncommitted changes exist
+```
+
+## Quickmerge Dependency Conflict — CRITICAL
+
+When quickmerge Stage 1 detects dependencies differ from main, it used to suggest:
+```
+Option 1: DISCARD local dependency changes
+  cd $dep_path && git reset --hard origin/main   ← THIS IS FORBIDDEN
+```
+
+**THIS IS A VIOLATION.** The correct response is ALWAYS:
+```
+Option 2: USE BRANCH ISOLATION (the only correct option)
+  bash scripts/quickmerge.sh "message" --dep-branch "my-feature"
+```
+
+If you see the dependency conflict error:
+1. NEVER run `git reset --hard` on the dependency
+2. ALWAYS use `--dep-branch` — quickmerge will cascade into the dep automatically
+3. The local dep changes ARE the feature — discarding them defeats the purpose
+
+## Feature Branch Safety Invariant
+
+On a feature branch, local changes in dependency repos are intentional and required.
+Quickmerge's stash/pop mechanism preserves all changes through branch operations.
+The cascade mechanism pushes dep changes to the same feature branch — changes are never lost.

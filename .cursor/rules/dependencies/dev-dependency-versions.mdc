@@ -1,0 +1,16 @@
+---
+description: "Keep dev dependency versions consistent across services"
+alwaysApply: false
+priority: 25
+globs:
+  - "**/pyproject.toml"
+tags:
+  - dependencies
+  - consistency
+---
+# Dev Dependency Versions
+RULE: Use codex-standard dev deps: pytest>=9.0.1, pytest-cov>=7.0.0, ruff==0.15.0, basedpyright>=1.20.0.
+WHY: Consistent test behavior, plugin compatibility, quality gate alignment across 30+ repos.
+CODEX: 06-coding-standards/dependency-management.md, .cursor/rules/dependency-version-alignment.mdc
+DO: Check codex before adding; use exact ruff pin; basedpyright not pyright
+NEVER: Mix pytest 8.x and 9.x; use pyright; skip ruff exact pin

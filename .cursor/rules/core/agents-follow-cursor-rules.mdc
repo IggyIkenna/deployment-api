@@ -1,0 +1,25 @@
+---
+description: "Sub-agents do not inherit always-apply rules — explicitly pass rules in every prompt"
+alwaysApply: true
+priority: 95
+tags:
+  - agents
+  - workflow
+  - critical
+---
+
+# Agents Must Follow Cursor Rules
+
+Sub-agents launched via Task tool start with FRESH context and do NOT automatically
+inherit the parent's always-apply rules.
+
+When launching ANY sub-agent (Task tool, generalPurpose, explore, shell, fast):
+1. ALWAYS include at the TOP of the prompt: "Follow all workspace cursor rules in .cursorrules"
+2. ALWAYS remind: "See no-summary-docs.mdc for documentation rules; plans only in unified-trading-pm or unified-trading-pm/plans/ai/"
+3. ALWAYS remind: "uv not pip, basedpyright not pyright, quickmerge not git push"
+4. ALWAYS remind: "Delete deprecated code; no parallel code paths — see delete-deprecated.mdc"
+5. ALWAYS remind: "Search unified libraries before implementing anything new"
+
+For multi-step agents: put the rule reminder at the TOP of the prompt, not buried at the end.
+
+CODEX: 06-coding-standards/cursor-rules-system.md

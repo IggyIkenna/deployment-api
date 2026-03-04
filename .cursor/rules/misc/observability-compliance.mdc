@@ -1,0 +1,23 @@
+# Observability and Compliance
+
+RULE: All events MUST include required fields per category. correlation_id on all coordination events, duration_ms on COMPLETED, stack_trace on FAILED, client_order_id on execution events.
+WHY: End-to-end tracing, performance monitoring, audit trail, and regulatory compliance (FCA/MiFID II).
+CODEX: 03-observability/lifecycle-events.md, 07-security/audit-logging.md
+
+MACHINE-READABLE SSOT:
+ unified-internal-contracts/events.py REQUIRED_EVENT_FIELDS
+ unified-internal-contracts/schemas/audit.py EXECUTION_AUDIT, STRATEGY_AUDIT
+ runtime-topology.yaml data_retention_policy, health_probes
+
+DO:
+ log_event("FAILED", metadata={"stack_trace": traceback.format_exc(), "error_category": "NETWORK", "correlation_id": corr_id})
+ log_event("PROCESSING_COMPLETED", metadata={"duration_ms": elapsed, "correlation_id": corr_id})
+ All execution events: include client_order_id and exchange_timestamp
+ Persist audit records to GCS audit/{client_id}/{date}/{event_type}/
+
+NEVER:
+ log_event("FAILED") without stack_trace and error_category
+ log_event("COMPLETED") without duration_ms
+ Execution events without client_order_id
+ Delete or modify audit records (append-only, immutable)
+ Skip correlation_id on coordination events

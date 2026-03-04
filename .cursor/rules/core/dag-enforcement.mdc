@@ -1,0 +1,26 @@
+---
+description: "Enforce DAG tier boundaries in imports and dependencies"
+alwaysApply: true
+priority: 90
+globs:
+  - "**/*.py"
+  - "**/pyproject.toml"
+tags:
+  - architecture
+  - blocking
+---
+# DAG Tier Enforcement
+RULE: No repo may import from a repo at a higher or equal tier. Tiers are defined in workspace-manifest.json arch_tier.
+SSOT: unified-trading-pm/workspace-manifest.json (code DAG); canonical visual: unified-trading-pm/WORKSPACE_MANIFEST_DAG.svg (derived from manifest).
+Runtime interaction SSOT: deployment-v3/configs/runtime-topology.yaml + RUNTIME_DEPLOYMENT_TOPOLOGY_DAG.svg. See 00-SSOT-INDEX.md § No service-to-service imports.
+CODEX: 00-SSOT-INDEX.md, 04-architecture/TIER-ARCHITECTURE.md. AC cannot import UIC: 02-data/contracts-scope-and-layout.md.
+TIERS:
+  T0 (pure leaf): unified-api-contracts, unified-internal-contracts, unified-config-interface, unified-events-interface, unified-cloud-interface, unified-reference-data-interface, execution-algo-library, matching-engine-library
+  T1: unified-trading-library (imports T0 only)
+  T2: unified-market-interface, unified-trade-execution-interface, unified-ml-interface, unified-feature-calculator-library, unified-position-interface, unified-defi-execution-interface, unified-sports-execution-interface (imports T0+T1)
+  T3: unified-domain-client (imports T0+T1)
+  Service: imports from T0-T3 only (libraries). **Importing another service as a package (pyproject dep / import) is a VIOLATION.** Interaction is only via messaging/APIs/storage per topology DAG. Services run as separate images always; colocated = same VM with in_memory for fast path, else GCS / PubSub / Redis.
+  API: imports T0+T1 only. HTTP boundary between services and UIs.
+  UI: TypeScript only. Never imports Python.
+CI: pyproject.toml dependencies are validated against workspace-manifest.json arch_tier fields.
+NEVER: T2 importing T3. Service importing another service (as package). UI importing from service engine.

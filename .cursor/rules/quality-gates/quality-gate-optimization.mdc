@@ -1,0 +1,14 @@
+---
+description: "Optimize quality gate execution for faster CI/CD feedback"
+alwaysApply: false
+priority: 75
+tags:
+  - quality-gates
+  - ci-cd
+---
+# Quality Gate Optimization
+RULE: Quality gates must complete in <3 minutes. Use pytest-xdist, skip slow tests in quick mode, synthetic fixtures.
+WHY: Fast feedback is essential; parallel agents must not overload.
+CODEX: 06-coding-standards/quality-gates-service-template.sh, .cursor/rules/quality-gates.mdc
+DO: Use pytest-xdist; mark slow tests; `--tb=short`; `--quick` for fast runs
+NEVER: Run slow tests in quick mode; skip parallel execution; exceed 5min total

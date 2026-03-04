@@ -1,0 +1,104 @@
+---
+description: "Universal semver for all repos; version = Docker image tag"
+alwaysApply: false
+priority: 50
+globs:
+  - "**/pyproject.toml"
+  - "**/package.json"
+  - "**/unified-*/**/*.py"
+tags:
+  - versioning
+  - libraries
+  - services
+  - ci-cd
+---
+# Universal Versioning
+
+RULE: ALL repos (libraries, services, UIs) use semver. Every main merge bumps version automatically via GitHub Action. Version tag = Docker image tag = immutable reference. NEVER bump version locally on branches. NEVER bump above 1.0.0 until all plan items for that repo are complete and it passes full quickmerge on main.
+WHY: Cloud Build fails if library version exists with different commit; prevents stale packages. Immutable tags enable safe rollbacks. Local bumps cause double-bumps (local bump + CI bump = skipped semver).
+CODEX: 06-coding-standards/feature-branch-workflow.md, 06-coding-standards/quality-gates.md
+
+## Pre-1.0.0 Policy (current state — ALL repos)
+
+ALL repos are `0.x.x` until they pass a full quickmerge on `main` under the new CI/CD pipeline.
+**`1.0.0` = first stable release = first successful CI-validated merge to main after all plan items for that repo are complete.**
+
+- `workspace-manifest.json` is the SSOT — if a repo is `0.x.x` there, it is NOT stable
+- The version bumping to `1.0.0` in the manifest is our signal that the change hit main
+- If the manifest still shows `0.x.x` after a quickmerge, the PR did not land — debug
+- `feat:` bumps within `0.x.y` (e.g. `0.1.0` → `0.2.0`); it does NOT cross to `1.0.0`
+- `1.0.0` is ONLY set when: (a) all plan items for that repo/tier are done, (b) full quickmerge passes, (c) staging → main merge completed, (d) GitHub Action bumps the version
+
+## Manifest as Audit Trail
+
+```
+1. Work on feature branch — versions stay at 0.x.x everywhere
+2. quickmerge --unit-only (fast check) → quickmerge full (passes)
+3. staging → main PR created (quickmerge with staging branch)
+4. PR merges to main → GitHub Action bumps version
+5. GitHub Action ALSO updates workspace-manifest.json with new version
+6. If manifest.json in unified-trading-pm still shows old version → PR did not land
+7. Pull manifest.json to see what actually made it to main
+```
+
+After a quickmerge PR lands on main, **always pull the manifest** to verify the version bumped:
+```bash
+cd unified-trading-pm && git pull
+# Check: does versions.my-repo now show the bumped version?
+```
+
+## Version Bump Rules
+
+| Commit prefix | Bump | Example |
+|---------------|------|---------|
+| `feat:` | minor | 0.1.0 → 0.2.0 (stays pre-1.0.0 until final green) |
+| `fix:` | patch | 0.1.0 → 0.1.1 |
+| `feat!:` or `BREAKING CHANGE:` | major | 0.1.0 → 0.2.0 (still pre-1.0.0; major only applies post-1.0.0) |
+| `chore:`, `docs:`, `refactor:`, `test:`, `ci:` | none | no change |
+| Final staging → main (all plan items done) | to `1.0.0` | 0.x.y → 1.0.0 |
+
+## Who Bumps Versions
+
+- **GitHub Action** (`version-bump.yml`): auto-triggered on push to main — reads merge commit prefix → bumps pyproject.toml/package.json → commits `[skip ci]` back to main
+- **PM repo version-bump**: also updates its own entry in workspace-manifest.json versions map
+- **Other repos version-bump**: bumps their own pyproject.toml only (cannot push to PM repo). PM manifest synced via periodic workflow or manual pull.
+- **Cloud Build**: publishes the bumped version to Artifact Registry with idempotent check
+- **Nobody else**: no agent, no human, no script should manually bump version on a branch
+- **All 53 repos** must have `version-bump.yml` — propagated in Phase 0 Stream A alongside quickmerge templates
+
+## Branch Builds (Feature Branch Artifacts)
+
+Feature branch Cloud Build runs (when enabled) inject an ephemeral local version suffix in the
+container only (never committed):
+```
+0.1.0 (toml) → 0.1.0+feat-rollback.abc123 (wheel artifact in Artifact Registry)
+```
+The toml stays `0.1.0`. The artifact is distinguishable. Cleanup scripts remove `+` artifacts.
+
+## DO
+
+```bash
+bash scripts/quickmerge.sh "feat: add ConfigReloader"  # CI bumps 0.x.y on merge
+bash scripts/quickmerge.sh "fix: tier boundary"         # CI bumps patch on merge
+# After merge lands, pull manifest to confirm
+cd unified-trading-pm && git pull && jq '.versions' workspace-manifest.json
+```
+
+## NEVER
+
+```bash
+# Edit pyproject.toml version on a branch
+version = "1.0.0"   # local bump on branch — FORBIDDEN
+# Change code then bump manually
+sed -i 's/0.1.0/0.2.0/' pyproject.toml   # FORBIDDEN
+# Deploy by SHA or latest
+docker pull myimage:latest    # FORBIDDEN — always use version tag
+# Bump to 1.0.0 before all plan items are done
+# Reuse version with different commit — Cloud Build idempotent check blocks this
+```
+
+## DAG Diagram Versions
+
+Version labels in TOPOLOGY-DAG.md are semantic milestone targets, NOT current semver.
+`workspace-manifest.json` is the SSOT for actual pinned versions.
+NEVER edit DAG diagram version labels to match pyproject.toml — that is the manifest's job.

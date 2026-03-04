@@ -1,0 +1,70 @@
+---
+description: "High-quality tests without duplication or performance degradation"
+alwaysApply: false
+priority: 55
+tags:
+  - testing
+  - quality
+---
+# Test Quality Standards
+RULE: Expand existing test files; never create test_*_extended.py, test_*_additional.py, test_*_v2.py. Use singleton fixtures from conftest; mock external deps.
+WHY: Duplicate files and fixtures cause maintenance burden; real GCS/API in unit tests slows gates.
+CODEX: 06-coding-standards/testing.md
+
+DO: Add tests to existing test_config.py; create new file only for uncovered module; use session/module scope fixtures; mock GCS, APIs
+NEVER: Create test_config_extended.py, test_adapter_2.py; duplicate fixtures; use real GCS in unit tests; 500MB fixtures; split by "concern" artificially
+
+## Mocking External I/O: General Principle
+
+Every external I/O boundary must be patchable. Unit tests never make real network calls and never need credentials.
+Use `autouse=True` conftest fixtures so tests pass by default; integration tests are the explicit exception.
+
+### Canonical: mock_secret_client (copy to every repo's tests/conftest.py)
+
+```python
+from unittest.mock import patch
+import pytest
+from unified_trading_services import SecretNotFoundError
+
+_UNIT_TEST_SECRETS: dict[str, str] = {
+    "tardis-api-key": "test-tardis-key",
+    "google-oauth-client-id": "test-oauth-client-id",
+    # add service-specific secrets
+}
+
+@pytest.fixture(autouse=True)
+def mock_secret_client():
+    def _fake(secret_name: str, project_id: str, **kwargs) -> str:
+        if secret_name in _UNIT_TEST_SECRETS:
+            return _UNIT_TEST_SECRETS[secret_name]
+        raise SecretNotFoundError(f"Test secret not registered: '{secret_name}'. Add to _UNIT_TEST_SECRETS.")
+    with patch("unified_trading_services.get_secret_client", side_effect=_fake):
+        yield
+```
+
+Apply the same autouse pattern for other external I/O:
+- `get_storage_client` → `MagicMock(spec=StorageClient)`
+- HTTP clients → `unittest.mock.patch` on the session/client class
+- Pub/Sub publishers → `MagicMock(spec=PublisherClient)`
+
+## Special case: libraries that DEFINE `get_secret_client`
+
+`unified-trading-library` and `unified-cloud-interface` cannot mock `get_secret_client` in their own tests.
+Mock `SecretManagerClient` at the class level instead:
+
+```python
+from unittest.mock import MagicMock, patch
+
+@pytest.fixture
+def mock_secret_manager():
+    with patch("unified_cloud_services.core.secret_manager.SecretManagerClient") as mock_cls:
+        mock_instance = MagicMock()
+        mock_instance.get_secret.return_value = "test-secret-value"
+        mock_instance.client = MagicMock()
+        mock_cls.return_value = mock_instance
+        yield mock_instance
+```
+
+RULE: if your repo DEFINES `get_secret_client` → mock `SecretManagerClient`; if your repo CONSUMES it → use the autouse fixture above.
+
+CODEX: 06-coding-standards/testing.md#mocking-get_secret_client-in-unit-tests-canonical-pattern

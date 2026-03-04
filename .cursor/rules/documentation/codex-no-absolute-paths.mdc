@@ -1,0 +1,41 @@
+---
+description: "Block absolute machine-specific paths in documentation in both codex and PM repos"
+globs: ["unified-trading-codex/**/*.md", "unified-trading-codex/**/*.yaml", "unified-trading-pm/docs/**/*.md", "unified-trading-pm/plans/**/*.md"]
+alwaysApply: false
+---
+
+# No Absolute Paths in Documentation
+
+**Rule:** All file paths in documentation in unified-trading-codex and unified-trading-pm must be workspace-relative. Absolute paths are never acceptable.
+
+## Forbidden patterns
+
+- `/Users/...` — developer home directories
+- `/home/...` — Linux home directories
+- `/data/...` — mounted data drives
+- `$HOME/...` — home directory variable
+- `$UNIFIED_TRADING_WORKSPACE_ROOT/...` — use workspace-relative paths instead
+
+## Correct pattern
+
+Use paths relative to the workspace root:
+
+```markdown
+# BAD
+cd /Users/ikennaigboaka/Documents/repos/unified-trading-system-repos/instruments-service
+
+# GOOD
+cd instruments-service
+
+# BAD
+python /data/Upwork/On\ Going/Ikenna/market-tick-data-service/scripts/validate.py
+
+# GOOD
+python market-tick-data-service/scripts/validate.py
+```
+
+## Rationale
+
+Absolute paths make documentation machine-specific and stale the moment they are written. Any developer or agent running the same command will get errors unless they happen to have the identical path structure.
+
+See: `unified-trading-codex/13-codex-governance/SSOT-BOUNDARY.md` for the full governance rules.

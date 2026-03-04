@@ -1,0 +1,40 @@
+---
+description: "Anti-patterns quick reference — don't/do pairs for common mistakes"
+alwaysApply: true
+priority: 80
+globs: []
+tags:
+  - standards
+  - quick-reference
+---
+
+# Anti-Patterns Quick Reference
+
+| Don't | Do |
+|-------|-----|
+| **Claim "done" without runtime verification** | **Run code, wait 8-10s, check terminal for errors, verify output** |
+| **Run quality gates standalone** | **Use quickmerge (includes all quality gates automatically)** |
+| **Dependencies differ but no --dep-branch** | **Use quickmerge --dep-branch for proper isolation and cascade** |
+| Commit deps change without uv.lock | Run quickmerge (auto-runs quality gates + `uv lock`); commit uv.lock |
+| `pip install` (except `pip install uv`) | `uv pip install` |
+| `os.getenv('KEY', '')` | `config.key_name` |
+| `from google.cloud import storage` | `get_storage_client()` |
+| `print()` | `logger.info()` |
+| `datetime.now()` | `datetime.now(timezone.utc)` |
+| Bare `except:` | `@handle_api_errors` |
+| `git push main` or `bash scripts/quality-gates.sh` | `quickmerge.sh` (includes all checks); use `--dep-branch` when deps differ; if CI fails use `/fix-ci` or `/loop-on-ci` |
+| Imports in functions | Imports at top |
+| TODO in code | GitHub issue |
+| File >900 lines | Split by SRP — see `06-coding-standards/file-splitting-guide.md` |
+| Hardcode standards in scripts | **Read from cursor rules** (see `.lobster/` workflow) |
+| Create `test_*_extended.py` files | **Expand existing test files** (see `.cursor/rules/test-quality-standards.mdc`) |
+| Duplicate fixtures across test files | **Use singleton fixtures from conftest.py** |
+| `!central-element-*.json` in .gitignore | **Never allow credential JSON**; use `*credentials*.json` (see quality-gates-audit-factors.mdc) |
+| `central-element-323112` in tests | **Use `test-project`** placeholder (see quality-gates-audit-factors.mdc) |
+| `except Exception:` in production | **Use `@handle_api_errors` or specific exceptions** (see quality-gates-audit-factors.mdc) |
+| Relax reportAny/reportUnknown*, add baselines | **Only audited exceptions pass** — document in QUALITY_GATE_BYPASS_AUDIT.md; fix all other type errors |
+| `basedpyright .` or `basedpyright` (no args) | **`timeout 120 basedpyright <source_dir>/`** (see `.cursor/rules/basedpyright-safety.mdc`) |
+| Run standalone basedpyright for codebase audits | **Run quality gates per repo** (`bash scripts/quality-gates.sh --no-fix`) — same lint + type check, no zombies |
+| Keep parallel code paths after refactor (old + new schema/import) | **Single code path; delete old; tests under new structure only** — see delete-deprecated.mdc |
+
+CODEX: 06-coding-standards/README.md

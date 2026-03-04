@@ -1,0 +1,15 @@
+---
+description: "Use ServiceCLI framework for all services"
+alwaysApply: false
+priority: 40
+tags:
+  - service
+  - cli
+  - framework
+---
+# ServiceCLI Framework
+RULE: All services use ServiceCLI from unified_trading_services.core.service_framework. Create BaseModeHandler implementations for batch/live modes.
+WHY: Standardizes CLI interface, argument parsing, and mode dispatch across all services.
+CODEX: 05-infrastructure/service-setup-checklist.md, unified-trading-library/unified_trading_services/core/service_framework.py
+DO: Import ServiceCLI and BaseModeHandler; implement validate_config() and run() methods; register handlers dict; delegate to unified libraries
+NEVER: Create custom argparse CLI; duplicate ServiceCLI logic; implement business logic in handlers (delegate to libraries)

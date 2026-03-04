@@ -1,0 +1,15 @@
+---
+description: "Follow tier architecture for libraries"
+alwaysApply: false
+priority: 40
+tags:
+  - library
+  - architecture
+  - dependencies
+---
+# Library Tier Architecture
+RULE: Libraries follow tier architecture. Tier 0: no unified deps. Tier 1: Tier 0 only. Tier 2: Tier 0 only (plus UTS). No circular imports.
+WHY: Prevents circular dependencies and maintains clear dependency hierarchy across 30+ repos.
+CODEX: 04-architecture/TIER-ARCHITECTURE.md, 05-infrastructure/unified-libraries/LIBRARY-DEPENDENCY-MATRIX.md
+DO: Tier 0 for schemas/contracts; Tier 1 for cloud primitives (UTS only); Tier 2 for domain logic; export public API at top level
+NEVER: Tier 2 depending on Tier 2; circular imports; nested module imports in services (use top-level exports)

@@ -1,0 +1,35 @@
+---
+description: "Use specific types, never Any. Check source code for actual type."
+alwaysApply: true
+priority: 90
+tags: [type-safety, blocking, strict-typing]
+globs: ["**/*.py", "!**/tests/**"]
+---
+
+# No Type Any - Use Specific Types (BLOCKING)
+
+RULE: Use specific types (TypedDict, Pydantic, Protocol, TypeVar, dict[str, X]). Never use Any — including dict[str, Any]. Check dependency source code to determine actual type. Only audited bypasses in QUALITY_GATE_BYPASS_AUDIT.md may pass.
+WHY: Any defeats type checking — no autocomplete, no refactoring safety, runtime errors instead of compile-time. reportAny is BLOCKING in quality gates. dict[str, Any] is NO LONGER EXEMPT.
+CODEX: 06-coding-standards/README.md#type-hints
+
+DO:
+  def process(data: dict[str, str]) -> str: return data.get("key", "")
+  class Config(TypedDict): max_workers: int; venues: list[str]
+  Use Protocol for duck typing; TypeVar for generics
+
+TYPED API RESPONSES (MANDATORY):
+  When consuming external HTTP/REST APIs (exchanges, data providers, etc.):
+  1. Create frozen Pydantic BaseModel classes mirroring the API response schema
+  2. Place them in a _<provider>_models.py file next to the adapter
+  3. Use model_validate() at the API boundary to parse raw dicts into typed models
+  4. Access fields via typed attributes, never .get() chains on raw dicts
+  5. For APIs with non-Pythonic keys, use Field(alias="PascalCase") with model_config = {"populate_by_name": True}
+  EXEMPLAR: unified-sports-execution-interface/adapters/exchanges/_matchbook_models.py
+  CODEX: 06-coding-standards/README.md#type-hints
+
+NEVER:
+  def process(data: Any) -> Any:
+  config: dict[str, Any] = load_config()
+  result = await response.json(); result["key"]  # untyped dict access
+  result.get("nested", {}).get("field", "")  # .get() chains on raw API responses
+  Relax reportAny; add baseline files

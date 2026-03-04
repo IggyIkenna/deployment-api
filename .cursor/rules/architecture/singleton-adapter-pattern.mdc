@@ -1,0 +1,14 @@
+---
+description: "Adapter factories must use singleton caching"
+alwaysApply: false
+priority: 60
+tags:
+  - adapters
+  - performance
+---
+# Singleton Adapter Pattern
+RULE: All venue/adapter factory functions MUST use singleton caching. One instance per venue across loops.
+WHY: Without caching, 325 instruments × 100 dates = 32,500 adapter instances; with singleton = 1.
+CODEX: 03-observability/README.md, 02-data/subscription-model.md
+DO: Module-level `_ADAPTER_CACHE`; return cached if exists; lazy-load and cache on first use
+NEVER: Create new adapter instance per iteration; skip cache for factory functions

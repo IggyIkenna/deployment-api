@@ -1,0 +1,231 @@
+---
+description: "Major version bump protocol for breaking changes in libraries and services"
+alwaysApply: true
+priority: 90
+tags: [versioning, breaking-changes, dependencies, ci-cd]
+---
+
+# Breaking-Change Major Version Protocol
+
+RULE: When a library or service makes a breaking change, the commit message MUST trigger a major version bump. All downstream consumer repos MUST update their `pyproject.toml` dependency constraint to the new major range before their next merge to main.
+
+WHY: The CI version-bump reads the commit prefix to determine semver. A breaking change without the correct prefix stays at the old major version, causing consumers to silently receive a broken API.
+
+CODEX: 06-coding-standards/feature-branch-workflow.md, 04-architecture/TIER-ARCHITECTURE.md
+
+---
+
+## What Counts as a Breaking Change
+
+A change is BREAKING (requires major bump) when **any consumer repo must change their code, config, scripts, or schema handling** to adopt it.
+
+### API and Type System
+
+| Example                                                            | Breaking?     |
+| ------------------------------------------------------------------ | ------------- |
+| Remove a public class, function, or method                         | ✅ YES        |
+| Rename a public class, function, or method                         | ✅ YES        |
+| Add a **required** parameter to a function                         | ✅ YES        |
+| Remove a parameter from a function                                 | ✅ YES        |
+| Remove a default value (parameter becomes required)                | ✅ YES        |
+| Move a symbol to a different module path                           | ✅ YES        |
+| Remove a re-export from `__init__.py`                              | ✅ YES        |
+| Change a return type incompatibly (narrow, widen, or replace)      | ✅ YES        |
+| Rename or remove an exception/error class consumers catch          | ✅ YES        |
+| Change exception hierarchy (consumers catching parent class break) | ✅ YES        |
+| Add a required abstract method to a base class or Protocol         | ✅ YES        |
+| Remove or rename an Enum value                                     | ✅ YES        |
+| Add an **optional** parameter with a default                       | ❌ NO (minor) |
+| Add a new public function or class                                 | ❌ NO (minor) |
+| Fix a bug without changing the public interface                    | ❌ NO (patch) |
+
+### Data Schemas and Storage (cloud-agnostic)
+
+| Example                                                                        | Breaking?     |
+| ------------------------------------------------------------------------------ | ------------- |
+| Rename or remove a Parquet/storage schema column                               | ✅ YES        |
+| Change a column type (e.g. `string` → `int`)                                   | ✅ YES        |
+| Change a Pydantic model field name, type, or remove it                         | ✅ YES        |
+| Add a **required** field to a Pydantic model (no default)                      | ✅ YES        |
+| Change event/message schema on any message bus (Pub/Sub, Kafka, Redis Streams) | ✅ YES        |
+| Change GCS/S3/object-store path structure consumers read from                  | ✅ YES        |
+| Add an **optional** field to a Pydantic model (with default)                   | ❌ NO (minor) |
+| Add a new column to a schema with a nullable/default value                     | ❌ NO (minor) |
+
+### Configuration and Environment
+
+| Example                                                                          | Breaking?     |
+| -------------------------------------------------------------------------------- | ------------- |
+| Rename a config key or environment variable consumers must set                   | ✅ YES        |
+| Remove a config key consumers rely on                                            | ✅ YES        |
+| Change the expected type or format of a config value                             | ✅ YES        |
+| Change a CLI argument name or remove it                                          | ✅ YES        |
+| Raise the minimum required version of a dependency (forces consumers to upgrade) | ✅ YES        |
+| Add a new optional config key with a sensible default                            | ❌ NO (minor) |
+
+### Runtime Behavior
+
+| Example                                                   | Breaking?     |
+| --------------------------------------------------------- | ------------- |
+| Change a storage path format consumers construct or parse | ✅ YES        |
+| Change topic/queue/channel names on a message bus         | ✅ YES        |
+| Remove a REST or gRPC endpoint                            | ✅ YES        |
+| Change an endpoint's request/response schema              | ✅ YES        |
+| Change authentication method or token format              | ✅ YES        |
+| Add a new endpoint                                        | ❌ NO (minor) |
+| Add optional fields to a request schema                   | ❌ NO (minor) |
+
+---
+
+## Commit Message Format for Breaking Changes
+
+The GitHub Actions `version-bump.yml` CI detects breaking changes via TWO patterns:
+
+### Pattern 1: `feat!:` or `fix!:` (bang syntax — preferred for single-line messages)
+
+```bash
+bash scripts/quickmerge.sh "feat!(unified-market-interface): remove normalize_trade() — use CanonicalAdapter instead"
+bash scripts/quickmerge.sh "fix!(unified-trading-library): remove ConfigStore — import from unified_config_interface"
+bash scripts/quickmerge.sh "feat!(unified-domain-client): rename InstrumentsDomainClient to InstrumentsClient"
+bash scripts/quickmerge.sh "feat!(unified-events-interface): rename UPLOAD_STARTED to DATA_BROADCAST in event schema"
+bash scripts/quickmerge.sh "feat!(unified-config-interface): remove GCP_PROJECT_ID env var — use GCP_PROJECT_ID only"
+```
+
+### Pattern 2: `BREAKING CHANGE:` footer (preferred when context requires explanation)
+
+```
+feat(unified-market-interface): migrate venue adapters to CanonicalAdapter protocol
+
+BREAKING CHANGE: normalize_trade(), normalize_orderbook(), normalize_ticker() removed from
+all venue adapter classes. Use CanonicalAdapter.normalize(record) instead. Consumers must
+update their import and call site. See codex 04-architecture/venue-adapters.md for migration.
+```
+
+Both patterns result in the CI bumping the **major** version (e.g. `1.4.2` → `2.0.0`).
+
+The `BREAKING CHANGE:` footer should describe:
+
+- What was removed/renamed
+- What consumers must do instead
+- Codex reference if a migration guide exists
+
+---
+
+## CI Detection Logic (how version-bump.yml works)
+
+```
+BREAKING CHANGE: anywhere in commit body  →  MAJOR bump
+<type>!(<scope>):                          →  MAJOR bump  (bang syntax)
+feat(<scope>):                             →  MINOR bump
+fix(<scope>):                              →  PATCH bump
+chore/docs/refactor/test/ci:              →  NO bump
+```
+
+The CI workflow (`unified-trading-pm/.github/workflows/version-bump.yml`) handles this automatically. **Never bump versions locally** — the CI owns the version number.
+
+---
+
+## Consumer Obligation After a Major Bump
+
+When a library you depend on releases a new major version, you MUST:
+
+1. **Update `pyproject.toml`** to accept the new major range:
+
+   ```toml
+   # Before (old major)
+   "unified-market-interface>=1.0.0,<2.0.0"
+
+   # After (new major)
+   "unified-market-interface>=2.0.0,<3.0.0"
+   ```
+
+2. **Fix all call sites** — update imports, rename usages, update config keys, update schema references, etc.
+
+3. **Choose the correct commit type for your own change:**
+   - If your update is internal only (no change to your public API) → use `feat:` or `fix:`
+   - If the migration causes YOUR public API to also change → use `feat!:` to trigger a major bump in your repo too, propagating the breaking change downstream
+
+4. **Run quality gates** before merging:
+   ```bash
+   bash scripts/quickmerge.sh "feat(my-service): migrate to unified-market-interface v2"
+   # or, if your API also changed:
+   bash scripts/quickmerge.sh "feat!(my-service): migrate to unified-market-interface v2 — removes legacy normalize_trade"
+   ```
+
+---
+
+## Quickmerge Commands Reference
+
+```bash
+# Major bump — breaking API change
+bash scripts/quickmerge.sh "feat!(unified-market-interface): remove legacy normalize_trade API"
+
+# Major bump — breaking config change
+bash scripts/quickmerge.sh "feat!(unified-config-interface): rename GOOGLE_CLOUD_PROJECT to GCP_PROJECT_ID"
+
+# Major bump — breaking schema change (cloud-agnostic storage)
+bash scripts/quickmerge.sh "feat!(unified-domain-client): rename instrument_key column to instrument_id in output schema"
+
+# Major bump — breaking message bus schema
+bash scripts/quickmerge.sh "feat!(unified-events-interface): rename UPLOAD_STARTED event to DATA_BROADCAST"
+
+# Major bump with dep-branch isolation (when deps also have local changes)
+bash scripts/quickmerge.sh "feat!(unified-market-interface): remove legacy API" --dep-branch "feat/v2-adapters"
+
+# Minor bump — new feature, backward compatible
+bash scripts/quickmerge.sh "feat(unified-market-interface): add CanonicalAdapter.normalize_ohlcv"
+
+# Patch bump — bug fix, no API change
+bash scripts/quickmerge.sh "fix(unified-market-interface): handle zero-volume trades in normalize_trade"
+
+# No bump — tooling or docs only
+bash scripts/quickmerge.sh "chore(unified-market-interface): update .gitignore"
+bash scripts/quickmerge.sh "docs(unified-market-interface): update venue adapter examples"
+```
+
+---
+
+## Pre-1.0.0 Safety Rule
+
+If a repo is still at `0.x.x`, the CI treats **major bumps as minor** (never auto-jumps to `1.0.0`). This is intentional — `0.x.x` signals an unstable API where breaking changes are expected.
+
+To graduate a repo to `1.0.0`, directly edit `pyproject.toml` to `version = "1.0.0"` and commit with `chore:`. This is a one-time manual act — the CI will not do it automatically. From `1.0.0` onwards, normal semver bump rules apply.
+
+---
+
+## Tier-Ordered Migration (for workspace-wide breaking changes)
+
+When a T0 or T1 library makes a breaking change that cascades across many repos, migrate in tier order:
+
+```
+T0 library (breaking change) → feat!: → bumps to 2.0.0
+  ↓
+T1 consumers: update pyproject.toml + fix call sites
+  → if T1's own public API is unchanged: use feat: → bumps T1 minor
+  → if T1's own public API also changed: use feat!: → bumps T1 major, propagates downstream
+  ↓
+T2 consumers: same decision — does this change T2's public API?
+  ↓
+T3 / Service consumers: same decision
+```
+
+Use `--dep-branch` in quickmerge to cascade the change across tiers in a single coordinated branch.
+
+---
+
+## NEVER
+
+```bash
+# Never bump versions locally on a branch — CI double-bumps
+version = "2.0.0"  # in pyproject.toml on a branch — FORBIDDEN
+
+# Never mislabel a breaking change as a non-breaking commit type
+bash scripts/quickmerge.sh "feat: remove normalize_trade"       # WRONG — use feat!:
+bash scripts/quickmerge.sh "refactor: rename InstrumentsClient" # WRONG — renaming public API is breaking
+
+# Never merge a consumer without updating the major version constraint
+"unified-market-interface>=1.0.0,<2.0.0"  # WRONG if library is now at 2.x
+
+# Never omit migration instructions from a BREAKING CHANGE footer
+# Bare BREAKING CHANGE: with no description leaves consumers with no path forward
+```

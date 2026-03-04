@@ -1,0 +1,14 @@
+---
+description: "Exclude build artifacts from type checking"
+alwaysApply: false
+priority: 40
+tags:
+  - type-checking
+  - basedpyright
+---
+# Exclude Build Artifacts
+RULE: Never type-check build/, dist/, __pycache__/, .venv/, node_modules. Add to pyrightconfig.json exclude.
+WHY: Stale code causes false positives; compiled bytecode doesn't match source.
+CODEX: 06-coding-standards/quality-gates.md, pyrightconfig.json
+DO: exclude: ["build", "dist", "__pycache__", ".venv", ".ruff_cache"]; run basedpyright on source_dir only
+NEVER: Type-check build dirs; include .venv in basedpyright scope

@@ -1,0 +1,46 @@
+---
+description: "Enforce UI/TypeScript quality gates per codex (tsc --noEmit, ESLint)"
+alwaysApply: false
+priority: 65
+globs:
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/package.json"
+  - "**/quality-gates.sh"
+tags:
+  - quality-gates
+  - typescript
+  - ui
+---
+
+# UI Quality Gates: MUST Abide by Codex
+
+**Source of truth:** `unified-trading-codex/06-coding-standards/quality-gates-ui-typescript.md`
+
+---
+
+## CRITICAL: UI Repos Are TypeScript, NOT Python
+
+When working with UI repos (backtest-ui, onboarding-ui, visualizer-ui, UTD v2/ui, etc.):
+
+- **MUST** run `tsc --noEmit` (type check) and ESLint — NOT pyright, ruff, or pytest
+- **NEVER** copy Python quality-gates.sh into UI repos; UI quality gates use Node/TypeScript flow
+- **MUST** ensure `package.json` has: `"typecheck": "tsc --noEmit"` and `"lint": "eslint ."`
+
+---
+
+## Quality Gates for UI Repos
+
+UI `quality-gates.sh` MUST run:
+1. `npm run typecheck` (or `npx tsc --noEmit`)
+2. `npm run lint`
+
+**NEVER:** ruff, pytest, pyright, or any Python tooling in UI repos.
+
+---
+
+## Python Repos: Variable Standardization
+
+When editing Python `quality-gates.sh`: use `PYTHON_CMD` with venv detection (see codex template). Migrate away from bare `python3` or inconsistent `$PYTHON`/`$PYTHON_CMD` usage.
+
+CODEX: 06-coding-standards/quality-gates.md

@@ -1,0 +1,24 @@
+---
+description: "Append 'use context7' when working with external libraries or APIs"
+alwaysApply: true
+priority: 70
+tags: [context7, external-libs]
+---
+
+# Context7 for External Dependencies
+
+RULE: Append "use context7" to prompts involving external libraries, APIs, or frameworks to get up-to-date docs.
+WHY: External library APIs change; context7 provides current documentation and examples, preventing use of deprecated patterns.
+CODEX: 06-coding-standards/dependency-management.md
+
+DO:
+  "Optimize pandas aggregation for tick data use context7"
+  "How to use aiohttp session pooling use context7"
+  "NautilusTrader order submission pattern use context7"
+
+USE FOR:
+  Market data APIs (Tardis, Databento, The Graph, Alchemy)
+  Cloud providers (GCP, AWS — storage, pubsub, secret manager)
+  ML frameworks (LightGBM, pandas, NumPy, scikit-learn)
+  Trading engines (NautilusTrader)
+  Any external package where version-specific behavior matters
