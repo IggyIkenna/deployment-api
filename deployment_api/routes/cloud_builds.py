@@ -7,6 +7,8 @@ Provides endpoints for:
 - Getting build history
 """
 
+from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 import logging
@@ -15,11 +17,9 @@ import tomllib
 from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
-from typing import Required, TypedDict, cast
+from typing import TYPE_CHECKING, Required, TypedDict, cast
 
 from fastapi import APIRouter, HTTPException, Query
-from google.cloud.devtools import cloudbuild_v1
-from google.cloud.devtools.cloudbuild_v1 import BuildOperationMetadata
 from pydantic import BaseModel, Field
 from unified_trading_library import __version__ as uts_version
 
@@ -32,7 +32,24 @@ from deployment_api.settings import GCP_PROJECT_ID as DEFAULT_PROJECT_ID
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 
+if TYPE_CHECKING:
+    from google.cloud.devtools import cloudbuild_v1
+
 logger = logging.getLogger(__name__)
+
+
+def _cloudbuild_v1():
+    """Deferred cloudbuild_v1 import — no UCI CloudBuildClient abstraction yet. TODO(uci)."""
+    from google.cloud.devtools import cloudbuild_v1  # Deferred — deployment Cloud Build boundary
+
+    return cloudbuild_v1
+
+
+def _build_op_meta_cls():
+    """Deferred BuildOperationMetadata import — deployment Cloud Build boundary."""
+    from google.cloud.devtools.cloudbuild_v1 import BuildOperationMetadata  # Deferred
+
+    return BuildOperationMetadata
 
 
 def _ensure_gcp() -> None:
@@ -290,10 +307,11 @@ async def list_triggers(
 
     async def fetch_triggers():
         def _list_triggers_sync() -> list[TriggerDict]:
-            client = cloudbuild_v1.CloudBuildClient()
+            _cb = _cloudbuild_v1()
+            client = _cb.CloudBuildClient()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
 
-            request = cloudbuild_v1.ListBuildTriggersRequest(
+            request = _cb.ListBuildTriggersRequest(
                 parent=parent,
                 page_size=50,
             )
@@ -383,7 +401,10 @@ async def list_triggers(
             "region": DEFAULT_REGION,
         }
 
-    return cast(TriggersResponseDict, await cache.get_or_fetch(cache_key, fetch_triggers, TTL_BUILD_INFO, force_refresh=force_refresh))
+    return cast(
+        TriggersResponseDict,
+        await cache.get_or_fetch(cache_key, fetch_triggers, TTL_BUILD_INFO, force_refresh=force_refresh),
+    )
 
 
 async def _get_recent_builds_for_triggers(
@@ -402,8 +423,9 @@ async def _get_recent_builds_for_triggers(
 
         def _fetch_latest_build(client: cloudbuild_v1.CloudBuildClient, trigger_id: str) -> tuple | None:
             """Fetch the latest build for a single trigger using API-level filter."""
+            _cb = _cloudbuild_v1()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
-            request = cloudbuild_v1.ListBuildsRequest(
+            request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=1,
                 filter=f'build_trigger_id="{trigger_id}"',
@@ -415,7 +437,8 @@ async def _get_recent_builds_for_triggers(
             return (trigger_id, _format_build_info(build))
 
         def _fetch_all_sync() -> dict[str, BuildInfoDict]:
-            client = cloudbuild_v1.CloudBuildClient()
+            _cb = _cloudbuild_v1()
+            client = _cb.CloudBuildClient()
             results = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent
@@ -468,20 +491,22 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
                 return cached_id
 
             # Cache miss - fetch from API and populate cache
+            _cb = _cloudbuild_v1()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
-            triggers_request = cloudbuild_v1.ListBuildTriggersRequest(parent=parent)
+            triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
             triggers = list(client.list_build_triggers(request=triggers_request))
             _populate_trigger_cache(triggers)
             return _trigger_id_cache.get(trigger_name)
 
         def _find_recent_build(
-            client: cloudbuild_v1.CloudBuildClient,
             trigger_id: str,
             started_after: datetime,
         ) -> RecentBuildDict | None:
             """Find a build for this trigger that started after the given time."""
+            _cb = _cloudbuild_v1()
+            client = _cb.CloudBuildClient()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
-            builds_request = cloudbuild_v1.ListBuildsRequest(
+            builds_request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=5,
                 filter=f'build_trigger_id="{trigger_id}"',
@@ -497,7 +522,8 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             return None
 
         def _run_trigger_sync() -> TriggerRunResultDict:
-            client = cloudbuild_v1.CloudBuildClient()
+            _cb = _cloudbuild_v1()
+            client = _cb.CloudBuildClient()
 
             # Get trigger ID first (needed for fallback query)
             trigger_id = _get_trigger_id(client)
@@ -513,9 +539,9 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             logger.info("Attempting to run trigger: %s on branch %s", name, request.branch)
 
             # Create the run trigger request
-            run_request = cloudbuild_v1.RunBuildTriggerRequest(
+            run_request = _cb.RunBuildTriggerRequest(
                 name=name,
-                source=cloudbuild_v1.RepoSource(
+                source=_cb.RepoSource(
                     branch_name=request.branch,
                 ),
             )
@@ -535,7 +561,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             # Approach 1: Unpack metadata to BuildOperationMetadata
             try:
                 if hasattr(operation, "metadata") and operation.metadata:
-                    meta = BuildOperationMetadata()
+                    meta = _build_op_meta_cls()()
                     if operation.metadata.Unpack(meta) and meta.build:
                         build_id = meta.build.id
                         log_url = meta.build.log_url
@@ -583,9 +609,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             await asyncio.sleep(2)
 
             for _attempt in range(3):
-                recent_build = await asyncio.to_thread(
-                    _find_recent_build, cloudbuild_v1.CloudBuildClient(), trigger_id_result, trigger_time_result
-                )
+                recent_build = await asyncio.to_thread(_find_recent_build, trigger_id_result, trigger_time_result)
                 if recent_build:
                     build_id = recent_build["build_id"]
                     log_url = recent_build.get("log_url")
@@ -657,7 +681,8 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
     try:
 
         def _get_history_sync() -> list[BuildInfoDict]:
-            client = cloudbuild_v1.CloudBuildClient()
+            _cb = _cloudbuild_v1()
+            client = _cb.CloudBuildClient()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
 
             # Try cached trigger ID first (avoids re-listing all triggers)
@@ -665,7 +690,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
 
             if not trigger_id:
                 # Cache miss - fetch from API and populate cache
-                triggers_request = cloudbuild_v1.ListBuildTriggersRequest(
+                triggers_request = _cb.ListBuildTriggersRequest(
                     parent=parent,
                 )
                 triggers = list(client.list_build_triggers(request=triggers_request))
@@ -676,7 +701,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
                 return []
 
             # Get builds filtered by trigger ID (API-level filter, much faster)
-            builds_request = cloudbuild_v1.ListBuildsRequest(
+            builds_request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=limit,
                 filter=f'build_trigger_id="{trigger_id}"',
