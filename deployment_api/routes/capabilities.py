@@ -1,0 +1,66 @@
+"""API capabilities and runtime info for UI display."""
+
+from pathlib import Path
+from typing import cast
+
+import yaml
+from fastapi import APIRouter, HTTPException
+
+from deployment_api.utils.storage_facade import get_gcs_fuse_status
+
+router = APIRouter()
+
+
+@router.get("")
+async def get_capabilities():
+    """
+    Get API capabilities for UI display.
+
+    Includes GCS Fuse status: whether the API is using FUSE mounts for GCS
+    reads (faster) or falling back to GCS API.
+    """
+    return {"gcs_fuse": get_gcs_fuse_status()}
+
+
+@router.get("/service-categories/{service}")
+async def get_service_categories(service: str) -> dict:
+    """
+    Get supported categories for a service from its sharding config.
+
+    Returns the categories that can be used for deployment and data status checks.
+    This allows the UI to hide irrelevant category filters (e.g., hide CEFI/DEFI
+    when viewing corporate-actions which is TRADFI-only).
+
+    Args:
+        service: Service name (e.g., "instruments-service", "corporate-actions")
+
+    Returns:
+        {"service": str, "categories": List[str]}
+
+    Examples:
+        - instruments-service: ["CEFI", "DEFI", "TRADFI"]
+        - corporate-actions: ["TRADFI"]
+        - features-calendar-service: []  # No category dimension
+    """
+    # Load sharding config
+    config_path = Path(__file__).parent.parent.parent / f"configs/sharding.{service}.yaml"
+
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail=f"Sharding config not found for service: {service}")
+
+    try:
+        with open(config_path) as f:
+            config = cast(dict[str, object], yaml.safe_load(f))
+
+        # Find the category dimension
+        dimensions = cast(list[dict[str, object]], config.get("dimensions") or [])
+        for dim in dimensions:
+            if dim.get("name") == "category":
+                values = dim.get("values") or []
+                return {"service": service, "categories": values}
+
+        # No category dimension found
+        return {"service": service, "categories": []}
+
+    except (OSError, ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load sharding config: {e}") from e

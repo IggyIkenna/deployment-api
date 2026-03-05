@@ -1,10 +1,38 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+# Pre-commit hooks - auto-format on commit
+# Setup: prek install (or: pre-commit install --install-hooks)
+
 repos:
+  # Conventional commit validation (feat:/fix:/chore:/docs:/refactor:/test:/ci:)
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.2.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+# Ruff - Fast Python linter AND formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
       - id: ruff
+        name: Lint with Ruff
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
+        name: Format with Ruff
+
+  # Basic file checks
+
+# Prettier - TypeScript/JSON/Markdown formatter
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        name: Format with Prettier
+        types_or: [ts, tsx, javascript, jsx, json, markdown, yaml]
+        additional_dependencies:
+          - prettier@3.6.2
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

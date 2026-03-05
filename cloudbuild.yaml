@@ -1,4 +1,8 @@
 # Cloud Build for deployment-api
+# ARCHITECTURE: Test the artifact you deploy
+#   1. Build Docker image
+#   2. Run quality gates INSIDE the image
+#   3. Push ONLY if tests pass
 
 steps:
   - name: 'gcr.io/cloud-builders/gcloud'
@@ -12,26 +16,41 @@ steps:
     args:
       - '-c'
       - |
-        gcloud artifacts repositories describe deployment-api \
+        gcloud artifacts repositories describe unified-services \
           --location=asia-northeast1 &>/dev/null || \
-        gcloud artifacts repositories create deployment-api \
-          --repository-format=docker \
-          --location=asia-northeast1 \
-          --description="deployment-api Docker images"
+        gcloud artifacts repositories create unified-services \
+          --repository-format=docker --location=asia-northeast1 \
+          --description="deployment-api and related services"
     waitFor: ['-']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'pull-base'
+    args: ['pull', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest']
+    waitFor: ['configure-docker']
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build'
     args:
       - 'build'
-      - '-f'
-      - 'Dockerfile'
+      - '--target'
+      - 'api'
       - '-t'
-      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:$SHORT_SHA'
+      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:$SHORT_SHA'
       - '-t'
-      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:latest'
+      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:latest'
       - '.'
-    waitFor: ['ensure-repo']
+    waitFor: ['pull-base', 'ensure-repo']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-dev'
+    args:
+      - 'build'
+      - '--target'
+      - 'api-dev'
+      - '-t'
+      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev'
+      - '.'
+    waitFor: ['build']
 
   - name: 'gcr.io/cloud-builders/docker'
     id: 'quality-gates'
@@ -40,24 +59,19 @@ steps:
       - '-c'
       - |
         set -e
-        docker run --rm \
-          --entrypoint "" \
-          -e CLOUD_BUILD=true \
-          asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:$SHORT_SHA \
-          /bin/bash -c "pip install uv --quiet && uv pip install --system -e .[dev] && scripts/quality-gates.sh --no-fix --quick"
-    waitFor: ['build']
+        docker run --rm --entrypoint "" \
+          -e CLOUD_BUILD=true -e CLOUD_MOCK_MODE=true \
+          -e GCP_PROJECT_ID=$PROJECT_ID -e GOOGLE_CLOUD_PROJECT=$PROJECT_ID \
+          asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev \
+          /bin/bash -c "scripts/quality-gates.sh --no-fix --quick" || { echo "❌ Quality gates failed"; exit 1; }
+    waitFor: ['build-dev']
 
   - name: 'gcr.io/cloud-builders/docker'
-    id: 'push'
-    args: ['push', '--all-tags', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api']
+    id: 'push-image'
+    args: ['push', '--all-tags', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api']
     waitFor: ['quality-gates']
 
-images:
-  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:$SHORT_SHA'
-  - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-api/deployment-api:latest'
-
 options:
+  machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
-  machineType: 'E2_MEDIUM'
-
-timeout: '1200s'
+timeout: '600s'

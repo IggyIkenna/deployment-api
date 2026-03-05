@@ -1,28 +1,35 @@
-# Dockerfile for deployment-api
-#
-# Build:
-#   docker build --build-arg PROJECT_ID=your-project -t deployment-api .
+# Dockerfile for deployment-api (FastAPI)
+# Production image. Test-in-image uses api-dev stage for quality gates.
 
 ARG PROJECT_ID
-FROM --platform=linux/amd64 python:3.13-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+FROM --platform=linux/amd64 asia-northeast1-docker.pkg.dev/${PROJECT_ID}/unified-trading-library/unified-trading-library:latest AS base
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+FROM base AS api
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --shell /bin/bash appuser
-WORKDIR /app
-COPY . /app/deployment-api
-WORKDIR /app/deployment-api
+COPY pyproject.toml ./
+RUN uv pip install --system --no-cache-dir gunicorn[gevent] gevent \
+    && uv pip install --system --no-cache-dir -e .
 
-RUN pip install uv --quiet && uv pip install --system -e .
-
+COPY deployment_api/ ./deployment_api/
+COPY gunicorn.conf.py ./
+RUN id -u appuser >/dev/null 2>&1 || useradd --create-home --uid 1000 --shell /bin/bash appuser
 RUN chown -R appuser:appuser /app
-USER appuser
 
+USER appuser
 EXPOSE 8080
-CMD ["uvicorn", "deployment_api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+ENV PORT=8080
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["gunicorn", "deployment_api.main:app", "-c", "/app/gunicorn.conf.py"]
+
+# Stage for quality gates (test-in-image)
+FROM api AS api-dev
+USER root
+COPY scripts/ ./scripts/
+COPY tests/ ./tests/
+RUN uv pip install --system --no-cache-dir -e ".[dev]" && chown -R appuser:appuser /app
+USER appuser

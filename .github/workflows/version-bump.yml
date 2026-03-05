@@ -1,0 +1,81 @@
+name: version-bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Parse commit and bump version
+        run: |
+          set -euo pipefail
+
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+
+          BUMP=""
+          if echo "$COMMIT_MSG" | grep -q "BREAKING CHANGE:"; then
+            BUMP="major"
+          elif echo "$FIRST_LINE" | grep -qE "^[a-z]+!(\(.+\))?:"; then
+            BUMP="major"
+          elif echo "$FIRST_LINE" | grep -qE "^feat(\(.+\))?:"; then
+            BUMP="minor"
+          elif echo "$FIRST_LINE" | grep -qE "^fix(\(.+\))?:"; then
+            BUMP="patch"
+          fi
+
+          if [ -z "$BUMP" ]; then
+            echo "No version-bump prefix found (feat:/fix:/BREAKING CHANGE:). Skipping."
+            echo "SKIP=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          CURRENT=$(grep -oP '^version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' pyproject.toml)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Bumping $CURRENT → $NEW_VERSION ($BUMP)"
+
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
+          echo "SKIP=false" >> "$GITHUB_ENV"
+
+      - name: Update workspace-manifest.json versions map
+        if: env.SKIP != 'true'
+        run: |
+          set -euo pipefail
+
+          NEW_VERSION="${{ env.NEW_VERSION }}"
+
+          # Update versions map entry
+          if grep -q '"unified-trading-pm"' workspace-manifest.json; then
+            sed -i "s/\"unified-trading-pm\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"unified-trading-pm\": \"${NEW_VERSION}\"/" workspace-manifest.json
+          fi
+
+      - name: Commit version bump
+        if: env.SKIP != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml workspace-manifest.json
+          git commit -m "chore(release): bump version to ${{ env.NEW_VERSION }} [skip ci]"
+          git push

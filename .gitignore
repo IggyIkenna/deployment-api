@@ -36,3 +36,7 @@ build/
 coverage/
 .nyc_output/
 logs/
+
+# Coverage output from quality-gates
+coverage.xml
+.coverage

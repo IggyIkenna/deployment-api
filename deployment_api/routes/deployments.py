@@ -1,0 +1,403 @@
+"""
+Deployments API Routes
+
+Endpoints for managing deployments - list, status, deploy, cancel.
+Pure route handlers that delegate business logic to service modules.
+"""
+
+import logging
+from typing import cast
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+
+# Import service modules for business logic
+from deployment_api.services.deployment_manager import DeploymentManager
+from deployment_api.services.deployment_state import DeploymentStateManager
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# Initialize service managers
+deployment_manager = DeploymentManager()
+state_manager = DeploymentStateManager()
+
+
+# Pydantic models for request/response
+class DeployRequest(BaseModel):
+    """Request body for creating a deployment."""
+
+    service: str = Field(..., description="Service name to deploy")
+    compute: str = Field("cloud_run", description="Compute mode: cloud_run or vm")
+    mode: str = Field("batch", description="Deployment mode: 'batch' or 'live'")
+
+    # Date range for data processing
+    start_date: str | None = Field(None, description="Start date (YYYY-MM-DD)")
+    end_date: str | None = Field(None, description="End date (YYYY-MM-DD)")
+
+    # Deployment configuration
+    max_shards: int | None = Field(10000, description="Maximum allowed shards")
+    max_concurrent: int | None = Field(None, description="Max concurrent jobs")
+    region: str | None = Field(None, description="GCP region for deployment")
+    vm_zone: str | None = Field(None, description="VM zone (for VM compute)")
+    tag: str | None = Field("latest", description="Docker image tag")
+
+    # Filtering and configuration options
+    cloud_config_path: str | None = Field(None, description="Cloud config path")
+    ignore_start_dates: bool = Field(False, description="Ignore venue start date filtering")
+    deploy_missing: bool = Field(False, description="Only deploy missing data")
+    skip_dimensions: list[str] | None = Field(None, description="Dimensions to skip")
+    date_granularity: str | None = Field(None, description="Date granularity override")
+    max_workers: int | None = Field(None, description="Max workers per job")
+
+    # Filter parameters
+    category: str | None = Field(None, description="Category filter")
+    venue: str | None = Field(None, description="Venue filter")
+    feature_group: str | None = Field(None, description="Feature group filter")
+    data_type: str | None = Field(None, description="Data type filter")
+
+    # Exclude dates: mapping of category -> list of date strings to skip
+    # Used by "Deploy Missing" to exclude dates that already have complete data
+    exclude_dates: dict[str, list[str]] | None = Field(None, description="Dates to exclude per category")
+
+    @property
+    def filters(self) -> dict:
+        """Extract filter parameters."""
+        return {
+            k: v
+            for k, v in {
+                "category": self.category,
+                "venue": self.venue,
+                "feature_group": self.feature_group,
+                "data_type": self.data_type,
+            }.items()
+            if v is not None
+        }
+
+
+class ShardInfo(BaseModel):
+    """Information about a single shard."""
+
+    shard_id: str
+    shard_index: int
+    dimensions: dict
+    cli_args: list[str]
+
+
+class ShardPreview(BaseModel):
+    """Preview of shards for a deployment."""
+
+    total_shards: int
+    sample_shards: list[ShardInfo]
+    cli_command: str
+
+
+class DeploymentResult(BaseModel):
+    """Result of creating a deployment."""
+
+    deployment_id: str
+    status: str
+    total_shards: int
+    cli_command: str
+
+
+class DeploymentSummary(BaseModel):
+    """Summary information about a deployment."""
+
+    deployment_id: str
+    service: str
+    status: str
+    total_shards: int
+    created_at: str
+
+
+class UpdateDeploymentRequest(BaseModel):
+    """Request to update deployment properties."""
+
+    tag: str | None = Field(None, description="New Docker image tag")
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request to delete multiple deployments."""
+
+    deployment_ids: list[str] = Field(..., description="List of deployment IDs to delete")
+
+
+# Route handlers (pure route logic, business logic delegated to services)
+
+
+@router.get("/deployments")
+async def list_deployments(
+    limit: int = Query(50, ge=1, le=200, description="Max deployments to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    status: str | None = Query(None, description="Filter by status"),
+    service: str | None = Query(None, description="Filter by service"),
+) -> dict:
+    """List deployments with optional filtering and pagination."""
+    try:
+        result = state_manager.list_deployments(
+            limit=limit,
+            offset=offset,
+            status_filter=status,
+            service_filter=service,
+        )
+        return result
+    except ValueError as e:
+        logger.error("Invalid parameters for listing deployments: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid parameters: {e!s}") from e
+    except ConnectionError as e:
+        logger.error("Database connection failed while listing deployments: %s", e)
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to list deployments: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.get("/deployments/{deployment_id}")
+async def get_deployment_status(
+    deployment_id: str,
+    detailed: bool = Query(True, description="Include detailed shard information"),
+) -> dict:
+    """Get detailed status for a specific deployment."""
+    try:
+        result = state_manager.get_deployment_status(deployment_id, detailed=detailed)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed for deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to get deployment status for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.get("/deployments/{deployment_id}/verify")
+async def verify_deployment_completion(
+    deployment_id: str,
+    force: bool = Query(False, description="Force refresh of verification"),
+) -> dict:
+    """Verify deployment completion and data integrity."""
+    try:
+        result = state_manager.verify_deployment_completion(deployment_id, force_refresh=force)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during verification for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to verify deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.post("/deployments/quota-info")
+async def quota_info(deploy_request: DeployRequest, request: Request) -> dict:
+    """Get quota requirements and recommendations for a deployment."""
+    try:
+        result = deployment_manager.calculate_quota_requirements(
+            deploy_request, config_dir=deploy_request.cloud_config_path or "configs"
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        logger.error("Configuration file not found for quota calculation: %s", e)
+        raise HTTPException(status_code=400, detail="Service configuration not found") from e
+    except KeyError as e:
+        logger.error("Missing configuration key for quota calculation: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid configuration: {e!s}") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to calculate quota info: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to calculate quota info: {e!s}") from e
+
+
+@router.post("/deployments")
+async def create_deployment(
+    deploy_request: DeployRequest, request: Request, background_tasks: BackgroundTasks
+) -> DeploymentResult:
+    """Create a new deployment."""
+    try:
+        # Create background task for deployment execution
+        def background_task_runner(req, config_dir, shard_list, cli_cmd, dep_id):
+            background_tasks.add_task(
+                deployment_manager.run_deployment_background, req, config_dir, shard_list, cli_cmd, dep_id
+            )
+
+        result = deployment_manager.create_deployment(
+            deploy_request,
+            config_dir=deploy_request.cloud_config_path or "configs",
+            background_task_func=background_task_runner,
+        )
+
+        return DeploymentResult(
+            deployment_id=cast(str, result["deployment_id"]),
+            status=cast(str, result["status"]),
+            total_shards=cast(int, result["total_shards"]),
+            cli_command=cast(str, result["cli_command"]),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        logger.error("Configuration file not found for deployment creation: %s", e)
+        raise HTTPException(status_code=400, detail="Service configuration not found") from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during deployment creation: %s", e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to create deployment: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to create deployment: {e!s}") from e
+
+
+@router.post("/deployments/{deployment_id}/cancel")
+async def cancel_deployment(deployment_id: str, request: Request) -> dict:
+    """Cancel a running deployment."""
+    try:
+        result = state_manager.cancel_deployment(deployment_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during cancellation for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to cancel deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to cancel deployment: {e!s}") from e
+
+
+@router.post("/deployments/{deployment_id}/resume")
+async def resume_deployment(deployment_id: str, request: Request) -> dict:
+    """Resume a cancelled or failed deployment."""
+    try:
+        result = state_manager.resume_deployment(deployment_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during resume for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to resume deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to resume deployment: {e!s}") from e
+
+
+@router.patch("/deployments/{deployment_id}")
+async def update_deployment(deployment_id: str, update_request: UpdateDeploymentRequest, request: Request) -> dict:
+    """Update deployment properties."""
+    try:
+        if update_request.tag:
+            result = state_manager.update_deployment_tag(deployment_id, update_request.tag)
+            return result
+        else:
+            raise HTTPException(status_code=400, detail="No update parameters provided")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during update for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to update deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to update deployment: {e!s}") from e
+
+
+@router.delete("/deployments/{deployment_id}")
+async def delete_deployment(deployment_id: str, request: Request) -> dict:
+    """Delete a deployment and its resources."""
+    try:
+        result = state_manager.delete_deployment(deployment_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during deletion for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to delete deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to delete deployment: {e!s}") from e
+
+
+@router.post("/deployments/bulk-delete")
+async def bulk_delete_deployments(bulk_request: BulkDeleteRequest, request: Request) -> dict:
+    """Delete multiple deployments."""
+    try:
+        result = state_manager.bulk_delete_deployments(bulk_request.deployment_ids)
+        return result
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during bulk delete: %s", e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Failed to bulk delete deployments: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to bulk delete deployments: {e!s}") from e
+
+
+@router.post("/deployments/{deployment_id}/refresh")
+async def refresh_deployment_status(deployment_id: str, request: Request) -> dict:
+    """Refresh deployment status from cloud provider."""
+    try:
+        result = state_manager.refresh_deployment_status(deployment_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during refresh for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to refresh deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to refresh deployment: {e!s}") from e
+
+
+@router.get("/deployments/{deployment_id}/logs")
+async def get_deployment_logs(
+    deployment_id: str,
+    shard_filter: str | None = Query(None, description="Filter logs by shard pattern"),
+    log_type: str = Query("all", description="Type of logs: all, error, warning"),
+    tail: int = Query(100, ge=1, le=10000, description="Number of recent lines"),
+    stream: bool = Query(False, description="Stream logs in real-time"),
+) -> dict:
+    """Get deployment logs with filtering options."""
+    try:
+        if stream:
+            # For streaming, we'd need to implement a different response type
+            # For now, return regular logs
+            result = state_manager.get_deployment_logs(
+                deployment_id,
+                shard_filter=shard_filter,
+                log_type=log_type,
+                tail_lines=tail,
+            )
+            return result
+        else:
+            result = state_manager.get_deployment_logs(
+                deployment_id,
+                shard_filter=shard_filter,
+                log_type=log_type,
+                tail_lines=tail,
+            )
+            return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed while getting logs for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to get logs for deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to get deployment logs: {e!s}") from e
+
+
+@router.get("/deployments/{deployment_id}/report")
+async def get_deployment_report(deployment_id: str, request: Request) -> dict:
+    """Get a detailed deployment report with analysis and recommendations."""
+    try:
+        result = deployment_manager.get_deployment_report(deployment_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except FileNotFoundError as e:
+        logger.error("Report data not found for deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=404, detail="Report data not available") from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed while generating report for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to get deployment report for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to get deployment report: {e!s}") from e

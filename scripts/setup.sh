@@ -35,17 +35,16 @@
 #    4. Create .venv if missing or version mismatch (uv venv)
 #    5. Activate .venv (source .venv/bin/activate)
 #    6. Run uv lock if pyproject.toml changed (skipped if uv.lock is current)
-#    7. Install local path dependencies from .dependency-matrix.json
+#    7. Install local path dependencies from workspace-manifest.json (SSOT)
+#       Reads unified-trading-pm/workspace-manifest.json; installs sibling repos
 #       Installs jq automatically (apt/brew) if needed; exits 1 if jq unavailable
 #    8. Install project + dev deps (uv pip install -e ".[dev]")
 #    9. Verify ripgrep available (required by quality-gates.sh) — always runs
-#   10. Verify bats-core available (required for shell script tests) — always runs
-#   11. Verify ruff version matches workspace standard (0.15.0) — always runs
-#   12. Import smoke test (python -c "import <package>") — always runs
-#   13. GCP credentials check — informational only, never blocks; never reads
+#   10. Verify ruff version matches workspace standard (0.15.0) — always runs
+#   11. Import smoke test (python -c "import <package>") — always runs
+#   12. GCP credentials check — informational only, never blocks; never reads
 #       SA JSON files from repo root (use ADC: gcloud auth application-default login)
-#
-#   14. Print known caveats from AGENTS.md (if present)
+#   13. Print known caveats from AGENTS.md (if present)
 #
 # Idempotency:
 #   - UI:  node_modules skipped if package.json not newer than node_modules/
@@ -57,7 +56,7 @@
 #
 # CI detection (GITHUB_ACTIONS, CI, or CLOUD_BUILD set):
 #   Python repo: steps 1-8 (install/setup) are skipped — CI manages its own env.
-#   Steps 9-14 (verification) always run.
+#   Steps 9-13 (verification) always run.
 #   UI repo: npm install step is skipped — CI manages node_modules.
 #
 # Exit codes:
@@ -349,12 +348,14 @@ fi
 # ── [7] LOCAL PATH DEPENDENCIES ─────────────────────────────────────────────
 log_step "Local path dependencies"
 
+MANIFEST_PATH="$WORKSPACE_ROOT/unified-trading-pm/workspace-manifest.json"
+
 if [ "$IN_CI" = true ] || [ "$CHECK_ONLY" = true ]; then
     log_skip "CI/check mode"
-elif [ ! -f ".dependency-matrix.json" ]; then
-    log_skip "No .dependency-matrix.json"
+elif [ ! -f "$MANIFEST_PATH" ]; then
+    log_skip "No workspace-manifest.json at $MANIFEST_PATH"
 else
-    # jq is required to parse .dependency-matrix.json — install if missing
+    # jq is required to parse workspace-manifest.json — install if missing
     if ! command -v jq &>/dev/null; then
         log_warn "jq not found — attempting install..."
         if command -v apt-get &>/dev/null; then
@@ -368,28 +369,26 @@ else
         fi
     fi
 
+    DEPS=$(jq -r '.repositories["'"$REPO_NAME"'"].dependencies[]?.name // empty' "$MANIFEST_PATH" 2>/dev/null || echo "")
+
     if [ "$ISOLATED" = true ]; then
         log_skip "Isolated mode — skipping workspace path deps"
-        DEPS=$(jq -r '.dependencies[].name' .dependency-matrix.json 2>/dev/null || echo "")
         if [ -n "$DEPS" ]; then
             log_warn "This repo depends on: $DEPS"
             log_warn "In isolated mode, install them from Artifact Registry (uv pip install <dep>)"
             log_warn "Some tests requiring these deps will fail — this is expected"
         fi
+    elif [ -n "$DEPS" ]; then
+        for dep in $DEPS; do
+            DEP_PATH="$WORKSPACE_ROOT/$dep"
+            if [ -d "$DEP_PATH" ] && [ -f "$DEP_PATH/pyproject.toml" ]; then
+                uv pip install -e "$DEP_PATH" --quiet 2>/dev/null && log_ok "$dep" || log_warn "$dep install failed"
+            else
+                log_warn "$dep not found at $DEP_PATH — install from Artifact Registry if needed"
+            fi
+        done
     else
-        DEPS=$(jq -r '.dependencies[].name' .dependency-matrix.json 2>/dev/null || echo "")
-        if [ -n "$DEPS" ]; then
-            for dep in $DEPS; do
-                DEP_PATH="$WORKSPACE_ROOT/$dep"
-                if [ -d "$DEP_PATH" ] && [ -f "$DEP_PATH/pyproject.toml" ]; then
-                    uv pip install -e "$DEP_PATH" --quiet 2>/dev/null && log_ok "$dep" || log_warn "$dep install failed"
-                else
-                    log_warn "$dep not found at $DEP_PATH — install from Artifact Registry if needed"
-                fi
-            done
-        else
-            log_skip "No dependencies listed in .dependency-matrix.json"
-        fi
+        log_skip "No dependencies for $REPO_NAME in workspace-manifest.json"
     fi
 fi
 
@@ -426,40 +425,9 @@ else
     ISSUES=$((ISSUES + 1))
 fi
 
-
-# ── [10] BATS (shell test framework — required for quality-gates.sh) ─────────
-log_step "bats-core (required for shell script tests)"
-
-if command -v bats &>/dev/null; then
-    log_ok "bats $(bats --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo 'installed')"
-elif [ "$IN_CI" = true ]; then
-    log_skip "CI mode — bats installed by workflow"
-elif [ "$CHECK_ONLY" = true ]; then
-    command -v bats &>/dev/null && log_ok "bats available" || { log_fail "bats not found"; ISSUES=$((ISSUES + 1)); }
-else
-    log_warn "bats not found — attempting install..."
-    BATS_INSTALLED=false
-    if command -v brew &>/dev/null; then
-        brew install bats-core 2>/dev/null && BATS_INSTALLED=true
-    elif command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq 2>/dev/null; sudo apt-get install -y bats 2>/dev/null && BATS_INSTALLED=true
-    elif command -v apt &>/dev/null; then
-        sudo apt update -qq 2>/dev/null; sudo apt install -y bats 2>/dev/null && BATS_INSTALLED=true
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y bats-core 2>/dev/null && BATS_INSTALLED=true
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y bats-core 2>/dev/null && BATS_INSTALLED=true
-    fi
-    if [ "$BATS_INSTALLED" = true ]; then
-        log_ok "Installed bats"
-    else
-        log_fail "bats required — install: brew install bats-core (macOS), apt install bats (Debian/Ubuntu), or dnf install bats-core (Fedora)"
-        ISSUES=$((ISSUES + 1))
-    fi
-fi
-
-# ── [11] RUFF VERSION ──────────────────────────────────────────────────────
+# ── [10] RUFF VERSION ──────────────────────────────────────────────────────
 log_step "ruff version (workspace standard: $REQUIRED_RUFF)"
+
 RUFF_CMD=""
 [ -f ".venv/bin/ruff" ] && RUFF_CMD=".venv/bin/ruff"
 [ -z "$RUFF_CMD" ] && command -v ruff &>/dev/null && RUFF_CMD="ruff"
@@ -475,7 +443,23 @@ else
     log_warn "ruff not found — will be installed with dev deps"
 fi
 
-# ── [12] IMPORT SMOKE TEST ─────────────────────────────────────────────────
+# ── [11] IMPORT SMOKE TEST ─────────────────────────────────────────────────
+log_step "pytest deps (required by quality-gates.sh)"
+if [ -d "tests" ]; then
+  PY_CMD="${PYTHON_CMD:-python3}"
+  [ -f ".venv/bin/python" ] && PY_CMD=".venv/bin/python"
+  for mod in pytest pytest_cov pytest_timeout xdist; do
+    if $PY_CMD -c "import $mod" 2>/dev/null; then
+      log_ok "$mod"
+    else
+      log_fail "$mod not found — add to pyproject.toml [project.optional-dependencies] dev: pytest, pytest-cov, pytest-xdist, pytest-timeout"
+      ISSUES=$((ISSUES + 1))
+    fi
+  done
+else
+  log_skip "No tests/ — pytest deps optional"
+fi
+
 log_step "Import smoke test"
 
 if [ -n "$PACKAGE_NAME" ]; then
@@ -495,7 +479,7 @@ else
     log_skip "PACKAGE_NAME not set and could not auto-detect"
 fi
 
-# ── [13] GCP CREDENTIALS (informational) ───────────────────────────────────
+# ── [12] GCP CREDENTIALS (informational) ───────────────────────────────────
 log_step "GCP credentials (informational)"
 
 if [ -n "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
@@ -505,7 +489,7 @@ else
     log_warn "Never place SA JSON files in the repo root (use ADC or Secret Manager)"
 fi
 
-# ── [14] KNOWN CAVEATS (per-repo) ─────────────────────────────────────────
+# ── [13] KNOWN CAVEATS (per-repo) ─────────────────────────────────────────
 # If AGENTS.md exists, print a summary of known caveats for this repo.
 # This helps AI agents and new developers understand what to expect.
 if [ -f "AGENTS.md" ]; then
