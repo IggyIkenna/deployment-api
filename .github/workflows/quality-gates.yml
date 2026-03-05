@@ -33,10 +33,12 @@ jobs:
       - name: Checkout dependencies
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+          DEP_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
+          BRANCH="${DEP_BRANCH:-main}"
           if [ -n "$GH_PAT" ]; then
             for dep in unified-cloud-interface unified-events-interface; do
-              git clone https://x-access-token:${GH_PAT}@github.com/IggyIkenna/${dep}.git ../${dep} 2>/dev/null || echo "Could not clone $dep"
+            (git clone -b "$BRANCH" "https://x-access-token:${GH_PAT}@github.com/IggyIkenna/${dep}.git" ../${dep} 2>/dev/null || git clone -b main "https://x-access-token:${GH_PAT}@github.com/IggyIkenna/${dep}.git" ../${dep} 2>/dev/null) || true
             done
           else
             echo "::notice::GH_PAT not set - installing deps from PyPI/Artifact Registry only"
