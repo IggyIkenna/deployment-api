@@ -80,16 +80,25 @@ done
 
 # ── BOOTSTRAP (local only; CI has its own setup) ─────────────────────────────
 if [ -z "${GITHUB_ACTIONS:-}" ] && [ -z "${CI:-}" ] && [ -z "${CLOUD_BUILD:-}" ]; then
-    command -v uv &>/dev/null || pip install uv --quiet
+    command -v uv &>/dev/null || { echo "uv not found — install it from https://docs.astral.sh/uv/"; exit 1; }
     uv lock 2>/dev/null || :
-    [ ! -d ".venv" ] && uv venv .venv
-    [ -f ".venv/bin/activate" ] && source .venv/bin/activate || :
-    for lib in "${LOCAL_DEPS[@]}"; do
-        [ -d "${REPO_ROOT}/$lib" ] && uv pip install -e "${REPO_ROOT}/$lib" --quiet 2>/dev/null || :
-    done
-    uv pip install -e ".[dev]" --quiet 2>/dev/null || uv pip install -e . --quiet 2>/dev/null || :
+    WORKSPACE_VENV="${REPO_ROOT}/.venv-workspace"
+    if [ -f ".venv/bin/activate" ]; then
+        source .venv/bin/activate
+    elif [ -f "${WORKSPACE_VENV}/bin/activate" ]; then
+        source "${WORKSPACE_VENV}/bin/activate"
+    else
+        [ ! -d ".venv" ] && uv venv .venv
+        [ -f ".venv/bin/activate" ] && source .venv/bin/activate || :
+        for lib in "${LOCAL_DEPS[@]}"; do
+            [ -d "${REPO_ROOT}/$lib" ] && uv pip install -e "${REPO_ROOT}/$lib" --quiet 2>/dev/null || :
+        done
+        uv pip install -e ".[dev]" --quiet 2>/dev/null || uv pip install -e . --quiet 2>/dev/null || :
+    fi
 fi
-PYTHON_CMD=".venv/bin/python"; [ ! -f "$PYTHON_CMD" ] && PYTHON_CMD="python3"
+PYTHON_CMD=".venv/bin/python"
+[ ! -f "$PYTHON_CMD" ] && [ -f "${REPO_ROOT}/.venv-workspace/bin/python" ] && PYTHON_CMD="${REPO_ROOT}/.venv-workspace/bin/python"
+[ ! -f "$PYTHON_CMD" ] && PYTHON_CMD="python3"
 
 # Git-aware: only check staged files when committing
 STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep '\.py$' | tr '\n' ' ' || :)
@@ -105,7 +114,7 @@ ACTUAL_PY=$($PYTHON_CMD --version 2>&1 | awk '{print $2}' | cut -d'.' -f1,2)
 command -v rg &>/dev/null || { log_fail "ripgrep required: brew install ripgrep"; exit 1; }; log_success "ripgrep OK"
 [ -f "pyproject.toml" ] && grep -q '>=3.13,<3.14' pyproject.toml || { log_fail "pyproject.toml: requires-python = '>=3.13,<3.14'"; exit 1; }; log_success "pyproject.toml OK"
 [[ ! -f "uv.lock" ]] && log_warn "uv.lock missing" || log_success "uv.lock present"
-RUFF_CMD=".venv/bin/ruff"; command -v "$RUFF_CMD" &>/dev/null || RUFF_CMD="ruff"
+RUFF_CMD=".venv/bin/ruff"; [ ! -f "$RUFF_CMD" ] && [ -f "${REPO_ROOT}/.venv-workspace/bin/ruff" ] && RUFF_CMD="${REPO_ROOT}/.venv-workspace/bin/ruff"; command -v "$RUFF_CMD" &>/dev/null || RUFF_CMD="ruff"
 RUFF_VER=$($RUFF_CMD --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0")
 [[ "$RUFF_VER" != "0.15.0" ]] && log_warn "ruff 0.15.0 expected, found $RUFF_VER" || log_success "ruff $RUFF_VER"
 
