@@ -9,6 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from deployment_api.routes.data_batch_processing import get_data_status_turbo_impl as get_data_status_turbo_impl  # noqa: F401 — re-export for tests and deployment_validation
 from deployment_api.services import DataAnalyticsService, DataQueryService, DataStatusService
 
 logger = logging.getLogger(__name__)
