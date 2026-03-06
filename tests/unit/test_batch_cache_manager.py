@@ -90,24 +90,24 @@ class TestStoreResultInCache:
         clear_cache()
 
     def _base_kwargs(self, **overrides):
-        kwargs = dict(
-            service="instruments-service",
-            start_date="2024-01-01",
-            end_date="2024-01-31",
-            category=None,
-            venue=None,
-            folder=None,
-            data_type=None,
-            include_sub_dimensions=False,
-            include_instrument_types=False,
-            include_file_counts=False,
-            check_upstream_availability=False,
-            first_day_of_month_only=False,
-            freshness_date=None,
-            mode="batch",
-            include_dates_list=True,
-            full_dates_list=False,
-        )
+        kwargs = {
+            "service": "instruments-service",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "category": None,
+            "venue": None,
+            "folder": None,
+            "data_type": None,
+            "include_sub_dimensions": False,
+            "include_instrument_types": False,
+            "include_file_counts": False,
+            "check_upstream_availability": False,
+            "first_day_of_month_only": False,
+            "freshness_date": None,
+            "mode": "batch",
+            "include_dates_list": True,
+            "full_dates_list": False,
+        }
         kwargs.update(overrides)
         return kwargs
 

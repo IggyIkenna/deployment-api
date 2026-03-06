@@ -71,7 +71,7 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 28,
             }
         }
-        exp, found, missing, unexpected = calculate_venue_weighted_totals(
+        exp, found, missing, _unexpected = calculate_venue_weighted_totals(
             results, set(), {}, "instruments-service"
         )
         assert exp == 30
@@ -93,7 +93,7 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 0,
             }
         }
-        exp, found, missing, _ = calculate_venue_weighted_totals(
+        exp, found, _missing, _ = calculate_venue_weighted_totals(
             results, set(), {}, "instruments-service"
         )
         assert exp == 0
@@ -101,7 +101,7 @@ class TestCalculateVenueWeightedTotals:
 
     def test_skips_error_categories(self):
         results = {"CEFI": {"error": "Failed"}}
-        exp, found, missing, _ = calculate_venue_weighted_totals(
+        exp, found, _missing, _ = calculate_venue_weighted_totals(
             results, set(), {}, "instruments-service"
         )
         assert exp == 0
@@ -140,7 +140,7 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 0,
             }
         }
-        exp, found, missing, _ = calculate_venue_weighted_totals(
+        exp, _found, missing, _ = calculate_venue_weighted_totals(
             results, set(), {}, "instruments-service"
         )
         assert missing == 15
@@ -222,24 +222,24 @@ class TestBuildFinalResponse:
     """Tests for build_final_response."""
 
     def _base_call(self, **overrides):
-        kwargs = dict(
-            service="instruments-service",
-            start_date="2024-01-01",
-            end_date="2024-01-31",
-            first_day_of_month_only=False,
-            sub_dimension_name="venue",
-            include_sub_dimensions=True,
-            include_file_counts=False,
-            all_dates=set(f"2024-01-{d:02d}" for d in range(1, 32)),
-            total_venue_expected=31,
-            total_venue_found=28,
-            total_expected_category=31,
-            total_found_category=28,
-            expected_missing=3,
-            unexpected_missing=0,
-            results={"CEFI": {"completion_pct": 90.3}},
-            overall_file_counts=None,
-        )
+        kwargs = {
+            "service": "instruments-service",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "first_day_of_month_only": False,
+            "sub_dimension_name": "venue",
+            "include_sub_dimensions": True,
+            "include_file_counts": False,
+            "all_dates": {f"2024-01-{d:02d}" for d in range(1, 32)},
+            "total_venue_expected": 31,
+            "total_venue_found": 28,
+            "total_expected_category": 31,
+            "total_found_category": 28,
+            "expected_missing": 3,
+            "unexpected_missing": 0,
+            "results": {"CEFI": {"completion_pct": 90.3}},
+            "overall_file_counts": None,
+        }
         kwargs.update(overrides)
         return build_final_response(**kwargs)
 
