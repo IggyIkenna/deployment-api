@@ -242,7 +242,7 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
             )
 
             # Truncate venue-level dates
-            for _venue_name, venue_data in cat_data.get("venues") or {}.items():
+            for _venue_name, venue_data in (cat_data.get("venues") or {}).items():
                 if isinstance(venue_data, dict):
                     truncate_list_in_dict(
                         venue_data,
@@ -258,7 +258,7 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
                     )
 
                     # Truncate data_type-level dates
-                    for _dt_name, dt_data in venue_data.get("data_types") or {}.items():
+                    for _dt_name, dt_data in (venue_data.get("data_types") or {}).items():
                         if isinstance(dt_data, dict):
                             truncate_list_in_dict(
                                 dt_data,

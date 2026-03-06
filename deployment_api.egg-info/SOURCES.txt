@@ -33,6 +33,7 @@ deployment_api/routes/deployment_state.py
 deployment_api/routes/deployment_validation.py
 deployment_api/routes/deployments.py
 deployment_api/routes/deployments_helpers.py
+deployment_api/routes/infra_health.py
 deployment_api/routes/log_analysis.py
 deployment_api/routes/service_status.py
 deployment_api/routes/service_status_cache.py

@@ -1,0 +1,322 @@
+"""
+Unit tests for state_management module helpers.
+
+Tests focus on pure helper functions that don't require HTTP requests or
+cloud API calls.
+"""
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+from deployment_api.routes.state_management import (
+    _build_blob_timestamp_map,
+    _build_existing_dates_sets,
+    _categories_from_state,
+    _classify_all_shards,
+    _classify_shard,
+    _compute_classification_counts,
+    _extract_date_range,
+    _extract_error_warning_shard_ids,
+    _get_state_date_range,
+    _parse_iso_dt,
+    _shard_has_force,
+    _status_str,
+)
+
+
+class TestStatusStr:
+    """Tests for _status_str in state_management."""
+
+    def test_string_passthrough(self):
+        assert _status_str("running") == "running"
+
+    def test_dict_status(self):
+        assert _status_str({"status": "failed"}) == "failed"
+
+    def test_dict_no_status(self):
+        assert _status_str({}) == "unknown"
+
+    def test_object_with_status(self):
+        obj = SimpleNamespace(status="pending")
+        assert _status_str(obj) == "pending"
+
+    def test_other_type(self):
+        assert _status_str(99) == "99"
+
+
+class TestParseIsoDt:
+    """Tests for _parse_iso_dt in state_management."""
+
+    def test_valid_utc(self):
+        result = _parse_iso_dt("2024-03-15T12:00:00Z")
+        assert result is not None
+        assert result.tzinfo is not None
+
+    def test_naive_gets_utc(self):
+        result = _parse_iso_dt("2024-03-15T12:00:00")
+        assert result is not None
+        assert result.tzinfo == UTC
+
+    def test_none_returns_none(self):
+        assert _parse_iso_dt(None) is None
+
+    def test_invalid_returns_none(self):
+        assert _parse_iso_dt("not-a-date") is None
+
+
+class TestShardHasForce:
+    """Tests for _shard_has_force in state_management."""
+
+    def test_with_force(self):
+        shard = SimpleNamespace(args=["--start-date", "2024-01-01", "--force"])
+        assert _shard_has_force(shard) is True
+
+    def test_without_force(self):
+        shard = SimpleNamespace(args=["--start-date", "2024-01-01"])
+        assert _shard_has_force(shard) is False
+
+    def test_no_args(self):
+        shard = SimpleNamespace()
+        assert _shard_has_force(shard) is False
+
+
+class TestExtractDateRange:
+    """Tests for _extract_date_range in state_management."""
+
+    def test_single_date(self):
+        start, end = _extract_date_range("2024-01-15")
+        assert start == "2024-01-15"
+        assert end == "2024-01-15"
+
+    def test_comma_range(self):
+        start, end = _extract_date_range("2024-01-01,2024-01-31")
+        assert start == "2024-01-01"
+        assert end == "2024-01-31"
+
+    def test_to_range(self):
+        start, end = _extract_date_range("2024-01-01 to 2024-01-31")
+        assert start == "2024-01-01"
+        assert end == "2024-01-31"
+
+    def test_last_n_days(self):
+        start, end = _extract_date_range("last-30-days")
+        assert start is not None
+        assert end is not None
+
+    def test_none_returns_none(self):
+        start, end = _extract_date_range(None)
+        assert start is None
+        assert end is None
+
+
+class TestGetStateDateRange:
+    """Tests for _get_state_date_range."""
+
+    def test_extracts_from_config(self):
+        state = SimpleNamespace(
+            config={"start_date": "2024-01-01", "end_date": "2024-01-31"},
+            shards=[],
+        )
+        start, end = _get_state_date_range(state)
+        assert start == "2024-01-01"
+        assert end == "2024-01-31"
+
+    def test_falls_back_to_shards(self):
+        state = SimpleNamespace(
+            config={},
+            shards=[
+                SimpleNamespace(dimensions={"date": "2024-01-05"}),
+                SimpleNamespace(dimensions={"date": "2024-01-10"}),
+            ],
+        )
+        start, end = _get_state_date_range(state)
+        assert start == "2024-01-05"
+        assert end == "2024-01-10"
+
+    def test_no_config_no_shards_returns_none(self):
+        state = SimpleNamespace(config={}, shards=[])
+        start, end = _get_state_date_range(state)
+        assert start is None
+        assert end is None
+
+    def test_no_config_attr(self):
+        state = SimpleNamespace(shards=[])
+        start, end = _get_state_date_range(state)
+        assert start is None
+        assert end is None
+
+
+class TestExtractErrorWarningShardsFromStateManagement:
+    """Tests for _extract_error_warning_shard_ids in state_management."""
+
+    def test_extracts_errors(self):
+        log_analysis = {
+            "errors": [{"shard_id": "s1"}, {"shard_id": "s2"}],
+            "warnings": [],
+        }
+        err_ids, warn_ids = _extract_error_warning_shard_ids(log_analysis)
+        assert "s1" in err_ids and "s2" in err_ids
+
+    def test_errors_take_precedence_over_warnings(self):
+        """Shard in both errors and warnings — counted as error only."""
+        log_analysis = {
+            "errors": [{"shard_id": "s1"}],
+            "warnings": [{"shard_id": "s1"}],
+        }
+        err_ids, warn_ids = _extract_error_warning_shard_ids(log_analysis)
+        assert "s1" in err_ids
+        assert "s1" not in warn_ids
+
+    def test_none_returns_empty(self):
+        err_ids, warn_ids = _extract_error_warning_shard_ids(None)
+        assert err_ids == set()
+        assert warn_ids == set()
+
+
+class TestClassifyShardInStateManagement:
+    """Tests for _classify_shard in state_management."""
+
+    def _make_shard(self, status: str, failure_category: str = "", args=None):
+        return SimpleNamespace(
+            status=status,
+            failure_category=failure_category,
+            args=args or [],
+            start_time=None,
+            end_time=None,
+        )
+
+    def test_pending(self):
+        assert _classify_shard(self._make_shard("pending")) == "NEVER_RAN"
+
+    def test_cancelled(self):
+        assert _classify_shard(self._make_shard("cancelled")) == "CANCELLED"
+
+    def test_running(self):
+        assert _classify_shard(self._make_shard("running")) == "STILL_RUNNING"
+
+    def test_failed_infra(self):
+        shard = self._make_shard("failed", failure_category="zone_exhaustion")
+        assert _classify_shard(shard) == "INFRA_FAILURE"
+
+    def test_failed_code(self):
+        shard = self._make_shard("failed", failure_category="application_error")
+        assert _classify_shard(shard) == "CODE_FAILURE"
+
+    def test_failed_timeout(self):
+        shard = self._make_shard("failed", failure_category="timeout")
+        assert _classify_shard(shard) == "TIMEOUT_FAILURE"
+
+    def test_failed_unknown(self):
+        shard = self._make_shard("failed")
+        assert _classify_shard(shard) == "VM_DIED"
+
+    def test_succeeded_with_errors(self):
+        shard = self._make_shard("succeeded")
+        assert _classify_shard(shard, has_log_errors=True) == "COMPLETED_WITH_ERRORS"
+
+    def test_succeeded_with_warnings(self):
+        shard = self._make_shard("succeeded")
+        assert _classify_shard(shard, has_log_warnings=True) == "COMPLETED_WITH_WARNINGS"
+
+    def test_unverified_no_blob_data(self):
+        shard = self._make_shard("succeeded")
+        assert _classify_shard(shard, blob_exists=None) == "UNVERIFIED"
+
+    def test_data_missing(self):
+        shard = self._make_shard("succeeded")
+        assert _classify_shard(shard, blob_exists=False) == "DATA_MISSING"
+
+    def test_verified(self):
+        now = datetime.now(UTC)
+        shard = SimpleNamespace(
+            status="succeeded",
+            failure_category="",
+            args=[],
+            start_time=(now - timedelta(hours=2)).isoformat(),
+            end_time=(now - timedelta(hours=1)).isoformat(),
+        )
+        blob_ts = now - timedelta(hours=1, minutes=30)
+        assert _classify_shard(shard, blob_exists=True, blob_updated=blob_ts) == "VERIFIED"
+
+
+class TestClassifyAllShardsInStateManagement:
+    """Tests for _classify_all_shards in state_management."""
+
+    def test_classifies_multiple_shards(self):
+        s1 = SimpleNamespace(shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None)
+        s2 = SimpleNamespace(shard_id="s2", status="pending", failure_category="", args=[], start_time=None, end_time=None)
+        state = SimpleNamespace(shards=[s1, s2])
+        result = _classify_all_shards(state, log_analysis=None)
+        assert result["s1"] == "UNVERIFIED"
+        assert result["s2"] == "NEVER_RAN"
+
+
+class TestComputeClassificationCountsInStateManagement:
+    """Tests for _compute_classification_counts in state_management."""
+
+    def test_counts(self):
+        classifications = {"s1": "VERIFIED", "s2": "VERIFIED", "s3": "DATA_MISSING"}
+        counts = _compute_classification_counts(classifications)
+        assert counts["VERIFIED"] == 2
+        assert counts["DATA_MISSING"] == 1
+
+
+class TestBuildExistingDatesSetsInStateManagement:
+    """Tests for _build_existing_dates_sets in state_management."""
+
+    def test_basic_dates_found_list(self):
+        turbo = {
+            "categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}
+        }
+        cat_dates, venue_dates = _build_existing_dates_sets(turbo)
+        assert "2024-01-01" in cat_dates["CEFI"]
+
+    def test_empty_result(self):
+        cat_dates, venue_dates = _build_existing_dates_sets({})
+        assert cat_dates == {}
+
+
+class TestBuildBlobTimestampMapInStateManagement:
+    """Tests for _build_blob_timestamp_map in state_management."""
+
+    def test_extracts_timestamps(self):
+        turbo = {
+            "categories": {
+                "CEFI": {
+                    "_venue_date_blob_timestamps": {
+                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
+                    }
+                }
+            }
+        }
+        result = _build_blob_timestamp_map(turbo)
+        assert "CEFI" in result
+
+    def test_empty_returns_empty(self):
+        assert _build_blob_timestamp_map({}) == {}
+
+
+class TestCategoriesFromState:
+    """Tests for _categories_from_state."""
+
+    def test_extracts_categories_from_succeeded_shards(self):
+        s1 = SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"})
+        s2 = SimpleNamespace(status="succeeded", dimensions={"category": "TRADFI"})
+        s3 = SimpleNamespace(status="failed", dimensions={"category": "DEFI"})  # excluded
+        state = SimpleNamespace(shards=[s1, s2, s3])
+        result = _categories_from_state(state)
+        assert result is not None
+        assert "CEFI" in result
+        assert "TRADFI" in result
+        assert "DEFI" not in result
+
+    def test_no_succeeded_shards_returns_none(self):
+        s1 = SimpleNamespace(status="pending", dimensions={"category": "CEFI"})
+        state = SimpleNamespace(shards=[s1])
+        result = _categories_from_state(state)
+        assert result is None
+
+    def test_empty_shards_returns_none(self):
+        state = SimpleNamespace(shards=[])
+        result = _categories_from_state(state)
+        assert result is None

@@ -24,7 +24,7 @@ async def _compute_and_cache_verification(
     Runs log analysis and data status checks concurrently to verify deployment completion.
     """
     # Import here to avoid circular imports
-    from .data_status import get_data_status_turbo_impl
+    from .data_batch_processing import get_data_status_turbo_impl
     from .deployment_caching import set_verification_cache
     from .log_analysis import analyze_deployment_logs
     from .shard_management import (
