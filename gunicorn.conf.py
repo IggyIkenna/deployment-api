@@ -21,7 +21,7 @@ backlog = 2048
 workers = _WORKERS
 worker_class = "uvicorn.workers.UvicornWorker"
 worker_connections = 1000
-timeout = 300  # 5 minutes for turbo data-status (instruments-service 6yr × venues can be slow)
+timeout = 300  # 5 minutes for turbo data-status (instruments-service 6yr x venues can be slow)
 keepalive = 5
 
 # Graceful restart settings

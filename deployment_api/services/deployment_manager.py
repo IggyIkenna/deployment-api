@@ -13,7 +13,8 @@ from collections.abc import Callable
 from datetime import date as _date
 from typing import TYPE_CHECKING, cast
 
-from deployment_service.config_loader import ConfigLoader, _substitute_env_vars
+from deployment_service.config_loader import ConfigLoader
+from deployment_service.config_loader import substitute_env_vars as _substitute_env_vars
 from deployment_service.deployment.orchestrator import DeploymentOrchestrator
 from deployment_service.shard_calculator import ShardCalculator
 from unified_events_interface import log_event

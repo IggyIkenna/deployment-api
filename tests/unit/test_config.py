@@ -45,12 +45,11 @@ def test_no_os_environ_in_config() -> None:
                     source = f.read()
                 tree = ast.parse(source, filename=fpath)
                 for node in ast.walk(tree):
-                    if isinstance(node, ast.Attribute):
-                        if (
-                            isinstance(node.value, ast.Name)
-                            and node.value.id == "os"
-                            and node.attr in ("getenv", "environ")
-                        ):
+                    if isinstance(node, ast.Attribute) and (
+                        isinstance(node.value, ast.Name)
+                        and node.value.id == "os"
+                        and node.attr in ("getenv", "environ")
+                    ):
                             violations.append(f"{fpath}:{node.lineno}")
             except (OSError, SyntaxError):
                 pass
