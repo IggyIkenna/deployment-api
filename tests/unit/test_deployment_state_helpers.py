@@ -35,12 +35,12 @@ class TestExtractSeverityAndLogger:
 
     def test_python_logging_debug(self):
         line = "DEBUG:app:debug message"
-        severity, logger_name = _extract_severity_and_logger(line)
+        severity, _logger_name = _extract_severity_and_logger(line)
         assert severity == "DEBUG"
 
     def test_python_logging_critical(self):
         line = "CRITICAL:app:critical failure"
-        severity, logger_name = _extract_severity_and_logger(line)
+        severity, _logger_name = _extract_severity_and_logger(line)
         assert severity == "CRITICAL"
 
     def test_json_log_with_level(self):
@@ -53,13 +53,13 @@ class TestExtractSeverityAndLogger:
     def test_json_log_with_warning_level(self):
         import json
         log = json.dumps({"level": "warning", "message": "degraded"})
-        severity, logger_name = _extract_severity_and_logger(log)
+        severity, _logger_name = _extract_severity_and_logger(log)
         assert severity == "WARNING"
 
     def test_json_log_with_name_fallback(self):
         import json
         log = json.dumps({"level": "info", "name": "my_logger"})
-        severity, logger_name = _extract_severity_and_logger(log)
+        _severity, logger_name = _extract_severity_and_logger(log)
         assert logger_name == "my_logger"
 
     def test_severity_alias_warn(self):
@@ -88,7 +88,7 @@ class TestExtractSeverityAndLogger:
 
     def test_invalid_json_falls_through(self):
         line = "{not valid json"
-        severity, logger_name = _extract_severity_and_logger(line)
+        severity, _logger_name = _extract_severity_and_logger(line)
         # Falls through to plain text path — severity defaults to INFO
         assert isinstance(severity, str)
 
