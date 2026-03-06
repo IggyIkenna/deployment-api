@@ -432,6 +432,20 @@ UNIT_CLOUD_CALLS=$(rg 'get_storage_client\(\)|get_secret_client\(\)|get_queue_cl
     ((V++))
 } || log_success "Unit tests appear cloud-agnostic"
 
+# ============================================================
+# STEP 5.11 — No UTL protocol-leaking symbol imports in service code
+# ============================================================
+UTL_PROTOCOL=$(rg "from unified_trading_library import.*(CloudTarget|StandardizedDomainCloudService|upload_to_gcs_batch)" \
+    --type py \
+    --glob '!.venv*' --glob '!**/.venv*/**' \
+    --glob '!tests/**' --glob '!scripts/**' \
+    "${SOURCE_DIR}/" 2>/dev/null || :)
+[[ -n "$UTL_PROTOCOL" ]] && {
+    log_fail "STEP 5.11: Protocol symbols must come from unified_domain_client, not unified_trading_library:"
+    echo "$UTL_PROTOCOL" | head -5
+    ((V++))
+} || log_success "No UTL protocol-leaking symbol imports"
+
 [[ $V -gt 0 ]] && { log_fail "Codex compliance FAILED: $V violations"; exit 1; }
 log_success "Codex compliance PASSED"
 
