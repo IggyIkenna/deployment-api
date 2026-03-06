@@ -14,7 +14,9 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from unified_config_interface import UnifiedCloudConfig
 from unified_events_interface import setup_events
-from unified_trading_library import PrometheusMiddleware, get_metrics_response
+# TODO: PrometheusMiddleware and get_metrics_response are not yet implemented in
+# unified_trading_library. Re-enable once available (ISS-xxx).
+# from unified_trading_library import PrometheusMiddleware, get_metrics_response
 
 # Event logging for UTD v2 observability (before any log_event)
 setup_events(service_name="deployment-api", mode="live", sink="cloud_logging")
@@ -59,8 +61,8 @@ app = FastAPI(
 # Configure middleware (CORS, etc.)
 configure_middleware(app)
 
-# Add Prometheus metrics middleware
-app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
+# TODO: Re-enable once PrometheusMiddleware is available in unified_trading_library.
+# app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
 
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
@@ -81,7 +83,8 @@ app.include_router(health_router)
 @app.get("/metrics")
 async def metrics() -> object:
     """Prometheus metrics endpoint."""
-    return get_metrics_response()
+    # TODO: Return real Prometheus metrics once PrometheusMiddleware is available in unified_trading_library.
+    return {"status": "metrics not yet available"}
 
 
 # Mount static files if UI dist exists (production mode)
