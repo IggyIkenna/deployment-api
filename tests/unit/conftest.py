@@ -93,6 +93,178 @@ def _ensure_services_mocked() -> None:
             setattr(services_mod, sub, sub_mod)
 
 
+def _ensure_external_packages_mocked() -> None:
+    """Pre-mock external packages (backends, deployment) as package-compatible modules.
+
+    These packages are not installed in the test environment but are imported at
+    module level by some source files. We register proper ModuleType objects (not
+    flat MagicMocks) so that dotted sub-module imports work regardless of
+    the order in which test files are collected.
+    """
+    # --- backends package ---
+    if "backends" not in sys.modules:
+        backends_mod = ModuleType("backends")
+        backends_mod.__package__ = "backends"
+        backends_mod.__path__ = []  # type: ignore[attr-defined]
+        sys.modules["backends"] = backends_mod
+
+        for sub_name, attrs in {
+            "base": {
+                "JobStatus": MagicMock(
+                    SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING"
+                )
+            },
+            "cloud_run": {"CloudRunBackend": MagicMock()},
+            "vm": {"VMBackend": MagicMock()},
+        }.items():
+            full = f"backends.{sub_name}"
+            sub_mod = ModuleType(full)
+            sub_mod.__package__ = "backends"
+            for attr, val in attrs.items():
+                setattr(sub_mod, attr, val)
+            sys.modules[full] = sub_mod
+            setattr(backends_mod, sub_name, sub_mod)
+
+    # --- deployment package ---
+    if "deployment" not in sys.modules:
+        dep_pkg = ModuleType("deployment")
+        dep_pkg.__package__ = "deployment"
+        dep_pkg.__path__ = []  # type: ignore[attr-defined]
+        dep_pkg.StateManager = MagicMock()  # type: ignore[attr-defined]
+        sys.modules["deployment"] = dep_pkg
+
+        for sub_name, attrs in {
+            "state": {
+                "DeploymentStatus": MagicMock(),
+                "StateManager": MagicMock(),
+                "ShardStatus": MagicMock(),
+            },
+            "orchestrator": {"DeploymentOrchestrator": MagicMock()},
+            "quota_broker_client": {"QuotaBrokerClient": MagicMock()},
+        }.items():
+            full = f"deployment.{sub_name}"
+            sub_mod = ModuleType(full)
+            sub_mod.__package__ = "deployment"
+            for attr, val in attrs.items():
+                setattr(sub_mod, attr, val)
+            sys.modules[full] = sub_mod
+            setattr(dep_pkg, sub_name, sub_mod)
+
+    # --- deployment_service package ---
+    if "deployment_service" not in sys.modules:
+        ds_pkg = ModuleType("deployment_service")
+        ds_pkg.__package__ = "deployment_service"
+        ds_pkg.__path__ = []  # type: ignore[attr-defined]
+        sys.modules["deployment_service"] = ds_pkg
+
+        _mock_validator = MagicMock(
+            get_required=MagicMock(return_value="value")
+        )
+
+        # Build a realistic DeploymentConfig mock so that settings.py constants
+        # resolve to proper types (ints, strs, lists) rather than MagicMocks.
+        _mock_config_instance = MagicMock()
+        # Core cloud
+        _mock_config_instance.gcp_project_id = "test-project"
+        _mock_config_instance.gcs_region = "us-central1"
+        _mock_config_instance.effective_state_bucket = "test-bucket"
+        _mock_config_instance.service_account_email = "sa@test.iam"
+        _mock_config_instance.github_org = "test-org"
+        _mock_config_instance.effective_github_token_sa = "test-token"
+        _mock_config_instance.cloud_provider = "gcp"
+        _mock_config_instance.deployment_env = "development"
+        # Server
+        _mock_config_instance.api_port = 8080
+        _mock_config_instance.workers = 1
+        _mock_config_instance.effective_port = 8080
+        _mock_config_instance.frontend_port = 3000
+        _mock_config_instance.cors_allowed_origins = "http://localhost:3000"
+        _mock_config_instance.cors_allowed_cloud_run = False
+        # Auto-sync
+        _mock_config_instance.auto_sync_enabled = True
+        _mock_config_instance.auto_sync_interval_seconds = 30
+        _mock_config_instance.auto_sync_interval_active = 10
+        _mock_config_instance.auto_sync_lock_ttl_seconds = 120
+        _mock_config_instance.auto_sync_max_parallel = 4
+        # Orphan cleanup
+        _mock_config_instance.orphan_delete_max_parallel = 10
+        _mock_config_instance.orphan_delete_retry_seconds = 120
+        _mock_config_instance.orphan_cleanup_recently_completed_minutes = 30
+        # Quota / write
+        _mock_config_instance.write_quota_buffer = 0.1
+        # Concurrency
+        _mock_config_instance.default_max_concurrent = 10
+        _mock_config_instance.max_concurrent_hard_limit = 50
+        # Auto-scheduler
+        _mock_config_instance.auto_scheduler_max_launch_per_tick = 5
+        _mock_config_instance.auto_scheduler_max_releases_per_tick = 5
+        _mock_config_instance.auto_scheduler_batch_size = 10
+        _mock_config_instance.auto_scheduler_inter_batch_delay = 0.1
+        _mock_config_instance.auto_scheduler_delete_batch_size = 5
+        _mock_config_instance.auto_scheduler_delete_batch_delay_seconds = 0.5
+        _mock_config_instance.auto_scheduler_parallel_workers = 2
+        _mock_config_instance.auto_scheduler_vm_rate_limit = 2
+        # Stuck / OOM
+        _mock_config_instance.stuck_shard_grace_seconds = 300
+        _mock_config_instance.oom_kill_threshold = 90
+        # VM launch
+        _mock_config_instance.vm_launch_mini_batch_size = 5
+        _mock_config_instance.vm_launch_mini_batch_delay_seconds = 1.0
+        _mock_config_instance.unknown_status_max_polls = 3
+        # Pool sizes
+        _mock_config_instance.gcs_pool_size = 4
+        _mock_config_instance.compute_pool_size = 4
+        _mock_config_instance.compute_pool_maxsize = 8
+        # Cache / redis
+        _mock_config_instance.redis_url = "redis://localhost:6379/0"
+        _mock_config_instance.gcs_cache_path = "cache/"
+        _mock_config_instance.data_status_cache_ttl_seconds = 300
+        _mock_config_instance.exec_cache_ttl_seconds = 300
+        # Quota broker
+        _mock_config_instance.quota_broker_url = ""
+        _mock_config_instance.quota_broker_auth_mode = "none"
+        _mock_config_instance.quota_broker_timeout_seconds = 5
+        _mock_config_instance.broker_max_wait_seconds = 30
+        # Misc
+        _mock_config_instance.workspace_root = "/tmp/test-workspace"
+        _mock_config_instance.cloud_mock_mode = False
+        _mock_config_instance.enforce_single_region = False
+        _mock_config_instance.disable_auth = False
+        _mock_config_instance.api_key = "test-api-key"
+        _mock_config_instance.enable_cloud_run_origin = False
+        _mock_config_instance.log_level = "INFO"
+        _DeploymentConfig = MagicMock(return_value=_mock_config_instance)
+
+        for sub_name, attrs in {
+            "config": {},
+            "config.config_validator": {
+                "ConfigurationError": Exception,
+                "ValidationUtils": _mock_validator,
+            },
+            "deployment_config": {"DeploymentConfig": _DeploymentConfig},
+            "config_loader": {
+                "ConfigLoader": MagicMock(),
+                "substitute_env_vars": MagicMock(return_value={}),
+            },
+            "shard_calculator": {"ShardCalculator": MagicMock()},
+            "cloud_client": {"CloudClient": MagicMock()},
+            "deployment": {},
+            "deployment.state": {
+                "DeploymentStatus": MagicMock(),
+                "StateManager": MagicMock(),
+                "ShardStatus": MagicMock(),
+            },
+            "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
+        }.items():
+            full = f"deployment_service.{sub_name}"
+            sub_mod = ModuleType(full)
+            sub_mod.__package__ = "deployment_service"
+            for attr, val in attrs.items():
+                setattr(sub_mod, attr, val)
+            sys.modules[full] = sub_mod
+
+
 # Run immediately at import time (before pytest collects tests)
 _ensure_utl_mocked()
 _ensure_services_mocked()
+_ensure_external_packages_mocked()
