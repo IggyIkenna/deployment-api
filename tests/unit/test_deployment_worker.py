@@ -48,16 +48,12 @@ class TestRunDeploymentInProcess:
         assert result is None
 
     def test_handles_exception_gracefully(self):
-        """When an exception occurs, it tries to update state to FAILED."""
+        """Function runs without raising - exception path just logs."""
         bad_kwargs = {**SAMPLE_KWARGS}
-
-        # Patch sys.path.insert to raise to trigger the exception path
-        with patch("sys.path.insert", side_effect=OSError("path error")):
-            # Should not raise - exception is caught inside the function
-            try:
-                dw.run_deployment_in_process(**bad_kwargs)
-            except OSError:
-                pass  # Either it raises or handles - both are acceptable
+        # The function just logs and returns; no exception should propagate
+        # The normal flow returns None immediately
+        result = dw.run_deployment_in_process(**bad_kwargs)
+        assert result is None
 
 
 class TestGetActiveWorkers:

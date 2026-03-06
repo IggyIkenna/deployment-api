@@ -125,11 +125,26 @@ class TestClearCache:
         mock_cache_obj = MagicMock()
         mock_cache_obj.clear_pattern = AsyncMock(return_value=5)
         mock_cache_mod.cache = mock_cache_obj
-        sys.modules["deployment_api.utils.cache"] = mock_cache_mod
 
-        from deployment_api.health_routes import clear_cache
+        # Also mock route imports to avoid errors
+        mock_svc_status = MagicMock()
+        mock_svc_status._clear_gcs_cache = MagicMock()
+        mock_data_cache = MagicMock()
+        mock_data_cache.clear_cache = MagicMock(return_value=0)
 
-        result = await clear_cache()
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "deployment_api.utils.cache": mock_cache_mod,
+                    "deployment_api.routes.service_status": mock_svc_status,
+                    "deployment_api.utils.data_status_cache": mock_data_cache,
+                },
+            ),
+        ):
+            from deployment_api.health_routes import clear_cache
+
+            result = await clear_cache()
         assert result["status"] == "success"
         assert result["cleared"] >= 0
 
@@ -157,11 +172,23 @@ class TestClearCache:
         mock_cache_obj = MagicMock()
         mock_cache_obj.clear_pattern = AsyncMock(return_value=2)
         mock_cache_mod.cache = mock_cache_obj
-        sys.modules["deployment_api.utils.cache"] = mock_cache_mod
 
-        from deployment_api.health_routes import clear_cache
+        mock_svc_status = MagicMock()
+        mock_svc_status._clear_gcs_cache = MagicMock()
+        mock_data_cache = MagicMock()
+        mock_data_cache.clear_cache = MagicMock(return_value=0)
 
-        result = await clear_cache()
+        with patch.dict(
+            sys.modules,
+            {
+                "deployment_api.utils.cache": mock_cache_mod,
+                "deployment_api.routes.service_status": mock_svc_status,
+                "deployment_api.utils.data_status_cache": mock_data_cache,
+            },
+        ):
+            from deployment_api.health_routes import clear_cache
+
+            result = await clear_cache()
         # 6 patterns x 2 each = 12 (plus any from turbo cache)
         assert result["cleared"] >= 12
 

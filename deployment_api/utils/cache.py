@@ -367,16 +367,16 @@ class UnifiedCache:
     def __init__(
         self,
         redis_url: str | None = None,
-        gcs_bucket: str | None = None,
+        storage_bucket: str | None = None,
         gcs_path: str | None = None,
     ):
         redis_url = redis_url or REDIS_URL
-        gcs_bucket = gcs_bucket or STATE_BUCKET
+        storage_bucket = storage_bucket or STATE_BUCKET
         gcs_path = gcs_path or GCS_CACHE_PATH
 
         self.in_memory = InMemoryCache()
         self.redis = RedisCache(redis_url) if REDIS_AVAILABLE else None
-        self.gcs = GCSCache(gcs_bucket, gcs_path) if GCS_AVAILABLE else None
+        self.gcs = GCSCache(storage_bucket, gcs_path) if GCS_AVAILABLE else None
         self._initialized = False
         self._cleanup_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
