@@ -45,9 +45,7 @@ class TestGenerateDateRangeAndYearMonths:
         assert len(dates) == 3  # Jan 1, Feb 1, Mar 1
 
     def test_first_day_filter_excludes_non_first_days(self):
-        dates, _ = generate_date_range_and_year_months(
-            "2024-01-15", "2024-01-31", first_day_of_month_only=True
-        )
+        dates, _ = generate_date_range_and_year_months("2024-01-15", "2024-01-31", first_day_of_month_only=True)
         # No first-of-month days in this range
         assert len(dates) == 0
 
@@ -113,9 +111,7 @@ class TestGetExpectedDataTypesForVenue:
     def test_returns_data_types_for_venue(self):
         from deployment_api.routes.batch_config_utils import get_expected_data_types_for_venue
 
-        venue_config = {
-            "CEFI": {"venues": {"BINANCE": {"data_types": ["trades", "book_snapshot_5"]}}}
-        }
+        venue_config = {"CEFI": {"venues": {"BINANCE": {"data_types": ["trades", "book_snapshot_5"]}}}}
         result = get_expected_data_types_for_venue(venue_config, "CEFI", "BINANCE")
         assert result == ["trades", "book_snapshot_5"]
 
@@ -131,9 +127,7 @@ class TestGetExpectedInstrumentTypesForVenue:
     """Tests for get_expected_instrument_types_for_venue."""
 
     def test_returns_instrument_types(self):
-        venue_config = {
-            "CEFI": {"venues": {"BINANCE": {"instrument_types": ["SPOT_PAIR", "PERPETUAL"]}}}
-        }
+        venue_config = {"CEFI": {"venues": {"BINANCE": {"instrument_types": ["SPOT_PAIR", "PERPETUAL"]}}}}
         result = get_expected_instrument_types_for_venue(venue_config, "CEFI", "BINANCE")
         assert result == ["SPOT_PAIR", "PERPETUAL"]
 
@@ -150,9 +144,7 @@ class TestGetDataTypeStartDate:
         config = {
             "market-tick-data-handler": {
                 "CEFI": {
-                    "data_type_start_dates": {
-                        "BINANCE": {"book_snapshot_5": "2023-06-01"}
-                    },
+                    "data_type_start_dates": {"BINANCE": {"book_snapshot_5": "2023-06-01"}},
                     "venues": {"BINANCE": "2023-01-01"},
                     "category_start": "2023-01-01",
                 }
@@ -208,23 +200,11 @@ class TestIsDataTypeAvailableForVenue:
     """Tests for is_data_type_available_for_venue."""
 
     def test_explicitly_available(self):
-        config = {
-            "svc": {
-                "CEFI": {
-                    "data_type_start_dates": {"BINANCE": {"trades": "2023-01-01"}}
-                }
-            }
-        }
+        config = {"svc": {"CEFI": {"data_type_start_dates": {"BINANCE": {"trades": "2023-01-01"}}}}}
         assert is_data_type_available_for_venue(config, "svc", "CEFI", "BINANCE", "trades") is True
 
     def test_explicitly_not_available_null(self):
-        config = {
-            "svc": {
-                "CEFI": {
-                    "data_type_start_dates": {"BINANCE": {"liquidations": None}}
-                }
-            }
-        }
+        config = {"svc": {"CEFI": {"data_type_start_dates": {"BINANCE": {"liquidations": None}}}}}
         assert is_data_type_available_for_venue(config, "svc", "CEFI", "BINANCE", "liquidations") is False
 
     def test_not_configured_assumes_available(self):
@@ -290,9 +270,7 @@ class TestGetExpectedDatesForVenue:
 
     def test_filters_to_venue_start_date(self):
         all_dates = {"2024-01-01", "2024-01-15", "2024-02-01"}
-        config = {
-            "svc": {"CEFI": {"venues": {"BINANCE": "2024-01-15"}, "category_start": "2024-01-01"}}
-        }
+        config = {"svc": {"CEFI": {"venues": {"BINANCE": "2024-01-15"}, "category_start": "2024-01-01"}}}
         result = get_expected_dates_for_venue(all_dates, config, "svc", "CEFI", "BINANCE")
         assert "2024-01-01" not in result
         assert "2024-01-15" in result
@@ -307,8 +285,7 @@ class TestGetExpectedDatesForVenue:
         all_dates = {"2024-01-01", "2024-01-02", "2024-01-03"}
         upstream = {"CEFI": {"BINANCE": {"2024-01-01", "2024-01-03"}}}
         result = get_expected_dates_for_venue(
-            all_dates, {}, "market-data-processing-service", "CEFI", "BINANCE",
-            upstream_avail_dates=upstream
+            all_dates, {}, "market-data-processing-service", "CEFI", "BINANCE", upstream_avail_dates=upstream
         )
         assert result == {"2024-01-01", "2024-01-03"}
 
@@ -316,8 +293,7 @@ class TestGetExpectedDatesForVenue:
         all_dates = {"2024-01-01", "2024-01-02"}
         upstream = {"CEFI": {"__category__": {"2024-01-01"}}}
         result = get_expected_dates_for_venue(
-            all_dates, {}, "market-data-processing-service", "CEFI", "VENUE_X",
-            upstream_avail_dates=upstream
+            all_dates, {}, "market-data-processing-service", "CEFI", "VENUE_X", upstream_avail_dates=upstream
         )
         assert result == {"2024-01-01"}
 

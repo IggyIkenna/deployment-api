@@ -45,6 +45,7 @@ class TestExtractSeverityAndLogger:
 
     def test_json_log_with_level(self):
         import json
+
         log = json.dumps({"level": "error", "logger": "my_service", "message": "failed"})
         severity, logger_name = _extract_severity_and_logger(log)
         assert severity == "ERROR"
@@ -52,30 +53,35 @@ class TestExtractSeverityAndLogger:
 
     def test_json_log_with_warning_level(self):
         import json
+
         log = json.dumps({"level": "warning", "message": "degraded"})
         severity, _logger_name = _extract_severity_and_logger(log)
         assert severity == "WARNING"
 
     def test_json_log_with_name_fallback(self):
         import json
+
         log = json.dumps({"level": "info", "name": "my_logger"})
         _severity, logger_name = _extract_severity_and_logger(log)
         assert logger_name == "my_logger"
 
     def test_severity_alias_warn(self):
         import json
+
         log = json.dumps({"level": "warn"})
         severity, _ = _extract_severity_and_logger(log)
         assert severity == "WARNING"
 
     def test_severity_alias_fatal(self):
         import json
+
         log = json.dumps({"level": "fatal"})
         severity, _ = _extract_severity_and_logger(log)
         assert severity == "CRITICAL"
 
     def test_severity_alias_trace(self):
         import json
+
         log = json.dumps({"level": "trace"})
         severity, _ = _extract_severity_and_logger(log)
         assert severity == "DEBUG"

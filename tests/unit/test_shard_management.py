@@ -281,8 +281,12 @@ class TestClassifyAllShards:
     def test_classifies_each_shard(self):
         from deployment_api.routes.shard_management import _classify_all_shards
 
-        shard1 = SimpleNamespace(shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None)
-        shard2 = SimpleNamespace(shard_id="s2", status="failed", failure_category="timeout", args=[], start_time=None, end_time=None)
+        shard1 = SimpleNamespace(
+            shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+        )
+        shard2 = SimpleNamespace(
+            shard_id="s2", status="failed", failure_category="timeout", args=[], start_time=None, end_time=None
+        )
         state = SimpleNamespace(shards=[shard1, shard2])
 
         result = _classify_all_shards(state, log_analysis=None)
@@ -292,7 +296,9 @@ class TestClassifyAllShards:
     def test_skips_shards_without_ids(self):
         from deployment_api.routes.shard_management import _classify_all_shards
 
-        shard = SimpleNamespace(shard_id="", status="succeeded", failure_category="", args=[], start_time=None, end_time=None)
+        shard = SimpleNamespace(
+            shard_id="", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+        )
         state = SimpleNamespace(shards=[shard])
         result = _classify_all_shards(state, log_analysis=None)
         assert len(result) == 0
@@ -300,7 +306,9 @@ class TestClassifyAllShards:
     def test_uses_log_analysis_for_errors(self):
         from deployment_api.routes.shard_management import _classify_all_shards
 
-        shard = SimpleNamespace(shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None)
+        shard = SimpleNamespace(
+            shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+        )
         state = SimpleNamespace(shards=[shard])
         log_analysis = {"errors": [{"shard_id": "s1", "line": "ERROR"}], "warnings": []}
         result = _classify_all_shards(state, log_analysis=log_analysis)
@@ -336,11 +344,7 @@ class TestBuildExistingDatesSets:
     def test_extracts_dates_found_list(self):
         from deployment_api.routes.shard_management import _build_existing_dates_sets
 
-        turbo_result = {
-            "categories": {
-                "CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}
-            }
-        }
+        turbo_result = {"categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
         cat_dates, _venue_dates = _build_existing_dates_sets(turbo_result)
         assert "CEFI" in cat_dates
         assert "2024-01-01" in cat_dates["CEFI"]
@@ -367,18 +371,14 @@ class TestBuildExistingDatesSets:
         from deployment_api.routes.shard_management import _build_existing_dates_sets
 
         dates_set = {"2024-01-01", "2024-01-15"}
-        turbo_result = {
-            "categories": {"CEFI": {"_dates_set": dates_set}}
-        }
+        turbo_result = {"categories": {"CEFI": {"_dates_set": dates_set}}}
         cat_dates, _ = _build_existing_dates_sets(turbo_result)
         assert cat_dates["CEFI"] == dates_set
 
     def test_skips_error_categories(self):
         from deployment_api.routes.shard_management import _build_existing_dates_sets
 
-        turbo_result = {
-            "categories": {"CEFI": {"error": "Failed to load data"}}
-        }
+        turbo_result = {"categories": {"CEFI": {"error": "Failed to load data"}}}
         cat_dates, _ = _build_existing_dates_sets(turbo_result)
         assert "CEFI" not in cat_dates
 
@@ -396,11 +396,7 @@ class TestBuildBlobTimestampMap:
     def test_extracts_timestamps_from_turbo_result(self):
         turbo_result = {
             "categories": {
-                "CEFI": {
-                    "_venue_date_blob_timestamps": {
-                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
-                    }
-                }
+                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}}}
             }
         }
         result = _build_blob_timestamp_map(turbo_result)
@@ -428,3 +424,190 @@ class TestBuildBlobTimestampMap:
         }
         result = _build_blob_timestamp_map(turbo_result)
         assert result == {}
+
+
+class TestGetAllZonesForVmLookup:
+    """Tests for get_all_zones_for_vm_lookup."""
+
+    def test_us_central1_primary(self):
+        from unittest.mock import patch
+
+        import deployment_api.settings as _settings
+        from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
+
+        with patch.object(_settings, "GCS_REGION", "us-central1"), patch.object(_settings, "ALL_FAILOVER_REGIONS", []):
+            zones = get_all_zones_for_vm_lookup("us-central1")
+        assert "us-central1-a" in zones
+        assert "us-central1-b" in zones
+        assert "us-central1-c" in zones
+
+    def test_us_east1_primary(self):
+        from unittest.mock import patch
+
+        import deployment_api.settings as _settings
+        from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
+
+        with patch.object(_settings, "GCS_REGION", "us-east1"), patch.object(_settings, "ALL_FAILOVER_REGIONS", []):
+            zones = get_all_zones_for_vm_lookup("us-east1")
+        assert "us-east1-b" in zones
+
+    def test_no_duplicates(self):
+        from unittest.mock import patch
+
+        import deployment_api.settings as _settings
+        from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
+
+        with (
+            patch.object(_settings, "GCS_REGION", "us-central1"),
+            patch.object(_settings, "ALL_FAILOVER_REGIONS", ["us-central1"]),
+        ):
+            zones = get_all_zones_for_vm_lookup("us-central1")
+        # No duplicates allowed
+        assert len(zones) == len(set(zones))
+
+    def test_none_primary_uses_settings(self):
+        from unittest.mock import patch
+
+        import deployment_api.settings as _settings
+        from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
+
+        with patch.object(_settings, "GCS_REGION", "us-central1"), patch.object(_settings, "ALL_FAILOVER_REGIONS", []):
+            zones = get_all_zones_for_vm_lookup(None)
+        assert len(zones) > 0
+
+    def test_unknown_region_returns_empty_primary(self):
+        from unittest.mock import patch
+
+        import deployment_api.settings as _settings
+        from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
+
+        with (
+            patch.object(_settings, "GCS_REGION", "unknown-region"),
+            patch.object(_settings, "ALL_FAILOVER_REGIONS", []),
+        ):
+            zones = get_all_zones_for_vm_lookup("unknown-region")
+        assert zones == []
+
+
+class TestCategoriesFromStateInShard:
+    """Tests for _categories_from_state in shard_management."""
+
+    def test_extracts_categories_from_all_shards(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _categories_from_state
+
+        shards = [
+            SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),
+            SimpleNamespace(status="failed", dimensions={"category": "TRADFI"}),
+            SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),  # duplicate
+        ]
+        state = SimpleNamespace(shards=shards)
+        result = _categories_from_state(state)
+        assert result is not None
+        assert "CEFI" in result
+        assert "TRADFI" in result
+        assert result.count("CEFI") == 1  # deduped
+
+    def test_returns_none_for_no_categories(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _categories_from_state
+
+        state = SimpleNamespace(shards=[SimpleNamespace(status="pending", dimensions={})])
+        result = _categories_from_state(state)
+        assert result is None
+
+    def test_returns_none_for_empty_state(self):
+        from deployment_api.routes.shard_management import _categories_from_state
+
+        assert _categories_from_state(None) is None
+
+
+class TestGetStateDateRangeInShard:
+    """Tests for _get_state_date_range in shard_management."""
+
+    def test_extracts_min_max_dates(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _get_state_date_range
+
+        shards = [
+            SimpleNamespace(dimensions={"date": "2024-01-05"}),
+            SimpleNamespace(dimensions={"date": "2024-01-10"}),
+            SimpleNamespace(dimensions={"date": "2024-01-01"}),
+        ]
+        state = SimpleNamespace(shards=shards)
+        start, end = _get_state_date_range(state)
+        assert start == "2024-01-01"
+        assert end == "2024-01-10"
+
+    def test_empty_shards_returns_none(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _get_state_date_range
+
+        state = SimpleNamespace(shards=[])
+        start, end = _get_state_date_range(state)
+        assert start is None
+        assert end is None
+
+    def test_no_shards_attr_returns_none(self):
+        from deployment_api.routes.shard_management import _get_state_date_range
+
+        assert _get_state_date_range(None) == (None, None)
+
+
+class TestComputeCompletedBreakdown:
+    """Tests for _compute_completed_breakdown in shard_management."""
+
+    def test_basic_breakdown(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _compute_completed_breakdown
+
+        # shard_management._status_str checks hasattr(status, 'status'), so use a string
+        shards = [
+            SimpleNamespace(shard_id="s1", status="succeeded"),
+            SimpleNamespace(shard_id="s2", status="succeeded"),
+            SimpleNamespace(shard_id="s3", status="failed"),
+        ]
+        state = SimpleNamespace(shards=shards)
+        log_analysis = {
+            "errors": [{"shard_id": "s1"}],
+            "warnings": [],
+        }
+        result = _compute_completed_breakdown(state, log_analysis)
+        assert "completed_with_errors" in result
+        assert result["completed_with_errors"] == 1
+        assert "s1" in result["error_shard_ids"]
+        assert "s1" in result["succeeded_ids"] or "s2" in result["succeeded_ids"]
+
+    def test_empty_shards_all_zeros(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _compute_completed_breakdown
+
+        state = SimpleNamespace(shards=[])
+        result = _compute_completed_breakdown(state, log_analysis=None)
+        assert result["completed_with_errors"] == 0
+        assert result["completed_with_warnings"] == 0
+        assert result["verified_clean"] == 0
+
+    def test_with_existing_dates_verification(self):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import _compute_completed_breakdown
+
+        shards = [
+            SimpleNamespace(
+                shard_id="s1",
+                status="succeeded",
+                dimensions={"category": "CEFI", "venue": "BINANCE", "date": "2024-01-01"},
+            ),
+        ]
+        state = SimpleNamespace(shards=shards)
+        existing_cat_dates = {"CEFI": {"2024-01-01"}}
+        existing_venue_dates = {"CEFI": {"BINANCE": {"2024-01-01"}}}
+        result = _compute_completed_breakdown(state, None, existing_cat_dates, existing_venue_dates)
+        assert result["verified_clean"] == 1

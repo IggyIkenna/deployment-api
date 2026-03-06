@@ -10,8 +10,6 @@ Tests cover:
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from deployment_api.routes.batch_query_engine import (
     get_expected_dates_for_category,
     query_generic_prefixes_for_category,
@@ -58,8 +56,15 @@ class TestGetExpectedDatesForCategory:
 class TestQuerySpecificPrefixesForCategory:
     """Tests for query_specific_prefixes_for_category."""
 
-    def _make_combo(self, venue="BINANCE", data_type="trades", folder="spot", timeframe=None,
-                    start_date=None, tick_window_only=False):
+    def _make_combo(
+        self,
+        venue="BINANCE",
+        data_type="trades",
+        folder="spot",
+        timeframe=None,
+        start_date=None,
+        tick_window_only=False,
+    ):
         combo = MagicMock()
         combo.venue = venue
         combo.data_type = data_type
@@ -102,9 +107,7 @@ class TestQuerySpecificPrefixesForCategory:
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]),
         ):
-            result = query_specific_prefixes_for_category(
-                "svc", "CEFI", set(), None, None, None, "", {}, set()
-            )
+            result = query_specific_prefixes_for_category("svc", "CEFI", set(), None, None, None, "", {}, set())
         assert result["found_dates"] == set()
 
     def test_found_date_tracked_by_venue(self):
@@ -139,13 +142,13 @@ class TestQuerySpecificPrefixesForCategory:
         with (
             patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"svc": {"CEFI": "bucket-cefi"}}),
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
-            patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]) as mock_list,
+            patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]) as _mock_list,
         ):
-            result = query_specific_prefixes_for_category(
+            _result = query_specific_prefixes_for_category(
                 "svc", "CEFI", {"2026-01-01"}, None, None, None, "", {}, set()
             )
         # Date 2026-01-01 is before combo start_date 2026-02-01, so it's skipped
-        assert "2026-01-01" not in result["found_dates"]
+        assert "2026-01-01" not in _result["found_dates"]
 
     def test_tick_window_only_skipped_outside_window(self):
         mock_pc = MagicMock()
@@ -159,7 +162,7 @@ class TestQuerySpecificPrefixesForCategory:
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]) as mock_list,
         ):
-            result = query_specific_prefixes_for_category(
+            _result = query_specific_prefixes_for_category(
                 "svc", "CEFI", {"2026-01-01"}, None, None, None, "", {}, set()
             )
         # Combo is tick_window_only but we're outside tick window — skipped
@@ -191,9 +194,7 @@ class TestQueryGenericPrefixesForCategory:
 
     def test_returns_error_when_no_bucket(self):
         with patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"svc": {}}):
-            result = query_generic_prefixes_for_category(
-                "svc", "UNKNOWN_CAT", {"2026-01-01"}, None, ""
-            )
+            result = query_generic_prefixes_for_category("svc", "UNKNOWN_CAT", {"2026-01-01"}, None, "")
         assert "error" in result
 
     def test_returns_empty_when_no_entries(self):
@@ -204,9 +205,7 @@ class TestQueryGenericPrefixesForCategory:
             patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"svc": {"CEFI": "bucket"}}),
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
         ):
-            result = query_generic_prefixes_for_category(
-                "svc", "CEFI", {"2026-01-01"}, None, ""
-            )
+            result = query_generic_prefixes_for_category("svc", "CEFI", {"2026-01-01"}, None, "")
         assert result["found_dates"] == set()
         assert result["venue_data"] == {}
 
@@ -217,13 +216,13 @@ class TestQueryGenericPrefixesForCategory:
         blob = SimpleNamespace(updated=None, name="data.parquet")
 
         with (
-            patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"instruments-service": {"CEFI": "bucket"}}),
+            patch(
+                "deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"instruments-service": {"CEFI": "bucket"}}
+            ),
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[blob]),
         ):
-            result = query_generic_prefixes_for_category(
-                "instruments-service", "CEFI", {"2026-01-15"}, None, ""
-            )
+            result = query_generic_prefixes_for_category("instruments-service", "CEFI", {"2026-01-15"}, None, "")
         assert "2026-01-15" in result["found_dates"]
         # instruments-service: sub_dim IS the venue
         assert "BINANCE" in result["venue_data"]
@@ -235,13 +234,13 @@ class TestQueryGenericPrefixesForCategory:
         blob = SimpleNamespace(updated=None, name="data.parquet")
 
         with (
-            patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"features-delta-one": {"CEFI": "bucket"}}),
+            patch(
+                "deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"features-delta-one": {"CEFI": "bucket"}}
+            ),
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[blob]),
         ):
-            result = query_generic_prefixes_for_category(
-                "features-delta-one", "CEFI", {"2026-01-15"}, None, ""
-            )
+            result = query_generic_prefixes_for_category("features-delta-one", "CEFI", {"2026-01-15"}, None, "")
         assert "feature_group_a" in result["sub_dimension_data"]
 
     def test_no_data_date_not_found(self):
@@ -253,7 +252,5 @@ class TestQueryGenericPrefixesForCategory:
             patch("deployment_api.routes.batch_query_engine.get_path_combinatorics", return_value=mock_pc),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]),
         ):
-            result = query_generic_prefixes_for_category(
-                "svc", "CEFI", {"2026-01-15"}, None, ""
-            )
+            result = query_generic_prefixes_for_category("svc", "CEFI", {"2026-01-15"}, None, "")
         assert "2026-01-15" not in result["found_dates"]

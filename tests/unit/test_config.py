@@ -50,7 +50,7 @@ def test_no_os_environ_in_config() -> None:
                         and node.value.id == "os"
                         and node.attr in ("getenv", "environ")
                     ):
-                            violations.append(f"{fpath}:{node.lineno}")
+                        violations.append(f"{fpath}:{node.lineno}")
             except (OSError, SyntaxError):
                 pass
 

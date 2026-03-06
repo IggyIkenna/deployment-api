@@ -1,4 +1,5 @@
 """Tests that lifecycle events are correctly emitted."""
+
 from unittest.mock import patch
 
 

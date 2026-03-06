@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import deployment_api.routes.log_analysis as la_mod
 from deployment_api.routes.log_analysis import (
     _log_analysis_cache,
     analyze_deployment_logs_sync,
@@ -163,7 +162,7 @@ class TestAnalyzeDeploymentLogsSync:
             "data": {"status_detail": "old_cached", "log_analysis": {}},
             "timestamp": 0,  # expired
         }
-        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        _result = analyze_deployment_logs_sync(sm, "dep-001", state)
         # Should re-run analysis, not return expired cache
         sm.get_deployment_shards.assert_called_once()
 

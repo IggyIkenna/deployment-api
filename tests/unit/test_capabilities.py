@@ -6,12 +6,7 @@ Covers:
 - infra_health helpers (_get_verify_infra fallback path)
 """
 
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-import yaml
+from unittest.mock import patch
 
 
 class TestGetServiceCategoriesLogic:
@@ -65,8 +60,9 @@ class TestGetCapabilities:
         # This tests the pure import is possible
         assert callable(get_capabilities)
         # get_gcs_fuse_status is a real function that can be called
+        # Returns dict with at least 'active' key (not a raw bool)
         status = get_gcs_fuse_status()
-        assert isinstance(status, bool)
+        assert isinstance(status, (bool, dict))
 
 
 class TestGetVerifyInfra:
@@ -74,15 +70,19 @@ class TestGetVerifyInfra:
 
     def test_returns_none_when_neither_import_works(self):
         """When both import paths fail, returns None."""
+        import sys
+
         from deployment_api.routes.infra_health import _get_verify_infra
 
-        import sys
-        with patch.dict(sys.modules, {
-            "deployment_service": None,
-            "deployment_service.scripts": None,
-            "deployment_service.scripts.verify_infra": None,
-            "verify_infra": None,
-        }):
+        with patch.dict(
+            sys.modules,
+            {
+                "deployment_service": None,
+                "deployment_service.scripts": None,
+                "deployment_service.scripts.verify_infra": None,
+                "verify_infra": None,
+            },
+        ):
             result = _get_verify_infra()
             # Either None (both failed) or a module object if the path happened to exist
             assert result is None or hasattr(result, "run_verification")
@@ -90,5 +90,6 @@ class TestGetVerifyInfra:
     def test_infra_health_route_exists(self):
         """Verify the router and route are importable and callable."""
         from deployment_api.routes.infra_health import infra_health, router
+
         assert callable(infra_health)
         assert router is not None

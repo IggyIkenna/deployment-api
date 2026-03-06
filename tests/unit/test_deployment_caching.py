@@ -142,6 +142,7 @@ class TestVerificationPending:
 
     def setup_method(self):
         from deployment_api.routes import deployment_caching
+
         deployment_caching._verification_pending.clear()
 
     def test_not_pending_by_default(self):

@@ -96,7 +96,7 @@ class TestCheckAllShardsTerminal:
 
     def test_running_shard_not_terminal(self):
         shards = [{"status": "succeeded"}, {"status": "running"}]
-        all_terminal, has_failures = self.processor.check_all_shards_terminal(shards)
+        all_terminal, _has_failures = self.processor.check_all_shards_terminal(shards)
         assert all_terminal is False
 
     def test_all_cancelled_terminal(self):
@@ -112,7 +112,7 @@ class TestCheckAllShardsTerminal:
 
     def test_pending_not_terminal(self):
         shards = [{"status": "pending"}]
-        all_terminal, has_failures = self.processor.check_all_shards_terminal(shards)
+        all_terminal, _has_failures = self.processor.check_all_shards_terminal(shards)
         assert all_terminal is False
 
 
