@@ -64,15 +64,11 @@ def notify_deployment_updated_sync(deployment_id: str):
     except (AttributeError, RuntimeError) as e:
         logger.debug("Sync queue put: %s", e)
     try:
-        import redis
+        from unified_cloud_interface import get_queue_client
 
-        from deployment_api.settings import REDIS_URL
-
-        r = redis.from_url(REDIS_URL)
-        r.publish("deployment:updated", deployment_id)
-        r.close()
+        get_queue_client().publish("deployment:updated", deployment_id.encode())
     except (OSError, ValueError, RuntimeError) as e:
-        logger.debug("Redis publish: %s", e)
+        logger.debug("Queue publish: %s", e)
 
 
 async def _drain_sync_queue():
