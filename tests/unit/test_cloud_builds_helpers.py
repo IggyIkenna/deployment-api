@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from deployment_api.routes.cloud_builds import (
     _format_build_info,
     _get_cached_trigger_id,
@@ -75,9 +77,6 @@ class TestFormatBuildInfo:
         build = self._make_build(substitutions={"COMMIT_SHA": "", "BRANCH_NAME": "main"})
         result = _format_build_info(build)
         assert result["commit_sha"] == ""  # empty string, not None
-
-
-import pytest
 
 
 class TestTriggerCache:
