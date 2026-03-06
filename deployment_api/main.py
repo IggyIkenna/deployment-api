@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from unified_config_interface import UnifiedCloudConfig
 from unified_events_interface import setup_events
+
 # TODO: PrometheusMiddleware and get_metrics_response are not yet implemented in
 # unified_trading_library. Re-enable once available (ISS-xxx).
 # from unified_trading_library import PrometheusMiddleware, get_metrics_response
@@ -35,6 +36,7 @@ from .routes import (
     config,
     data_status,
     deployments,
+    infra_health,
     service_status,
     services,
 )
@@ -78,6 +80,7 @@ app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---
 app.include_router(health_router)
+app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 
 
 @app.get("/metrics")
