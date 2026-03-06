@@ -11,7 +11,7 @@ from deployment_api.utils.cache import UnifiedCache
 
 def _make_cache() -> UnifiedCache:
     """Create UnifiedCache with no Redis/GCS for unit testing."""
-    cache = UnifiedCache(redis_url=None, gcs_bucket=None, gcs_path=None)
+    cache = UnifiedCache(redis_url=None, storage_bucket=None, gcs_path=None)
     # Disable Redis and GCS backends explicitly
     cache.redis = None
     cache.gcs = None
