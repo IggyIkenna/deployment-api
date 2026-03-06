@@ -1,7 +1,5 @@
 """Tests that lifecycle events are correctly emitted."""
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 
 def test_started_event_emitted() -> None:

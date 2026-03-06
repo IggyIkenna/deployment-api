@@ -7,8 +7,8 @@ This avoids needing the google-cloud-artifact-registry package.
 
 import logging
 import re
-from typing import cast
 from datetime import UTC, datetime
+from typing import cast
 
 import aiohttp
 import google.auth

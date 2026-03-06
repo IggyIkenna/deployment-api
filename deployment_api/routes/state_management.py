@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import cast
 
 import yaml
-
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 

@@ -223,7 +223,7 @@ class DeploymentManager:
             raise ValueError(str(quota_error))
 
         # Validate image availability
-        compute_cfg_for_validation: dict[str, object] = cast(
+        _ = cast(
             dict[str, object],
             loader_for_validation.get_compute_recommendation(deploy_request.service, deploy_request.compute),
         )

@@ -8,8 +8,8 @@ and result aggregation.
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import cast
 from datetime import UTC, datetime
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 

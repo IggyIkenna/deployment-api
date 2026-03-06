@@ -14,17 +14,14 @@ import logging
 import os
 import sys
 import time
-import urllib.request
 from pathlib import Path
 from typing import cast
 
 import yaml
-
 from fastapi import APIRouter, FastAPI, Request
 from google.auth import default, impersonated_credentials
 from unified_cloud_interface import get_secret_client
 
-from deployment_api.settings import GCP_PROJECT_ID as DEFAULT_PROJECT_ID
 from deployment_api.settings import GITHUB_TOKEN_SA
 from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
@@ -118,7 +115,7 @@ async def get_service_status(service: str, request: Request):
 
                 # Running locally - impersonate GitHub Token SA
                 target_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
-                credentials = impersonated_credentials.Credentials(
+                _ = impersonated_credentials.Credentials(
                     source_credentials=source_credentials,
                     target_principal=target_sa,
                     target_scopes=target_scopes,
