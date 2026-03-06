@@ -24,8 +24,9 @@ from deployment_api.routes.cloud_builds import (
 class TestFormatBuildInfo:
     """Tests for _format_build_info."""
 
-    def _make_build(self, status_name="SUCCESS", create_time=None, finish_time=None,
-                    substitutions=None, log_url="https://log.url"):
+    def _make_build(
+        self, status_name="SUCCESS", create_time=None, finish_time=None, substitutions=None, log_url="https://log.url"
+    ):
         build = SimpleNamespace(
             id="build-123",
             status=SimpleNamespace(name=status_name),

@@ -41,27 +41,25 @@ class TestLoadGcsCache:
         assert result == {"trigger_ids": {"a": "b"}}
 
     def test_loads_from_gcs_when_blob_exists(self):
+        """When GCS blob exists, load_gcs_cache reads and parses the JSON."""
         cached_data = {"trigger_ids": {"svc": "trig-001"}, "deployments": {}}
-        with (
-            patch("deployment_api.routes.service_status_cache.object_exists", return_value=True),
-            patch(
-                "deployment_api.routes.service_status_cache.read_object_text",
-                return_value=json.dumps(cached_data),
-            ),
-        ):
-            # Need to patch the import inside the function
-            with patch.dict(
-                "sys.modules",
-                {
-                    "deployment_api.utils.storage_facade": MagicMock(
-                        object_exists=MagicMock(return_value=True),
-                        read_object_text=MagicMock(return_value=json.dumps(cached_data)),
-                    )
-                },
-            ):
-                # Reset and use the direct module-level test
-                cache_mod._cache_loaded = False
-                cache_mod._local_cache = {}
+        import deployment_api.utils.storage_facade as sf_mod
+
+        original_exists = getattr(sf_mod, "object_exists", None)
+        original_read = getattr(sf_mod, "read_object_text", None)
+        sf_mod.object_exists = MagicMock(return_value=True)
+        sf_mod.read_object_text = MagicMock(return_value=json.dumps(cached_data))
+        try:
+            cache_mod._cache_loaded = False
+            cache_mod._local_cache = {}
+            result = load_gcs_cache()
+            assert cache_mod._cache_loaded is True
+            assert isinstance(result, dict)
+        finally:
+            if original_exists is not None:
+                sf_mod.object_exists = original_exists
+            if original_read is not None:
+                sf_mod.read_object_text = original_read
 
     def test_returns_empty_cache_when_blob_missing(self):
         """When blob doesn't exist, returns fresh empty cache structure."""
@@ -75,25 +73,29 @@ class TestLoadGcsCache:
             cache_mod._local_cache = {}
 
             # Patch inside the function's import
-            with patch("deployment_api.utils.storage_facade.object_exists", return_value=False):
-                with patch("deployment_api.utils.storage_facade.read_object_text") as mock_read:
-                    # Patch the function-level import
-                    import deployment_api.utils.storage_facade as sf_mod
-                    original_exists = getattr(sf_mod, "object_exists", None)
-                    sf_mod.object_exists = MagicMock(return_value=False)
-                    try:
-                        result = load_gcs_cache()
-                        # Either loaded from GCS or returned empty; either way cache_loaded=True
-                        assert cache_mod._cache_loaded is True
-                    finally:
-                        if original_exists is not None:
-                            sf_mod.object_exists = original_exists
+            with (
+                patch("deployment_api.utils.storage_facade.object_exists", return_value=False),
+                patch("deployment_api.utils.storage_facade.read_object_text") as _mock_read,
+            ):
+                # Patch the function-level import
+                import deployment_api.utils.storage_facade as sf_mod
+
+                original_exists = getattr(sf_mod, "object_exists", None)
+                sf_mod.object_exists = MagicMock(return_value=False)
+                try:
+                    _result = load_gcs_cache()
+                    # Either loaded from GCS or returned empty; either way cache_loaded=True
+                    assert cache_mod._cache_loaded is True
+                finally:
+                    if original_exists is not None:
+                        sf_mod.object_exists = original_exists
 
     def test_returns_fallback_on_exception(self):
         """When storage throws, returns fallback empty cache."""
         cache_mod._cache_loaded = False
 
         import deployment_api.utils.storage_facade as sf_mod
+
         original_exists = getattr(sf_mod, "object_exists", None)
         sf_mod.object_exists = MagicMock(side_effect=OSError("connection error"))
         try:
@@ -112,6 +114,7 @@ class TestSaveGcsCache:
         cache_mod._local_cache = {"trigger_ids": {"x": "y"}}
 
         import deployment_api.utils.storage_facade as sf_mod
+
         original_write = getattr(sf_mod, "write_object_text", None)
         write_mock = MagicMock()
         sf_mod.write_object_text = write_mock
@@ -131,6 +134,7 @@ class TestSaveGcsCache:
         cache_mod._local_cache = {}
 
         import deployment_api.utils.storage_facade as sf_mod
+
         original_write = getattr(sf_mod, "write_object_text", None)
         sf_mod.write_object_text = MagicMock(side_effect=OSError("write failed"))
         try:
@@ -148,6 +152,7 @@ class TestClearGcsCache:
         cache_mod._local_cache = {"trigger_ids": {"old": "data"}}
 
         import deployment_api.utils.storage_facade as sf_mod
+
         original_write = getattr(sf_mod, "write_object_text", None)
         sf_mod.write_object_text = MagicMock()
         try:
@@ -162,6 +167,7 @@ class TestClearGcsCache:
 
     def test_clear_sets_cache_loaded_true(self):
         import deployment_api.utils.storage_facade as sf_mod
+
         original_write = getattr(sf_mod, "write_object_text", None)
         sf_mod.write_object_text = MagicMock()
         try:
@@ -173,6 +179,7 @@ class TestClearGcsCache:
 
     def test_clear_calls_save(self):
         import deployment_api.utils.storage_facade as sf_mod
+
         original_write = getattr(sf_mod, "write_object_text", None)
         write_mock = MagicMock()
         sf_mod.write_object_text = write_mock

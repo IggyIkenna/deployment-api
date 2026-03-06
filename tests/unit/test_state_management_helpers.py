@@ -259,8 +259,12 @@ class TestClassifyAllShardsInStateManagement:
     """Tests for _classify_all_shards in state_management."""
 
     def test_classifies_multiple_shards(self):
-        s1 = SimpleNamespace(shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None)
-        s2 = SimpleNamespace(shard_id="s2", status="pending", failure_category="", args=[], start_time=None, end_time=None)
+        s1 = SimpleNamespace(
+            shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+        )
+        s2 = SimpleNamespace(
+            shard_id="s2", status="pending", failure_category="", args=[], start_time=None, end_time=None
+        )
         state = SimpleNamespace(shards=[s1, s2])
         result = _classify_all_shards(state, log_analysis=None)
         assert result["s1"] == "UNVERIFIED"
@@ -281,9 +285,7 @@ class TestBuildExistingDatesSetsInStateManagement:
     """Tests for _build_existing_dates_sets in state_management."""
 
     def test_basic_dates_found_list(self):
-        turbo = {
-            "categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}
-        }
+        turbo = {"categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
         cat_dates, _venue_dates = _build_existing_dates_sets(turbo)
         assert "2024-01-01" in cat_dates["CEFI"]
 
@@ -298,11 +300,7 @@ class TestBuildBlobTimestampMapInStateManagement:
     def test_extracts_timestamps(self):
         turbo = {
             "categories": {
-                "CEFI": {
-                    "_venue_date_blob_timestamps": {
-                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
-                    }
-                }
+                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}}}
             }
         }
         result = _build_blob_timestamp_map(turbo)

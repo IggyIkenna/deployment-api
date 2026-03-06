@@ -232,6 +232,7 @@ class TestExtractDateRange:
         assert end is not None
         # end should be today
         from datetime import UTC, datetime
+
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         assert end == today
 
@@ -262,6 +263,7 @@ class TestVerificationCache:
     def setup_method(self):
         # Clear the cache before each test
         from deployment_api.routes import deployments_helpers
+
         deployments_helpers._verification_cache.clear()
 
     def test_miss_returns_none(self):

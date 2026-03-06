@@ -5,7 +5,6 @@ Tests cover cache get/set/clear/stats operations, TTL expiration,
 truncation logic, and execution-service cache functions.
 """
 
-
 from deployment_api.utils.data_status_cache import (
     _make_cache_key,
     clear_cache,
@@ -229,9 +228,7 @@ class TestTruncateDatesList:
                         "BINANCE": {
                             "dates_found_list": [],
                             "dates_missing_list": [],
-                            "data_types": {
-                                "trades": {"dates_found_list": long_dates}
-                            },
+                            "data_types": {"trades": {"dates_found_list": long_dates}},
                         }
                     },
                 }

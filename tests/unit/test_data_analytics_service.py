@@ -39,30 +39,20 @@ class TestGenerateCacheKey:
         assert "cats:CEFI,TRADFI" in key
 
     def test_categories_sorted(self):
-        key1 = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", categories=["TRADFI", "CEFI"]
-        )
-        key2 = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", categories=["CEFI", "TRADFI"]
-        )
+        key1 = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", categories=["TRADFI", "CEFI"])
+        key2 = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", categories=["CEFI", "TRADFI"])
         assert key1 == key2
 
     def test_with_venues(self):
-        key = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", venues=["BINANCE", "COINBASE"]
-        )
+        key = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", venues=["BINANCE", "COINBASE"])
         assert "venues:" in key
 
     def test_with_kwargs(self):
-        key = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", mode="turbo"
-        )
+        key = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", mode="turbo")
         assert "mode:turbo" in key
 
     def test_none_kwargs_excluded(self):
-        key = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", mode=None
-        )
+        key = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", mode=None)
         assert "mode" not in key
 
 

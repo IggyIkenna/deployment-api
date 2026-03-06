@@ -5,7 +5,6 @@ Tests cover CombinatoricEntry, PathCombinatorics methods, service prefix
 generation, and the base prefix / combinatorics filtering logic.
 """
 
-
 from deployment_api.utils.path_combinatorics import (
     CALENDAR_FEATURE_TYPES,
     INSTRUMENT_TYPE_TO_FOLDER,
@@ -347,9 +346,7 @@ class TestProcessingServiceCombinatorics:
 
     def test_processing_service_with_timeframe_filter(self):
         pc = self._make_pc_with_cefi()
-        combos = pc.get_combinatorics(
-            service="market-data-processing-service", timeframes=["1h", "4h"]
-        )
+        combos = pc.get_combinatorics(service="market-data-processing-service", timeframes=["1h", "4h"])
         timeframes = {c.timeframe for c in combos}
         assert timeframes == {"1h", "4h"}
 
@@ -386,13 +383,7 @@ class TestHasServiceCombinatorics:
     """Tests for has_service_combinatorics."""
 
     def test_market_tick_with_entries(self):
-        config = {
-            "CEFI": {
-                "venues": {
-                    "BINANCE": {"folders": ["spot"], "data_types": ["trades"]}
-                }
-            }
-        }
+        config = {"CEFI": {"venues": {"BINANCE": {"folders": ["spot"], "data_types": ["trades"]}}}}
         pc = PathCombinatorics.__new__(PathCombinatorics)
         pc.config = config
         pc.combinatorics = []

@@ -10,7 +10,6 @@ Tests cover pure validation functions:
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from deployment_api.routes.deployment_validation import (
     generate_deployment_report,
@@ -246,9 +245,15 @@ class TestValidateImageAvailability:
 class TestGenerateDeploymentReport:
     """Tests for generate_deployment_report."""
 
-    def _make_state(self, deployment_id="dep-1", service="instruments-service",
-                    status="completed", shards=None, compute_type="cloud_run",
-                    config=None):
+    def _make_state(
+        self,
+        deployment_id="dep-1",
+        service="instruments-service",
+        status="completed",
+        shards=None,
+        compute_type="cloud_run",
+        config=None,
+    ):
         return SimpleNamespace(
             deployment_id=deployment_id,
             service=service,

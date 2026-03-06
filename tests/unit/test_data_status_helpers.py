@@ -14,13 +14,18 @@ class TestBucketHelper:
 
     def test_bucket_name_format(self):
         from deployment_api.routes import data_status_helpers
-        with patch("deployment_api.routes.data_status_helpers._PID", "my-project-123"), patch.object(data_status_helpers, "_PID", "my-project-123"):
+
+        with (
+            patch("deployment_api.routes.data_status_helpers._PID", "my-project-123"),
+            patch.object(data_status_helpers, "_PID", "my-project-123"),
+        ):
             bucket_name = data_status_helpers._bucket("instruments-store", "CEFI")
             assert bucket_name == "instruments-store-cefi-my-project-123"
 
     def test_bucket_lowercases_category(self):
         with patch("deployment_api.routes.data_status_helpers._PID", "proj"):
             from deployment_api.routes import data_status_helpers
+
             with patch.object(data_status_helpers, "_PID", "proj"):
                 bucket_name = data_status_helpers._bucket("market-data", "TRADFI")
                 assert "tradfi" in bucket_name
@@ -28,6 +33,7 @@ class TestBucketHelper:
 
     def test_bucket_includes_prefix_and_project(self):
         from deployment_api.routes import data_status_helpers
+
         with patch.object(data_status_helpers, "_PID", "test-project"):
             bucket_name = data_status_helpers._bucket("my-prefix", "DEFI")
             assert bucket_name.startswith("my-prefix-defi-")
@@ -48,7 +54,10 @@ class TestRunDataStatusCli:
         mock_proc.returncode = 0
         mock_proc.communicate.return_value = (fake_output, b"")
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc), patch("asyncio.wait_for", return_value=(fake_output, b"")):
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.wait_for", return_value=(fake_output, b"")),
+        ):
             result = await _run_data_status_cli(
                 service="instruments-service",
                 start_date="2024-01-01",
@@ -87,7 +96,10 @@ class TestRunDataStatusCli:
         mock_proc.returncode = 0
         mock_proc.communicate.return_value = (fake_output, b"")
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc), patch("asyncio.wait_for", return_value=(fake_output, b"")):
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.wait_for", return_value=(fake_output, b"")),
+        ):
             result = await _run_data_status_cli(
                 service="instruments-service",
                 start_date="2024-01-01",

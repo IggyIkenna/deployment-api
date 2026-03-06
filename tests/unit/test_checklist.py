@@ -87,106 +87,124 @@ class TestParseChecklist:
         assert result["blocking_items"] == []
 
     def test_all_done_items(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_setup": {
-                "item_a": {"status": "done", "description": "Item A"},
-                "item_b": {"status": "done", "description": "Item B"},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_setup": {
+                    "item_a": {"status": "done", "description": "Item A"},
+                    "item_b": {"status": "done", "description": "Item B"},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         assert result["total_items"] == 2
         assert result["completed_items"] == 2
         assert result["readiness_percent"] == 100
 
     def test_pending_items(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_setup": {
-                "item_a": {"status": "done", "description": "Item A"},
-                "item_b": {"status": "pending", "description": "Item B"},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_setup": {
+                    "item_a": {"status": "done", "description": "Item A"},
+                    "item_b": {"status": "pending", "description": "Item B"},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         assert result["total_items"] == 2
         assert result["pending_items"] == 1
         assert result["readiness_percent"] == 50
 
     def test_partial_items_count_as_half(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_setup": {
-                "item_a": {"status": "partial", "description": "Item A"},
-                "item_b": {"status": "partial", "description": "Item B"},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_setup": {
+                    "item_a": {"status": "partial", "description": "Item A"},
+                    "item_b": {"status": "partial", "description": "Item B"},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         assert result["partial_items"] == 2
         # 2 partial = 1 effective done, 2 total applicable => 50%
         assert result["readiness_percent"] == 50
 
     def test_na_items_excluded_from_percent(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_setup": {
-                "item_a": {"status": "done", "description": "Item A"},
-                "item_b": {"status": "n/a", "description": "Item B"},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_setup": {
+                    "item_a": {"status": "done", "description": "Item A"},
+                    "item_b": {"status": "n/a", "description": "Item B"},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         assert result["not_applicable_items"] == 1
         # Only 1 applicable item, 1 done -> 100%
         assert result["readiness_percent"] == 100
 
     def test_blocking_items_tracked(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_foundation": {
-                "item_a": {"status": "pending", "description": "Critical item", "blocking": True},
-                "item_b": {"status": "done", "description": "Done item", "blocking": True},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_foundation": {
+                    "item_a": {"status": "pending", "description": "Critical item", "blocking": True},
+                    "item_b": {"status": "done", "description": "Done item", "blocking": True},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         # Only pending blocking items appear in blocking_items
         assert len(result["blocking_items"]) == 1
         assert result["blocking_items"][0]["id"] == "item_a"
 
     def test_not_started_is_blocking(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_foundation": {
-                "item_x": {"status": "not_started", "description": "Not started item", "blocking": True},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_foundation": {
+                    "item_x": {"status": "not_started", "description": "Not started item", "blocking": True},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         assert len(result["blocking_items"]) == 1
 
     def test_multiple_phases(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_foundation": {
-                "item_a": {"status": "done", "description": "Done"},
-            },
-            "phase_2_testing": {
-                "item_b": {"status": "pending", "description": "Pending"},
-            },
-        })
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_foundation": {
+                    "item_a": {"status": "done", "description": "Done"},
+                },
+                "phase_2_testing": {
+                    "item_b": {"status": "pending", "description": "Pending"},
+                },
+            }
+        )
         result = _parse_checklist(data)
         assert result["total_items"] == 2
         assert len(result["categories"]) == 2
 
     def test_phase_sort_order(self):
-        data = self._make_checklist_data(phases={
-            "phase_3_deploy": {
-                "item_a": {"status": "done", "description": "Item"},
-            },
-            "phase_1_setup": {
-                "item_b": {"status": "done", "description": "Item"},
-            },
-        })
+        data = self._make_checklist_data(
+            phases={
+                "phase_3_deploy": {
+                    "item_a": {"status": "done", "description": "Item"},
+                },
+                "phase_1_setup": {
+                    "item_b": {"status": "done", "description": "Item"},
+                },
+            }
+        )
         result = _parse_checklist(data)
         # Phases are sorted, so phase_1 comes first
         assert result["categories"][0]["name"] == "phase_1_setup"
 
     def test_category_structure(self):
-        data = self._make_checklist_data(phases={
-            "phase_1_repository_foundation": {
-                "item_a": {"status": "done", "description": "A done item"},
+        data = self._make_checklist_data(
+            phases={
+                "phase_1_repository_foundation": {
+                    "item_a": {"status": "done", "description": "A done item"},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         cat = result["categories"][0]
         assert cat["name"] == "phase_1_repository_foundation"
@@ -216,11 +234,13 @@ class TestParseChecklist:
         assert result["total_items"] == 0
 
     def test_blocking_items_include_category_display_name(self):
-        data = self._make_checklist_data(phases={
-            "phase_2_integration": {
-                "item_x": {"status": "pending", "description": "Blocker", "blocking": True},
+        data = self._make_checklist_data(
+            phases={
+                "phase_2_integration": {
+                    "item_x": {"status": "pending", "description": "Blocker", "blocking": True},
+                }
             }
-        })
+        )
         result = _parse_checklist(data)
         assert result["blocking_items"][0]["category"] == "Integration"
 
@@ -234,7 +254,12 @@ class TestGetWarnings:
             "categories": [
                 {
                     "items": [
-                        {"id": k, "description": v["description"], "status": v["status"], "blocking": v.get("blocking", False)}
+                        {
+                            "id": k,
+                            "description": v["description"],
+                            "status": v["status"],
+                            "blocking": v.get("blocking", False),
+                        }
                         for k, v in items.items()
                     ]
                 }
@@ -242,31 +267,39 @@ class TestGetWarnings:
         }
 
     def test_pending_non_blocking_is_warning(self):
-        checklist = self._make_checklist({
-            "item_a": {"status": "pending", "description": "Do this", "blocking": False},
-        })
+        checklist = self._make_checklist(
+            {
+                "item_a": {"status": "pending", "description": "Do this", "blocking": False},
+            }
+        )
         warnings = _get_warnings(checklist)
         assert len(warnings) == 1
         assert "Do this" in warnings[0]
 
     def test_partial_non_blocking_is_warning(self):
-        checklist = self._make_checklist({
-            "item_a": {"status": "partial", "description": "Almost done", "blocking": False},
-        })
+        checklist = self._make_checklist(
+            {
+                "item_a": {"status": "partial", "description": "Almost done", "blocking": False},
+            }
+        )
         warnings = _get_warnings(checklist)
         assert len(warnings) == 1
 
     def test_done_items_not_in_warnings(self):
-        checklist = self._make_checklist({
-            "item_a": {"status": "done", "description": "Done", "blocking": False},
-        })
+        checklist = self._make_checklist(
+            {
+                "item_a": {"status": "done", "description": "Done", "blocking": False},
+            }
+        )
         warnings = _get_warnings(checklist)
         assert warnings == []
 
     def test_blocking_items_excluded_from_warnings(self):
-        checklist = self._make_checklist({
-            "item_a": {"status": "pending", "description": "Blocking item", "blocking": True},
-        })
+        checklist = self._make_checklist(
+            {
+                "item_a": {"status": "pending", "description": "Blocking item", "blocking": True},
+            }
+        )
         warnings = _get_warnings(checklist)
         assert warnings == []
 
@@ -289,9 +322,7 @@ class TestLoadChecklistYaml:
         content = {
             "service_name": "my-service",
             "last_updated": "2026-01-01",
-            "phase_1_setup": {
-                "item_a": {"status": "done", "description": "A"}
-            }
+            "phase_1_setup": {"item_a": {"status": "done", "description": "A"}},
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             config_dir = Path(tmpdir)
