@@ -95,7 +95,9 @@ def _refresh_live_cloud_run_status(state: object) -> int:
         return -1
 
     try:
-        from google.cloud import run_v2  # noqa: PLC0415 — MIGRATION_PENDING: route through unified-cloud-interface once run_v2 support is added
+        from google.cloud import (
+            run_v2,
+        )
 
         client = run_v2.ServicesClient()
         parent = f"projects/{project_id}/locations/{region}"
@@ -110,7 +112,7 @@ def _refresh_live_cloud_run_status(state: object) -> int:
             if ct is None:
                 return 0.0
             if hasattr(ct, "timestamp"):
-                return cast(float, getattr(ct, "timestamp")())
+                return cast(float, ct.timestamp())
             return 0.0
 
         latest_raw = max(revisions_list, key=_revision_time) if revisions_list else None

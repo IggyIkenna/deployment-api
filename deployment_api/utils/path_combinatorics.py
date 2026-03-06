@@ -30,12 +30,12 @@ Usage:
 
 import asyncio
 import logging
-from typing import cast
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import yaml
 
