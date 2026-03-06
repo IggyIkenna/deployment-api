@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: deployment-api
-Version: 0.1.0
+Version: 0.1.1
 Summary: Standalone FastAPI API for the deployment monitoring dashboard
 License: MIT
 Requires-Python: <3.14,>=3.13
