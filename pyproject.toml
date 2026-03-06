@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deployment-api"
-version = "0.1.0"
+version = "0.1.1"
 description = "Standalone FastAPI API for the deployment monitoring dashboard"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"

@@ -33,8 +33,8 @@ import importlib.util
 import json
 import logging
 import time
-from typing import cast
 from collections.abc import Callable
+from typing import cast
 
 from deployment_api.settings import REDIS_URL, STATE_BUCKET
 
@@ -61,7 +61,7 @@ def deserialize(value: object) -> object:
     return cast(object, json.loads(value))
 
 
-import redis.asyncio as aioredis
+from unified_cloud_interface import AsyncRedisProvider
 
 REDIS_AVAILABLE = True
 
@@ -142,38 +142,34 @@ class RedisCache(CacheBackend):
 
     def __init__(self, redis_url: str):
         self.redis_url = redis_url
-        self.redis: aioredis.Redis | None = None
+        self._provider: AsyncRedisProvider | None = None
 
     async def connect(self):
         """Connect to Redis."""
         try:
-            self.redis = await aioredis.from_url(
-                self.redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-            )
-            await self.redis.ping()
+            provider = AsyncRedisProvider(url=self.redis_url)
+            await provider._get_client()
+            self._provider = provider
             logger.info("Connected to Redis at %s", self.redis_url)
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("Failed to connect to Redis: %s", e)
-            self.redis = None
+            self._provider = None
 
     async def close(self):
         """Close Redis connection."""
-        if not self.redis:
+        if not self._provider:
             return
         try:
-            await self.redis.close()
-            await self.redis.connection_pool.disconnect()
+            await self._provider.close()
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("Failed to close Redis connection: %s", e)
 
     async def get(self, key: str) -> object | None:
-        if not self.redis:
+        if not self._provider:
             return None
 
         try:
-            value = await self.redis.get(key)
+            value = await self._provider.get(key)
             if value is None:
                 return None
             return deserialize(value)
@@ -182,32 +178,33 @@ class RedisCache(CacheBackend):
             return None
 
     async def set(self, key: str, value: object, ttl: int) -> None:
-        if not self.redis:
+        if not self._provider:
             return
 
         try:
-            await self.redis.setex(key, ttl, serialize(value))
+            await self._provider.set(key, serialize(value).encode("utf-8"), ttl_seconds=ttl)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Redis SET error for %s: %s", key, e)
 
     async def delete(self, key: str) -> None:
-        if not self.redis:
+        if not self._provider:
             return
 
         try:
-            await self.redis.delete(key)
+            await self._provider.delete(key)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Redis DELETE error for %s: %s", key, e)
 
     async def clear_pattern(self, pattern: str) -> int:
         """Clear all keys matching pattern."""
-        if not self.redis:
+        if not self._provider:
             return 0
 
         try:
-            keys = await self.redis.keys(pattern)
+            client = await self._provider._get_client()
+            keys = await client.keys(pattern)
             if keys:
-                await self.redis.delete(*keys)
+                await client.delete(*keys)
             return len(keys)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Redis CLEAR_PATTERN error for %s: %s", pattern, e)
@@ -402,8 +399,8 @@ class UnifiedCache:
         self._initialized = True
         logger.info(
             "Unified cache initialized (Redis: %s, GCS: %s)",
-            "enabled" if self.redis and self.redis.redis else "disabled",
-            "enabled" if self.gcs else f"disabledGCS: {'enabled' if self.gcs else 'disabled'})",
+            "enabled" if self.redis and self.redis._provider else "disabled",
+            "enabled" if self.gcs else "disabled",
         )
 
     async def _cleanup_loop(self):
