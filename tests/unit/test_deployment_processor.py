@@ -23,6 +23,10 @@ sys.modules.setdefault(
         ValidationUtils=MagicMock(get_required=MagicMock(return_value="value")),
     ),
 )
+# Mock backends module (lazy imported inside _process_cloud_run_status)
+sys.modules.setdefault("backends", MagicMock())
+sys.modules.setdefault("backends.base", MagicMock(JobStatus=MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")))
+sys.modules.setdefault("backends.cloud_run", MagicMock())
 
 from deployment_api.workers.deployment_processor import (  # noqa: E402
     _handle_orphan_vm_cleanup,
@@ -59,10 +63,6 @@ class TestProcessDeploymentsBatch:
         assert result == (0, 0)
 
     def test_returns_tuple_of_synced_and_active(self):
-        mock_list = MagicMock(return_value=[])
-        mock_read = MagicMock(return_value="")
-        mock_write = MagicMock()
-
         state = {
             "status": "running",
             "compute_type": "cloud_run",
@@ -71,11 +71,12 @@ class TestProcessDeploymentsBatch:
             "config": {"region": "us-central1", "job_name": "my-job"},
         }
 
-        with (
-            patch("deployment_api.workers.deployment_processor.list_objects", mock_list),
-            patch("deployment_api.workers.deployment_processor.read_object_text", mock_read),
-            patch("deployment_api.workers.deployment_processor.write_object_text", mock_write),
-        ):
+        mock_facade = MagicMock()
+        mock_facade.list_objects = MagicMock(return_value=[])
+        mock_facade.read_object_text = MagicMock(return_value="")
+        mock_facade.write_object_text = MagicMock()
+
+        with patch.dict(sys.modules, {"deployment_api.utils.storage_facade": mock_facade}):
             synced, num_active = process_deployments_batch(
                 active_states=[("deployments.development/dep-1/state.json", state)],
                 bucket=MagicMock(),
@@ -97,11 +98,12 @@ class TestProcessDeploymentsBatch:
             "config": {},
         }
 
-        with (
-            patch("deployment_api.workers.deployment_processor.list_objects", return_value=[]),
-            patch("deployment_api.workers.deployment_processor.read_object_text", return_value=""),
-            patch("deployment_api.workers.deployment_processor.write_object_text"),
-        ):
+        mock_facade = MagicMock()
+        mock_facade.list_objects = MagicMock(return_value=[])
+        mock_facade.read_object_text = MagicMock(return_value="")
+        mock_facade.write_object_text = MagicMock()
+
+        with patch.dict(sys.modules, {"deployment_api.utils.storage_facade": mock_facade}):
             synced, num_active = process_deployments_batch(
                 active_states=[("deployments.development/dep-1/state.json", state)],
                 bucket=MagicMock(),
@@ -127,11 +129,12 @@ class TestProcessDeploymentsBatch:
         def mock_write(bucket, path, text):
             written_state.update(json.loads(text))
 
-        with (
-            patch("deployment_api.workers.deployment_processor.list_objects", return_value=[]),
-            patch("deployment_api.workers.deployment_processor.read_object_text", return_value=""),
-            patch("deployment_api.workers.deployment_processor.write_object_text", side_effect=mock_write),
-        ):
+        mock_facade = MagicMock()
+        mock_facade.list_objects = MagicMock(return_value=[])
+        mock_facade.read_object_text = MagicMock(return_value="")
+        mock_facade.write_object_text = MagicMock(side_effect=mock_write)
+
+        with patch.dict(sys.modules, {"deployment_api.utils.storage_facade": mock_facade}):
             synced, _ = process_deployments_batch(
                 active_states=[("deployments.development/dep-1/state.json", state)],
                 bucket=MagicMock(),
@@ -238,7 +241,7 @@ class TestProcessStuckShards:
     def test_vm_shard_exceeds_timeout_marked_failed(self):
         # Start time in the past (exceeded timeout + grace)
         old_start = (datetime.now(UTC) - timedelta(seconds=7200)).isoformat()
-        shards = [_make_shard(status="running", start_time=old_start)]
+        shards = [_make_shard(status="running", start_time=old_start, job_id=None)]
         config = {"compute_config": {"timeout_seconds": 3600}}
 
         with patch("deployment_api.workers.deployment_processor.settings") as mock_settings:
