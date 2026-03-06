@@ -17,7 +17,6 @@ from typing import TypedDict, cast
 
 from deployment_service.deployment.state import StateManager
 from github import Github
-from google.cloud.devtools import cloudbuild_v1
 
 from deployment_api.settings import GCP_PROJECT_ID as DEFAULT_PROJECT_ID
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
@@ -320,6 +319,9 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             trigger_id = trigger_ids[service]
 
             # Query builds (client-side filtering - server-side filter has issues)
+            # Deferred import — no UCI CloudBuildClient abstraction yet. TODO(uci).
+            from google.cloud.devtools import cloudbuild_v1  # Deferred — Cloud Build boundary
+
             client = cloudbuild_v1.CloudBuildClient()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
 
@@ -332,6 +334,7 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             # Get builds and filter by trigger ID client-side
             all_builds = list(client.list_builds(request=request))
             builds = [b for b in all_builds if b.build_trigger_id == trigger_id]
+
             def _build_sort_key(b: object) -> datetime:
                 ct: object = getattr(b, "create_time", None)
                 if ct is None:

@@ -5,73 +5,83 @@
 #   3. Push ONLY if tests pass
 
 steps:
-  - name: 'gcr.io/cloud-builders/gcloud'
-    id: 'configure-docker'
-    args: ['auth', 'configure-docker', 'asia-northeast1-docker.pkg.dev', '--quiet']
-    waitFor: ['-']
-
-  - name: 'gcr.io/cloud-builders/gcloud'
-    id: 'ensure-repo'
-    entrypoint: 'bash'
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "configure-docker"
     args:
-      - '-c'
+      ["auth", "configure-docker", "asia-northeast1-docker.pkg.dev", "--quiet"]
+    waitFor: ["-"]
+
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "ensure-repo"
+    entrypoint: "bash"
+    args:
+      - "-c"
       - |
         gcloud artifacts repositories describe unified-services \
           --location=asia-northeast1 &>/dev/null || \
         gcloud artifacts repositories create unified-services \
           --repository-format=docker --location=asia-northeast1 \
           --description="deployment-api and related services"
-    waitFor: ['-']
+    waitFor: ["-"]
 
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'pull-base'
-    args: ['pull', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest']
-    waitFor: ['configure-docker']
-
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'build'
+  - name: "gcr.io/cloud-builders/docker"
+    id: "pull-base"
     args:
-      - 'build'
-      - '--target'
-      - 'api'
-      - '-t'
-      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:$SHORT_SHA'
-      - '-t'
-      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:latest'
-      - '.'
-    waitFor: ['pull-base', 'ensure-repo']
+      [
+        "pull",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest",
+      ]
+    waitFor: ["configure-docker"]
 
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'build-dev'
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build"
     args:
-      - 'build'
-      - '--target'
-      - 'api-dev'
-      - '-t'
-      - 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev'
-      - '.'
-    waitFor: ['build']
+      - "build"
+      - "--target"
+      - "api"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:$SHORT_SHA"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:latest"
+      - "."
+    waitFor: ["pull-base", "ensure-repo"]
 
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'quality-gates'
-    entrypoint: 'bash'
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-dev"
     args:
-      - '-c'
+      - "build"
+      - "--target"
+      - "api-dev"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev"
+      - "."
+    waitFor: ["build"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "quality-gates"
+    entrypoint: "bash"
+    args:
+      - "-c"
       - |
         set -e
         docker run --rm --entrypoint "" \
           -e CLOUD_BUILD=true -e CLOUD_MOCK_MODE=true \
-          -e GCP_PROJECT_ID=$PROJECT_ID -e GOOGLE_CLOUD_PROJECT=$PROJECT_ID \
+          -e GCP_PROJECT_ID=$PROJECT_ID -e GCP_PROJECT_ID=$PROJECT_ID \
           asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev \
           /bin/bash -c "scripts/quality-gates.sh --no-fix --quick" || { echo "❌ Quality gates failed"; exit 1; }
-    waitFor: ['build-dev']
+    waitFor: ["build-dev"]
 
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'push-image'
-    args: ['push', '--all-tags', 'asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api']
-    waitFor: ['quality-gates']
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-image"
+    args:
+      [
+        "push",
+        "--all-tags",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api",
+      ]
+    waitFor: ["quality-gates"]
 
 options:
-  machineType: 'E2_HIGHCPU_8'
+  machineType: "E2_HIGHCPU_8"
   logging: CLOUD_LOGGING_ONLY
-timeout: '600s'
+timeout: "600s"
