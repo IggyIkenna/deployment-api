@@ -37,7 +37,7 @@ class TestGenerateDateRangeAndYearMonths:
         assert "2024-02" in year_months
 
     def test_first_day_of_month_only(self):
-        dates, year_months = generate_date_range_and_year_months(
+        dates, _year_months = generate_date_range_and_year_months(
             "2024-01-01", "2024-03-31", first_day_of_month_only=True
         )
         # Only first days of months should be included
@@ -52,7 +52,7 @@ class TestGenerateDateRangeAndYearMonths:
         assert len(dates) == 0
 
     def test_year_months_deduplication(self):
-        dates, year_months = generate_date_range_and_year_months("2024-01-01", "2024-01-31")
+        _dates, year_months = generate_date_range_and_year_months("2024-01-01", "2024-01-31")
         assert year_months == {"2024-01"}
 
     def test_full_year_range_year_months(self):

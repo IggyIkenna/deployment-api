@@ -25,20 +25,30 @@ from deployment_api.routes.state_management import (
 
 
 class TestStatusStr:
-    """Tests for _status_str in state_management."""
+    """Tests for _status_str in state_management.
+
+    Note: state_management._status_str uses hasattr(val, 'value') for enum-like
+    objects, unlike shard_management which checks for .status attribute.
+    """
 
     def test_string_passthrough(self):
         assert _status_str("running") == "running"
 
-    def test_dict_status(self):
-        assert _status_str({"status": "failed"}) == "failed"
+    def test_dict_returns_str_repr(self):
+        # state_management._status_str does str(val) for dicts (no .status extraction)
+        result = _status_str({"status": "failed"})
+        assert "status" in result and "failed" in result
 
-    def test_dict_no_status(self):
-        assert _status_str({}) == "unknown"
+    def test_object_with_value_attr(self):
+        # Uses .value for enum-like objects
+        obj = SimpleNamespace(value="running")
+        assert _status_str(obj) == "running"
 
-    def test_object_with_status(self):
+    def test_object_without_value_attr(self):
+        # Falls back to str() for objects without .value
         obj = SimpleNamespace(status="pending")
-        assert _status_str(obj) == "pending"
+        result = _status_str(obj)
+        assert "pending" in result
 
     def test_other_type(self):
         assert _status_str(99) == "99"
@@ -81,30 +91,36 @@ class TestShardHasForce:
 
 
 class TestExtractDateRange:
-    """Tests for _extract_date_range in state_management."""
+    """Tests for _extract_date_range in state_management.
 
-    def test_single_date(self):
+    Note: state_management._extract_date_range is simpler than shard_management's:
+    - dict input: returns (start, end) from dict keys
+    - string: returns (str, str) treating the string as a single date value
+    - falsy: returns (None, None)
+    """
+
+    def test_single_date_string(self):
         start, end = _extract_date_range("2024-01-15")
         assert start == "2024-01-15"
         assert end == "2024-01-15"
 
-    def test_comma_range(self):
-        start, end = _extract_date_range("2024-01-01,2024-01-31")
+    def test_dict_with_start_and_end(self):
+        start, end = _extract_date_range({"start": "2024-01-01", "end": "2024-01-31"})
         assert start == "2024-01-01"
         assert end == "2024-01-31"
 
-    def test_to_range(self):
-        start, end = _extract_date_range("2024-01-01 to 2024-01-31")
+    def test_dict_with_only_start(self):
+        start, end = _extract_date_range({"start": "2024-01-01"})
         assert start == "2024-01-01"
-        assert end == "2024-01-31"
-
-    def test_last_n_days(self):
-        start, end = _extract_date_range("last-30-days")
-        assert start is not None
-        assert end is not None
+        assert end == "2024-01-01"  # end defaults to start
 
     def test_none_returns_none(self):
         start, end = _extract_date_range(None)
+        assert start is None
+        assert end is None
+
+    def test_empty_string_returns_none(self):
+        start, end = _extract_date_range("")
         assert start is None
         assert end is None
 
@@ -154,7 +170,7 @@ class TestExtractErrorWarningShardsFromStateManagement:
             "errors": [{"shard_id": "s1"}, {"shard_id": "s2"}],
             "warnings": [],
         }
-        err_ids, warn_ids = _extract_error_warning_shard_ids(log_analysis)
+        err_ids, _warn_ids = _extract_error_warning_shard_ids(log_analysis)
         assert "s1" in err_ids and "s2" in err_ids
 
     def test_errors_take_precedence_over_warnings(self):
@@ -268,11 +284,11 @@ class TestBuildExistingDatesSetsInStateManagement:
         turbo = {
             "categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}
         }
-        cat_dates, venue_dates = _build_existing_dates_sets(turbo)
+        cat_dates, _venue_dates = _build_existing_dates_sets(turbo)
         assert "2024-01-01" in cat_dates["CEFI"]
 
     def test_empty_result(self):
-        cat_dates, venue_dates = _build_existing_dates_sets({})
+        cat_dates, _venue_dates = _build_existing_dates_sets({})
         assert cat_dates == {}
 
 

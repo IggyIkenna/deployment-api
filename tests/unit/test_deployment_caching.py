@@ -8,9 +8,6 @@ verification-pending tracking.
 import time
 
 from deployment_api.routes.deployment_caching import (
-    _LOGS_CACHE_TTL_SEC,
-    _VERIFICATION_CACHE_TTL_SEC,
-    _VM_LOGS_CACHE_TTL_SEC,
     _logs_cache,
     _verification_cache,
     _vm_logs_cache,

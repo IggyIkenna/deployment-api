@@ -2041,7 +2041,7 @@ wheels = [
 
 [[package]]
 name = "unified-cloud-interface"
-version = "1.1.5"
+version = "1.1.6"
 source = { directory = "../unified-cloud-interface" }
 dependencies = [
     { name = "redis" },
@@ -2137,7 +2137,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "unified-trading-library"
-version = "0.3.24"
+version = "0.3.26"
 source = { directory = "../unified-trading-library" }
 dependencies = [
     { name = "fsspec" },

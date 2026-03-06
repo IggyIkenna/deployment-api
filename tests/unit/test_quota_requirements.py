@@ -28,10 +28,10 @@ class TestVmQuotaShape:
         assert per_shard["SSD_TOTAL_GB"] == 200.0
 
     def test_frozen_dataclass_is_immutable(self):
-        shape = VmQuotaShape(cpu_metric="CPUS", vcpus=4, external_ipv4=1, ssd_gb=100)
         import pytest
 
-        with pytest.raises(Exception):
+        shape = VmQuotaShape(cpu_metric="CPUS", vcpus=4, external_ipv4=1, ssd_gb=100)
+        with pytest.raises(AttributeError):
             shape.vcpus = 8  # type: ignore[misc]
 
 

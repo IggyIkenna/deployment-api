@@ -341,7 +341,7 @@ class TestBuildExistingDatesSets:
                 "CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}
             }
         }
-        cat_dates, venue_dates = _build_existing_dates_sets(turbo_result)
+        cat_dates, _venue_dates = _build_existing_dates_sets(turbo_result)
         assert "CEFI" in cat_dates
         assert "2024-01-01" in cat_dates["CEFI"]
 
