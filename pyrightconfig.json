@@ -1,11 +1,11 @@
 {
   "pythonVersion": "3.13",
   "typeCheckingMode": "strict",
-  "include": [
-    "deployment_api"
-  ],
+  "include": ["deployment_api"],
   "reportAny": "error",
   "reportMissingTypeStubs": false,
   "reportUnknownMemberType": "error",
-  "reportUnknownVariableType": "error"
+  "reportUnknownVariableType": "error",
+  "venvPath": "../",
+  "venv": ".venv-workspace"
 }
