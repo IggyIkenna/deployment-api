@@ -130,8 +130,16 @@ class TestNotifyDeploymentUpdatedSync:
 
     def test_handles_none_sync_queue(self):
         ev._sync_queue = None
-        # Should not raise
-        ev.notify_deployment_updated_sync("dep-sync-null")
+        with patch.dict(
+            __import__("sys").modules,
+            {
+                "unified_cloud_interface": MagicMock(
+                    get_queue_client=MagicMock(side_effect=RuntimeError("no queue"))
+                )
+            },
+        ):
+            # Should not raise
+            ev.notify_deployment_updated_sync("dep-sync-null")
 
     def test_handles_queue_client_error(self):
         mock_q = MagicMock()
@@ -139,7 +147,11 @@ class TestNotifyDeploymentUpdatedSync:
 
         with patch.dict(
             __import__("sys").modules,
-            {"unified_cloud_interface": MagicMock(get_queue_client=MagicMock(side_effect=RuntimeError))},
+            {
+                "unified_cloud_interface": MagicMock(
+                    get_queue_client=MagicMock(side_effect=RuntimeError)
+                )
+            },
         ):
             # Should not raise
             ev.notify_deployment_updated_sync("dep-sync-err")
@@ -182,7 +194,7 @@ class TestSubscribe:
         consumer_task.cancel()
         try:
             await asyncio.wait_for(consumer_task, timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
 
         # Queue should be cleaned up
@@ -222,7 +234,7 @@ class TestDrainSyncQueue:
             drain_task.cancel()
             try:
                 await asyncio.wait_for(drain_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
 
         assert deployment_id in broadcast_called

@@ -15,13 +15,15 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict, cast
 
-from deployment_service.deployment.state import StateManager
 from github import Github
 
 from deployment_api.settings import GCP_PROJECT_ID as DEFAULT_PROJECT_ID
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import GITHUB_ORG
 from deployment_api.settings import STATE_BUCKET as DEFAULT_STATE_BUCKET
+from deployment_api.utils.deployment_state_reader import (
+    list_deployments as _list_deployments_from_gcs,
+)
 from deployment_api.utils.storage_facade import list_objects
 
 from .service_status_cache import load_gcs_cache, save_gcs_cache
@@ -102,7 +104,9 @@ class CodePushInfoDict(TypedDict, total=False):
     error: str
 
 
-async def get_latest_data_timestamp(service: str, use_cache: bool = True) -> DataTimestampResultDict | None:
+async def get_latest_data_timestamp(
+    service: str, use_cache: bool = True
+) -> DataTimestampResultDict | None:
     """
     Get the most recent data file timestamp from GCS for a service.
 
@@ -122,7 +126,9 @@ async def get_latest_data_timestamp(service: str, use_cache: bool = True) -> Dat
                 cache_time = datetime.fromisoformat(data_times[service])
                 age = datetime.now(UTC) - cache_time
                 if age < timedelta(minutes=2):  # 2-minute cache
-                    logger.info("Using cached data timestamps for %s (age: %ss)", service, age.seconds)
+                    logger.info(
+                        "Using cached data timestamps for %s (age: %ss)", service, age.seconds
+                    )
                     return data_cache[service]
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Cache invalid for %s: %s", service, e)
@@ -141,26 +147,39 @@ async def get_latest_data_timestamp(service: str, use_cache: bool = True) -> Dat
                         # Find most recently updated blob
                         latest_blob = max(
                             blobs,
-                            key=lambda b: b.updated if b.updated else datetime.min.replace(tzinfo=UTC),
+                            key=lambda b: (
+                                b.updated if b.updated else datetime.min.replace(tzinfo=UTC)
+                            ),
                         )
 
                         # Verify GCS blob timestamps are UTC-aware (RFC3339 format)
                         # GCS always returns timestamps in UTC with timezone info
                         latest_ts = latest_blob.updated if latest_blob.updated else None
                         if latest_ts and latest_ts.tzinfo is None:
-                            logger.warning("GCS blob timestamp is naive (missing timezone): %s", latest_blob.name)
+                            logger.warning(
+                                "GCS blob timestamp is naive (missing timezone): %s",
+                                latest_blob.name,
+                            )
 
                         results[category] = {
                             "timestamp": (latest_ts.isoformat() if latest_ts else None),
                             "file": latest_blob.name,
-                            "size_mb": (round(latest_blob.size / (1024 * 1024), 2) if latest_blob.size else 0),
+                            "size_mb": (
+                                round(latest_blob.size / (1024 * 1024), 2)
+                                if latest_blob.size
+                                else 0
+                            ),
                         }
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.warning("Error checking %s bucket %s: %s", category, bucket_name, e)
                     results[category] = {"error": str(e)}
 
             # Overall latest (most recent across all categories)
-            valid_timestamps = [datetime.fromisoformat(r["timestamp"]) for r in results.values() if r.get("timestamp")]
+            valid_timestamps = [
+                datetime.fromisoformat(r["timestamp"])
+                for r in results.values()
+                if r.get("timestamp")
+            ]
 
             return {
                 "by_category": results,
@@ -170,7 +189,9 @@ async def get_latest_data_timestamp(service: str, use_cache: bool = True) -> Dat
             logger.exception("Error getting data timestamps for %s: %s", service, e)
             return {"error": str(e)}
 
-    result = cast(DataTimestampResultDict | None, cast(object, await asyncio.to_thread(_get_timestamps_sync)))
+    result = cast(
+        DataTimestampResultDict | None, cast(object, await asyncio.to_thread(_get_timestamps_sync))
+    )
 
     # Cache the result
     cache = load_gcs_cache()
@@ -211,12 +232,15 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
 
     def _get_latest_sync():
         try:
-            state_manager = StateManager(
+            from deployment_api import settings as _s
+
+            deployments = _list_deployments_from_gcs(
                 bucket_name=DEFAULT_STATE_BUCKET,
                 project_id=DEFAULT_PROJECT_ID,
+                service=service,
+                deployment_env=_s.DEPLOYMENT_ENV,
+                limit=1,
             )
-
-            deployments = state_manager.list_deployments(service=service, limit=1)
 
             if deployments:
                 latest = deployments[0]
@@ -228,12 +252,20 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
                 # Get shard counts
                 progress = latest.get("progress") or {}
                 total_shards = (
-                    progress.get("total_shards", 0) if isinstance(progress, dict) else latest.get("total_shards", 0)
+                    progress.get("total_shards", 0)
+                    if isinstance(progress, dict)
+                    else latest.get("total_shards", 0)
                 )
                 completed = (
-                    progress.get("completed", 0) if isinstance(progress, dict) else latest.get("completed_shards", 0)
+                    progress.get("completed", 0)
+                    if isinstance(progress, dict)
+                    else latest.get("completed_shards", 0)
                 )
-                failed = progress.get("failed", 0) if isinstance(progress, dict) else latest.get("failed_shards", 0)
+                failed = (
+                    progress.get("failed", 0)
+                    if isinstance(progress, dict)
+                    else latest.get("failed_shards", 0)
+                )
 
                 return {
                     "deployment_id": latest.get("deployment_id"),
@@ -361,7 +393,8 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
                         if build.finish_time and build.create_time
                         else None
                     ),
-                    "commit_sha": build.substitutions.get("COMMIT_SHA") or build.substitutions.get("SHORT_SHA"),
+                    "commit_sha": build.substitutions.get("COMMIT_SHA")
+                    or build.substitutions.get("SHORT_SHA"),
                 }
 
                 # Cache build info to GCS with timestamp
@@ -382,7 +415,9 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
     return cast(BuildInfoDict | None, await asyncio.to_thread(_get_build_sync))
 
 
-async def get_latest_code_push(service: str, github_token: str | None = None) -> CodePushInfoDict | None:
+async def get_latest_code_push(
+    service: str, github_token: str | None = None
+) -> CodePushInfoDict | None:
     """
     Get the most recent code push (commit) from GitHub.
 

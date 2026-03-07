@@ -114,8 +114,8 @@ def _get_state_date_range(state) -> tuple[str | None, str | None]:
 
 
 def _extract_error_warning_shard_ids(
-    log_analysis: dict | None,
-) -> tuple[set, set]:
+    log_analysis: dict[str, object] | None,
+) -> tuple[set[str], set[str]]:
     if not log_analysis:
         return set(), set()
 
@@ -256,7 +256,7 @@ def _parse_iso_dt(val: str | None) -> datetime | None:
 
 
 def _build_blob_timestamp_map(
-    turbo_result: dict,
+    turbo_result: dict[str, object],
 ) -> dict[str, dict[str, dict[str, object]]]:
     """Extract per-(category, venue, date) blob timestamps from turbo result.
 
@@ -360,10 +360,19 @@ def _resolve_shard_blob_data(
             if blob_updated_raw is None:
                 for _v_key, v_dates in cat_ts.items():
                     ts = v_dates.get(start_date)
-                    if ts is not None and (blob_updated_raw is None or (isinstance(ts, datetime) and isinstance(blob_updated_raw, datetime) and ts > blob_updated_raw)):
+                    if ts is not None and (
+                        blob_updated_raw is None
+                        or (
+                            isinstance(ts, datetime)
+                            and isinstance(blob_updated_raw, datetime)
+                            and ts > blob_updated_raw
+                        )
+                    ):
                         blob_updated_raw = ts
 
-        blob_updated: datetime | None = cast(datetime, blob_updated_raw) if isinstance(blob_updated_raw, datetime) else None
+        blob_updated: datetime | None = (
+            cast(datetime, blob_updated_raw) if isinstance(blob_updated_raw, datetime) else None
+        )
         result[sid] = (data_exists, blob_updated)
 
     return result
@@ -371,7 +380,7 @@ def _resolve_shard_blob_data(
 
 def _classify_all_shards(
     state,
-    log_analysis: dict | None,
+    log_analysis: dict[str, object] | None,
     blob_data: dict[str, tuple[bool, datetime | None]] | None = None,
 ) -> dict[str, str]:
     """Classify every shard in a deployment into outcome categories.
@@ -417,15 +426,15 @@ def _compute_classification_counts(
 
 
 def _build_existing_dates_sets(
-    turbo_result: dict,
-) -> tuple[dict[str, set], dict[str, dict[str, set]]]:
+    turbo_result: dict[str, object],
+) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
     """Build category+date and venue+date sets from turbo data status result.
 
     Mirrors logic used by /api/data-status/missing-shards.
     """
 
-    existing_cat_dates: dict[str, set] = {}
-    existing_venue_dates: dict[str, dict[str, set]] = {}
+    existing_cat_dates: dict[str, set[str]] = {}
+    existing_venue_dates: dict[str, dict[str, set[str]]] = {}
 
     for cat_name, cat_data in (turbo_result.get("categories") or {} or {}).items():
         if not isinstance(cat_data, dict):
@@ -501,10 +510,10 @@ def _compute_verified_succeeded_shard_ids(
 
 def _compute_completed_breakdown(
     state,
-    log_analysis: dict | None,
-    existing_cat_dates: dict[str, set] | None = None,
-    existing_venue_dates: dict[str, dict[str, set]] | None = None,
-) -> dict:
+    log_analysis: dict[str, object] | None,
+    existing_cat_dates: dict[str, set[str]] | None = None,
+    existing_venue_dates: dict[str, dict[str, set[str]]] | None = None,
+) -> dict[str, object]:
     succeeded_ids: set[str] = {
         cast(str, getattr(s, "shard_id", ""))
         for s in cast(list[object], getattr(state, "shards", []) or [])
@@ -518,7 +527,9 @@ def _compute_completed_breakdown(
 
     verified_clean_ids: set = set()
     if existing_cat_dates is not None and existing_venue_dates is not None:
-        verified_ids = _compute_verified_succeeded_shard_ids(state, existing_cat_dates, existing_venue_dates)
+        verified_ids = _compute_verified_succeeded_shard_ids(
+            state, existing_cat_dates, existing_venue_dates
+        )
         verified_clean_ids = verified_ids - shard_ids_with_errors - shard_ids_with_warnings
 
     completed_with_verification = len(succeeded_ids & verified_clean_ids)
@@ -555,7 +566,7 @@ async def _compute_and_cache_verification(
     state_manager,
     deployment_id: str,
     state,
-) -> dict:
+) -> dict[str, object]:
     # Turbo data status (file existence verification) — start preparing args
     from .data_status import get_data_status_turbo_impl
 
@@ -566,7 +577,7 @@ async def _compute_and_cache_verification(
     # Run log analysis and TURBO data status CONCURRENTLY.
     # Previously these ran sequentially, adding ~10s of log analysis latency
     # before the fast (~3s) TURBO queries even started.
-    async def _run_log_analysis() -> dict | None:
+    async def _run_log_analysis() -> dict[str, object] | None:
         try:
             result = await analyze_deployment_logs(state_manager, deployment_id, state)
             return result.get("log_analysis")
@@ -574,7 +585,7 @@ async def _compute_and_cache_verification(
             logger.warning("[VERIFY] Log analysis failed for %s: %s", deployment_id, e)
             return None
 
-    async def _run_turbo() -> dict:
+    async def _run_turbo() -> dict[str, object]:
         return await get_data_status_turbo_impl(
             service=getattr(state, "service", ""),
             start_date=start_date,
@@ -600,7 +611,9 @@ async def _compute_and_cache_verification(
     blob_timestamps = _build_blob_timestamp_map(turbo_result)
 
     # Resolve per-shard blob data (existence + timestamp) from turbo data
-    blob_data = _resolve_shard_blob_data(state, existing_cat_dates, existing_venue_dates, blob_timestamps)
+    blob_data = _resolve_shard_blob_data(
+        state, existing_cat_dates, existing_venue_dates, blob_timestamps
+    )
 
     # Classify every shard using the full decision tree
     shard_classifications = _classify_all_shards(state, log_analysis, blob_data)
@@ -717,7 +730,9 @@ class DeployRequest(BaseModel):
     max_threads: int = Field(100, description="Max concurrent threads for launching")
     respect_start_dates: bool = Field(True, description="Filter shards by venue start dates")
     region: str | None = Field(None, description="GCP region (e.g., asia-northeast1)")
-    vm_zone: str | None = Field(None, description="GCP zone for VM deployments (e.g., asia-northeast1-a)")
+    vm_zone: str | None = Field(
+        None, description="GCP zone for VM deployments (e.g., asia-northeast1-a)"
+    )
     extra_args: str | None = Field(
         None,
         description="Additional CLI args to pass to service (e.g., '--data-types trades')",
@@ -812,7 +827,9 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         return _FALLBACK_START_DATE
 
 
-def _resolve_deploy_dates(deploy_request: "DeployRequest", config_dir: str = "configs") -> tuple[str, str]:
+def _resolve_deploy_dates(
+    deploy_request: "DeployRequest", config_dir: str = "configs"
+) -> tuple[str, str]:
     """Resolve effective start_date and end_date for a deployment request.
 
     When start_date/end_date are omitted, defaults are:
@@ -823,7 +840,9 @@ def _resolve_deploy_dates(deploy_request: "DeployRequest", config_dir: str = "co
     """
     yesterday = (date.today() - timedelta(days=1)).isoformat()
 
-    start = deploy_request.start_date or _get_service_earliest_start(deploy_request.service, config_dir)
+    start = deploy_request.start_date or _get_service_earliest_start(
+        deploy_request.service, config_dir
+    )
     end = deploy_request.end_date or yesterday
 
     # Validate format

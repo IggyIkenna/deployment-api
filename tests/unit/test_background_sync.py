@@ -17,7 +17,7 @@ import pytest
 _mock_sync_service_cls = MagicMock()
 sys.modules.setdefault("deployment_api.services", MagicMock(SyncService=_mock_sync_service_cls))
 
-import deployment_api.background_sync as bsync  # noqa: E402
+import deployment_api.background_sync as bsync
 
 
 class TestGetHeldDeploymentLocks:
@@ -161,6 +161,75 @@ class TestAutoSyncRunningDeploymentsShutdown:
             except TimeoutError:
                 task.cancel()
                 pytest.fail("Task should have exited")
+
+
+class TestAutoSyncRunLoopBody:
+    """Tests for _auto_sync_running_deployments loop body execution."""
+
+    @pytest.mark.asyncio
+    async def test_sync_ops_executed_and_stops(self):
+        shutdown_event = asyncio.Event()
+
+        mock_service = MagicMock()
+        mock_service.sync_deployments.return_value = (2, 3)
+        mock_service.cleanup_state_ttl.return_value = 0
+        mock_service.state_manager.owner_id = "test-owner"
+
+        call_count = 0
+
+        async def controlled_sleep(secs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                shutdown_event.set()
+
+        with (
+            patch("deployment_api.background_sync.SyncService", return_value=mock_service),
+            patch.object(bsync, "_shutdown_event", shutdown_event),
+            patch.object(bsync, "_sync_service", None),
+            patch(
+                "deployment_api.background_sync.asyncio.sleep",
+                new=AsyncMock(side_effect=controlled_sleep),
+            ),
+        ):
+            task = asyncio.create_task(bsync._auto_sync_running_deployments())
+            try:
+                await asyncio.wait_for(task, timeout=3.0)
+            except TimeoutError:
+                task.cancel()
+                pytest.fail("Task should have exited")
+
+    @pytest.mark.asyncio
+    async def test_oserror_handled_gracefully(self):
+        shutdown_event = asyncio.Event()
+
+        mock_service = MagicMock()
+        mock_service.sync_deployments.side_effect = OSError("connection failed")
+        mock_service.state_manager.owner_id = "test-owner"
+
+        call_count = 0
+
+        async def controlled_sleep(secs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                shutdown_event.set()
+
+        with (
+            patch("deployment_api.background_sync.SyncService", return_value=mock_service),
+            patch.object(bsync, "_shutdown_event", shutdown_event),
+            patch.object(bsync, "_sync_service", None),
+            patch(
+                "deployment_api.background_sync.asyncio.sleep",
+                new=AsyncMock(side_effect=controlled_sleep),
+            ),
+        ):
+            task = asyncio.create_task(bsync._auto_sync_running_deployments())
+            try:
+                await asyncio.wait_for(task, timeout=3.0)
+            except TimeoutError:
+                task.cancel()
+                pytest.fail("Task should have exited after OSError handling")
 
 
 class TestModuleLevelConstants:

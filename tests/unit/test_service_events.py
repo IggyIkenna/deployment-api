@@ -28,7 +28,9 @@ class TestParseServiceEventFromServiceEvents:
         assert result["details"] == ""
 
     def test_event_with_details(self):
-        result = parse_service_event("SERVICE_EVENT: INSTRUMENT_PROCESSING_COMPLETED (BTC-USDT, 500)")
+        result = parse_service_event(
+            "SERVICE_EVENT: INSTRUMENT_PROCESSING_COMPLETED (BTC-USDT, 500)"
+        )
         assert result is not None
         assert result["event_name"] == "INSTRUMENT_PROCESSING_COMPLETED"
         assert "BTC-USDT" in result["details"]
@@ -146,3 +148,52 @@ class TestUpdateShardStateFromServiceEvents:
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("MY_EVENT", "custom detail"))
         assert shard["stage_details"] == "custom detail"
+
+
+class TestNaiveTimestampHandling:
+    """Tests for naive datetime timestamp handling in stage timing calculations."""
+
+    def test_naive_started_at_gets_utc_timezone(self):
+        from datetime import datetime
+
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("VALIDATION_STARTED"))
+        # Replace stage_started_at with a naive datetime ISO string (no timezone)
+        naive_ts = datetime.now().isoformat()  # no UTC timezone
+        shard["stage_started_at"] = naive_ts
+        # Should not raise - naive datetime is handled via replace(tzinfo=UTC)
+        update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
+        assert "validation" in shard.get("stage_timings", {})
+
+    def test_invalid_started_at_swallows_valueerror(self):
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("VALIDATION_STARTED"))
+        shard["stage_started_at"] = "not-a-valid-iso-string"
+        # Should not raise - ValueError is caught and suppressed
+        update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
+
+    def test_ingestion_naive_started_at(self):
+        from datetime import datetime
+
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("DATA_INGESTION_STARTED"))
+        naive_ts = datetime.now().isoformat()
+        shard["stage_started_at"] = naive_ts
+        update_shard_state_from_event(shard, _make_event("DATA_INGESTION_COMPLETED", "done"))
+        assert "ingestion" in shard.get("stage_timings", {})
+
+    def test_processing_invalid_started_at(self):
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("PROCESSING_STARTED"))
+        shard["stage_started_at"] = "bad-date"
+        update_shard_state_from_event(shard, _make_event("PROCESSING_COMPLETED"))
+
+    def test_persistence_naive_started_at(self):
+        from datetime import datetime
+
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("PERSISTENCE_STARTED"))
+        naive_ts = datetime.now().isoformat()
+        shard["stage_started_at"] = naive_ts
+        update_shard_state_from_event(shard, _make_event("PERSISTENCE_COMPLETED"))
+        assert "persistence" in shard.get("stage_timings", {})

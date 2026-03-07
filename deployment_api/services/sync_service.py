@@ -5,6 +5,7 @@ Orchestrates the synchronization of running deployments, coordinating
 state management, event processing, and scheduling operations.
 """
 
+import importlib as _importlib
 import json
 import logging
 import time as _time
@@ -12,9 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from deployment_service.config.config_validator import ConfigurationError, ValidationUtils
-
 from deployment_api import settings
+from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.storage_facade import list_objects, read_object_text, write_object_text
 
 from .event_processor import EventProcessor
@@ -55,9 +55,11 @@ class SyncService:
     def _initialize_quota_broker(self):
         """Initialize quota broker if available."""
         try:
-            from deployment.quota_broker_client import QuotaBrokerClient
+            _quota_broker_client_cls = _importlib.import_module(
+                "deployment_service.deployment.quota_broker_client"
+            ).QuotaBrokerClient  # type: ignore[assignment]
 
-            return QuotaBrokerClient()
+            return _quota_broker_client_cls()
         except (OSError, ValueError, RuntimeError) as e:
             logger.info("[SYNC_SERVICE] Quota broker not available: %s", e)
             return None
@@ -191,7 +193,9 @@ class SyncService:
             # Always release lock after processing
             self.state_manager.release_deployment_lock(deployment_id)
 
-    def _process_deployment_locked(self, deployment_id: str, state_path: str, state: dict[str, object]) -> bool:
+    def _process_deployment_locked(
+        self, deployment_id: str, state_path: str, state: dict[str, object]
+    ) -> bool:
         """
         Process a deployment while holding its lock.
 
@@ -231,13 +235,21 @@ class SyncService:
 
             # Handle orphan VM cleanup
             orphan_count = self.event_processor.process_orphan_vm_cleanup(
-                deployment_id, state, vm_map, shard_statuses, cast(dict[str, object], self.state_manager._pending_vm_deletes)
+                deployment_id,
+                state,
+                vm_map,
+                shard_statuses,
+                cast(dict[str, object], self.state_manager._pending_vm_deletes),
             )
             if orphan_count > 0:
-                logger.info("[SYNC_SERVICE] %s: Fired %s orphan VM deletes", deployment_id, orphan_count)
+                logger.info(
+                    "[SYNC_SERVICE] %s: Fired %s orphan VM deletes", deployment_id, orphan_count
+                )
 
         elif compute_type == "cloud_run":
-            cr_updated = self.event_processor.process_cloud_run_updates(deployment_id, state, shard_statuses)
+            cr_updated = self.event_processor.process_cloud_run_updates(
+                deployment_id, state, shard_statuses
+            )
             updated = updated or cr_updated
 
         # Handle scheduling for pending deployments
@@ -253,7 +265,9 @@ class SyncService:
         if updated:
             all_terminal, has_failures = self.event_processor.check_all_shards_terminal(shards)
 
-            if self.event_processor.update_deployment_status(state, all_terminal, has_failures, now):
+            if self.event_processor.update_deployment_status(
+                state, all_terminal, has_failures, now
+            ):
                 updated = True
 
             state["updated_at"] = now.isoformat()
@@ -264,7 +278,9 @@ class SyncService:
                 self.event_processor.notify_deployment_updated(deployment_id)
 
                 if launched_this_tick > 0:
-                    logger.info("[SYNC_SERVICE] Updated %s (launched %s)", deployment_id, launched_this_tick)
+                    logger.info(
+                        "[SYNC_SERVICE] Updated %s (launched %s)", deployment_id, launched_this_tick
+                    )
                 else:
                     logger.info("[SYNC_SERVICE] Updated %s", deployment_id)
 
@@ -291,7 +307,9 @@ class SyncService:
         config_raw: object = state.get("config") or {}
         config = cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
         shards_raw2: object = state.get("shards") or []
-        shards2 = cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
+        shards2 = (
+            cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
+        )
 
         # Find shards that need to be launched
         shards_to_launch = [s for s in shards2 if s.get("status") == "pending"]
@@ -299,7 +317,9 @@ class SyncService:
             return 0
 
         try:
-            from deployment.orchestrator import DeploymentOrchestrator
+            _orchestrator_cls = _importlib.import_module(
+                "deployment_service.deployment.orchestrator"
+            ).DeploymentOrchestrator  # type: ignore[assignment]
 
             from deployment_api.utils.quota_requirements import vm_quota_shape_from_compute_config
 
@@ -319,13 +339,15 @@ class SyncService:
             # Launch the acquired batch
             try:
                 service_account_email = ValidationUtils.get_required(
-                    cast(dict[str, object], config), "service_account_email", "deployment orchestrator"
+                    cast(dict[str, object], config),
+                    "service_account_email",
+                    "deployment orchestrator",
                 )
             except ConfigurationError as e:
                 logger.error("[SYNC_SERVICE] %s: %s", deployment_id, e)
                 return 0
 
-            orch = DeploymentOrchestrator(
+            orch = DeploymentOrchestrator(  # noqa: F821
                 project_id=self.project_id,
                 region=config.get("region") or "asia-northeast1",
                 service_account_email=service_account_email,
@@ -350,7 +372,9 @@ class SyncService:
                         shard["started_at"] = datetime.now(UTC).isoformat()
                         launched += 1
                 except (OSError, ValueError, RuntimeError) as e:
-                    logger.error("[SYNC_SERVICE] Error launching shard %s: %s", shard.get("shard_id"), e)
+                    logger.error(
+                        "[SYNC_SERVICE] Error launching shard %s: %s", shard.get("shard_id"), e
+                    )
                     # Release quota for failed launch
                     self.quota_broker.release(quota_shape, 1)
 
@@ -411,7 +435,10 @@ class SyncService:
         # Run orphan cleanup for recently-completed deployments
         orphan_count = self._cleanup_recent_orphans(state_paths, active_states)
         if orphan_count > 0:
-            logger.info("[SYNC_SERVICE] Fired %s orphan deletes for recently-completed deployments", orphan_count)
+            logger.info(
+                "[SYNC_SERVICE] Fired %s orphan deletes for recently-completed deployments",
+                orphan_count,
+            )
 
         return synced, len(active_states)
 

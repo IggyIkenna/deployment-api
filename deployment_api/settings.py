@@ -8,16 +8,12 @@ The .env file (sourced by run-api.sh) provides defaults for local development.
 Docker/Cloud Run override these via runtime environment variables.
 """
 
-import sys
-from pathlib import Path
+from deployment_api.deployment_api_config import DeploymentApiConfig
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from deployment_service.deployment_config import DeploymentConfig
-
-# Initialize configuration
-_config = DeploymentConfig()
+# Initialize configuration — uses local DeploymentApiConfig (extends UnifiedCloudConfig).
+# Previously imported DeploymentConfig from deployment-service; inlined here to remove
+# the cross-service import boundary.
+_config = DeploymentApiConfig()
 
 # =============================================================================
 # CORE CLOUD CONFIGURATION
@@ -49,6 +45,7 @@ PORT = _config.effective_port
 FRONTEND_PORT = _config.frontend_port
 CORS_ALLOWED_ORIGINS = _config.cors_allowed_origins
 CORS_ALLOWED_CLOUD_RUN = _config.cors_allowed_cloud_run
+CORS_DEV_ORIGINS = _config.cors_dev_origins
 
 # =============================================================================
 # AUTO-SYNC CONFIGURATION
@@ -136,6 +133,12 @@ WORKSPACE_ROOT = _config.workspace_root
 # TESTING
 # =============================================================================
 CLOUD_MOCK_MODE = _config.cloud_mock_mode
+
+# =============================================================================
+# DEPLOYMENT-SERVICE HTTP CLIENT CONFIGURATION
+# =============================================================================
+DEPLOYMENT_SERVICE_URL = _config.deployment_service_url.rstrip("/")
+DEPLOYMENT_SERVICE_TIMEOUT_SECONDS = _config.deployment_service_timeout_seconds
 
 # =============================================================================
 # SINGLE-REGION / ZONE FAILOVER

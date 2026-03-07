@@ -14,21 +14,21 @@ logger = logging.getLogger(__name__)
 # In-memory cache for logs API to avoid exceeding Cloud Logging 60 reads/min quota
 _LOGS_CACHE_TTL_SEC = 90
 _LOGS_CACHE_MAX_ENTRIES = 100
-_logs_cache: dict[str, tuple[float, dict]] = {}
+_logs_cache: dict[str, tuple[float, dict[str, object]]] = {}
 
 # In-memory cache for VM logs (GCS fetch) to avoid hammering GCS on rapid log tab opens
 _VM_LOGS_CACHE_TTL_SEC = 15
 _VM_LOGS_CACHE_MAX_ENTRIES = 50
-_vm_logs_cache: dict[str, tuple[float, tuple[list, str]]] = {}  # key -> (expiry_ts, (logs, message))
+_vm_logs_cache: dict[str, tuple[float, tuple[list[object], str]]] = {}  # key -> (expiry_ts, (logs, message))
 
 # In-memory cache for expensive completion verification breakdown (data-status turbo)
 _VERIFICATION_CACHE_TTL_SEC = 15 * 60
 _VERIFICATION_CACHE_MAX_ENTRIES = 100
-_verification_cache: dict[str, tuple[float, dict]] = {}
-_verification_pending: set = set()
+_verification_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_verification_pending: set[str] = set()
 
 
-def get_verification_cache(deployment_id: str) -> dict | None:
+def get_verification_cache(deployment_id: str) -> dict[str, object] | None:
     """Get verification cache for a deployment."""
     entry = _verification_cache.get(deployment_id)
     if not entry:
@@ -42,7 +42,7 @@ def get_verification_cache(deployment_id: str) -> dict | None:
     return cached
 
 
-def set_verification_cache(deployment_id: str, data: dict) -> None:
+def set_verification_cache(deployment_id: str, data: dict[str, object]) -> None:
     """Set verification cache for a deployment."""
     # Prune old entries if cache is getting too large
     if len(_verification_cache) >= _VERIFICATION_CACHE_MAX_ENTRIES:
@@ -53,7 +53,7 @@ def set_verification_cache(deployment_id: str, data: dict) -> None:
     _verification_cache[deployment_id] = (expiry_ts, data)
 
 
-def get_logs_cache(cache_key: str) -> dict | None:
+def get_logs_cache(cache_key: str) -> dict[str, object] | None:
     """Get logs from cache if not expired."""
     entry = _logs_cache.get(cache_key)
     if not entry:
@@ -67,7 +67,7 @@ def get_logs_cache(cache_key: str) -> dict | None:
     return cached
 
 
-def set_logs_cache(cache_key: str, data: dict) -> None:
+def set_logs_cache(cache_key: str, data: dict[str, object]) -> None:
     """Set logs cache with TTL."""
     # Prune old entries if cache is getting too large
     if len(_logs_cache) >= _LOGS_CACHE_MAX_ENTRIES:
@@ -78,7 +78,7 @@ def set_logs_cache(cache_key: str, data: dict) -> None:
     _logs_cache[cache_key] = (expiry_ts, data)
 
 
-def get_vm_logs_cache(cache_key: str) -> tuple[list, str] | None:
+def get_vm_logs_cache(cache_key: str) -> tuple[list[object], str] | None:
     """Get VM logs from cache if not expired."""
     entry = _vm_logs_cache.get(cache_key)
     if not entry:
@@ -92,7 +92,7 @@ def get_vm_logs_cache(cache_key: str) -> tuple[list, str] | None:
     return cached
 
 
-def set_vm_logs_cache(cache_key: str, logs: list, message: str) -> None:
+def set_vm_logs_cache(cache_key: str, logs: list[object], message: str) -> None:
     """Set VM logs cache with TTL."""
     # Prune old entries if cache is getting too large
     if len(_vm_logs_cache) >= _VM_LOGS_CACHE_MAX_ENTRIES:
@@ -157,7 +157,9 @@ async def invalidate_deployment_cache(deployment_id: str | None = None):
     await cache.clear_pattern("deployments:*")
 
 
-async def get_cached_deployment_state(state_manager, deployment_id: str, force_refresh: bool = False):
+async def get_cached_deployment_state(
+    state_manager, deployment_id: str, force_refresh: bool = False
+):
     """Get deployment state with smart caching (Redis + in-memory fallback).
 
     Uses shorter TTL (10s) for active deployments and longer TTL (60s) for terminal ones.
@@ -219,6 +221,8 @@ def clear_all_caches():
 def invalidate_log_analysis_cache(deployment_id: str | None = None):
     """Invalidate log analysis cache for specific deployment or all deployments."""
     # This function is defined in log_analysis.py and should be imported from there
-    from deployment_api.routes.log_analysis import invalidate_log_analysis_cache as _invalidate_log_analysis_cache
+    from deployment_api.routes.log_analysis import (
+        invalidate_log_analysis_cache as _invalidate_log_analysis_cache,
+    )
 
     return _invalidate_log_analysis_cache(deployment_id)

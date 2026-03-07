@@ -75,8 +75,8 @@ class TestDetectAnomalies:
 
     def test_code_not_built_anomaly(self):
         # code_time is 60 min AFTER build_time
-        build_ts = _ts(-2)   # built 2h ago
-        code_ts = _ts(-1)    # code pushed 1h ago  (code_time - build_time = 1h > 30min)
+        build_ts = _ts(-2)  # built 2h ago
+        code_ts = _ts(-1)  # code pushed 1h ago  (code_time - build_time = 1h > 30min)
         result = detect_anomalies(None, None, build_ts, code_ts)
         types = [a["type"] for a in result]
         assert "code_not_built" in types
@@ -181,3 +181,98 @@ class TestDetermineOverviewHealth:
         result = determine_overview_health(None, None, None, None)
         # When no data or deployment info, result is unknown or stale
         assert result in ("unknown", "stale", "healthy", "warning")
+
+    def test_warning_with_running_deployment(self):
+        deploy_ts = _ts(-1)
+        result = determine_overview_health(None, deploy_ts, "running", None)
+        assert result == "warning"
+
+    def test_warning_with_cancelled_deployment(self):
+        deploy_ts = _ts(-1)
+        result = determine_overview_health(None, deploy_ts, "cancelled", None)
+        assert result == "warning"
+
+    def test_unknown_status_pass_falls_through(self):
+        deploy_ts = _ts(-1)
+        result = determine_overview_health(None, deploy_ts, "unknown", None)
+        assert result in ("unknown", "healthy")
+
+    def test_old_deployment_with_fresh_data(self):
+        old_deploy_ts = _ts(-200)
+        fresh_data_ts = _ts(-1)
+        result = determine_overview_health(fresh_data_ts, old_deploy_ts, "completed", None)
+        assert result == "healthy"
+
+    def test_old_deployment_with_stale_data(self):
+        old_deploy_ts = _ts(-200)
+        stale_data_ts = _ts(-50)
+        result = determine_overview_health(stale_data_ts, old_deploy_ts, "completed", None)
+        assert result == "stale"
+
+    def test_old_deployment_with_mildly_stale_data(self):
+        old_deploy_ts = _ts(-200)
+        data_ts = _ts(-36)
+        result = determine_overview_health(data_ts, old_deploy_ts, "completed", None)
+        assert result == "warning"
+
+    def test_no_deployment_with_fresh_data(self):
+        data_ts = _ts(-1)
+        result = determine_overview_health(data_ts, None, None, None)
+        assert result == "healthy"
+
+    def test_no_deployment_with_stale_data(self):
+        data_ts = _ts(-50)
+        result = determine_overview_health(data_ts, None, None, None)
+        assert result == "stale"
+
+    def test_no_deployment_with_mildly_stale_data(self):
+        data_ts = _ts(-36)
+        result = determine_overview_health(data_ts, None, None, None)
+        assert result == "warning"
+
+    def test_build_failed_overrides_data_health(self):
+        data_ts = _ts(-1)
+        result = determine_overview_health(data_ts, None, None, "FAILURE")
+        assert result == "build_failed"
+
+    def test_naive_timestamp_without_tz(self):
+        naive_ts = datetime.now().isoformat()  # no timezone info
+        result = determine_overview_health(naive_ts, None, None, None)
+        assert result in ("healthy", "warning", "stale", "unknown")
+
+    def test_invalid_deploy_ts_graceful(self):
+        result = determine_overview_health(None, "not-a-date", "completed", None)
+        assert result in ("unknown", "healthy")
+
+
+class TestDetermineServiceHealthEdgeCases:
+    """Additional edge case tests for determine_service_health."""
+
+    def test_unknown_deploy_status_falls_through(self):
+        deploy_ts = _ts(-1)
+        health = determine_service_health(None, deploy_ts, "unknown", None, [])
+        assert health in ("healthy", "unknown")
+
+    def test_invalid_deploy_ts_graceful(self):
+        health = determine_service_health(None, "not-a-date", "completed", None, [])
+        assert health in ("healthy", "unknown", "error")
+
+    def test_old_deployment_warning_anomaly_downgrade(self):
+        old_deploy_ts = _ts(-200)
+        anomalies = [{"type": "stale_data", "severity": "warning", "message": "old"}]
+        health = determine_service_health(None, old_deploy_ts, "completed", None, anomalies)
+        assert health == "warning"
+
+    def test_naive_timestamp_without_tz(self):
+        naive_ts = datetime.now().isoformat()  # no timezone info
+        health = determine_service_health(naive_ts, None, None, None, [])
+        assert health in ("healthy", "warning", "stale", "unknown")
+
+    def test_invalid_data_ts_sets_unknown(self):
+        health = determine_service_health("bad-date", None, None, None, [])
+        assert health in ("healthy", "unknown")
+
+    def test_partial_deploy_status(self):
+        deploy_ts = _ts(-1)
+        health = determine_service_health(None, deploy_ts, "partial", None, [])
+        assert health == "warning"

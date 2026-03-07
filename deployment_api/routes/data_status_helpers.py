@@ -4,15 +4,12 @@ Helper functions for data status routes.
 Contains utility functions for data status checking and processing.
 """
 
-import asyncio
-import json
 import logging
-import os
-import sys
 from typing import cast
 
 from fastapi import HTTPException
 
+from deployment_api.clients import deployment_service_client as _ds_client
 from deployment_api.settings import GCP_PROJECT_ID as _PID
 
 logger = logging.getLogger(__name__)
@@ -36,88 +33,28 @@ async def _run_data_status_cli(
     check_feature_groups: bool = False,
     check_timeframes: bool = False,
     mode: str = "batch",
-) -> dict:
+) -> dict[str, object]:
     """
-    Run data-status CLI command and parse JSON output.
+    Fetch data status from the deployment-service HTTP API.
 
-    This wraps the CLI for API access with proper error handling.
+    Previously invoked `python -m deployment_service.cli data-status` as a subprocess.
+    Replaced with an HTTP call to GET /api/v1/data-status on the deployment-service.
     """
     try:
-        # Build CLI command
-        cmd = [
-            sys.executable,
-            "-m",
-            "deployment_service.cli",
-            "data-status",
-            "--service",
-            service,
-            "--start-date",
-            start_date,
-            "--end-date",
-            end_date,
-            "--output",
-            "json",
-            "--mode",
-            mode,
-        ]
-
-        # Add optional parameters
-        if categories:
-            for cat in categories:
-                cmd.extend(["--category", cat])
-
-        if venues:
-            for venue in venues:
-                cmd.extend(["--venue", venue])
-
-        if show_missing:
-            cmd.append("--show-missing")
-
-        if check_venues:
-            cmd.append("--check-venues")
-
-        if check_data_types:
-            cmd.append("--check-data-types")
-
-        if check_feature_groups:
-            cmd.append("--check-feature-groups")
-
-        if check_timeframes:
-            cmd.append("--check-timeframes")
-
-        # Run command with timeout
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=os.getcwd(),
+        result = await _ds_client.get_data_status(
+            service=service,
+            start_date=start_date,
+            end_date=end_date,
+            categories=categories,
+            venues=venues,
+            show_missing=show_missing,
+            check_venues=check_venues,
+            check_data_types=check_data_types,
+            check_feature_groups=check_feature_groups,
+            check_timeframes=check_timeframes,
+            mode=mode,
         )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)  # 5 min timeout
-        except TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            raise HTTPException(status_code=500, detail="Data status check timed out (>5 minutes)") from None
-
-        if proc.returncode != 0:
-            error_msg = stderr.decode() if stderr else "Unknown error"
-            logger.error("data-status CLI failed: %s", error_msg)
-            raise HTTPException(status_code=500, detail=f"Data status check failed: {error_msg}")
-
-        # Parse JSON output
-        try:
-            result = cast(dict[str, object], json.loads(stdout.decode()))
-            return result
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse CLI JSON output: %s", e)
-            # Return raw output for debugging
-            return {
-                "error": "Failed to parse JSON output",
-                "raw_output": stdout.decode(),
-                "stderr": stderr.decode() if stderr else None,
-            }
-
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.error("Error running data-status CLI: %s", e)
-        raise HTTPException(status_code=500, detail=f"Internal error: {e!s}") from e
+        return cast(dict[str, object], result)
+    except RuntimeError as e:
+        logger.error("deployment-service data-status call failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Data status check failed: {e!s}") from e

@@ -14,7 +14,7 @@ import pytest
 # Mock SyncService before importing lifespan to avoid circular import via background_sync
 sys.modules.setdefault("deployment_api.services", MagicMock(SyncService=MagicMock()))
 
-import deployment_api.lifespan as lm  # noqa: E402
+import deployment_api.lifespan as lm
 
 
 class TestLifespanModuleAttributes:
@@ -31,7 +31,6 @@ class TestLifespanModuleAttributes:
 
     def test_lifespan_function_is_async_context_manager(self):
         """lifespan should be an async context manager function."""
-        import inspect
 
         assert callable(lm.lifespan)
 
@@ -192,7 +191,10 @@ class TestLifespanShutdown:
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value={"dep-x"}),
             patch("deployment_api.lifespan.get_owner_id", return_value="owner"),
-            patch("deployment_api.lifespan.get_storage_client_with_pool", side_effect=OSError("network")),
+            patch(
+                "deployment_api.lifespan.get_storage_client_with_pool",
+                side_effect=OSError("network"),
+            ),
         ):
             # Should not raise even with storage error
             async with lm.lifespan(mock_app):

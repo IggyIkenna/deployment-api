@@ -16,7 +16,9 @@ _auth_cfg = UnifiedCloudConfig()
 _disable_auth_raw: bool = _auth_cfg.disable_auth
 _environment: str = _auth_cfg.environment
 if _disable_auth_raw and _environment == "production":
-    logging.getLogger(__name__).critical("DISABLE_AUTH=true is forbidden in production. Auth remains ENABLED.")
+    logging.getLogger(__name__).critical(
+        "DISABLE_AUTH=true is forbidden in production. Auth remains ENABLED."
+    )
     _disable_auth_guarded: bool = False
 else:
     _disable_auth_guarded = _disable_auth_raw
@@ -35,11 +37,19 @@ async def verify_api_key(
     if DISABLE_AUTH:
         return "dev-mode"
     if not api_key:
-        log_event("AUTH_FAILURE", severity="WARNING", details={"auth_type": "api_key", "reason": "missing_key"})
+        log_event(
+            "AUTH_FAILURE",
+            severity="WARNING",
+            details={"auth_type": "api_key", "reason": "missing_key"},
+        )
         raise HTTPException(status_code=401, detail="Missing API key")
     expected_key = _auth_cfg.api_key
     if not expected_key or api_key != expected_key:
-        log_event("AUTH_FAILURE", severity="WARNING", details={"auth_type": "api_key", "reason": "invalid_key"})
+        log_event(
+            "AUTH_FAILURE",
+            severity="WARNING",
+            details={"auth_type": "api_key", "reason": "invalid_key"},
+        )
         raise HTTPException(status_code=401, detail="Invalid API key")
-    log_event("AUTH_SUCCESS", details={"auth_type": "api_key"})
+    logger.info("Authentication successful: auth_type=api_key")
     return api_key

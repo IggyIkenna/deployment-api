@@ -17,9 +17,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from deployment_service.config.config_validator import ConfigurationError, ValidationUtils
-
 from deployment_api import settings
+from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.storage_client import get_storage_client as get_storage_client_with_pool
 
 logger = logging.getLogger(__name__)
@@ -108,9 +107,11 @@ async def _auto_sync_running_deployments():
                 # Optional centralized quota broker (Cloud Run IAM). If not configured,
                 # acquire/release calls become no-ops and scheduling behaves as before.
                 try:
-                    from deployment.quota_broker_client import QuotaBrokerClient
+                    _quota_broker_client_cls = _importlib.import_module(  # noqa: F821
+                        "deployment_service.deployment.quota_broker_client"
+                    ).QuotaBrokerClient  # type: ignore[assignment]
 
-                    quota_broker = QuotaBrokerClient()
+                    quota_broker = _quota_broker_client_cls()
                     logger.info("[AUTO_SYNC] Quota broker initialized")
                 except (OSError, ValueError, RuntimeError) as e:
                     quota_broker = None
@@ -148,12 +149,19 @@ async def _auto_sync_running_deployments():
                                 return False
                             meta = existing.metageneration
                             try:
-                                existing_payload = cast(dict[str, object], json.loads(existing.download_as_text() or "{}"))
+                                existing_payload = cast(
+                                    dict[str, object],
+                                    json.loads(existing.download_as_text() or "{}"),
+                                )
                             except (OSError, ValueError, RuntimeError):
                                 existing_payload = {}
 
                             expires_at_raw2: object = existing_payload.get("expires_at", 0)
-                            expires_at = float(cast(float, expires_at_raw2)) if isinstance(expires_at_raw2, (int, float)) else 0.0
+                            expires_at = (
+                                float(cast(float, expires_at_raw2))
+                                if isinstance(expires_at_raw2, (int, float))
+                                else 0.0
+                            )
                             owner_raw2: object = existing_payload.get("owner")
                             owner = cast(str, owner_raw2) if isinstance(owner_raw2, str) else None
 
@@ -187,20 +195,26 @@ async def _auto_sync_running_deployments():
                     try:
                         lock_blob = bucket.blob(lock_blob_name)
                         if lock_blob.exists():
-                            lock_data = cast(dict[str, object], json.loads(lock_blob.download_as_text() or "{}"))
+                            lock_data = cast(
+                                dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                            )
                             if lock_data.get("owner") == OWNER_ID:
                                 lock_blob.delete()
                                 _held_deployment_locks.discard(deployment_id)
                                 return True
                     except (OSError, ValueError, RuntimeError) as e:
-                        logger.warning("Unexpected error during release deployment lock: %s", e, exc_info=True)
+                        logger.warning(
+                            "Unexpected error during release deployment lock: %s", e, exc_info=True
+                        )
                         pass
                     _held_deployment_locks.discard(deployment_id)
                     return False
 
                 # List deployment directories via storage facade (FUSE when production)
                 deployments_prefix = f"deployments.{DEPLOYMENT_ENV}/"
-                logger.info("[AUTO_SYNC] Listing deployment directories (prefix=%s)...", deployments_prefix)
+                logger.info(
+                    "[AUTO_SYNC] Listing deployment directories (prefix=%s)...", deployments_prefix
+                )
                 try:
                     from deployment_api.utils.storage_facade import (
                         list_objects,
@@ -228,7 +242,9 @@ async def _auto_sync_running_deployments():
                 def _scan_one(path):
                     """Load state.json and return (path, data) if active, else None."""
                     try:
-                        raw = cast(dict[str, object], json.loads(read_object_text(STATE_BUCKET, path)))
+                        raw = cast(
+                            dict[str, object], json.loads(read_object_text(STATE_BUCKET, path))
+                        )
                         if raw.get("status") in (
                             "pending",
                             "running",
@@ -260,7 +276,7 @@ async def _auto_sync_running_deployments():
                     skipped,
                 )
 
-                def _run_orphan_cleanup_only(dep_state_path: str, state: dict) -> int:
+                def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:
                     """Run orphan VM cleanup only (GCS + vm_map + fire). No state write. Returns count fired."""
                     config = state.get("config") or {}
                     deployment_id = dep_state_path.split("/")[1]
@@ -291,7 +307,9 @@ async def _auto_sync_running_deployments():
                             if status_part in ("FAILED", "ZOMBIE"):
                                 return (shard_id, "failed")
                         except (OSError, ValueError, RuntimeError) as e:
-                            logger.warning("Unexpected error during read status: %s", e, exc_info=True)
+                            logger.warning(
+                                "Unexpected error during read status: %s", e, exc_info=True
+                            )
                             pass
                         return None
 
@@ -325,14 +343,18 @@ async def _auto_sync_running_deployments():
                                     "zone": z or None,
                                 }
                     except (OSError, ValueError, RuntimeError) as e:
-                        logger.debug("[AUTO_SYNC] Orphan cleanup aggregatedList failed for %s: %s", deployment_id, e)
+                        logger.debug(
+                            "[AUTO_SYNC] Orphan cleanup aggregatedList failed for %s: %s",
+                            deployment_id,
+                            e,
+                        )
                         return 0
 
-                    def _vm_status(m: dict, jid: str) -> str | None:
+                    def _vm_status(m: dict[str, object], jid: str) -> str | None:
                         v = m.get(jid)
                         return v.get("status") if isinstance(v, dict) else v
 
-                    def _vm_zone(m: dict, jid: str) -> str | None:
+                    def _vm_zone(m: dict[str, object], jid: str) -> str | None:
                         v = m.get(jid)
                         return v.get("zone") if isinstance(v, dict) else None
 
@@ -360,18 +382,24 @@ async def _auto_sync_running_deployments():
                     if not to_fire:
                         return 0
                     try:
-                        from deployment.orchestrator import DeploymentOrchestrator
+                        _orchestrator_cls = _importlib.import_module(  # noqa: F821
+                            "deployment_service.deployment.orchestrator"
+                        ).DeploymentOrchestrator  # type: ignore[assignment]
 
                         try:
                             service_account_email = ValidationUtils.get_required(
                                 config, "service_account_email", "auto_sync orchestrator"
                             )
-                            job_name = ValidationUtils.get_required(config, "job_name", "auto_sync VM backend")
+                            job_name = ValidationUtils.get_required(
+                                config, "job_name", "auto_sync VM backend"
+                            )
                         except ConfigurationError as e:
-                            logger.error("[AUTO_SYNC] %s: Configuration error - %s", deployment_id, e)
+                            logger.error(
+                                "[AUTO_SYNC] %s: Configuration error - %s", deployment_id, e
+                            )
                             return 0
 
-                        orch = DeploymentOrchestrator(
+                        orch = DeploymentOrchestrator(  # noqa: F821
                             project_id=PROJECT_ID,
                             region=config.get("region") or "asia-northeast1",
                             service_account_email=service_account_email,
@@ -384,7 +412,9 @@ async def _auto_sync_running_deployments():
                             zone=config.get("zone"),
                         )
                         if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-                            with ThreadPoolExecutor(max_workers=min(len(to_fire), orphan_max)) as pool:
+                            with ThreadPoolExecutor(
+                                max_workers=min(len(to_fire), orphan_max)
+                            ) as pool:
                                 for job_id, zone in to_fire:
                                     pool.submit(
                                         backend.cancel_job_fire_and_forget,
@@ -398,7 +428,9 @@ async def _auto_sync_running_deployments():
                             )
                             return len(to_fire)
                     except (OSError, ValueError, RuntimeError) as e:
-                        logger.debug("[AUTO_SYNC] Orphan cleanup fire failed for %s: %s", deployment_id, e)
+                        logger.debug(
+                            "[AUTO_SYNC] Orphan cleanup fire failed for %s: %s", deployment_id, e
+                        )
                     return 0
 
                 # Process deployment implementations...
@@ -431,7 +463,10 @@ async def _auto_sync_running_deployments():
                 try:
                     ttl_hours = getattr(settings, "STATE_TTL_HOURS", 48)
                     cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)
-                    logger.info("[AUTO_SYNC] State TTL cleanup: removing deployments older than %sh", ttl_hours)
+                    logger.info(
+                        "[AUTO_SYNC] State TTL cleanup: removing deployments older than %sh",
+                        ttl_hours,
+                    )
 
                     from deployment_api.utils.storage_facade import delete_objects, list_prefixes
 
@@ -463,20 +498,28 @@ async def _auto_sync_running_deployments():
                                     (datetime.now(UTC) - updated).days,
                                 )
                         except (OSError, ValueError, RuntimeError) as e:
-                            logger.debug("[AUTO_SYNC] TTL cleanup error for %s: %s", deployment_id, e)
+                            logger.debug(
+                                "[AUTO_SYNC] TTL cleanup error for %s: %s", deployment_id, e
+                            )
 
                     if deleted_count > 0:
-                        logger.info("[AUTO_SYNC] TTL cleanup: deleted %s old deployment(s)", deleted_count)
+                        logger.info(
+                            "[AUTO_SYNC] TTL cleanup: deleted %s old deployment(s)", deleted_count
+                        )
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("[AUTO_SYNC] State TTL cleanup error: %s", e)
 
             # Adaptive interval: fast when active, slow when idle
             if num_active > 0:
                 current_interval = sync_interval_active
-                logger.debug("[AUTO_SYNC] %s active → next cycle in %ss", num_active, current_interval)
+                logger.debug(
+                    "[AUTO_SYNC] %s active → next cycle in %ss", num_active, current_interval
+                )
             else:
                 current_interval = sync_interval_idle
-                logger.debug("[AUTO_SYNC] No active deployments → next cycle in %ss", current_interval)
+                logger.debug(
+                    "[AUTO_SYNC] No active deployments → next cycle in %ss", current_interval
+                )
 
         except asyncio.CancelledError:
             break

@@ -5,6 +5,7 @@ Contains the core deployment processing functionality that was extracted
 from the main auto_sync module to keep files under 1,500 lines.
 """
 
+import asyncio as _asyncio
 import json
 import logging
 import time
@@ -13,10 +14,42 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from deployment_service.config.config_validator import ConfigurationError, ValidationUtils
-
 from deployment_api import settings
+from deployment_api.clients import deployment_service_client as _ds_client
+from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.service_events import parse_service_event, update_shard_state_from_event
+
+
+def _cancel_vm_jobs_sync(
+    deployment_id: str,
+    project_id: str,
+    region: str,
+    service_account_email: str,
+    state_bucket: str,
+    state_prefix: str,
+    job_name: str,
+    jobs: list[tuple[str, str | None]],
+    fire_and_forget: bool = True,
+) -> dict[str, object]:
+    """
+    Synchronous wrapper for _ds_client.cancel_vm_jobs.
+
+    Safe to call from ThreadPoolExecutor threads (creates a fresh event loop).
+    """
+    return _asyncio.run(
+        _ds_client.cancel_vm_jobs(
+            deployment_id=deployment_id,
+            project_id=project_id,
+            region=region,
+            service_account_email=service_account_email,
+            state_bucket=state_bucket,
+            state_prefix=state_prefix,
+            job_name=job_name,
+            jobs=jobs,
+            fire_and_forget=fire_and_forget,
+        )
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -130,15 +163,21 @@ def process_deployments_batch(
                             }
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug(
-                        "[AUTO_SYNC] completed_pending_delete aggregatedList failed for %s: %s", deployment_id, e
+                        "[AUTO_SYNC] completed_pending_delete aggregatedList failed for %s: %s",
+                        deployment_id,
+                        e,
                     )
                     return 0
 
-                def _vm_status_cpd(m: dict, jid: str) -> str | None:
+                def _vm_status_cpd(m: dict[str, object], jid: str) -> str | None:
                     v = m.get(jid)
-                    return v.get("status") if isinstance(v, dict) else v
+                    return (
+                        v.get("status")
+                        if isinstance(v, dict)
+                        else (v if isinstance(v, str) else None)
+                    )
 
-                def _vm_zone_cpd(m: dict, jid: str) -> str | None:
+                def _vm_zone_cpd(m: dict[str, object], jid: str) -> str | None:
                     v = m.get(jid)
                     return v.get("zone") if isinstance(v, dict) else None
 
@@ -157,38 +196,24 @@ def process_deployments_batch(
                     _pending_vm_deletes[job_id] = (now_ts_cpd, zone)
                 if to_fire_cpd:
                     try:
-                        from deployment.orchestrator import (
-                            DeploymentOrchestrator,
-                        )
-
-                        orch_cpd = DeploymentOrchestrator(
+                        _cancel_vm_jobs_sync(
+                            deployment_id=deployment_id,
                             project_id=PROJECT_ID,
-                            region=config.get("region") or "asia-northeast1",
-                            service_account_email=cast(str, config.get("service_account_email") or ""),
+                            region=cast(str, config.get("region") or "asia-northeast1"),
+                            service_account_email=cast(
+                                str, config.get("service_account_email") or ""
+                            ),
                             state_bucket=STATE_BUCKET,
                             state_prefix=f"deployments.{DEPLOYMENT_ENV}",
-                        )
-                        backend_cpd = orch_cpd.get_backend(
-                            "vm",
                             job_name=cast(str, config.get("job_name") or ""),
-                            zone=config.get("zone"),
+                            jobs=[(jid, cast(str | None, z)) for jid, z in to_fire_cpd],
+                            fire_and_forget=True,
                         )
-                        if backend_cpd and hasattr(
-                            backend_cpd,
-                            "cancel_job_fire_and_forget",
-                        ):
-                            with ThreadPoolExecutor(max_workers=min(len(to_fire_cpd), orphan_max_cpd)) as pool_cpd:
-                                for jid, z in to_fire_cpd:
-                                    pool_cpd.submit(
-                                        backend_cpd.cancel_job_fire_and_forget,
-                                        jid,
-                                        z,
-                                    )
-                            logger.info(
-                                "[AUTO_SYNC] completed_pending_delete: fired %s orphan deletes for %s",
-                                len(to_fire_cpd),
-                                deployment_id,
-                            )
+                        logger.info(
+                            "[AUTO_SYNC] completed_pending_delete: fired %s orphan deletes for %s",
+                            len(to_fire_cpd),
+                            deployment_id,
+                        )
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.debug("[AUTO_SYNC] completed_pending_delete fire failed: %s", e)
                     return 0
@@ -202,7 +227,10 @@ def process_deployments_batch(
                     state_path,
                     json.dumps(state, indent=2),
                 )
-                logger.info("[AUTO_SYNC] %s: completed_pending_delete -> completed (no RUNNING VMs)", deployment_id)
+                logger.info(
+                    "[AUTO_SYNC] %s: completed_pending_delete -> completed (no RUNNING VMs)",
+                    deployment_id,
+                )
                 try:
                     from deployment_api.utils.deployment_events import (
                         notify_deployment_updated_sync,
@@ -262,7 +290,7 @@ def process_deployments_batch(
 
             # 2. For VMs: Check if VMs are still running in GCP
             #    Use aggregatedList (1 API call) instead of per-shard get() calls
-            vm_map: dict = {}
+            vm_map: dict[str, object] = {}
             if compute_type == "vm":
                 from google.cloud import compute_v1
 
@@ -290,7 +318,11 @@ def process_deployments_batch(
                                     "status": inst.status,
                                     "zone": zone or None,
                                 }
-                        logger.info("[AUTO_SYNC] aggregatedList found %s VMs for %s", len(vm_map), service_name)
+                        logger.info(
+                            "[AUTO_SYNC] aggregatedList found %s VMs for %s",
+                            len(vm_map),
+                            service_name,
+                        )
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.warning("[AUTO_SYNC] aggregatedList failed: %s", e)
 
@@ -303,7 +335,9 @@ def process_deployments_batch(
             # Cloud Run executions don't write VM-style status blobs, so we need
             # to query the Cloud Run API to observe completion.
             if compute_type == "cloud_run":
-                updated = _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated)
+                updated = _process_cloud_run_status(
+                    shards, config, deployment_id, shard_statuses, updated
+                )
 
             # Apply status updates based on GCS markers / VM existence / Cloud Run API.
             releases_this_tick = 0
@@ -344,12 +378,20 @@ def process_deployments_batch(
                         pass
 
                     updated = True
-                    logger.info("[AUTO_SYNC] %s: %s -> %s (source: %s)", shard_id, old_status, new_status, source)
+                    logger.info(
+                        "[AUTO_SYNC] %s: %s -> %s (source: %s)",
+                        shard_id,
+                        old_status,
+                        new_status,
+                        source,
+                    )
 
             # Conservative stuck shard detection (mostly for VM).
             # If a shard exceeds its configured timeout_seconds (+ grace), mark as failed so
             # deployments don't remain RUNNING forever due to hung work.
-            updated = _process_stuck_shards(shards, config, compute_type, now, deployment_id, updated)
+            updated = _process_stuck_shards(
+                shards, config, compute_type, now, deployment_id, updated
+            )
 
             # Auto-scheduler: continuously fill available slots for all deployments.
             # Loops within tick to launch batches until slots are filled.
@@ -362,13 +404,17 @@ def process_deployments_batch(
             if updated:
                 # Update overall status if all shards are terminal
                 shards = state.get("shards") or []
-                all_terminal = all(s.get("status") in ["succeeded", "failed", "cancelled"] for s in shards)
+                all_terminal = all(
+                    s.get("status") in ["succeeded", "failed", "cancelled"] for s in shards
+                )
 
                 if all_terminal:
                     failed_count = sum(1 for s in shards if s.get("status") == "failed")
                     # VM: use completed_pending_delete until no RUNNING VMs (then -> completed)
                     if compute_type == "vm":
-                        state["status"] = "failed" if failed_count > 0 else "completed_pending_delete"
+                        state["status"] = (
+                            "failed" if failed_count > 0 else "completed_pending_delete"
+                        )
                     else:
                         state["status"] = "failed" if failed_count > 0 else "completed"
                     state["completed_at"] = now.isoformat()
@@ -391,7 +437,9 @@ def process_deployments_batch(
                     logger.debug("Suppressed %s during operation: %s", type(_e).__name__, _e)
                     pass
                 if launched_this_tick > 0:
-                    logger.info("[AUTO_SYNC] Updated %s (launched %s)", deployment_id, launched_this_tick)
+                    logger.info(
+                        "[AUTO_SYNC] Updated %s (launched %s)", deployment_id, launched_this_tick
+                    )
                 else:
                     logger.info("[AUTO_SYNC] Updated %s", deployment_id)
                 return 1
@@ -438,7 +486,9 @@ def process_deployments_batch(
     return synced, len(active_states)
 
 
-def _process_vm_health_and_status(shards, vm_map, now, config, deployment_id, shard_statuses, updated):
+def _process_vm_health_and_status(
+    shards, vm_map, now, config, deployment_id, shard_statuses, updated
+):
     """Process VM health checks and update shard statuses."""
     # Collect running shard job_ids that need VM checks
     running_job_ids = {}  # job_id -> shard_id
@@ -453,11 +503,11 @@ def _process_vm_health_and_status(shards, vm_map, now, config, deployment_id, sh
             continue  # Already resolved via GCS
         running_job_ids[job_id] = shard_id
 
-    def _vm_status(m: dict, jid: str) -> str | None:
+    def _vm_status(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return v.get("status") if isinstance(v, dict) else v
+        return v.get("status") if isinstance(v, dict) else (v if isinstance(v, str) else None)
 
-    def _vm_zone(m: dict, jid: str) -> str | None:
+    def _vm_zone(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
         return v.get("zone") if isinstance(v, dict) else None
 
@@ -564,33 +614,34 @@ def _process_vm_health_and_status(shards, vm_map, now, config, deployment_id, sh
     # Terminate unhealthy VMs
     if vm_health_kills:
         try:
-            from deployment.orchestrator import DeploymentOrchestrator
-
-            orch = DeploymentOrchestrator(
+            jobs_to_cancel = [
+                (job_id, cast(str | None, zone))
+                for job_id, zone, _sid, _reason, _msg in vm_health_kills
+            ]
+            _cancel_vm_jobs_sync(
+                deployment_id=deployment_id,
                 project_id=PROJECT_ID,
-                region=config.get("region") or "asia-northeast1",
+                region=cast(str, config.get("region") or "asia-northeast1"),
                 service_account_email=cast(str, config.get("service_account_email") or ""),
                 state_bucket=STATE_BUCKET,
                 state_prefix=f"deployments.{DEPLOYMENT_ENV}",
-            )
-            backend = orch.get_backend(
-                "vm",
                 job_name=cast(str, config.get("job_name") or ""),
-                zone=config.get("zone"),
+                jobs=jobs_to_cancel,
+                fire_and_forget=True,
             )
-            if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-                for job_id, zone, shard_id, reason, msg in vm_health_kills:
-                    backend.cancel_job_fire_and_forget(job_id, zone)
-                    # Mark shard as failed
-                    for shard in shards:
-                        if shard.get("shard_id") == shard_id:
-                            shard["status"] = "failed"
-                            shard["end_time"] = now.isoformat()
-                            shard["error_message"] = msg
-                            shard["failure_category"] = reason
-                            updated = True
-                            break
-                    logger.warning("[AUTO_SYNC] VM health check killed %s: %s - %s", job_id, reason, msg)
+            for job_id, _zone, shard_id, reason, msg in vm_health_kills:
+                # Mark shard as failed
+                for shard in shards:
+                    if shard.get("shard_id") == shard_id:
+                        shard["status"] = "failed"
+                        shard["end_time"] = now.isoformat()
+                        shard["error_message"] = msg
+                        shard["failure_category"] = reason
+                        updated = True
+                        break
+                logger.warning(
+                    "[AUTO_SYNC] VM health check killed %s: %s - %s", job_id, reason, msg
+                )
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[AUTO_SYNC] VM health kill failed: %s", e)
 
@@ -690,7 +741,9 @@ def _process_stuck_shards(shards, config, compute_type, now, deployment_id, upda
     try:
         if compute_type == "vm":
             grace_seconds = settings.STUCK_SHARD_GRACE_SECONDS
-            timeout_seconds = int((config.get("compute_config") or {}).get("timeout_seconds", 0) or 0)
+            timeout_seconds = int(
+                (config.get("compute_config") or {}).get("timeout_seconds", 0) or 0
+            )
             if timeout_seconds > 0:
                 for shard in shards:
                     if shard.get("status") != "running":
@@ -719,22 +772,24 @@ def _process_stuck_shards(shards, config, compute_type, now, deployment_id, upda
                         job_id = shard.get("job_id")
                         if job_id:
                             try:
-                                from deployment.orchestrator import DeploymentOrchestrator
-
-                                orch = DeploymentOrchestrator(
+                                _cancel_vm_jobs_sync(
+                                    deployment_id=deployment_id,
                                     project_id=PROJECT_ID,
-                                    region=config.get("region") or "asia-northeast1",
-                                    service_account_email=cast(str, config.get("service_account_email") or ""),
+                                    region=cast(str, config.get("region") or "asia-northeast1"),
+                                    service_account_email=cast(
+                                        str, config.get("service_account_email") or ""
+                                    ),
                                     state_bucket=STATE_BUCKET,
-                                )
-                                backend = orch.get_backend(
-                                    "vm",
+                                    state_prefix=f"deployments.{settings.DEPLOYMENT_ENV}",
                                     job_name=cast(str, config.get("job_name") or ""),
-                                    zone=config.get("zone"),
+                                    jobs=[
+                                        (cast(str, job_id), cast(str | None, config.get("zone")))
+                                    ],
+                                    fire_and_forget=False,
                                 )
-                                if backend and hasattr(backend, "cancel_job"):
-                                    backend.cancel_job(job_id)
-                                    logger.info("[AUTO_SYNC] Terminated stuck VM %s (timeout exceeded)", job_id)
+                                logger.info(
+                                    "[AUTO_SYNC] Terminated stuck VM %s (timeout exceeded)", job_id
+                                )
                             except (OSError, ValueError, RuntimeError) as e:
                                 logger.debug("[AUTO_SYNC] Stuck VM termination failed: %s", e)
 
@@ -771,11 +826,11 @@ def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment
     orphan_retry_s = settings.ORPHAN_DELETE_RETRY_SECONDS
     now_ts = time.time()
 
-    def _vm_status(m: dict, jid: str) -> str | None:
+    def _vm_status(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return v.get("status") if isinstance(v, dict) else v
+        return v.get("status") if isinstance(v, dict) else (v if isinstance(v, str) else None)
 
-    def _vm_zone(m: dict, jid: str) -> str | None:
+    def _vm_zone(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
         return v.get("zone") if isinstance(v, dict) else None
 
@@ -831,37 +886,24 @@ def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment
 
     if to_fire:
         try:
-            from deployment.orchestrator import DeploymentOrchestrator
-
-            try:
-                service_account_email = ValidationUtils.get_required(
-                    config, "service_account_email", "bulk cancellation orchestrator"
-                )
-                job_name = ValidationUtils.get_required(config, "job_name", "bulk cancellation backend")
-            except ConfigurationError as e:
-                logger.error("[BULK_CANCEL_VMS] %s: Configuration error - %s", deployment_id, e)
-                return 0
-
-            orch = DeploymentOrchestrator(
+            service_account_email = ValidationUtils.get_required(
+                config, "service_account_email", "bulk cancellation orchestrator"
+            )
+            job_name = ValidationUtils.get_required(config, "job_name", "bulk cancellation backend")
+            _cancel_vm_jobs_sync(
+                deployment_id=deployment_id,
                 project_id=PROJECT_ID,
-                region=config.get("region") or "asia-northeast1",
+                region=cast(str, config.get("region") or "asia-northeast1"),
                 service_account_email=service_account_email,
                 state_bucket=STATE_BUCKET,
                 state_prefix=f"deployments.{DEPLOYMENT_ENV}",
-            )
-            backend = orch.get_backend(
-                "vm",
                 job_name=job_name,
-                zone=config.get("zone"),
+                jobs=[(job_id, cast(str | None, zone)) for job_id, zone in to_fire],
+                fire_and_forget=True,
             )
-            if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-                with ThreadPoolExecutor(max_workers=min(len(to_fire), orphan_max)) as pool:
-                    for job_id, zone in to_fire:
-                        pool.submit(
-                            backend.cancel_job_fire_and_forget,
-                            job_id,
-                            zone,
-                        )
-                logger.info("[AUTO_SYNC] Fired %s orphan VM deletes (job done)", len(to_fire))
+            logger.info("[AUTO_SYNC] Fired %s orphan VM deletes (job done)", len(to_fire))
+        except ConfigurationError as e:
+            logger.error("[BULK_CANCEL_VMS] %s: Configuration error - %s", deployment_id, e)
+            return 0
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[AUTO_SYNC] VM fire-and-forget failed: %s", e)

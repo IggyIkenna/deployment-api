@@ -38,7 +38,12 @@
 #    7. Install local path dependencies from workspace-manifest.json (SSOT)
 #       Reads unified-trading-pm/workspace-manifest.json; installs sibling repos
 #       Installs jq automatically (apt/brew) if needed; exits 1 if jq unavailable
+#       NOTE: step 7 runs BEFORE step 8 so siblings are resolvable during install.
 #    8. Install project + dev deps (uv pip install -e ".[dev]")
+#    8b. Re-pin workspace sibling deps as editable (re-runs after step 8)
+#        uv pip install -e ".[dev]" in step 8 may resolve siblings from PyPI/
+#        Artifact Registry and overwrite the editable installs from step 7.
+#        Step 8b forces the local editable version to win.
 #    9. Verify ripgrep available (required by quality-gates.sh) — always runs
 #   10. Verify ruff version matches workspace standard (0.15.0) — always runs
 #   11. Import smoke test (python -c "import <package>") — always runs
@@ -346,6 +351,10 @@ else
 fi
 
 # ── [7] LOCAL PATH DEPENDENCIES ─────────────────────────────────────────────
+# NOTE: Step 7 runs BEFORE step 8 (uv pip install -e ".[dev]") so that sibling
+# packages are already present as editables when pip resolves the dependency
+# graph. Step 8b (below) re-pins them afterwards to guard against step 8
+# overwriting editables with wheels pulled from PyPI/Artifact Registry.
 log_step "Local path dependencies"
 
 MANIFEST_PATH="$WORKSPACE_ROOT/unified-trading-pm/workspace-manifest.json"
@@ -382,7 +391,7 @@ else
         for dep in $DEPS; do
             DEP_PATH="$WORKSPACE_ROOT/$dep"
             if [ -d "$DEP_PATH" ] && [ -f "$DEP_PATH/pyproject.toml" ]; then
-                uv pip install -e "$DEP_PATH" --quiet 2>/dev/null && log_ok "$dep" || log_warn "$dep install failed"
+                uv pip install -e "$DEP_PATH" --reinstall --quiet 2>/dev/null && log_ok "$dep" || log_warn "$dep install failed"
             else
                 log_warn "$dep not found at $DEP_PATH — install from Artifact Registry if needed"
             fi
@@ -413,6 +422,25 @@ else
     uv pip install -e ".[dev]" --quiet 2>/dev/null || uv pip install -e . --quiet 2>/dev/null
     touch "$SETUP_STAMP"
     log_ok "Dependencies installed"
+fi
+
+# ── [8b] RE-PIN WORKSPACE SIBLING DEPS AS EDITABLE ─────────────────────────
+# NOTE: Step 8 (uv pip install -e ".[dev]") resolves ALL deps from pyproject.toml
+# and may pull workspace siblings as wheels from PyPI/Artifact Registry,
+# overwriting the editable installs from step 7. This step re-pins every local
+# sibling back to its editable source so the local checkout always wins.
+if [ "$IN_CI" = true ] || [ "$CHECK_ONLY" = true ] || [ "$ISOLATED" = true ]; then
+    : # skip — CI manages env; check mode is read-only; isolated has no siblings
+elif [ ! -f "$MANIFEST_PATH" ]; then
+    : # no manifest — nothing to re-pin
+elif [ -n "${DEPS:-}" ]; then
+    for dep in $DEPS; do
+        DEP_PATH="$WORKSPACE_ROOT/$dep"
+        if [ -d "$DEP_PATH" ] && [ -f "$DEP_PATH/pyproject.toml" ]; then
+            uv pip install -e "$DEP_PATH" --reinstall --quiet 2>/dev/null || true
+        fi
+    done
+    log_ok "Workspace sibling deps re-pinned as editable (step 8b)"
 fi
 
 # ── [9] RIPGREP CHECK ──────────────────────────────────────────────────────
@@ -484,9 +512,14 @@ log_step "GCP credentials (informational)"
 
 if [ -n "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
     log_ok "GOOGLE_APPLICATION_CREDENTIALS set"
+elif [ -f "$HOME/.config/gcloud/application_default_credentials.json" ]; then
+    log_ok "ADC credentials (gcloud auth application-default login)"
 else
     log_warn "No GCP credentials detected — run: gcloud auth application-default login"
-    log_warn "Never place SA JSON files in the repo root (use ADC or Secret Manager)"
+    # Only warn about SA JSON if credential-like files found in repo root
+    if find . -maxdepth 1 \( -name '*credentials*.json' -o -name 'central-element*.json' -o -name '*service*account*.json' \) 2>/dev/null | grep -q .; then
+        log_warn "Never place SA JSON files in the repo root (use ADC or Secret Manager)"
+    fi
 fi
 
 # ── [13] KNOWN CAVEATS (per-repo) ─────────────────────────────────────────

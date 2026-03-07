@@ -62,7 +62,9 @@ class TestIngestionEvents:
     def test_ingestion_completed_with_details(self):
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("DATA_INGESTION_STARTED"))
-        update_shard_state_from_event(shard, _make_event("DATA_INGESTION_COMPLETED", "5000 records"))
+        update_shard_state_from_event(
+            shard, _make_event("DATA_INGESTION_COMPLETED", "5000 records")
+        )
         assert "ingestion" in shard.get("stage_timings", {})
         assert shard["stage_details"] == "5000 records"
 
@@ -131,7 +133,9 @@ class TestProgressParsing:
 
     def test_progress_parsed_from_details(self):
         shard: dict = {}
-        update_shard_state_from_event(shard, _make_event("DATE_PROCESSING_STARTED", "2024-01-15 (10/100)"))
+        update_shard_state_from_event(
+            shard, _make_event("DATE_PROCESSING_STARTED", "2024-01-15 (10/100)")
+        )
         assert shard["progress_current"] == 10
         assert shard["progress_total"] == 100
         assert shard["progress"] == 10
@@ -198,3 +202,49 @@ class TestGetUiDistDir:
         result = get_ui_dist_dir()
         # Either None or a valid path
         assert result is None or (isinstance(result, Path) and result.exists())
+
+    def test_returns_none_or_path_type(self):
+        result = get_ui_dist_dir()
+        assert result is None or isinstance(result, Path)
+
+
+class TestNaiveTimestampInServiceUtils:
+    """Tests for naive datetime timestamp handling in update_shard_state_from_event."""
+
+    def test_naive_started_at_in_validation_completed(self):
+        from datetime import datetime
+
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("VALIDATION_STARTED"))
+        naive_ts = datetime.now().isoformat()  # no timezone
+        shard["stage_started_at"] = naive_ts
+        update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
+        assert "validation" in shard.get("stage_timings", {})
+
+    def test_invalid_started_at_swallows_error(self):
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("VALIDATION_STARTED"))
+        shard["stage_started_at"] = "not-iso"
+        update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
+
+    def test_ingestion_naive_started_at(self):
+        from datetime import datetime
+
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("DATA_INGESTION_STARTED"))
+        shard["stage_started_at"] = datetime.now().isoformat()
+        update_shard_state_from_event(shard, _make_event("DATA_INGESTION_COMPLETED", "done"))
+
+    def test_processing_invalid_started_at(self):
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("PROCESSING_STARTED"))
+        shard["stage_started_at"] = "bad"
+        update_shard_state_from_event(shard, _make_event("PROCESSING_COMPLETED"))
+
+    def test_persistence_naive_started_at(self):
+        from datetime import datetime
+
+        shard: dict = {}
+        update_shard_state_from_event(shard, _make_event("PERSISTENCE_STARTED"))
+        shard["stage_started_at"] = datetime.now().isoformat()
+        update_shard_state_from_event(shard, _make_event("PERSISTENCE_COMPLETED"))

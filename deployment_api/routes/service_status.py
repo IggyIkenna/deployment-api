@@ -12,13 +12,14 @@ Provides temporal audit trail for services:
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
 from typing import cast
 
 import yaml
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from google.auth import default, impersonated_credentials
 from unified_cloud_interface import get_secret_client
 
@@ -46,6 +47,79 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Allowlist of valid service names derived from workspace-manifest.json repositories.
+# This prevents user-supplied service names from being passed unsanitised to
+# subprocess (gcloud) arguments.
+VALID_SERVICES: frozenset[str] = frozenset(
+    {
+        "unified-api-contracts",
+        "unified-internal-contracts",
+        "unified-reference-data-interface",
+        "unified-config-interface",
+        "unified-events-interface",
+        "unified-cloud-interface",
+        "unified-trading-library",
+        "unified-domain-client",
+        "execution-algo-library",
+        "matching-engine-library",
+        "unified-feature-calculator-library",
+        "unified-market-interface",
+        "unified-ml-interface",
+        "unified-trade-execution-interface",
+        "unified-sports-execution-interface",
+        "unified-defi-execution-interface",
+        "unified-position-interface",
+        "instruments-service",
+        "market-tick-data-service",
+        "market-data-processing-service",
+        "features-calendar-service",
+        "features-delta-one-service",
+        "features-volatility-service",
+        "features-onchain-service",
+        "features-sports-service",
+        "features-multi-timeframe-service",
+        "features-cross-instrument-service",
+        "ml-training-service",
+        "ml-inference-service",
+        "strategy-service",
+        "execution-service",
+        "alerting-service",
+        "pnl-attribution-service",
+        "position-balance-monitor-service",
+        "risk-and-exposure-service",
+        "strategy-validation-service",
+        "execution-results-api",
+        "market-data-api",
+        "client-reporting-api",
+        "strategy-ui",
+        "ibkr-gateway-infra",
+        "deployment-service",
+        "deployment-api",
+        "deployment-ui",
+        "system-integration-tests",
+        "unified-trading-codex",
+        "batch-audit-ui",
+        "trading-analytics-ui",
+        "live-health-monitor-ui",
+        "client-reporting-ui",
+        "logs-dashboard-ui",
+        "onboarding-ui",
+        "settlement-ui",
+        "unified-trading-pm",
+        "unified-trading-ui-auth",
+        "execution-analytics-ui",
+        "ml-training-ui",
+        "features-commodity-service",
+        "trading-agent-service",
+        # Additional names used internally by the status dashboard
+        "market-tick-data-handler",
+        "quota-manager",
+    }
+)
+
+# Secondary guard: syntactic sanity check (lowercase, digits, hyphens only).
+_VALID_SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+
 
 @router.get("/{service}/status")
 async def get_service_status(service: str, request: Request):
@@ -60,6 +134,13 @@ async def get_service_status(service: str, request: Request):
 
     Plus anomaly detection.
     """
+    # Validate service name against allowlist before passing to any subprocess.
+    if not _VALID_SERVICE_NAME_RE.match(service) or service not in VALID_SERVICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid service name: {service!r}. Must be a known service from the workspace manifest.",
+        )
+
     start_time = time.time()
     timing = {}
 
@@ -121,14 +202,18 @@ async def get_service_status(service: str, request: Request):
                     target_scopes=target_scopes,
                 )
 
-                logger.info("[PERF] About to access secret (elapsed: %.2fs)", time.time() - token_start)
+                logger.info(
+                    "[PERF] About to access secret (elapsed: %.2fs)", time.time() - token_start
+                )
                 secret_client = get_secret_client()
                 secret_value = secret_client.get_secret("github-token")
                 logger.info("[PERF] Secret accessed in %.2fs total", time.time() - token_start)
                 return secret_value
 
             except (OSError, ValueError, RuntimeError) as e:
-                logger.warning("Could not access github-token (took %.2fs): %s", time.time() - token_start, e)
+                logger.warning(
+                    "Could not access github-token (took %.2fs): %s", time.time() - token_start, e
+                )
                 return None
 
         token_overall_start = time.time()
@@ -249,7 +334,7 @@ async def get_services_overview(request: Request):
     Returns a lightweight summary - skips slow GitHub/Build lookups.
     For full details, query individual service status.
     """
-    from deployment_service.config_loader import ConfigLoader
+    from deployment_api.config_loader import ConfigLoader
 
     config_dir = cast(Path, cast(FastAPI, request.app).state.config_dir)
     loader = ConfigLoader(str(config_dir))
@@ -293,7 +378,10 @@ async def get_services_overview(request: Request):
                         headers={"Authorization": f"Bearer {token}"},
                     )
                     import http.client
-                    with cast(http.client.HTTPResponse, urllib.request.urlopen(req, timeout=5)) as resp:
+
+                    with cast(
+                        http.client.HTTPResponse, urllib.request.urlopen(req, timeout=5)
+                    ) as resp:
                         return resp.status == 200
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("Quota broker health check failed: %s", e)
@@ -404,4 +492,6 @@ async def calculate_execution_missing_shards_endpoint(
     algo: str | None = None,
 ):
     """Calculate missing config x date shards for execution-service."""
-    return await calculate_execution_missing_shards(config_path, start_date, end_date, strategy, mode, timeframe, algo)
+    return await calculate_execution_missing_shards(
+        config_path, start_date, end_date, strategy, mode, timeframe, algo
+    )

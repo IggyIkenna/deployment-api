@@ -5,15 +5,15 @@ Handles VM status updates, Cloud Run execution monitoring, and shard
 status processing for deployment state management.
 """
 
+import importlib as _importlib
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime
 from typing import cast
 
-from deployment_service.config.config_validator import ConfigurationError, ValidationUtils
-
 from deployment_api import settings
+from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.service_utils import parse_service_event, update_shard_state_from_event
 from deployment_api.utils.storage_facade import read_object_text
 
@@ -63,7 +63,9 @@ class EventProcessor:
             logger.error("Invalid JSON in VM status map for deployment %s: %s", deployment_id, e)
             return {}
         except RuntimeError as e:
-            logger.error("Unexpected error reading VM status map for deployment %s: %s", deployment_id, e)
+            logger.error(
+                "Unexpected error reading VM status map for deployment %s: %s", deployment_id, e
+            )
             return {}
 
     def read_shard_statuses(
@@ -86,7 +88,9 @@ class EventProcessor:
             if not shard_id:
                 continue
 
-            status_obj_path = f"deployments.{self.deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
+            status_obj_path = (
+                f"deployments.{self.deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
+            )
             try:
                 status_text = read_object_text(self.state_bucket, status_obj_path)
                 event_data = parse_service_event(status_text)
@@ -182,13 +186,19 @@ class EventProcessor:
                 shard["vm_status"] = current_vm_status
                 updated = True
                 logger.debug(
-                    "[EVENT_PROCESSOR] %s: Shard %s VM status → %s", deployment_id, shard_id, current_vm_status
+                    "[EVENT_PROCESSOR] %s: Shard %s VM status → %s",
+                    deployment_id,
+                    shard_id,
+                    current_vm_status,
                 )
 
         return updated, launched_this_tick
 
     def process_cloud_run_updates(
-        self, deployment_id: str, state: dict[str, object], shard_statuses: dict[str, tuple[str, dict[str, object]]]
+        self,
+        deployment_id: str,
+        state: dict[str, object],
+        shard_statuses: dict[str, tuple[str, dict[str, object]]],
     ) -> bool:
         """
         Process Cloud Run execution updates for a deployment.
@@ -206,7 +216,9 @@ class EventProcessor:
             from backends.cloud_run import CloudRunBackend
 
             shards_raw2: object = state.get("shards") or []
-            shards = cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
+            shards = (
+                cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
+            )
             config_raw2: object = state.get("config") or {}
             config = cast(dict[str, object], config_raw2) if isinstance(config_raw2, dict) else {}
 
@@ -237,7 +249,9 @@ class EventProcessor:
                 service_account_email = ValidationUtils.get_required(
                     cast(dict[str, object], config), "service_account_email", "Cloud Run backend"
                 )
-                service_name = ValidationUtils.get_required(cast(dict[str, object], config), "cloud_run_service_name", "Cloud Run backend")
+                service_name = ValidationUtils.get_required(
+                    cast(dict[str, object], config), "cloud_run_service_name", "Cloud Run backend"
+                )
             except ConfigurationError as e:
                 logger.error("[EVENT_PROCESSOR] %s: %s", deployment_id, e)
                 return False
@@ -341,18 +355,22 @@ class EventProcessor:
                     orphan_tuples.append((job_id, zone, shard_id, st))
 
             if orphan_tuples:
-                from deployment.orchestrator import DeploymentOrchestrator
+                _orchestrator_cls = _importlib.import_module(
+                    "deployment_service.deployment.orchestrator"
+                ).DeploymentOrchestrator  # type: ignore[assignment]
 
                 try:
                     service_account_email = ValidationUtils.get_required(
                         cast(dict[str, object], config), "service_account_email", "VM orchestrator"
                     )
-                    job_name = ValidationUtils.get_required(cast(dict[str, object], config), "job_name", "VM backend")
+                    job_name = ValidationUtils.get_required(
+                        cast(dict[str, object], config), "job_name", "VM backend"
+                    )
                 except ConfigurationError as e:
                     logger.error("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
                     return 0
 
-                orch = DeploymentOrchestrator(
+                orch = DeploymentOrchestrator(  # noqa: F821
                     project_id=self.project_id,
                     region=config.get("region") or "asia-northeast1",
                     service_account_email=service_account_email,

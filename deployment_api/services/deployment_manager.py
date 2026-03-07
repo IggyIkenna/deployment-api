@@ -13,13 +13,12 @@ from collections.abc import Callable
 from datetime import date as _date
 from typing import TYPE_CHECKING, cast
 
-from deployment_service.config_loader import ConfigLoader
-from deployment_service.config_loader import substitute_env_vars as _substitute_env_vars
-from deployment_service.deployment.orchestrator import DeploymentOrchestrator
-from deployment_service.shard_calculator import ShardCalculator
 from unified_events_interface import log_event
 
 from deployment_api import settings as _settings
+from deployment_api.clients import deployment_service_client as _ds_client
+from deployment_api.config_loader import ConfigLoader
+from deployment_api.config_loader import substitute_env_vars as _substitute_env_vars
 from deployment_api.routes.deployment_validation import (
     _resolve_deploy_dates,
     generate_deployment_report,
@@ -52,7 +51,9 @@ class DeploymentManager:
         self.default_project_id = _settings.GCP_PROJECT_ID
         self.default_max_concurrent = 100
 
-    def validate_deployment_request(self, deploy_request: DeployRequest) -> dict[str, object] | None:
+    def validate_deployment_request(
+        self, deploy_request: DeployRequest
+    ) -> dict[str, object] | None:
         """
         Validate deployment request parameters.
 
@@ -61,9 +62,14 @@ class DeploymentManager:
         """
         return cast(dict[str, object] | None, validate_deployment_request(deploy_request))
 
-    def calculate_quota_requirements(self, deploy_request: DeployRequest, config_dir: str = "configs") -> dict[str, object]:
+    async def calculate_quota_requirements(
+        self, deploy_request: DeployRequest, config_dir: str = "configs"
+    ) -> dict[str, object]:
         """
         Calculate quota requirements for a deployment.
+
+        Calls deployment-service /api/v1/shards/calculate via HTTP to enumerate shards,
+        then computes quota locally using the deployment-api ConfigLoader.
 
         Args:
             deploy_request: Deployment request object
@@ -75,48 +81,34 @@ class DeploymentManager:
         loader = ConfigLoader(config_dir)
         loader.load_service_config(deploy_request.service)
 
-        # Calculate shards
-        calculator: ShardCalculator = ShardCalculator(config_dir)
-
+        # Calculate shards via deployment-service HTTP API
         try:
-            _start_d = _date.fromisoformat(deploy_request.start_date) if deploy_request.start_date else None
-            _end_d = _date.fromisoformat(deploy_request.end_date) if deploy_request.end_date else None
-            shards = calculator.calculate_shards(
+            shard_list = await _ds_client.calculate_shards(
                 service=deploy_request.service,
-                start_date=_start_d,
-                end_date=_end_d,
+                config_dir=config_dir,
+                start_date=deploy_request.start_date,
+                end_date=deploy_request.end_date,
                 max_shards=deploy_request.max_shards or 10000,
                 cloud_config_path=deploy_request.cloud_config_path,
                 respect_start_dates=not deploy_request.ignore_start_dates,
                 skip_existing=deploy_request.deploy_missing,
                 skip_dimensions=deploy_request.skip_dimensions or [],
                 date_granularity_override=deploy_request.date_granularity,
-                **deploy_request.filters,
+                extra_filters=deploy_request.filters,
             )
-        except (ValueError, KeyError, FileNotFoundError) as e:
+        except RuntimeError as e:
             log_event(
                 "deployment.quota_calculation.failed",
                 details={
                     "error_type": "shard_calculation_error",
                     "service": deploy_request.service,
                     "error_message": str(e),
-                    "error_category": "configuration",
+                    "error_category": "http_client",
                 },
             )
             raise ValueError(f"Failed to calculate shards: {e}") from e
-        except OSError as e:
-            log_event(
-                "deployment.quota_calculation.failed",
-                details={
-                    "error_type": "configuration_access_error",
-                    "service": deploy_request.service,
-                    "error_message": str(e),
-                    "error_category": "file_system",
-                },
-            )
-            raise ValueError(f"Configuration access failed: {e}") from e
 
-        total_shards: int = len(shards)
+        total_shards: int = len(shard_list)
         if total_shards == 0:
             return {
                 "total_shards": 0,
@@ -140,7 +132,9 @@ class DeploymentManager:
             vm_shape: VmQuotaShape = vm_quota_shape_from_compute_config(compute_config)
             single_vm_shape: dict[str, float] = vm_shape.per_shard()
             total_shape: dict[str, float] = multiply_resources(single_vm_shape, max_concurrent)
-            recommended_concurrent: int = max_concurrent  # Simplified: no headroom data available here
+            recommended_concurrent: int = (
+                max_concurrent  # Simplified: no headroom data available here
+            )
         else:
             # Cloud Run quota calculation
             cpu_raw = compute_config.get("cpu", 2)
@@ -169,7 +163,7 @@ class DeploymentManager:
             "quota_ok": True,  # Simplified for now
         }
 
-    def create_deployment(
+    async def create_deployment(
         self,
         deploy_request: DeployRequest,
         config_dir: str = "configs",
@@ -200,13 +194,17 @@ class DeploymentManager:
         )
 
         # Validate request
-        validation_error: dict[str, object] | None = self.validate_deployment_request(deploy_request)
+        validation_error: dict[str, object] | None = self.validate_deployment_request(
+            deploy_request
+        )
         if validation_error:
             raise ValueError(str(validation_error))
 
         # Validate shard configuration
         loader_for_validation = ConfigLoader(config_dir)
-        service_cfg: dict[str, object] = cast(dict[str, object], loader_for_validation.load_service_config(deploy_request.service))
+        service_cfg: dict[str, object] = cast(
+            dict[str, object], loader_for_validation.load_service_config(deploy_request.service)
+        )
         shard_error: dict[str, object] | None = cast(
             dict[str, object] | None,
             validate_shard_configuration(service_cfg, deploy_request),
@@ -226,7 +224,9 @@ class DeploymentManager:
         # Validate image availability
         _ = cast(
             dict[str, object],
-            loader_for_validation.get_compute_recommendation(deploy_request.service, deploy_request.compute),
+            loader_for_validation.get_compute_recommendation(
+                deploy_request.service, deploy_request.compute
+            ),
         )
         region_for_validation: str = deploy_request.region or self.default_region
         raw_docker_image = service_cfg.get("docker_image")
@@ -242,35 +242,37 @@ class DeploymentManager:
         if image_error:
             raise ValueError(str(image_error))
 
-        # Calculate shards
-        calculator: ShardCalculator = ShardCalculator(config_dir)
-        _start_d2 = _date.fromisoformat(deploy_request.start_date) if deploy_request.start_date else None
-        _end_d2 = _date.fromisoformat(deploy_request.end_date) if deploy_request.end_date else None
-        shards = calculator.calculate_shards(
+        # Calculate shards via deployment-service HTTP API
+        raw_shards = await _ds_client.calculate_shards(
             service=deploy_request.service,
-            start_date=_start_d2,
-            end_date=_end_d2,
+            config_dir=config_dir,
+            start_date=deploy_request.start_date,
+            end_date=deploy_request.end_date,
             max_shards=deploy_request.max_shards or 10000,
             cloud_config_path=deploy_request.cloud_config_path,
             respect_start_dates=not deploy_request.ignore_start_dates,
             skip_existing=deploy_request.deploy_missing,
             skip_dimensions=deploy_request.skip_dimensions or [],
             date_granularity_override=deploy_request.date_granularity,
-            **deploy_request.filters,
+            extra_filters=deploy_request.filters,
         )
 
-        if not shards:
+        if not raw_shards:
             raise ValueError("No shards to deploy after filtering")
 
-        # Build shard list for API response
+        # Normalise shard list: deployment-service returns dicts with shard_index, dimensions, cli_command
         shard_list: list[dict[str, object]] = []
-        for shard in shards:
+        for shard in raw_shards:
+            shard_index = shard.get("shard_index", 0)
+            total_shards = shard.get("total_shards", len(raw_shards))
+            dimensions = shard.get("dimensions", {})
+            cli_command_raw: str = str(shard.get("cli_command", ""))
             shard_dict: dict[str, object] = {
-                "shard_id": f"{shard.service}-{shard.shard_index}",
-                "shard_index": shard.shard_index,
-                "total_shards": shard.total_shards,
-                "dimensions": shard.dimensions,
-                "cli_args": shard.cli_command.split()[1:],  # Remove 'python -m service' part
+                "shard_id": f"{deploy_request.service}-{shard_index}",
+                "shard_index": shard_index,
+                "total_shards": total_shards,
+                "dimensions": dimensions,
+                "cli_args": cli_command_raw.split()[1:] if cli_command_raw else [],
             }
             shard_list.append(shard_dict)
 
@@ -294,11 +296,17 @@ class DeploymentManager:
 
         if deploy_request.start_date:
             start_date_val = deploy_request.start_date
-            start_str: str = start_date_val.isoformat() if isinstance(start_date_val, _date) else str(start_date_val)
+            start_str: str = (
+                start_date_val.isoformat()
+                if isinstance(start_date_val, _date)
+                else str(start_date_val)
+            )
             cli_parts.extend(["--start-date", start_str])
         if deploy_request.end_date:
             end_date_val = deploy_request.end_date
-            end_str: str = end_date_val.isoformat() if isinstance(end_date_val, _date) else str(end_date_val)
+            end_str: str = (
+                end_date_val.isoformat() if isinstance(end_date_val, _date) else str(end_date_val)
+            )
             cli_parts.extend(["--end-date", end_str])
         if deploy_request.tag:
             cli_parts.extend(["--tag", deploy_request.tag])
@@ -316,7 +324,7 @@ class DeploymentManager:
             details={
                 "deployment_id": deployment_id,
                 "service": deploy_request.service,
-                "total_shards": len(shards),
+                "total_shards": len(shard_list),
                 "max_concurrent": deploy_request.max_concurrent or self.default_max_concurrent,
                 "background_execution": background_task_func is not None,
             },
@@ -327,14 +335,14 @@ class DeploymentManager:
             "service": deploy_request.service,
             "region": deploy_request.region or self.default_region,
             "compute": deploy_request.compute,
-            "total_shards": len(shards),
+            "total_shards": len(shard_list),
             "max_concurrent": deploy_request.max_concurrent or self.default_max_concurrent,
             "cli_command": cli_command,
             "shard_list": shard_list,
             "status": "pending",
         }
 
-    def run_deployment_background(
+    async def run_deployment_background(
         self,
         deploy_request: DeployRequest,
         config_dir: str,
@@ -342,9 +350,14 @@ class DeploymentManager:
         cli_command: str,
         deployment_id: str,
     ) -> None:
-        """Execute deployment in the background."""
+        """
+        Execute deployment in the background via deployment-service HTTP API.
+
+        Calls POST /api/v1/deployments on the deployment-service, which owns the
+        DeploymentOrchestrator execution logic.
+        """
         try:
-            # Resolve effective dates
+            # Resolve effective dates (local config-level check, no deployment_service import needed)
             _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)
 
             # Use region from request or default
@@ -363,10 +376,13 @@ class DeploymentManager:
                 )
 
             loader: ConfigLoader = ConfigLoader(config_dir)
-            service_config: dict[str, object] = cast(dict[str, object], loader.load_service_config(deploy_request.service))
-            compute_config: dict[str, object] = cast(dict[str, object], loader.get_compute_recommendation(
-                deploy_request.service, deploy_request.compute
-            ))
+            service_config: dict[str, object] = cast(
+                dict[str, object], loader.load_service_config(deploy_request.service)
+            )
+            compute_config: dict[str, object] = cast(
+                dict[str, object],
+                loader.get_compute_recommendation(deploy_request.service, deploy_request.compute),
+            )
 
             raw_docker = service_config.get("docker_image")
             docker_image: str = (
@@ -374,26 +390,18 @@ class DeploymentManager:
                 if raw_docker
                 else f"{deployment_region}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"
             )
-            job_name: str = cast(str, service_config.get("cloud_run_job_name", deploy_request.service))
+            job_name: str = cast(
+                str, service_config.get("cloud_run_job_name", deploy_request.service)
+            )
 
-            # Build orchestrator shards
-            orchestrator_shards: list[dict[str, object]] = [
-                {
-                    "shard_id": s["shard_id"],
-                    "dimensions": s["dimensions"],
-                    "args": s["cli_args"],
-                }
-                for s in shard_list
-            ]
-
-            # Create orchestrator
-            orchestrator: DeploymentOrchestrator = DeploymentOrchestrator(
-                project_id=self.default_project_id,
+            # Submit deployment to deployment-service HTTP API
+            # deployment-service owns DeploymentOrchestrator execution logic
+            await _ds_client.create_deployment(
+                deployment_id=deployment_id,
+                service=deploy_request.service,
                 region=deployment_region,
                 compute_type=deploy_request.compute,
                 deployment_mode=deploy_request.mode,
-                deployment_id=deployment_id,
-                service=deploy_request.service,
                 docker_image=docker_image,
                 job_name=job_name,
                 compute_config=compute_config,
@@ -403,11 +411,10 @@ class DeploymentManager:
                     compute_config=compute_config,
                 ),
                 max_concurrent=deploy_request.max_concurrent or self.default_max_concurrent,
+                shards=shard_list,
+                tag=deploy_request.tag,
                 vm_zone=deploy_request.vm_zone,
             )
-
-            # Run deployment
-            orchestrator.deploy(orchestrator_shards, tag=deploy_request.tag)
             log_event(
                 "deployment.completed",
                 details={
@@ -415,7 +422,7 @@ class DeploymentManager:
                     "service": deploy_request.service,
                     "region": deployment_region,
                     "compute_type": deploy_request.compute,
-                    "total_shards": len(orchestrator_shards),
+                    "total_shards": len(shard_list),
                     "tag": deploy_request.tag,
                 },
             )

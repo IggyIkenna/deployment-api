@@ -6,8 +6,11 @@ Tests cover:
 - analyze_deployment_logs_sync (status filtering behavior)
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from deployment_api.routes.log_analysis import (
     _log_analysis_cache,
@@ -80,8 +83,6 @@ class TestAnalyzeDeploymentLogsSyncStatusFilter:
 
     def test_result_cached(self):
         """Results are cached after full log analysis completes."""
-        # A completed state with a completed shard that has compute_info will
-        # execute the full path and cache the result.
         state = SimpleNamespace(status=SimpleNamespace(value="completed"))
         state_manager = MagicMock()
         # Shard with status=completed but no compute_info (vm_name missing → no logs)
@@ -112,3 +113,161 @@ class TestAnalyzeDeploymentLogsWithShards:
         result = analyze_deployment_logs_sync(state_manager, "dep-1", state)
         assert result["log_analysis"] is None
         assert result["status_detail"] == "no_completed_shards"
+
+
+@pytest.fixture(autouse=True)
+def _clear_log_analysis_cache():
+    _log_analysis_cache.clear()
+    yield
+    _log_analysis_cache.clear()
+
+
+def _make_log_state(status_val: str = "completed"):
+    return SimpleNamespace(status=SimpleNamespace(value=status_val))
+
+
+def _make_log_state_manager(shards=None, vm_logs=None):
+    sm = MagicMock()
+    sm.get_deployment_shards.return_value = shards or []
+    sm.get_vm_serial_console.return_value = vm_logs or ""
+    return sm
+
+
+class TestAnalyzeDeploymentLogsSync:
+    """Tests for analyze_deployment_logs_sync - detailed log paths."""
+
+    def test_running_state_returns_early(self):
+        state = _make_log_state("running")
+        sm = _make_log_state_manager()
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "running"
+        assert result["log_analysis"] is None
+        sm.get_deployment_shards.assert_not_called()
+
+    def test_pending_state_returns_early(self):
+        state = _make_log_state("pending")
+        sm = _make_log_state_manager()
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "pending"
+
+    def test_no_shards_returns_no_shards(self):
+        state = _make_log_state("completed")
+        sm = _make_log_state_manager(shards=[])
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "no_shards"
+        assert result["log_analysis"]["shards_analyzed"] == 0
+
+    def test_no_completed_shards_returns_no_completed_shards(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "running", "shard_id": "s1"}]
+        sm = _make_log_state_manager(shards=shards)
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "no_completed_shards"
+
+    def test_completed_shard_no_compute_info(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {}}]
+        sm = _make_log_state_manager(shards=shards)
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["log_analysis"]["shards_analyzed"] == 1
+
+    def test_completed_shard_with_error_in_logs(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {"vm_name": "vm-01"}}]
+        sm = _make_log_state_manager(
+            shards=shards,
+            vm_logs="some text\nERROR: something went wrong\nmore text",
+        )
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "failed_with_errors"
+        assert len(result["log_analysis"]["errors"]) >= 1
+
+    def test_completed_shard_with_warning_in_logs(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {"vm_name": "vm-01"}}]
+        sm = _make_log_state_manager(
+            shards=shards,
+            vm_logs="WARNING: disk almost full\nok",
+        )
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] in ("completed_with_warnings", "completed")
+        assert len(result["log_analysis"]["warnings"]) >= 1
+
+    def test_completed_shard_with_success_indicators(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {"vm_name": "vm-01"}}]
+        sm = _make_log_state_manager(
+            shards=shards,
+            vm_logs="Processing complete\nAll done",
+        )
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "succeeded"
+
+    def test_failed_state_keeps_failed(self):
+        state = _make_log_state("failed")
+        shards = [{"status": "failed", "shard_id": "s1", "compute_info": {"vm_name": "vm-01"}}]
+        sm = _make_log_state_manager(shards=shards, vm_logs="")
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "failed"
+
+    def test_succeeded_state_keeps_succeeded(self):
+        state = _make_log_state("succeeded")
+        shards = [{"status": "succeeded", "shard_id": "s1", "compute_info": {"vm_name": "vm-01"}}]
+        sm = _make_log_state_manager(shards=shards, vm_logs="")
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "succeeded"
+
+    def test_stack_trace_detected(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {"vm_name": "vm-01"}}]
+        sm = _make_log_state_manager(
+            shards=shards,
+            vm_logs="Traceback (most recent call last):\n  File foo.py line 10\nValueError: bad value",
+        )
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["log_analysis"]["has_stack_traces"] is True
+        assert result["status_detail"] == "failed_with_errors"
+
+    def test_result_is_cached(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {}}]
+        sm = _make_log_state_manager(shards=shards)
+        analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert "dep-001" in _log_analysis_cache
+
+    def test_cache_hit_skips_shards_call(self):
+        state = _make_log_state("completed")
+        sm = _make_log_state_manager()
+        _log_analysis_cache["dep-001"] = {
+            "data": {"status_detail": "cached", "log_analysis": {}},
+            "timestamp": time.time(),
+        }
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "cached"
+        sm.get_deployment_shards.assert_not_called()
+
+    def test_expired_cache_re_runs(self):
+        state = _make_log_state("completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {}}]
+        sm = _make_log_state_manager(shards=shards)
+        _log_analysis_cache["dep-001"] = {
+            "data": {"status_detail": "old_cached", "log_analysis": {}},
+            "timestamp": 0,
+        }
+        analyze_deployment_logs_sync(sm, "dep-001", state)
+        sm.get_deployment_shards.assert_called_once()
+
+    def test_status_via_str_not_value(self):
+        state = SimpleNamespace(status="completed")
+        shards = [{"status": "completed", "shard_id": "s1", "compute_info": {}}]
+        sm = _make_log_state_manager(shards=shards)
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert "status_detail" in result
+
+    def test_exception_from_state_manager_returns_error(self):
+        state = _make_log_state("completed")
+        sm = MagicMock()
+        sm.get_deployment_shards.side_effect = OSError("GCS down")
+        result = analyze_deployment_logs_sync(sm, "dep-001", state)
+        assert result["status_detail"] == "analysis_error"
+        assert "error" in result

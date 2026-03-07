@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from unified_config_interface import UnifiedCloudConfig
 from unified_events_interface import setup_events
+from unified_trading_library.utils.tracing import setup_tracing
 
 # TODO: PrometheusMiddleware and get_metrics_response are not yet implemented in
 # unified_trading_library. Re-enable once available (ISS-xxx).
@@ -21,6 +22,7 @@ from unified_events_interface import setup_events
 
 # Event logging for UTD v2 observability (before any log_event)
 setup_events(service_name="deployment-api", mode="live", sink="cloud_logging")
+setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version
 from deployment_api.auth import verify_api_key
@@ -33,7 +35,9 @@ from .routes import (
     capabilities,
     checklist,
     cloud_builds,
+    commentary,
     config,
+    config_management,
     data_status,
     deployments,
     infra_health,
@@ -69,13 +73,25 @@ configure_middleware(app)
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
-_authenticated_router.include_router(deployments.router, prefix="/api/deployments", tags=["Deployments"])
+_authenticated_router.include_router(
+    deployments.router, prefix="/api/deployments", tags=["Deployments"]
+)
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
-_authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
-_authenticated_router.include_router(data_status.router, prefix="/api/data-status", tags=["Data Status"])
-_authenticated_router.include_router(service_status.router, prefix="/api/service-status", tags=["Service Status"])
-_authenticated_router.include_router(capabilities.router, prefix="/api/capabilities", tags=["Capabilities"])
+_authenticated_router.include_router(
+    checklist.router, prefix="/api/checklists", tags=["Checklists"]
+)
+_authenticated_router.include_router(
+    data_status.router, prefix="/api/data-status", tags=["Data Status"]
+)
+_authenticated_router.include_router(
+    service_status.router, prefix="/api/service-status", tags=["Service Status"]
+)
+_authenticated_router.include_router(
+    capabilities.router, prefix="/api/capabilities", tags=["Capabilities"]
+)
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds
+_authenticated_router.include_router(config_management.router, prefix="/api")
+_authenticated_router.include_router(commentary.router, prefix="/api", tags=["Commentary"])
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---
@@ -107,6 +123,8 @@ async def health_check_with_config() -> dict[str, object]:
     return {
         "status": "healthy",
         "version": _api_version,
-        "config_dir": (str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None),
+        "config_dir": (
+            str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None
+        ),
         "gcs_fuse": get_gcs_fuse_status(),
     }

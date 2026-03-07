@@ -346,7 +346,9 @@ class TestProcessingServiceCombinatorics:
 
     def test_processing_service_with_timeframe_filter(self):
         pc = self._make_pc_with_cefi()
-        combos = pc.get_combinatorics(service="market-data-processing-service", timeframes=["1h", "4h"])
+        combos = pc.get_combinatorics(
+            service="market-data-processing-service", timeframes=["1h", "4h"]
+        )
         timeframes = {c.timeframe for c in combos}
         assert timeframes == {"1h", "4h"}
 
@@ -399,3 +401,132 @@ class TestHasServiceCombinatorics:
         pc.service_dimensions = {}
         pc.tick_windows = []
         assert pc.has_service_combinatorics("market-tick-data-handler", "CEFI") is False
+
+
+class TestGetServicePrefixesForDate:
+    """Tests for get_service_prefixes_for_date."""
+
+    def _make_pc_with_venues(self):
+        config = {
+            "CEFI": {
+                "venues": {
+                    "BINANCE": {
+                        "folders": ["spot"],
+                        "data_types": ["trades"],
+                    },
+                    "COINBASE": {
+                        "folders": ["spot"],
+                        "data_types": ["trades"],
+                    },
+                }
+            }
+        }
+        pc = PathCombinatorics.__new__(PathCombinatorics)
+        pc.config = config
+        pc.combinatorics = []
+        pc.service_dimensions = {}
+        pc.tick_windows = []
+        pc._loaded = False
+        pc._build_combinatorics()
+        pc._load_service_dimensions()
+        return pc
+
+    def test_unknown_service_returns_empty(self):
+        pc = self._make_pc_with_venues()
+        result = pc.get_service_prefixes_for_date("unknown-service", "CEFI", "2024-01-15")
+        assert result == []
+
+    def test_instruments_service_returns_prefixes(self):
+        pc = self._make_pc_with_venues()
+        result = pc.get_service_prefixes_for_date("instruments-service", "CEFI", "2024-01-15")
+        assert len(result) > 0
+        # Each result is a (prefix, venue) tuple
+        assert all(len(r) == 2 for r in result)
+
+    def test_instruments_service_venue_filter(self):
+        pc = self._make_pc_with_venues()
+        result = pc.get_service_prefixes_for_date(
+            "instruments-service", "CEFI", "2024-01-15", venue_filter=["BINANCE"]
+        )
+        # Only BINANCE prefixes
+        assert all("BINANCE" in r[0] for r in result)
+
+    def test_unknown_category_returns_empty(self):
+        pc = self._make_pc_with_venues()
+        # Service dimensions limit to valid categories
+        # Instruments service will try to get_all_venues_for_category("UNKNOWN")
+        result = pc.get_service_prefixes_for_date("instruments-service", "UNKNOWN", "2024-01-15")
+        assert result == []
+
+    def test_calendar_service_returns_feature_types(self):
+        pc = self._make_pc_with_venues()
+        result = pc.get_service_prefixes_for_date("features-calendar-service", "CEFI", "2024-01-15")
+        assert len(result) == len(CALENDAR_FEATURE_TYPES)
+
+    def test_corporate_actions_returns_single_prefix(self):
+        pc = self._make_pc_with_venues()
+        # corporate-actions is TRADFI-only per sharding config
+        result = pc.get_service_prefixes_for_date("corporate-actions", "TRADFI", "2024-01-15")
+        assert len(result) == 1
+        assert result[0][1] is None  # No sub-dimension
+
+
+class TestGetPrefixesForDate:
+    """Tests for get_prefixes_for_date method."""
+
+    def _make_pc_with_cefi(self):
+        config = {
+            "CEFI": {
+                "venues": {
+                    "BINANCE": {
+                        "folders": ["spot"],
+                        "data_types": ["trades"],
+                    }
+                }
+            }
+        }
+        pc = PathCombinatorics.__new__(PathCombinatorics)
+        pc.config = config
+        pc.combinatorics = []
+        pc.service_dimensions = {}
+        pc.tick_windows = []
+        pc._loaded = False
+        pc._build_combinatorics()
+        pc._load_tick_windows()
+        pc._load_service_dimensions()
+        return pc
+
+    def test_returns_list_of_strings(self):
+        pc = self._make_pc_with_cefi()
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="CEFI")
+        assert isinstance(result, list)
+        assert all(isinstance(p, str) for p in result)
+
+    def test_with_category_filter(self):
+        pc = self._make_pc_with_cefi()
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="CEFI")
+        assert len(result) > 0
+        assert all("BINANCE" in p for p in result)
+
+    def test_with_no_matching_combos(self):
+        pc = self._make_pc_with_cefi()
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="DEFI")
+        assert result == []
+
+    def test_start_date_filter(self):
+        pc = self._make_pc_with_cefi()
+        # Add a start_date to the combinatoric entry
+        for c in pc.combinatorics:
+            c.start_date = "2025-01-01"
+        # Date before start should yield no results
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-06-01", category="CEFI")
+        assert result == []
+
+    def test_tick_window_only_skipped_outside_window(self):
+        pc = self._make_pc_with_cefi()
+        # Mark all combos as tick_window_only
+        for c in pc.combinatorics:
+            c.tick_window_only = True
+        # No tick windows configured → outside tick window
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="CEFI")
+        assert result == []

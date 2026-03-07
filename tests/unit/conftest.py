@@ -21,6 +21,7 @@ def _ensure_utl_mocked() -> None:
     broken_modules = [
         "unified_trading_library",
         "unified_trading_library.core",
+        "unified_trading_library.core._env_bootstrap",
         "unified_trading_library.core.cloud_config",
         "unified_trading_library.core.cloud_base_service",
         "unified_trading_library.core.cloud_pubsub_service",
@@ -110,9 +111,7 @@ def _ensure_external_packages_mocked() -> None:
 
         for sub_name, attrs in {
             "base": {
-                "JobStatus": MagicMock(
-                    SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING"
-                )
+                "JobStatus": MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")
             },
             "cloud_run": {"CloudRunBackend": MagicMock()},
             "vm": {"VMBackend": MagicMock()},
@@ -157,9 +156,7 @@ def _ensure_external_packages_mocked() -> None:
         ds_pkg.__path__ = []  # type: ignore[attr-defined]
         sys.modules["deployment_service"] = ds_pkg
 
-        _mock_validator = MagicMock(
-            get_required=MagicMock(return_value="value")
-        )
+        _mock_validator = MagicMock(get_required=MagicMock(return_value="value"))
 
         # Build a realistic DeploymentConfig mock so that settings.py constants
         # resolve to proper types (ints, strs, lists) rather than MagicMocks.

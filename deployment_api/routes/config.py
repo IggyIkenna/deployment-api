@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import cast
 
 import yaml
-from deployment_service.config_loader import ConfigLoader
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 
 from deployment_api import settings
+from deployment_api.config_loader import ConfigLoader
 from deployment_api.utils.cache import TTL_SERVICE_CONFIG, cache
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,9 @@ async def get_venues(request: Request):
         return venues_config
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues config")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/venues/{category}")
@@ -132,7 +134,9 @@ async def get_venues_by_category(category: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues by category")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/expected-start-dates")
@@ -158,7 +162,9 @@ async def get_expected_start_dates(request: Request):
         return data
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load expected start dates")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/expected-start-dates/{service_name}")
@@ -202,7 +208,9 @@ async def get_service_start_dates(service_name: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load service start dates for %s", service_name)
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/dependencies")
@@ -228,7 +236,9 @@ async def get_dependencies(request: Request):
         return data
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load dependencies")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/dependencies/{service_name}")
@@ -313,4 +323,6 @@ async def get_service_dependencies(service_name: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load service dependencies for %s", service_name)
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
