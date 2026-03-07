@@ -5,8 +5,36 @@ Tests focus on pure helper functions that don't require HTTP requests or
 cloud API calls.
 """
 
+import json
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+# Ensure _deployment_config in deployments_helpers has the needed attributes
+# before state_management.py is imported (it accesses these at module level).
+if "deployment_api.routes.deployments_helpers" not in sys.modules:
+    _dh_mock = MagicMock()
+    _dh_mock._deployment_config.effective_project_id = "test-project"
+    _dh_mock._deployment_config.effective_region = "us-central1"
+    _dh_mock._deployment_config.effective_state_bucket = "test-bucket"
+    _dh_mock._deployment_config.service_account_email = "sa@test.iam"
+    _dh_mock._deployment_config.default_max_concurrent = 5
+    _dh_mock._deployment_config.max_concurrent_hard_limit = 20
+    sys.modules["deployment_api.routes.deployments_helpers"] = _dh_mock
+else:
+    _dh_mod = sys.modules["deployment_api.routes.deployments_helpers"]
+    _cfg = getattr(_dh_mod, "_deployment_config", None)
+    if _cfg is not None and not isinstance(_cfg, MagicMock):
+        if not hasattr(_cfg, "effective_project_id"):
+            _cfg.__class__.effective_project_id = property(lambda self: "test-project")
+        if not hasattr(_cfg, "effective_region"):
+            _cfg.__class__.effective_region = property(lambda self: "us-central1")
+
+# Remove state_management from sys.modules so it's re-imported with the mocked helpers
+for _key in list(sys.modules):
+    if "state_management" in _key and "test_" not in _key:
+        del sys.modules[_key]
 
 from deployment_api.routes.state_management import (
     _build_blob_timestamp_map,
@@ -15,8 +43,10 @@ from deployment_api.routes.state_management import (
     _classify_all_shards,
     _classify_shard,
     _compute_classification_counts,
+    _compute_verified_succeeded_shard_ids,
     _extract_date_range,
     _extract_error_warning_shard_ids,
+    _extract_severity_and_logger,
     _get_state_date_range,
     _parse_iso_dt,
     _shard_has_force,
@@ -260,10 +290,20 @@ class TestClassifyAllShardsInStateManagement:
 
     def test_classifies_multiple_shards(self):
         s1 = SimpleNamespace(
-            shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+            shard_id="s1",
+            status="succeeded",
+            failure_category="",
+            args=[],
+            start_time=None,
+            end_time=None,
         )
         s2 = SimpleNamespace(
-            shard_id="s2", status="pending", failure_category="", args=[], start_time=None, end_time=None
+            shard_id="s2",
+            status="pending",
+            failure_category="",
+            args=[],
+            start_time=None,
+            end_time=None,
         )
         state = SimpleNamespace(shards=[s1, s2])
         result = _classify_all_shards(state, log_analysis=None)
@@ -300,7 +340,11 @@ class TestBuildBlobTimestampMapInStateManagement:
     def test_extracts_timestamps(self):
         turbo = {
             "categories": {
-                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}}}
+                "CEFI": {
+                    "_venue_date_blob_timestamps": {
+                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
+                    }
+                }
             }
         }
         result = _build_blob_timestamp_map(turbo)
@@ -334,3 +378,99 @@ class TestCategoriesFromState:
         state = SimpleNamespace(shards=[])
         result = _categories_from_state(state)
         assert result is None
+
+
+class TestExtractSeverityAndLogger:
+    """Tests for _extract_severity_and_logger — JSON and plain-text paths."""
+
+    def test_json_severity_info(self):
+        line = json.dumps({"severity": "INFO", "message": "hello"})
+        sev, _ = _extract_severity_and_logger(line)
+        assert sev == "INFO"
+
+    def test_json_severity_error(self):
+        line = json.dumps({"severity": "ERROR", "message": "bad"})
+        sev, _ = _extract_severity_and_logger(line)
+        assert sev == "ERROR"
+
+    def test_json_severity_critical_mapped_to_error(self):
+        line = json.dumps({"severity": "CRITICAL", "message": "fatal"})
+        sev, _ = _extract_severity_and_logger(line)
+        assert sev == "ERROR"
+
+    def test_json_severity_warning(self):
+        line = json.dumps({"severity": "WARNING"})
+        sev, _ = _extract_severity_and_logger(line)
+        assert sev == "WARNING"
+
+    def test_json_severity_debug(self):
+        line = json.dumps({"severity": "DEBUG"})
+        sev, _ = _extract_severity_and_logger(line)
+        assert sev == "DEBUG"
+
+    def test_json_logger_extracted(self):
+        line = json.dumps({"severity": "INFO", "logger": "my.module"})
+        _, logger_name = _extract_severity_and_logger(line)
+        assert logger_name == "my.module"
+
+    def test_non_json_error_keyword(self):
+        sev, _ = _extract_severity_and_logger("This is an ERROR in processing")
+        assert sev == "ERROR"
+
+    def test_non_json_warning_keyword(self):
+        sev, _ = _extract_severity_and_logger("WARNING: disk almost full")
+        assert sev == "WARNING"
+
+    def test_non_json_info_default(self):
+        sev, _ = _extract_severity_and_logger("Normal processing line")
+        assert sev == "INFO"
+
+
+class TestComputeVerifiedSucceededShardIds:
+    """Tests for _compute_verified_succeeded_shard_ids."""
+
+    def _make_shard(
+        self,
+        shard_id: str,
+        status: str = "succeeded",
+        category: str = "CEFI",
+        venue: str = "",
+        date: str = "2026-01-01",
+    ) -> SimpleNamespace:
+        dims: dict[str, object] = {"category": category, "date": date}
+        if venue:
+            dims["venue"] = venue
+        return SimpleNamespace(shard_id=shard_id, status=status, dimensions=dims)
+
+    def _make_state(self, shards: list) -> SimpleNamespace:
+        return SimpleNamespace(shards=shards)
+
+    def test_verified_when_date_in_cat_dates(self):
+        state = self._make_state([self._make_shard("s1")])
+        cat_dates = {"CEFI": {"2026-01-01"}}
+        result = _compute_verified_succeeded_shard_ids(state, cat_dates, {})
+        assert "s1" in result
+
+    def test_not_verified_when_date_missing(self):
+        state = self._make_state([self._make_shard("s1")])
+        cat_dates = {"CEFI": {"2026-01-02"}}
+        result = _compute_verified_succeeded_shard_ids(state, cat_dates, {})
+        assert "s1" not in result
+
+    def test_verified_with_venue_match(self):
+        state = self._make_state([self._make_shard("s1", venue="BINANCE")])
+        cat_dates = {"CEFI": {"2026-01-01"}}
+        venue_dates = {"CEFI": {"BINANCE": {"2026-01-01"}}}
+        result = _compute_verified_succeeded_shard_ids(state, cat_dates, venue_dates)
+        assert "s1" in result
+
+    def test_non_succeeded_shards_skipped(self):
+        state = self._make_state([self._make_shard("s1", status="failed")])
+        cat_dates = {"CEFI": {"2026-01-01"}}
+        result = _compute_verified_succeeded_shard_ids(state, cat_dates, {})
+        assert "s1" not in result
+
+    def test_empty_state_returns_empty(self):
+        state = self._make_state([])
+        result = _compute_verified_succeeded_shard_ids(state, {}, {})
+        assert result == set()

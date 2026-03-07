@@ -226,7 +226,10 @@ class TestCacheKeyBuilders:
         assert deployment_key("deploy-123") == "deployment:deploy-123"
 
     def test_deployment_list_key_with_service(self):
-        assert deployment_list_key("instruments-service", 50) == "deployments:instruments-service:limit-50"
+        assert (
+            deployment_list_key("instruments-service", 50)
+            == "deployments:instruments-service:limit-50"
+        )
 
     def test_deployment_list_key_no_service(self):
         assert deployment_list_key(None, 20) == "deployments:all:limit-20"
@@ -310,3 +313,247 @@ class TestBackwardsCompatibility:
         from deployment_api.utils.cache import cache as cache_singleton
 
         assert isinstance(cache_singleton, UnifiedCache)
+
+
+class TestRedisCacheMethods:
+    """Tests for RedisCache with mocked AsyncRedisProvider."""
+
+    def _make_redis_cache(self):
+        from deployment_api.utils.cache import RedisCache
+
+        return RedisCache("redis://localhost:6379")
+
+    @pytest.mark.asyncio
+    async def test_connect_success(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider._get_client = AsyncMock(return_value=AsyncMock())
+
+        with patch("deployment_api.utils.cache.AsyncRedisProvider", return_value=mock_provider):
+            await cache.connect()
+
+        assert cache._provider is mock_provider
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_sets_provider_none(self):
+        cache = self._make_redis_cache()
+
+        with patch(
+            "deployment_api.utils.cache.AsyncRedisProvider", side_effect=OSError("conn refused")
+        ):
+            await cache.connect()
+
+        assert cache._provider is None
+
+    @pytest.mark.asyncio
+    async def test_close_with_provider(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        cache._provider = mock_provider
+
+        await cache.close()
+        mock_provider.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_without_provider_no_crash(self):
+        cache = self._make_redis_cache()
+        cache._provider = None
+        await cache.close()  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_get_without_provider_returns_none(self):
+        cache = self._make_redis_cache()
+        cache._provider = None
+        result = await cache.get("some-key")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_with_provider_returns_value(self):
+        cache = self._make_redis_cache()
+        import json
+
+        mock_provider = AsyncMock()
+        mock_provider.get = AsyncMock(return_value=json.dumps({"data": "value"}).encode())
+        cache._provider = mock_provider
+
+        result = await cache.get("some-key")
+        assert result == {"data": "value"}
+
+    @pytest.mark.asyncio
+    async def test_get_provider_returns_none_gives_none(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider.get = AsyncMock(return_value=None)
+        cache._provider = mock_provider
+
+        result = await cache.get("missing-key")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_oserror_returns_none(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider.get = AsyncMock(side_effect=OSError("redis down"))
+        cache._provider = mock_provider
+
+        result = await cache.get("key")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_set_without_provider_no_crash(self):
+        cache = self._make_redis_cache()
+        cache._provider = None
+        await cache.set("key", "value", ttl=60)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_set_with_provider_calls_provider(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider.set = AsyncMock()
+        cache._provider = mock_provider
+
+        await cache.set("key", {"data": 1}, ttl=30)
+        mock_provider.set.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_set_oserror_no_crash(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider.set = AsyncMock(side_effect=OSError("write failed"))
+        cache._provider = mock_provider
+
+        await cache.set("key", "val", ttl=60)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_delete_without_provider_no_crash(self):
+        cache = self._make_redis_cache()
+        cache._provider = None
+        await cache.delete("key")
+
+    @pytest.mark.asyncio
+    async def test_delete_with_provider_calls_provider(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider.delete = AsyncMock()
+        cache._provider = mock_provider
+
+        await cache.delete("key")
+        mock_provider.delete.assert_called_once_with("key")
+
+    @pytest.mark.asyncio
+    async def test_delete_oserror_no_crash(self):
+        cache = self._make_redis_cache()
+        mock_provider = AsyncMock()
+        mock_provider.delete = AsyncMock(side_effect=OSError("delete failed"))
+        cache._provider = mock_provider
+
+        await cache.delete("key")  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_clear_pattern_without_provider_returns_zero(self):
+        cache = self._make_redis_cache()
+        cache._provider = None
+        result = await cache.clear_pattern("deploy:*")
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_clear_pattern_with_keys_deletes_them(self):
+        cache = self._make_redis_cache()
+        mock_client = AsyncMock()
+        mock_client.keys = AsyncMock(return_value=["k1", "k2"])
+        mock_client.delete = AsyncMock()
+        mock_provider = AsyncMock()
+        mock_provider._get_client = AsyncMock(return_value=mock_client)
+        cache._provider = mock_provider
+
+        result = await cache.clear_pattern("deploy:*")
+        assert result == 2
+        mock_client.delete.assert_called_once_with("k1", "k2")
+
+    @pytest.mark.asyncio
+    async def test_clear_pattern_no_keys_returns_zero(self):
+        cache = self._make_redis_cache()
+        mock_client = AsyncMock()
+        mock_client.keys = AsyncMock(return_value=[])
+        mock_provider = AsyncMock()
+        mock_provider._get_client = AsyncMock(return_value=mock_client)
+        cache._provider = mock_provider
+
+        result = await cache.clear_pattern("no-match:*")
+        assert result == 0
+
+
+class TestDeserialize:
+    """Tests for deserialize function."""
+
+    def test_deserialize_bytes(self):
+        import json
+
+        from deployment_api.utils.cache import deserialize
+
+        data = json.dumps({"key": "value"}).encode("utf-8")
+        result = deserialize(data)
+        assert result == {"key": "value"}
+
+    def test_deserialize_string(self):
+        import json
+
+        from deployment_api.utils.cache import deserialize
+
+        data = json.dumps([1, 2, 3])
+        result = deserialize(data)
+        assert result == [1, 2, 3]
+
+    def test_deserialize_non_str_raises(self):
+        from deployment_api.utils.cache import deserialize
+
+        with pytest.raises(TypeError):
+            deserialize(12345)
+
+
+class TestUnifiedCacheRedisTier:
+    """Tests for UnifiedCache with Redis tier enabled."""
+
+    @pytest.mark.asyncio
+    async def test_get_promotes_from_redis_to_memory(self):
+        import json
+
+        cache = UnifiedCache()
+        mock_redis = AsyncMock()
+        # Redis returns bytes; UnifiedCache.get returns them as-is
+        encoded = json.dumps({"cached": True}).encode()
+        mock_redis.get = AsyncMock(return_value=encoded)
+        cache.redis = mock_redis
+        cache.gcs = None
+
+        result = await cache.get("test-key")
+        # The cache returns raw bytes from Redis without deserializing
+        assert result == encoded
+
+    @pytest.mark.asyncio
+    async def test_set_writes_to_redis(self):
+        cache = UnifiedCache()
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock()
+        cache.redis = mock_redis
+        cache.gcs = None
+
+        await cache.set("key", {"val": 1}, ttl=60)
+        mock_redis.set.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_calls_redis(self):
+        cache = UnifiedCache()
+        mock_redis = AsyncMock()
+        mock_redis.delete = AsyncMock()
+        cache.redis = mock_redis
+        cache.gcs = None  # Avoid triggering GCS delete path
+
+        await cache.delete("key")
+        mock_redis.delete.assert_called_once_with("key")
+
+    @pytest.mark.asyncio
+    async def test_shutdown_not_initialized_noop(self):
+        cache = UnifiedCache()
+        cache._initialized = False
+        await cache.shutdown()  # Should not raise

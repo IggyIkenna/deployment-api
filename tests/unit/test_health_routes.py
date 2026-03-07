@@ -5,8 +5,9 @@ Tests root, health_check, get_workers_status, clear_cache, and serve_spa
 route handler functions with mocked dependencies.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestRootRoute:

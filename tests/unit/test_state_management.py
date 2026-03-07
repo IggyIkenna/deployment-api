@@ -15,8 +15,36 @@ Covers uncovered branches and functions:
 """
 
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+# Ensure _deployment_config in deployments_helpers has the needed attributes
+# before state_management.py is imported (it accesses these at module level).
+if "deployment_api.routes.deployments_helpers" not in sys.modules:
+    _dh_mock = MagicMock()
+    _dh_mock._deployment_config.effective_project_id = "test-project"
+    _dh_mock._deployment_config.effective_region = "us-central1"
+    _dh_mock._deployment_config.effective_state_bucket = "test-bucket"
+    _dh_mock._deployment_config.service_account_email = "sa@test.iam"
+    _dh_mock._deployment_config.default_max_concurrent = 5
+    _dh_mock._deployment_config.max_concurrent_hard_limit = 20
+    sys.modules["deployment_api.routes.deployments_helpers"] = _dh_mock
+else:
+    _dh_mod = sys.modules["deployment_api.routes.deployments_helpers"]
+    _cfg = getattr(_dh_mod, "_deployment_config", None)
+    if _cfg is not None and not isinstance(_cfg, MagicMock):
+        # Patch missing attributes so module-level code in state_management can run
+        if not hasattr(_cfg, "effective_project_id"):
+            _cfg.__class__.effective_project_id = property(lambda self: "test-project")
+        if not hasattr(_cfg, "effective_region"):
+            _cfg.__class__.effective_region = property(lambda self: "us-central1")
+
+# Remove state_management from sys.modules so it's re-imported with the mocked helpers
+for _key in list(sys.modules):
+    if "state_management" in _key and "test_" not in _key:
+        del sys.modules[_key]
 
 from deployment_api.routes.state_management import (
     _build_blob_timestamp_map,
@@ -162,7 +190,9 @@ class TestShardHasForce:
 class TestClassifyShardBlobBranches:
     """Covers lines 229-239: DATA_STALE, EXPECTED_SKIP, VERIFIED (no timestamps)."""
 
-    def _make_shard(self, status="succeeded", args=None, start_time=None, end_time=None, failure_category=None):
+    def _make_shard(
+        self, status="succeeded", args=None, start_time=None, end_time=None, failure_category=None
+    ):
         return SimpleNamespace(
             status=status,
             args=args or [],
@@ -307,7 +337,11 @@ class TestBuildBlobTimestampMap:
 
     def test_extracts_venue_date_timestamps(self):
         now = datetime.now(UTC)
-        turbo = {"categories": {"CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2026-01-01": now}}}}}
+        turbo = {
+            "categories": {
+                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2026-01-01": now}}}
+            }
+        }
         result = _build_blob_timestamp_map(turbo)
         assert "CEFI" in result
         assert "BINANCE" in result["CEFI"]
@@ -423,7 +457,9 @@ class TestComputeClassificationCounts:
 
 
 class TestComputeVerifiedSucceededShardIds:
-    def _make_shard(self, shard_id, status="succeeded", category="CEFI", venue="", date="2026-01-01"):
+    def _make_shard(
+        self, shard_id, status="succeeded", category="CEFI", venue="", date="2026-01-01"
+    ):
         dims: dict[str, object] = {"category": category, "date": date}
         if venue:
             dims["venue"] = venue

@@ -11,12 +11,12 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from deployment_service.deployment_config import DeploymentConfig
+from deployment_api.deployment_api_config import DeploymentApiConfig
 
 logger = logging.getLogger(__name__)
 
 # Deployment configuration
-_deployment_config = DeploymentConfig()
+_deployment_config = DeploymentApiConfig()
 
 # Cache for verification results
 _verification_cache = {}
@@ -122,7 +122,9 @@ def find_duplicate_running_shards(
 
     try:
         # Get all active deployments for this service
-        active_deployments = state_manager.list_deployments(service=service, status=["running", "pending", "resuming"])
+        active_deployments = state_manager.list_deployments(
+            service=service, status=["running", "pending", "resuming"]
+        )
 
         # Convert new shard args to comparable format
         new_shard_signatures = set()

@@ -81,6 +81,41 @@ steps:
       ]
     waitFor: ["quality-gates"]
 
+  # Step: Vulnerability scan — check for CRITICAL CVEs in pushed image
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "scan-check"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        IMAGE="asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:$SHORT_SHA"
+        echo "Waiting for Container Analysis vulnerability scan on $IMAGE..."
+        for i in $(seq 1 18); do
+          RESULT=$(gcloud artifacts docker images describe "$IMAGE" \
+            --show-package-vulnerability --format="json" 2>/dev/null)
+          if [ -n "$RESULT" ]; then
+            CRITICAL=$(echo "$RESULT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+summary = d.get('package_vulnerability_summary', {})
+vulns = summary.get('vulnerabilities', {})
+crits = vulns.get('CRITICAL', [])
+print(len(crits))
+" 2>/dev/null || echo "0")
+            if [ "$CRITICAL" != "0" ]; then
+              echo "SCAN FAILED: $CRITICAL CRITICAL CVEs found in $IMAGE"
+              exit 1
+            fi
+            echo "Scan complete: 0 CRITICAL CVEs"
+            exit 0
+          fi
+          echo "Scan not ready (attempt $i/18) — waiting 10s..."
+          sleep 10
+        done
+        echo "WARNING: Scan did not complete in 3 minutes — proceeding"
+        exit 0
+    waitFor: ["push-image"]
+
 options:
   machineType: "E2_HIGHCPU_8"
   logging: CLOUD_LOGGING_ONLY

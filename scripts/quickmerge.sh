@@ -3,27 +3,41 @@
 #
 # Single source of truth for all repos. Copy to scripts/quickmerge.sh.
 #
+# Three-tier branch model:
+#   feat/*    → QG only, no PR (feature iteration, auto-detected)
+#   staging   → convergence zone for breaking changes; PR targets main after SIT
+#   main      → always stable; NEVER a direct target for breaking changes
+#
 # Usage:
 #   ./scripts/quickmerge.sh "commit message"
 #   ./scripts/quickmerge.sh "commit message" --files "path1 path2 path3"
 #   ./scripts/quickmerge.sh "commit message" --dep-branch "my-feature"
+#   ./scripts/quickmerge.sh "commit message" --to-staging
 #   ./scripts/quickmerge.sh "commit message" --quick
 #   ./scripts/quickmerge.sh "commit message" --skip-tests
 #   ./scripts/quickmerge.sh "commit message" --skip-typecheck
 #
 # Flags:
 #   --files "p1 p2"    Stage only these paths (multi-agent: avoid committing other agents' work)
-#   --dep-branch NAME  Branch isolation when dependencies have uncommitted changes
+#   --dep-branch NAME  Branch isolation when dependencies have uncommitted changes (feature mode)
+#   --to-staging       Breaking change path: PR targets staging instead of main; checks staging lock.
+#                      dep-branch auto-derived from current git branch. Mutually exclusive with --dep-branch.
 #   --quick            Skip only act simulation (Stage 4); all other checks run
 #   --skip-tests       Pass --skip-tests to quality-gates.sh (lint+type+codex only)
 #   --skip-typecheck   Pass --skip-typecheck to quality-gates.sh (skips basedpyright only)
 #
+# When to use --to-staging:
+#   feat!: / BREAKING CHANGE: commits that break downstream API contracts.
+#   All other commits (fix:, feat:, chore:) go directly to main (no --to-staging needed).
+#   See: unified-trading-pm/docs/repo-management/version-cascade-flow.md
+#
 # Pipeline:
 #   1. Dependency validation (workspace-manifest.json)
+#   1.5. PM: dependency alignment check; ALL: staging lock check (if --to-staging)
 #   2. Pre-flight audit (always runs — never skipped)
 #   3. Local quality gates (two-phase: auto-fix → verify)
 #   4. Act simulation (default; skip with --quick)
-#   5. Create PR + enable auto-merge
+#   5. Create PR + enable auto-merge (base: staging if --to-staging, else main)
 #
 # Prerequisites:
 #   - gh CLI installed and authenticated (gh auth login)
@@ -45,6 +59,7 @@ WORKSPACE_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 COMMIT_MSG="chore: automated update"
 FILES_ARG=""
 DEP_BRANCH=""
+TO_STAGING=false
 SKIP_TESTS=""
 SKIP_TYPECHECK=""
 QUICK=false
@@ -59,6 +74,10 @@ while [[ $# -gt 0 ]]; do
     --dep-branch)
       DEP_BRANCH="$2"
       shift 2
+      ;;
+    --to-staging)
+      TO_STAGING=true
+      shift
       ;;
     --skip-tests)
       SKIP_TESTS="--skip-tests"
@@ -88,6 +107,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── FLAG VALIDATION ────────────────────────────────────────────────────────────
+if [ "$TO_STAGING" = true ] && [ -n "$DEP_BRANCH" ]; then
+  echo "❌ --to-staging and --dep-branch are mutually exclusive."
+  echo "   --to-staging auto-derives the dep-branch from your current git branch."
+  echo "   Remove --dep-branch and re-run."
+  exit 1
+fi
+
+# Auto-derive dep-branch from current git branch when --to-staging
+CURRENT_BRANCH_PRE=$(git branch --show-current 2>/dev/null || echo "")
+if [ "$TO_STAGING" = true ] && [ -n "$CURRENT_BRANCH_PRE" ] && [ "$CURRENT_BRANCH_PRE" != "main" ] && [ "$CURRENT_BRANCH_PRE" != "staging" ]; then
+  DEP_BRANCH="$CURRENT_BRANCH_PRE"
+  echo "[$REPO_NAME] --to-staging: auto-derived dep-branch from current branch: $DEP_BRANCH"
+fi
+
+# Breaking change warning: if no --to-staging but commit looks like breaking change
+if [ "$TO_STAGING" = false ] && [ "$NO_PR" = false ]; then
+  FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+  if echo "$COMMIT_MSG" | grep -q "BREAKING CHANGE:" || echo "$FIRST_LINE" | grep -qE "^[a-z]+!\("; then
+    echo ""
+    echo "⚠️  WARNING: This commit appears to be a breaking change (feat!: or BREAKING CHANGE:)."
+    echo "   Breaking changes should target staging via --to-staging so downstream repos"
+    echo "   can run quality gates before the change reaches main."
+    echo "   To use the breaking change path: bash scripts/quickmerge.sh \"$COMMIT_MSG\" --to-staging"
+    echo "   Continuing with direct-to-main path (your choice)."
+    echo ""
+  fi
+fi
+
 # NOTE: Cursor rules sync was previously done here as Stage 0 (copy-based).
 # Rules are now symlinked (.cursor/rules/ -> unified-trading-pm/cursor-rules/)
 # so no sync step is needed — edits go directly to the git-tracked source.
@@ -106,6 +154,10 @@ elif [ -f ".venv/Scripts/activate" ]; then
   source .venv/Scripts/activate
   VENV_ACTIVATED=1
   echo "[$REPO_NAME] Using .venv (Python $(python --version 2>&1))"
+elif [ -f "${WORKSPACE_ROOT}/.venv-workspace/bin/activate" ]; then
+  source "${WORKSPACE_ROOT}/.venv-workspace/bin/activate"
+  VENV_ACTIVATED=1
+  echo "[$REPO_NAME] Using .venv-workspace (Python $(python --version 2>&1))"
 else
   echo "[$REPO_NAME] ⚠️  No .venv found — using system Python"
 fi
@@ -185,8 +237,55 @@ fi
 echo ""
 
 # ============================================================================
-# STAGE 1.5: PM DEPENDENCY ALIGNMENT (unified-trading-pm only)
+# STAGE 1.5: STAGING LOCK CHECK (--to-staging only) + PM DEPENDENCY ALIGNMENT
 # ============================================================================
+if [ "$TO_STAGING" = true ] && [ -f "$MANIFEST_PATH" ]; then
+  echo "=========================================="
+  echo "STAGE 1.5: Staging Lock Check"
+  echo "=========================================="
+  STAGING_LOCKED=$(python3 -c "
+import json, sys
+try:
+    with open('${MANIFEST_PATH}') as f:
+        m = json.load(f)
+    ss = m.get('staging_status', {})
+    locked = ss.get('locked', False)
+    reason = ss.get('locked_reason') or ''
+    since = ss.get('locked_since') or ''
+    print(f'locked={str(locked).lower()}')
+    print(f'reason={reason}')
+    print(f'since={since}')
+except Exception as e:
+    print(f'locked=false')
+" 2>/dev/null)
+
+  IS_LOCKED=$(echo "$STAGING_LOCKED" | grep 'locked=' | cut -d= -f2)
+  LOCK_REASON=$(echo "$STAGING_LOCKED" | grep 'reason=' | cut -d= -f2-)
+  LOCK_SINCE=$(echo "$STAGING_LOCKED" | grep 'since=' | cut -d= -f2-)
+
+  if [ "$IS_LOCKED" = "true" ]; then
+    echo ""
+    echo "═══════════════════════════════════════════════════════"
+    echo "⏳ STAGING LOCKED — Cannot proceed with --to-staging"
+    echo "═══════════════════════════════════════════════════════"
+    echo ""
+    echo "Reason: $LOCK_REASON"
+    echo "Since:  $LOCK_SINCE"
+    echo ""
+    echo "Staging is locked while a breaking change cascade is converging."
+    echo "Wait for the SIT to validate staging and unlock it, then re-run."
+    echo ""
+    echo "To check staging status:"
+    echo "  jq '.staging_status' unified-trading-pm/workspace-manifest.json"
+    echo ""
+    echo "Your changes are safe — nothing was committed. Re-run when staging clears."
+    echo "═══════════════════════════════════════════════════════"
+    exit 1
+  fi
+  echo "[$REPO_NAME] ✅ Staging is unlocked — proceeding"
+  echo ""
+fi
+
 if [ "$REPO_NAME" = "unified-trading-pm" ]; then
   echo "=========================================="
   echo "STAGE 1.5: Dependency Alignment (PM)"
@@ -205,6 +304,7 @@ if [ "$REPO_NAME" = "unified-trading-pm" ]; then
       echo "  python unified-trading-pm/scripts/manifest/generate-derived-manifest.py"
       echo "  python unified-trading-pm/scripts/manifest/check-dependency-alignment.py --json"
       echo "  python unified-trading-pm/scripts/manifest/fix-internal-dependency-alignment.py --apply  # if internal mismatches"
+      echo "  python unified-trading-pm/scripts/manifest/fix_external_dependency_alignment.py --apply  # if external mismatches (updates repos to match canonical)"
       echo ""
       echo "See: unified-trading-pm/scripts/manifest/README-DEPENDENCY-ALIGNMENT.md"
       cd "$REPO_DIR"
@@ -212,6 +312,15 @@ if [ "$REPO_NAME" = "unified-trading-pm" ]; then
     fi
     cd "$REPO_DIR"
   fi
+
+  # Regenerate SVG when manifest has been updated (so diagram always reflects current state)
+  SVG_SCRIPT="$WORKSPACE_ROOT/unified-trading-pm/scripts/manifest/generate_workspace_dag.py"
+  if [ -f "$SVG_SCRIPT" ]; then
+    cd "$WORKSPACE_ROOT"
+    python "$SVG_SCRIPT" 2>/dev/null && echo "[$REPO_NAME] ✅ Workspace DAG SVG regenerated" || echo "[$REPO_NAME] ⚠️  SVG generation failed (non-blocking)"
+    cd "$REPO_DIR"
+  fi
+
   echo ""
 fi
 
@@ -277,6 +386,12 @@ if [ -f "scripts/setup.sh" ]; then
   echo "[$REPO_NAME] Ensuring env ready (setup.sh)..."
   bash scripts/setup.sh --check 2>/dev/null || bash scripts/setup.sh
 fi
+
+# Ensure scripts are executable before quality gates (so executable checks pass)
+# and stage them so Git records the mode for everyone on commit
+for s in scripts/quickmerge.sh scripts/quality-gates.sh; do
+  [ -f "$s" ] && chmod +x "$s" && git add "$s" 2>/dev/null || true
+done
 
 # STAGE 3: LOCAL QUALITY GATES (two-phase: auto-fix → verify)
 # ============================================================================
@@ -353,11 +468,24 @@ else
   fi
 
   ACT_SECRETS=""
-  [ -f ~/.secrets ] && ACT_SECRETS="--secret-file ~/.secrets"
-  if act -j quality-gates $ACT_SECRETS 2>/dev/null; then
+  [ -f "${WORKSPACE_ROOT}/.act-secrets" ] && ACT_SECRETS="--secret-file ${WORKSPACE_ROOT}/.act-secrets"
+  [ -z "$ACT_SECRETS" ] && [ -f ~/.secrets ] && ACT_SECRETS="--secret-file ~/.secrets"
+  if act -j quality-gates $ACT_SECRETS; then
     echo "[$REPO_NAME] ✅ Act simulation PASSED"
   else
-    echo "[$REPO_NAME] ⚠️  Act simulation failed (continuing — CI will be the authoritative check)"
+    echo "" >&2
+    echo "[$REPO_NAME] ❌ Act simulation FAILED — quickmerge aborted" >&2
+    echo "" >&2
+    echo "Act needs GH_PAT to clone sibling repos (e.g. unified-trading-codex). Without it, CI simulation cannot run." >&2
+    echo "" >&2
+    echo "Fix:" >&2
+    echo "  1. bash unified-trading-pm/scripts/workspace/generate-act-secrets.sh" >&2
+    echo "  2. Edit <workspace-root>/.act-secrets and add:  GH_PAT=ghp_xxxxxxxxxxxx" >&2
+    echo "  3. Re-run quickmerge" >&2
+    echo "" >&2
+    echo "SSOT: unified-trading-pm/docs/repo-management/act-secrets-setup.md" >&2
+    echo "" >&2
+    exit 1
   fi
 fi
 
@@ -389,7 +517,7 @@ if [ -n "$DEP_BRANCH" ]; then
   BRANCH="$DEP_BRANCH"
   echo "[$REPO_NAME] Using specified branch: $BRANCH"
 else
-  BRANCH="auto/$(date +%Y%m%d-%H%M%S)-$$"
+  BRANCH="auto/$(TZ=UTC date +%Y%m%d-%H%M%S)-$$"
   echo "[$REPO_NAME] Creating auto-generated branch: $BRANCH"
 fi
 
@@ -399,6 +527,18 @@ echo ""
 # Restore stash on new branch
 if [ "$RESTORE_STASH" = 1 ] && git stash list | grep -q "quickmerge-$$"; then
   git stash pop --quiet
+fi
+
+# Auto-format with Prettier BEFORE staging (so pre-commit validation passes)
+# Run twice to handle idempotency
+if [ -f ".pre-commit-config.yaml" ] && grep -q "mirrors-prettier" .pre-commit-config.yaml 2>/dev/null; then
+  if command -v pre-commit &>/dev/null; then
+    pre-commit run prettier --all-files 2>/dev/null || true
+    pre-commit run prettier --all-files 2>/dev/null || true
+  else
+    npx prettier --write "**/*.{ts,tsx,js,jsx,json,md,yaml,yml,css}" --ignore-unknown 2>/dev/null || true
+    npx prettier --write "**/*.{ts,tsx,js,jsx,json,md,yaml,yml,css}" --ignore-unknown 2>/dev/null || true
+  fi
 fi
 
 # Stage files: --files for selective add, else add all
@@ -427,7 +567,15 @@ else
   git add -A
 fi
 
-git commit -m "$COMMIT_MSG" --quiet
+if ! git commit -m "$COMMIT_MSG" --quiet; then
+  # Pre-commit may have modified files (e.g. Prettier). Stage and retry once.
+  git add -A
+  if ! git commit -m "$COMMIT_MSG" --quiet; then
+    echo "[$REPO_NAME] ❌ Commit failed (pre-commit may have failed). Run: pre-commit run --all-files; git add -A; git commit -m \"...\"" >&2
+    exit 1
+  fi
+  echo "[$REPO_NAME] Pre-commit modified files; staged and committed on retry" >&2
+fi
 
 git push -u origin "$BRANCH" --quiet 2>/dev/null
 
@@ -437,18 +585,33 @@ PR_BODY="Automated PR. Will auto-merge once quality gates pass.
 
 ${ISSUE_REFS}"
 
+# Determine PR base branch
+if [ "$TO_STAGING" = true ]; then
+  PR_BASE="staging"
+  echo "[$REPO_NAME] --to-staging: PR targets staging (breaking change path)"
+else
+  PR_BASE="main"
+fi
+
 PR_URL=$(gh pr create \
   --title "$COMMIT_MSG" \
   --body "$PR_BODY" \
-  --base main \
+  --base "$PR_BASE" \
   --head "$BRANCH" 2>/dev/null)
 
 PR_NUM=$(echo "$PR_URL" | grep -o "[0-9]*$" || echo "")
 if [ -n "$PR_NUM" ]; then
-  gh pr merge "$PR_NUM" --auto --squash --delete-branch 2>/dev/null || true
+  if [ "$TO_STAGING" = true ]; then
+    # Breaking change path: auto-merge to staging; SIT will validate before promoting to main
+    gh pr merge "$PR_NUM" --auto --squash --delete-branch 2>/dev/null || true
+    echo "[$REPO_NAME] ✅ PR created targeting staging: $PR_URL (auto-merge to staging enabled)"
+    echo "[$REPO_NAME] After staging merge: version-bump.yml will dispatch to PM → cascade to dependents"
+    echo "[$REPO_NAME] SIT will validate staging → staging-to-main.yml will promote to main when ready"
+  else
+    gh pr merge "$PR_NUM" --auto --squash --delete-branch 2>/dev/null || true
+    echo "[$REPO_NAME] ✅ PR created: $PR_URL (auto-merge enabled)"
+    echo "[$REPO_NAME] Staying on branch $BRANCH — PR will auto-merge when CI passes"
+    echo "[$REPO_NAME] To sync with main after merge: git checkout main && git pull"
+  fi
 fi
-
-echo "[$REPO_NAME] ✅ PR created: $PR_URL (auto-merge enabled)"
-echo "[$REPO_NAME] Staying on branch $BRANCH — PR will auto-merge when CI passes"
-echo "[$REPO_NAME] To sync with main after merge: git checkout main && git pull"
 fi

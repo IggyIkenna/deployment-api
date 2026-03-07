@@ -55,11 +55,12 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
     if "stage_timings" not in shard_state or shard_state["stage_timings"] is None:
         shard_state["stage_timings"] = {}
 
+    _is_validation_failed = event_name == "FAILED" and details.get("error_category") == "validation"
     if event_name in [
         "VALIDATION_STARTED",
         "VALIDATION_COMPLETED",
-        "VALIDATION_FAILED",
-    ]:
+        "FAILED",
+    ] and (event_name != "FAILED" or _is_validation_failed):
         if event_name == "VALIDATION_STARTED":
             shard_state["current_stage"] = "validation"
             shard_state["stage_started_at"] = timestamp.isoformat()
@@ -71,11 +72,13 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
                     start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
                     if start_dt.tzinfo is None:
                         start_dt = start_dt.replace(tzinfo=UTC)
-                    shard_state["stage_timings"]["validation"] = (timestamp - start_dt).total_seconds()
+                    shard_state["stage_timings"]["validation"] = (
+                        timestamp - start_dt
+                    ).total_seconds()
                 except (ValueError, TypeError) as e:
                     logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
                     pass
-        elif event_name == "VALIDATION_FAILED":
+        elif _is_validation_failed:
             shard_state["status"] = "failed"
             shard_state["failure_category"] = "validation_failed"
 
@@ -91,7 +94,9 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
                     start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
                     if start_dt.tzinfo is None:
                         start_dt = start_dt.replace(tzinfo=UTC)
-                    shard_state["stage_timings"]["ingestion"] = (timestamp - start_dt).total_seconds()
+                    shard_state["stage_timings"]["ingestion"] = (
+                        timestamp - start_dt
+                    ).total_seconds()
                 except (ValueError, TypeError) as e:
                     logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
                     pass
@@ -108,7 +113,9 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
                     start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
                     if start_dt.tzinfo is None:
                         start_dt = start_dt.replace(tzinfo=UTC)
-                    shard_state["stage_timings"]["processing"] = (timestamp - start_dt).total_seconds()
+                    shard_state["stage_timings"]["processing"] = (
+                        timestamp - start_dt
+                    ).total_seconds()
                 except (ValueError, TypeError) as e:
                     logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
                     pass
@@ -127,7 +134,9 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
                     start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
                     if start_dt.tzinfo is None:
                         start_dt = start_dt.replace(tzinfo=UTC)
-                    shard_state["stage_timings"]["persistence"] = (timestamp - start_dt).total_seconds()
+                    shard_state["stage_timings"]["persistence"] = (
+                        timestamp - start_dt
+                    ).total_seconds()
                 except (ValueError, TypeError) as e:
                     logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
                     pass

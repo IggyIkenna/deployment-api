@@ -6,7 +6,10 @@ Covers:
 - infra_health helpers (_get_verify_infra fallback path)
 """
 
+import asyncio
 from unittest.mock import patch
+
+import pytest
 
 
 class TestGetServiceCategoriesLogic:
@@ -65,27 +68,8 @@ class TestGetCapabilities:
         assert isinstance(status, (bool, dict))
 
 
-class TestGetVerifyInfra:
-    """Tests for _get_verify_infra fallback logic."""
-
-    def test_returns_none_when_neither_import_works(self):
-        """When both import paths fail, returns None."""
-        import sys
-
-        from deployment_api.routes.infra_health import _get_verify_infra
-
-        with patch.dict(
-            sys.modules,
-            {
-                "deployment_service": None,
-                "deployment_service.scripts": None,
-                "deployment_service.scripts.verify_infra": None,
-                "verify_infra": None,
-            },
-        ):
-            result = _get_verify_infra()
-            # Either None (both failed) or a module object if the path happened to exist
-            assert result is None or hasattr(result, "run_verification")
+class TestInfraHealthRoute:
+    """Tests for infra_health route."""
 
     def test_infra_health_route_exists(self):
         """Verify the router and route are importable and callable."""
@@ -93,3 +77,51 @@ class TestGetVerifyInfra:
 
         assert callable(infra_health)
         assert router is not None
+
+
+class TestGetServiceCategoriesRoute:
+    """Tests for the actual get_service_categories route function."""
+
+    def test_returns_categories_from_real_yaml(self):
+        """Uses real instruments-service sharding config if it exists."""
+        from deployment_api.routes.capabilities import get_service_categories
+
+        result = asyncio.run(get_service_categories("instruments-service"))
+        assert "service" in result
+        assert "categories" in result
+        assert isinstance(result["categories"], list)
+
+    def test_raises_404_when_config_not_found(self):
+        from fastapi import HTTPException
+
+        from deployment_api.routes.capabilities import get_service_categories
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(get_service_categories("zzz-nonexistent-service-xyz"))
+        assert exc.value.status_code == 404
+
+    def test_returns_empty_categories_for_service_without_category_dim(self):
+        """features-calendar-service has no category dimension."""
+        from deployment_api.routes.capabilities import get_service_categories
+
+        result = asyncio.run(get_service_categories("features-calendar-service"))
+        assert result["categories"] == []
+
+    def test_get_capabilities_returns_gcs_fuse(self):
+        from deployment_api.routes.capabilities import get_capabilities
+
+        with patch("deployment_api.routes.capabilities.get_gcs_fuse_status", return_value=False):
+            result = asyncio.run(get_capabilities())
+        assert result == {"gcs_fuse": False}
+
+    def test_raises_500_on_oserror(self):
+        from fastapi import HTTPException
+
+        from deployment_api.routes.capabilities import get_service_categories
+
+        with (
+            patch("builtins.open", side_effect=OSError("disk error")),
+            pytest.raises(HTTPException) as exc,
+        ):
+            asyncio.run(get_service_categories("corporate-actions"))
+        assert exc.value.status_code == 500

@@ -106,7 +106,6 @@ class TestGetConfigDir:
         configs_dir.mkdir()
 
         # Use real Path but redirect __file__ to tmp_path / fake.py
-        from pathlib import Path
 
         # auto_sync.get_config_dir uses Path(__file__).parent.parent / "configs"
         # We can't easily redirect __file__, so just test that the function
@@ -167,7 +166,10 @@ class TestAutoSyncCancelledError:
 
         with (
             patch.object(auto_sync, "_shutdown_event", shutdown_event),
-            patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=asyncio.CancelledError()),
+            patch(
+                "deployment_api.workers.auto_sync.asyncio.sleep",
+                side_effect=asyncio.CancelledError(),
+            ),
         ):
             # Should complete without raising when cancelled
             task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
@@ -175,3 +177,356 @@ class TestAutoSyncCancelledError:
                 await asyncio.wait_for(task, timeout=1.0)
             except (asyncio.CancelledError, TimeoutError):
                 task.cancel()
+
+
+class TestGetConfigDirRaises:
+    """Tests for get_config_dir RuntimeError path (line 59)."""
+
+    def test_raises_runtime_error_when_configs_missing(self, tmp_path):
+
+        # Build a fake module file two levels deep: tmp_path/pkg/workers/auto_sync.py
+        # so api_dir = tmp_path/pkg and repo_root = tmp_path/pkg.parent = tmp_path
+        # configs_dir = tmp_path / "configs" — which we do NOT create
+        fake_workers = tmp_path / "pkg" / "workers"
+        fake_workers.mkdir(parents=True)
+        fake_file = fake_workers / "auto_sync.py"
+        fake_file.touch()
+
+        original_file = auto_sync.__file__
+        try:
+            auto_sync.__file__ = str(fake_file)
+            with pytest.raises(RuntimeError, match="configs"):
+                auto_sync.get_config_dir()
+        finally:
+            auto_sync.__file__ = original_file
+
+    def test_returns_path_object_when_configs_exists(self, tmp_path):
+
+        fake_workers = tmp_path / "pkg" / "workers"
+        fake_workers.mkdir(parents=True)
+        fake_file = fake_workers / "auto_sync.py"
+        fake_file.touch()
+
+        # Create the configs directory at tmp_path/configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+
+        original_file = auto_sync.__file__
+        try:
+            auto_sync.__file__ = str(fake_file)
+            result = auto_sync.get_config_dir()
+            assert result == configs
+        finally:
+            auto_sync.__file__ = original_file
+
+
+class TestAutoSyncShutdownBeforeSync:
+    """Tests that auto_sync loop exits early when shutdown is set during sleep."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_set_during_first_sleep_exits(self):
+        shutdown_event = asyncio.Event()
+
+        async def _sleep_then_shutdown(seconds):
+            shutdown_event.set()
+
+        with (
+            patch.object(auto_sync, "_shutdown_event", shutdown_event),
+            patch(
+                "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_sleep_then_shutdown
+            ),
+        ):
+            task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+            await asyncio.wait_for(task, timeout=2.0)
+            assert task.done()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_already_set_does_not_enter_loop(self):
+        shutdown_event = asyncio.Event()
+        shutdown_event.set()
+
+        with patch.object(auto_sync, "_shutdown_event", shutdown_event):
+            # Loop checks is_set() immediately; should exit without sleeping
+            task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+            await asyncio.wait_for(task, timeout=1.0)
+            assert task.done()
+
+
+class TestAutoSyncMainLoop:
+    """Tests for the body of _auto_sync_running_deployments (lines 92-485)."""
+
+    def _prepare_modules(
+        self, list_prefixes_return=None, process_batch_return=(0, 0), list_prefixes_side_effect=None
+    ):
+        """Inject sys.modules mocks and _importlib into auto_sync module. Returns restore dict."""
+        import sys
+        from types import ModuleType
+
+        # auto_sync.py references `_importlib` but never imports it.
+        # Inject a mock that handles the quota_broker_client import gracefully.
+        mock_importlib = MagicMock()
+        mock_importlib.import_module.side_effect = RuntimeError("quota_broker not available")
+        auto_sync._importlib = mock_importlib  # type: ignore[attr-defined]
+
+        sf_mod = ModuleType("deployment_api.utils.storage_facade")
+        if list_prefixes_side_effect is not None:
+            sf_mod.list_prefixes = MagicMock(side_effect=list_prefixes_side_effect)  # type: ignore[attr-defined]
+        else:
+            sf_mod.list_prefixes = MagicMock(return_value=list_prefixes_return or [])  # type: ignore[attr-defined]
+        sf_mod.list_objects = MagicMock(return_value=[])  # type: ignore[attr-defined]
+        sf_mod.read_object_text = MagicMock(return_value="{}")  # type: ignore[attr-defined]
+        sf_mod.delete_objects = MagicMock()  # type: ignore[attr-defined]
+        sf_mod.get_object_metadata = MagicMock(return_value=None)  # type: ignore[attr-defined]
+
+        proc_mod = ModuleType("deployment_api.workers.deployment_processor")
+        proc_mod.process_deployments_batch = MagicMock(return_value=process_batch_return)  # type: ignore[attr-defined]
+
+        orig_sf = sys.modules.get("deployment_api.utils.storage_facade")
+        orig_proc = sys.modules.get("deployment_api.workers.deployment_processor")
+        sys.modules["deployment_api.utils.storage_facade"] = sf_mod
+        sys.modules["deployment_api.workers.deployment_processor"] = proc_mod
+
+        return {"orig_sf": orig_sf, "orig_proc": orig_proc}
+
+    def _restore_modules(self, restore: dict) -> None:
+        import sys
+
+        orig_sf = restore["orig_sf"]
+        orig_proc = restore["orig_proc"]
+        if orig_sf is not None:
+            sys.modules["deployment_api.utils.storage_facade"] = orig_sf
+        elif "deployment_api.utils.storage_facade" in sys.modules:
+            del sys.modules["deployment_api.utils.storage_facade"]
+        if orig_proc is not None:
+            sys.modules["deployment_api.workers.deployment_processor"] = orig_proc
+        elif "deployment_api.workers.deployment_processor" in sys.modules:
+            del sys.modules["deployment_api.workers.deployment_processor"]
+        if hasattr(auto_sync, "_importlib"):
+            del auto_sync._importlib  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_sync_cycle_runs_and_exits_on_shutdown(self):
+        """Full sync cycle: storage_facade + process_deployments_batch mocked."""
+        shutdown_event = asyncio.Event()
+        sleep_count = 0
+
+        async def _controlled_sleep(seconds):
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count >= 2:
+                shutdown_event.set()
+
+        mock_storage_client = MagicMock()
+        mock_storage_client.bucket.return_value = MagicMock()
+
+        restore = self._prepare_modules()
+        try:
+            mock_loop = MagicMock()
+
+            async def _fake_run_in_executor(executor, fn):
+                return fn()
+
+            mock_loop.run_in_executor = _fake_run_in_executor
+
+            with (
+                patch.object(auto_sync, "_shutdown_event", shutdown_event),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.get_storage_client_with_pool",
+                    return_value=mock_storage_client,
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.get_event_loop",
+                    return_value=mock_loop,
+                ),
+            ):
+                task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+                await asyncio.wait_for(task, timeout=5.0)
+                assert task.done()
+        finally:
+            self._restore_modules(restore)
+
+    @pytest.mark.asyncio
+    async def test_sync_cycle_storage_error_handled(self):
+        """list_prefixes raising RuntimeError is caught and returns 0, 0."""
+        shutdown_event = asyncio.Event()
+        sleep_count = 0
+
+        async def _controlled_sleep(seconds):
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count >= 2:
+                shutdown_event.set()
+
+        mock_storage_client = MagicMock()
+        mock_storage_client.bucket.return_value = MagicMock()
+
+        restore = self._prepare_modules(list_prefixes_side_effect=RuntimeError("gcs down"))
+        try:
+            mock_loop = MagicMock()
+
+            async def _fake_run_in_executor(executor, fn):
+                return fn()
+
+            mock_loop.run_in_executor = _fake_run_in_executor
+
+            with (
+                patch.object(auto_sync, "_shutdown_event", shutdown_event),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.get_storage_client_with_pool",
+                    return_value=mock_storage_client,
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.get_event_loop",
+                    return_value=mock_loop,
+                ),
+            ):
+                task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+                await asyncio.wait_for(task, timeout=5.0)
+                assert task.done()
+        finally:
+            self._restore_modules(restore)
+
+    @pytest.mark.asyncio
+    async def test_sync_cycle_with_active_deployments_uses_active_interval(self):
+        """When process_deployments_batch returns num_active > 0, interval stays active."""
+        shutdown_event = asyncio.Event()
+        sleep_count = 0
+        sleep_values = []
+
+        async def _controlled_sleep(seconds):
+            nonlocal sleep_count
+            sleep_values.append(seconds)
+            sleep_count += 1
+            if sleep_count >= 3:
+                shutdown_event.set()
+
+        mock_storage_client = MagicMock()
+        mock_storage_client.bucket.return_value = MagicMock()
+
+        restore = self._prepare_modules(
+            list_prefixes_return=["deployments.development/dep-1/"],
+            process_batch_return=(1, 2),
+        )
+        try:
+            mock_loop = MagicMock()
+
+            async def _fake_run_in_executor(executor, fn):
+                return fn()
+
+            mock_loop.run_in_executor = _fake_run_in_executor
+
+            with (
+                patch.object(auto_sync, "_shutdown_event", shutdown_event),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.get_storage_client_with_pool",
+                    return_value=mock_storage_client,
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.get_event_loop",
+                    return_value=mock_loop,
+                ),
+            ):
+                task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+                await asyncio.wait_for(task, timeout=5.0)
+
+            # Second sleep (index 1) should use active interval (not idle=60)
+            active_interval = getattr(auto_sync.settings, "AUTO_SYNC_INTERVAL_ACTIVE", 30)
+            assert len(sleep_values) >= 2
+            assert sleep_values[1] == active_interval
+        finally:
+            self._restore_modules(restore)
+
+    @pytest.mark.asyncio
+    async def test_sync_cycle_idle_uses_idle_interval(self):
+        """When no active deployments, interval switches to 60s."""
+        shutdown_event = asyncio.Event()
+        sleep_count = 0
+        sleep_values = []
+
+        async def _controlled_sleep(seconds):
+            nonlocal sleep_count
+            sleep_values.append(seconds)
+            sleep_count += 1
+            if sleep_count >= 3:
+                shutdown_event.set()
+
+        mock_storage_client = MagicMock()
+        mock_storage_client.bucket.return_value = MagicMock()
+
+        restore = self._prepare_modules(list_prefixes_return=[], process_batch_return=(0, 0))
+        try:
+            mock_loop = MagicMock()
+
+            async def _fake_run_in_executor(executor, fn):
+                return fn()
+
+            mock_loop.run_in_executor = _fake_run_in_executor
+
+            with (
+                patch.object(auto_sync, "_shutdown_event", shutdown_event),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.get_storage_client_with_pool",
+                    return_value=mock_storage_client,
+                ),
+                patch(
+                    "deployment_api.workers.auto_sync.asyncio.get_event_loop",
+                    return_value=mock_loop,
+                ),
+            ):
+                task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+                await asyncio.wait_for(task, timeout=5.0)
+
+            # Second sleep should be idle=60
+            assert len(sleep_values) >= 2
+            assert sleep_values[1] == 60
+        finally:
+            self._restore_modules(restore)
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_in_loop_does_not_crash(self):
+        """RuntimeError inside the loop body is caught and loop continues."""
+        shutdown_event = asyncio.Event()
+        sleep_count = 0
+
+        async def _controlled_sleep(seconds):
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count >= 2:
+                shutdown_event.set()
+
+        mock_storage_client = MagicMock()
+        mock_storage_client.bucket.side_effect = RuntimeError("simulated crash")
+
+        mock_loop = MagicMock()
+
+        async def _raise_in_executor(executor, fn):
+            raise RuntimeError("executor error")
+
+        mock_loop.run_in_executor = _raise_in_executor
+
+        with (
+            patch.object(auto_sync, "_shutdown_event", shutdown_event),
+            patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep),
+            patch(
+                "deployment_api.workers.auto_sync.get_storage_client_with_pool",
+                return_value=mock_storage_client,
+            ),
+            patch(
+                "deployment_api.workers.auto_sync.asyncio.get_event_loop", return_value=mock_loop
+            ),
+        ):
+            task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
+            await asyncio.wait_for(task, timeout=5.0)
+            assert task.done()

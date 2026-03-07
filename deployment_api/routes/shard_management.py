@@ -106,7 +106,9 @@ def _extract_date_range(date_val: object) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _extract_error_warning_shard_ids(log_analysis: dict | None) -> tuple[set, set]:
+def _extract_error_warning_shard_ids(
+    log_analysis: dict[str, object] | None,
+) -> tuple[set[str], set[str]]:
     """Extract shard IDs that have log errors or warnings."""
     if not log_analysis or not isinstance(log_analysis, dict):
         return set(), set()
@@ -206,7 +208,7 @@ def _classify_shard(
 
 
 def _build_blob_timestamp_map(
-    turbo_result: dict,
+    turbo_result: dict[str, object],
 ) -> dict[str, dict[str, dict[str, object]]]:
     """Extract per-(category, venue, date) blob timestamps from turbo result.
 
@@ -315,7 +317,9 @@ def _resolve_shard_blob_data(
                             blob_updated_raw = ts
                             break
 
-        blob_updated: datetime | None = cast(datetime, blob_updated_raw) if isinstance(blob_updated_raw, datetime) else None
+        blob_updated: datetime | None = (
+            cast(datetime, blob_updated_raw) if isinstance(blob_updated_raw, datetime) else None
+        )
         result[sid_str] = (data_exists, blob_updated)
 
     return result
@@ -323,7 +327,7 @@ def _resolve_shard_blob_data(
 
 def _classify_all_shards(
     state,
-    log_analysis: dict | None,
+    log_analysis: dict[str, object] | None,
     blob_data: dict[str, tuple[bool, datetime | None]] | None = None,
 ) -> dict[str, str]:
     """Classify every shard in a deployment into outcome categories.
@@ -369,8 +373,8 @@ def _compute_classification_counts(
 
 
 def _build_existing_dates_sets(
-    turbo_result: dict,
-) -> tuple[dict[str, set], dict[str, dict[str, set]]]:
+    turbo_result: dict[str, object],
+) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
     """Build category+date and venue+date sets from turbo data status result.
 
     Mirrors logic used by /api/data-status/missing-shards.
@@ -454,10 +458,10 @@ def _compute_verified_succeeded_shard_ids(
 
 def _compute_completed_breakdown(
     state,
-    log_analysis: dict | None,
-    existing_cat_dates: dict[str, set] | None = None,
-    existing_venue_dates: dict[str, dict[str, set]] | None = None,
-) -> dict:
+    log_analysis: dict[str, object] | None,
+    existing_cat_dates: dict[str, set[str]] | None = None,
+    existing_venue_dates: dict[str, dict[str, set[str]]] | None = None,
+) -> dict[str, object]:
     """Compute detailed breakdown of completed shards by status and verification."""
     succeeded_ids: set[str] = {
         cast(str, getattr(s, "shard_id", ""))
@@ -470,9 +474,11 @@ def _compute_completed_breakdown(
     completed_with_errors = len(succeeded_ids & shard_ids_with_errors)
     completed_with_warnings = len(succeeded_ids & shard_ids_with_warnings)
 
-    verified_clean_ids: set = set()
+    verified_clean_ids: set[str] = set()
     if existing_cat_dates is not None and existing_venue_dates is not None:
-        verified_ids = _compute_verified_succeeded_shard_ids(state, existing_cat_dates, existing_venue_dates)
+        verified_ids = _compute_verified_succeeded_shard_ids(
+            state, existing_cat_dates, existing_venue_dates
+        )
         verified_clean_ids = verified_ids - shard_ids_with_errors - shard_ids_with_warnings
 
     verified_clean = len(verified_clean_ids)

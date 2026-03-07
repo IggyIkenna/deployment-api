@@ -132,7 +132,7 @@ SERVICE_CONFIG = {
 }
 
 
-def load_expected_start_dates() -> dict[str, dict]:
+def load_expected_start_dates() -> dict[str, dict[str, object]]:
     """Load expected start dates from configs/expected_start_dates.yaml."""
     config_path = Path(__file__).parent.parent.parent / "configs" / "expected_start_dates.yaml"
     if not config_path.exists():
@@ -142,7 +142,7 @@ def load_expected_start_dates() -> dict[str, dict]:
         return yaml.safe_load(f) or {}
 
 
-def load_venue_data_types() -> dict[str, dict]:
+def load_venue_data_types() -> dict[str, dict[str, object]]:
     """Load venue-specific data type expectations from venue_data_types.yaml."""
     config_path = Path(__file__).parent.parent.parent / "configs" / "venue_data_types.yaml"
     if not config_path.exists():
@@ -152,20 +152,22 @@ def load_venue_data_types() -> dict[str, dict]:
         return yaml.safe_load(f) or {}
 
 
-def get_expected_venues_for_category(venue_config: dict, category: str) -> set:
+def get_expected_venues_for_category(venue_config: dict[str, object], category: str) -> set[str]:
     """Get the set of expected venues for a category from venue_data_types.yaml."""
     cat_config = venue_config.get(category, {})
     venues = cat_config.get("venues") or {}
     return set(venues.keys())
 
 
-def is_venue_expected(venue_config: dict, category: str, venue: str) -> bool:
+def is_venue_expected(venue_config: dict[str, object], category: str, venue: str) -> bool:
     """Check if a venue is expected for a category."""
     expected_venues = get_expected_venues_for_category(venue_config, category)
     return venue in expected_venues
 
 
-def get_expected_data_types_for_venue(venue_config: dict, category: str, venue: str) -> list:
+def get_expected_data_types_for_venue(
+    venue_config: dict[str, object], category: str, venue: str
+) -> list[str]:
     """Get expected data_types for a specific venue from venue_data_types.yaml."""
     cat_config = venue_config.get(category, {})
     venues = cat_config.get("venues") or {}
@@ -173,7 +175,9 @@ def get_expected_data_types_for_venue(venue_config: dict, category: str, venue: 
     return venue_cfg.get("data_types") or []
 
 
-def get_expected_instrument_types_for_venue(venue_config: dict, category: str, venue: str) -> list:
+def get_expected_instrument_types_for_venue(
+    venue_config: dict[str, object], category: str, venue: str
+) -> list[str]:
     """Get expected instrument_types for a specific venue from venue_data_types.yaml."""
     cat_config = venue_config.get(category, {})
     venues = cat_config.get("venues") or {}
@@ -182,7 +186,7 @@ def get_expected_instrument_types_for_venue(venue_config: dict, category: str, v
 
 
 def get_data_type_start_date(
-    expected_dates_config: dict,
+    expected_dates_config: dict[str, object],
     service: str,
     category: str,
     venue: str,
@@ -212,7 +216,7 @@ def get_data_type_start_date(
 
 
 def is_data_type_available_for_venue(
-    expected_dates_config: dict,
+    expected_dates_config: dict[str, object],
     service: str,
     category: str,
     venue: str,
@@ -234,7 +238,9 @@ def is_data_type_available_for_venue(
     return True
 
 
-def get_category_start_date(expected_dates_config: dict, service: str, category: str) -> str | None:
+def get_category_start_date(
+    expected_dates_config: dict[str, object], service: str, category: str
+) -> str | None:
     """Get the expected start date for a service/category."""
     service_config = expected_dates_config.get(service, {})
     category_config = service_config.get(category, {})
@@ -243,7 +249,9 @@ def get_category_start_date(expected_dates_config: dict, service: str, category:
     return None
 
 
-def get_venue_start_date(expected_dates_config: dict, service: str, category: str, venue: str) -> str | None:
+def get_venue_start_date(
+    expected_dates_config: dict[str, object], service: str, category: str, venue: str
+) -> str | None:
     """Get venue-specific start date, falling back to category start.
 
     Looks up venue-level start dates from expected_start_dates.yaml.
@@ -260,8 +268,8 @@ def get_venue_start_date(expected_dates_config: dict, service: str, category: st
 
 
 def get_expected_dates_for_venue(
-    all_dates: set,
-    expected_dates_config: dict,
+    all_dates: set[str],
+    expected_dates_config: dict[str, object],
     service: str,
     category: str,
     venue: str,
@@ -323,6 +331,8 @@ def generate_date_range_and_year_months(
     if first_day_of_month_only:
         original_count = len(all_dates)
         all_dates = {d for d in all_dates if d.endswith("-01")}
-        logger.info("[TURBO] First-day-of-month filter: %s -> %s dates", original_count, len(all_dates))
+        logger.info(
+            "[TURBO] First-day-of-month filter: %s -> %s dates", original_count, len(all_dates)
+        )
 
     return all_dates, year_months

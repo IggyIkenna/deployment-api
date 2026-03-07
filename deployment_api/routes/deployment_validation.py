@@ -79,7 +79,9 @@ async def _compute_and_cache_verification(
     blob_timestamps = _build_blob_timestamp_map(turbo_result)
 
     # Resolve per-shard blob data (existence + timestamp) from turbo data
-    blob_data = _resolve_shard_blob_data(state, existing_cat_dates, existing_venue_dates, blob_timestamps)
+    blob_data = _resolve_shard_blob_data(
+        state, existing_cat_dates, existing_venue_dates, blob_timestamps
+    )
 
     # Classify every shard using the full decision tree
     shard_classifications = _classify_all_shards(state, log_analysis, blob_data)
@@ -139,7 +141,7 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
 
     try:
-        from deployment_service.config_loader import ConfigLoader
+        from deployment_api.config_loader import ConfigLoader
 
         loader = ConfigLoader(config_dir)
         expected_dates = loader.load_expected_start_dates()
@@ -184,7 +186,7 @@ def _resolve_deploy_dates(deploy_request, config_dir: str = "configs") -> tuple[
     return start_date, end_date
 
 
-def validate_deployment_request(deploy_request) -> dict | None:
+def validate_deployment_request(deploy_request) -> dict[str, object] | None:
     """
     Validate deployment request parameters.
 
@@ -242,11 +244,17 @@ def validate_deployment_request(deploy_request) -> dict | None:
         errors.append("Invalid log_level. Must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
 
     # Validate region format
-    if deploy_request.region and not deploy_request.region.replace("-", "").replace("_", "").isalnum():
+    if (
+        deploy_request.region
+        and not deploy_request.region.replace("-", "").replace("_", "").isalnum()
+    ):
         errors.append("Invalid region format")
 
     # Validate zone format
-    if deploy_request.vm_zone and not deploy_request.vm_zone.replace("-", "").replace("_", "").isalnum():
+    if (
+        deploy_request.vm_zone
+        and not deploy_request.vm_zone.replace("-", "").replace("_", "").isalnum()
+    ):
         errors.append("Invalid vm_zone format")
 
     if errors:
@@ -255,7 +263,9 @@ def validate_deployment_request(deploy_request) -> dict | None:
     return None
 
 
-def validate_shard_configuration(service_config: dict, deploy_request) -> dict | None:
+def validate_shard_configuration(
+    service_config: dict[str, object], deploy_request
+) -> dict[str, object] | None:
     """
     Validate shard configuration for the service.
 
@@ -274,7 +284,9 @@ def validate_shard_configuration(service_config: dict, deploy_request) -> dict |
         errors.append("Service has no sharding dimensions configured")
 
     # Validate date granularity
-    date_granularity = deploy_request.date_granularity or service_config.get("date_granularity", "daily")
+    date_granularity = deploy_request.date_granularity or service_config.get(
+        "date_granularity", "daily"
+    )
     if date_granularity not in ["daily", "weekly", "monthly", "none"]:
         errors.append("Invalid date_granularity. Must be daily, weekly, monthly, or none")
 
@@ -295,7 +307,9 @@ def validate_shard_configuration(service_config: dict, deploy_request) -> dict |
     return None
 
 
-def validate_quota_requirements(quota_shape: dict, shard_count: int) -> dict | None:
+def validate_quota_requirements(
+    quota_shape: dict[str, object], shard_count: int
+) -> dict[str, object] | None:
     """
     Validate that quota requirements can be satisfied.
 
@@ -316,10 +330,14 @@ def validate_quota_requirements(quota_shape: dict, shard_count: int) -> dict | N
 
         errors = []
         if cpu_cores > max_cpu_cores:
-            errors.append(f"Total CPU requirement ({cpu_cores} cores) exceeds limit ({max_cpu_cores})")
+            errors.append(
+                f"Total CPU requirement ({cpu_cores} cores) exceeds limit ({max_cpu_cores})"
+            )
 
         if memory_gb > max_memory_gb:
-            errors.append(f"Total memory requirement ({memory_gb} GB) exceeds limit ({max_memory_gb})")
+            errors.append(
+                f"Total memory requirement ({memory_gb} GB) exceeds limit ({max_memory_gb})"
+            )
 
         if errors:
             return {"error": "quota_exceeded", "details": errors}
@@ -356,7 +374,9 @@ def validate_image_availability(docker_image: str, region: str) -> dict | None:
         return None
 
 
-def generate_deployment_report(state, log_analysis: dict | None, verification_data: dict | None) -> dict:
+def generate_deployment_report(
+    state, log_analysis: dict[str, object] | None, verification_data: dict[str, object] | None
+) -> dict[str, object]:
     """
     Generate comprehensive deployment report.
 

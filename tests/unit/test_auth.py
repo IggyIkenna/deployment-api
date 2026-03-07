@@ -6,9 +6,10 @@ invalid key, and valid key scenarios. Also tests production guard
 for DISABLE_AUTH.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi import HTTPException
-from unittest.mock import MagicMock, patch
 
 
 class TestVerifyApiKeyDisabledAuth:

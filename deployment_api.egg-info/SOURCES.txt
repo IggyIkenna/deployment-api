@@ -5,6 +5,8 @@ deployment_api/app_config.py
 deployment_api/auth.py
 deployment_api/auth_middleware.py
 deployment_api/background_sync.py
+deployment_api/config_loader.py
+deployment_api/deployment_api_config.py
 deployment_api/gunicorn.conf.py
 deployment_api/health_routes.py
 deployment_api/lifespan.py
@@ -16,6 +18,10 @@ deployment_api.egg-info/SOURCES.txt
 deployment_api.egg-info/dependency_links.txt
 deployment_api.egg-info/requires.txt
 deployment_api.egg-info/top_level.txt
+deployment_api/clients/__init__.py
+deployment_api/clients/deployment_service_client.py
+deployment_api/commentary/__init__.py
+deployment_api/commentary/pipeline_uat.py
 deployment_api/routes/__init__.py
 deployment_api/routes/batch_cache_manager.py
 deployment_api/routes/batch_config_utils.py
@@ -24,7 +30,9 @@ deployment_api/routes/batch_result_processor.py
 deployment_api/routes/capabilities.py
 deployment_api/routes/checklist.py
 deployment_api/routes/cloud_builds.py
+deployment_api/routes/commentary.py
 deployment_api/routes/config.py
+deployment_api/routes/config_management.py
 deployment_api/routes/data_batch_processing.py
 deployment_api/routes/data_status.py
 deployment_api/routes/data_status_helpers.py
@@ -56,8 +64,11 @@ deployment_api/services/sync_service.py
 deployment_api/utils/__init__.py
 deployment_api/utils/artifact_registry.py
 deployment_api/utils/cache.py
+deployment_api/utils/cloud_storage_client.py
+deployment_api/utils/config_validation.py
 deployment_api/utils/data_status_cache.py
 deployment_api/utils/deployment_events.py
+deployment_api/utils/deployment_state_reader.py
 deployment_api/utils/path_combinatorics.py
 deployment_api/utils/quota_requirements.py
 deployment_api/utils/service_events.py

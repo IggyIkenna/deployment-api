@@ -5,6 +5,7 @@ Handles VM state tracking, deployment locks, and cleanup operations
 to manage the lifecycle of deployment synchronization.
 """
 
+import importlib as _importlib
 import json
 import logging
 import os
@@ -15,10 +16,10 @@ from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from deployment_service.config.config_validator import ConfigurationError, ValidationUtils
 from unified_trading_library import get_storage_client as get_storage_client_with_pool
 
 from deployment_api import settings
+from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +106,18 @@ class StateManager:
                     return False
                 meta = existing.metageneration
                 try:
-                    existing_payload = cast(dict[str, object], json.loads(existing.download_as_text() or "{}"))
+                    existing_payload = cast(
+                        dict[str, object], json.loads(existing.download_as_text() or "{}")
+                    )
                 except (OSError, ValueError, RuntimeError):
                     existing_payload = {}
 
                 expires_at_raw: object = existing_payload.get("expires_at", 0)
-                expires_at = float(cast(float, expires_at_raw)) if isinstance(expires_at_raw, (int, float)) else 0.0
+                expires_at = (
+                    float(cast(float, expires_at_raw))
+                    if isinstance(expires_at_raw, (int, float))
+                    else 0.0
+                )
                 owner_raw: object = existing_payload.get("owner")
                 owner = cast(str, owner_raw) if isinstance(owner_raw, str) else None
 
@@ -157,7 +164,9 @@ class StateManager:
         try:
             lock_blob = bucket.blob(lock_blob_name)
             if lock_blob.exists():
-                lock_data = cast(dict[str, object], json.loads(lock_blob.download_as_text() or "{}"))
+                lock_data = cast(
+                    dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                )
                 if lock_data.get("owner") == self.owner_id:
                     lock_blob.delete()
                     self._held_deployment_locks.discard(deployment_id)
@@ -197,7 +206,9 @@ class StateManager:
             from deployment_api.utils.storage_facade import read_object_text
 
             # Read VM status
-            status_path = f"deployments.{self.deployment_env}/{state.get('deployment_id')}/vm_status.json"
+            status_path = (
+                f"deployments.{self.deployment_env}/{state.get('deployment_id')}/vm_status.json"
+            )
             try:
                 status_raw = read_object_text(self.state_bucket, status_path)
                 vm_map = cast(dict[str, object], json.loads(status_raw))
@@ -210,9 +221,7 @@ class StateManager:
                 shard_id = shard.get("shard_id")
                 if not shard_id:
                     continue
-                status_obj_path = (
-                    f"deployments.{self.deployment_env}/{state.get('deployment_id')}/shards/{shard_id}/status.txt"
-                )
+                status_obj_path = f"deployments.{self.deployment_env}/{state.get('deployment_id')}/shards/{shard_id}/status.txt"
                 try:
                     status_text = read_object_text(self.state_bucket, status_obj_path)
                     event_data = parse_service_event(status_text)
@@ -222,14 +231,14 @@ class StateManager:
                     logger.warning("Skipping item during operation: %s", e)
                     continue
 
-            def vm_status(vm_map: dict, job_id: str) -> str | None:
+            def vm_status(vm_map: dict[str, object], job_id: str) -> str | None:
                 """Get VM status from vm_map."""
                 for entry in vm_map.values():
                     if isinstance(entry, dict) and entry.get("job_id") == job_id:
                         return entry.get("status")
                 return None
 
-            def vm_zone(vm_map: dict, job_id: str) -> str | None:
+            def vm_zone(vm_map: dict[str, object], job_id: str) -> str | None:
                 """Get VM zone from vm_map."""
                 for entry in vm_map.values():
                     if isinstance(entry, dict) and entry.get("job_id") == job_id:
@@ -256,18 +265,22 @@ class StateManager:
 
             if orphan_tuples:
                 try:
-                    from deployment.orchestrator import DeploymentOrchestrator
+                    _orchestrator_cls = _importlib.import_module(
+                        "deployment_service.deployment.orchestrator"
+                    ).DeploymentOrchestrator  # type: ignore[assignment]
 
                     try:
                         service_account_email = ValidationUtils.get_required(
                             cast(dict[str, object], config), "service_account_email", "orchestrator"
                         )
-                        job_name = ValidationUtils.get_required(cast(dict[str, object], config), "job_name", "VM backend")
+                        job_name = ValidationUtils.get_required(
+                            cast(dict[str, object], config), "job_name", "VM backend"
+                        )
                     except ConfigurationError as e:
                         logger.error("[ORPHAN_CLEANUP] Configuration error: %s", e)
                         return 0
 
-                    orch = DeploymentOrchestrator(
+                    orch = DeploymentOrchestrator(  # noqa: F821
                         project_id=self.project_id,
                         region=config.get("region") or "asia-northeast1",
                         service_account_email=service_account_email,
@@ -286,7 +299,9 @@ class StateManager:
                             for job_id, zone, _shard_id, _st in orphan_tuples:
                                 pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)
 
-                        logger.info("[ORPHAN_CLEANUP] Fired %s orphan VM deletes", len(orphan_tuples))
+                        logger.info(
+                            "[ORPHAN_CLEANUP] Fired %s orphan VM deletes", len(orphan_tuples)
+                        )
                         return len(orphan_tuples)
 
                 except (OSError, ValueError, RuntimeError) as e:
@@ -315,7 +330,7 @@ class StateManager:
         def pending_ts(p: tuple[float, str | None] | float) -> float:
             return p[0] if isinstance(p, tuple) else p
 
-        def vm_status(vm_map: dict, job_id: str) -> str | None:
+        def vm_status(vm_map: dict[str, object], job_id: str) -> str | None:
             for entry in vm_map.values():
                 if isinstance(entry, dict) and entry.get("job_id") == job_id:
                     return entry.get("status")
@@ -369,8 +384,12 @@ class StateManager:
                                 blob_to_delete.delete()
 
                             deleted_count += 1
-                            age_days = (datetime.now(UTC) - blob.time_created.replace(tzinfo=UTC)).days
-                            logger.info("[STATE_TTL] Deleted %s (age: %sd)", deployment_id, age_days)
+                            age_days = (
+                                datetime.now(UTC) - blob.time_created.replace(tzinfo=UTC)
+                            ).days
+                            logger.info(
+                                "[STATE_TTL] Deleted %s (age: %sd)", deployment_id, age_days
+                            )
 
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("[STATE_TTL] Error processing blob %s: %s", blob.name, e)
@@ -404,7 +423,9 @@ class StateManager:
                     lock_blob = bucket.blob(lock_blob_name)
 
                     if lock_blob.exists():
-                        lock_data = cast(dict[str, object], json.loads(lock_blob.download_as_text() or "{}"))
+                        lock_data = cast(
+                            dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                        )
                         if lock_data.get("owner") == self.owner_id:
                             lock_blob.delete()
                             released_count += 1

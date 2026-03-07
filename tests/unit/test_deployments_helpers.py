@@ -5,6 +5,8 @@ Tests cover pure helper functions for env var building, shard signature extracti
 status string conversion, severity extraction, and date range parsing.
 """
 
+from unittest.mock import MagicMock
+
 from deployment_api.routes.deployments_helpers import (
     _build_deploy_env_vars,
     _extract_date_range,
@@ -14,6 +16,7 @@ from deployment_api.routes.deployments_helpers import (
     _maybe_add_direct_gcs,
     _set_verification_cache,
     _status_str,
+    find_duplicate_running_shards,
 )
 
 
@@ -292,3 +295,62 @@ class TestVerificationCache:
         _set_verification_cache("dep-B", {"b": 2})
         assert _get_verification_cache("dep-A") == {"a": 1}
         assert _get_verification_cache("dep-B") == {"b": 2}
+
+
+class TestFindDuplicateRunningShards:
+    """Tests for find_duplicate_running_shards."""
+
+    def _make_state_manager(self, active_deployments=None, shards=None):
+        sm = MagicMock()
+        sm.list_deployments.return_value = active_deployments or []
+        sm.get_deployment_shards.return_value = shards or []
+        return sm
+
+    def test_returns_empty_list_when_no_active_deployments(self):
+        sm = self._make_state_manager(active_deployments=[])
+        result = find_duplicate_running_shards(sm, "svc", "dep-1", [["--start-date", "2024-01-01"]])
+        assert result == []
+
+    def test_skips_self_deployment(self):
+        active = [{"deployment_id": "dep-1", "status": "running"}]
+        sm = self._make_state_manager(active_deployments=active)
+        shard_args = [["--start-date", "2024-01-01"]]
+        result = find_duplicate_running_shards(sm, "svc", "dep-1", shard_args)
+        assert result == []
+
+    def test_returns_conflict_when_signatures_match(self):
+        active = [{"deployment_id": "dep-2", "status": "running", "started_at": "2024-01-01"}]
+        active_shard = {
+            "shard_id": "s-1",
+            "args": ["--start-date", "2024-01-01", "--end-date", "2024-01-31"],
+        }
+        sm = self._make_state_manager(active_deployments=active, shards=[active_shard])
+        shard_args = [["--start-date", "2024-01-01", "--end-date", "2024-01-31"]]
+        result = find_duplicate_running_shards(sm, "instruments-service", "dep-1", shard_args)
+        assert len(result) == 1
+        assert result[0]["deployment_id"] == "dep-2"
+
+    def test_no_conflict_when_signatures_differ(self):
+        active = [{"deployment_id": "dep-2", "status": "running", "started_at": "2024-01-01"}]
+        active_shard = {
+            "shard_id": "s-1",
+            "args": ["--start-date", "2024-02-01", "--end-date", "2024-02-28"],
+        }
+        sm = self._make_state_manager(active_deployments=active, shards=[active_shard])
+        shard_args = [["--start-date", "2024-01-01", "--end-date", "2024-01-31"]]
+        result = find_duplicate_running_shards(sm, "instruments-service", "dep-1", shard_args)
+        assert result == []
+
+    def test_returns_empty_list_on_exception(self):
+        sm = MagicMock()
+        sm.list_deployments.side_effect = RuntimeError("connection failed")
+        result = find_duplicate_running_shards(sm, "svc", "dep-1", [["--start-date", "2024-01-01"]])
+        assert result == []
+
+    def test_no_conflict_when_shard_has_no_matchable_signature(self):
+        active = [{"deployment_id": "dep-2", "status": "running", "started_at": "2024-01-01"}]
+        active_shard = {"shard_id": "s-1", "args": []}
+        sm = self._make_state_manager(active_deployments=active, shards=[active_shard])
+        shard_args = [["--start-date", "2024-01-01"]]
+        result = find_duplicate_running_shards(sm, "instruments-service", "dep-1", shard_args)
+        assert result == []

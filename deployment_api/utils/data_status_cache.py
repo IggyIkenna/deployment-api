@@ -130,7 +130,9 @@ def get_cached_result(
 
     with _cache_lock:
         if key not in _cache:
-            logger.debug("[DATA_STATUS_CACHE] MISS (not found): %s %s-%s", service, start_date, end_date)
+            logger.debug(
+                "[DATA_STATUS_CACHE] MISS (not found): %s %s-%s", service, start_date, end_date
+            )
             return None
 
         result, cached_at = _cache[key]
@@ -140,11 +142,21 @@ def get_cached_result(
             # Expired - remove from cache
             del _cache[key]
             logger.info(
-                "[DATA_STATUS_CACHE] MISS (expired, age=%.1fs): %s %s-%s", age_seconds, service, start_date, end_date
+                "[DATA_STATUS_CACHE] MISS (expired, age=%.1fs): %s %s-%s",
+                age_seconds,
+                service,
+                start_date,
+                end_date,
             )
             return None
 
-        logger.info("[DATA_STATUS_CACHE] HIT (age=%.1fs): %s %s-%s", age_seconds, service, start_date, end_date)
+        logger.info(
+            "[DATA_STATUS_CACHE] HIT (age=%.1fs): %s %s-%s",
+            age_seconds,
+            service,
+            start_date,
+            end_date,
+        )
         return result
 
 
@@ -191,7 +203,13 @@ def set_cached_result(
     with _cache_lock:
         if result is not None:
             _cache[key] = (result, datetime.now(UTC))
-            logger.info("[DATA_STATUS_CACHE] STORED: %s %s-%s (TTL=%ss)", service, start_date, end_date, CACHE_TTL_SECONDS)
+            logger.info(
+                "[DATA_STATUS_CACHE] STORED: %s %s-%s (TTL=%ss)",
+                service,
+                start_date,
+                end_date,
+                CACHE_TTL_SECONDS,
+            )
 
 
 def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[str, object]:
@@ -207,7 +225,9 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
     truncated = copy.deepcopy(result)
     half = max_items // 2
 
-    def truncate_list_in_dict(d: dict[str, object], list_key: str, tail_key: str, truncated_key: str):
+    def truncate_list_in_dict(
+        d: dict[str, object], list_key: str, tail_key: str, truncated_key: str
+    ):
         """Truncate a dates list in a dict."""
         if list_key not in d:
             return
@@ -226,7 +246,9 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
 
     # Truncate category-level dates
     cats_raw: object = truncated.get("categories") or {}
-    for _cat_name, cat_data in (cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}).items():
+    for _cat_name, cat_data in (
+        cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
+    ).items():
         if isinstance(cat_data, dict):
             truncate_list_in_dict(
                 cat_data,

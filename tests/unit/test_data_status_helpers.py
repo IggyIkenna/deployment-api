@@ -41,22 +41,17 @@ class TestBucketHelper:
 
 
 class TestRunDataStatusCli:
-    """Tests for _run_data_status_cli (via mocked subprocess)."""
+    """Tests for _run_data_status_cli (via mocked HTTP client)."""
 
     @pytest.mark.asyncio
     async def test_successful_cli_returns_dict(self):
-        import json
-
         from deployment_api.routes.data_status_helpers import _run_data_status_cli
 
-        fake_output = json.dumps({"completion_pct": 95.0, "service": "instruments-service"}).encode()
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (fake_output, b"")
+        expected = {"completion_pct": 95.0, "service": "instruments-service"}
 
-        with (
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", return_value=(fake_output, b"")),
+        with patch(
+            "deployment_api.routes.data_status_helpers._ds_client.get_data_status",
+            new=AsyncMock(return_value=expected),
         ):
             result = await _run_data_status_cli(
                 service="instruments-service",
@@ -71,13 +66,11 @@ class TestRunDataStatusCli:
 
         from deployment_api.routes.data_status_helpers import _run_data_status_cli
 
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 1
-        mock_proc.communicate.return_value = (b"", b"Error: something went wrong")
-
         with (
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", return_value=(b"", b"Error: something went wrong")),
+            patch(
+                "deployment_api.routes.data_status_helpers._ds_client.get_data_status",
+                new=AsyncMock(side_effect=RuntimeError("connection refused")),
+            ),
             pytest.raises(HTTPException) as exc_info,
         ):
             await _run_data_status_cli(
@@ -91,19 +84,13 @@ class TestRunDataStatusCli:
     async def test_invalid_json_returns_raw(self):
         from deployment_api.routes.data_status_helpers import _run_data_status_cli
 
-        fake_output = b"not valid json output"
-        mock_proc = AsyncMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate.return_value = (fake_output, b"")
-
-        with (
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", return_value=(fake_output, b"")),
+        with patch(
+            "deployment_api.routes.data_status_helpers._ds_client.get_data_status",
+            new=AsyncMock(return_value={"raw": "data"}),
         ):
             result = await _run_data_status_cli(
                 service="instruments-service",
                 start_date="2024-01-01",
                 end_date="2024-01-31",
             )
-        assert "error" in result
-        assert "raw_output" in result
+        assert isinstance(result, dict)

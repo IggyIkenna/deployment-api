@@ -2,7 +2,7 @@ name: version-bump
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Parse commit and bump version
@@ -46,7 +46,15 @@ jobs:
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
           case "$BUMP" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            major)
+              # Pre-1.0.0 rule: breaking changes bump minor, not major (never auto-cross to 1.0.0).
+              # 1.0.0 is only set manually when the repo passes full quickmerge under the new
+              # CI/CD pipeline and all plan items are complete. See workspace-manifest versions_policy.
+              if [ "$MAJOR" = "0" ]; then
+                MINOR=$((MINOR + 1)); PATCH=0
+              else
+                MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+              fi ;;
             minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
             patch) PATCH=$((PATCH + 1)) ;;
           esac
@@ -71,9 +79,11 @@ jobs:
       - name: Dispatch manifest update to unified-trading-pm
         if: env.SKIP != 'true'
         run: |
+          # Include the branch so PM knows whether to update versions (main) or staging_versions (staging).
+          BRANCH="${{ github.ref_name }}"
           curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository_owner }}/unified-trading-pm/dispatches" \
-            -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"${{ github.event.repository.name }}\", \"version\": \"${{ env.NEW_VERSION }}\"}}"
-          echo "Dispatched manifest update: ${{ github.event.repository.name }}=${{ env.NEW_VERSION }}"
+            -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"${{ github.event.repository.name }}\", \"version\": \"${{ env.NEW_VERSION }}\", \"branch\": \"${BRANCH}\"}}"
+          echo "Dispatched manifest update: ${{ github.event.repository.name }}=${{ env.NEW_VERSION }} (branch=${BRANCH})"

@@ -1,6 +1,6 @@
 fastapi<1.0.0,>=0.110.0
 uvicorn[standard]<1.0.0,>=0.27.0
-gunicorn<22.0.0,>=21.0.0
+gunicorn<23.0.0,>=22.0.0
 pydantic<3.0.0,>=2.12.5
 google-auth<3.0.0,>=2.40.0
 google-cloud-storage<4.0.0,>=3.8.0
@@ -11,11 +11,11 @@ google-cloud-build<4.0.0,>=3.0.0
 jsonpickle<4.0.0,>=3.0.0
 cachetools<6.0.0,>=5.0.0
 redis<6.0.0,>=5.0.0
-deployment-service>=0.1.0
-unified-trading-library>=0.1.0
-unified-events-interface>=0.1.0
-unified-config-interface>=0.1.0
-unified-cloud-interface>=0.1.0
+anthropic<1.0.0,>=0.40.0
+unified-trading-library<1.0.0,>=0.1.0
+unified-events-interface<1.0.0,>=0.1.0
+unified-config-interface<1.0.0,>=0.1.0
+unified-cloud-interface<1.0.0,>=0.1.0
 
 [dev]
 pytest<10.0.0,>=9.0.1

@@ -9,9 +9,9 @@ import logging
 from pathlib import Path
 from typing import cast
 
-from deployment_service.config_loader import ConfigLoader
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
+from deployment_api.config_loader import ConfigLoader
 from deployment_api.settings import GCP_PROJECT_ID as _PID
 from deployment_api.utils.cache import TTL_SERVICE_CONFIG, cache
 
@@ -141,7 +141,9 @@ async def get_service_dimensions(service_name: str, request: Request):
                     # If it's venue, get values from venues config
                     if dim["name"] == "venue":
                         dim_info["values_by_parent"] = {}
-                        for category in cast(dict[str, object], venues_config.get("categories") or {}):
+                        for category in cast(
+                            dict[str, object], venues_config.get("categories") or {}
+                        ):
                             cat_venues = venues_config["categories"][category].get("venues") or []
                             dim_info["values_by_parent"][category] = cat_venues
 
@@ -189,17 +191,16 @@ async def discover_configs(
     """
 
     def _discover_configs_sync():
-        from deployment_service.cloud_client import CloudClient
+        from deployment_api.utils.cloud_storage_client import list_cloud_files
 
         # Validate cloud path format
         if not cloud_path.startswith("gs://") and not cloud_path.startswith("s3://"):
-            raise ValueError(f"Invalid cloud path format. Must start with 'gs://' or 's3://'. Got: {cloud_path}")
-
-        # Initialize cloud client
-        cloud_client = CloudClient()
+            raise ValueError(
+                f"Invalid cloud path format. Must start with 'gs://' or 's3://'. Got: {cloud_path}"
+            )
 
         # List all JSON files recursively (increased limit to 10000 for large config sets)
-        all_files = cloud_client.list_files(cloud_path, "**/*.json", max_results=10000)
+        all_files = list_cloud_files(cloud_path, "**/*.json", max_results=10000)
 
         # Filter out non-config files (manifest.json, package.json, etc.)
         excluded_filenames = {
@@ -209,7 +210,9 @@ async def discover_configs(
             "schema.json",
         }
         config_files = [
-            f for f in all_files if not any(f.endswith(f"/{excl}") or f.endswith(excl) for excl in excluded_filenames)
+            f
+            for f in all_files
+            if not any(f.endswith(f"/{excl}") or f.endswith(excl) for excl in excluded_filenames)
         ]
 
         return config_files
@@ -227,7 +230,8 @@ async def discover_configs(
             "truncated": len(configs) > sample_size,
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        logger.exception("Invalid request for config discovery")
+        raise HTTPException(status_code=400, detail="Internal error — see server logs") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to discover configs: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error") from e
@@ -291,7 +295,8 @@ async def list_directories(
             "count": len(directories),
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        logger.exception("Invalid request for directory listing")
+        raise HTTPException(status_code=400, detail="Internal error — see server logs") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to list directories: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error") from e

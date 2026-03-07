@@ -11,10 +11,11 @@ from unittest.mock import MagicMock, patch
 
 # Mock the 'deployment' package before importing deployment_worker
 sys.modules.setdefault("deployment", MagicMock())
-sys.modules.setdefault("deployment.state", MagicMock(DeploymentStatus=MagicMock(), StateManager=MagicMock()))
+sys.modules.setdefault(
+    "deployment.state", MagicMock(DeploymentStatus=MagicMock(), StateManager=MagicMock())
+)
 
-import deployment_api.workers.deployment_worker as dw  # noqa: E402
-
+import deployment_api.workers.deployment_worker as dw
 
 SAMPLE_KWARGS = {
     "deployment_id": "dep-test-123",
@@ -199,7 +200,10 @@ class TestSpawnDeploymentWorker:
         mock_process.pid = 99999
         mock_ctx.Process.return_value = mock_process
 
-        with patch("deployment_api.workers.deployment_worker.multiprocessing.get_context", return_value=mock_ctx):
+        with patch(
+            "deployment_api.workers.deployment_worker.multiprocessing.get_context",
+            return_value=mock_ctx,
+        ):
             result = dw.spawn_deployment_worker(**SAMPLE_KWARGS)
 
         mock_process.start.assert_called_once()
@@ -225,7 +229,10 @@ class TestSpawnDeploymentWorker:
         mock_process = MagicMock(spec=multiprocessing.Process)
         mock_ctx.Process.return_value = mock_process
 
-        with patch("deployment_api.workers.deployment_worker.multiprocessing.get_context", return_value=mock_ctx):
+        with patch(
+            "deployment_api.workers.deployment_worker.multiprocessing.get_context",
+            return_value=mock_ctx,
+        ):
             dw.spawn_deployment_worker(**SAMPLE_KWARGS)
 
         call_kwargs = mock_ctx.Process.call_args.kwargs

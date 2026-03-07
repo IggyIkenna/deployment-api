@@ -294,7 +294,9 @@ class TestGenerateDeploymentReport:
             "has_stack_traces": True,
             "shards_analyzed": 5,
         }
-        report = generate_deployment_report(state, log_analysis=log_analysis, verification_data=None)
+        report = generate_deployment_report(
+            state, log_analysis=log_analysis, verification_data=None
+        )
         assert "log_summary" in report
         assert report["log_summary"]["total_errors"] == 2
         assert report["log_summary"]["total_warnings"] == 1
@@ -312,7 +314,9 @@ class TestGenerateDeploymentReport:
                 "VM_DIED": 0,
             }
         }
-        report = generate_deployment_report(state, log_analysis=None, verification_data=verification_data)
+        report = generate_deployment_report(
+            state, log_analysis=None, verification_data=verification_data
+        )
         assert "verification_summary" in report
         assert report["verification_summary"]["verified_clean"] == 10
         assert report["verification_summary"]["data_missing"] == 2
@@ -336,3 +340,138 @@ class TestGenerateDeploymentReport:
         state = self._make_state()
         report = generate_deployment_report(state, log_analysis=None, verification_data=None)
         assert "verification_summary" not in report
+
+
+class TestGetServiceEarliestStart:
+    """Tests for _get_service_earliest_start."""
+
+    def test_returns_yesterday_when_no_config(self, tmp_path):
+        from deployment_api.routes.deployment_validation import _get_service_earliest_start
+
+        result = _get_service_earliest_start("unknown-service", str(tmp_path))
+        from datetime import UTC, datetime, timedelta
+
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        assert result == yesterday
+
+    def test_returns_yesterday_on_oserror(self):
+        from deployment_api.routes.deployment_validation import _get_service_earliest_start
+
+        result = _get_service_earliest_start("svc", "/nonexistent/path/that/does/not/exist")
+        from datetime import UTC, datetime, timedelta
+
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        assert result == yesterday
+
+    def test_returns_earliest_from_config(self, tmp_path):
+        import yaml
+
+        from deployment_api.routes.deployment_validation import _get_service_earliest_start
+
+        expected_dates = {
+            "instruments-service": {
+                "CEFI": {"category_start": "2022-01-01"},
+                "TRADFI": {"category_start": "2021-06-01"},
+            }
+        }
+        dates_file = tmp_path / "expected_start_dates.yaml"
+        with open(dates_file, "w") as f:
+            yaml.dump(expected_dates, f)
+
+        result = _get_service_earliest_start("instruments-service", str(tmp_path))
+        assert result == "2021-06-01"
+
+    def test_returns_yesterday_for_service_not_in_config(self, tmp_path):
+        import yaml
+
+        from deployment_api.routes.deployment_validation import _get_service_earliest_start
+
+        expected_dates = {"other-service": {"CEFI": {"category_start": "2022-01-01"}}}
+        dates_file = tmp_path / "expected_start_dates.yaml"
+        with open(dates_file, "w") as f:
+            yaml.dump(expected_dates, f)
+
+        result = _get_service_earliest_start("unknown-service", str(tmp_path))
+        from datetime import UTC, datetime, timedelta
+
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        assert result == yesterday
+
+
+class TestResolveDeployDates:
+    """Tests for _resolve_deploy_dates."""
+
+    def test_provided_dates_used_as_is(self, tmp_path):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.deployment_validation import _resolve_deploy_dates
+
+        req = SimpleNamespace(
+            service="instruments-service",
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+        )
+        start, end = _resolve_deploy_dates(req, str(tmp_path))
+        assert start == "2024-01-01"
+        assert end == "2024-01-31"
+
+    def test_missing_end_date_defaults_to_yesterday(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+        from types import SimpleNamespace
+
+        from deployment_api.routes.deployment_validation import _resolve_deploy_dates
+
+        req = SimpleNamespace(
+            service="instruments-service",
+            start_date="2024-01-01",
+            end_date=None,
+        )
+        _, end = _resolve_deploy_dates(req, str(tmp_path))
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        assert end == yesterday
+
+    def test_missing_start_date_defaults_from_config(self, tmp_path):
+        from types import SimpleNamespace
+
+        from deployment_api.routes.deployment_validation import _resolve_deploy_dates
+
+        req = SimpleNamespace(
+            service="instruments-service",
+            start_date=None,
+            end_date="2024-01-31",
+        )
+        start, _ = _resolve_deploy_dates(req, str(tmp_path))
+        assert isinstance(start, str)
+        assert len(start) == 10  # YYYY-MM-DD format
+
+
+class TestValidateDeploymentRequestEdgeCases:
+    """Additional edge cases for validate_deployment_request."""
+
+    def test_max_concurrent_exceeds_limit(self):
+        from unittest.mock import patch
+
+        import deployment_api.settings as _settings
+
+        req = _make_request(max_concurrent=99999)
+        with patch.object(_settings, "MAX_CONCURRENT_HARD_LIMIT", 100):
+            result = validate_deployment_request(req)
+
+        assert result is not None
+        assert any("max_concurrent" in d for d in result["details"])
+
+
+class TestValidateQuotaExceptionPath:
+    """Tests for validate_quota_requirements exception handling."""
+
+    def test_exception_returns_error_dict(self):
+        from unittest.mock import patch
+
+        with patch(
+            "deployment_api.utils.quota_requirements.multiply_resources",
+            side_effect=ValueError("bad"),
+        ):
+            result = validate_quota_requirements({"cpu_cores": 1}, shard_count=5)
+
+        assert result is not None
+        assert result["error"] == "quota_validation_failed"

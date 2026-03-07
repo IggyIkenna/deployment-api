@@ -23,15 +23,14 @@ def configure_middleware(app: FastAPI) -> None:
     # Development origins (only in development mode)
     dev_origins: list[str] = []
     if settings.DEPLOYMENT_ENV == "development":
+        _static_dev_origins = [
+            o.strip() for o in settings.CORS_DEV_ORIGINS.split(",") if o.strip()
+        ]
         dev_origins = [
-            "http://localhost:3000",
+            *_static_dev_origins,
             f"http://localhost:{_frontend_port}",
             f"http://127.0.0.1:{_frontend_port}",
-            # Keep 5174 allowed for execution-service visualizer UI by default.
-            "http://localhost:5174",
-            "http://127.0.0.1:5174",
             f"http://localhost:{_api_port}",
-            "http://localhost:8080",
         ]
 
     allowed_origins = production_origins + dev_origins

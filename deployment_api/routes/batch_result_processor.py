@@ -12,7 +12,9 @@ from .batch_config_utils import get_expected_dates_for_venue
 logger = logging.getLogger(__name__)
 
 
-def calculate_overall_file_counts(results: dict, include_file_counts: bool) -> dict | None:
+def calculate_overall_file_counts(
+    results: dict[str, object], include_file_counts: bool
+) -> dict[str, object] | None:
     """Calculate overall file counts across all categories.
 
     Args:
@@ -39,16 +41,18 @@ def calculate_overall_file_counts(results: dict, include_file_counts: bool) -> d
             "total_files": total_files_all,
             "dates_with_file_counts": total_dates_with_files,
             "avg_files_per_date": (
-                round(total_files_all / total_dates_with_files, 1) if total_dates_with_files > 0 else 0
+                round(total_files_all / total_dates_with_files, 1)
+                if total_dates_with_files > 0
+                else 0
             ),
         }
     return None
 
 
 def calculate_venue_weighted_totals(
-    results: dict,
-    all_dates: set,
-    expected_start_dates_config: dict,
+    results: dict[str, object],
+    all_dates: set[str],
+    expected_start_dates_config: dict[str, object],
     service: str,
     upstream_dates: dict[str, dict[str, set]] | None = None,
 ) -> tuple[int, int, int, int]:
@@ -142,9 +146,9 @@ def calculate_venue_weighted_totals(
 
 
 def update_category_completion_percentages(
-    results: dict,
-    all_dates: set,
-    expected_start_dates_config: dict,
+    results: dict[str, object],
+    all_dates: set[str],
+    expected_start_dates_config: dict[str, object],
     service: str,
     upstream_dates: dict[str, dict[str, set]] | None = None,
 ) -> None:
@@ -231,9 +235,9 @@ def build_final_response(
     total_found_category: int,
     expected_missing: int,
     unexpected_missing: int,
-    results: dict,
-    overall_file_counts: dict | None,
-) -> dict:
+    results: dict[str, object],
+    overall_file_counts: dict[str, object] | None,
+) -> dict[str, object]:
     """Build the final response dictionary.
 
     Args:
@@ -250,7 +254,9 @@ def build_final_response(
         total_missing = expected_missing
     else:
         # No venue data - fall back to category-level calculation
-        overall_pct = (total_found_category / total_expected_category * 100) if total_expected_category else 0
+        overall_pct = (
+            (total_found_category / total_expected_category * 100) if total_expected_category else 0
+        )
         total_missing = total_expected_category - total_found_category
 
     response = {
