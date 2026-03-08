@@ -12,7 +12,13 @@ from typing import cast
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from deployment_api.config_loader import ConfigLoader
-from deployment_api.settings import GCP_PROJECT_ID as _PID
+from deployment_api.settings import (
+    EXECUTION_STORE_BUCKET,
+    ML_CONFIGS_STORE_BUCKET,
+    STRATEGY_STORE_CEFI_BUCKET,
+    STRATEGY_STORE_DEFI_BUCKET,
+    STRATEGY_STORE_TRADFI_BUCKET,
+)
 from deployment_api.utils.cache import TTL_SERVICE_CONFIG, cache
 
 logger = logging.getLogger(__name__)
@@ -309,40 +315,42 @@ async def get_config_buckets(service_name: str, request: Request):
 
     Returns the GCS bucket path where configs are typically stored.
     """
-    # Service-specific bucket mappings
+    # Service-specific bucket mappings.
+    # Bucket names come from config fields (EXECUTION_STORE_BUCKET, etc.) populated via
+    # DeploymentApiConfig env vars. Defaults derived from gcp_project_id when env vars unset.
     bucket_mappings = {
         "execution-service": {
-            "default_bucket": f"gs://execution-store-{_PID}/configs/",
+            "default_bucket": f"gs://{EXECUTION_STORE_BUCKET}/configs/",
             "buckets": [
                 {
                     "name": "execution-store (main)",
-                    "path": f"gs://execution-store-{_PID}/configs/",
+                    "path": f"gs://{EXECUTION_STORE_BUCKET}/configs/",
                 },
             ],
         },
         "strategy-service": {
-            "default_bucket": f"gs://strategy-store-cefi-{_PID}/configs_grid/",
+            "default_bucket": f"gs://{STRATEGY_STORE_CEFI_BUCKET}/configs_grid/",
             "buckets": [
                 {
                     "name": "strategy-store-cefi",
-                    "path": f"gs://strategy-store-cefi-{_PID}/configs_grid/",
+                    "path": f"gs://{STRATEGY_STORE_CEFI_BUCKET}/configs_grid/",
                 },
                 {
                     "name": "strategy-store-tradfi",
-                    "path": f"gs://strategy-store-tradfi-{_PID}/configs_grid/",
+                    "path": f"gs://{STRATEGY_STORE_TRADFI_BUCKET}/configs_grid/",
                 },
                 {
                     "name": "strategy-store-defi",
-                    "path": f"gs://strategy-store-defi-{_PID}/configs_grid/",
+                    "path": f"gs://{STRATEGY_STORE_DEFI_BUCKET}/configs_grid/",
                 },
             ],
         },
         "ml-training-service": {
-            "default_bucket": f"gs://ml-configs-store-{_PID}/training/grid_configs/",
+            "default_bucket": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",
             "buckets": [
                 {
                     "name": "ml-configs-store",
-                    "path": f"gs://ml-configs-store-{_PID}/training/grid_configs/",
+                    "path": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",
                 },
             ],
         },

@@ -1,4 +1,5 @@
 # Quality Gate Bypass Audit — deployment-api
+
 Date: 2026-03-04
 Auditor: Claude (automated)
 
@@ -8,10 +9,10 @@ Auditor: Claude (automated)
 
 Files that approach or exceed the 900-line limit and require splitting in Phase 3.
 
-| File | Lines | Action Required |
-|------|-------|-----------------|
-| `deployment_api/routes/state_management.py` | 886 | Approaching limit (warn threshold 700). Split into sub-modules in Phase 3. |
-| `deployment_api/workers/deployment_processor.py` | 868 | Approaching limit. Split batch processing logic into sub-modules in Phase 3. |
+| File                                             | Lines | Action Required                                                              |
+| ------------------------------------------------ | ----- | ---------------------------------------------------------------------------- |
+| `deployment_api/routes/state_management.py`      | 886   | Approaching limit (warn threshold 700). Split into sub-modules in Phase 3.   |
+| `deployment_api/workers/deployment_processor.py` | 868   | Approaching limit. Split batch processing logic into sub-modules in Phase 3. |
 
 ## 2.2 Direct Cloud SDK Import Exceptions
 
@@ -19,19 +20,19 @@ Files that approach or exceed the 900-line limit and require splitting in Phase 
 
 These files use `from google.cloud import` directly because `unified-cloud-interface` does not yet expose Compute Engine management (`compute_v1`) or Cloud Run management (`run_v2`) APIs. Once those surfaces are added to `unified-cloud-interface`, these call sites must be updated.
 
-| File | Lines | Cloud API | Migration Path |
-|------|-------|-----------|----------------|
-| `deployment_api/routes/deployment_state.py` | ~99 | `run_v2.ServicesClient` — Cloud Run revision status | Add Cloud Run management surface to `unified-cloud-interface` |
-| `deployment_api/workers/auto_sync.py` | ~308 | `compute_v1.InstancesClient` — VM instance list | Add Compute Engine surface to `unified-cloud-interface` |
-| `deployment_api/workers/deployment_processor.py` | ~110, ~266, ~469 | `compute_v1.InstancesClient` — VM instance management | Add Compute Engine surface to `unified-cloud-interface` |
+| File                                             | Lines            | Cloud API                                             | Migration Path                                                |
+| ------------------------------------------------ | ---------------- | ----------------------------------------------------- | ------------------------------------------------------------- |
+| `deployment_api/routes/deployment_state.py`      | ~99              | `run_v2.ServicesClient` — Cloud Run revision status   | Add Cloud Run management surface to `unified-cloud-interface` |
+| `deployment_api/workers/auto_sync.py`            | ~308             | `compute_v1.InstancesClient` — VM instance list       | Add Compute Engine surface to `unified-cloud-interface`       |
+| `deployment_api/workers/deployment_processor.py` | ~110, ~266, ~469 | `compute_v1.InstancesClient` — VM instance management | Add Compute Engine surface to `unified-cloud-interface`       |
 
 **Note:** `google.cloud.secretmanager` usage in `service_status.py` was replaced with `get_secret_client()` from `unified_cloud_interface` (fixed in this audit pass).
 
 ### Migration Tracking
 
-| Item | Target | Owner |
-|------|--------|-------|
-| `deployment_state.py` — `run_v2` | Phase 2/3: add Cloud Run mgmt API to unified-cloud-interface | deployment-api |
+| Item                                                     | Target                                                            | Owner          |
+| -------------------------------------------------------- | ----------------------------------------------------------------- | -------------- |
+| `deployment_state.py` — `run_v2`                         | Phase 2/3: add Cloud Run mgmt API to unified-cloud-interface      | deployment-api |
 | `auto_sync.py`, `deployment_processor.py` — `compute_v1` | Phase 2/3: add Compute Engine mgmt API to unified-cloud-interface | deployment-api |
 
 ---
@@ -78,15 +79,36 @@ None.
 
 These files use `os.environ` in production source where `UnifiedCloudConfig` should eventually own the value. The reads are functional and do not cause incorrect behaviour today, but they violate the workspace `os.environ` ban and must be migrated in Phase 1.
 
-| File | Lines | Purpose | Status |
-|------|-------|---------|--------|
-| `deployment_api/routes/cloud_builds.py` | 720 | `os.environ.get(...)` reads `workspace_root` to resolve Cloud Build trigger paths. This value is not yet a field on `UnifiedCloudConfig`. Migration: add `workspace_root` to `UnifiedCloudConfig` and replace this call. | MIGRATION_PENDING |
+| File                                    | Lines | Purpose                                                                                                                                                                                                                  | Status            |
+| --------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| `deployment_api/routes/cloud_builds.py` | 720   | `os.environ.get(...)` reads `workspace_root` to resolve Cloud Build trigger paths. This value is not yet a field on `UnifiedCloudConfig`. Migration: add `workspace_root` to `UnifiedCloudConfig` and replace this call. | MIGRATION_PENDING |
 
 ### Migration Tracking
 
-| Item | Target | Owner |
-|------|--------|-------|
+| Item                                                      | Target                                                                     | Owner          |
+| --------------------------------------------------------- | -------------------------------------------------------------------------- | -------------- |
 | `cloud_builds.py:720` — `workspace_root` via `os.environ` | Phase 1: add `workspace_root` to `UnifiedCloudConfig` and update call site | deployment-api |
+
+## 2.6 Hardcoded GCS Path Remediation — RESOLVED (2026-03-08)
+
+**Status: RESOLVED**
+
+`deployment_api/routes/services.py` previously used `f"gs://execution-store-{_PID}/configs/"` and
+similar f-strings with the raw `GCP_PROJECT_ID` string interpolated directly. These hardcoded
+patterns coupled the GCS path to the project ID without an intermediate config field, making
+bucket overrides impossible.
+
+**Resolution:** Five new fields added to `DeploymentApiConfig`:
+
+- `execution_store_bucket` (env: `EXECUTION_STORE_BUCKET`)
+- `strategy_store_cefi_bucket` (env: `STRATEGY_STORE_CEFI_BUCKET`)
+- `strategy_store_tradfi_bucket` (env: `STRATEGY_STORE_TRADFI_BUCKET`)
+- `strategy_store_defi_bucket` (env: `STRATEGY_STORE_DEFI_BUCKET`)
+- `ml_configs_store_bucket` (env: `ML_CONFIGS_STORE_BUCKET`)
+
+Each has a corresponding `effective_*` property that falls back to
+`{prefix}-{gcp_project_id}` when the env var is not set, preserving backward compatibility.
+`routes/services.py` now reads from `settings.py` module-level constants populated from these fields.
 
 ---
 
@@ -97,38 +119,38 @@ These files use `os.environ` in production source where `UnifiedCloudConfig` sho
 
 ### Error Breakdown by Type
 
-| Rule | Count | Classification |
-|---|---|---|
-| reportUnknownVariableType | 1195 | JUSTIFIED (cascade from missing stubs) |
-| reportUnknownMemberType | 1194 | JUSTIFIED (third-party stubs) |
-| reportUnknownArgumentType | 549 | JUSTIFIED (cascade from missing stubs) |
-| reportUnknownParameterType | 310 | MIGRATION_PENDING |
-| reportAny | 201 | JUSTIFIED (stdlib + third-party propagation) |
-| reportAttributeAccessIssue | 192 | MIGRATION_PENDING |
-| reportMissingTypeArgument | 176 | MIGRATION_PENDING |
-| reportArgumentType | 131 | MIGRATION_PENDING |
-| reportImplicitRelativeImport | 123 | MIGRATION_PENDING |
-| reportCallIssue | 107 | MIGRATION_PENDING |
-| reportMissingParameterType | 100 | MIGRATION_PENDING |
-| reportCallInDefaultInitializer | 64 | MIGRATION_PENDING |
-| reportUnusedCallResult | 63 | MIGRATION_PENDING |
-| reportUnusedParameter | 60 | MIGRATION_PENDING |
-| reportIndexIssue | 52 | MIGRATION_PENDING |
-| reportOperatorIssue | 40 | MIGRATION_PENDING |
-| reportPrivateUsage | 32 | MIGRATION_PENDING |
-| reportUnusedFunction | 31 | MIGRATION_PENDING |
-| reportUnannotatedClassAttribute | 31 | MIGRATION_PENDING |
-| reportMissingTypeStubs | 27 | JUSTIFIED (no stubs for workspace libs) |
-| reportReturnType | 26 | MIGRATION_PENDING |
-| reportMissingImports | 25 | MIGRATION_PENDING |
-| reportGeneralTypeIssues | 17 | MIGRATION_PENDING |
-| reportImplicitStringConcatenation | 13 | MIGRATION_PENDING |
-| reportOptionalSubscript | 10 | MIGRATION_PENDING |
-| reportImplicitOverride | 9 | MIGRATION_PENDING |
-| reportAssignmentType | 9 | MIGRATION_PENDING |
-| reportUnusedCoroutine | 7 | MIGRATION_PENDING |
-| reportUnknownLambdaType | 7 | MIGRATION_PENDING |
-| reportUnnecessaryIsInstance | 5 | MIGRATION_PENDING |
+| Rule                              | Count | Classification                               |
+| --------------------------------- | ----- | -------------------------------------------- |
+| reportUnknownVariableType         | 1195  | JUSTIFIED (cascade from missing stubs)       |
+| reportUnknownMemberType           | 1194  | JUSTIFIED (third-party stubs)                |
+| reportUnknownArgumentType         | 549   | JUSTIFIED (cascade from missing stubs)       |
+| reportUnknownParameterType        | 310   | MIGRATION_PENDING                            |
+| reportAny                         | 201   | JUSTIFIED (stdlib + third-party propagation) |
+| reportAttributeAccessIssue        | 192   | MIGRATION_PENDING                            |
+| reportMissingTypeArgument         | 176   | MIGRATION_PENDING                            |
+| reportArgumentType                | 131   | MIGRATION_PENDING                            |
+| reportImplicitRelativeImport      | 123   | MIGRATION_PENDING                            |
+| reportCallIssue                   | 107   | MIGRATION_PENDING                            |
+| reportMissingParameterType        | 100   | MIGRATION_PENDING                            |
+| reportCallInDefaultInitializer    | 64    | MIGRATION_PENDING                            |
+| reportUnusedCallResult            | 63    | MIGRATION_PENDING                            |
+| reportUnusedParameter             | 60    | MIGRATION_PENDING                            |
+| reportIndexIssue                  | 52    | MIGRATION_PENDING                            |
+| reportOperatorIssue               | 40    | MIGRATION_PENDING                            |
+| reportPrivateUsage                | 32    | MIGRATION_PENDING                            |
+| reportUnusedFunction              | 31    | MIGRATION_PENDING                            |
+| reportUnannotatedClassAttribute   | 31    | MIGRATION_PENDING                            |
+| reportMissingTypeStubs            | 27    | JUSTIFIED (no stubs for workspace libs)      |
+| reportReturnType                  | 26    | MIGRATION_PENDING                            |
+| reportMissingImports              | 25    | MIGRATION_PENDING                            |
+| reportGeneralTypeIssues           | 17    | MIGRATION_PENDING                            |
+| reportImplicitStringConcatenation | 13    | MIGRATION_PENDING                            |
+| reportOptionalSubscript           | 10    | MIGRATION_PENDING                            |
+| reportImplicitOverride            | 9     | MIGRATION_PENDING                            |
+| reportAssignmentType              | 9     | MIGRATION_PENDING                            |
+| reportUnusedCoroutine             | 7     | MIGRATION_PENDING                            |
+| reportUnknownLambdaType           | 7     | MIGRATION_PENDING                            |
+| reportUnnecessaryIsInstance       | 5     | MIGRATION_PENDING                            |
 
 **Total: 924 errors. ~2150+ warnings. ~3149 JUSTIFIED (cascade unknowns from missing stubs). ~761 MIGRATION_PENDING.**
 
@@ -139,6 +161,7 @@ These files use `os.environ` in production source where `UnifiedCloudConfig` sho
 ### 1. Missing Type Stubs for Workspace Libraries (27 errors + large cascade)
 
 **Files affected:**
+
 - `deployment_api/app_config.py` — `unified_config_interface`
 - `deployment_api/auth.py` — `unified_config_interface`, `unified_events_interface`
 - `deployment_api/auth_middleware.py` — `unified_trading_library`
@@ -177,6 +200,7 @@ These files use `os.environ` in production source where `UnifiedCloudConfig` sho
 ### 1. Unresolved Third-Party and Internal Modules (25 errors — reportMissingImports)
 
 **Files affected:**
+
 - `deployment_api/app_config.py`, `deployment_api/background_sync.py`, `deployment_api/workers/deployment_processor.py` — `backends.base`, `backends.cloud_run`, `backends.vm`, `deployment.orchestrator`, `deployment.quota_broker_client`, `deployment.state`
 - `deployment_api/main.py` — `PrometheusMiddleware`, `get_metrics_response`
 - `deployment_api/health_routes.py` — `_clear_gcs_cache`
@@ -213,6 +237,7 @@ These files use `os.environ` in production source where `UnifiedCloudConfig` sho
 ### 5. Constant Redefinition (2 errors — reportConstantRedefinition)
 
 **Files affected:**
+
 - `auth.py:22` — `DISABLE_AUTH` constant redefined inside a conditional
 - `background_sync.py:55` — `OWNER_ID` constant redefined
 
@@ -223,6 +248,7 @@ These files use `os.environ` in production source where `UnifiedCloudConfig` sho
 ### 6. Optional Member Access Without Guard (2 errors — reportOptionalMemberAccess)
 
 **Files affected:**
+
 - `background_sync.py:70` — `.is_set()` called on potentially `None` value
 - `background_sync.py:79` — same pattern
 
@@ -233,6 +259,7 @@ These files use `os.environ` in production source where `UnifiedCloudConfig` sho
 ### 7. Attribute Access on UnifiedCloudConfig for Non-Existent Fields (reportAttributeAccessIssue)
 
 **Files affected:**
+
 - `auth.py` — accessing `.disable_auth` and `.api_key` on `UnifiedCloudConfig`
 
 **Root cause:** The service accesses config fields (`disable_auth`, `api_key`) that are not defined on `UnifiedCloudConfig`. These are service-specific config needs.

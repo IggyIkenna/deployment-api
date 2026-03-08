@@ -376,6 +376,45 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     )
 
     # =========================================================================
+    # GCS STORE BUCKET CONFIGURATION
+    # =========================================================================
+
+    execution_store_bucket: str = Field(
+        default="",
+        validation_alias=AliasChoices("EXECUTION_STORE_BUCKET"),
+        description="GCS bucket name for execution store configs (without gs:// prefix). "
+        "Defaults to 'execution-store-{gcp_project_id}' when empty.",
+    )
+
+    strategy_store_cefi_bucket: str = Field(
+        default="",
+        validation_alias=AliasChoices("STRATEGY_STORE_CEFI_BUCKET"),
+        description="GCS bucket name for strategy store CeFi configs (without gs:// prefix). "
+        "Defaults to 'strategy-store-cefi-{gcp_project_id}' when empty.",
+    )
+
+    strategy_store_tradfi_bucket: str = Field(
+        default="",
+        validation_alias=AliasChoices("STRATEGY_STORE_TRADFI_BUCKET"),
+        description="GCS bucket name for strategy store TradFi configs (without gs:// prefix). "
+        "Defaults to 'strategy-store-tradfi-{gcp_project_id}' when empty.",
+    )
+
+    strategy_store_defi_bucket: str = Field(
+        default="",
+        validation_alias=AliasChoices("STRATEGY_STORE_DEFI_BUCKET"),
+        description="GCS bucket name for strategy store DeFi configs (without gs:// prefix). "
+        "Defaults to 'strategy-store-defi-{gcp_project_id}' when empty.",
+    )
+
+    ml_configs_store_bucket: str = Field(
+        default="",
+        validation_alias=AliasChoices("ML_CONFIGS_STORE_BUCKET"),
+        description="GCS bucket name for ML configs store (without gs:// prefix). "
+        "Defaults to 'ml-configs-store-{gcp_project_id}' when empty.",
+    )
+
+    # =========================================================================
     # DEPLOYMENT-SERVICE HTTP CLIENT CONFIGURATION
     # =========================================================================
 
@@ -422,6 +461,41 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     # =========================================================================
     # DERIVED PROPERTIES
     # =========================================================================
+
+    @property
+    def effective_execution_store_bucket(self) -> str:
+        """Get the effective execution store bucket with project_id fallback."""
+        if self.execution_store_bucket:
+            return self.execution_store_bucket
+        return f"execution-store-{self.gcp_project_id}"
+
+    @property
+    def effective_strategy_store_cefi_bucket(self) -> str:
+        """Get the effective strategy store CeFi bucket with project_id fallback."""
+        if self.strategy_store_cefi_bucket:
+            return self.strategy_store_cefi_bucket
+        return f"strategy-store-cefi-{self.gcp_project_id}"
+
+    @property
+    def effective_strategy_store_tradfi_bucket(self) -> str:
+        """Get the effective strategy store TradFi bucket with project_id fallback."""
+        if self.strategy_store_tradfi_bucket:
+            return self.strategy_store_tradfi_bucket
+        return f"strategy-store-tradfi-{self.gcp_project_id}"
+
+    @property
+    def effective_strategy_store_defi_bucket(self) -> str:
+        """Get the effective strategy store DeFi bucket with project_id fallback."""
+        if self.strategy_store_defi_bucket:
+            return self.strategy_store_defi_bucket
+        return f"strategy-store-defi-{self.gcp_project_id}"
+
+    @property
+    def effective_ml_configs_store_bucket(self) -> str:
+        """Get the effective ML configs store bucket with project_id fallback."""
+        if self.ml_configs_store_bucket:
+            return self.ml_configs_store_bucket
+        return f"ml-configs-store-{self.gcp_project_id}"
 
     @property
     def effective_state_bucket(self) -> str:
