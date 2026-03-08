@@ -15,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from unified_events_interface import setup_events
 from unified_trading_library import setup_tracing
 
-# TODO: PrometheusMiddleware and get_metrics_response are not yet implemented in
-# unified_trading_library. Re-enable once available (ISS-xxx).
+# TODO(GH-BACKLOG): PrometheusMiddleware and get_metrics_response are not yet implemented in
+# unified_trading_library. Re-enable once available.
 # from unified_trading_library import PrometheusMiddleware, get_metrics_response
 
 # Event logging for UTD v2 observability (before any log_event)
@@ -66,7 +66,7 @@ app = FastAPI(
 # Configure middleware (CORS, etc.)
 configure_middleware(app)
 
-# TODO: Re-enable once PrometheusMiddleware is available in unified_trading_library.
+# TODO(GH-BACKLOG): Re-enable once PrometheusMiddleware is available in unified_trading_library.
 # app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
 
 # --- Authenticated API routes (require API key) ---

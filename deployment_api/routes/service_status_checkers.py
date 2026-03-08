@@ -351,7 +351,8 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             trigger_id = trigger_ids[service]
 
             # Query builds (client-side filtering - server-side filter has issues)
-            # Deferred import — no UCI CloudBuildClient abstraction yet. TODO(uci).
+            # Deferred import — no UCI CloudBuildClient abstraction yet.
+            # TODO(GH-BACKLOG): migrate to UCI when CloudBuildClient is available.
             from google.cloud.devtools import cloudbuild_v1  # Deferred — Cloud Build boundary
 
             client = cloudbuild_v1.CloudBuildClient()

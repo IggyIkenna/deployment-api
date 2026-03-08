@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 
 def _cloudbuild_v1():
-    """Deferred cloudbuild_v1 import — no UCI CloudBuildClient abstraction yet. TODO(uci)."""
+    # TODO(GH-BACKLOG): migrate to UCI CloudBuildClient when abstraction is available.
+    """Deferred cloudbuild_v1 import — no UCI CloudBuildClient abstraction yet."""
     from google.cloud.devtools import cloudbuild_v1  # Deferred — deployment Cloud Build boundary
 
     return cloudbuild_v1
