@@ -123,14 +123,14 @@ def _validate_domain(domain: str) -> None:
 
 def _make_config_store(domain: str, schema_version: str = "1.0") -> _ConfigStoreProto:
     """Create a ConfigStore for the given domain."""
-    from unified_config_interface import get_config_store  # type: ignore[import-untyped]
+    from unified_config_interface import get_config_store  # pyright: ignore[reportMissingTypeStubs]
 
     return cast(_ConfigStoreProto, get_config_store(domain=domain, schema_version=schema_version))
 
 
 def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> None:
     """Publish config-domain-{domain} event to notify subscribing services."""
-    from unified_cloud_interface import get_event_bus  # type: ignore[import-untyped]
+    from unified_cloud_interface import get_event_bus  # pyright: ignore[reportMissingTypeStubs]
     from unified_events_interface import log_event
 
     topic = f"{DOMAIN_TOPIC_PREFIX}{domain}"
@@ -174,7 +174,7 @@ async def write_domain_config(
 
     def _write_sync() -> tuple[str, str]:
         from unified_config_interface import (
-            schema_for_domain,  # type: ignore[import-untyped]
+            schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
         # Validate content against domain schema
@@ -219,7 +219,7 @@ async def read_domain_config(
 
     def _read_sync() -> tuple[dict[str, object], str | None]:
         from unified_config_interface import (
-            schema_for_domain,  # type: ignore[import-untyped]
+            schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
         store = _make_config_store(domain)
@@ -283,7 +283,7 @@ async def diff_domain_config_versions(
 
     def _diff_sync() -> list[str]:
         from unified_config_interface import (
-            schema_for_domain,  # type: ignore[import-untyped]
+            schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
         store = _make_config_store(domain)
@@ -341,7 +341,7 @@ async def rollback_domain_config(
 
     def _rollback_sync() -> tuple[str, str]:
         from unified_config_interface import (
-            schema_for_domain,  # type: ignore[import-untyped]
+            schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
         store = _make_config_store(domain)
