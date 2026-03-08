@@ -110,9 +110,18 @@ RUFF_CMD=".venv/bin/ruff"; command -v "$RUFF_CMD" &>/dev/null || RUFF_CMD="ruff"
 RUFF_VER=$($RUFF_CMD --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0")
 [[ "$RUFF_VER" != "0.15.0" ]] && log_warn "ruff 0.15.0 expected, found $RUFF_VER" || log_success "ruff $RUFF_VER"
 
-# ── [1] AUTO-FIX (ruff, 30s) ──────────────────────────────────────────────────
+# ── [1] AUTO-FIX (prettier + ruff, 30s each) ──────────────────────────────────
+# Prettier runs FIRST on non-Python files to prevent ruff/prettier conflict in pre-commit hooks.
+# See: 06-coding-standards/quality-gates.md § Formatter Conflict Resolution
 if [ "$RUN_LINT" = true ] && [ "$FIX_MODE" = true ]; then
     log_section "[1/6] AUTO-FIX"
+    if command -v npx &>/dev/null; then
+        npx prettier --write "**/*.{md,json,yaml,yml}" --ignore-path .gitignore 2>/dev/null \
+            && log_success "Prettier: non-Python files formatted" \
+            || log_warn "Prettier not available or no files to format (skipping)"
+    else
+        log_warn "npx not available — skipping prettier pre-format (commit may require re-staging)"
+    fi
     run_timeout 30 $RUFF_CMD format $SOURCE_DIRS || exit 1
     run_timeout 30 $RUFF_CMD check --fix $SOURCE_DIRS || exit 1
     log_success "Auto-fix complete"
