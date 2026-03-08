@@ -322,6 +322,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
 
                     vm_map = {}
                     try:
+                        # TODO(p1): migrate to UCI get_compute_client()
                         from google.cloud import compute_v1
 
                         inst_client = compute_v1.InstancesClient()

@@ -19,16 +19,12 @@ dependencies = [
     "pydantic>=2.12.5,<3.0.0",
     # Auth
     "google-auth>=2.40.0,<3.0.0",
-    # Cloud storage
-    "google-cloud-storage>=3.8.0,<4.0.0",
     # Metrics
     "prometheus-client>=0.20.0,<1.0.0",
     # HTTP client
     "httpx>=0.28.1,<1.0.0",
     # Async HTTP (service status checks)
     "aiohttp>=3.13.2,<4.0.0",
-    # Cloud Build API
-    "google-cloud-build>=3.0.0,<4.0.0",
     # Cache
     "jsonpickle>=3.0.0,<4.0.0",
     "cachetools>=5.0.0,<6.0.0",

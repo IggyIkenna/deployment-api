@@ -100,7 +100,7 @@ def _refresh_live_cloud_run_status(state: object) -> int:  # noqa: C901
         return -1
 
     try:
-        from google.cloud import (
+        from google.cloud import (  # TODO(p1): migrate to UCI get_run_client()
             run_v2,
         )
 
