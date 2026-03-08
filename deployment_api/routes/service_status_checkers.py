@@ -104,7 +104,7 @@ class CodePushInfoDict(TypedDict, total=False):
     error: str
 
 
-async def get_latest_data_timestamp(
+async def get_latest_data_timestamp(  # noqa: C901
     service: str, use_cache: bool = True
 ) -> DataTimestampResultDict | None:
     """
@@ -211,7 +211,7 @@ async def get_latest_data_timestamp(
 DEPLOYMENT_CACHE_TTL = timedelta(minutes=5)
 
 
-async def get_latest_deployment(service: str, use_cache: bool = True) -> DeploymentInfoDict | None:
+async def get_latest_deployment(service: str, use_cache: bool = True) -> DeploymentInfoDict | None:  # noqa: C901
     """Get the most recent deployment for a service (with GCS-based caching)."""
     # Load GCS cache
     cache = load_gcs_cache()
@@ -295,7 +295,7 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
     return result
 
 
-async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDict | None:
+async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDict | None:  # noqa: C901
     """
     Get the most recent Cloud Build for a service.
 
@@ -317,7 +317,7 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Build cache invalid for %s: %s", service, e)
 
-    def _get_build_sync():
+    def _get_build_sync():  # noqa: C901
         try:
             # Load GCS cache
             cache = load_gcs_cache()

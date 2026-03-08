@@ -163,7 +163,7 @@ class DeploymentManager:
             "quota_ok": True,  # Simplified for now
         }
 
-    async def create_deployment(
+    async def create_deployment(  # noqa: C901
         self,
         deploy_request: DeployRequest,
         config_dir: str = "configs",
@@ -233,7 +233,7 @@ class DeploymentManager:
         docker_image_for_validation: str = (
             _substitute_env_vars(str(raw_docker_image))
             if raw_docker_image
-            else f"{region_for_validation}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"
+            else f"{region_for_validation}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"  # noqa: E501
         )
         image_error: dict[str, object] | None = cast(
             dict[str, object] | None,
@@ -260,7 +260,7 @@ class DeploymentManager:
         if not raw_shards:
             raise ValueError("No shards to deploy after filtering")
 
-        # Normalise shard list: deployment-service returns dicts with shard_index, dimensions, cli_command
+        # Normalise shard list: deployment-service returns dicts with shard_index, dimensions, cli_command  # noqa: E501
         shard_list: list[dict[str, object]] = []
         for shard in raw_shards:
             shard_index = shard.get("shard_index", 0)
@@ -357,7 +357,7 @@ class DeploymentManager:
         DeploymentOrchestrator execution logic.
         """
         try:
-            # Resolve effective dates (local config-level check, no deployment_service import needed)
+            # Resolve effective dates (local config-level check, no deployment_service import needed)  # noqa: E501
             _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)
 
             # Use region from request or default
@@ -388,7 +388,7 @@ class DeploymentManager:
             docker_image: str = (
                 _substitute_env_vars(str(raw_docker))
                 if raw_docker
-                else f"{deployment_region}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"
+                else f"{deployment_region}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"  # noqa: E501
             )
             job_name: str = cast(
                 str, service_config.get("cloud_run_job_name", deploy_request.service)

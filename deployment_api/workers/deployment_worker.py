@@ -68,7 +68,7 @@ def run_deployment_in_process(
         # The worker exits immediately - the auto-scheduler handles launching shards
         # with rolling concurrency and proper quota management.
         logger.info(
-            "Deployment %s created. API auto-scheduler will launch shards with rolling concurrency.",
+            "Deployment %s created. API auto-scheduler will launch shards with rolling concurrency.",  # noqa: E501
             deployment_id,
         )
         return

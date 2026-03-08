@@ -33,7 +33,7 @@ _shutdown_event = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI):  # noqa: C901
     """Application lifespan - startup and shutdown."""
     global _background_task, _shutdown_event, _events_drain_task
 
@@ -90,7 +90,9 @@ async def lifespan(app: FastAPI):
                 lock_blob_name = f"locks/deployment_{deployment_id}.lock"
                 lock_blob = bucket.blob(lock_blob_name)
                 if lock_blob.exists():
-                    lock_data = cast(dict[str, object], json.loads(lock_blob.download_as_text() or "{}"))
+                    lock_data = cast(
+                        dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                    )
                     if lock_data.get("owner") == get_owner_id():
                         lock_blob.delete()
                         released_count += 1

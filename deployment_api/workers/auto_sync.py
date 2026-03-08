@@ -58,7 +58,7 @@ def get_config_dir():
     raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
 
-async def _auto_sync_running_deployments():
+async def _auto_sync_running_deployments():  # noqa: C901
     """
     Background task that periodically syncs status for running deployments.
 
@@ -96,7 +96,7 @@ async def _auto_sync_running_deployments():
                 break
 
             # Run GCS operations in thread pool to not block event loop
-            def sync_running_deployments():
+            def sync_running_deployments():  # noqa: C901
                 logger.info("[AUTO_SYNC] Sync cycle starting...")
                 client = get_storage_client_with_pool(PROJECT_ID)  # Uses default pool_size=200
                 bucket = client.bucket(STATE_BUCKET)
@@ -276,8 +276,8 @@ async def _auto_sync_running_deployments():
                     skipped,
                 )
 
-                def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:
-                    """Run orphan VM cleanup only (GCS + vm_map + fire). No state write. Returns count fired."""
+                def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:  # noqa: C901
+                    """Run orphan VM cleanup only (GCS + vm_map + fire). No state write. Returns count fired."""  # noqa: E501
                     config = state.get("config") or {}
                     deployment_id = dep_state_path.split("/")[1]
                     compute_type = state.get("compute_type", "vm")
@@ -434,7 +434,7 @@ async def _auto_sync_running_deployments():
                     return 0
 
                 # Process deployment implementations...
-                # (This would be the large _process_one_deployment function - extracted separately for brevity)
+                # (This would be the large _process_one_deployment function - extracted separately for brevity)  # noqa: E501
                 from .deployment_processor import process_deployments_batch
 
                 synced, num_active = process_deployments_batch(

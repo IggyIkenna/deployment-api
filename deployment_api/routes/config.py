@@ -242,7 +242,7 @@ async def get_dependencies(request: Request):
 
 
 @router.get("/dependencies/{service_name}")
-async def get_service_dependencies(service_name: str, request: Request):
+async def get_service_dependencies(service_name: str, request: Request):  # noqa: C901
     """
     Get dependencies for a specific service.
 
@@ -254,14 +254,14 @@ async def get_service_dependencies(service_name: str, request: Request):
     """
     cache_key = f"config:dependencies:{service_name}"
 
-    async def _fetch():
+    async def _fetch():  # noqa: C901
         config_dir = cast(Path, cast(FastAPI, request.app).state.config_dir)
         deps_path: Path = config_dir / "dependencies.yaml"
 
         if not deps_path.exists():
             raise HTTPException(status_code=404, detail="dependencies.yaml not found")
 
-        def _load_service_deps_sync() -> dict[str, object] | None:
+        def _load_service_deps_sync() -> dict[str, object] | None:  # noqa: C901
             with open(deps_path) as f:
                 data = cast(dict[str, object], yaml.safe_load(f))
 

@@ -10,7 +10,12 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from deployment_api.settings import GCP_PROJECT_ID as _PID
-from deployment_api.utils.storage_facade import ObjectInfo, list_objects, list_prefixes, object_exists
+from deployment_api.utils.storage_facade import (
+    ObjectInfo,
+    list_objects,
+    list_prefixes,
+    object_exists,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +168,9 @@ class DataQueryService:
 
         for category in cast(list[str], mapping.get("categories") or []):
             try:
-                bucket_name = self.build_bucket_name(cast(str, mapping.get("prefix") or ""), category)
+                bucket_name = self.build_bucket_name(
+                    cast(str, mapping.get("prefix") or ""), category
+                )
                 venues: list[str] = []
 
                 # List prefixes to find venue directories
@@ -198,7 +205,7 @@ class DataQueryService:
 
         return venue_filters
 
-    async def get_instruments_list(
+    async def get_instruments_list(  # noqa: C901
         self,
         category: str,
         venue: str | None = None,
@@ -276,7 +283,7 @@ class DataQueryService:
             logger.error("Error getting instruments list: %s", e)
             return {"error": str(e)}
 
-    async def get_instrument_availability(
+    async def get_instrument_availability(  # noqa: C901
         self,
         venue: str,
         instrument_type: str,
@@ -306,7 +313,9 @@ class DataQueryService:
         try:
             # Determine category from venue
             venue_upper = venue.upper()
-            if any(cefi in venue_upper for cefi in ["BINANCE", "BYBIT", "OKX", "DERIBIT", "BITMEX"]):
+            if any(
+                cefi in venue_upper for cefi in ["BINANCE", "BYBIT", "OKX", "DERIBIT", "BITMEX"]
+            ):
                 category = "CEFI"
             elif any(tradfi in venue_upper for tradfi in ["NYSE", "NASDAQ", "CME", "CBOE", "ICE"]):
                 category = "TRADFI"
@@ -340,18 +349,26 @@ class DataQueryService:
             if available_from:
                 try:
                     if "T" in available_from:
-                        instrument_available_from = datetime.fromisoformat(available_from.replace("Z", "+00:00"))
+                        instrument_available_from = datetime.fromisoformat(
+                            available_from.replace("Z", "+00:00")
+                        )
                     else:
-                        instrument_available_from = datetime.strptime(available_from, "%Y-%m-%d").replace(tzinfo=UTC)
+                        instrument_available_from = datetime.strptime(
+                            available_from, "%Y-%m-%d"
+                        ).replace(tzinfo=UTC)
                 except (ValueError, TypeError):
                     logger.warning("Could not parse available_from: %s", available_from)
 
             if available_to:
                 try:
                     if "T" in available_to:
-                        instrument_available_to = datetime.fromisoformat(available_to.replace("Z", "+00:00"))
+                        instrument_available_to = datetime.fromisoformat(
+                            available_to.replace("Z", "+00:00")
+                        )
                     else:
-                        instrument_available_to = datetime.strptime(available_to, "%Y-%m-%d").replace(tzinfo=UTC)
+                        instrument_available_to = datetime.strptime(
+                            available_to, "%Y-%m-%d"
+                        ).replace(tzinfo=UTC)
                 except (ValueError, TypeError):
                     logger.warning("Could not parse available_to: %s", available_to)
 
@@ -389,7 +406,9 @@ class DataQueryService:
                 for dt in data_types:
                     # Build expected path for this instrument/date/data_type
                     # Structure varies by category, this is simplified
-                    expected_path = f"{venue}/{instrument_type.lower()}/{instrument}/{date_str}/{dt}"
+                    expected_path = (
+                        f"{venue}/{instrument_type.lower()}/{instrument}/{date_str}/{dt}"
+                    )
 
                     # Check if data exists
                     exists = object_exists(bucket_name, expected_path)

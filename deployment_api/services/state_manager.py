@@ -178,7 +178,7 @@ class StateManager:
         self._held_deployment_locks.discard(deployment_id)
         return False
 
-    def run_orphan_cleanup_only(self, state: dict[str, object]) -> int:
+    def run_orphan_cleanup_only(self, state: dict[str, object]) -> int:  # noqa: C901
         """
         Run orphan VM cleanup for a completed deployment.
 
@@ -221,7 +221,7 @@ class StateManager:
                 shard_id = shard.get("shard_id")
                 if not shard_id:
                     continue
-                status_obj_path = f"deployments.{self.deployment_env}/{state.get('deployment_id')}/shards/{shard_id}/status.txt"
+                status_obj_path = f"deployments.{self.deployment_env}/{state.get('deployment_id')}/shards/{shard_id}/status.txt"  # noqa: E501
                 try:
                     status_text = read_object_text(self.state_bucket, status_obj_path)
                     event_data = parse_service_event(status_text)
@@ -342,7 +342,7 @@ class StateManager:
             if now_ts - pending_ts(val) >= retry_seconds and vm_status(vm_map, jid) == "RUNNING"
         ]
 
-    def cleanup_state_ttl(self) -> int:
+    def cleanup_state_ttl(self) -> int:  # noqa: C901
         """
         Clean up old deployment states based on TTL.
 

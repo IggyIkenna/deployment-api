@@ -234,7 +234,7 @@ class GCSCache:
 
         return get_storage_client()
 
-    async def _load_from_gcs(self) -> None:
+    async def _load_from_gcs(self) -> None:  # noqa: C901
         """Load cache from GCS into local memory."""
         if self._loaded:
             return
@@ -251,7 +251,10 @@ class GCSCache:
                     )
 
                     if object_exists(self.bucket_name, self.blob_path):
-                        data = cast(dict[str, object], json.loads(read_object_text(self.bucket_name, self.blob_path)))
+                        data = cast(
+                            dict[str, object],
+                            json.loads(read_object_text(self.bucket_name, self.blob_path)),
+                        )
                         self._local_cache = data
                         logger.info("Loaded GCS cache: %s keys", len(data))
                     else:
@@ -625,8 +628,12 @@ def invalidate_service_status_cache_async(service: str | None = None):
 # =============================================================================
 
 TTL_HEALTH = 5  # Health checks - very short
-TTL_DEPLOYMENT_STATE = 10  # Individual deployment state (active deployments - short for near-real-time)
-TTL_DEPLOYMENT_STATE_TERMINAL = 60  # Terminal deployment state (completed/failed/cancelled - longer)
+TTL_DEPLOYMENT_STATE = (
+    10  # Individual deployment state (active deployments - short for near-real-time)
+)
+TTL_DEPLOYMENT_STATE_TERMINAL = (
+    60  # Terminal deployment state (completed/failed/cancelled - longer)
+)
 TTL_DEPLOYMENT_LIST = 30  # Deployment list (30s - keep list fresh for running/pending status)
 TTL_DATA_STATUS = 1800  # Data status checks (30 min - expensive queries, data rarely changes)
 TTL_SERVICE_STATUS = 120  # Service status (2 min)

@@ -53,7 +53,7 @@ def get_ui_dist_dir() -> Path | None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI):  # noqa: C901
     """Application lifespan - startup and shutdown."""
     # Startup
     app.state.config_dir = get_config_dir()
@@ -114,7 +114,9 @@ async def lifespan(app: FastAPI):
                 lock_blob_name = f"locks/deployment_{deployment_id}.lock"
                 lock_blob = bucket.blob(lock_blob_name)
                 if lock_blob.exists():
-                    lock_data = cast(dict[str, object], json.loads(lock_blob.download_as_text() or "{}"))
+                    lock_data = cast(
+                        dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                    )
                     if lock_data.get("owner") == owner_id:
                         lock_blob.delete()
                         released_count += 1

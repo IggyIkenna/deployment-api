@@ -33,7 +33,7 @@ def set_shutdown_event(event: asyncio.Event) -> None:
     _shutdown_event = event
 
 
-async def _auto_sync_running_deployments():
+async def _auto_sync_running_deployments():  # noqa: C901
     """
     Background task that periodically syncs status for running deployments.
 
@@ -82,7 +82,9 @@ async def _auto_sync_running_deployments():
             # Run sync operations in thread pool to not block event loop
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor(max_workers=1) as executor:
-                synced, num_active = await loop.run_in_executor(executor, _sync_service.sync_deployments)
+                synced, num_active = await loop.run_in_executor(
+                    executor, _sync_service.sync_deployments
+                )
 
             if synced > 0:
                 logger.info("[AUTO_SYNC] Synced %s deployment(s)", synced)
@@ -91,19 +93,27 @@ async def _auto_sync_running_deployments():
             if (_time.time() % 3600) < current_interval:
                 try:
                     with ThreadPoolExecutor(max_workers=1) as executor:
-                        deleted_count = await loop.run_in_executor(executor, _sync_service.cleanup_state_ttl)
+                        deleted_count = await loop.run_in_executor(
+                            executor, _sync_service.cleanup_state_ttl
+                        )
                     if deleted_count > 0:
-                        logger.info("[AUTO_SYNC] TTL cleanup: deleted %s old deployment(s)", deleted_count)
+                        logger.info(
+                            "[AUTO_SYNC] TTL cleanup: deleted %s old deployment(s)", deleted_count
+                        )
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("[AUTO_SYNC] State TTL cleanup error: %s", e)
 
             # Adaptive interval: fast when active, slow when idle
             if num_active > 0:
                 current_interval = sync_interval_active
-                logger.debug("[AUTO_SYNC] %s active → next cycle in %ss", num_active, current_interval)
+                logger.debug(
+                    "[AUTO_SYNC] %s active → next cycle in %ss", num_active, current_interval
+                )
             else:
                 current_interval = sync_interval_idle
-                logger.debug("[AUTO_SYNC] No active deployments → next cycle in %ss", current_interval)
+                logger.debug(
+                    "[AUTO_SYNC] No active deployments → next cycle in %ss", current_interval
+                )
 
         except asyncio.CancelledError:
             break

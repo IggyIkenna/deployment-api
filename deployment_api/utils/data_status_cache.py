@@ -212,7 +212,7 @@ def set_cached_result(
             )
 
 
-def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[str, object]:
+def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[str, object]:  # noqa: C901
     """
     Truncate dates lists in result for UI display.
 

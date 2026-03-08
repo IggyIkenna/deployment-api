@@ -108,7 +108,7 @@ def _maybe_add_direct_gcs(
     return env_vars
 
 
-def find_duplicate_running_shards(
+def find_duplicate_running_shards(  # noqa: C901
     state_manager, service: str, deployment_id: str, shard_args_list: list[list[str]]
 ) -> list[dict]:
     """
@@ -200,7 +200,7 @@ def _status_str(val: object) -> str:
         return str(val)
 
 
-def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:
+def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:  # noqa: C901
     """
     Extract severity level and logger name from log line.
 

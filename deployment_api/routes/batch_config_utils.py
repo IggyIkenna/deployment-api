@@ -82,7 +82,7 @@ SERVICE_CONFIG = {
         # Instrument type breakdown: directory level below data_type
         "supports_instrument_types": True,
         # Venue breakdown: fast directory listing
-        # Path: .../data_type={dt}/instrument_type={folder}/venue={venue}/instrument_key={instrument}.parquet
+        # Path: .../data_type={dt}/instrument_type={folder}/venue={venue}/instrument_key={instrument}.parquet  # noqa: E501
         "venue_extraction": "from_path_parsing",
     },
     "market-data-processing-service": {

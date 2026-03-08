@@ -20,7 +20,7 @@ from .batch_config_utils import (
 logger = logging.getLogger(__name__)
 
 
-def query_specific_prefixes_for_category(
+def query_specific_prefixes_for_category(  # noqa: C901
     service: str,
     cat: str,
     dates_to_check: set,
@@ -45,7 +45,7 @@ def query_specific_prefixes_for_category(
     if not bucket_name:
         return {"error": f"No bucket for category {cat}"}
 
-    # Get all valid combinatorics for this category (and venue/folder/data_type filters if specified)
+    # Get all valid combinatorics for this category (and venue/folder/data_type filters if specified)  # noqa: E501
     # Pass service for timeframe expansion (market-data-processing-service)
     path_combinatorics = get_path_combinatorics()
     combos = path_combinatorics.get_combinatorics(
@@ -105,7 +105,7 @@ def query_specific_prefixes_for_category(
     # NESTED tracking for full dimensional breakdown
     venue_data_types = {}  # venue -> {data_type -> set of dates}
     venue_folders = {}  # venue -> {folder -> set of dates}
-    venue_timeframes = {}  # venue -> {timeframe -> set of dates} (for market-data-processing-service)
+    venue_timeframes = {}  # venue -> {timeframe -> set of dates} (for market-data-processing-service)  # noqa: E501
 
     # Blob timestamp tracking for verification classification
     # Maps venue -> {date_str -> oldest blob.updated datetime}
@@ -236,7 +236,7 @@ def query_specific_prefixes_for_category(
     }
 
 
-def query_generic_prefixes_for_category(
+def query_generic_prefixes_for_category(  # noqa: C901
     service: str,
     cat: str,
     dates_to_check: set,

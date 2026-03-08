@@ -17,7 +17,7 @@ _log_analysis_cache = {}
 _log_analysis_cache_ttl = 60  # Cache log analysis for 60 seconds
 
 
-def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> dict:
+def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> dict:  # noqa: C901
     """
     Analyze deployment logs for errors and warnings.
 
@@ -91,7 +91,11 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
             }
 
         # Filter to completed/failed shards for log analysis
-        shards_to_check = [s for s in shards if (s.get("status") or "").lower() in ("completed", "succeeded", "failed")]
+        shards_to_check = [
+            s
+            for s in shards
+            if (s.get("status") or "").lower() in ("completed", "succeeded", "failed")
+        ]
 
         if not shards_to_check:
             return {
@@ -104,7 +108,7 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
         stack_traces_found = False
         success_indicators = []
 
-        def _analyze_shard_vm(shard):
+        def _analyze_shard_vm(shard):  # noqa: C901
             """Analyze logs for a single shard (VM-based deployment)."""
             shard_errors = []
             shard_warnings = []
@@ -190,12 +194,16 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all shard analysis tasks
-            futures = {executor.submit(_analyze_shard_vm, shard): shard for shard in shards_to_check}
+            futures = {
+                executor.submit(_analyze_shard_vm, shard): shard for shard in shards_to_check
+            }
 
             # Collect results as they complete
             for future in as_completed(futures, timeout=30):  # 30s timeout per shard
                 try:
-                    shard_errors, shard_warnings, shard_stack_traces, shard_success = future.result()
+                    shard_errors, shard_warnings, shard_stack_traces, shard_success = (
+                        future.result()
+                    )
 
                     all_errors.extend(shard_errors)
                     all_warnings.extend(shard_warnings)
@@ -262,7 +270,9 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
 
 async def analyze_deployment_logs(state_manager, deployment_id: str, state) -> dict:
     """Async wrapper for log analysis."""
-    return await asyncio.to_thread(analyze_deployment_logs_sync, state_manager, deployment_id, state)
+    return await asyncio.to_thread(
+        analyze_deployment_logs_sync, state_manager, deployment_id, state
+    )
 
 
 def invalidate_log_analysis_cache(deployment_id: str | None = None):

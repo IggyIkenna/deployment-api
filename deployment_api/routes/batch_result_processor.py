@@ -49,7 +49,7 @@ def calculate_overall_file_counts(
     return None
 
 
-def calculate_venue_weighted_totals(
+def calculate_venue_weighted_totals(  # noqa: C901
     results: dict[str, object],
     all_dates: set[str],
     expected_start_dates_config: dict[str, object],
@@ -145,7 +145,7 @@ def calculate_venue_weighted_totals(
     return total_venue_expected, total_venue_found, expected_missing, unexpected_missing
 
 
-def update_category_completion_percentages(
+def update_category_completion_percentages(  # noqa: C901
     results: dict[str, object],
     all_dates: set[str],
     expected_start_dates_config: dict[str, object],

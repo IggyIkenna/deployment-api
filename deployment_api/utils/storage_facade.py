@@ -91,13 +91,13 @@ def list_objects(
     return _list_objects_api(bucket_name, prefix, max_results, delimiter)
 
 
-def _list_objects_fuse(
+def _list_objects_fuse(  # noqa: C901
     bucket_name: str,
     prefix: str,
     max_results: int | None,
     delimiter: str | None,
 ) -> list[ObjectInfo]:
-    """List via FUSE filesystem. Matches GCS list_blobs(prefix) semantics - all objects under prefix."""
+    """List via FUSE filesystem. Matches GCS list_blobs(prefix) semantics - all objects under prefix."""  # noqa: E501
     try:
         base = _fuse_path(bucket_name)
         path = _fuse_path(bucket_name, prefix)

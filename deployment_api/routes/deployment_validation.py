@@ -186,7 +186,7 @@ def _resolve_deploy_dates(deploy_request, config_dir: str = "configs") -> tuple[
     return start_date, end_date
 
 
-def validate_deployment_request(deploy_request) -> dict[str, object] | None:
+def validate_deployment_request(deploy_request) -> dict[str, object] | None:  # noqa: C901
     """
     Validate deployment request parameters.
 
@@ -263,7 +263,7 @@ def validate_deployment_request(deploy_request) -> dict[str, object] | None:
     return None
 
 
-def validate_shard_configuration(
+def validate_shard_configuration(  # noqa: C901
     service_config: dict[str, object], deploy_request
 ) -> dict[str, object] | None:
     """

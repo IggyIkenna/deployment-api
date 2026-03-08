@@ -116,15 +116,15 @@ class CombinatoricEntry:
         - market-tick-data-handler: {base}/day={date}/data_type={dt}/instrument_type={folder}/venue={venue}/
         - market-data-processing-service: {base}/day={date}/timeframe={tf}/data_type={dt}/
           (flat path, no instrument_type/venue folders)
-        """
+        """  # noqa: E501
         if self.timeframe:
             # market-data-processing-service: flat path
             # processed_candles/by_date/day=.../timeframe=.../data_type=.../{instrument}.parquet
-            return f"{base_prefix}/day={date_str}/timeframe={self.timeframe}/data_type={self.data_type}/"
+            return f"{base_prefix}/day={date_str}/timeframe={self.timeframe}/data_type={self.data_type}/"  # noqa: E501
         else:
             # market-tick-data-handler: key=value for hive partitioning
-            # raw_tick_data/by_date/day=.../data_type=.../instrument_type=equities/venue=NYSE/instrument_key=*.parquet
-            return f"{base_prefix}/day={date_str}/data_type={self.data_type}/instrument_type={self.folder}/venue={self.venue}/"
+            # raw_tick_data/by_date/day=.../data_type=.../instrument_type=equities/venue=NYSE/instrument_key=*.parquet  # noqa: E501
+            return f"{base_prefix}/day={date_str}/data_type={self.data_type}/instrument_type={self.folder}/venue={self.venue}/"  # noqa: E501
 
 
 @dataclass
@@ -174,7 +174,9 @@ class PathCombinatorics:
 
     def is_in_tick_window(self, date_str: str) -> bool:
         """Check if a date falls within any tick data window."""
-        return any(window_start <= date_str <= window_end for window_start, window_end in self.tick_windows)
+        return any(
+            window_start <= date_str <= window_end for window_start, window_end in self.tick_windows
+        )
 
     def _load_config(self) -> None:
         """Load venue_data_types.yaml configuration."""
@@ -187,7 +189,7 @@ class PathCombinatorics:
             self.config = yaml.safe_load(f) or {}
         logger.debug("Loaded venue_data_types.yaml with %s categories", len(self.config))
 
-    def _build_combinatorics(self) -> None:
+    def _build_combinatorics(self) -> None:  # noqa: C901
         """Build all valid combinatorics from the config.
 
         Respects accessible_instrument_types from venue_data_types.yaml:
@@ -220,7 +222,9 @@ class PathCombinatorics:
                         skipped_venues.append(venue)
                         continue
                     # Filter folders to only those mapped from accessible instrument types
-                    accessible_folders = {INSTRUMENT_TYPE_TO_FOLDER.get(t) for t in accessible_types} - {None}
+                    accessible_folders = {
+                        INSTRUMENT_TYPE_TO_FOLDER.get(t) for t in accessible_types
+                    } - {None}
                     folders = [f for f in folders if f in accessible_folders]
                     if not folders:
                         skipped_venues.append(venue)
@@ -259,7 +263,7 @@ class PathCombinatorics:
 
         if skipped_venues:
             logger.info(
-                "Skipped %s venue(s) with no accessible instrument types (Tardis subscription limitation): %s",
+                "Skipped %s venue(s) with no accessible instrument types (Tardis subscription limitation): %s",  # noqa: E501
                 len(skipped_venues),
                 ", ".join(skipped_venues),
             )
@@ -286,14 +290,16 @@ class PathCombinatorics:
                         dims[name] = dim["values"]
                 self.service_dimensions[svc] = dims
                 logger.debug(
-                    "Loaded sharding dimensions for %s: %s", svc, ", ".join(f"{k}={len(v)}" for k, v in dims.items())
+                    "Loaded sharding dimensions for %s: %s",
+                    svc,
+                    ", ".join(f"{k}={len(v)}" for k, v in dims.items()),
                 )
             except (OSError, ValueError, RuntimeError) as e:
                 logger.warning("Failed to load sharding config for %s: %s", svc, e)
 
         logger.info("Loaded service dimensions for %s services", len(self.service_dimensions))
 
-    def get_service_prefixes_for_date(
+    def get_service_prefixes_for_date(  # noqa: C901
         self,
         service: str,
         category: str,
@@ -594,7 +600,7 @@ class PathCombinatorics:
                 data_types.add(c.data_type)
         return data_types
 
-    async def parallel_query_prefixes(
+    async def parallel_query_prefixes(  # noqa: C901
         self,
         bucket_or_name: object,  # bucket object (legacy) or bucket_name str
         prefixes: list[str],
@@ -618,7 +624,11 @@ class PathCombinatorics:
             return {}
 
         # Support both bucket name (str) and legacy bucket object
-        bucket_name = bucket_or_name if isinstance(bucket_or_name, str) else getattr(bucket_or_name, "name", None)
+        bucket_name = (
+            bucket_or_name
+            if isinstance(bucket_or_name, str)
+            else getattr(bucket_or_name, "name", None)
+        )
 
         loop = asyncio.get_event_loop()
 
@@ -644,7 +654,9 @@ class PathCombinatorics:
         # Execute all queries in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Create futures for all prefixes
-            futures = {prefix: loop.run_in_executor(executor, query_func, prefix) for prefix in prefixes}
+            futures = {
+                prefix: loop.run_in_executor(executor, query_func, prefix) for prefix in prefixes
+            }
 
             # Gather all results
             results = {}

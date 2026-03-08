@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from .service_status_checkers import SERVICE_OUTPUT_BUCKETS
 
 
-async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | None:
+async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | None:  # noqa: C901
     """
     FAST version: Get most recent data timestamp by checking latest date folder.
 
@@ -25,7 +25,7 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
     """
     from deployment_api.utils.storage_facade import list_objects, list_prefixes
 
-    def _get_timestamps_sync():
+    def _get_timestamps_sync():  # noqa: C901
         try:
             buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
 
@@ -49,18 +49,24 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
                         prefixes_found = list_prefixes(bucket_name, prefix)
 
                         # Look for day=YYYY-MM-DD pattern in prefixes
-                        date_prefixes = [p for p in prefixes_found if re.search(r"day=\d{4}-\d{2}-\d{2}", p)]
+                        date_prefixes = [
+                            p for p in prefixes_found if re.search(r"day=\d{4}-\d{2}-\d{2}", p)
+                        ]
 
                         if date_prefixes:
                             date_prefixes.sort(reverse=True)
                             most_recent_prefix = date_prefixes[0]
 
                             # Get files in most recent date folder
-                            recent_objs = list_objects(bucket_name, most_recent_prefix, max_results=10)
+                            recent_objs = list_objects(
+                                bucket_name, most_recent_prefix, max_results=10
+                            )
                             if recent_objs:
                                 latest_obj = max(
                                     recent_objs,
-                                    key=lambda o: o.updated if o.updated else datetime.min.replace(tzinfo=UTC),
+                                    key=lambda o: (
+                                        o.updated if o.updated else datetime.min.replace(tzinfo=UTC)
+                                    ),
                                 )
                                 latest_timestamp = latest_obj.updated
                             break
@@ -70,7 +76,9 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
                             if objs:
                                 latest_obj = max(
                                     objs,
-                                    key=lambda o: o.updated if o.updated else datetime.min.replace(tzinfo=UTC),
+                                    key=lambda o: (
+                                        o.updated if o.updated else datetime.min.replace(tzinfo=UTC)
+                                    ),
                                 )
                                 latest_timestamp = latest_obj.updated
                                 break
@@ -86,7 +94,11 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
                     logger.warning("Error checking %s/%s: %s", category, bucket_name, e)
                     results[category] = {"error": str(e)[:50]}
 
-            valid_timestamps = [datetime.fromisoformat(r["timestamp"]) for r in results.values() if r.get("timestamp")]
+            valid_timestamps = [
+                datetime.fromisoformat(r["timestamp"])
+                for r in results.values()
+                if r.get("timestamp")
+            ]
 
             return {
                 "by_category": results,
@@ -95,4 +107,6 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
         except (OSError, ValueError, RuntimeError) as e:
             return {"error": str(e)[:100]}
 
-    return cast(dict[str, object] | None, cast(object, await asyncio.to_thread(_get_timestamps_sync)))
+    return cast(
+        dict[str, object] | None, cast(object, await asyncio.to_thread(_get_timestamps_sync))
+    )

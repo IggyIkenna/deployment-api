@@ -206,7 +206,9 @@ INFRASTRUCTURE_WITH_TRIGGERS = [
 ]
 
 # All trackable repos (services + libraries + infrastructure)
-ALL_REPOS_WITH_TRIGGERS = SERVICES_WITH_TRIGGERS + LIBRARIES_WITH_TRIGGERS + INFRASTRUCTURE_WITH_TRIGGERS
+ALL_REPOS_WITH_TRIGGERS = (
+    SERVICES_WITH_TRIGGERS + LIBRARIES_WITH_TRIGGERS + INFRASTRUCTURE_WITH_TRIGGERS
+)
 
 
 class TriggerBuildRequest(BaseModel):
@@ -260,9 +262,13 @@ def _format_build_info(build) -> BuildInfoDict:
         "create_time": build.create_time.isoformat() if build.create_time else None,
         "finish_time": build.finish_time.isoformat() if build.finish_time else None,
         "duration_seconds": (
-            (build.finish_time - build.create_time).total_seconds() if build.finish_time and build.create_time else None
+            (build.finish_time - build.create_time).total_seconds()
+            if build.finish_time and build.create_time
+            else None
         ),
-        "commit_sha": ((build.substitutions.get("COMMIT_SHA") or "")[:7] if build.substitutions else None),
+        "commit_sha": (
+            (build.substitutions.get("COMMIT_SHA") or "")[:7] if build.substitutions else None
+        ),
         "branch": (build.substitutions.get("BRANCH_NAME") if build.substitutions else None),
         "log_url": build.log_url,
     }
@@ -292,7 +298,7 @@ def _get_cached_trigger_id(trigger_name: str) -> str | None:
 
 
 @router.get("/triggers")
-async def list_triggers(
+async def list_triggers(  # noqa: C901
     force_refresh: bool = Query(False, description="Bypass cache and fetch fresh data"),
 ) -> TriggersResponseDict:
     """
@@ -305,8 +311,8 @@ async def list_triggers(
     _ensure_gcp()
     cache_key = f"cloud_builds:triggers:{DEFAULT_PROJECT_ID}:{DEFAULT_REGION}"
 
-    async def fetch_triggers():
-        def _list_triggers_sync() -> list[TriggerDict]:
+    async def fetch_triggers():  # noqa: C901
+        def _list_triggers_sync() -> list[TriggerDict]:  # noqa: C901
             _cb = _cloudbuild_v1()
             client = _cb.CloudBuildClient()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
@@ -363,7 +369,7 @@ async def list_triggers(
                 elif trigger.repository_event_config:
                     repo_config = trigger.repository_event_config
                     if repo_config.repository:
-                        # Format: projects/PROJECT/locations/REGION/connections/CONNECTION/repositories/REPO
+                        # Format: projects/PROJECT/locations/REGION/connections/CONNECTION/repositories/REPO  # noqa: E501
                         parts = repo_config.repository.split("/")
                         if parts:
                             github_repo = parts[-1]
@@ -403,11 +409,13 @@ async def list_triggers(
 
     return cast(
         TriggersResponseDict,
-        await cache.get_or_fetch(cache_key, fetch_triggers, TTL_BUILD_INFO, force_refresh=force_refresh),
+        await cache.get_or_fetch(
+            cache_key, fetch_triggers, TTL_BUILD_INFO, force_refresh=force_refresh
+        ),
     )
 
 
-async def _get_recent_builds_for_triggers(
+async def _get_recent_builds_for_triggers(  # noqa: C901
     trigger_ids: list[str],
 ) -> dict[str, BuildInfoDict]:
     """Get the most recent build for each trigger using parallel filtered queries.
@@ -421,7 +429,9 @@ async def _get_recent_builds_for_triggers(
 
     try:
 
-        def _fetch_latest_build(client: cloudbuild_v1.CloudBuildClient, trigger_id: str) -> tuple | None:
+        def _fetch_latest_build(
+            client: cloudbuild_v1.CloudBuildClient, trigger_id: str
+        ) -> tuple | None:
             """Fetch the latest build for a single trigger using API-level filter."""
             _cb = _cloudbuild_v1()
             parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
@@ -442,8 +452,12 @@ async def _get_recent_builds_for_triggers(
             results = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(trigger_ids), 8)) as executor:
-                futures = {executor.submit(_fetch_latest_build, client, tid): tid for tid in trigger_ids}
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(trigger_ids), 8)
+            ) as executor:
+                futures = {
+                    executor.submit(_fetch_latest_build, client, tid): tid for tid in trigger_ids
+                }
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         result = future.result()
@@ -464,7 +478,7 @@ async def _get_recent_builds_for_triggers(
 
 
 @router.post("/trigger", response_model=TriggerBuildResponse)
-async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
+async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  # noqa: C901
     """
     Manually trigger a Cloud Build for a service.
 
@@ -475,7 +489,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
     if request.service not in ALL_REPOS_WITH_TRIGGERS:
         return TriggerBuildResponse(
             success=False,
-            message=f"Unknown service/library: {request.service}. Valid options: {', '.join(ALL_REPOS_WITH_TRIGGERS)}",
+            message=f"Unknown service/library: {request.service}. Valid options: {', '.join(ALL_REPOS_WITH_TRIGGERS)}",  # noqa: E501
             service=request.service,
             branch=request.branch,
         )
@@ -521,7 +535,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
                     }
             return None
 
-        def _run_trigger_sync() -> TriggerRunResultDict:
+        def _run_trigger_sync() -> TriggerRunResultDict:  # noqa: C901
             _cb = _cloudbuild_v1()
             client = _cb.CloudBuildClient()
 
@@ -534,7 +548,9 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             trigger_time = datetime.now(UTC)
 
             # Trigger name format: projects/PROJECT/locations/REGION/triggers/TRIGGER_NAME
-            name = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
+            name = (
+                f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
+            )
 
             logger.info("Attempting to run trigger: %s on branch %s", name, request.branch)
 
@@ -551,7 +567,9 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
 
             op_name: str | None = cast(str | None, getattr(operation, "name", None))
             op_done = getattr(operation, "done", None)
-            logger.info("Trigger operation returned. Operation name: %s, done: %s", op_name, op_done)
+            logger.info(
+                "Trigger operation returned. Operation name: %s, done: %s", op_name, op_done
+            )
 
             # Get the build metadata from the operation
             build_id = None
@@ -609,7 +627,9 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             await asyncio.sleep(2)
 
             for _attempt in range(3):
-                recent_build = await asyncio.to_thread(_find_recent_build, trigger_id_result, trigger_time_result)
+                recent_build = await asyncio.to_thread(
+                    _find_recent_build, trigger_id_result, trigger_time_result
+                )
                 if recent_build:
                     build_id = recent_build["build_id"]
                     log_url = recent_build.get("log_url")
@@ -629,9 +649,11 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
             )
 
         if build_id:
-            message = f"Build triggered successfully for {request.service} on branch {request.branch}"
+            message = (
+                f"Build triggered successfully for {request.service} on branch {request.branch}"
+            )
         else:
-            message = f"Build trigger called for {request.service} on branch {request.branch}, but could not get build ID. Check Cloud Build console."
+            message = f"Build trigger called for {request.service} on branch {request.branch}, but could not get build ID. Check Cloud Build console."  # noqa: E501
 
         return TriggerBuildResponse(
             success=True,
@@ -649,7 +671,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
         if "403" in error_msg or "PERMISSION_DENIED" in error_msg:
             return TriggerBuildResponse(
                 success=False,
-                message=f"Permission denied. Service account needs 'roles/cloudbuild.builds.editor' role. Error: {error_msg}",
+                message=f"Permission denied. Service account needs 'roles/cloudbuild.builds.editor' role. Error: {error_msg}",  # noqa: E501
                 service=request.service,
                 branch=request.branch,
             )
@@ -726,7 +748,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
 
 
 @router.get("/library-status/{library}")
-async def get_library_status(library: str) -> LibraryStatusDict:
+async def get_library_status(library: str) -> LibraryStatusDict:  # noqa: C901
     """
     Get detailed status for a library/SDK (like unified-trading-library).
 
@@ -755,7 +777,9 @@ async def get_library_status(library: str) -> LibraryStatusDict:
 
     # Get package version from pyproject.toml (local workspace)
     try:
-        pyproject_path = Path(WORKSPACE_ROOT) / library / "pyproject.toml" if WORKSPACE_ROOT else None
+        pyproject_path = (
+            Path(WORKSPACE_ROOT) / library / "pyproject.toml" if WORKSPACE_ROOT else None
+        )
         if pyproject_path and pyproject_path.exists():
             with open(pyproject_path, "rb") as f:
                 pyproject = tomllib.load(f)
@@ -783,7 +807,8 @@ async def get_library_status(library: str) -> LibraryStatusDict:
             result["quality_gates_status"] = {
                 "status": status,
                 "is_passing": status == "SUCCESS",
-                "last_build_time": latest_build.get("finish_time") or latest_build.get("create_time"),
+                "last_build_time": latest_build.get("finish_time")
+                or latest_build.get("create_time"),
                 "commit_sha": latest_build.get("commit_sha"),
                 "branch": latest_build.get("branch"),
             }

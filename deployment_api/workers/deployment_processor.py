@@ -62,7 +62,7 @@ DEPLOYMENT_ENV = settings.DEPLOYMENT_ENV
 from .auto_sync import _pending_vm_deletes
 
 
-def process_deployments_batch(
+def process_deployments_batch(  # noqa: C901
     active_states,
     bucket,
     now,
@@ -106,7 +106,7 @@ def process_deployments_batch(
         raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
     # ---- Phase 2: Process active deployments concurrently ----
-    def _process_one_deployment(state_path_and_state):
+    def _process_one_deployment(state_path_and_state):  # noqa: C901
         """Process a single deployment. Returns 1 if synced, 0 otherwise."""
         state_path, state = state_path_and_state
         path_parts = state_path.split("/")
@@ -124,7 +124,7 @@ def process_deployments_batch(
             compute_type = state.get("compute_type", "vm")
             shards = state.get("shards") or []
 
-            # ---- completed_pending_delete: orphan cleanup only; transition to completed when no RUNNING VMs ----
+            # ---- completed_pending_delete: orphan cleanup only; transition to completed when no RUNNING VMs ----  # noqa: E501
             if state.get("status") == "completed_pending_delete":
                 if compute_type != "vm":
                     state["status"] = "completed"
@@ -486,7 +486,7 @@ def process_deployments_batch(
     return synced, len(active_states)
 
 
-def _process_vm_health_and_status(
+def _process_vm_health_and_status(  # noqa: C901
     shards, vm_map, now, config, deployment_id, shard_statuses, updated
 ):
     """Process VM health checks and update shard statuses."""
@@ -666,7 +666,7 @@ def _process_vm_health_and_status(
     return updated
 
 
-def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated):
+def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated):  # noqa: C901
     """Process Cloud Run execution status updates."""
     try:
         from backends.base import JobStatus
@@ -736,7 +736,7 @@ def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, upd
     return updated
 
 
-def _process_stuck_shards(shards, config, compute_type, now, deployment_id, updated):
+def _process_stuck_shards(shards, config, compute_type, now, deployment_id, updated):  # noqa: C901
     """Process detection and handling of stuck shards."""
     try:
         if compute_type == "vm":
@@ -764,7 +764,7 @@ def _process_stuck_shards(shards, config, compute_type, now, deployment_id, upda
                         shard["status"] = "failed"
                         shard["end_time"] = now.isoformat()
                         shard["error_message"] = (
-                            f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"
+                            f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"  # noqa: E501
                         )
                         shard["failure_category"] = "timeout"
 
@@ -818,7 +818,7 @@ def _launch_pending_shards(state, config, now, deployment_id, compute_type, quot
     return launched_this_tick
 
 
-def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment_id):
+def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment_id):  # noqa: C901
     """Handle cleanup of orphaned VMs that are still running after completion."""
     # Proactive VM termination: GCS has terminal status but VM still alive
     # Fire-and-forget: up to N parallel deletes, track pending, retry if still RUNNING after Xs

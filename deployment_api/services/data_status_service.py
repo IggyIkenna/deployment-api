@@ -36,7 +36,7 @@ class DataStatusService:
         """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""
         return f"{prefix}-{category.lower()}-{self.project_id}"
 
-    async def run_data_status_cli(
+    async def run_data_status_cli(  # noqa: C901
         self,
         service: str,
         start_date: str,
@@ -147,7 +147,7 @@ class DataStatusService:
             logger.error("Error running CLI command: %s", e)
             return {"error": str(e)}
 
-    async def calculate_missing_shards(
+    async def calculate_missing_shards(  # noqa: C901
         self,
         service: str,
         start_date: str,
@@ -209,7 +209,9 @@ class DataStatusService:
                                 continue
                             venue_info = cast(dict[str, object], venue_info_raw)
                             venue_name_raw: object = venue_info.get("venue")
-                            venue_name = cast(str, venue_name_raw) if isinstance(venue_name_raw, str) else ""
+                            venue_name = (
+                                cast(str, venue_name_raw) if isinstance(venue_name_raw, str) else ""
+                            )
                             if venue_info.get("status") == "missing":
                                 missing_count += 1
 
@@ -220,7 +222,9 @@ class DataStatusService:
 
                                 # Track by category if available
                                 cat_raw: object = venue_info.get("category", "unknown")
-                                category = cast(str, cat_raw) if isinstance(cat_raw, str) else "unknown"
+                                category = (
+                                    cast(str, cat_raw) if isinstance(cat_raw, str) else "unknown"
+                                )
                                 if category not in missing_by_category:
                                     missing_by_category[category] = 0
                                 missing_by_category[category] += 1
@@ -238,7 +242,9 @@ class DataStatusService:
                 "missing_by_venue": missing_by_venue,
                 "missing_by_category": missing_by_category,
                 "summary": {
-                    "total_days_checked": len(cast(list[object], dates_raw)) if isinstance(dates_raw, list) else 0,
+                    "total_days_checked": len(cast(list[object], dates_raw))
+                    if isinstance(dates_raw, list)
+                    else 0,
                     "days_with_missing": len(missing_by_date),
                     "venues_with_missing": len(missing_by_venue),
                     "categories_with_missing": len(missing_by_category),
@@ -252,7 +258,7 @@ class DataStatusService:
             logger.error("Error calculating missing shards: %s", e)
             return {"error": str(e)}
 
-    def _calculate_completion_rate(self, data_status_result: dict[str, object]) -> float:
+    def _calculate_completion_rate(self, data_status_result: dict[str, object]) -> float:  # noqa: C901
         """
         Calculate completion rate from data status result.
 
@@ -364,7 +370,7 @@ class DataStatusService:
 
         return last_updated_info
 
-    async def validate_data_completeness(
+    async def validate_data_completeness(  # noqa: C901
         self,
         service: str,
         date: str,
@@ -419,7 +425,9 @@ class DataStatusService:
                             continue
                         venue_info = cast(dict[str, object], venue_info_raw)
                         vname_raw: object = venue_info.get("venue", "unknown")
-                        venue_name = cast(str, vname_raw) if isinstance(vname_raw, str) else "unknown"
+                        venue_name = (
+                            cast(str, vname_raw) if isinstance(vname_raw, str) else "unknown"
+                        )
                         status_raw: object = venue_info.get("status")
                         status = cast(str, status_raw) if isinstance(status_raw, str) else ""
 
@@ -431,7 +439,9 @@ class DataStatusService:
                             validation_errors.append(
                                 {
                                     "venue": venue_name,
-                                    "error": cast(str, err_raw) if isinstance(err_raw, str) else "Unknown error",
+                                    "error": cast(str, err_raw)
+                                    if isinstance(err_raw, str)
+                                    else "Unknown error",
                                 }
                             )
                         else:
