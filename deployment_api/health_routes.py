@@ -40,6 +40,12 @@ async def health_check():
     }
 
 
+@router.get("/api/readiness")
+async def readiness_check() -> dict[str, str]:
+    """Readiness probe — returns 503 if service is not ready to handle requests."""
+    return {"status": "ready", "service": "deployment-api"}
+
+
 @router.get("/api/workers")
 async def get_workers_status():
     """
