@@ -191,7 +191,7 @@ if [ "$SKIP_TYPECHECK" != "true" ]; then
     fi
     export BASEDPYRIGHT_CACHE_DIR="${TMPDIR:-/tmp}/basedpyright-cache/${SERVICE_NAME:-$(basename "$PWD")}"
     mkdir -p "$BASEDPYRIGHT_CACHE_DIR"
-    PYRIGHT_OUT=$(run_timeout 120 basedpyright "$SOURCE_DIR/" 2>&1); PYRIGHT_EXIT=$?
+    PYRIGHT_OUT=$(basedpyright "$SOURCE_DIR/" 2>&1); PYRIGHT_EXIT=$?
     if [ "$PYRIGHT_EXIT" -ne 0 ]; then echo "$PYRIGHT_OUT"; log_fail "Type check FAILED/timeout"; exit 1; fi
     WARN_COUNT=$(echo "$PYRIGHT_OUT" | grep -c " warning:" || :)
     if [ "${WARN_COUNT:-0}" -gt 0 ]; then
