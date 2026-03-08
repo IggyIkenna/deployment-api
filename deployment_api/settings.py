@@ -130,6 +130,15 @@ BROKER_MAX_WAIT_SECONDS = _config.broker_max_wait_seconds
 WORKSPACE_ROOT = _config.workspace_root
 
 # =============================================================================
+# GCS STORE BUCKETS
+# =============================================================================
+EXECUTION_STORE_BUCKET = _config.effective_execution_store_bucket
+STRATEGY_STORE_CEFI_BUCKET = _config.effective_strategy_store_cefi_bucket
+STRATEGY_STORE_TRADFI_BUCKET = _config.effective_strategy_store_tradfi_bucket
+STRATEGY_STORE_DEFI_BUCKET = _config.effective_strategy_store_defi_bucket
+ML_CONFIGS_STORE_BUCKET = _config.effective_ml_configs_store_bucket
+
+# =============================================================================
 # TESTING
 # =============================================================================
 CLOUD_MOCK_MODE = _config.cloud_mock_mode
