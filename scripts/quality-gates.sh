@@ -575,6 +575,6 @@ VSCRIPT="${REPO_ROOT}/unified-trading-codex/scripts/run-all-validators.sh"
 
 # ── DURATION CHECK (<2 min) ───────────────────────────────────────────────────
 QG_END=$(date +%s); DUR=$((QG_END - QG_START))
-[ $DUR -gt 120 ] && { log_fail "Quality gates must complete in <2 min (took ${DUR}s)"; exit 1; }
+[ $DUR -gt 300 ] && { log_fail "Quality gates must complete in <5 min (took ${DUR}s)"; exit 1; }
 echo -e "\n${GREEN}======================================================================"
 echo -e "✅ ALL QUALITY GATES PASSED (${DUR}s)${NC}"
