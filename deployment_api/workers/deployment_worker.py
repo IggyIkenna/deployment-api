@@ -20,11 +20,6 @@ from typing import cast
 
 from deployment.state import DeploymentStatus, StateManager
 
-# Configure logging for the worker process
-logging.basicConfig(
-    level=logging.INFO,
-    format="[WORKER %(process)d] %(asctime)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
