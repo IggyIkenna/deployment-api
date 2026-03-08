@@ -89,7 +89,7 @@ async def run_pipeline_uat(
         try:
             commentary = await _call_anthropic(context, config)
         except Exception as exc:
-            logger.error("Pipeline UAT: Anthropic call failed: %s", exc, exc_info=True)
+            logger.exception("Pipeline UAT: Anthropic call failed: %s", exc)
             log_event("PIPELINE_UAT_ERROR", details={"run_id": request.run_id, "error": str(exc)})
             commentary = f"[Commentary unavailable: {type(exc).__name__}]"
     else:
@@ -234,5 +234,7 @@ async def _call_anthropic(
         messages=[{"role": "user", "content": user_message}],
     )
 
-    text_blocks = [block for block in message.content if isinstance(block, TextBlock)]
-    return text_blocks[0].text if text_blocks else ""
+    text_blocks = [
+        block for block in message.content if isinstance(block, TextBlock) or hasattr(block, "text")
+    ]
+    return str(text_blocks[0].text) if text_blocks else ""

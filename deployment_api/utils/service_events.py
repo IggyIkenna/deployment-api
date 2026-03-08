@@ -38,7 +38,7 @@ def parse_service_event(log_line: str) -> dict[str, object] | None:
     }
 
 
-def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
+def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:  # noqa: C901
     """Update shard state based on parsed event.
 
     Args:
@@ -55,12 +55,16 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
     if "stage_timings" not in shard_state or shard_state["stage_timings"] is None:
         shard_state["stage_timings"] = {}
 
-    _is_validation_failed = event_name == "FAILED" and details.get("error_category") == "validation"
+    _details_dict = details if isinstance(details, dict) else {}
+    _is_validation_failed = (
+        event_name == "FAILED" and _details_dict.get("error_category") == "validation"
+    )
     if event_name in [
         "VALIDATION_STARTED",
         "VALIDATION_COMPLETED",
+        "VALIDATION_FAILED",
         "FAILED",
-    ] and (event_name != "FAILED" or _is_validation_failed):
+    ] and (event_name not in ("FAILED",) or _is_validation_failed):
         if event_name == "VALIDATION_STARTED":
             shard_state["current_stage"] = "validation"
             shard_state["stage_started_at"] = timestamp.isoformat()
@@ -78,7 +82,7 @@ def update_shard_state_from_event(shard_state: dict, event: dict) -> dict:
                 except (ValueError, TypeError) as e:
                     logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
                     pass
-        elif _is_validation_failed:
+        elif event_name == "VALIDATION_FAILED" or _is_validation_failed:
             shard_state["status"] = "failed"
             shard_state["failure_category"] = "validation_failed"
 
