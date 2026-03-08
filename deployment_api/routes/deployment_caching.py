@@ -19,7 +19,9 @@ _logs_cache: dict[str, tuple[float, dict[str, object]]] = {}
 # In-memory cache for VM logs (GCS fetch) to avoid hammering GCS on rapid log tab opens
 _VM_LOGS_CACHE_TTL_SEC = 15
 _VM_LOGS_CACHE_MAX_ENTRIES = 50
-_vm_logs_cache: dict[str, tuple[float, tuple[list[object], str]]] = {}  # key -> (expiry_ts, (logs, message))
+_vm_logs_cache: dict[
+    str, tuple[float, tuple[list[object], str]]
+] = {}  # key -> (expiry_ts, (logs, message))
 
 # In-memory cache for expensive completion verification breakdown (data-status turbo)
 _VERIFICATION_CACHE_TTL_SEC = 15 * 60

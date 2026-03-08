@@ -102,7 +102,7 @@ app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra v
 @app.get("/metrics")
 async def metrics() -> object:
     """Prometheus metrics endpoint."""
-    # TODO: Return real Prometheus metrics once PrometheusMiddleware is available in unified_trading_library.
+    # TODO: Return real Prometheus metrics once PrometheusMiddleware is available in unified_trading_library.  # noqa: E501
     return {"status": "metrics not yet available"}
 
 

@@ -14,7 +14,7 @@ from typing import cast
 logger = logging.getLogger(__name__)
 
 
-async def get_execution_service_data_status(
+async def get_execution_service_data_status(  # noqa: C901
     config_path: str,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -54,7 +54,7 @@ async def get_execution_service_data_status(
     if cached is not None:
         return cached
 
-    def _get_status_sync():
+    def _get_status_sync():  # noqa: C901
         try:
             # Parse config_path to get bucket and prefix
             if not config_path.startswith("gs://"):
@@ -79,7 +79,11 @@ async def get_execution_service_data_status(
             for obj in config_objs:
                 if obj.name.endswith(".json"):
                     # Parse path: configs/V1/{strategy}/{mode}/{timeframe}/{config}.json
-                    rel_path = obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
+                    rel_path = (
+                        obj.name[len(config_prefix) :]
+                        if obj.name.startswith(config_prefix)
+                        else obj.name
+                    )
                     parts = rel_path.split("/")
 
                     if len(parts) >= 4:
@@ -88,7 +92,7 @@ async def get_execution_service_data_status(
                         timeframe = parts[2]
                         config_file = parts[3] if len(parts) > 3 else parts[-1]
 
-                        # Extract algo name from config file (e.g., ADAPTIVE_TWAP from ADAPTIVE_TWAP_horizon_secs120_...)
+                        # Extract algo name from config file (e.g., ADAPTIVE_TWAP from ADAPTIVE_TWAP_horizon_secs120_...)  # noqa: E501
                         algo_match = re.match(
                             r"^([A-Z_]+?)_(?:horizon|profile|display|clip|urgency|num_|participation|lambda|sigma|passive)",
                             config_file,
@@ -124,8 +128,16 @@ async def get_execution_service_data_status(
             date_prefixes = list_prefixes(bucket_name, results_prefix)
 
             # Parse date range filter
-            filter_start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).date() if start_date else None
-            filter_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC).date() if end_date else None
+            filter_start = (
+                datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
+                if start_date
+                else None
+            )
+            filter_end = (
+                datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
+                if end_date
+                else None
+            )
 
             for date_prefix in date_prefixes:
                 # Extract date from prefix: results/2023-05-23/
@@ -145,7 +157,9 @@ async def get_execution_service_data_status(
 
                     for strategy_prefix in strategy_prefixes:
                         # Extract strategy_id: results/2023-05-23/CEFI_BTC_momentum-macd_SCE_5M_V1/
-                        strategy_match = re.search(r"results/\d{4}-\d{2}-\d{2}/([^/]+)/", strategy_prefix)
+                        strategy_match = re.search(
+                            r"results/\d{4}-\d{2}-\d{2}/([^/]+)/", strategy_prefix
+                        )
                         if strategy_match:
                             strategy_id = strategy_match.group(1)
                             existing_result_strategy_ids.add(strategy_id)
@@ -184,7 +198,9 @@ async def get_execution_service_data_status(
 
             # Also build flat breakdown by attribute for filtering
             breakdown_by_mode = defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []})
-            breakdown_by_timeframe = defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []})
+            breakdown_by_timeframe = defaultdict(
+                lambda: {"total": 0, "with_results": 0, "missing": []}
+            )
             breakdown_by_algo = defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []})
 
             for strategy_name in sorted(hierarchy.keys()):
@@ -215,7 +231,11 @@ async def get_execution_service_data_status(
                                 "timeframe": timeframe_name,
                                 "total": tf_total,
                                 "with_results": tf_with_results,
-                                "completion_pct": (round(tf_with_results / tf_total * 100, 1) if tf_total > 0 else 0),
+                                "completion_pct": (
+                                    round(tf_with_results / tf_total * 100, 1)
+                                    if tf_total > 0
+                                    else 0
+                                ),
                                 "missing_configs": [
                                     {
                                         "config_file": c["config_file"],
@@ -253,7 +273,9 @@ async def get_execution_service_data_status(
                             "total": mode_configs,
                             "with_results": mode_with_results,
                             "completion_pct": (
-                                round(mode_with_results / mode_configs * 100, 1) if mode_configs > 0 else 0
+                                round(mode_with_results / mode_configs * 100, 1)
+                                if mode_configs > 0
+                                else 0
                             ),
                             "timeframes": timeframes,
                         }
@@ -272,7 +294,9 @@ async def get_execution_service_data_status(
                         "total": strategy_configs,
                         "with_results": strategy_with_results,
                         "completion_pct": (
-                            round(strategy_with_results / strategy_configs * 100, 1) if strategy_configs > 0 else 0
+                            round(strategy_with_results / strategy_configs * 100, 1)
+                            if strategy_configs > 0
+                            else 0
                         ),
                         "result_dates": sorted(strategy_result_dates),
                         "result_date_count": len(strategy_result_dates),
@@ -291,7 +315,9 @@ async def get_execution_service_data_status(
                         "with_results": data["with_results"],
                         "missing_count": data["total"] - data["with_results"],
                         "completion_pct": (
-                            round(data["with_results"] / data["total"] * 100, 1) if data["total"] > 0 else 0
+                            round(data["with_results"] / data["total"] * 100, 1)
+                            if data["total"] > 0
+                            else 0
                         ),
                         "missing_samples": data["missing"][:5],  # First 5 for preview
                     }
@@ -304,7 +330,9 @@ async def get_execution_service_data_status(
                 "total_configs": total_configs,
                 "configs_with_results": total_with_results,
                 "missing_count": total_configs - total_with_results,
-                "completion_pct": (round(total_with_results / total_configs * 100, 1) if total_configs > 0 else 0),
+                "completion_pct": (
+                    round(total_with_results / total_configs * 100, 1) if total_configs > 0 else 0
+                ),
                 "strategy_count": len(strategies),
                 "strategies": strategies,
                 # Flat breakdowns for quick diagnostics
@@ -334,7 +362,7 @@ async def get_execution_service_data_status(
     return result
 
 
-async def calculate_execution_missing_shards(
+async def calculate_execution_missing_shards(  # noqa: C901
     config_path: str,
     start_date: str,
     end_date: str,
@@ -360,7 +388,7 @@ async def calculate_execution_missing_shards(
     """
     from deployment_api.utils.storage_facade import list_objects, list_prefixes
 
-    def _calculate_missing_sync():
+    def _calculate_missing_sync():  # noqa: C901
         try:
             # Parse config_path to get bucket and prefix
             if not config_path.startswith("gs://"):
@@ -392,7 +420,11 @@ async def calculate_execution_missing_shards(
 
             for obj in config_objs:
                 if obj.name.endswith(".json"):
-                    rel_path = obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
+                    rel_path = (
+                        obj.name[len(config_prefix) :]
+                        if obj.name.startswith(config_prefix)
+                        else obj.name
+                    )
                     parts = rel_path.split("/")
 
                     if len(parts) >= 4:
@@ -454,7 +486,9 @@ async def calculate_execution_missing_shards(
                     strategy_prefixes = list_prefixes(bucket_name, date_prefix)
 
                     for strategy_prefix in strategy_prefixes:
-                        strategy_match = re.search(r"results/\d{4}-\d{2}-\d{2}/([^/]+)/", strategy_prefix)
+                        strategy_match = re.search(
+                            r"results/\d{4}-\d{2}-\d{2}/([^/]+)/", strategy_prefix
+                        )
                         if strategy_match:
                             strategy_id = strategy_match.group(1)
                             result_dates_by_strategy[strategy_id].add(date_str)

@@ -46,7 +46,9 @@ async def get_service_categories(service: str) -> dict:
     config_path = Path(__file__).parent.parent.parent / f"configs/sharding.{service}.yaml"
 
     if not config_path.exists():
-        raise HTTPException(status_code=404, detail=f"Sharding config not found for service: {service}")
+        raise HTTPException(
+            status_code=404, detail=f"Sharding config not found for service: {service}"
+        )
 
     try:
         with open(config_path) as f:

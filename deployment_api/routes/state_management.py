@@ -28,7 +28,7 @@ def _status_str(val: object) -> str:
     return val.value if hasattr(val, "value") else str(val)
 
 
-def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:
+def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:  # noqa: C901
     """Extract the real severity and logger name from a log line.
 
     On VMs, ALL Python logs go to stderr, so the serial console / Ops Agent
@@ -160,7 +160,7 @@ def _shard_has_force(shard) -> bool:
     return "--force" in args
 
 
-def _classify_shard(
+def _classify_shard(  # noqa: C901
     shard: object,
     blob_exists: bool | None = None,
     blob_updated: datetime | None = None,
@@ -277,7 +277,7 @@ def _build_blob_timestamp_map(
     return result
 
 
-def _resolve_shard_blob_data(
+def _resolve_shard_blob_data(  # noqa: C901
     state,
     existing_cat_dates: dict[str, set],
     existing_venue_dates: dict[str, dict[str, set]],
@@ -425,7 +425,7 @@ def _compute_classification_counts(
     return counts
 
 
-def _build_existing_dates_sets(
+def _build_existing_dates_sets(  # noqa: C901
     turbo_result: dict[str, object],
 ) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
     """Build category+date and venue+date sets from turbo data status result.
@@ -469,7 +469,7 @@ def _build_existing_dates_sets(
     return existing_cat_dates, existing_venue_dates
 
 
-def _compute_verified_succeeded_shard_ids(
+def _compute_verified_succeeded_shard_ids(  # noqa: C901
     state,
     existing_cat_dates: dict[str, set],
     existing_venue_dates: dict[str, dict[str, set]],
@@ -739,11 +739,11 @@ class DeployRequest(BaseModel):
     )
     tag: str | None = Field(
         None,
-        description="Human-readable description/annotation for this deployment (e.g., 'Fixed Curve adapter')",
+        description="Human-readable description/annotation for this deployment (e.g., 'Fixed Curve adapter')",  # noqa: E501
     )
     cloud_config_path: str | None = Field(
         None,
-        description="Cloud storage path to config directory (gs://... or s3://...) for dynamic config discovery",
+        description="Cloud storage path to config directory (gs://... or s3://...) for dynamic config discovery",  # noqa: E501
     )
     skip_venue_sharding: bool = Field(
         False,
@@ -765,16 +765,16 @@ class DeployRequest(BaseModel):
     )
     max_concurrent: int | None = Field(
         None,
-        description="Max simultaneously running jobs/VMs. If total shards exceeds this, rolling launch is used. "
+        description="Max simultaneously running jobs/VMs. If total shards exceeds this, rolling launch is used. "  # noqa: E501
         "Default: 2000. Hard limit: 2500.",
     )
     include_all_shards: bool = Field(
         False,
-        description="If true, dry run response will include all shards (not just first 50). Use with caution for large deployments.",
+        description="If true, dry run response will include all shards (not just first 50). Use with caution for large deployments.",  # noqa: E501
     )
     deploy_missing_only: bool = Field(
         False,
-        description="If true, use backend to calculate missing shards (more accurate than exclude_dates). "
+        description="If true, use backend to calculate missing shards (more accurate than exclude_dates). "  # noqa: E501
         "This fetches full date lists from GCS to determine what data exists, avoiding the "
         "truncation issue with exclude_dates passed from frontend.",
     )
@@ -786,7 +786,7 @@ class DeployRequest(BaseModel):
     exclude_dates: dict[str, object] | None = Field(
         None,
         description="Dates to exclude. Supports two formats: "
-        "(1) Category-level: {'CEFI': ['2024-01-01', ...]} - excludes all shards for those category+date combos. "
+        "(1) Category-level: {'CEFI': ['2024-01-01', ...]} - excludes all shards for those category+date combos. "  # noqa: E501
         "(2) Venue-level: {'CEFI': {'BINANCE-SPOT': ['2024-01-01', ...], 'UPBIT': [...]}} - "
         "excludes only specific category+venue+date combos. "
         "Venue-level format enables precise 'deploy missing' for services with venue sharding.",

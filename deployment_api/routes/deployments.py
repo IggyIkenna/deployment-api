@@ -352,9 +352,7 @@ async def bulk_delete_deployments(
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to bulk delete deployments: %s", e)
-        raise HTTPException(
-            status_code=500, detail="Internal error — see server logs"
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
 
 
 @router.post("/deployments/{deployment_id}/refresh")
@@ -434,6 +432,4 @@ async def get_deployment_report(deployment_id: str, request: Request) -> dict[st
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get deployment report for %s: %s", deployment_id, e)
-        raise HTTPException(
-            status_code=500, detail="Internal error — see server logs"
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e

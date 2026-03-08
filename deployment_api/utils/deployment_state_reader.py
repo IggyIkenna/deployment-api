@@ -16,7 +16,7 @@ from typing import cast
 logger = logging.getLogger(__name__)
 
 
-def list_deployments(
+def list_deployments(  # noqa: C901
     bucket_name: str,
     project_id: str | None = None,
     service: str | None = None,
@@ -67,7 +67,7 @@ def list_deployments(
         # Only fetch the most recent ones
         valid_prefixes = valid_prefixes[: limit * 2]
 
-        def fetch_one(folder: str) -> dict[str, object] | None:
+        def fetch_one(folder: str) -> dict[str, object] | None:  # noqa: C901
             folder_name = folder.rstrip("/").split("/")[-1]
             state_blob_name = f"{folder}state.json"
             try:

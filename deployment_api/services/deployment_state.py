@@ -312,7 +312,9 @@ class DeploymentStateManager:
             logger.error("Failed to update deployment %s tag: %s", deployment_id, e)
             raise ValueError(f"Failed to update deployment tag: {e}") from e
 
-    def verify_deployment_completion(self, deployment_id: str, force_refresh: bool = False) -> dict[str, object]:
+    def verify_deployment_completion(
+        self, deployment_id: str, force_refresh: bool = False
+    ) -> dict[str, object]:
         """
         Verify deployment completion and data integrity.
 
@@ -382,7 +384,9 @@ class DeploymentStateManager:
                 duration = updated - created
                 deployment["duration_minutes"] = int(duration.total_seconds() / 60)
             except (ValueError, TypeError, OSError) as e:
-                logger.debug("Suppressed %s during enrich deployment summary: %s", type(e).__name__, e)
+                logger.debug(
+                    "Suppressed %s during enrich deployment summary: %s", type(e).__name__, e
+                )
                 pass
 
         # Add success rate if shard information is available

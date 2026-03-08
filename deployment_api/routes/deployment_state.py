@@ -19,7 +19,12 @@ from deployment.state import DeploymentStatus, ShardStatus
 
 from deployment_api import settings as _settings
 from deployment_api.utils.deployment_events import notify_deployment_updated_sync
-from deployment_api.utils.storage_facade import delete_object, list_objects, object_exists, read_object_text
+from deployment_api.utils.storage_facade import (
+    delete_object,
+    list_objects,
+    object_exists,
+    read_object_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +35,7 @@ DEFAULT_STATE_BUCKET = _settings.STATE_BUCKET
 DEPLOYMENT_ENV = getattr(_settings, "DEPLOYMENT_ENV", "default")
 
 
-def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:
+def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:  # noqa: C901
     """
     Extract severity level and logger name from log line.
 
@@ -78,7 +83,7 @@ def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:
     return severity, logger_name
 
 
-def _refresh_live_cloud_run_status(state: object) -> int:
+def _refresh_live_cloud_run_status(state: object) -> int:  # noqa: C901
     """
     Refresh deployment state for live mode by checking Cloud Run Service revision health.
 
@@ -184,7 +189,9 @@ def _check_shard_logs_for_errors(shard, deployment_id: str) -> bool:
                     continue
                 severity, _ = _extract_severity_and_logger(line)
                 if severity == "ERROR":
-                    logger.warning("[BATCH_REFRESH] Found ERROR in %s: %s", shard.shard_id, line[:200])
+                    logger.warning(
+                        "[BATCH_REFRESH] Found ERROR in %s: %s", shard.shard_id, line[:200]
+                    )
                     return True
         return False
     except (OSError, ValueError, RuntimeError) as e:
@@ -192,7 +199,7 @@ def _check_shard_logs_for_errors(shard, deployment_id: str) -> bool:
         return False
 
 
-def _refresh_deployment_status_sync(deployment_id: str) -> dict:
+def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
     """
     Synchronous helper for refresh_deployment_status.
     All blocking GCP/GCS calls are done here.
@@ -304,7 +311,9 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:
                     zone_shards = [
                         s
                         for s in running_shards
-                        if hasattr(s, "compute_info") and s.compute_info and s.compute_info.get("zone") == zone
+                        if hasattr(s, "compute_info")
+                        and s.compute_info
+                        and s.compute_info.get("zone") == zone
                     ]
 
                     if not zone_shards:
@@ -320,7 +329,9 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:
                         vm_statuses = backend.list_vm_status(zone, vm_names)
 
                         for shard in zone_shards:
-                            vm_name = shard.compute_info.get("vm_name") if shard.compute_info else None
+                            vm_name = (
+                                shard.compute_info.get("vm_name") if shard.compute_info else None
+                            )
                             if vm_name and vm_name in vm_statuses:
                                 vm_status = vm_statuses[vm_name]
                                 if vm_status == "TERMINATED":
@@ -341,7 +352,8 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:
     # We must validate logs before finalizing shard status.
     # Check if all shards are done (terminal state)
     shards_all_done = all(
-        s.status in [ShardStatus.SUCCEEDED, ShardStatus.FAILED, ShardStatus.CANCELLED] for s in state.shards
+        s.status in [ShardStatus.SUCCEEDED, ShardStatus.FAILED, ShardStatus.CANCELLED]
+        for s in state.shards
     )
     if state.compute_type == "vm" and shards_all_done:
         logger.info("[BATCH_REFRESH] Checking logs for ERROR severity in succeeded shards...")
@@ -366,14 +378,20 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:
 
         # Mark shards with errors as FAILED
         if shards_with_errors:
-            logger.warning("[BATCH_REFRESH] Marking %s shards as FAILED due to ERROR logs", len(shards_with_errors))
+            logger.warning(
+                "[BATCH_REFRESH] Marking %s shards as FAILED due to ERROR logs",
+                len(shards_with_errors),
+            )
             for shard in shards_with_errors:
                 shard.status = ShardStatus.FAILED
                 shard.error_message = "Job reported SUCCESS but logs contain ERROR severity"
                 updated_count += 1
 
     # Update overall deployment status
-    all_done = all(s.status in [ShardStatus.SUCCEEDED, ShardStatus.FAILED, ShardStatus.CANCELLED] for s in state.shards)
+    all_done = all(
+        s.status in [ShardStatus.SUCCEEDED, ShardStatus.FAILED, ShardStatus.CANCELLED]
+        for s in state.shards
+    )
     any_failed = any(s.status == ShardStatus.FAILED for s in state.shards)
     all_failed = all(s.status == ShardStatus.FAILED for s in state.shards)
 
@@ -408,7 +426,9 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:
         "status": state.status.value,
         "updated": updated_count > 0,
         "shards_updated": updated_count,
-        "message": (f"Refreshed {updated_count} shard(s)" if updated_count > 0 else "No changes detected"),
+        "message": (
+            f"Refreshed {updated_count} shard(s)" if updated_count > 0 else "No changes detected"
+        ),
     }
 
 
@@ -429,7 +449,11 @@ def _cancel_deployment_sync(deployment_id: str) -> dict:
         return {"error": "not_found", "deployment_id": deployment_id}
 
     # Only cancel if deployment is still running
-    if state.status in [DeploymentStatus.COMPLETED, DeploymentStatus.FAILED, DeploymentStatus.CANCELLED]:
+    if state.status in [
+        DeploymentStatus.COMPLETED,
+        DeploymentStatus.FAILED,
+        DeploymentStatus.CANCELLED,
+    ]:
         return {
             "deployment_id": deployment_id,
             "message": f"Deployment already in terminal state: {state.status.value}",
@@ -520,7 +544,9 @@ def _resume_deployment_sync(deployment_id: str) -> dict:
         "deployment_id": deployment_id,
         "resumed": resumed_count > 0,
         "resumed_shards": resumed_count,
-        "message": f"Resumed {resumed_count} shard(s)" if resumed_count > 0 else "No shards to resume",
+        "message": f"Resumed {resumed_count} shard(s)"
+        if resumed_count > 0
+        else "No shards to resume",
     }
 
 

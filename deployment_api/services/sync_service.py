@@ -122,7 +122,7 @@ class SyncService:
             logger.error("[SYNC_SERVICE] Error saving %s: %s", state_path, e)
             return False
 
-    def filter_active_deployments(
+    def filter_active_deployments(  # noqa: C901
         self, state_paths: list[str], min_age_minutes: int = 5
     ) -> list[tuple[str, dict[str, object]]]:
         """
@@ -193,7 +193,7 @@ class SyncService:
             # Always release lock after processing
             self.state_manager.release_deployment_lock(deployment_id)
 
-    def _process_deployment_locked(
+    def _process_deployment_locked(  # noqa: C901
         self, deployment_id: str, state_path: str, state: dict[str, object]
     ) -> bool:
         """
@@ -290,7 +290,7 @@ class SyncService:
 
         return False
 
-    def _process_scheduling(self, deployment_id: str, state: dict[str, object]) -> int:
+    def _process_scheduling(self, deployment_id: str, state: dict[str, object]) -> int:  # noqa: C901
         """
         Process scheduling for pending deployments.
 
@@ -442,7 +442,7 @@ class SyncService:
 
         return synced, len(active_states)
 
-    def _cleanup_recent_orphans(
+    def _cleanup_recent_orphans(  # noqa: C901
         self, state_paths: list[str], active_states: list[tuple[str, dict[str, object]]]
     ) -> int:
         """

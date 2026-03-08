@@ -23,9 +23,7 @@ def configure_middleware(app: FastAPI) -> None:
     # Development origins (only in development mode)
     dev_origins: list[str] = []
     if settings.DEPLOYMENT_ENV == "development":
-        _static_dev_origins = [
-            o.strip() for o in settings.CORS_DEV_ORIGINS.split(",") if o.strip()
-        ]
+        _static_dev_origins = [o.strip() for o in settings.CORS_DEV_ORIGINS.split(",") if o.strip()]
         dev_origins = [
             *_static_dev_origins,
             f"http://localhost:{_frontend_port}",

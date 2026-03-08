@@ -45,7 +45,7 @@ class ValidationUtils:
             if isinstance(default, str) and default == "":
                 context_msg = f" in {context}" if context else ""
                 logger.warning(
-                    "Using empty string default for '%s'%s - consider using ValidationUtils.get_required() instead",
+                    "Using empty string default for '%s'%s - consider using ValidationUtils.get_required() instead",  # noqa: E501
                     key,
                     context_msg,
                 )

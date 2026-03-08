@@ -53,7 +53,7 @@ router = APIRouter()
 
 
 @router.get("/last-updated/batch")
-async def get_last_updated_batch(
+async def get_last_updated_batch(  # noqa: C901
     request: Request,
     services: list[str] | None = Query(None, description="List of services (default: all known)"),
 ):
@@ -75,7 +75,10 @@ async def get_last_updated_batch(
                 return {"service": service, "category": cat, "latest": None}
 
             # Find most recent
-            latest_blob = max(blobs, key=lambda b: (b.updated or b.time_created) or datetime.min.replace(tzinfo=UTC))
+            latest_blob = max(
+                blobs,
+                key=lambda b: (b.updated or b.time_created) or datetime.min.replace(tzinfo=UTC),
+            )
             return {
                 "service": service,
                 "category": cat,
@@ -93,7 +96,10 @@ async def get_last_updated_batch(
 
     # Parallel check (max 15 concurrent to avoid overwhelming GCS)
     with ThreadPoolExecutor(max_workers=min(15, len(tasks))) as executor:
-        futures = {executor.submit(check_bucket_latest, svc, cat, bucket): (svc, cat) for svc, cat, bucket in tasks}
+        futures = {
+            executor.submit(check_bucket_latest, svc, cat, bucket): (svc, cat)
+            for svc, cat, bucket in tasks
+        }
         for future in as_completed(futures):
             result = future.result()
             svc = result["service"]
@@ -107,7 +113,7 @@ async def get_last_updated_batch(
     return {"services": results}
 
 
-async def get_data_status_turbo_impl(
+async def get_data_status_turbo_impl(  # noqa: C901
     service: str,
     start_date: str,
     end_date: str,
@@ -153,7 +159,9 @@ async def get_data_status_turbo_impl(
                 continue
         if freshness_date_dt is None:
             logger.warning("[TURBO] Invalid freshness_date format: %s", freshness_date)
-            freshness_date_dt = datetime.strptime(freshness_date[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+            freshness_date_dt = datetime.strptime(freshness_date[:10], "%Y-%m-%d").replace(
+                tzinfo=UTC
+            )
 
     # Check cache first
     cached_result = check_cache_for_result(
@@ -181,8 +189,14 @@ async def get_data_status_turbo_impl(
     # For market-data-processing-service, fetch upstream (market-tick-data-handler) data
     # to determine which dates are actually available as candidates for processing.
     upstream_dates = _upstream_dates  # May be pre-computed
-    if service == "market-data-processing-service" and check_upstream_availability and upstream_dates is None:
-        logger.info("[TURBO] Fetching upstream market-tick-data-handler data for cascading expected dates")
+    if (
+        service == "market-data-processing-service"
+        and check_upstream_availability
+        and upstream_dates is None
+    ):
+        logger.info(
+            "[TURBO] Fetching upstream market-tick-data-handler data for cascading expected dates"
+        )
         # Fetch tick handler data status (use cache if available, but don't recurse)
         tick_result = await get_data_status_turbo_impl(
             service="market-tick-data-handler",
@@ -223,7 +237,9 @@ async def get_data_status_turbo_impl(
         )
 
     if service not in BUCKET_MAPPING:
-        return {"error": f"Service {service} not supported for turbo mode. Supported: {list(BUCKET_MAPPING.keys())}"}
+        return {
+            "error": f"Service {service} not supported for turbo mode. Supported: {list(BUCKET_MAPPING.keys())}"  # noqa: E501
+        }
 
     categories = category if category else list(BUCKET_MAPPING[service].keys())
     config = SERVICE_CONFIG[service]
@@ -235,7 +251,9 @@ async def get_data_status_turbo_impl(
     venue_data_types_config = load_venue_data_types()
 
     # Generate ALL dates in range (before category filtering) for year-month prefixes
-    all_dates, year_months = generate_date_range_and_year_months(start_date, end_date, first_day_of_month_only)
+    all_dates, year_months = generate_date_range_and_year_months(
+        start_date, end_date, first_day_of_month_only
+    )
 
     # Use PathCombinatorics for highly optimized parallel specific queries
     path_combinatorics = get_path_combinatorics()
@@ -245,16 +263,18 @@ async def get_data_status_turbo_impl(
     if service == "instruments-service" and include_sub_dimensions:
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
-        total_venues = sum(len(path_combinatorics.get_all_venues_for_category(cat)) for cat in categories)
+        total_venues = sum(
+            len(path_combinatorics.get_all_venues_for_category(cat)) for cat in categories
+        )
         days = (end_dt - start_dt).days + 1
         estimated = days * total_venues
         if estimated > max_estimated_checks:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Request too large: {days} days x {total_venues} venues x {len(categories)} categories "
+                    f"Request too large: {days} days x {total_venues} venues x {len(categories)} categories "  # noqa: E501
                     f"= ~{estimated:,} GCS checks (limit {max_estimated_checks:,}). "
-                    "Narrow the date range (e.g. last 6-12 months), select specific categories, or add venue filter."
+                    "Narrow the date range (e.g. last 6-12 months), select specific categories, or add venue filter."  # noqa: E501
                 ),
             )
 
@@ -266,18 +286,23 @@ async def get_data_status_turbo_impl(
     # Determine if we should use flat listing (much faster for large date ranges)
     _use_flat_listing = len(year_months) > 6  # More than 6 months = use flat listing
 
-    def check_category(cat: str) -> dict:
+    def check_category(cat: str) -> dict:  # noqa: C901
         """Check all date directories for a category using optimized queries."""
         bucket_name = BUCKET_MAPPING[service].get(cat)
         if not bucket_name:
             return {"category": cat, "error": f"No bucket for category {cat}"}
 
         # Get category-specific expected dates (respects category_start from config)
-        expected_dates_for_cat = get_expected_dates_for_category(all_dates, expected_start_dates_config, service, cat)
+        expected_dates_for_cat = get_expected_dates_for_category(
+            all_dates, expected_start_dates_config, service, cat
+        )
 
         try:
             # Choose query strategy based on service and filters
-            if service in ["market-tick-data-handler", "market-data-processing-service"] and path_combinatorics:
+            if (
+                service in ["market-tick-data-handler", "market-data-processing-service"]
+                and path_combinatorics
+            ):
                 # Use specific PathCombinatorics queries for market data services
                 query_result = query_specific_prefixes_for_category(
                     service=service,
@@ -371,13 +396,17 @@ async def get_data_status_turbo_impl(
                     }
 
                     if venue_expected_dates:
-                        venue_dict["completion_pct"] = round(len(venue_dates) / len(venue_expected_dates) * 100, 1)
+                        venue_dict["completion_pct"] = round(
+                            len(venue_dates) / len(venue_expected_dates) * 100, 1
+                        )
                     else:
                         venue_dict["completion_pct"] = 0
 
                     if include_dates_list:
                         venue_dict["dates_found_list"] = sorted(venue_dates)
-                        venue_dict["dates_missing_list"] = sorted(venue_expected_dates - venue_dates)
+                        venue_dict["dates_missing_list"] = sorted(
+                            venue_expected_dates - venue_dates
+                        )
 
                     venues_dict[venue_name] = venue_dict
 
@@ -408,16 +437,24 @@ async def get_data_status_turbo_impl(
             results[result["category"]] = result
 
     # Calculate overall totals using extracted functions
-    total_venue_expected, total_venue_found, expected_missing, unexpected_missing = calculate_venue_weighted_totals(
-        results, all_dates, expected_start_dates_config, service, upstream_dates
+    total_venue_expected, total_venue_found, expected_missing, unexpected_missing = (
+        calculate_venue_weighted_totals(
+            results, all_dates, expected_start_dates_config, service, upstream_dates
+        )
     )
 
     # Update category completion percentages to be venue-weighted
-    update_category_completion_percentages(results, all_dates, expected_start_dates_config, service, upstream_dates)
+    update_category_completion_percentages(
+        results, all_dates, expected_start_dates_config, service, upstream_dates
+    )
 
     # Calculate category-level totals for reference
-    total_expected_category = sum(r.get("dates_expected", 0) for r in results.values() if "error" not in r)
-    total_found_category = sum(r.get("dates_found", 0) for r in results.values() if "error" not in r)
+    total_expected_category = sum(
+        r.get("dates_expected", 0) for r in results.values() if "error" not in r
+    )
+    total_found_category = sum(
+        r.get("dates_found", 0) for r in results.values() if "error" not in r
+    )
 
     # Calculate overall file counts if requested
     overall_file_counts = calculate_overall_file_counts(results, include_file_counts)

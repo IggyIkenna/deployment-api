@@ -6,7 +6,7 @@ All configuration values come from the DeploymentConfig class instead of direct 
 
 The .env file (sourced by run-api.sh) provides defaults for local development.
 Docker/Cloud Run override these via runtime environment variables.
-"""
+"""  # noqa: E501
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 

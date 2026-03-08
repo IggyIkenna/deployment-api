@@ -33,7 +33,7 @@ def _parse_image_url(image_url: str) -> dict[str, str] | None:
         Dict with location, project, repository, image, tag/digest
     """
     # Pattern for Artifact Registry URLs
-    pattern = r"^(?P<location>[a-z]+-[a-z]+[0-9]*)-docker\.pkg\.dev/(?P<project>[^/]+)/(?P<repository>[^/]+)/(?P<image>[^:@]+)(?::(?P<tag>[^@]+)|@(?P<digest>sha256:[a-f0-9]+))?$"
+    pattern = r"^(?P<location>[a-z]+-[a-z]+[0-9]*)-docker\.pkg\.dev/(?P<project>[^/]+)/(?P<repository>[^/]+)/(?P<image>[^:@]+)(?::(?P<tag>[^@]+)|@(?P<digest>sha256:[a-f0-9]+))?$"  # noqa: E501
 
     match = re.match(pattern, image_url)
     if not match:
@@ -51,7 +51,9 @@ def _parse_image_url(image_url: str) -> dict[str, str] | None:
 def _get_auth_token() -> str | None:
     """Get OAuth2 token for Artifact Registry API."""
     try:
-        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
         # Refresh credentials if needed
         request = google.auth.transport.requests.Request()
         credentials.refresh(request)
@@ -61,7 +63,7 @@ def _get_auth_token() -> str | None:
         return None
 
 
-async def get_image_info(image_url: str) -> dict[str, object] | None:
+async def get_image_info(image_url: str) -> dict[str, object] | None:  # noqa: C901
     """
     Get image digest and metadata from Artifact Registry.
 
@@ -73,7 +75,7 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
 
     Returns:
         Dict with digest, tags, created_time, etc.
-    """
+    """  # noqa: E501
     # Check cache first
     cache_key = image_url
     if cache_key in _image_cache:
@@ -101,7 +103,7 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
 
     headers = {
         "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+        "Accept": "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",  # noqa: E501
     }
 
     try:

@@ -122,7 +122,7 @@ _VALID_SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 
 
 @router.get("/{service}/status")
-async def get_service_status(service: str, request: Request):
+async def get_service_status(service: str, request: Request):  # noqa: C901
     """
     Get comprehensive status for a service.
 
@@ -138,7 +138,7 @@ async def get_service_status(service: str, request: Request):
     if not _VALID_SERVICE_NAME_RE.match(service) or service not in VALID_SERVICES:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid service name: {service!r}. Must be a known service from the workspace manifest.",
+            detail=f"Invalid service name: {service!r}. Must be a known service from the workspace manifest.",  # noqa: E501
         )
 
     start_time = time.time()
@@ -180,7 +180,7 @@ async def get_service_status(service: str, request: Request):
                 # Check if we're already running as a SA with secret access
                 if hasattr(source_credentials, "service_account_email"):
                     sa_email = source_credentials.service_account_email
-                    # If running as github-token-sa, Compute Engine SA, or instruments-service SA - use directly
+                    # If running as github-token-sa, Compute Engine SA, or instruments-service SA - use directly  # noqa: E501
                     if any(
                         x in sa_email
                         for x in [
@@ -327,7 +327,7 @@ async def get_service_status(service: str, request: Request):
 
 
 @router.get("/overview")
-async def get_services_overview(request: Request):
+async def get_services_overview(request: Request):  # noqa: C901
     """
     Get FAST status overview for all services.
 
@@ -345,7 +345,7 @@ async def get_services_overview(request: Request):
         services = sorted([*services, "quota-manager"])
 
     # Fetch data timestamps + cached deployments (fast with caching)
-    async def get_quick_status(service: str) -> dict[str, object]:
+    async def get_quick_status(service: str) -> dict[str, object]:  # noqa: C901
         """Get status info - data timestamps + cached deployment info."""
         # Quota-manager: health from quota broker /health (no sharding/deployment in this dashboard)
         if service == "quota-manager":

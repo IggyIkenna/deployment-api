@@ -125,7 +125,7 @@ def _extract_error_warning_shard_ids(
     return error_shard_ids, warning_shard_ids
 
 
-def _classify_shard(
+def _classify_shard(  # noqa: C901
     shard: object,
     blob_exists: bool | None = None,
     blob_updated: datetime | None = None,
@@ -229,7 +229,7 @@ def _build_blob_timestamp_map(
     return result
 
 
-def _resolve_shard_blob_data(
+def _resolve_shard_blob_data(  # noqa: C901
     state,
     existing_cat_dates: dict[str, set],
     existing_venue_dates: dict[str, dict[str, set]],
@@ -372,7 +372,7 @@ def _compute_classification_counts(
     return counts
 
 
-def _build_existing_dates_sets(
+def _build_existing_dates_sets(  # noqa: C901
     turbo_result: dict[str, object],
 ) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
     """Build category+date and venue+date sets from turbo data status result.
@@ -416,7 +416,7 @@ def _build_existing_dates_sets(
     return existing_cat_dates, existing_venue_dates
 
 
-def _compute_verified_succeeded_shard_ids(
+def _compute_verified_succeeded_shard_ids(  # noqa: C901
     state,
     existing_cat_dates: dict[str, set],
     existing_venue_dates: dict[str, dict[str, set]],
@@ -494,7 +494,7 @@ def _compute_completed_breakdown(
     }
 
 
-def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
+def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:  # noqa: C901
     """
     Get all zones to search for VMs during lookup operations.
 

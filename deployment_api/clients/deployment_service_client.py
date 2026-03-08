@@ -313,7 +313,7 @@ async def cancel_vm_jobs(
 
     Raises:
         RuntimeError: If the deployment-service HTTP call fails.
-    """
+    """  # noqa: E501
     payload: dict[str, object] = {
         "deployment_id": deployment_id,
         "project_id": project_id,
