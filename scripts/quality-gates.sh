@@ -148,7 +148,7 @@ if [ "$RUN_TESTS" = true ]; then
 
     # @pytest.mark.skip must have a reason comment on the preceding line
     SKIP_NO_REASON=$(rg "@pytest\.mark\.skip" --type py tests/ -B 1 2>/dev/null \
-        | grep -v "# reason:\|# noqa\|^--" | grep "@pytest\.mark\.skip" || :)
+        | grep -v "# reason:\|# noqa\|^--\|skipif" | grep "@pytest\.mark\.skip" || :)
     [[ -n "$SKIP_NO_REASON" ]] && { log_fail "pytest.mark.skip without reason comment — add '# reason: ...' above"; echo "$SKIP_NO_REASON" | head -3; exit 1; }
     log_success "All pytest.mark.skip have reason comments"
 fi
