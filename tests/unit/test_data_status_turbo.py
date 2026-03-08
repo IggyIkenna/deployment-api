@@ -127,9 +127,9 @@ class TestRequestSizeGuard:
 class TestInstrumentTypeExtraction:
     """Tests for instrument type breakdown extraction."""
 
-    @pytest.mark.skip(
+    @pytest.mark.skip(  # reason: Requires full PathCombinatorics mock wiring — deferred to integration tests
         reason="Requires full PathCombinatorics mock wiring — deferred to integration tests"
-    )  # noqa: skip-reason
+    )
     @patch("deployment_api.utils.path_combinatorics.get_path_combinatorics")
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_instrument_types_market_tick_data_handler(
