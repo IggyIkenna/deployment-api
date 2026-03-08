@@ -282,10 +282,20 @@ class TestClassifyAllShards:
         from deployment_api.routes.shard_management import _classify_all_shards
 
         shard1 = SimpleNamespace(
-            shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+            shard_id="s1",
+            status="succeeded",
+            failure_category="",
+            args=[],
+            start_time=None,
+            end_time=None,
         )
         shard2 = SimpleNamespace(
-            shard_id="s2", status="failed", failure_category="timeout", args=[], start_time=None, end_time=None
+            shard_id="s2",
+            status="failed",
+            failure_category="timeout",
+            args=[],
+            start_time=None,
+            end_time=None,
         )
         state = SimpleNamespace(shards=[shard1, shard2])
 
@@ -297,7 +307,12 @@ class TestClassifyAllShards:
         from deployment_api.routes.shard_management import _classify_all_shards
 
         shard = SimpleNamespace(
-            shard_id="", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+            shard_id="",
+            status="succeeded",
+            failure_category="",
+            args=[],
+            start_time=None,
+            end_time=None,
         )
         state = SimpleNamespace(shards=[shard])
         result = _classify_all_shards(state, log_analysis=None)
@@ -307,7 +322,12 @@ class TestClassifyAllShards:
         from deployment_api.routes.shard_management import _classify_all_shards
 
         shard = SimpleNamespace(
-            shard_id="s1", status="succeeded", failure_category="", args=[], start_time=None, end_time=None
+            shard_id="s1",
+            status="succeeded",
+            failure_category="",
+            args=[],
+            start_time=None,
+            end_time=None,
         )
         state = SimpleNamespace(shards=[shard])
         log_analysis = {"errors": [{"shard_id": "s1", "line": "ERROR"}], "warnings": []}
@@ -396,7 +416,11 @@ class TestBuildBlobTimestampMap:
     def test_extracts_timestamps_from_turbo_result(self):
         turbo_result = {
             "categories": {
-                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}}}
+                "CEFI": {
+                    "_venue_date_blob_timestamps": {
+                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
+                    }
+                }
             }
         }
         result = _build_blob_timestamp_map(turbo_result)
@@ -435,7 +459,10 @@ class TestGetAllZonesForVmLookup:
         import deployment_api.settings as _settings
         from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
 
-        with patch.object(_settings, "GCS_REGION", "us-central1"), patch.object(_settings, "ALL_FAILOVER_REGIONS", []):
+        with (
+            patch.object(_settings, "GCS_REGION", "us-central1"),
+            patch.object(_settings, "ALL_FAILOVER_REGIONS", []),
+        ):
             zones = get_all_zones_for_vm_lookup("us-central1")
         assert "us-central1-a" in zones
         assert "us-central1-b" in zones
@@ -447,7 +474,10 @@ class TestGetAllZonesForVmLookup:
         import deployment_api.settings as _settings
         from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
 
-        with patch.object(_settings, "GCS_REGION", "us-east1"), patch.object(_settings, "ALL_FAILOVER_REGIONS", []):
+        with (
+            patch.object(_settings, "GCS_REGION", "us-east1"),
+            patch.object(_settings, "ALL_FAILOVER_REGIONS", []),
+        ):
             zones = get_all_zones_for_vm_lookup("us-east1")
         assert "us-east1-b" in zones
 
@@ -471,7 +501,10 @@ class TestGetAllZonesForVmLookup:
         import deployment_api.settings as _settings
         from deployment_api.routes.shard_management import get_all_zones_for_vm_lookup
 
-        with patch.object(_settings, "GCS_REGION", "us-central1"), patch.object(_settings, "ALL_FAILOVER_REGIONS", []):
+        with (
+            patch.object(_settings, "GCS_REGION", "us-central1"),
+            patch.object(_settings, "ALL_FAILOVER_REGIONS", []),
+        ):
             zones = get_all_zones_for_vm_lookup(None)
         assert len(zones) > 0
 

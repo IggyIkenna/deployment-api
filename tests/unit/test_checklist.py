@@ -146,7 +146,11 @@ class TestParseChecklist:
         data = self._make_checklist_data(
             phases={
                 "phase_1_foundation": {
-                    "item_a": {"status": "pending", "description": "Critical item", "blocking": True},
+                    "item_a": {
+                        "status": "pending",
+                        "description": "Critical item",
+                        "blocking": True,
+                    },
                     "item_b": {"status": "done", "description": "Done item", "blocking": True},
                 }
             }
@@ -160,7 +164,11 @@ class TestParseChecklist:
         data = self._make_checklist_data(
             phases={
                 "phase_1_foundation": {
-                    "item_x": {"status": "not_started", "description": "Not started item", "blocking": True},
+                    "item_x": {
+                        "status": "not_started",
+                        "description": "Not started item",
+                        "blocking": True,
+                    },
                 }
             }
         )
@@ -304,7 +312,10 @@ class TestGetWarnings:
         assert warnings == []
 
     def test_warnings_capped_at_10(self):
-        items = {f"item_{i}": {"status": "pending", "description": f"Item {i}", "blocking": False} for i in range(15)}
+        items = {
+            f"item_{i}": {"status": "pending", "description": f"Item {i}", "blocking": False}
+            for i in range(15)
+        }
         checklist = self._make_checklist(items)
         warnings = _get_warnings(checklist)
         assert len(warnings) == 10

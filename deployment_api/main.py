@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from unified_config_interface import UnifiedCloudConfig
 from unified_events_interface import setup_events
-from unified_trading_library.utils.tracing import setup_tracing
+from unified_trading_library import setup_tracing
 
 # TODO: PrometheusMiddleware and get_metrics_response are not yet implemented in
 # unified_trading_library. Re-enable once available (ISS-xxx).

@@ -85,7 +85,7 @@ max-complexity = 7
 "deployment_api/routes/service_status_fast_data.py" = ["E402"]
 "deployment_api/workers/deployment_processor.py" = ["E402"]
 "deployment_api/utils/cache.py" = ["E402"]
-"tests/**" = ["SIM117", "SIM105", "F841", "RUF059", "N806", "E402"]
+"tests/**" = ["SIM117", "SIM105", "F841", "RUF059", "N806", "E402", "E501", "C901"]
 
 [tool.ruff.format]
 quote-style = "double"

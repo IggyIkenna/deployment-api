@@ -142,7 +142,9 @@ class TestLifespanStartup:
             patch("deployment_api.app_config.set_background_task_handles"),
             patch("deployment_api.app_config.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.app_config.get_owner_id", return_value="owner"),
-            patch("deployment_api.app_config.get_storage_client_with_pool", return_value=MagicMock()),
+            patch(
+                "deployment_api.app_config.get_storage_client_with_pool", return_value=MagicMock()
+            ),
         ):
             async with app_config.lifespan(mock_app):
                 assert mock_app.state.config_dir == configs_dir
@@ -173,7 +175,9 @@ class TestLifespanStartup:
             patch("deployment_api.app_config.set_background_task_handles"),
             patch("deployment_api.app_config.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.app_config.get_owner_id", return_value="owner"),
-            patch("deployment_api.app_config.get_storage_client_with_pool", return_value=MagicMock()),
+            patch(
+                "deployment_api.app_config.get_storage_client_with_pool", return_value=MagicMock()
+            ),
         ):
             async with app_config.lifespan(mock_app):
                 pass
@@ -206,7 +210,9 @@ class TestLifespanStartup:
             patch("deployment_api.app_config.set_background_task_handles"),
             patch("deployment_api.app_config.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.app_config.get_owner_id", return_value="owner"),
-            patch("deployment_api.app_config.get_storage_client_with_pool", return_value=MagicMock()),
+            patch(
+                "deployment_api.app_config.get_storage_client_with_pool", return_value=MagicMock()
+            ),
         ):
             async with app_config.lifespan(mock_app):
                 pass
@@ -247,7 +253,9 @@ class TestLifespanStartup:
             patch("deployment_api.app_config.set_background_task_handles"),
             patch("deployment_api.app_config.get_held_deployment_locks", return_value={"dep-1"}),
             patch("deployment_api.app_config.get_owner_id", return_value="test-owner"),
-            patch("deployment_api.app_config.get_storage_client_with_pool", return_value=mock_client),
+            patch(
+                "deployment_api.app_config.get_storage_client_with_pool", return_value=mock_client
+            ),
         ):
             async with app_config.lifespan(mock_app):
                 pass
@@ -280,7 +288,10 @@ class TestLifespanStartup:
             patch("deployment_api.app_config.set_background_task_handles"),
             patch("deployment_api.app_config.get_held_deployment_locks", return_value={"dep-x"}),
             patch("deployment_api.app_config.get_owner_id", return_value="owner"),
-            patch("deployment_api.app_config.get_storage_client_with_pool", side_effect=OSError("network")),
+            patch(
+                "deployment_api.app_config.get_storage_client_with_pool",
+                side_effect=OSError("network"),
+            ),
         ):
             # Should not raise even with storage error
             async with app_config.lifespan(mock_app):

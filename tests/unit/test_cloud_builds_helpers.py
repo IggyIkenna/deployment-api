@@ -25,7 +25,12 @@ class TestFormatBuildInfo:
     """Tests for _format_build_info."""
 
     def _make_build(
-        self, status_name="SUCCESS", create_time=None, finish_time=None, substitutions=None, log_url="https://log.url"
+        self,
+        status_name="SUCCESS",
+        create_time=None,
+        finish_time=None,
+        substitutions=None,
+        log_url="https://log.url",
     ):
         build = SimpleNamespace(
             id="build-123",

@@ -173,7 +173,7 @@ async def write_domain_config(
     _validate_domain(domain)
 
     def _write_sync() -> tuple[str, str]:
-        from unified_config_interface.domain_configs import (
+        from unified_config_interface import (
             schema_for_domain,  # type: ignore[import-untyped]
         )
 
@@ -218,7 +218,7 @@ async def read_domain_config(
     _validate_domain(domain)
 
     def _read_sync() -> tuple[dict[str, object], str | None]:
-        from unified_config_interface.domain_configs import (
+        from unified_config_interface import (
             schema_for_domain,  # type: ignore[import-untyped]
         )
 
@@ -282,7 +282,7 @@ async def diff_domain_config_versions(
     _validate_domain(domain)
 
     def _diff_sync() -> list[str]:
-        from unified_config_interface.domain_configs import (
+        from unified_config_interface import (
             schema_for_domain,  # type: ignore[import-untyped]
         )
 
@@ -340,7 +340,7 @@ async def rollback_domain_config(
     _validate_domain(domain)
 
     def _rollback_sync() -> tuple[str, str]:
-        from unified_config_interface.domain_configs import (
+        from unified_config_interface import (
             schema_for_domain,  # type: ignore[import-untyped]
         )
 
