@@ -141,6 +141,7 @@ def process_deployments_batch(  # noqa: C901
                     return 0
                 vm_map_cpd = {}
                 try:
+                    # TODO(p1): migrate to UCI get_compute_client()
                     from google.cloud import compute_v1
 
                     inst_client = compute_v1.InstancesClient()
@@ -292,6 +293,7 @@ def process_deployments_batch(  # noqa: C901
             #    Use aggregatedList (1 API call) instead of per-shard get() calls
             vm_map: dict[str, object] = {}
             if compute_type == "vm":
+                # TODO(p1): migrate to UCI get_compute_client()
                 from google.cloud import compute_v1
 
                 instances_client = compute_v1.InstancesClient()
@@ -515,7 +517,7 @@ def _process_vm_health_and_status(  # noqa: C901
     vm_health_kills = []
     if vm_map:
         try:
-            from google.cloud import compute_v1
+            from google.cloud import compute_v1  # TODO(p1): migrate to UCI get_compute_client()
 
             instances_client = compute_v1.InstancesClient()
             oom_threshold = getattr(settings, "OOM_KILL_THRESHOLD", 5)
