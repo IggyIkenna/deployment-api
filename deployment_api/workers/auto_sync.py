@@ -107,9 +107,12 @@ async def _auto_sync_running_deployments():  # noqa: C901
                 # Optional centralized quota broker (Cloud Run IAM). If not configured,
                 # acquire/release calls become no-ops and scheduling behaves as before.
                 try:
-                    _quota_broker_client_cls = _importlib.import_module(  # noqa: F821
-                        "deployment_service.deployment.quota_broker_client"
-                    ).QuotaBrokerClient  # type: ignore[assignment]
+                    _quota_broker_client_cls = cast(
+                        type[object],
+                        _importlib.import_module(  # noqa: F821
+                            "deployment_service.deployment.quota_broker_client"
+                        ).QuotaBrokerClient,
+                    )
 
                     quota_broker = _quota_broker_client_cls()
                     logger.info("[AUTO_SYNC] Quota broker initialized")
@@ -373,9 +376,12 @@ async def _auto_sync_running_deployments():  # noqa: C901
                     if not to_fire:
                         return 0
                     try:
-                        _orchestrator_cls = _importlib.import_module(  # noqa: F821
-                            "deployment_service.deployment.orchestrator"
-                        ).DeploymentOrchestrator  # type: ignore[assignment]
+                        _orchestrator_cls = cast(
+                            type[object],
+                            _importlib.import_module(  # noqa: F821
+                                "deployment_service.deployment.orchestrator"
+                            ).DeploymentOrchestrator,
+                        )
 
                         try:
                             service_account_email = ValidationUtils.get_required(
