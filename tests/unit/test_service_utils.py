@@ -212,11 +212,10 @@ class TestNaiveTimestampInServiceUtils:
     """Tests for naive datetime timestamp handling in update_shard_state_from_event."""
 
     def test_naive_started_at_in_validation_completed(self):
-        from datetime import datetime
 
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("VALIDATION_STARTED"))
-        naive_ts = datetime.now().isoformat()  # no timezone
+        naive_ts = datetime.now(UTC).replace(tzinfo=None).isoformat()  # no timezone
         shard["stage_started_at"] = naive_ts
         update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
         assert "validation" in shard.get("stage_timings", {})
@@ -228,11 +227,10 @@ class TestNaiveTimestampInServiceUtils:
         update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
 
     def test_ingestion_naive_started_at(self):
-        from datetime import datetime
 
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("DATA_INGESTION_STARTED"))
-        shard["stage_started_at"] = datetime.now().isoformat()
+        shard["stage_started_at"] = datetime.now(UTC).replace(tzinfo=None).isoformat()
         update_shard_state_from_event(shard, _make_event("DATA_INGESTION_COMPLETED", "done"))
 
     def test_processing_invalid_started_at(self):
@@ -242,9 +240,8 @@ class TestNaiveTimestampInServiceUtils:
         update_shard_state_from_event(shard, _make_event("PROCESSING_COMPLETED"))
 
     def test_persistence_naive_started_at(self):
-        from datetime import datetime
 
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("PERSISTENCE_STARTED"))
-        shard["stage_started_at"] = datetime.now().isoformat()
+        shard["stage_started_at"] = datetime.now(UTC).replace(tzinfo=None).isoformat()
         update_shard_state_from_event(shard, _make_event("PERSISTENCE_COMPLETED"))

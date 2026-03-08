@@ -236,7 +236,7 @@ class TestDetermineOverviewHealth:
         assert result == "build_failed"
 
     def test_naive_timestamp_without_tz(self):
-        naive_ts = datetime.now().isoformat()  # no timezone info
+        naive_ts = datetime.now(UTC).replace(tzinfo=None).isoformat()  # no timezone info
         result = determine_overview_health(naive_ts, None, None, None)
         assert result in ("healthy", "warning", "stale", "unknown")
 
@@ -264,7 +264,7 @@ class TestDetermineServiceHealthEdgeCases:
         assert health == "warning"
 
     def test_naive_timestamp_without_tz(self):
-        naive_ts = datetime.now().isoformat()  # no timezone info
+        naive_ts = datetime.now(UTC).replace(tzinfo=None).isoformat()  # no timezone info
         health = determine_service_health(naive_ts, None, None, None, [])
         assert health in ("healthy", "warning", "stale", "unknown")
 

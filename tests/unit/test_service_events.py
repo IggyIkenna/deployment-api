@@ -154,12 +154,11 @@ class TestNaiveTimestampHandling:
     """Tests for naive datetime timestamp handling in stage timing calculations."""
 
     def test_naive_started_at_gets_utc_timezone(self):
-        from datetime import datetime
 
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("VALIDATION_STARTED"))
         # Replace stage_started_at with a naive datetime ISO string (no timezone)
-        naive_ts = datetime.now().isoformat()  # no UTC timezone
+        naive_ts = datetime.now(UTC).replace(tzinfo=None).isoformat()  # no UTC timezone
         shard["stage_started_at"] = naive_ts
         # Should not raise - naive datetime is handled via replace(tzinfo=UTC)
         update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
@@ -173,11 +172,10 @@ class TestNaiveTimestampHandling:
         update_shard_state_from_event(shard, _make_event("VALIDATION_COMPLETED"))
 
     def test_ingestion_naive_started_at(self):
-        from datetime import datetime
 
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("DATA_INGESTION_STARTED"))
-        naive_ts = datetime.now().isoformat()
+        naive_ts = datetime.now(UTC).replace(tzinfo=None).isoformat()
         shard["stage_started_at"] = naive_ts
         update_shard_state_from_event(shard, _make_event("DATA_INGESTION_COMPLETED", "done"))
         assert "ingestion" in shard.get("stage_timings", {})
@@ -189,11 +187,10 @@ class TestNaiveTimestampHandling:
         update_shard_state_from_event(shard, _make_event("PROCESSING_COMPLETED"))
 
     def test_persistence_naive_started_at(self):
-        from datetime import datetime
 
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("PERSISTENCE_STARTED"))
-        naive_ts = datetime.now().isoformat()
+        naive_ts = datetime.now(UTC).replace(tzinfo=None).isoformat()
         shard["stage_started_at"] = naive_ts
         update_shard_state_from_event(shard, _make_event("PERSISTENCE_COMPLETED"))
         assert "persistence" in shard.get("stage_timings", {})
