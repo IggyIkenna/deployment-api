@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_config = DeploymentApiConfig()  # type: ignore[call-arg]
+_config = DeploymentApiConfig()
 
 
 @router.post("/commentary/pipeline-uat", status_code=202)

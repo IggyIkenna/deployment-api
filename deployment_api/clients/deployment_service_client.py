@@ -17,6 +17,7 @@ so that failures are loud and traceable rather than silently wrong.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import aiohttp
 
@@ -261,7 +262,7 @@ async def get_data_status(
     logger.debug("GET %s (service=%s, %s..%s)", url, service, start_date, end_date)
 
     async with aiohttp.ClientSession(timeout=_timeout()) as session:  # noqa: SIM117
-        async with session.get(url, params=params) as resp:  # type: ignore[arg-type]
+        async with session.get(url, params=cast(dict[str, str], params)) as resp:
             if resp.status != 200:
                 body = await resp.text()
                 raise RuntimeError(

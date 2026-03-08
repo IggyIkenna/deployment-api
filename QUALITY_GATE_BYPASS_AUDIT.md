@@ -71,6 +71,24 @@ None.
 
 None.
 
+## 2.4b Type-Ignore Suppressions — Last Updated: 2026-03-08
+
+### GROUP A — Genuine Third-Party Stub Gaps (no `py.typed`, no stubs package)
+
+These 6 suppressions in `deployment_api/routes/config_management.py` are unavoidable:
+`unified_config_interface` and `unified_cloud_interface` do not ship a `py.typed` marker
+file, so basedpyright reports `import-untyped`. The functions `get_config_store`,
+`schema_for_domain`, and `get_event_bus` are used correctly — the call signatures match
+the documented API.
+
+| File                                         | Lines                        | Error Code       | Root Cause                                                                      |
+| -------------------------------------------- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------- |
+| `deployment_api/routes/config_management.py` | 126, 133, 177, 222, 286, 344 | `import-untyped` | `unified_config_interface` and `unified_cloud_interface` lack `py.typed` marker |
+
+**Migration:** Add `py.typed` to `unified-config-interface` and `unified-cloud-interface`
+packages, or publish `types-unified-config-interface` / `types-unified-cloud-interface`
+stubs packages.
+
 ## 2.4 os.environ Exceptions
 
 ### GROUP A — Migration Pending

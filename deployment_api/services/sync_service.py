@@ -55,9 +55,12 @@ class SyncService:
     def _initialize_quota_broker(self):
         """Initialize quota broker if available."""
         try:
-            _quota_broker_client_cls = _importlib.import_module(
-                "deployment_service.deployment.quota_broker_client"
-            ).QuotaBrokerClient  # type: ignore[assignment]
+            _quota_broker_client_cls = cast(
+                type[object],
+                _importlib.import_module(
+                    "deployment_service.deployment.quota_broker_client"
+                ).QuotaBrokerClient,
+            )
 
             return _quota_broker_client_cls()
         except (OSError, ValueError, RuntimeError) as e:
@@ -317,9 +320,12 @@ class SyncService:
             return 0
 
         try:
-            _orchestrator_cls = _importlib.import_module(
-                "deployment_service.deployment.orchestrator"
-            ).DeploymentOrchestrator  # type: ignore[assignment]
+            _orchestrator_cls = cast(
+                type[object],
+                _importlib.import_module(
+                    "deployment_service.deployment.orchestrator"
+                ).DeploymentOrchestrator,
+            )
 
             from deployment_api.utils.quota_requirements import vm_quota_shape_from_compute_config
 

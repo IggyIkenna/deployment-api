@@ -166,10 +166,9 @@ async def _assemble_context(
 
     # Instruments coverage
     try:
-        instruments_manifest_path = (
-            f"instruments-store-{project_id}/instruments/latest/manifest.json"
+        raw_bytes = storage.download_bytes(
+            f"instruments-store-{project_id}", "instruments/latest/manifest.json"
         )
-        raw_bytes = storage.download_bytes(instruments_manifest_path)  # type: ignore[union-attr]
         manifest: dict[str, object] = json.loads(raw_bytes)
         context["instruments_count"] = manifest.get("count")
         context["instruments_expected_count"] = manifest.get("expected_count")
@@ -180,8 +179,7 @@ async def _assemble_context(
 
     # Feature pipeline health
     try:
-        features_health_path = f"features-store-{project_id}/health/latest.json"
-        raw_bytes = storage.download_bytes(features_health_path)  # type: ignore[union-attr]
+        raw_bytes = storage.download_bytes(f"features-store-{project_id}", "health/latest.json")
         health: dict[str, object] = json.loads(raw_bytes)
         context["feature_row_count"] = health.get("row_count")
         context["feature_null_rate"] = health.get("null_rate")
@@ -192,8 +190,7 @@ async def _assemble_context(
 
     # ML training metrics
     try:
-        ml_metrics_path = f"ml-store-{project_id}/training/latest/metrics.json"
-        raw_bytes = storage.download_bytes(ml_metrics_path)  # type: ignore[union-attr]
+        raw_bytes = storage.download_bytes(f"ml-store-{project_id}", "training/latest/metrics.json")
         metrics: dict[str, object] = json.loads(raw_bytes)
         context["ml_loss"] = metrics.get("loss")
         context["ml_val_loss"] = metrics.get("val_loss")
@@ -207,8 +204,9 @@ async def _assemble_context(
     # Execution T+1 recon (execution alpha)
     try:
         date_str = datetime.now(UTC).strftime("%Y-%m-%d")
-        recon_path = f"execution-store-{project_id}/t1_recon/latest/summary.json"
-        raw_bytes = storage.download_bytes(recon_path)  # type: ignore[union-attr]
+        raw_bytes = storage.download_bytes(
+            f"execution-store-{project_id}", "t1_recon/latest/summary.json"
+        )
         recon: dict[str, object] = json.loads(raw_bytes)
         context["execution_alpha_bps"] = recon.get("execution_alpha_bps")
         context["execution_recon_date"] = recon.get("date", date_str)

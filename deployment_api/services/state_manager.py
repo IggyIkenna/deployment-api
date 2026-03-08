@@ -265,9 +265,12 @@ class StateManager:
 
             if orphan_tuples:
                 try:
-                    _orchestrator_cls = _importlib.import_module(
-                        "deployment_service.deployment.orchestrator"
-                    ).DeploymentOrchestrator  # type: ignore[assignment]
+                    _orchestrator_cls = cast(
+                        type[object],
+                        _importlib.import_module(
+                            "deployment_service.deployment.orchestrator"
+                        ).DeploymentOrchestrator,
+                    )
 
                     try:
                         service_account_email = ValidationUtils.get_required(
