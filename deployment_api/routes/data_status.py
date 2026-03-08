@@ -67,7 +67,9 @@ async def get_data_status(
         logger.exception("Error in get_data_status")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.post("/missing-shards")
@@ -100,7 +102,9 @@ async def calculate_missing_shards(
         logger.exception("Error in calculate_missing_shards")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/last-updated")
@@ -124,7 +128,9 @@ async def get_last_updated(
         logger.exception("Error in get_last_updated")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/turbo")
@@ -135,6 +141,10 @@ async def get_data_status_turbo(
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
     category: list[str] | None = Query(None, description="Filter by category"),
     venue: list[str] | None = Query(None, description="Filter by venue"),
+    include_sub_dimensions: bool = Query(False, description="Include sub-dimension breakdown"),
+    include_instrument_types: bool = Query(False, description="Include instrument type breakdown"),
+    include_file_counts: bool = Query(False, description="Include per-date file counts"),
+    include_dates_list: bool = Query(False, description="Include sorted list of dates found"),
 ):
     """Get data status with turbo mode caching (5-minute cache TTL)."""
     try:
@@ -156,7 +166,9 @@ async def get_data_status_turbo(
         logger.exception("Error in get_data_status_turbo")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/turbo/stats")
@@ -166,7 +178,9 @@ async def get_turbo_cache_stats():
         return await data_analytics_service.get_cache_stats()
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_turbo_cache_stats")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.post("/turbo/clear")
@@ -176,7 +190,9 @@ async def clear_turbo_cache():
         return await data_analytics_service.clear_cache()
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in clear_turbo_cache")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/venue-filters")
@@ -194,7 +210,9 @@ async def get_venue_filters(service: str = Query(..., description="Service name"
         logger.exception("Error in get_venue_filters")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/list-files")
@@ -222,7 +240,9 @@ async def list_files_in_path(
         if isinstance(e, HTTPException):
             raise
         logger.exception("Error in list_files_in_path")
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/instruments")
@@ -250,7 +270,9 @@ async def get_instruments_list(
         logger.exception("Error in get_instruments_list")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/instrument-availability")
@@ -286,7 +308,9 @@ async def get_instrument_availability(
         logger.exception("Error in get_instrument_availability")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.post("/analyze")
@@ -325,7 +349,9 @@ async def analyze_data_patterns(
         logger.exception("Error in analyze_data_patterns")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.post("/multi-service")
@@ -351,4 +377,6 @@ async def get_multi_service_status(
         logger.exception("Error in get_multi_service_status")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e

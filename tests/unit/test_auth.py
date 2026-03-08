@@ -121,7 +121,8 @@ class TestVerifyApiKeyValidKey:
 
             result = await verify_api_key(api_key="secret-key-123")
             assert result == "secret-key-123"
-            mock_log.assert_called_once()
+            # log_event is NOT called on successful authentication (only on failures)
+            mock_log.assert_not_called()
 
 
 class TestProductionGuard:
