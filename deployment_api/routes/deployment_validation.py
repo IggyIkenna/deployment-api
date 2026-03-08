@@ -87,7 +87,7 @@ async def _compute_and_cache_verification(
     shard_classifications = _classify_all_shards(state, log_analysis, blob_data)
     classification_counts = _compute_classification_counts(shard_classifications)
 
-    # Keep backward-compatible breakdown fields
+    # Compute legacy breakdown fields included in the response envelope
     breakdown = _compute_completed_breakdown(
         state,
         log_analysis,

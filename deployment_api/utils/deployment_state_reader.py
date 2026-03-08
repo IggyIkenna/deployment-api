@@ -114,7 +114,7 @@ def list_deployments(  # noqa: C901
                     "created_at": data.get("created_at"),
                     "completed_at": data.get("completed_at"),
                     "tag": data.get("tag"),
-                    "cli_args": data.get("cli_args", ""),
+                    "cli_args": data.get("cli_args") or "",
                     "progress": {
                         "total_shards": total_shards,
                         "completed": completed,

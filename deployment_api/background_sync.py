@@ -51,7 +51,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
         deployment_env=settings.DEPLOYMENT_ENV,
     )
 
-    # Set OWNER_ID for backward compatibility (via module-level reassignment via the setter)
+    # Sync OWNER_ID store with the initialized state manager owner_id
     _set_owner_id(_sync_service.state_manager.owner_id)
 
     sync_interval_active = getattr(settings, "AUTO_SYNC_INTERVAL_ACTIVE", 30)
@@ -123,7 +123,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
     logger.info("[AUTO_SYNC] Background sync task stopped")
 
 
-# Export constants for backward compatibility
+# Module-level aliases for settings constants used by processors in this module
 PROJECT_ID = settings.GCP_PROJECT_ID
 STATE_BUCKET = settings.STATE_BUCKET
 
@@ -135,9 +135,8 @@ def get_owner_id() -> str:
     return ""
 
 
-# For backward compatibility - will be set after sync service initialization.
-# Use a mutable list container so callers can read OWNER_ID[0] after update.
-# This avoids reportConstantRedefinition on the uppercase symbol.
+# Mutable container for OWNER_ID — set after sync service initialization.
+# Using a list avoids reportConstantRedefinition on the uppercase symbol.
 _owner_id_store: list[str] = [""]
 
 

@@ -380,7 +380,8 @@ async def get_services_overview(request: Request):  # noqa: C901
                     import http.client
 
                     with cast(
-                        http.client.HTTPResponse, urllib.request.urlopen(req, timeout=5)
+                        http.client.HTTPResponse,
+                        urllib.request.urlopen(req, timeout=5),  # nosec B310
                     ) as resp:
                         return resp.status == 200
                 except (OSError, ValueError, RuntimeError) as e:

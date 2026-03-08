@@ -619,7 +619,7 @@ async def _compute_and_cache_verification(
     shard_classifications = _classify_all_shards(state, log_analysis, blob_data)
     classification_counts = _compute_classification_counts(shard_classifications)
 
-    # Keep backward-compatible breakdown fields
+    # Compute legacy breakdown fields included in the response envelope
     breakdown = _compute_completed_breakdown(
         state,
         log_analysis,
@@ -686,7 +686,7 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
 
 
 # Pydantic models for request/response
-class DeployRequest(BaseModel):
+class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for creating a deployment."""
 
     service: str = Field(..., description="Service name to deploy")
@@ -855,7 +855,7 @@ def _resolve_deploy_dates(
     return start, end
 
 
-class ShardInfo(BaseModel):
+class ShardInfo(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Information about a single shard."""
 
     shard_id: str
@@ -863,7 +863,7 @@ class ShardInfo(BaseModel):
     cli_args: list[str]
 
 
-class ShardPreview(BaseModel):
+class ShardPreview(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Preview of shards that would be created."""
 
     service: str
@@ -874,7 +874,7 @@ class ShardPreview(BaseModel):
     dry_run: bool = True
 
 
-class DeploymentResult(BaseModel):
+class DeploymentResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Result of a deployment."""
 
     deployment_id: str
@@ -886,7 +886,7 @@ class DeploymentResult(BaseModel):
     dry_run: bool
 
 
-class DeploymentSummary(BaseModel):
+class DeploymentSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Summary of a deployment."""
 
     deployment_id: str

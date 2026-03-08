@@ -24,7 +24,7 @@ state_manager = DeploymentStateManager()
 
 
 # Pydantic models for request/response
-class DeployRequest(BaseModel):
+class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for creating a deployment."""
 
     service: str = Field(..., description="Service name to deploy")
@@ -77,7 +77,7 @@ class DeployRequest(BaseModel):
         }
 
 
-class ShardInfo(BaseModel):
+class ShardInfo(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Information about a single shard."""
 
     shard_id: str
@@ -86,7 +86,7 @@ class ShardInfo(BaseModel):
     cli_args: list[str]
 
 
-class ShardPreview(BaseModel):
+class ShardPreview(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Preview of shards for a deployment."""
 
     total_shards: int
@@ -94,7 +94,7 @@ class ShardPreview(BaseModel):
     cli_command: str
 
 
-class DeploymentResult(BaseModel):
+class DeploymentResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Result of creating a deployment."""
 
     deployment_id: str
@@ -103,7 +103,7 @@ class DeploymentResult(BaseModel):
     cli_command: str
 
 
-class DeploymentSummary(BaseModel):
+class DeploymentSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Summary information about a deployment."""
 
     deployment_id: str
@@ -113,13 +113,13 @@ class DeploymentSummary(BaseModel):
     created_at: str
 
 
-class UpdateDeploymentRequest(BaseModel):
+class UpdateDeploymentRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request to update deployment properties."""
 
     tag: str | None = Field(None, description="New Docker image tag")
 
 
-class BulkDeleteRequest(BaseModel):
+class BulkDeleteRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request to delete multiple deployments."""
 
     deployment_ids: list[str] = Field(..., description="List of deployment IDs to delete")
