@@ -44,11 +44,6 @@ from .routes import (
     services,
 )
 
-# Configure logging for the main API process
-logging.basicConfig(
-    level=logging.INFO,
-    format="[API] %(asctime)s - %(levelname)s - %(name)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
