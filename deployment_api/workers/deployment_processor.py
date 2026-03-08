@@ -141,27 +141,15 @@ def process_deployments_batch(  # noqa: C901
                     return 0
                 vm_map_cpd = {}
                 try:
-                    # TODO(p1): migrate to UCI get_compute_client()
-                    from google.cloud import compute_v1
+                    from unified_cloud_interface import get_compute_engine_client
 
-                    inst_client = compute_v1.InstancesClient()
-                    agg_req = compute_v1.AggregatedListInstancesRequest(
-                        project=PROJECT_ID,
-                        filter=f"name:{service_name}-*",
-                    )
-
-                    def _zone_cpd(scope: str) -> str:
-                        if "zones/" in scope:
-                            return scope.split("zones/")[-1].split("/")[0]
-                        return scope.split("/")[-1] if scope else ""
-
-                    for zone_scope, resp in inst_client.aggregated_list(request=agg_req):
-                        z = _zone_cpd(str(zone_scope))
-                        for inst in resp.instances or []:
-                            vm_map_cpd[inst.name] = {
-                                "status": inst.status,
-                                "zone": z or None,
-                            }
+                    ce = get_compute_engine_client(project_id=PROJECT_ID)
+                    instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")
+                    for inst in instances:
+                        vm_map_cpd[inst["name"]] = {
+                            "status": inst["status"],
+                            "zone": inst.get("zone"),
+                        }
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug(
                         "[AUTO_SYNC] completed_pending_delete aggregatedList failed for %s: %s",
@@ -293,33 +281,22 @@ def process_deployments_batch(  # noqa: C901
             #    Use aggregatedList (1 API call) instead of per-shard get() calls
             vm_map: dict[str, object] = {}
             if compute_type == "vm":
-                # TODO(p1): migrate to UCI get_compute_client()
-                from google.cloud import compute_v1
+                from unified_cloud_interface import get_compute_engine_client
 
-                instances_client = compute_v1.InstancesClient()
                 service_name = cast(str, state.get("service") or "")
 
                 # Always fetch vm_map for VM type (needed for status + orphan cleanup)
                 if service_name:
                     try:
-                        agg_request = compute_v1.AggregatedListInstancesRequest(
-                            project=PROJECT_ID,
-                            filter=f"name:{service_name}-*",
+                        ce = get_compute_engine_client(project_id=PROJECT_ID)
+                        instances = ce.aggregated_list_instances(
+                            PROJECT_ID, f"name:{service_name}-*"
                         )
-
-                        def _extract_zone(scope: str) -> str:
-                            if "zones/" in scope:
-                                return scope.split("zones/")[-1].split("/")[0]
-                            return scope.split("/")[-1] if scope else ""
-
-                        agg_list = instances_client.aggregated_list(request=agg_request)
-                        for zone_scope, response in agg_list:
-                            zone = _extract_zone(str(zone_scope))
-                            for inst in response.instances or []:
-                                vm_map[inst.name] = {
-                                    "status": inst.status,
-                                    "zone": zone or None,
-                                }
+                        for inst in instances:
+                            vm_map[inst["name"]] = {
+                                "status": inst["status"],
+                                "zone": inst.get("zone"),
+                            }
                         logger.info(
                             "[AUTO_SYNC] aggregatedList found %s VMs for %s",
                             len(vm_map),
@@ -517,9 +494,9 @@ def _process_vm_health_and_status(  # noqa: C901
     vm_health_kills = []
     if vm_map:
         try:
-            from google.cloud import compute_v1  # TODO(p1): migrate to UCI get_compute_client()
+            from unified_cloud_interface import get_compute_engine_client
 
-            instances_client = compute_v1.InstancesClient()
+            ce_client = get_compute_engine_client(project_id=PROJECT_ID)
             oom_threshold = getattr(settings, "OOM_KILL_THRESHOLD", 5)
             startup_timeout = getattr(settings, "VM_STARTUP_TIMEOUT_SECONDS", 300)
 
@@ -553,14 +530,10 @@ def _process_vm_health_and_status(  # noqa: C901
                     continue
 
                 try:
-                    request = compute_v1.GetSerialPortOutputInstanceRequest(
-                        project=PROJECT_ID,
-                        zone=zone,
-                        instance=job_id,
-                        start=-8192,  # Last 8KB
+                    output_str = ce_client.get_serial_port_output(
+                        PROJECT_ID, zone, job_id, start=-8192
                     )
-                    output = instances_client.get_serial_port_output(request=request)
-                    serial_logs = output.contents or ""
+                    serial_logs = output_str
 
                     # Layer 1: OOM detection
                     oom_count = serial_logs.count("Out of memory: Killed process")

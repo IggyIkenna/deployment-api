@@ -100,38 +100,22 @@ def _refresh_live_cloud_run_status(state: object) -> int:  # noqa: C901
         return -1
 
     try:
-        from google.cloud import (  # TODO(p1): migrate to UCI get_run_client()
-            run_v2,
-        )
+        from unified_cloud_interface import get_compute_client
 
-        client = run_v2.ServicesClient()
-        parent = f"projects/{project_id}/locations/{region}"
-        name = f"{parent}/services/{service_name}"
-        client.get_service(name=name)  # Validate service exists
+        compute = get_compute_client(project_id=project_id)
+        revisions_list = compute.list_revisions(service_name, region)
 
-        # Check latest revision: list revisions and take the latest by create time
-        revisions_list = list(client.list_revisions(parent=name))
-
-        def _revision_time(r: object) -> float:
-            ct: object = getattr(r, "create_time", None)
-            if ct is None:
-                return 0.0
-            if hasattr(ct, "timestamp"):
-                return cast(float, ct.timestamp())
-            return 0.0
-
-        latest_raw = max(revisions_list, key=_revision_time) if revisions_list else None
-        latest: object = cast(object, latest_raw)
-
-        if not latest:
+        if not revisions_list:
             return 0
+
+        latest = max(revisions_list, key=lambda r: cast(float, r.get("create_time", 0.0)))
 
         # Revision conditions: type "Ready" with state CONDITION_SUCCEEDED = healthy
         ready = False
-        for cond in cast(list[object], getattr(latest, "conditions", []) or []):
-            type_val: object = getattr(cond, "type_", None) or getattr(cond, "type", None)
+        for cond in cast(list[object], latest.get("conditions", []) or []):
+            type_val = cond.get("type") if isinstance(cond, dict) else None
             if type_val == "Ready":
-                state_val: object = getattr(cond, "state", None)
+                state_val = cond.get("state") if isinstance(cond, dict) else None
                 if state_val is not None:
                     ready = "SUCCEEDED" in str(state_val).upper()
                 break

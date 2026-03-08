@@ -322,27 +322,17 @@ async def _auto_sync_running_deployments():  # noqa: C901
 
                     vm_map = {}
                     try:
-                        # TODO(p1): migrate to UCI get_compute_client()
-                        from google.cloud import compute_v1
+                        from unified_cloud_interface import get_compute_engine_client
 
-                        inst_client = compute_v1.InstancesClient()
-                        agg_req = compute_v1.AggregatedListInstancesRequest(
-                            project=PROJECT_ID,
-                            filter=f"name:{service_name}-*",
+                        ce = get_compute_engine_client(project_id=PROJECT_ID)
+                        instances = ce.aggregated_list_instances(
+                            PROJECT_ID, f"name:{service_name}-*"
                         )
-
-                        def _zone(scope: str) -> str:
-                            if "zones/" in scope:
-                                return scope.split("zones/")[-1].split("/")[0]
-                            return scope.split("/")[-1] if scope else ""
-
-                        for zone_scope, resp in inst_client.aggregated_list(request=agg_req):
-                            z = _zone(str(zone_scope))
-                            for inst in resp.instances or []:
-                                vm_map[inst.name] = {
-                                    "status": inst.status,
-                                    "zone": z or None,
-                                }
+                        for inst in instances:
+                            vm_map[inst["name"]] = {
+                                "status": inst["status"],
+                                "zone": inst.get("zone"),
+                            }
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.debug(
                             "[AUTO_SYNC] Orphan cleanup aggregatedList failed for %s: %s",

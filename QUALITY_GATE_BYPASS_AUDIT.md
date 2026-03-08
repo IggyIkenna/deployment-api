@@ -16,24 +16,24 @@ Files that approach or exceed the 900-line limit and require splitting in Phase 
 
 ## 2.2 Direct Cloud SDK Import Exceptions
 
-### GROUP A — MIGRATION_PENDING: APIs not yet in unified-cloud-interface
+### GROUP A — RESOLVED (2026-03-08): Migrated to unified-cloud-interface
 
-These files use `from google.cloud import` directly because `unified-cloud-interface` does not yet expose Compute Engine management (`compute_v1`) or Cloud Run management (`run_v2`) APIs. Once those surfaces are added to `unified-cloud-interface`, these call sites must be updated.
+| File                                             | Cloud API    | Resolution                                                                  |
+| ------------------------------------------------ | ------------ | --------------------------------------------------------------------------- |
+| `deployment_api/routes/deployment_state.py`      | `run_v2`     | Migrated to `get_compute_client().list_revisions()`                         |
+| `deployment_api/workers/auto_sync.py`            | `compute_v1` | Migrated to `get_compute_engine_client().aggregated_list_instances()`       |
+| `deployment_api/workers/deployment_processor.py` | `compute_v1` | Migrated to `get_compute_engine_client()` (aggregated_list + serial output) |
 
-| File                                             | Lines            | Cloud API                                             | Migration Path                                                |
-| ------------------------------------------------ | ---------------- | ----------------------------------------------------- | ------------------------------------------------------------- |
-| `deployment_api/routes/deployment_state.py`      | ~99              | `run_v2.ServicesClient` — Cloud Run revision status   | Add Cloud Run management surface to `unified-cloud-interface` |
-| `deployment_api/workers/auto_sync.py`            | ~308             | `compute_v1.InstancesClient` — VM instance list       | Add Compute Engine surface to `unified-cloud-interface`       |
-| `deployment_api/workers/deployment_processor.py` | ~110, ~266, ~469 | `compute_v1.InstancesClient` — VM instance management | Add Compute Engine surface to `unified-cloud-interface`       |
+### GROUP B — JUSTIFIED: Cloud Build (no UCI equivalent)
+
+UCI does not expose Cloud Build API. Deployment boundary requires triggers, build history, and run-build. Documented bypass.
+
+| File                                               | Cloud API       | Justification                                             |
+| -------------------------------------------------- | --------------- | --------------------------------------------------------- |
+| `deployment_api/routes/cloud_builds.py`            | `cloudbuild_v1` | Deployment Cloud Build boundary — no UCI CloudBuildClient |
+| `deployment_api/routes/service_status_checkers.py` | `cloudbuild_v1` | Same — deferred import for build status checks            |
 
 **Note:** `google.cloud.secretmanager` usage in `service_status.py` was replaced with `get_secret_client()` from `unified_cloud_interface` (fixed in this audit pass).
-
-### Migration Tracking
-
-| Item                                                     | Target                                                            | Owner          |
-| -------------------------------------------------------- | ----------------------------------------------------------------- | -------------- |
-| `deployment_state.py` — `run_v2`                         | Phase 2/3: add Cloud Run mgmt API to unified-cloud-interface      | deployment-api |
-| `auto_sync.py`, `deployment_processor.py` — `compute_v1` | Phase 2/3: add Compute Engine mgmt API to unified-cloud-interface | deployment-api |
 
 ---
 
@@ -53,9 +53,7 @@ Stdlib imports that were straightforward to move to module-top were fixed in thi
 
 `deployment_events.py:67` — `import redis` is deferred because `redis` is an optional dependency (not always installed). This is a deliberate pattern to allow the service to run without Redis.
 
-`compute_v1` and `run_v2` — deferred inside try/except blocks for optional cloud API availability.
-
-**Migration:** Phase 2/3 — make `redis` a hard dependency; move `compute_v1`/`run_v2` through unified-cloud-interface.
+`compute_v1` and `run_v2` — RESOLVED 2026-03-08: migrated to UCI `get_compute_client()` and `get_compute_engine_client()`.
 
 ### C — Missing Modules (unresolvable at import time)
 
