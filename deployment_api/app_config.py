@@ -13,10 +13,10 @@ from typing import cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from unified_config_interface import UnifiedCloudConfig
 
 from deployment_api import __version__ as _api_version
 from deployment_api import settings
+from deployment_api.auth import _auth_cfg as _cloud_cfg
 from deployment_api.utils.storage_client import get_storage_client as get_storage_client_with_pool
 from deployment_api.workers.auto_sync import (
     _auto_sync_running_deployments,
@@ -142,9 +142,9 @@ def create_app() -> FastAPI:
         description="API for managing and monitoring service deployments",
         version=_api_version,
         lifespan=lifespan,
-        docs_url="/docs" if UnifiedCloudConfig().environment != "production" else None,
-        redoc_url="/redoc" if UnifiedCloudConfig().environment != "production" else None,
-        openapi_url="/openapi.json" if UnifiedCloudConfig().environment != "production" else None,
+        docs_url="/docs" if _cloud_cfg.environment != "production" else None,
+        redoc_url="/redoc" if _cloud_cfg.environment != "production" else None,
+        openapi_url="/openapi.json" if _cloud_cfg.environment != "production" else None,
     )
 
     # Build CORS allowed origins from env vars

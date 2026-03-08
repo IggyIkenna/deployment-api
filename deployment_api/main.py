@@ -12,7 +12,6 @@ from typing import cast
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
-from unified_config_interface import UnifiedCloudConfig
 from unified_events_interface import setup_events
 from unified_trading_library import setup_tracing
 
@@ -25,7 +24,7 @@ setup_events(service_name="deployment-api", mode="live", sink="cloud_logging")
 setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version
-from deployment_api.auth import verify_api_key
+from deployment_api.auth import _auth_cfg, verify_api_key
 from deployment_api.health_routes import router as health_router
 from deployment_api.lifespan import lifespan
 from deployment_api.middleware import configure_middleware
@@ -53,7 +52,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
-_env = UnifiedCloudConfig().environment
+_env = _auth_cfg.environment
 app = FastAPI(
     title="Deployment Monitoring API",
     description="API for managing and monitoring service deployments",
