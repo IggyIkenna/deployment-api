@@ -38,10 +38,10 @@ async def infra_health() -> dict[str, object]:
     """
     try:
         from unified_cloud_interface import get_secret_client, get_storage_client
-        from unified_config_interface import UnifiedCloudConfig
 
-        config = UnifiedCloudConfig()
-        project_id: str = config.gcp_project_id or ""
+        from deployment_api.auth import _auth_cfg as _config
+
+        project_id: str = _config.gcp_project_id or ""
 
         checks: list[dict[str, object]] = []
         errors: list[str] = []
