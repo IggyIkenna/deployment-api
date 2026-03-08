@@ -141,9 +141,7 @@ class TestWriteDomainConfig:
         with (
             patch.object(_cm, "_make_config_store", return_value=store),
             patch.object(_cm, "_publish_domain_event"),
-            patch(
-                "unified_config_interface.domain_configs.schema_for_domain", return_value=schema_cls
-            ),
+            patch("unified_config_interface.schema_for_domain", return_value=schema_cls),
         ):
             result = asyncio.run(_cm.write_domain_config("instruments", self._make_write_request()))
 
@@ -163,9 +161,7 @@ class TestWriteDomainConfig:
 
         with (
             patch.object(_cm, "_make_config_store", return_value=store),
-            patch(
-                "unified_config_interface.domain_configs.schema_for_domain", return_value=schema_cls
-            ),
+            patch("unified_config_interface.schema_for_domain", return_value=schema_cls),
             pytest.raises(HTTPException) as exc,
         ):
             asyncio.run(_cm.write_domain_config("instruments", self._make_write_request()))
@@ -181,9 +177,7 @@ class TestWriteDomainConfig:
 
         with (
             patch.object(_cm, "_make_config_store", return_value=store),
-            patch(
-                "unified_config_interface.domain_configs.schema_for_domain", return_value=schema_cls
-            ),
+            patch("unified_config_interface.schema_for_domain", return_value=schema_cls),
             pytest.raises(HTTPException) as exc,
         ):
             asyncio.run(_cm.write_domain_config("instruments", self._make_write_request()))
@@ -204,9 +198,7 @@ class TestReadDomainConfig:
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
             sys.modules["unified_config_interface"].ConfigStoreError = _mock_config_store_error_cls
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             result = asyncio.run(_cm.read_domain_config("instruments"))
 
@@ -226,9 +218,7 @@ class TestReadDomainConfig:
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
             sys.modules["unified_config_interface"].ConfigStoreError = _mock_config_store_error_cls
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.read_domain_config("strategies"))
@@ -242,9 +232,7 @@ class TestReadDomainConfig:
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
             sys.modules["unified_config_interface"].ConfigStoreError = _mock_config_store_error_cls
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.read_domain_config("clients"))
@@ -310,9 +298,7 @@ class TestDiffDomainConfigVersions:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             result = asyncio.run(
                 _cm.diff_domain_config_versions(
@@ -333,9 +319,7 @@ class TestDiffDomainConfigVersions:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(
@@ -375,9 +359,7 @@ class TestRollbackDomainConfig:
             patch.object(_cm, "_publish_domain_event"),
         ):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             result = asyncio.run(_cm.rollback_domain_config("venues", "20260101T100000Z"))
 
@@ -391,9 +373,7 @@ class TestRollbackDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.rollback_domain_config("venues", "20991231T000000Z"))
@@ -413,9 +393,7 @@ class TestRollbackDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_config_interface.domain_configs"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.rollback_domain_config("venues", "20260101T100000Z"))

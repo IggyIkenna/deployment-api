@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import cast
 
 import yaml
-from unified_trading_library.core._env_bootstrap import get_env_copy
+from unified_trading_library import get_env_copy
 
 logger = logging.getLogger(__name__)
 

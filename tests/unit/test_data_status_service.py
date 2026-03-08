@@ -8,7 +8,9 @@ import importlib.util
 import os
 
 # Load directly to avoid circular import via services/__init__.py
-_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py")
+_path = os.path.join(
+    os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py"
+)
 _spec = importlib.util.spec_from_file_location("_dss_standalone", os.path.abspath(_path))
 assert _spec is not None and _spec.loader is not None
 _dss_mod = importlib.util.module_from_spec(_spec)
