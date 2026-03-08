@@ -112,7 +112,7 @@ async def calculate_shards(
                 f"deployment-service /api/v1/shards/calculate returned HTTP {resp.status}: {body}"
             )
         data: dict[str, object] = await resp.json()
-        shards: list[dict[str, object]] = data.get("shards", [])
+        shards: list[dict[str, object]] = list(data.get("shards") or [])
         return shards
 
 

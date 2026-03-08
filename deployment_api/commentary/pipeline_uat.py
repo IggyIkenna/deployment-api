@@ -50,7 +50,7 @@ Guidelines:
 """
 
 
-class PipelineUATRequest(BaseModel):
+class PipelineUATRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for the pipeline UAT endpoint."""
 
     job_name: str
@@ -59,7 +59,7 @@ class PipelineUATRequest(BaseModel):
     project_id: str = ""
 
 
-class PipelineUATResult(BaseModel):
+class PipelineUATResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Result returned by the pipeline UAT endpoint."""
 
     run_id: str

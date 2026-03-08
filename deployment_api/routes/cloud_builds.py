@@ -211,14 +211,14 @@ ALL_REPOS_WITH_TRIGGERS = (
 )
 
 
-class TriggerBuildRequest(BaseModel):
+class TriggerBuildRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request to trigger a Cloud Build."""
 
     service: str = Field(..., description="Service name (e.g., 'market-tick-data-service')")
     branch: str = Field(default="main", description="Branch to build from")
 
 
-class TriggerBuildResponse(BaseModel):
+class TriggerBuildResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Response from triggering a Cloud Build."""
 
     success: bool
@@ -229,7 +229,7 @@ class TriggerBuildResponse(BaseModel):
     branch: str
 
 
-class BuildTriggerInfo(BaseModel):
+class BuildTriggerInfo(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Information about a Cloud Build trigger."""
 
     trigger_id: str
@@ -241,7 +241,7 @@ class BuildTriggerInfo(BaseModel):
     status: str = "unknown"  # active, disabled, unknown
 
 
-class BuildHistoryEntry(BaseModel):
+class BuildHistoryEntry(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """A single build history entry."""
 
     build_id: str
@@ -380,7 +380,7 @@ async def list_triggers(  # noqa: C901
                     {
                         "trigger_id": trigger.id,
                         "trigger_name": trigger.name,
-                        "service": repo_name,  # Keep "service" key for backward compatibility
+                        "service": repo_name,  # Legacy field name matching existing API consumers
                         "type": repo_type,  # "service", "library", or "infrastructure"
                         "github_repo": github_repo,
                         "branch_pattern": branch_pattern,

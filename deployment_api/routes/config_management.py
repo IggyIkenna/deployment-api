@@ -63,7 +63,7 @@ class _ConfigStoreProto(Protocol):
 # ─── Request / Response Models ────────────────────────────────────────────────
 
 
-class ConfigWriteRequest(BaseModel):
+class ConfigWriteRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for writing a new domain config version."""
 
     content: dict[str, object] = Field(description="Config content as a JSON object")
@@ -71,7 +71,7 @@ class ConfigWriteRequest(BaseModel):
     schema_version: str = Field(default="1.0", description="Schema version (semver)")
 
 
-class ConfigVersionEntry(BaseModel):
+class ConfigVersionEntry(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Single entry from the config version history."""
 
     path: str = Field(description="Storage path of this config version")
@@ -79,7 +79,7 @@ class ConfigVersionEntry(BaseModel):
     schema_version: str = Field(description="Schema version at time of write")
 
 
-class ConfigVersionResponse(BaseModel):
+class ConfigVersionResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Response for write/rollback operations."""
 
     domain: str
@@ -88,7 +88,7 @@ class ConfigVersionResponse(BaseModel):
     message: str
 
 
-class ConfigReadResponse(BaseModel):
+class ConfigReadResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Response for reading active config."""
 
     domain: str
@@ -96,7 +96,7 @@ class ConfigReadResponse(BaseModel):
     active_path: str | None
 
 
-class ConfigDiffResponse(BaseModel):
+class ConfigDiffResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Response for config diff operation."""
 
     domain: str

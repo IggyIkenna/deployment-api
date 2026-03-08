@@ -87,7 +87,7 @@ def _make_cache_key(
         "mode": mode,
     }
     key_str = json.dumps(key_data, sort_keys=True)
-    return hashlib.md5(key_str.encode()).hexdigest()
+    return hashlib.md5(key_str.encode(), usedforsecurity=False).hexdigest()
 
 
 def get_cached_result(
@@ -348,7 +348,7 @@ def _make_exec_cache_key(
         "end_date": end_date,
     }
     key_str = json.dumps(key_data, sort_keys=True)
-    return hashlib.md5(key_str.encode()).hexdigest()
+    return hashlib.md5(key_str.encode(), usedforsecurity=False).hexdigest()
 
 
 def get_exec_cached_result(

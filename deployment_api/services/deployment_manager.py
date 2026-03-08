@@ -265,8 +265,8 @@ class DeploymentManager:
         for shard in raw_shards:
             shard_index = shard.get("shard_index", 0)
             total_shards = shard.get("total_shards", len(raw_shards))
-            dimensions = shard.get("dimensions", {})
-            cli_command_raw: str = str(shard.get("cli_command", ""))
+            dimensions = shard.get("dimensions") or {}
+            cli_command_raw: str = str(shard.get("cli_command") or "")
             shard_dict: dict[str, object] = {
                 "shard_id": f"{deploy_request.service}-{shard_index}",
                 "shard_index": shard_index,
