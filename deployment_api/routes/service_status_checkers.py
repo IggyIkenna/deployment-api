@@ -351,11 +351,20 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             trigger_id = trigger_ids[service]
 
             # Query builds (client-side filtering - server-side filter has issues)
-            # Deferred import — no UCI CloudBuildClient abstraction yet.
-            # TODO(GH-BACKLOG): migrate to UCI when CloudBuildClient is available.
-            from google.cloud.devtools import cloudbuild_v1  # Deferred — Cloud Build boundary
+            # UCI CloudBuildClient routes client construction through UCI factory;
+            # request types (ListBuildsRequest) still use cloudbuild_v1 directly as
+            # they are GCP-specific types not yet abstracted by UCI.
+            from google.cloud.devtools import cloudbuild_v1  # Deferred — request types only
+            from unified_cloud_interface import get_cloud_build_client  # Deferred — UCI boundary
+            from unified_cloud_interface.providers.gcp_compute import (
+                GCPCloudBuildClient,  # Deferred — UCI boundary
+            )
 
-            client = cloudbuild_v1.CloudBuildClient()
+            _uci_cb = get_cloud_build_client(project_id=default_project_id)
+            if isinstance(_uci_cb, GCPCloudBuildClient):
+                client = _uci_cb._client()
+            else:
+                client = cloudbuild_v1.CloudBuildClient()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
 
             # Fetch recent builds without filter (API v1 filter syntax is problematic)
