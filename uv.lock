@@ -499,10 +499,10 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.0,<4.0.0" },
     { name = "redis", specifier = ">=5.0.0,<6.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
-    { name = "unified-cloud-interface", directory = "../unified-cloud-interface" },
-    { name = "unified-config-interface", directory = "../unified-config-interface" },
-    { name = "unified-events-interface", directory = "../unified-events-interface" },
-    { name = "unified-trading-library", directory = "../unified-trading-library" },
+    { name = "unified-cloud-interface", editable = "../unified-cloud-interface" },
+    { name = "unified-config-interface", editable = "../unified-config-interface" },
+    { name = "unified-events-interface", editable = "../unified-events-interface" },
+    { name = "unified-trading-library", editable = "../unified-trading-library" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0,<1.0.0" },
 ]
 provides-extras = ["dev"]
@@ -1900,8 +1900,8 @@ wheels = [
 
 [[package]]
 name = "unified-api-contracts"
-version = "0.1.97"
-source = { directory = "../unified-api-contracts" }
+version = "0.1.152"
+source = { editable = "../unified-api-contracts" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -1933,8 +1933,8 @@ provides-extras = ["schema-validation", "dev"]
 
 [[package]]
 name = "unified-cloud-interface"
-version = "0.11.21"
-source = { directory = "../unified-cloud-interface" }
+version = "0.11.35"
+source = { editable = "../unified-cloud-interface" }
 dependencies = [
     { name = "redis" },
 ]
@@ -1967,13 +1967,14 @@ requires-dist = [
     { name = "redis", specifier = ">=5.0.0,<6.0.0" },
     { name = "redis", marker = "extra == 'cache'", specifier = ">=5.0.0,<6.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
+    { name = "vcrpy", marker = "extra == 'dev'", specifier = ">=6.0.0,<7.0.0" },
 ]
 provides-extras = ["gcp", "aws", "cache", "dev"]
 
 [[package]]
 name = "unified-config-interface"
-version = "0.1.39"
-source = { directory = "../unified-config-interface" }
+version = "0.1.55"
+source = { editable = "../unified-config-interface" }
 dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -2000,15 +2001,15 @@ requires-dist = [
     { name = "python-dateutil", specifier = ">=2.8.2,<3.0.0" },
     { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
-    { name = "unified-cloud-interface", directory = "../unified-cloud-interface" },
-    { name = "unified-events-interface", directory = "../unified-events-interface" },
+    { name = "unified-cloud-interface", editable = "../unified-cloud-interface" },
+    { name = "unified-events-interface", editable = "../unified-events-interface" },
 ]
 provides-extras = ["aws", "dev"]
 
 [[package]]
 name = "unified-events-interface"
-version = "0.2.14"
-source = { directory = "../unified-events-interface" }
+version = "0.2.18"
+source = { editable = "../unified-events-interface" }
 
 [package.metadata]
 requires-dist = [
@@ -2027,8 +2028,8 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "unified-internal-contracts"
-version = "0.1.28"
-source = { directory = "../unified-internal-contracts" }
+version = "0.1.39"
+source = { editable = "../unified-internal-contracts" }
 dependencies = [
     { name = "pandas" },
     { name = "pydantic" },
@@ -2050,14 +2051,14 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0,<3.0.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.0,<4.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
-    { name = "unified-api-contracts", directory = "../unified-api-contracts" },
+    { name = "unified-api-contracts", editable = "../unified-api-contracts" },
 ]
 provides-extras = ["dev"]
 
 [[package]]
 name = "unified-trading-library"
-version = "0.3.101"
-source = { directory = "../unified-trading-library" }
+version = "0.3.129"
+source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "fsspec" },
     { name = "httpx" },
@@ -2110,13 +2111,13 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
-    { name = "unified-cloud-interface", extras = ["gcp"], marker = "extra == 'gcp'", directory = "../unified-cloud-interface" },
-    { name = "unified-cloud-interface", extras = ["gcp", "aws"], marker = "extra == 'all'", directory = "../unified-cloud-interface" },
-    { name = "unified-config-interface", marker = "extra == 'all'", directory = "../unified-config-interface" },
-    { name = "unified-config-interface", marker = "extra == 'split-libraries'", directory = "../unified-config-interface" },
-    { name = "unified-events-interface", marker = "extra == 'all'", directory = "../unified-events-interface" },
-    { name = "unified-events-interface", marker = "extra == 'split-libraries'", directory = "../unified-events-interface" },
-    { name = "unified-internal-contracts", directory = "../unified-internal-contracts" },
+    { name = "unified-cloud-interface", extras = ["gcp"], marker = "extra == 'gcp'", editable = "../unified-cloud-interface" },
+    { name = "unified-cloud-interface", extras = ["gcp", "aws"], marker = "extra == 'all'", editable = "../unified-cloud-interface" },
+    { name = "unified-config-interface", marker = "extra == 'all'", editable = "../unified-config-interface" },
+    { name = "unified-config-interface", marker = "extra == 'split-libraries'", editable = "../unified-config-interface" },
+    { name = "unified-events-interface", marker = "extra == 'all'", editable = "../unified-events-interface" },
+    { name = "unified-events-interface", marker = "extra == 'split-libraries'", editable = "../unified-events-interface" },
+    { name = "unified-internal-contracts", editable = "../unified-internal-contracts" },
     { name = "web3", specifier = ">=6.0.0,<7.0.0" },
 ]
 provides-extras = ["aws", "gcp", "databento", "observability", "split-libraries", "all", "dev"]

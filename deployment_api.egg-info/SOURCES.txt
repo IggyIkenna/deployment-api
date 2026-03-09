@@ -11,6 +11,7 @@ deployment_api/gunicorn.conf.py
 deployment_api/health_routes.py
 deployment_api/lifespan.py
 deployment_api/main.py
+deployment_api/metrics.py
 deployment_api/middleware.py
 deployment_api/settings.py
 deployment_api.egg-info/PKG-INFO
