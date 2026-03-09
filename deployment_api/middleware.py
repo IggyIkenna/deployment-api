@@ -4,10 +4,40 @@ Middleware configuration for the FastAPI application.
 Handles CORS setup and other middleware configurations.
 """
 
+import time
+from collections.abc import Awaitable, Callable
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from deployment_api import settings
+from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
+
+_RequestResponseEndpoint = Callable[[Request], Awaitable[Response]]
+
+
+class PrometheusMiddleware(BaseHTTPMiddleware):
+    """ASGI middleware that records request counts and latency into Prometheus metrics.
+
+    Uses the existing RECORDS_PROCESSED Counter and PROCESSING_LATENCY Histogram
+    from deployment_api.metrics — no additional Prometheus dependencies required.
+    """
+
+    def __init__(self, app: FastAPI, service_name: str = "deployment-api") -> None:
+        super().__init__(app)
+        self.service_name = service_name
+
+    async def dispatch(self, request: Request, call_next: _RequestResponseEndpoint) -> Response:
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+        status = "success" if response.status_code < 500 else "error"
+        RECORDS_PROCESSED.labels(status=status).inc()
+        PROCESSING_LATENCY.observe(duration)
+        return response
 
 
 def configure_middleware(app: FastAPI) -> None:

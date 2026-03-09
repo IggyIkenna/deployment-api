@@ -75,16 +75,16 @@ class CacheBackend:
     """Abstract cache backend interface."""
 
     async def get(self, key: str) -> object | None:
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__.__name__} does not implement get()")
 
     async def set(self, key: str, value: object, ttl: int) -> None:
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__.__name__} does not implement set()")
 
     async def delete(self, key: str) -> None:
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__.__name__} does not implement delete()")
 
     async def clear_pattern(self, pattern: str) -> int:
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__.__name__} does not implement clear_pattern()")
 
 
 class InMemoryCache(CacheBackend):
