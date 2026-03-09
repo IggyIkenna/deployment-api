@@ -25,6 +25,7 @@ else:
 DISABLE_AUTH: bool = _disable_auth_guarded
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+service_token_header = APIKeyHeader(name="X-Service-Token", auto_error=False)
 
 
 async def verify_api_key(
@@ -53,3 +54,32 @@ async def verify_api_key(
         raise HTTPException(status_code=401, detail="Invalid API key")
     logger.info("Authentication successful: auth_type=api_key")
     return api_key
+
+
+async def verify_service_token(
+    service_token: str | None = Security(service_token_header),
+) -> str:
+    """Validate X-Service-Token header for service-to-service calls.
+
+    Internal endpoints called by peer services should depend on this function.
+    In dev/test mode (DISABLE_AUTH=true) all S2S calls are allowed.
+    """
+    if DISABLE_AUTH:
+        return "dev-mode"
+    if not service_token:
+        log_event(
+            "AUTH_FAILURE",
+            severity="WARNING",
+            details={"auth_type": "service_token", "reason": "missing_token"},
+        )
+        raise HTTPException(status_code=401, detail="Missing service token")
+    expected_token = getattr(_auth_cfg, "service_token", None)
+    if not expected_token or service_token != expected_token:
+        log_event(
+            "AUTH_FAILURE",
+            severity="WARNING",
+            details={"auth_type": "service_token", "reason": "invalid_token"},
+        )
+        raise HTTPException(status_code=403, detail="Invalid service token")
+    logger.info("Authentication successful: auth_type=service_token")
+    return service_token
