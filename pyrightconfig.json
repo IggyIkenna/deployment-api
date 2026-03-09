@@ -1,7 +1,9 @@
 {
   "pythonVersion": "3.13",
   "typeCheckingMode": "strict",
-  "include": ["deployment_api"],
+  "include": [
+    "deployment_api"
+  ],
   "reportAny": "error",
   "reportMissingTypeStubs": false,
   "reportUnknownMemberType": "error",
@@ -13,5 +15,8 @@
     "../unified-config-interface",
     "../unified-events-interface",
     "../unified-trading-library"
+  ],
+  "exclude": [
+    "tests"
   ]
 }
