@@ -157,9 +157,9 @@ if [ "$RUN_TESTS" = true ]; then
     [[ -n "$DUP" ]] && { log_fail "Duplicate test files — expand existing files instead:"; echo "$DUP"; exit 1; }
     log_success "No duplicate test files"
 
-    # @pytest.mark.skip must have a reason comment on the preceding line
+    # @pytest.mark.skip/skipif must have '# reason: ...' on the preceding line
     SKIP_NO_REASON=$(rg "@pytest\.mark\.skip" --type py tests/ -B 1 2>/dev/null \
-        | grep -v "# reason:\|# noqa\|^--" | grep "@pytest\.mark\.skip" || :)
+        | grep -v '^--$' | paste - - | grep -v "# reason:\|# noqa" | cut -f2 | grep "@pytest\.mark\.skip" || :)
     [[ -n "$SKIP_NO_REASON" ]] && { log_fail "pytest.mark.skip without reason comment — add '# reason: ...' above"; echo "$SKIP_NO_REASON" | head -3; exit 1; }
     log_success "All pytest.mark.skip have reason comments"
 fi
@@ -270,9 +270,9 @@ rg "central-element-323112" tests/ 2>/dev/null \
 rg "central-element-323112" --type py --glob "!tests/**" "$SOURCE_DIR/" 2>/dev/null \
     && { log_fail "Hardcoded project ID in production — use config.gcp_project_id"; ((V++)); } || log_success "No hardcoded project ID in production"
 
-# GCP_PROJECT_ID is legacy — only GCP_PROJECT_ID is canonical
-rg "GCP_PROJECT_ID" --type py --glob "!tests/**" --glob "!**/config.py" "$SOURCE_DIR/" 2>/dev/null \
-    && { log_fail "Use GCP_PROJECT_ID not GCP_PROJECT_ID (except config.py backward compat)"; ((V++)); } || log_success "No GCP_PROJECT_ID usage"
+# Project ID — use GCP_PROJECT_ID only; banned: GOOGLE_CLOUD_PROJECT, GCP_PROJECT (without _ID)
+BAD_PROJECT=$(rg "GOOGLE_CLOUD_PROJECT|GCP_PROJECT(?!_ID)" --type py --glob "!tests/**" "$SOURCE_DIR/" 2>/dev/null || :)
+[[ -n "$BAD_PROJECT" ]] && { log_fail "Use GCP_PROJECT_ID; banned: GOOGLE_CLOUD_PROJECT, GCP_PROJECT"; echo "$BAD_PROJECT" | head -3; ((V++)); } || log_success "Project ID uses GCP_PROJECT_ID"
 
 # GCP auth: tests must use google.auth.default() — never pytest.skip for missing credential file
 # Acceptable: pytest.skip inside _skip_integration_without_creds autouse fixture (integration marker pattern)
@@ -287,9 +287,9 @@ DOMAIN_FROM_UCS=$(rg 'from unified_trading_library import.*(market_category|Doma
     --type py "$SOURCE_DIR/" 2>/dev/null || :)
 [[ -n "$DOMAIN_FROM_UCS" ]] && { log_fail "Service imports domain symbols from UCS — use unified_domain_client instead"; echo "$DOMAIN_FROM_UCS" | head -5; ((V++)); } || log_success "No domain imports from UCS"
 
-# setup_events/setup_service uses sink= in production
+# setup_events/setup_service uses sink= in production (exclude def lines — UEI defines setup_events)
 SETUP_NO_SINK=$(rg 'setup_(events|service)\s*\(' --type py \
-    --glob "!tests/**" "$SOURCE_DIR/" 2>/dev/null | grep -v 'sink=' || :)
+    --glob "!tests/**" "$SOURCE_DIR/" 2>/dev/null | grep -v 'sink=' | grep -v "def setup_events\|def setup_service" || :)
 [[ -n "$SETUP_NO_SINK" ]] && { log_fail "setup_events()/setup_service() called without sink= in production code"; echo "$SETUP_NO_SINK" | head -5; ((V++)); } || log_success "setup_service() uses sink= in all production call sites"
 
 BAD_AUTH_SKIP=$(rg 'pytest\.skip.*[Cc]redential|pytest\.skip.*GOOGLE_APPLICATION_CREDENTIALS|if not.*gcp_credentials.*pytest\.skip\|if not.*cred_file.*pytest\.skip' \
@@ -428,7 +428,7 @@ fi
 
 # CI/CD hygiene: ||true bypasses in quality gate scripts
 BYPASS=$(rg "\|\|true|\|\| true" --glob "**/quality-gates.sh" --glob "**/quality-gates.yml" . 2>/dev/null \
-    | grep -v "^#\|zombies\|pyright\|cleanup" || :)
+    | grep -v "BYPASS —\|fix the root cause\|zombies\|pyright\|cleanup" || :)
 [[ -n "$BYPASS" ]] && { log_fail "||true bypass in quality gates — fix the root cause"; echo "$BYPASS" | head -3; ((V++)); } || log_success "No ||true quality gate bypasses"
 
 # ============================================================
