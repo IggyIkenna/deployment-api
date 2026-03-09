@@ -10,7 +10,7 @@ from typing import cast
 from fastapi import HTTPException
 
 from deployment_api.clients import deployment_service_client as _ds_client
-from deployment_api.settings import GCP_PROJECT_ID as _PID
+from deployment_api.settings import gcp_project_id as _pid
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Helper: build bucket name from prefix, category, and project ID
 def _bucket(prefix: str, category: str) -> str:
     """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""
-    return f"{prefix}-{category.lower()}-{_PID}"
+    return f"{prefix}-{category.lower()}-{_pid}"
 
 
 async def _run_data_status_cli(

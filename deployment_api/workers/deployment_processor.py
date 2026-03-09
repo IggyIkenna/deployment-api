@@ -53,7 +53,7 @@ def _cancel_vm_jobs_sync(
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = settings.GCP_PROJECT_ID
+PROJECT_ID = settings.gcp_project_id
 STATE_BUCKET = settings.STATE_BUCKET
 DEFAULT_MAX_CONCURRENT = settings.DEFAULT_MAX_CONCURRENT
 DEPLOYMENT_ENV = settings.DEPLOYMENT_ENV

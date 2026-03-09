@@ -48,7 +48,7 @@ class DeploymentManager:
     def __init__(self) -> None:
         """Initialize the deployment manager."""
         self.default_region = _settings.GCS_REGION or "asia-northeast1"
-        self.default_project_id = _settings.GCP_PROJECT_ID
+        self.default_project_id = _settings.gcp_project_id
         self.default_max_concurrent = 100
 
     def validate_deployment_request(

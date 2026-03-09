@@ -24,7 +24,7 @@ from deployment_api.utils.storage_client import get_storage_client as get_storag
 logger = logging.getLogger(__name__)
 
 # Auto-sync configuration (from centralized settings)
-PROJECT_ID = settings.GCP_PROJECT_ID
+PROJECT_ID = settings.gcp_project_id
 STATE_BUCKET = settings.STATE_BUCKET
 DEFAULT_MAX_CONCURRENT = settings.DEFAULT_MAX_CONCURRENT
 SYNC_INTERVAL = settings.AUTO_SYNC_INTERVAL_SECONDS

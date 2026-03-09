@@ -17,10 +17,10 @@ from typing import TypedDict, cast
 
 from github import Github
 
-from deployment_api.settings import GCP_PROJECT_ID as DEFAULT_PROJECT_ID
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import GITHUB_ORG
 from deployment_api.settings import STATE_BUCKET as DEFAULT_STATE_BUCKET
+from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.deployment_state_reader import (
     list_deployments as _list_deployments_from_gcs,
 )
@@ -31,7 +31,7 @@ from .service_status_cache import load_gcs_cache, save_gcs_cache
 logger = logging.getLogger(__name__)
 
 # Service to GCS bucket mapping (constructed from project ID)
-_pid = DEFAULT_PROJECT_ID
+_pid = default_project_id
 SERVICE_OUTPUT_BUCKETS = {
     "instruments-service": {
         "CEFI": f"instruments-store-cefi-{_pid}",
@@ -236,7 +236,7 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
 
             deployments = _list_deployments_from_gcs(
                 bucket_name=DEFAULT_STATE_BUCKET,
-                project_id=DEFAULT_PROJECT_ID,
+                project_id=default_project_id,
                 service=service,
                 deployment_env=_s.DEPLOYMENT_ENV,
                 limit=1,
@@ -356,7 +356,7 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             from google.cloud.devtools import cloudbuild_v1  # Deferred — Cloud Build boundary
 
             client = cloudbuild_v1.CloudBuildClient()
-            parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
+            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
 
             # Fetch recent builds without filter (API v1 filter syntax is problematic)
             request = cloudbuild_v1.ListBuildsRequest(
