@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Required, TypedDict, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
+from unified_cloud_interface import get_cloud_build_client
 from unified_trading_library import __version__ as uts_version
 
 from deployment_api.settings import (
@@ -39,11 +40,39 @@ logger = logging.getLogger(__name__)
 
 
 def _cloudbuild_v1():
-    # TODO(GH-BACKLOG): migrate to UCI CloudBuildClient when abstraction is available.
-    """Deferred cloudbuild_v1 import — no UCI CloudBuildClient abstraction yet."""
+    """Deferred cloudbuild_v1 import — used for request/response type construction only.
+
+    The Cloud Build *client* is obtained via UCI ``get_cloud_build_client()``.
+    This helper provides the request-builder namespace (ListBuildTriggersRequest,
+    ListBuildsRequest, RunBuildTriggerRequest, etc.) which are GCP-specific types
+    not yet abstracted by UCI.
+    """
     from google.cloud.devtools import cloudbuild_v1  # Deferred — deployment Cloud Build boundary
 
     return cloudbuild_v1
+
+
+def _get_gcp_build_client():
+    """Return the underlying GCP CloudBuildClient via UCI factory.
+
+    Uses ``unified_cloud_interface.get_cloud_build_client()`` so that credentials
+    and project-ID resolution go through UCI rather than constructing the client
+    directly.  The ``._client()`` call unwraps to the native
+    ``google.cloud.devtools.cloudbuild_v1.CloudBuildClient`` needed by the
+    request-builder helpers in this module.
+    """
+    from unified_cloud_interface.providers.gcp_compute import (
+        GCPCloudBuildClient,  # Deferred — UCI boundary
+    )
+
+    uci_client = get_cloud_build_client(project_id=default_project_id)
+    # GCPCloudBuildClient exposes ._client() to get the native google client.
+    # This is intentional — request types (ListBuildTriggersRequest etc.) are
+    # still constructed using the cloudbuild_v1 module directly.
+    if isinstance(uci_client, GCPCloudBuildClient):
+        return uci_client._client()
+    # Fallback: direct construction (should not be reached in production)
+    return _cloudbuild_v1().CloudBuildClient()
 
 
 def _build_op_meta_cls():
@@ -315,7 +344,7 @@ async def list_triggers(  # noqa: C901
     async def fetch_triggers():  # noqa: C901
         def _list_triggers_sync() -> list[TriggerDict]:  # noqa: C901
             _cb = _cloudbuild_v1()
-            client = _cb.CloudBuildClient()
+            client = _get_gcp_build_client()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
 
             request = _cb.ListBuildTriggersRequest(
@@ -449,7 +478,7 @@ async def _get_recent_builds_for_triggers(  # noqa: C901
 
         def _fetch_all_sync() -> dict[str, BuildInfoDict]:
             _cb = _cloudbuild_v1()
-            client = _cb.CloudBuildClient()
+            client = _get_gcp_build_client()
             results = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent
@@ -519,7 +548,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
         ) -> RecentBuildDict | None:
             """Find a build for this trigger that started after the given time."""
             _cb = _cloudbuild_v1()
-            client = _cb.CloudBuildClient()
+            client = _get_gcp_build_client()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             builds_request = _cb.ListBuildsRequest(
                 parent=parent,
@@ -538,7 +567,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
 
         def _run_trigger_sync() -> TriggerRunResultDict:  # noqa: C901
             _cb = _cloudbuild_v1()
-            client = _cb.CloudBuildClient()
+            client = _get_gcp_build_client()
 
             # Get trigger ID first (needed for fallback query)
             trigger_id = _get_trigger_id(client)
@@ -705,7 +734,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
 
         def _get_history_sync() -> list[BuildInfoDict]:
             _cb = _cloudbuild_v1()
-            client = _cb.CloudBuildClient()
+            client = _get_gcp_build_client()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
 
             # Try cached trigger ID first (avoids re-listing all triggers)

@@ -12,7 +12,7 @@ repos:
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
-# Ruff - Fast Python linter AND formatter
+  # Ruff - Fast Python linter AND formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
     hooks:
@@ -24,7 +24,7 @@ repos:
 
   # Basic file checks
 
-# Prettier - TypeScript/JSON/Markdown formatter
+  # Prettier - TypeScript/JSON/Markdown formatter
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v4.0.0-alpha.8
     hooks:
