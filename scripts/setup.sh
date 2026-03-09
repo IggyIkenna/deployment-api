@@ -34,7 +34,7 @@
 #    3. Bootstrap uv (the only pip install allowed; must run before venv creation)
 #    4. Create .venv if missing or version mismatch (uv venv)
 #    5. Activate .venv (source .venv/bin/activate)
-#    6. Run uv lock if pyproject.toml changed (skipped if uv.lock is current)
+#    6. Run uv lock (always — timestamp skip was insufficient; sibling bumps don't touch pyproject.toml)
 #    7. Install local path dependencies from workspace-manifest.json (SSOT)
 #       Reads unified-trading-pm/workspace-manifest.json; installs sibling repos
 #       Installs jq automatically (apt/brew) if needed; exits 1 if jq unavailable
@@ -54,7 +54,7 @@
 # Idempotency:
 #   - UI:  node_modules skipped if package.json not newer than node_modules/
 #   - .venv creation: skipped if .venv/ exists with correct Python version
-#   - uv lock: skipped if uv.lock is newer than pyproject.toml
+#   - uv lock: always runs (sibling version bumps don't update pyproject.toml timestamps)
 #   - Dep install: skipped if .setup-stamp is newer than pyproject.toml + uv.lock
 #   - Each step prints [SKIP] or [OK], never re-does work unnecessarily
 #   - --force bypasses all skip checks and reinstalls from scratch
@@ -344,9 +344,10 @@ elif [ "$CHECK_ONLY" = true ]; then
     [ -f "uv.lock" ] && log_ok "uv.lock present" || log_warn "uv.lock missing"
 elif [ ! -f "pyproject.toml" ]; then
     log_skip "No pyproject.toml"
-elif [ -f "uv.lock" ] && [ "uv.lock" -nt "pyproject.toml" ] && [ "$FORCE" != true ]; then
-    log_skip "uv.lock is current (newer than pyproject.toml)"
 else
+    # Always run uv lock — the timestamp check (uv.lock newer than pyproject.toml) is
+    # insufficient: sibling workspace package version bumps don't touch THIS repo's
+    # pyproject.toml, so the lock silently goes stale and uv falls back to PyPI wheels.
     uv lock 2>/dev/null && log_ok "uv.lock synced" || log_warn "uv lock failed (non-fatal)"
 fi
 
