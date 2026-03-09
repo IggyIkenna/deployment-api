@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import cast
 
 from fastapi import APIRouter, Depends, FastAPI
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from unified_events_interface import setup_events
 from unified_trading_library import setup_tracing
 
-# TODO(GH-BACKLOG): PrometheusMiddleware and get_metrics_response are not yet implemented in
-# unified_trading_library. Re-enable once available.
-# from unified_trading_library import PrometheusMiddleware, get_metrics_response
+from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED  # noqa: F401
 
 # Event logging for UTD v2 observability (before any log_event)
 setup_events(service_name="deployment-api", mode="live", sink="cloud_logging")
@@ -93,11 +93,10 @@ app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 
 
-@app.get("/metrics")
-async def metrics() -> object:
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
     """Prometheus metrics endpoint."""
-    # TODO: Return real Prometheus metrics once PrometheusMiddleware is available in unified_trading_library.  # noqa: E501
-    return {"status": "metrics not yet available"}
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # Mount static files if UI dist exists (production mode)
