@@ -27,6 +27,12 @@ async def root():
     return {"status": "ok", "message": "Deployment Monitoring API"}
 
 
+@router.get("/health")
+async def health() -> dict[str, str]:
+    """Standard Cloud Run liveness probe."""
+    return {"status": "ok", "service": "deployment-api"}
+
+
 @router.get("/api/health")
 async def health_check():
     """Detailed health check. Includes GCS FUSE status for UI display."""
@@ -38,6 +44,12 @@ async def health_check():
         "config_dir": None,  # Will be set by main app
         "gcs_fuse": get_gcs_fuse_status(),
     }
+
+
+@router.get("/readiness")
+async def readiness() -> dict[str, str]:
+    """Standard Cloud Run readiness probe."""
+    return {"status": "ready", "service": "deployment-api"}
 
 
 @router.get("/api/readiness")
