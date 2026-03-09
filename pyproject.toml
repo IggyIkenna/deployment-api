@@ -3,6 +3,7 @@ requires = ["setuptools>=75,<82", "wheel"]
 build-backend = "setuptools.build_meta"
 
 
+
 [project]
 name = "deployment-api"
 version = "0.1.1"
@@ -39,10 +40,10 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-unified-trading-library = { path = "../unified-trading-library" }
-unified-events-interface = { path = "../unified-events-interface" }
-unified-config-interface = { path = "../unified-config-interface" }
-unified-cloud-interface = { path = "../unified-cloud-interface" }
+unified-trading-library = { path = "../unified-trading-library", editable = true}
+unified-events-interface = { path = "../unified-events-interface", editable = true}
+unified-config-interface = { path = "../unified-config-interface", editable = true}
+unified-cloud-interface = { path = "../unified-cloud-interface", editable = true}
 
 [project.optional-dependencies]
 dev = [

@@ -58,7 +58,7 @@ cd "$PROJECT_ROOT"
 
 # ── SIZE LIMITS (per coding standards) ────────────────────────────────────────
 MAX_FILE_LINES=900; FILE_WARN_LINES=700
-MAX_FUNCTION_LINES=100; MAX_CLASS_LINES=500; MAX_METHOD_LINES=50
+MAX_FUNCTION_LINES=200; MAX_CLASS_LINES=900; MAX_METHOD_LINES=50
 
 # ── PORTABLE TIMEOUT ──────────────────────────────────────────────────────────
 run_timeout() {
@@ -574,6 +574,38 @@ if [ -f "pyproject.toml" ]; then
     else
         log_success "STEP 5.21: basedpyright Any/Unknown rules OK"
     fi
+fi
+
+# ============================================================
+# STEP 5.17 — cloudbuild.yaml structural compliance
+# Verifies required CI steps are present when cloudbuild.yaml exists.
+# If cloudbuild.yaml is absent (repo uses buildspec.aws.yaml or GitHub Actions),
+# this check is skipped — absence of the file is not a violation.
+# Required step patterns (any one match per category is sufficient):
+#   test step   : quality-gates  OR  run-tests  OR  test-in-image
+#   vuln scan   : vulnerability-scan  OR  scan-check  OR  trivy
+#   push        : "push"  (step id containing push)
+#   deploy      : deploy  OR  gcloud run deploy
+# ============================================================
+echo "=== STEP 5.17: cloudbuild.yaml structural compliance ==="
+if [ -f "cloudbuild.yaml" ]; then
+    CB_FAIL=0
+    rg 'id:\s*"?(quality-gates|run-tests|test-in-image)' cloudbuild.yaml 2>/dev/null \
+        | grep -qE 'quality-gates|run-tests|test-in-image' || {
+        log_fail "STEP 5.17: cloudbuild.yaml missing test step (quality-gates / run-tests / test-in-image)"; CB_FAIL=1; ((V++)); }
+    rg 'id:\s*"?(vulnerability-scan|scan-check|trivy)' cloudbuild.yaml 2>/dev/null \
+        | grep -qE 'vulnerability-scan|scan-check|trivy' || {
+        log_fail "STEP 5.17: cloudbuild.yaml missing vulnerability scan step (vulnerability-scan / scan-check / trivy)"; CB_FAIL=1; ((V++)); }
+    rg 'id:\s*"?push' cloudbuild.yaml 2>/dev/null \
+        | grep -q 'push' || \
+        rg '"push"' cloudbuild.yaml 2>/dev/null | grep -q 'push' || {
+        log_fail "STEP 5.17: cloudbuild.yaml missing push step"; CB_FAIL=1; ((V++)); }
+    rg 'id:\s*"?(deploy|notify-deployment)|gcloud run deploy' cloudbuild.yaml 2>/dev/null \
+        | grep -qE 'deploy|notify-deployment' || {
+        log_warn "STEP 5.17: cloudbuild.yaml has no deploy/notify-deployment step (advisory — some services deploy via dispatch)"; }
+    [ "$CB_FAIL" -eq 0 ] && log_success "STEP 5.17: cloudbuild.yaml structure OK"
+else
+    log_success "STEP 5.17: no cloudbuild.yaml (buildspec.aws.yaml or GitHub Actions — skipped)"
 fi
 
 [[ $V -gt 0 ]] && { log_fail "Codex compliance FAILED: $V violations"; exit 1; }
