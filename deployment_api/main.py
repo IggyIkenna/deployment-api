@@ -27,7 +27,11 @@ from deployment_api import __version__ as _api_version
 from deployment_api.auth import _auth_cfg, verify_api_key
 from deployment_api.health_routes import router as health_router
 from deployment_api.lifespan import lifespan
-from deployment_api.middleware import PrometheusMiddleware, configure_middleware
+from deployment_api.middleware import (
+    CorrelationIdMiddleware,
+    PrometheusMiddleware,
+    configure_middleware,
+)
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
@@ -62,6 +66,7 @@ app = FastAPI(
 configure_middleware(app)
 
 app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
+app.add_middleware(CorrelationIdMiddleware)
 
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
