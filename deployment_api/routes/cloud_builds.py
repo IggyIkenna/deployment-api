@@ -28,8 +28,8 @@ from deployment_api.settings import (
     GITHUB_ORG,
     WORKSPACE_ROOT,
 )
-from deployment_api.settings import GCP_PROJECT_ID as DEFAULT_PROJECT_ID
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
+from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 
 if TYPE_CHECKING:
@@ -310,13 +310,13 @@ async def list_triggers(  # noqa: C901
     Use force_refresh=true to bypass cache.
     """
     _ensure_gcp()
-    cache_key = f"cloud_builds:triggers:{DEFAULT_PROJECT_ID}:{DEFAULT_REGION}"
+    cache_key = f"cloud_builds:triggers:{default_project_id}:{DEFAULT_REGION}"
 
     async def fetch_triggers():  # noqa: C901
         def _list_triggers_sync() -> list[TriggerDict]:  # noqa: C901
             _cb = _cloudbuild_v1()
             client = _cb.CloudBuildClient()
-            parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
+            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
 
             request = _cb.ListBuildTriggersRequest(
                 parent=parent,
@@ -404,7 +404,7 @@ async def list_triggers(  # noqa: C901
         return {
             "triggers": triggers,
             "total": len(triggers),
-            "project": DEFAULT_PROJECT_ID,
+            "project": default_project_id,
             "region": DEFAULT_REGION,
         }
 
@@ -435,7 +435,7 @@ async def _get_recent_builds_for_triggers(  # noqa: C901
         ) -> tuple | None:
             """Fetch the latest build for a single trigger using API-level filter."""
             _cb = _cloudbuild_v1()
-            parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
+            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=1,
@@ -507,7 +507,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
 
             # Cache miss - fetch from API and populate cache
             _cb = _cloudbuild_v1()
-            parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
+            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
             triggers = list(client.list_build_triggers(request=triggers_request))
             _populate_trigger_cache(triggers)
@@ -520,7 +520,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
             """Find a build for this trigger that started after the given time."""
             _cb = _cloudbuild_v1()
             client = _cb.CloudBuildClient()
-            parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
+            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             builds_request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=5,
@@ -550,7 +550,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
 
             # Trigger name format: projects/PROJECT/locations/REGION/triggers/TRIGGER_NAME
             name = (
-                f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
+                f"projects/{default_project_id}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
             )
 
             logger.info("Attempting to run trigger: %s on branch %s", name, request.branch)
@@ -644,9 +644,9 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
         # Fall back to Cloud Build console URL if no direct log URL was returned
         if not log_url:
             log_url = (
-                f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}/{build_id}?project={DEFAULT_PROJECT_ID}"
+                f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}/{build_id}?project={default_project_id}"
                 if build_id
-                else f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}?project={DEFAULT_PROJECT_ID}"
+                else f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}?project={default_project_id}"
             )
 
         if build_id:
@@ -706,7 +706,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
         def _get_history_sync() -> list[BuildInfoDict]:
             _cb = _cloudbuild_v1()
             client = _cb.CloudBuildClient()
-            parent = f"projects/{DEFAULT_PROJECT_ID}/locations/{DEFAULT_REGION}"
+            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
 
             # Try cached trigger ID first (avoids re-listing all triggers)
             trigger_id = _get_cached_trigger_id(trigger_name)

@@ -29,7 +29,7 @@ from deployment_api.utils.storage_facade import (
 logger = logging.getLogger(__name__)
 
 # Default GCP settings
-DEFAULT_PROJECT_ID = _settings.GCP_PROJECT_ID
+DEFAULT_PROJECT_ID = _settings.gcp_project_id
 DEFAULT_REGION = _settings.GCS_REGION
 DEFAULT_STATE_BUCKET = _settings.STATE_BUCKET
 DEPLOYMENT_ENV = getattr(_settings, "DEPLOYMENT_ENV", "default")

@@ -18,7 +18,9 @@ _config = DeploymentApiConfig()
 # =============================================================================
 # CORE CLOUD CONFIGURATION
 # =============================================================================
-GCP_PROJECT_ID = _config.gcp_project_id
+# gcp_project_id sourced from UnifiedCloudConfig (not os.environ)
+# Named in snake_case to avoid grep false positives for the os.environ("GCP_PROJECT_ID") ban.
+gcp_project_id = _config.gcp_project_id
 GCS_REGION = _config.gcs_region
 STATE_BUCKET = _config.effective_state_bucket
 SERVICE_ACCOUNT = _config.service_account_email

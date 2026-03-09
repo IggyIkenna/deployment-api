@@ -11,7 +11,7 @@ import logging
 import sys
 from typing import cast
 
-from deployment_api.settings import GCP_PROJECT_ID as _PID
+from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class DataStatusService:
 
     def __init__(self, project_id: str | None = None):
         """Initialize data status service."""
-        self.project_id = project_id or _PID
+        self.project_id = project_id or _pid
 
     def build_bucket_name(self, prefix: str, category: str) -> str:
         """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""

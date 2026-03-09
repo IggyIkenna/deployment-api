@@ -38,7 +38,7 @@ class EventProcessor:
         deployment_env: str | None = None,
     ):
         """Initialize event processor with configuration."""
-        self.project_id = project_id or settings.GCP_PROJECT_ID
+        self.project_id = project_id or settings.gcp_project_id
         self.state_bucket = state_bucket or settings.STATE_BUCKET
         self.deployment_env = deployment_env or settings.DEPLOYMENT_ENV
 

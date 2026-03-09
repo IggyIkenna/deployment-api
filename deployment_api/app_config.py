@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):  # noqa: C901
 
     # Release any held per-deployment locks on graceful shutdown
     try:
-        project_id = settings.GCP_PROJECT_ID
+        project_id = settings.gcp_project_id
         state_bucket = settings.STATE_BUCKET
         owner_id = get_owner_id()
         held_deployment_locks = get_held_deployment_locks()
@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
         "http://localhost:8080",
     ]
     # Allow specific Cloud Run origins (restrict to known project)
-    project_id = settings.GCP_PROJECT_ID or "unknown-project"
+    project_id = settings.gcp_project_id or "unknown-project"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,

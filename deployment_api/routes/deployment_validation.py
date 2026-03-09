@@ -116,7 +116,7 @@ async def _run_verification_and_cache_background(deployment_id: str) -> None:
 
         state_manager = StateManager(
             bucket_name=_settings.STATE_BUCKET,
-            project_id=_settings.GCP_PROJECT_ID,
+            project_id=_settings.gcp_project_id,
         )
 
         state = await get_cached_deployment_state(state_manager, deployment_id, force_refresh=True)

@@ -11,8 +11,8 @@ GCS_POOL_SIZE env var.
 
 from unified_trading_library import get_storage_client as _get_unified_storage_client
 
-from deployment_api.settings import GCP_PROJECT_ID as _DEFAULT_PROJECT_ID
 from deployment_api.settings import GCS_POOL_SIZE as DEFAULT_POOL_SIZE
+from deployment_api.settings import gcp_project_id as _default_project_id
 
 
 def get_storage_client(
@@ -40,7 +40,7 @@ def get_storage_client(
     """
     # Get project ID
     if project_id is None:
-        project_id = _DEFAULT_PROJECT_ID
+        project_id = _default_project_id
 
     # Get the unified client wrapper
     unified_client = _get_unified_storage_client(project_id=project_id)

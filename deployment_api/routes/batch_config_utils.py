@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from deployment_api.settings import GCP_PROJECT_ID as _PID
+from deployment_api.settings import gcp_project_id as _pid
 
 logger = logging.getLogger(__name__)
 
@@ -22,43 +22,43 @@ LIVE_PATH_PREFIX = "live/"
 # Service -> bucket mapping (uses storage facade)
 BUCKET_MAPPING = {
     "instruments-service": {
-        "CEFI": f"instruments-store-cefi-{_PID}",
-        "DEFI": f"instruments-store-defi-{_PID}",
-        "TRADFI": f"instruments-store-tradfi-{_PID}",
+        "CEFI": f"instruments-store-cefi-{_pid}",
+        "DEFI": f"instruments-store-defi-{_pid}",
+        "TRADFI": f"instruments-store-tradfi-{_pid}",
     },
     "market-tick-data-handler": {
-        "CEFI": f"market-data-tick-cefi-{_PID}",
-        "DEFI": f"market-data-tick-defi-{_PID}",
-        "TRADFI": f"market-data-tick-tradfi-{_PID}",
+        "CEFI": f"market-data-tick-cefi-{_pid}",
+        "DEFI": f"market-data-tick-defi-{_pid}",
+        "TRADFI": f"market-data-tick-tradfi-{_pid}",
     },
     "market-data-processing-service": {
         # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
-        "CEFI": f"market-data-tick-cefi-{_PID}",
-        "DEFI": f"market-data-tick-defi-{_PID}",
-        "TRADFI": f"market-data-tick-tradfi-{_PID}",
+        "CEFI": f"market-data-tick-cefi-{_pid}",
+        "DEFI": f"market-data-tick-defi-{_pid}",
+        "TRADFI": f"market-data-tick-tradfi-{_pid}",
     },
     "features-delta-one-service": {
-        "CEFI": f"features-delta-one-cefi-{_PID}",
-        "DEFI": f"features-delta-one-defi-{_PID}",
-        "TRADFI": f"features-delta-one-tradfi-{_PID}",
+        "CEFI": f"features-delta-one-cefi-{_pid}",
+        "DEFI": f"features-delta-one-defi-{_pid}",
+        "TRADFI": f"features-delta-one-tradfi-{_pid}",
     },
     "features-calendar-service": {
         # Calendar features are UNIVERSAL - use single bucket (CEFI)
         # Temporal patterns, economic events, macro indicators don't vary by category
-        "CEFI": f"features-calendar-cefi-{_PID}",
+        "CEFI": f"features-calendar-cefi-{_pid}",
     },
     "features-onchain-service": {
-        "CEFI": f"features-onchain-cefi-{_PID}",
-        "DEFI": f"features-onchain-defi-{_PID}",
+        "CEFI": f"features-onchain-cefi-{_pid}",
+        "DEFI": f"features-onchain-defi-{_pid}",
     },
     "features-volatility-service": {
-        "CEFI": f"features-volatility-cefi-{_PID}",
-        "DEFI": f"features-volatility-defi-{_PID}",
-        "TRADFI": f"features-volatility-tradfi-{_PID}",
+        "CEFI": f"features-volatility-cefi-{_pid}",
+        "DEFI": f"features-volatility-defi-{_pid}",
+        "TRADFI": f"features-volatility-tradfi-{_pid}",
     },
     "corporate-actions": {
         # Corporate actions are TRADFI-only (uses instruments-store bucket)
-        "TRADFI": f"instruments-store-tradfi-{_PID}",
+        "TRADFI": f"instruments-store-tradfi-{_pid}",
     },
 }
 

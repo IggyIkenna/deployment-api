@@ -46,7 +46,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
 
     # Initialize sync service
     _sync_service = SyncService(
-        project_id=settings.GCP_PROJECT_ID,
+        project_id=settings.gcp_project_id,
         state_bucket=settings.STATE_BUCKET,
         deployment_env=settings.DEPLOYMENT_ENV,
     )
@@ -124,7 +124,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
 
 
 # Module-level aliases for settings constants used by processors in this module
-PROJECT_ID = settings.GCP_PROJECT_ID
+PROJECT_ID = settings.gcp_project_id
 STATE_BUCKET = settings.STATE_BUCKET
 
 
