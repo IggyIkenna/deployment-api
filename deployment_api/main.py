@@ -27,7 +27,7 @@ from deployment_api import __version__ as _api_version
 from deployment_api.auth import _auth_cfg, verify_api_key
 from deployment_api.health_routes import router as health_router
 from deployment_api.lifespan import lifespan
-from deployment_api.middleware import configure_middleware
+from deployment_api.middleware import PrometheusMiddleware, configure_middleware
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
@@ -61,8 +61,7 @@ app = FastAPI(
 # Configure middleware (CORS, etc.)
 configure_middleware(app)
 
-# TODO(GH-BACKLOG): Re-enable once PrometheusMiddleware is available in unified_trading_library.
-# app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
+app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
 
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
