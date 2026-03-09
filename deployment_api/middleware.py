@@ -5,6 +5,7 @@ Handles CORS setup and other middleware configurations.
 """
 
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI
@@ -17,6 +18,17 @@ from deployment_api import settings
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
 
 _RequestResponseEndpoint = Callable[[Request], Awaitable[Response]]
+
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    """Propagate or generate X-Correlation-ID for every request."""
+
+    async def dispatch(self, request: Request, call_next: _RequestResponseEndpoint) -> Response:
+        correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4()))
+        request.state.correlation_id = correlation_id
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
 
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
