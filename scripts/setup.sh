@@ -287,50 +287,68 @@ else
     log_ok "Installed uv"
 fi
 
-# ── [4] VENV CREATION ──────────────────────────────────────────────────────
-log_step "Virtual environment (.venv)"
+# ── [4] VENV — Prefer .venv-workspace when available ───────────────────────
+log_step "Virtual environment"
+
+USE_WORKSPACE_VENV=false
+WORKSPACE_VENV="$WORKSPACE_ROOT/.venv-workspace"
 
 if [ "$IN_CI" = true ]; then
     log_skip "CI mode — venv managed by CI"
 elif [ "$CHECK_ONLY" = true ]; then
-    if [ -d ".venv" ]; then
+    if [ -d "$WORKSPACE_VENV" ] && [ -f "$WORKSPACE_VENV/bin/python" ]; then
+        log_ok ".venv-workspace available (use in all repos)"
+    elif [ -d ".venv" ]; then
         log_ok ".venv exists"
-    elif [ -d "../.venv-workspace" ] && [ -f "../.venv-workspace/bin/python" ]; then
-        log_ok ".venv-workspace available (workspace venv)"
     else
-        log_fail ".venv missing"
+        log_fail "No .venv or .venv-workspace"
         ISSUES=$((ISSUES + 1))
     fi
-elif [ -d ".venv" ] && [ "$FORCE" != true ]; then
-    VENV_PY=$(".venv/bin/python" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "")
-    if [ "$VENV_PY" = "$REQUIRED_PYTHON" ]; then
-        log_skip ".venv exists (Python $VENV_PY)"
+elif [ -d "$WORKSPACE_VENV" ] && [ -f "$WORKSPACE_VENV/bin/python" ]; then
+    WS_PY=$("$WORKSPACE_VENV/bin/python" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "")
+    if [ "$WS_PY" = "$REQUIRED_PYTHON" ]; then
+        USE_WORKSPACE_VENV=true
+        log_ok "Using .venv-workspace (Python $WS_PY)"
     else
-        log_warn ".venv has Python $VENV_PY, need $REQUIRED_PYTHON — recreating"
-        rm -rf .venv
-        uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
-        log_ok "Recreated .venv with Python $REQUIRED_PYTHON"
+        log_warn ".venv-workspace has Python $WS_PY, need $REQUIRED_PYTHON — falling back to .venv"
     fi
-else
-    uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
-    log_ok "Created .venv"
+fi
+
+if [ "$USE_WORKSPACE_VENV" != true ] && [ "$IN_CI" != true ] && [ "$CHECK_ONLY" != true ]; then
+    if [ -d ".venv" ] && [ "$FORCE" != true ]; then
+        VENV_PY=$(".venv/bin/python" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "")
+        if [ "$VENV_PY" = "$REQUIRED_PYTHON" ]; then
+            log_skip ".venv exists (Python $VENV_PY)"
+        else
+            log_warn ".venv has Python $VENV_PY, need $REQUIRED_PYTHON — recreating with \$PYTHON_CMD"
+            rm -rf .venv
+            uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
+            log_ok "Recreated .venv"
+        fi
+    elif [ "$IN_CI" != true ] && [ "$CHECK_ONLY" != true ]; then
+        uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
+        log_ok "Created .venv"
+    fi
 fi
 
 # ── [5] ACTIVATE VENV ──────────────────────────────────────────────────────
-log_step "Activate .venv"
+log_step "Activate venv"
 
 if [ "$IN_CI" = true ]; then
     log_skip "CI mode"
 elif [ "$CHECK_ONLY" = true ]; then
     log_skip "Check mode — not activating"
+elif [ "$USE_WORKSPACE_VENV" = true ] && [ -f "$WORKSPACE_VENV/bin/activate" ]; then
+    source "$WORKSPACE_VENV/bin/activate"
+    log_ok "Activated (.venv-workspace)"
 elif [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
-    log_ok "Activated (.venv/bin/python)"
+    log_ok "Activated (.venv)"
 elif [ -f ".venv/Scripts/activate" ]; then
     source .venv/Scripts/activate
     log_ok "Activated (.venv/Scripts/python)"
 else
-    log_fail "No .venv/bin/activate found"
+    log_fail "No venv activate found"
     ISSUES=$((ISSUES + 1))
     [ "$CHECK_ONLY" = true ] || exit 1
 fi

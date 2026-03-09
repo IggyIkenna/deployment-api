@@ -44,16 +44,19 @@ jobs:
             echo "::notice::GH_PAT not set - installing deps from PyPI/Artifact Registry only"
           fi
 
-      - name: Install dependencies
-        run: |
-          for dep in unified-cloud-interface unified-events-interface; do
-            [ -d "../$dep" ] && uv pip install --system -e ../$dep 2>/dev/null || true
-          done
-          uv pip install --system -e ".[dev]" || uv pip install --system -e .
-          uv pip install --system ruff==0.15.0 basedpyright 2>/dev/null || true
-
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          for dep in unified-cloud-interface unified-events-interface; do
+            [ -d "../$dep" ] && uv pip install --python .venv/bin/python -e ../$dep 2>/dev/null || true
+          done
+          uv pip install --python .venv/bin/python -e ".[dev]" || uv pip install --python .venv/bin/python -e .
+          uv pip install --python .venv/bin/python ruff==0.15.0 pytest pytest-cov pytest-asyncio pytest-timeout pytest-xdist basedpyright bandit pip-audit
+
       - name: Run quality gates
-        run: bash scripts/quality-gates.sh --no-fix
+        run: |
+          export PATH="$(pwd)/.venv/bin:$PATH"
+          bash scripts/quality-gates.sh --no-fix

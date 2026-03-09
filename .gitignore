@@ -23,6 +23,7 @@ __pycache__/
 .cache/
 data/
 # Python venvs
+.python-version
 .venv/
 venv/
 .venv-workspace/
