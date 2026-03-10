@@ -641,12 +641,28 @@ def _process_vm_health_and_status(  # noqa: C901
     return updated
 
 
-def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated):  # noqa: C901
-    """Process Cloud Run execution status updates."""
-    try:
-        from backends.base import JobStatus
-        from backends.cloud_run import CloudRunBackend
+def _get_cloud_run_status_batch_sync(
+    project_id: str,
+    region: str,
+    service_account_email: str,
+    job_name: str,
+    job_ids: list[str],
+) -> dict[str, str]:
+    """Synchronous wrapper for get_cloud_run_status_batch. Safe for ThreadPoolExecutor threads."""
+    return _asyncio.run(
+        _ds_client.get_cloud_run_status_batch(
+            project_id=project_id,
+            region=region,
+            service_account_email=service_account_email,
+            job_name=job_name,
+            job_ids=job_ids,
+        )
+    )
 
+
+def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated):  # noqa: C901
+    """Process Cloud Run execution status updates via deployment-service HTTP API."""
+    try:
         job_ids = []
         job_id_to_shard_id = {}
         for shard in shards:
@@ -687,26 +703,34 @@ def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, upd
                 groups.setdefault((r, j), []).append(job_id)
 
             for (region, job_name), group_job_ids in groups.items():
-                backend = CloudRunBackend(
-                    project_id=PROJECT_ID,
-                    region=region,
-                    service_account_email=service_account_email,
-                    job_name=job_name,
-                )
-                statuses = backend.get_status_batch(group_job_ids)
-                for job_id, info in statuses.items():
-                    shard_id = job_id_to_shard_id.get(job_id)
-                    if not shard_id:
-                        continue
-                    # Never regress a launched shard back to "pending" in state.
-                    if info.status == JobStatus.SUCCEEDED:
-                        shard_statuses[shard_id] = ("succeeded", "cloud_run")
-                    elif info.status == JobStatus.FAILED:
-                        shard_statuses[shard_id] = ("failed", "cloud_run")
-                    elif info.status == JobStatus.RUNNING:
-                        shard_statuses[shard_id] = ("running", "cloud_run")
+                try:
+                    statuses = _get_cloud_run_status_batch_sync(
+                        project_id=PROJECT_ID,
+                        region=region,
+                        service_account_email=service_account_email,
+                        job_name=job_name,
+                        job_ids=group_job_ids,
+                    )
+                    for job_id, status in statuses.items():
+                        shard_id = job_id_to_shard_id.get(job_id)
+                        if not shard_id:
+                            continue
+                        # Never regress a launched shard back to "pending" in state.
+                        if status == "SUCCEEDED":
+                            shard_statuses[shard_id] = ("succeeded", "cloud_run")
+                        elif status == "FAILED":
+                            shard_statuses[shard_id] = ("failed", "cloud_run")
+                        elif status == "RUNNING":
+                            shard_statuses[shard_id] = ("running", "cloud_run")
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.warning(
+                        "[AUTO_SYNC] Cloud Run status batch failed for %s/%s: %s",
+                        region,
+                        job_name,
+                        e,
+                    )
     except (OSError, ValueError, RuntimeError) as e:
-        logger.warning("Failed to process shard statuses: %s", e)
+        logger.warning("Failed to process cloud run shard statuses: %s", e)
 
     return updated
 

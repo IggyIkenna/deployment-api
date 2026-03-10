@@ -5,19 +5,18 @@ Contains functions for managing deployment lifecycle, status updates,
 and state synchronization with cloud resources.
 """
 
+import asyncio as _asyncio
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import cast
 
-from backends.base import JobStatus
-from backends.cloud_run import CloudRunBackend
-from backends.vm import VMBackend
 from deployment import StateManager
 from deployment.state import DeploymentStatus, ShardStatus
 
 from deployment_api import settings as _settings
+from deployment_api.clients import deployment_service_client as _ds_client
 from deployment_api.utils.deployment_events import notify_deployment_updated_sync
 from deployment_api.utils.storage_facade import (
     delete_object,
@@ -243,29 +242,36 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
 
         for (region, job_name), exec_names in groups.items():
             try:
-                backend = CloudRunBackend(region=region)
-                project_id = state.config.get("project_id") or DEFAULT_PROJECT_ID
+                project_id = cast(str, state.config.get("project_id") or DEFAULT_PROJECT_ID)
+                service_account_email = cast(str, state.config.get("service_account_email") or "")
 
-                # List all executions for this job once
-                all_executions = backend.list_job_executions(project_id, job_name)
-                exec_statuses = {e.name: e for e in all_executions if e.name in exec_names}
+                # Query Cloud Run execution statuses via deployment-service HTTP API
+                raw_statuses = _asyncio.run(
+                    _ds_client.get_cloud_run_status_batch(
+                        project_id=project_id,
+                        region=region,
+                        service_account_email=service_account_email,
+                        job_name=job_name,
+                        job_ids=exec_names,
+                    )
+                )
 
-                for execution_name, execution in exec_statuses.items():
+                for execution_name, status in raw_statuses.items():
                     shard = exec_to_shard.get(execution_name)
                     if not shard:
                         continue
 
                     # Update based on execution status
-                    if execution.status == JobStatus.SUCCEEDED:
+                    if status == "SUCCEEDED":
                         shard.status = ShardStatus.SUCCEEDED
                         shard.end_time = datetime.now(UTC).isoformat()
                         updated_count += 1
-                    elif execution.status == JobStatus.FAILED:
+                    elif status == "FAILED":
                         shard.status = ShardStatus.FAILED
                         shard.end_time = datetime.now(UTC).isoformat()
-                        shard.error_message = execution.error_message or "Job failed"
+                        shard.error_message = "Job failed"
                         updated_count += 1
-                    elif execution.status == JobStatus.CANCELLED:
+                    elif status == "CANCELLED":
                         shard.status = ShardStatus.CANCELLED
                         shard.end_time = datetime.now(UTC).isoformat()
                         updated_count += 1
@@ -274,11 +280,10 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
                 logger.warning("Failed to refresh deployment shards: %s", e)
 
     elif state.compute_type == "vm":
-        # VM refresh: check if compute instances are still running
+        # VM refresh: check if compute instances are still running via deployment-service HTTP API
         running_shards = [s for s in state.shards if s.status == ShardStatus.RUNNING]
         if running_shards:
-            backend = VMBackend()
-            zones = []
+            zones: list[str] = []
             # Extract zones from VM names or use default
             for shard in running_shards[:10]:  # Sample to avoid too many API calls
                 if hasattr(shard, "compute_info") and shard.compute_info:
@@ -288,6 +293,8 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
 
             if not zones:
                 zones = [f"{DEFAULT_REGION}-a"]
+
+            project_id = cast(str, state.config.get("project_id") or DEFAULT_PROJECT_ID)
 
             # Check VM status in batches
             for zone in zones:
@@ -310,7 +317,13 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
                     ]
 
                     if vm_names:
-                        vm_statuses = backend.list_vm_status(zone, vm_names)
+                        vm_statuses = _asyncio.run(
+                            _ds_client.get_vm_status_batch(
+                                project_id=project_id,
+                                zone=zone,
+                                vm_names=vm_names,
+                            )
+                        )
 
                         for shard in zone_shards:
                             vm_name = (
