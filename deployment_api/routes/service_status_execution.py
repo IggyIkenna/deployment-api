@@ -14,10 +14,10 @@ from typing import cast
 logger = logging.getLogger(__name__)
 
 # Module-level type aliases for execution service status structures
-_ConfigEntry = dict[str, str | bool | list[str]]
-_TimeframeMap = defaultdict[str, list[_ConfigEntry]]
-_ModeMap = defaultdict[str, _TimeframeMap]
-_BreakdownEntry = dict[str, int | list[str]]
+type _ConfigEntry = dict[str, str | bool | list[str]]
+type _TimeframeMap = defaultdict[str, list[_ConfigEntry]]
+type _ModeMap = defaultdict[str, _TimeframeMap]
+type _BreakdownEntry = dict[str, int | list[str]]
 
 
 async def get_execution_service_data_status(  # noqa: C901

@@ -39,7 +39,7 @@ async def infra_health() -> dict[str, object]:
     try:
         from unified_cloud_interface import get_secret_client, get_storage_client
 
-        from deployment_api.auth import _auth_cfg as _config
+        from deployment_api.auth import auth_cfg as _config
 
         project_id: str = _config.gcp_project_id or ""
 

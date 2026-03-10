@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 # --- Production guard for DISABLE_AUTH ---
 _auth_cfg = UnifiedCloudConfig()
+# Public alias so other modules (main.py, infra_health.py) can import without
+# triggering basedpyright's reportPrivateUsage diagnostic.
+auth_cfg = _auth_cfg
 _disable_auth_raw: bool = _auth_cfg.disable_auth
 _environment: str = _auth_cfg.environment
 if _disable_auth_raw and _environment == "production":
