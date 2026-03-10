@@ -94,14 +94,7 @@ steps:
           RESULT=$(gcloud artifacts docker images describe "$IMAGE" \
             --show-package-vulnerability --format="json" 2>/dev/null)
           if [ -n "$RESULT" ]; then
-            CRITICAL=$(echo "$RESULT" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-summary = d.get('package_vulnerability_summary', {})
-vulns = summary.get('vulnerabilities', {})
-crits = vulns.get('CRITICAL', [])
-print(len(crits))
-" 2>/dev/null || echo "0")
+            CRITICAL=$(echo "$RESULT" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('package_vulnerability_summary',{}).get('vulnerabilities',{}).get('CRITICAL',[])))" 2>/dev/null || echo "0")
             if [ "$CRITICAL" != "0" ]; then
               echo "SCAN FAILED: $CRITICAL CRITICAL CVEs found in $IMAGE"
               exit 1
