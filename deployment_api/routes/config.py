@@ -110,14 +110,22 @@ async def get_venues_by_category(category: str, request: Request):
         List of venues and their data types for the category.
     """
 
-    def _load_category_sync():
+    def _load_category_sync() -> dict[str, object] | None:
+        from typing import cast
+
         loader = get_config_loader(request)
         venues_config = loader.load_venues_config()
-        categories = venues_config.get("categories") or {}
+        categories_raw = venues_config.get("categories") or {}
+        categories = (
+            cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
+        )
 
         # Case-insensitive lookup
-        for cat_name, cat_data in categories.items():
+        for cat_name, cat_data_raw in categories.items():
             if cat_name.upper() == category.upper():
+                cat_data = (
+                    cast(dict[str, object], cat_data_raw) if isinstance(cat_data_raw, dict) else {}
+                )
                 return {
                     "category": cat_name,
                     "venues": cat_data.get("venues") or [],
@@ -274,7 +282,7 @@ async def get_service_dependencies(service_name: str, request: Request):  # noqa
             service_data = services[service_name]
 
             # Find downstream dependents
-            dependents = []
+            dependents: list[str] = []
             for svc_name, svc_data in services.items():
                 if svc_name == service_name:
                     continue
@@ -284,7 +292,7 @@ async def get_service_dependencies(service_name: str, request: Request):  # noqa
                         break
 
             # Build DAG context: all edges for graph visualization
-            dag_edges = []
+            dag_edges: list[dict[str, object]] = []
             for svc_name, svc_data in services.items():
                 for upstream in cast(list[dict[str, object]], svc_data.get("upstream") or []):
                     dag_edges.append(

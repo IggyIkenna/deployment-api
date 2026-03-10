@@ -246,10 +246,10 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
 
     # Truncate category-level dates
     cats_raw: object = truncated.get("categories") or {}
-    for _cat_name, cat_data in (
-        cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
-    ).items():
-        if isinstance(cat_data, dict):
+    cats_map = cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
+    for _cat_name, cat_data_raw in cats_map.items():
+        cat_data = cast(dict[str, object], cat_data_raw) if isinstance(cat_data_raw, dict) else None
+        if cat_data is not None:
             truncate_list_in_dict(
                 cat_data,
                 "dates_found_list",
@@ -264,8 +264,15 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
             )
 
             # Truncate venue-level dates
-            for _venue_name, venue_data in (cat_data.get("venues") or {}).items():
-                if isinstance(venue_data, dict):
+            venues_raw = cat_data.get("venues") or {}
+            venues_map = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
+            for _venue_name, venue_data_raw in venues_map.items():
+                venue_data = (
+                    cast(dict[str, object], venue_data_raw)
+                    if isinstance(venue_data_raw, dict)
+                    else None
+                )
+                if venue_data is not None:
                     truncate_list_in_dict(
                         venue_data,
                         "dates_found_list",
@@ -280,8 +287,11 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
                     )
 
                     # Truncate data_type-level dates
-                    for _dt_name, dt_data in (venue_data.get("data_types") or {}).items():
-                        if isinstance(dt_data, dict):
+                    dt_raw = venue_data.get("data_types") or {}
+                    dt_map = cast(dict[str, object], dt_raw) if isinstance(dt_raw, dict) else {}
+                    for _dt_name, dt_data_raw in dt_map.items():
+                        if isinstance(dt_data_raw, dict):
+                            dt_data = cast(dict[str, object], dt_data_raw)
                             truncate_list_in_dict(
                                 dt_data,
                                 "dates_found_list",

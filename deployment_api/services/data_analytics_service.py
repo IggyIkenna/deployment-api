@@ -7,10 +7,19 @@ data aggregation operations for performance optimization.
 
 import json
 import logging
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, TypedDict, cast
 
 logger = logging.getLogger(__name__)
+
+
+class _CacheStats(TypedDict):
+    hits: int
+    misses: int
+    entries: int
+    last_cleared: datetime
+    total_size_estimate: int
 
 
 class DataAnalyticsService:
@@ -28,7 +37,7 @@ class DataAnalyticsService:
         """Initialize data analytics service."""
         # In-memory cache for turbo mode results
         self._turbo_cache: dict[str, dict[str, object]] = {}
-        self._cache_stats: dict[str, int | datetime] = {
+        self._cache_stats: _CacheStats = {
             "hits": 0,
             "misses": 0,
             "entries": 0,
@@ -43,7 +52,7 @@ class DataAnalyticsService:
         end_date: str,
         categories: list[str] | None = None,
         venues: list[str] | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> str:
         """
         Generate a cache key for turbo mode results.
@@ -143,7 +152,7 @@ class DataAnalyticsService:
     def _evict_old_entries(self) -> None:
         """Evict oldest cache entries to manage memory."""
         # Sort by cached_at time and remove oldest 20%
-        entries_with_time = []
+        entries_with_time: list[tuple[datetime, str]] = []
         for key, entry in self._turbo_cache.items():
             cached_at = cast(str | None, entry.get("cached_at"))
             if cached_at:
@@ -170,7 +179,9 @@ class DataAnalyticsService:
         service: str,
         start_date: str,
         end_date: str,
-        from_data_status_service,  # Callable to get fresh data
+        from_data_status_service: Callable[  # Callable to get fresh data
+            ..., Coroutine[Any, Any, dict[str, object]]
+        ],
         categories: list[str] | None = None,
         venues: list[str] | None = None,
     ) -> dict[str, object]:
@@ -308,8 +319,8 @@ class DataAnalyticsService:
         dates_data = cast(list[dict[str, object]], data_status_result["dates"])
 
         # Analyze completion rates by date
-        daily_completions = []
-        venue_stats = {}
+        daily_completions: list[dict[str, object]] = []
+        venue_stats: dict[str, dict[str, int]] = {}
 
         for date_info in dates_data:
             date_str = date_info.get("date")
@@ -424,7 +435,9 @@ class DataAnalyticsService:
         services: list[str],
         start_date: str,
         end_date: str,
-        from_data_status_service,  # Callable to get data status
+        from_data_status_service: Callable[  # Callable to get data status
+            ..., Coroutine[Any, Any, dict[str, object]]
+        ],
         categories: list[str] | None = None,
     ) -> dict[str, object]:
         """

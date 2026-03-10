@@ -14,6 +14,7 @@ import concurrent.futures
 import logging
 import time
 import tomllib
+from collections.abc import Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from itertools import islice
@@ -195,12 +196,14 @@ class RecentBuildDict(TypedDict):  # CORRECT-LOCAL
     status: str
 
 
-class TriggerRunResultDict(TypedDict):  # CORRECT-LOCAL
+class TriggerRunResultDict(TypedDict, total=False):  # CORRECT-LOCAL
     """Result from running a build trigger."""
 
     success: bool
     build_id: str | None
     log_url: str | None
+    trigger_id: str | None
+    trigger_time: datetime | None
 
 
 router = APIRouter(prefix="/api/cloud-builds", tags=["cloud-builds"])
@@ -301,16 +304,10 @@ def _format_build_info(build: object) -> BuildInfoDict:
     log_url_raw = getattr(build, "log_url", None)
     log_url = str(log_url_raw) if log_url_raw is not None else None
 
-    create_time_str = (
-        create_time.isoformat()
-        if create_time is not None and hasattr(create_time, "isoformat")
-        else None
-    )
-    finish_time_str = (
-        finish_time.isoformat()
-        if finish_time is not None and hasattr(finish_time, "isoformat")
-        else None
-    )
+    create_time_iso = getattr(create_time, "isoformat", None)
+    create_time_str: str | None = str(create_time_iso()) if callable(create_time_iso) else None  # type: ignore[misc]
+    finish_time_iso = getattr(finish_time, "isoformat", None)
+    finish_time_str: str | None = str(finish_time_iso()) if callable(finish_time_iso) else None  # type: ignore[misc]
 
     duration_seconds: float | None = None
     if finish_time is not None and create_time is not None:
@@ -345,7 +342,7 @@ _trigger_cache_time: float = 0
 _TRIGGER_CACHE_TTL = 3600  # 1 hour
 
 
-def _populate_trigger_cache(triggers_list: list[object]) -> None:
+def _populate_trigger_cache(triggers_list: Sequence[object]) -> None:
     """Populate trigger ID cache from a list of Cloud Build trigger objects."""
     global _trigger_id_cache, _trigger_cache_time
     new_cache: dict[str, str] = {}
@@ -396,7 +393,7 @@ async def list_triggers(  # noqa: C901
             _populate_trigger_cache(triggers)
 
             # Filter to services, libraries, and infrastructure we track
-            result = []
+            result: list[TriggerDict] = []
             for trigger in triggers:
                 # Check if this is one of our service triggers
                 repo_name = None
@@ -445,16 +442,19 @@ async def list_triggers(  # noqa: C901
                         branch_pattern = repo_config.push.branch
 
                 result.append(
-                    {
-                        "trigger_id": trigger.id,
-                        "trigger_name": trigger.name,
-                        "service": repo_name,  # Legacy field name matching existing API consumers
-                        "type": repo_type,  # "service", "library", or "infrastructure"
-                        "github_repo": github_repo,
-                        "branch_pattern": branch_pattern,
-                        "disabled": trigger.disabled,
-                        "status": "disabled" if trigger.disabled else "active",
-                    }
+                    cast(
+                        TriggerDict,
+                        {
+                            "trigger_id": str(trigger.id or ""),
+                            "trigger_name": str(trigger.name or ""),
+                            "service": repo_name,  # Legacy field — matches existing API consumers
+                            "type": repo_type,  # "service", "library", or "infrastructure"
+                            "github_repo": github_repo,
+                            "branch_pattern": branch_pattern,
+                            "disabled": bool(trigger.disabled),
+                            "status": "disabled" if trigger.disabled else "active",
+                        },
+                    )
                 )
 
             return result
@@ -499,7 +499,7 @@ async def _get_recent_builds_for_triggers(
 
         def _fetch_latest_build(
             client: cloudbuild_v1.CloudBuildClient, trigger_id: str
-        ) -> tuple | None:
+        ) -> tuple[str, BuildInfoDict] | None:
             """Fetch the latest build for a single trigger using API-level filter."""
             _cb = _cloudbuild_v1()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
@@ -517,7 +517,7 @@ async def _get_recent_builds_for_triggers(
         def _fetch_all_sync() -> dict[str, BuildInfoDict]:
             _cb = _cloudbuild_v1()
             client = _get_gcp_build_client()
-            results = {}
+            results: dict[str, BuildInfoDict] = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent
             with concurrent.futures.ThreadPoolExecutor(
@@ -595,7 +595,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
             )
             # Only check the first few builds (ordered by create_time desc)
             for build in islice(client.list_builds(request=builds_request), 5):
-                if build.create_time and build.create_time >= started_after:
+                if build.create_time and build.create_time >= started_after:  # type: ignore[operator]  # Timestamp vs datetime — compatible at runtime
                     return {
                         "build_id": build.id,
                         "log_url": build.log_url,
@@ -850,8 +850,14 @@ async def get_library_status(library: str) -> LibraryStatusDict:
         )
         if pyproject_path and pyproject_path.exists():
             with open(pyproject_path, "rb") as f:
-                pyproject = tomllib.load(f)
-                result["package_version"] = pyproject.get("project") or {}.get("version")
+                pyproject: dict[str, object] = cast(dict[str, object], tomllib.load(f))
+                project_section_raw = pyproject.get("project") or {}
+                if isinstance(project_section_raw, dict):
+                    project_section = cast(dict[str, object], project_section_raw)
+                    version_raw = project_section.get("version")
+                    result["package_version"] = (
+                        str(version_raw) if version_raw is not None else None
+                    )
     except (OSError, ValueError, KeyError) as e:
         logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
         pass
@@ -901,8 +907,8 @@ async def check_dependencies() -> DependencyCheckResponseDict:
 
     This is useful for catching version mismatches before they cause runtime errors.
     """
-    issues = []
-    libraries_status = []
+    issues: list[DependencyIssueDict] = []
+    libraries_status: list[LibraryStatusDict] = []
 
     for library in LIBRARIES_WITH_TRIGGERS:
         try:

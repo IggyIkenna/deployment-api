@@ -20,7 +20,10 @@ from typing import cast
 
 import yaml
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from google.auth import default, impersonated_credentials
+from google.auth import (  # type: ignore[import-untyped]  # google-auth stubs incomplete
+    default,
+    impersonated_credentials,
+)
 from unified_cloud_interface import get_secret_client
 
 from deployment_api.settings import GITHUB_TOKEN_SA
@@ -174,12 +177,12 @@ async def get_service_status(service: str, request: Request):  # noqa: C901
                 target_sa = GITHUB_TOKEN_SA
 
                 # Get source credentials
-                source_credentials, _project = default()
+                source_credentials, _project = default()  # type: ignore[misc]  # google-auth untyped
                 logger.info("[PERF] Got default credentials in %.2fs", time.time() - token_start)
 
                 # Check if we're already running as a SA with secret access
                 if hasattr(source_credentials, "service_account_email"):
-                    sa_email = source_credentials.service_account_email
+                    sa_email: str = str(source_credentials.service_account_email)  # type: ignore[union-attr]  # google-auth untyped
                     # If running as github-token-sa, Compute Engine SA, or instruments-service SA - use directly  # noqa: E501
                     if any(
                         x in sa_email
@@ -197,7 +200,7 @@ async def get_service_status(service: str, request: Request):  # noqa: C901
                 # Running locally - impersonate GitHub Token SA
                 target_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
                 _ = impersonated_credentials.Credentials(
-                    source_credentials=source_credentials,
+                    source_credentials=source_credentials,  # type: ignore[arg-type]  # google-auth untyped
                     target_principal=target_sa,
                     target_scopes=target_scopes,
                 )
@@ -371,7 +374,7 @@ async def get_services_overview(request: Request):  # noqa: C901
                     from google.auth.transport.requests import Request as AuthRequest
                     from google.oauth2 import id_token
 
-                    token = id_token.fetch_id_token(AuthRequest(), broker_url)
+                    token = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[misc]  # google-auth untyped
                     req = urllib.request.Request(
                         f"{broker_url}/health",
                         method="GET",
@@ -414,22 +417,31 @@ async def get_services_overview(request: Request):  # noqa: C901
             deploy_ts: str | None = None
             deploy_status: str | None = None
             if isinstance(deployment_info, dict) and "timestamp" in deployment_info:
-                deploy_ts = cast(str | None, deployment_info["timestamp"])
-                deploy_status = cast(str | None, deployment_info.get("status"))
+                ts_raw = deployment_info["timestamp"]
+                deploy_ts = str(ts_raw) if ts_raw is not None else None
+                status_raw = deployment_info.get("status")
+                deploy_status = str(status_raw) if status_raw is not None else None
                 # Normalize status to lowercase string for comparison
                 if deploy_status:
                     deploy_status = str(deploy_status).lower()
 
             # Check GCS cache for build info (populated by individual service views)
             cache = load_gcs_cache()
-            builds_cache = cache.get("builds") or {}
-            build_ts = None
-            build_status = None
+            builds_cache_raw = cache.get("builds") or {}
+            if isinstance(builds_cache_raw, dict):
+                builds_cache = cast(dict[str, object], builds_cache_raw)
+            else:
+                builds_cache: dict[str, object] = {}
+            build_ts: str | None = None
+            build_status: str | None = None
             if service in builds_cache:
-                build_info = builds_cache[service]
-                if isinstance(build_info, dict):
-                    build_ts = build_info.get("timestamp")
-                    build_status = build_info.get("status")
+                build_info_raw = builds_cache[service]
+                if isinstance(build_info_raw, dict):
+                    build_info = cast(dict[str, object], build_info_raw)
+                    bt_raw = build_info.get("timestamp")
+                    build_ts = str(bt_raw) if bt_raw is not None else None
+                    bs_raw = build_info.get("status")
+                    build_status = str(bs_raw) if bs_raw is not None else None
 
             # Determine health using extracted function
             health = determine_overview_health(

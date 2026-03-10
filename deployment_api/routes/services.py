@@ -53,7 +53,7 @@ async def list_services(request: Request):
         loader = get_config_loader(request)
         services = loader.list_available_services()
 
-        result = []
+        result: list[dict[str, object]] = []
         for service in services:
             try:
                 config = loader.load_service_config(service)
@@ -129,7 +129,7 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
             config = loader.load_service_config(service_name)
             venues_config = loader.load_venues_config()
 
-            dimensions = []
+            dimensions: list[dict[str, object]] = []
             for dim in cast(list[dict[str, object]], config.get("dimensions") or []):
                 dim_info = {
                     "name": dim["name"],
@@ -147,10 +147,15 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
                     # If it's venue, get values from venues config
                     if dim["name"] == "venue":
                         dim_info["values_by_parent"] = {}
-                        for category in cast(
-                            dict[str, object], venues_config.get("categories") or {}
-                        ):
-                            cat_venues = venues_config["categories"][category].get("venues") or []
+                        categories_raw = venues_config.get("categories") or {}
+                        categories_map = cast(dict[str, object], categories_raw)
+                        for category, cat_data in categories_map.items():
+                            cat_data_dict = (
+                                cast(dict[str, object], cat_data)
+                                if isinstance(cat_data, dict)
+                                else {}
+                            )
+                            cat_venues = cat_data_dict.get("venues") or []
                             dim_info["values_by_parent"][category] = cat_venues
 
                 # Add date range info
@@ -284,7 +289,7 @@ async def list_directories(
 
         # Extract just the directory name from the full prefix
         # e.g., "configs/V1/" -> "V1"
-        directories = set()
+        directories: set[str] = set()
         for prefix_name in prefix_names:
             dir_name = prefix_name[len(prefix) :].rstrip("/")
             if dir_name:
@@ -318,7 +323,7 @@ async def get_config_buckets(service_name: str, request: Request):
     # Service-specific bucket mappings.
     # Bucket names come from config fields (EXECUTION_STORE_BUCKET, etc.) populated via
     # DeploymentApiConfig env vars. Defaults derived from gcp_project_id when env vars unset.
-    bucket_mappings = {
+    bucket_mappings: dict[str, dict[str, object]] = {
         "execution-service": {
             "default_bucket": f"gs://{EXECUTION_STORE_BUCKET}/configs/",
             "buckets": [
