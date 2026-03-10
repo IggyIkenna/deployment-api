@@ -10,14 +10,17 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from deployment_service.deployment import StateManager
+from deployment_service.deployment.state import DeploymentState
+
 logger = logging.getLogger(__name__)
 
 
 async def _compute_and_cache_verification(
-    state_manager,
+    state_manager: StateManager,
     deployment_id: str,
-    state,
-) -> dict:
+    state: DeploymentState,
+) -> dict[str, object]:
     """
     Compute and cache verification results for a deployment.
 
@@ -28,44 +31,50 @@ async def _compute_and_cache_verification(
     from .deployment_caching import set_verification_cache
     from .log_analysis import analyze_deployment_logs
     from .shard_management import (
-        _build_blob_timestamp_map,
-        _build_existing_dates_sets,
-        _categories_from_state,
-        _classify_all_shards,
-        _compute_classification_counts,
-        _compute_completed_breakdown,
-        _get_state_date_range,
-        _resolve_shard_blob_data,
+        build_blob_timestamp_map,
+        build_existing_dates_sets,
+        categories_from_state,
+        classify_all_shards,
+        compute_classification_counts,
+        compute_completed_breakdown,
+        get_state_date_range,
+        resolve_shard_blob_data,
     )
 
-    start_date, end_date = _get_state_date_range(state)
+    start_date, end_date = get_state_date_range(state)
     if not start_date or not end_date:
         raise RuntimeError("Missing start_date/end_date; cannot verify output files")
 
     # Run log analysis and TURBO data status CONCURRENTLY.
     # Previously these ran sequentially, adding ~10s of log analysis latency
     # before the fast (~3s) TURBO queries even started.
-    async def _run_log_analysis() -> dict | None:
+    async def _run_log_analysis() -> dict[str, object] | None:
         try:
-            result = await analyze_deployment_logs(state_manager, deployment_id, state)
-            return result.get("log_analysis")
+            result = cast(
+                dict[str, object],
+                await analyze_deployment_logs(state_manager, deployment_id, state),
+            )
+            return cast(dict[str, object] | None, result.get("log_analysis"))
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("[VERIFY] Log analysis failed for %s: %s", deployment_id, e)
             return None
 
-    async def _run_turbo() -> dict:
-        return await get_data_status_turbo_impl(
-            service=getattr(state, "service", ""),
-            start_date=start_date,
-            end_date=end_date,
-            category=_categories_from_state(state),
-            venue=None,
-            folder=None,
-            data_type=None,
-            include_sub_dimensions=True,
-            include_dates_list=True,
-            full_dates_list=True,
-            first_day_of_month_only=False,
+    async def _run_turbo() -> dict[str, object]:
+        return cast(
+            dict[str, object],
+            await get_data_status_turbo_impl(
+                service=getattr(state, "service", ""),
+                start_date=start_date,
+                end_date=end_date,
+                category=categories_from_state(state),
+                venue=None,
+                folder=None,
+                data_type=None,
+                include_sub_dimensions=True,
+                include_dates_list=True,
+                full_dates_list=True,
+                first_day_of_month_only=False,
+            ),
         )
 
     log_analysis, turbo_result = await asyncio.gather(_run_log_analysis(), _run_turbo())
@@ -73,22 +82,22 @@ async def _compute_and_cache_verification(
     if isinstance(turbo_result, dict) and turbo_result.get("error"):
         raise RuntimeError(str(turbo_result.get("error")))
 
-    existing_cat_dates, existing_venue_dates = _build_existing_dates_sets(turbo_result)
+    existing_cat_dates, existing_venue_dates = build_existing_dates_sets(turbo_result)
 
     # Build blob timestamp map from turbo results (zero extra API calls)
-    blob_timestamps = _build_blob_timestamp_map(turbo_result)
+    blob_timestamps = build_blob_timestamp_map(turbo_result)
 
     # Resolve per-shard blob data (existence + timestamp) from turbo data
-    blob_data = _resolve_shard_blob_data(
+    blob_data = resolve_shard_blob_data(
         state, existing_cat_dates, existing_venue_dates, blob_timestamps
     )
 
     # Classify every shard using the full decision tree
-    shard_classifications = _classify_all_shards(state, log_analysis, blob_data)
-    classification_counts = _compute_classification_counts(shard_classifications)
+    shard_classifications = classify_all_shards(state, log_analysis, blob_data)
+    classification_counts = compute_classification_counts(shard_classifications)
 
     # Compute legacy breakdown fields included in the response envelope
-    breakdown = _compute_completed_breakdown(
+    breakdown = compute_completed_breakdown(
         state,
         log_analysis,
         existing_cat_dates=existing_cat_dates,
@@ -108,7 +117,7 @@ async def _run_verification_and_cache_background(deployment_id: str) -> None:
     from .deployment_caching import remove_verification_pending
 
     try:
-        from deployment import StateManager
+        from deployment_service.deployment import StateManager
 
         from deployment_api import settings as _settings
 
@@ -119,9 +128,12 @@ async def _run_verification_and_cache_background(deployment_id: str) -> None:
             project_id=_settings.gcp_project_id,
         )
 
-        state = await get_cached_deployment_state(state_manager, deployment_id, force_refresh=True)
-        if not state:
+        state_raw: object = await get_cached_deployment_state(
+            state_manager, deployment_id, force_refresh=True
+        )
+        if not state_raw:
             return
+        state = cast(DeploymentState, state_raw)
 
         await _compute_and_cache_verification(state_manager, deployment_id, state)
     except (OSError, ValueError, RuntimeError) as e:

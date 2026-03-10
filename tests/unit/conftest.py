@@ -102,6 +102,13 @@ def _ensure_external_packages_mocked() -> None:
     flat MagicMocks) so that dotted sub-module imports work regardless of
     the order in which test files are collected.
     """
+    # --- Shared status sentinel objects (created unconditionally) ---
+    # These are referenced by both the deployment.state and deployment_service.deployment.state
+    # mocks so tests and source code compare the same objects.
+    _shared_deployment_status = MagicMock()
+    _shared_shard_status = MagicMock()
+    _shared_state_manager_cls = MagicMock()
+
     # --- backends package ---
     if "backends" not in sys.modules:
         backends_mod = ModuleType("backends")
@@ -129,14 +136,14 @@ def _ensure_external_packages_mocked() -> None:
         dep_pkg = ModuleType("deployment")
         dep_pkg.__package__ = "deployment"
         dep_pkg.__path__ = []  # type: ignore[attr-defined]
-        dep_pkg.StateManager = MagicMock()  # type: ignore[attr-defined]
+        dep_pkg.StateManager = _shared_state_manager_cls  # type: ignore[attr-defined]
         sys.modules["deployment"] = dep_pkg
 
         for sub_name, attrs in {
             "state": {
-                "DeploymentStatus": MagicMock(),
-                "StateManager": MagicMock(),
-                "ShardStatus": MagicMock(),
+                "DeploymentStatus": _shared_deployment_status,
+                "StateManager": _shared_state_manager_cls,
+                "ShardStatus": _shared_shard_status,
             },
             "orchestrator": {"DeploymentOrchestrator": MagicMock()},
             "quota_broker_client": {"QuotaBrokerClient": MagicMock()},
@@ -245,11 +252,19 @@ def _ensure_external_packages_mocked() -> None:
             },
             "shard_calculator": {"ShardCalculator": MagicMock()},
             "cloud_client": {"CloudClient": MagicMock()},
-            "deployment": {},
+            "deployment": {
+                "StateManager": _shared_state_manager_cls,
+                "DeploymentState": MagicMock(),
+                "ShardState": MagicMock(),
+                "DeploymentStatus": _shared_deployment_status,
+                "ShardStatus": _shared_shard_status,
+            },
             "deployment.state": {
-                "DeploymentStatus": MagicMock(),
-                "StateManager": MagicMock(),
-                "ShardStatus": MagicMock(),
+                "DeploymentStatus": _shared_deployment_status,
+                "StateManager": _shared_state_manager_cls,
+                "ShardStatus": _shared_shard_status,
+                "DeploymentState": MagicMock(),
+                "ShardState": MagicMock(),
             },
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
         }.items():

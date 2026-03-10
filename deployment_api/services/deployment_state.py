@@ -81,9 +81,13 @@ class DeploymentStateManager:
         """
         from ..routes.deployment_caching import get_cached_deployment_state
         from ..routes.shard_management import (
-            _classify_all_shards,
-            _compute_classification_counts,
-            _get_state_date_range,
+            classify_all_shards as _classify_all_shards,
+        )
+        from ..routes.shard_management import (
+            compute_classification_counts as _compute_classification_counts,
+        )
+        from ..routes.shard_management import (
+            get_state_date_range as _get_state_date_range,
         )
 
         # Get deployment state from cache

@@ -8,12 +8,17 @@ and state synchronization with cloud resources.
 import asyncio as _asyncio
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import cast
 
-from deployment import StateManager
-from deployment.state import DeploymentStatus, ShardStatus
+from deployment_service.deployment import StateManager
+from deployment_service.deployment.state import (
+    DeploymentState,
+    DeploymentStatus,
+    ShardState,
+    ShardStatus,
+)
 
 from deployment_api import settings as _settings
 from deployment_api.clients import deployment_service_client as _ds_client
@@ -82,7 +87,7 @@ def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:  # noqa: 
     return severity, logger_name
 
 
-def _refresh_live_cloud_run_status(state: object) -> int:  # noqa: C901
+def _refresh_live_cloud_run_status(state: DeploymentState) -> int:  # noqa: C901
     """
     Refresh deployment state for live mode by checking Cloud Run Service revision health.
 
@@ -90,9 +95,9 @@ def _refresh_live_cloud_run_status(state: object) -> int:  # noqa: C901
     based on service/revision readiness. Returns number of shards updated, or -1 if live
     refresh not applicable (e.g. no service_name in config).
     """
-    service_name = state.config.get("service_name") or state.service
-    region = state.config.get("region") or DEFAULT_REGION
-    project_id = state.config.get("project_id") or DEFAULT_PROJECT_ID
+    service_name = cast(str, state.config.get("service_name")) or state.service
+    region = cast(str, state.config.get("region")) or DEFAULT_REGION
+    project_id = cast(str, state.config.get("project_id")) or DEFAULT_PROJECT_ID
     # Normalize service name for Cloud Run (lowercase, no underscores)
     service_name = (service_name or "").replace("_", "-").lower()
     if not service_name:
@@ -159,7 +164,7 @@ def _parse_execution_name(name: str) -> tuple[str | None, str | None]:
     return region, job_name
 
 
-def _check_shard_logs_for_errors(shard, deployment_id: str) -> bool:
+def _check_shard_logs_for_errors(shard: ShardState, deployment_id: str) -> bool:
     """Check if shard logs contain ERROR severity. Returns True if errors found."""
     try:
         logs_path = f"deployments.{DEPLOYMENT_ENV}/{deployment_id}/{shard.shard_id}/logs.txt"
@@ -182,7 +187,7 @@ def _check_shard_logs_for_errors(shard, deployment_id: str) -> bool:
         return False
 
 
-def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
+def _refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:  # noqa: C901
     """
     Synchronous helper for refresh_deployment_status.
     All blocking GCP/GCS calls are done here.
@@ -229,13 +234,13 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
         # Group by (region, job_name)
         groups: dict[tuple[str, str], list[str]] = {}
         for shard in running_shards:
-            r, j = _parse_execution_name(shard.job_id)
-            r = r or state.config.get("region") or DEFAULT_REGION
+            r, j = _parse_execution_name(cast(str, shard.job_id))
+            r = r or cast(str, state.config.get("region")) or DEFAULT_REGION
             j = j or "unknown"
             key = (r, j)
             if key not in groups:
                 groups[key] = []
-            groups[key].append(shard.job_id)
+            groups[key].append(cast(str, shard.job_id))
 
         # Build mapping from execution_name -> our shard
         exec_to_shard = {s.job_id: s for s in running_shards}
@@ -286,8 +291,11 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
             zones: list[str] = []
             # Extract zones from VM names or use default
             for shard in running_shards[:10]:  # Sample to avoid too many API calls
-                if hasattr(shard, "compute_info") and shard.compute_info:
-                    zone = shard.compute_info.get("zone")
+                shard_compute_info = cast(
+                    "dict[str, object] | None", getattr(shard, "compute_info", None)
+                )
+                if shard_compute_info:
+                    zone = cast(str, shard_compute_info.get("zone"))
                     if zone and zone not in zones:
                         zones.append(zone)
 
@@ -302,18 +310,28 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
                     zone_shards = [
                         s
                         for s in running_shards
-                        if hasattr(s, "compute_info")
-                        and s.compute_info
-                        and s.compute_info.get("zone") == zone
+                        if cast("dict[str, object] | None", getattr(s, "compute_info", None))
+                        is not None
+                        and cast(
+                            "dict[str, object]",
+                            getattr(s, "compute_info", {}),
+                        ).get("zone")
+                        == zone
                     ]
 
                     if not zone_shards:
                         continue
 
                     vm_names = [
-                        s.compute_info.get("vm_name")
+                        cast(
+                            str,
+                            cast("dict[str, object]", getattr(s, "compute_info", {})).get(
+                                "vm_name"
+                            ),
+                        )
                         for s in zone_shards
-                        if s.compute_info and s.compute_info.get("vm_name")
+                        if getattr(s, "compute_info", None)
+                        and cast("dict[str, object]", getattr(s, "compute_info", {})).get("vm_name")
                     ]
 
                     if vm_names:
@@ -326,9 +344,10 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
                         )
 
                         for shard in zone_shards:
-                            vm_name = (
-                                shard.compute_info.get("vm_name") if shard.compute_info else None
+                            _shard_ci = cast(
+                                "dict[str, object] | None", getattr(shard, "compute_info", None)
                             )
+                            vm_name = cast(str, _shard_ci.get("vm_name")) if _shard_ci else None
                             if vm_name and vm_name in vm_statuses:
                                 vm_status = vm_statuses[vm_name]
                                 if vm_status == "TERMINATED":
@@ -357,9 +376,9 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
         succeeded_shards = [s for s in state.shards if s.status == ShardStatus.SUCCEEDED]
 
         # Check succeeded shards in parallel for errors
-        shards_with_errors = []
+        shards_with_errors: list[ShardState] = []
         with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {
+            futures: dict[Future[bool], ShardState] = {
                 executor.submit(_check_shard_logs_for_errors, shard, deployment_id): shard
                 for shard in succeeded_shards[:100]  # Limit to first 100 for performance
             }
@@ -429,7 +448,7 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict:  # noqa: C901
     }
 
 
-def _cancel_deployment_sync(deployment_id: str) -> dict:
+def _cancel_deployment_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous cancellation logic.
 
@@ -488,7 +507,7 @@ def _cancel_deployment_sync(deployment_id: str) -> dict:
     }
 
 
-def _resume_deployment_sync(deployment_id: str) -> dict:
+def _resume_deployment_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous resume logic.
 
@@ -547,7 +566,7 @@ def _resume_deployment_sync(deployment_id: str) -> dict:
     }
 
 
-def _delete_deployment_sync(deployment_id: str) -> dict:
+def _delete_deployment_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous deletion logic.
 
@@ -565,7 +584,8 @@ def _delete_deployment_sync(deployment_id: str) -> dict:
 
     # Delete state file
     try:
-        state_manager.delete_state(deployment_id)
+        state_path = f"{state_manager.prefix}/{deployment_id}/state.json"
+        delete_object(DEFAULT_STATE_BUCKET, state_path)
     except (OSError, ValueError, RuntimeError) as e:
         logger.warning("Failed to delete state for %s: %s", deployment_id, e)
 
@@ -588,7 +608,7 @@ def _delete_deployment_sync(deployment_id: str) -> dict:
     }
 
 
-def _update_deployment_tag_sync(deployment_id: str, tag: str | None) -> dict:
+def _update_deployment_tag_sync(deployment_id: str, tag: str | None) -> dict[str, object]:
     """
     Synchronous tag update logic.
 

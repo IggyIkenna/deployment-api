@@ -637,7 +637,7 @@ async def _compute_and_cache_verification(
 
 async def _run_verification_and_cache_background(deployment_id: str) -> None:
     try:
-        from deployment import StateManager
+        from deployment_service.deployment import StateManager
 
         state_manager = StateManager(
             bucket_name=DEFAULT_STATE_BUCKET,

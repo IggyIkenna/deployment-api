@@ -502,23 +502,25 @@ class TestProcessDeploymentsBatchExtended:
 
         facade = _make_mock_facade(write_fn=capture_write)
 
-        inst_client = MagicMock()
-        # aggregated_list returns empty -> no VMs -> running_vms = []
-        inst_client.aggregated_list.return_value = []
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.AggregatedListInstancesRequest.return_value = MagicMock()
+        # The source code uses UCI get_compute_engine_client and calls
+        # ce.aggregated_list_instances() — mock at the UCI level.
+        ce_mock = MagicMock()
+        ce_mock.aggregated_list_instances.return_value = []  # no running VMs
 
         notify_mock = MagicMock()
-        with patch.dict(
-            sys.modules,
-            {
-                "google.cloud.compute_v1": compute_v1_mock,
-                "google.cloud": MagicMock(),
-                "deployment_api.utils.deployment_events": MagicMock(
-                    notify_deployment_updated_sync=notify_mock
-                ),
-            },
+        with (
+            patch(
+                "unified_cloud_interface.get_compute_engine_client",
+                return_value=ce_mock,
+            ),
+            patch.dict(
+                sys.modules,
+                {
+                    "deployment_api.utils.deployment_events": MagicMock(
+                        notify_deployment_updated_sync=notify_mock
+                    ),
+                },
+            ),
         ):
             synced, _ = self._run_batch(state, facade=facade)
 
@@ -978,15 +980,14 @@ class TestProcessDeploymentsBatchExtended:
 class TestProcessVmHealthAndStatusExtended:
     """Extended coverage for _process_vm_health_and_status."""
 
-    def _make_vm_mocks(self, serial_contents=""):
-        serial_output = MagicMock()
-        serial_output.contents = serial_contents
-        inst_client = MagicMock()
-        inst_client.get_serial_port_output.return_value = serial_output
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.GetSerialPortOutputInstanceRequest.return_value = MagicMock()
-        return compute_v1_mock, inst_client
+    def _make_ce_client_mock(self, serial_contents="", serial_raise=None):
+        """Create a mock UCI compute engine client returning serial log content as a string."""
+        ce_client = MagicMock()
+        if serial_raise:
+            ce_client.get_serial_port_output.side_effect = serial_raise
+        else:
+            ce_client.get_serial_port_output.return_value = serial_contents
+        return ce_client
 
     def _make_orch_mocks(self):
         backend = MagicMock()
@@ -1011,27 +1012,19 @@ class TestProcessVmHealthAndStatusExtended:
         serial_raise=None,
         serial_contents="",
     ):
-        import deployment_api.workers.deployment_processor as dp_mod
-
         if config is None:
             config = {}
 
-        compute_v1_mock, inst_client = self._make_vm_mocks(serial_contents)
-        if serial_raise:
-            inst_client.get_serial_port_output.side_effect = serial_raise
-
-        gc_mock = MagicMock()
-        gc_mock.compute_v1 = compute_v1_mock
+        ce_client = self._make_ce_client_mock(
+            serial_contents=serial_contents, serial_raise=serial_raise
+        )
 
         shard_statuses = {}
 
         with (
-            patch.dict(
-                sys.modules,
-                {
-                    "google.cloud": gc_mock,
-                    "google.cloud.compute_v1": compute_v1_mock,
-                },
+            patch(
+                "unified_cloud_interface.get_compute_engine_client",
+                return_value=ce_client,
             ),
             patch("deployment_api.workers.deployment_processor.settings") as mock_settings,
             patch(
@@ -1042,27 +1035,15 @@ class TestProcessVmHealthAndStatusExtended:
             mock_settings.VM_STARTUP_TIMEOUT_SECONDS = startup_timeout
             mock_settings.ORPHAN_DELETE_MAX_PARALLEL = 5
             mock_settings.ORPHAN_DELETE_RETRY_SECONDS = 120
-            if mock_importlib:
-                with patch.object(dp_mod, "_importlib", mock_importlib, create=True):
-                    updated = _process_vm_health_and_status(
-                        shards=shards,
-                        vm_map=vm_map,
-                        now=datetime.now(UTC),
-                        config=config,
-                        deployment_id="dep-1",
-                        shard_statuses=shard_statuses,
-                        updated=False,
-                    )
-            else:
-                updated = _process_vm_health_and_status(
-                    shards=shards,
-                    vm_map=vm_map,
-                    now=datetime.now(UTC),
-                    config=config,
-                    deployment_id="dep-1",
-                    shard_statuses=shard_statuses,
-                    updated=False,
-                )
+            updated = _process_vm_health_and_status(
+                shards=shards,
+                vm_map=vm_map,
+                now=datetime.now(UTC),
+                config=config,
+                deployment_id="dep-1",
+                shard_statuses=shard_statuses,
+                updated=False,
+            )
         return updated, shards, shard_statuses
 
     def test_vm_health_check_oom_detection(self):
