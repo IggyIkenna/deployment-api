@@ -423,11 +423,14 @@ class EventProcessor:
                     state_prefix=f"deployments.{self.deployment_env}",
                 )
 
-                backend = orch.get_backend(  # type: ignore[union-attr]  # dynamic object
-                    "vm",
-                    job_name=job_name,
-                    zone=config.get("zone"),
-                )
+                def _get_backend() -> object:
+                    return orch.get_backend(  # type: ignore[union-attr, arg-type, return-value]  # dynamic object
+                        "vm",
+                        job_name=job_name,
+                        zone=config.get("zone"),
+                    )
+
+                backend: object = _get_backend()
 
                 if backend and hasattr(backend, "cancel_job_fire_and_forget"):
                     max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)

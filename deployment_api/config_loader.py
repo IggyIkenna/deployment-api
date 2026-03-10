@@ -129,7 +129,7 @@ class ConfigLoader:
         except FileNotFoundError:
             return {}
         compute_configs = cast(dict[str, object], config.get("compute") or {})
-        raw = compute_configs.get(compute_type) or compute_configs.get("default") or {}
+        raw: object = compute_configs.get(compute_type) or compute_configs.get("default") or {}
         return cast(dict[str, object], raw) if isinstance(raw, dict) else {}
 
     def get_scaled_compute_config(

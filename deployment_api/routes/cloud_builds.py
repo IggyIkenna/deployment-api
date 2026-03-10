@@ -919,7 +919,7 @@ async def check_dependencies() -> DependencyCheckResponseDict:
             if qg_status and not qg_status.get("is_passing", True):
                 _qg_status_raw: object = qg_status.get("status")
                 _qg_last_build_raw: object = qg_status.get("last_build_time")
-                _dep_services_raw: object = status.get("dependent_services") or []
+                _dep_services: list[str] = list(status.get("dependent_services") or [])
                 issues.append(
                     cast(
                         DependencyIssueDict,
@@ -930,9 +930,7 @@ async def check_dependencies() -> DependencyCheckResponseDict:
                             "last_build_time": str(_qg_last_build_raw)
                             if _qg_last_build_raw is not None
                             else None,
-                            "affected_services": [str(x) for x in _dep_services_raw]
-                            if isinstance(_dep_services_raw, list)
-                            else [],
+                            "affected_services": _dep_services,
                         },
                     )
                 )

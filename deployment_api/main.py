@@ -22,7 +22,7 @@ from unified_trading_library.core.events_relay import make_events_relay_router
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED  # noqa: F401
 
 # Event logging for UTD v2 observability (before any log_event)
-setup_events(service_name="deployment-api", mode="live", sink="cloud_logging")
+setup_events(service_name="deployment-api", mode="live")
 setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version
@@ -68,7 +68,7 @@ app = FastAPI(
 # Configure middleware (CORS, etc.)
 configure_middleware(app)
 
-app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
+app.add_middleware(PrometheusMiddleware, service_name="deployment-api")  # pyright: ignore[reportArgumentType]
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(RequestAuditMiddleware)
 

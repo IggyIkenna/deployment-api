@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp
 
 from deployment_api import settings
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
@@ -38,7 +39,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
     from deployment_api.metrics — no additional Prometheus dependencies required.
     """
 
-    def __init__(self, app: FastAPI, service_name: str = "deployment-api") -> None:
+    def __init__(self, app: ASGIApp, service_name: str = "deployment-api") -> None:
         super().__init__(app)
         self.service_name = service_name
 

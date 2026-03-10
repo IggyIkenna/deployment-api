@@ -59,7 +59,7 @@ async def readiness_check() -> dict[str, str]:
 
 
 @router.get("/api/workers")
-async def get_workers_status():
+async def get_workers_status() -> dict[str, object]:
     """
     Get status of all active deployment worker processes.
 

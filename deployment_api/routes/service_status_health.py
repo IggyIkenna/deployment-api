@@ -21,7 +21,7 @@ def detect_anomalies(
 
     Returns list of detected issues.
     """
-    anomalies = []
+    anomalies: list[dict[str, str]] = []
     now = datetime.now(UTC)
 
     try:
