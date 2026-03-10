@@ -47,10 +47,10 @@ _ROUTE_MOCKS = {
         validate_quota_requirements=MagicMock(return_value=None),
         validate_image_availability=MagicMock(return_value=None),
         generate_deployment_report=MagicMock(return_value={}),
-        _resolve_deploy_dates=MagicMock(return_value=(None, None)),
+        resolve_deploy_dates=MagicMock(return_value=(None, None)),
     ),
     "deployment_api.routes.deployments_helpers": MagicMock(
-        _build_deploy_env_vars=MagicMock(return_value={}),
+        build_deploy_env_vars=MagicMock(return_value={}),
         _deployment_config=MagicMock(),
     ),
 }
@@ -375,7 +375,7 @@ class TestCreateDeployment:
             ),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
             patch(
-                "deployment_api.services.deployment_manager._build_deploy_env_vars", return_value={}
+                "deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}
             ),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
@@ -449,7 +449,7 @@ class TestCreateDeployment:
             ),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
             patch(
-                "deployment_api.services.deployment_manager._build_deploy_env_vars", return_value={}
+                "deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}
             ),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
@@ -499,7 +499,7 @@ class TestCreateDeployment:
             ),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
             patch(
-                "deployment_api.services.deployment_manager._build_deploy_env_vars", return_value={}
+                "deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}
             ),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):

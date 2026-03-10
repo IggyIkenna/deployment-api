@@ -6,10 +6,11 @@ from cloud storage with optimized parallel processing.
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
+from typing import cast
 
-from deployment_api.utils.path_combinatorics import get_path_combinatorics
+from deployment_api.utils.path_combinatorics import CombinatoricEntry, get_path_combinatorics
 from deployment_api.utils.storage_facade import list_objects
 
 from .batch_config_utils import (
@@ -23,15 +24,15 @@ logger = logging.getLogger(__name__)
 def query_specific_prefixes_for_category(  # noqa: C901
     service: str,
     cat: str,
-    dates_to_check: set,
+    dates_to_check: set[str],
     venue: list[str] | None,
     folder: list[str] | None,
     data_type: list[str] | None,
     path_prefix: str,
-    expected_start_dates_config: dict,
-    all_dates: set,
-    upstream_avail_dates: dict[str, dict[str, set]] | None = None,
-) -> dict:
+    expected_start_dates_config: dict[str, object],
+    all_dates: set[str],
+    upstream_avail_dates: dict[str, dict[str, set[str]]] | None = None,
+) -> dict[str, object]:
     """
     Use PathCombinatorics to query specific GCS prefixes in parallel.
 
@@ -70,9 +71,9 @@ def query_specific_prefixes_for_category(  # noqa: C901
 
     # Build all specific prefixes to query
     # Group by date for efficient parallel execution
-    prefixes_by_date = {}  # date -> list of prefixes
+    prefixes_by_date: dict[str, list[tuple[str, CombinatoricEntry]]] = {}
     for date_str in dates_to_check:
-        prefixes = []
+        prefixes: list[tuple[str, CombinatoricEntry]] = []
         # Check if this date is inside a tick data window
         in_tick_window = path_combinatorics.is_in_tick_window(date_str)
         for combo in combos:
@@ -88,7 +89,7 @@ def query_specific_prefixes_for_category(  # noqa: C901
             # Skip tick_window_only data types outside tick windows
             if combo.tick_window_only and not in_tick_window:
                 continue
-            base_prefix = path_combinatorics._get_base_prefix(service)
+            base_prefix = path_combinatorics.get_base_prefix(service)
             prefix = combo.to_gcs_prefix(date_str, base_prefix)
             prefixes.append((prefix, combo))
         if prefixes:
@@ -96,23 +97,25 @@ def query_specific_prefixes_for_category(  # noqa: C901
 
     # Execute parallel queries for all prefixes
     # FLAT tracking
-    found_dates = set()
-    venue_data = {}  # venue -> set of dates
-    sub_dimension_data = {}  # data_type -> set of dates
-    inst_type_data = {}  # folder -> set of dates
-    timeframe_data = {}  # timeframe -> set of dates (for market-data-processing-service)
+    found_dates: set[str] = set()
+    venue_data: dict[str, set[str]] = {}  # venue -> set of dates
+    sub_dimension_data: dict[str, set[str]] = {}  # data_type -> set of dates
+    inst_type_data: dict[str, set[str]] = {}  # folder -> set of dates
+    timeframe_data: dict[str, set[str]] = {}  # timeframe -> set of dates (for market-data-processing-service)  # noqa: E501
 
     # NESTED tracking for full dimensional breakdown
-    venue_data_types = {}  # venue -> {data_type -> set of dates}
-    venue_folders = {}  # venue -> {folder -> set of dates}
-    venue_timeframes = {}  # venue -> {timeframe -> set of dates} (for market-data-processing-service)  # noqa: E501
+    venue_data_types: dict[str, dict[str, set[str]]] = {}  # venue -> {data_type -> set of dates}
+    venue_folders: dict[str, dict[str, set[str]]] = {}  # venue -> {folder -> set of dates}
+    venue_timeframes: dict[str, dict[str, set[str]]] = {}  # venue -> {timeframe -> set of dates}
 
     # Blob timestamp tracking for verification classification
     # Maps venue -> {date_str -> oldest blob.updated datetime}
     # Uses min so if ANY file under a prefix is stale, the group is stale
-    venue_date_blob_timestamps = {}  # venue -> {date -> blob.updated}
+    venue_date_blob_timestamps: dict[str, dict[str, datetime]] = {}
 
-    def check_prefix(prefix: str, combo) -> tuple:
+    def check_prefix(
+        prefix: str, combo: CombinatoricEntry
+    ) -> tuple[bool, CombinatoricEntry, datetime | None]:
         """Check if prefix has any data, return (has_data, combo, oldest_blob_updated).
 
         Lists up to 50 blobs under the prefix (FUSE when production).
@@ -145,15 +148,19 @@ def query_specific_prefixes_for_category(  # noqa: C901
 
     # Use ThreadPoolExecutor for parallel GCS queries
     with ThreadPoolExecutor(max_workers=100) as executor:
-        all_futures = []
+        all_futures: list[tuple[object, str]] = []
         for date_str, prefix_combos in prefixes_by_date.items():
             for prefix, combo in prefix_combos:
                 future = executor.submit(check_prefix, prefix, combo)
                 all_futures.append((future, date_str))
 
-        for future, date_str in all_futures:
+        for future_obj, date_str in all_futures:
             try:
-                has_data, combo, blob_updated = future.result(timeout=30)
+                typed_future: Future[tuple[bool, CombinatoricEntry, datetime | None]] = cast(
+                    Future[tuple[bool, CombinatoricEntry, datetime | None]],
+                    future_obj,
+                )
+                has_data, combo, blob_updated = typed_future.result(timeout=30)
                 if has_data:
                     found_dates.add(date_str)
 
@@ -239,10 +246,10 @@ def query_specific_prefixes_for_category(  # noqa: C901
 def query_generic_prefixes_for_category(  # noqa: C901
     service: str,
     cat: str,
-    dates_to_check: set,
+    dates_to_check: set[str],
     venue: list[str] | None,
     path_prefix: str,
-) -> dict:
+) -> dict[str, object]:
     """
     Use generic service combinatorics to query GCS prefixes in parallel.
 
@@ -268,7 +275,7 @@ def query_generic_prefixes_for_category(  # noqa: C901
     path_combinatorics = get_path_combinatorics()
 
     # Build all prefixes to check
-    all_entries = []  # (date_str, prefix, sub_dim_value)
+    all_entries: list[tuple[str, str, str | None]] = []  # (date_str, prefix, sub_dim_value)
     for date_str in dates_to_check:
         entries = path_combinatorics.get_service_prefixes_for_date(
             service=service,
@@ -294,12 +301,12 @@ def query_generic_prefixes_for_category(  # noqa: C901
         }
 
     # Track results
-    found_dates = set()
-    sub_dimension_data = {}  # sub_dim_value -> set of dates
-    venue_data = {}  # venue -> set of dates (for instruments-service)
-    venue_date_blob_timestamps = {}  # venue -> {date -> blob.updated}
+    found_dates: set[str] = set()
+    sub_dimension_data: dict[str, set[str]] = {}  # sub_dim_value -> set of dates
+    venue_data: dict[str, set[str]] = {}  # venue -> set of dates (for instruments-service)
+    venue_date_blob_timestamps: dict[str, dict[str, datetime]] = {}
 
-    def check_prefix_generic(prefix: str) -> tuple:
+    def check_prefix_generic(prefix: str) -> tuple[bool, datetime | None]:
         """Quick existence check for a prefix, returns (has_data, oldest_blob_updated).
 
         Lists up to 50 blobs (FUSE when production) and returns min blob.updated.
@@ -329,7 +336,7 @@ def query_generic_prefixes_for_category(  # noqa: C901
 
     # Execute all checks in parallel
     with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = []
+        futures: list[tuple[Future[tuple[bool, datetime | None]], str, str | None]] = []
         for date_str, prefix, sub_dim_value in all_entries:
             future = executor.submit(check_prefix_generic, prefix)
             futures.append((future, date_str, sub_dim_value))
@@ -386,11 +393,11 @@ def query_generic_prefixes_for_category(  # noqa: C901
 
 
 def get_expected_dates_for_category(
-    all_dates: set,
-    expected_start_dates_config: dict,
+    all_dates: set[str],
+    expected_start_dates_config: dict[str, object],
     service: str,
     cat: str,
-) -> set:
+) -> set[str]:
     """Get expected dates for a category, respecting category_start from config."""
     cat_start = get_category_start_date(expected_start_dates_config, service, cat)
     if not cat_start:

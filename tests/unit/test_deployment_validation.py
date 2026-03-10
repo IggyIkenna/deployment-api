@@ -399,19 +399,19 @@ class TestGetServiceEarliestStart:
 
 
 class TestResolveDeployDates:
-    """Tests for _resolve_deploy_dates."""
+    """Tests for resolve_deploy_dates."""
 
     def test_provided_dates_used_as_is(self, tmp_path):
         from types import SimpleNamespace
 
-        from deployment_api.routes.deployment_validation import _resolve_deploy_dates
+        from deployment_api.routes.deployment_validation import resolve_deploy_dates
 
         req = SimpleNamespace(
             service="instruments-service",
             start_date="2024-01-01",
             end_date="2024-01-31",
         )
-        start, end = _resolve_deploy_dates(req, str(tmp_path))
+        start, end = resolve_deploy_dates(req, str(tmp_path))
         assert start == "2024-01-01"
         assert end == "2024-01-31"
 
@@ -419,28 +419,28 @@ class TestResolveDeployDates:
         from datetime import UTC, datetime, timedelta
         from types import SimpleNamespace
 
-        from deployment_api.routes.deployment_validation import _resolve_deploy_dates
+        from deployment_api.routes.deployment_validation import resolve_deploy_dates
 
         req = SimpleNamespace(
             service="instruments-service",
             start_date="2024-01-01",
             end_date=None,
         )
-        _, end = _resolve_deploy_dates(req, str(tmp_path))
+        _, end = resolve_deploy_dates(req, str(tmp_path))
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
         assert end == yesterday
 
     def test_missing_start_date_defaults_from_config(self, tmp_path):
         from types import SimpleNamespace
 
-        from deployment_api.routes.deployment_validation import _resolve_deploy_dates
+        from deployment_api.routes.deployment_validation import resolve_deploy_dates
 
         req = SimpleNamespace(
             service="instruments-service",
             start_date=None,
             end_date="2024-01-31",
         )
-        start, _ = _resolve_deploy_dates(req, str(tmp_path))
+        start, _ = resolve_deploy_dates(req, str(tmp_path))
         assert isinstance(start, str)
         assert len(start) == 10  # YYYY-MM-DD format
 
