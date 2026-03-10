@@ -14,15 +14,22 @@ from typing import cast
 from fastapi import FastAPI
 
 from deployment_api.background_sync import (
-    PROJECT_ID,
     STATE_BUCKET,
-    _auto_sync_running_deployments,
+    auto_sync_running_deployments,
     get_held_deployment_locks,
     get_owner_id,
     set_shutdown_event,
 )
 from deployment_api.utils.service_utils import get_config_dir
-from deployment_api.utils.storage_client import get_storage_client as get_storage_client_with_pool
+from deployment_api.utils.storage_facade import (
+    delete_object as _delete_storage_object,
+)
+from deployment_api.utils.storage_facade import (
+    object_exists as _storage_object_exists,
+)
+from deployment_api.utils.storage_facade import (
+    read_object_text as _read_storage_object_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +56,13 @@ async def lifespan(app: FastAPI):  # noqa: C901
     # Start background sync task
     _shutdown_event = asyncio.Event()
     set_shutdown_event(_shutdown_event)
-    _background_task = asyncio.create_task(_auto_sync_running_deployments())
+    _background_task = asyncio.create_task(auto_sync_running_deployments())
     logger.info("Background auto-sync task started")
 
     # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
-    from deployment_api.utils.deployment_events import _drain_sync_queue
+    from deployment_api.utils.deployment_events import drain_sync_queue
 
-    _events_drain_task = asyncio.create_task(_drain_sync_queue())
+    _events_drain_task = asyncio.create_task(drain_sync_queue())
     logger.info("Deployment events drain task started")
 
     yield
@@ -79,22 +86,19 @@ async def lifespan(app: FastAPI):  # noqa: C901
 
     # Release any held per-deployment locks on graceful shutdown
     try:
-        client = get_storage_client_with_pool(PROJECT_ID)  # Uses shared client with large pool
-        bucket = client.bucket(STATE_BUCKET)
-
         # Release all locks held by this instance
         released_count = 0
         held_deployment_locks = get_held_deployment_locks()
         for deployment_id in list(held_deployment_locks):
             try:
                 lock_blob_name = f"locks/deployment_{deployment_id}.lock"
-                lock_blob = bucket.blob(lock_blob_name)
-                if lock_blob.exists():
+                if _storage_object_exists(STATE_BUCKET, lock_blob_name):
                     lock_data = cast(
-                        dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                        dict[str, object],
+                        json.loads(_read_storage_object_text(STATE_BUCKET, lock_blob_name) or "{}"),
                     )
                     if lock_data.get("owner") == get_owner_id():
-                        lock_blob.delete()
+                        _delete_storage_object(STATE_BUCKET, lock_blob_name)
                         released_count += 1
             except (OSError, ValueError, RuntimeError):
                 pass  # Lock may have been taken by another instance

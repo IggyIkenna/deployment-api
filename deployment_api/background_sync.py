@@ -33,7 +33,7 @@ def set_shutdown_event(event: asyncio.Event) -> None:
     _shutdown_event = event
 
 
-async def _auto_sync_running_deployments():  # noqa: C901
+async def auto_sync_running_deployments():  # noqa: C901
     """
     Background task that periodically syncs status for running deployments.
 
@@ -67,7 +67,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
     # Run first sync immediately (don't wait for interval)
     first_run = True
 
-    while not _shutdown_event.is_set():
+    while _shutdown_event is None or not _shutdown_event.is_set():
         try:
             if first_run:
                 # Small delay on first run to let API fully start, but don't wait full interval
@@ -76,7 +76,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
             else:
                 await asyncio.sleep(current_interval)
 
-            if _shutdown_event.is_set():
+            if _shutdown_event is not None and _shutdown_event.is_set():
                 break
 
             # Run sync operations in thread pool to not block event loop

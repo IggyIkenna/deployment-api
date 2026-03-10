@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections import defaultdict
+from collections.abc import AsyncGenerator
 
 logger = logging.getLogger(__name__)
 _sse_queues: dict[str, set[asyncio.Queue[str]]] = defaultdict(set)
@@ -23,13 +24,13 @@ def _get_sync_queue():
     return _sync_queue
 
 
-async def subscribe(deployment_id: str):
-    q = asyncio.Queue()
+async def subscribe(deployment_id: str) -> AsyncGenerator[str]:
+    q: asyncio.Queue[str] = asyncio.Queue()
     async with _lock:
         _sse_queues[deployment_id].add(q)
     try:
         while True:
-            msg = await q.get()
+            msg: str = await q.get()
             yield msg
     finally:
         async with _lock:
@@ -48,7 +49,7 @@ async def _broadcast(deployment_id: str):
 
 async def notify_deployment_updated(deployment_id: str):
     try:
-        from deployment_api.utils.cache import invalidate_deployment_state_cache
+        from deployment_api.routes.deployment_caching import invalidate_deployment_state_cache
 
         await invalidate_deployment_state_cache(deployment_id)
     except (OSError, ValueError, RuntimeError) as e:
@@ -85,7 +86,9 @@ async def drain_sync_queue():
                 continue
             await _broadcast(deployment_id)
             try:
-                from deployment_api.utils.cache import invalidate_deployment_state_cache
+                from deployment_api.routes.deployment_caching import (
+                    invalidate_deployment_state_cache,
+                )
 
                 await invalidate_deployment_state_cache(deployment_id)
             except (OSError, ValueError, RuntimeError) as e:
