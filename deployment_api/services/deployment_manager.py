@@ -19,15 +19,11 @@ from deployment_api import settings as _settings
 from deployment_api.clients import deployment_service_client as _ds_client
 from deployment_api.config_loader import ConfigLoader
 from deployment_api.config_loader import substitute_env_vars as _substitute_env_vars
-from deployment_api.routes.deployment_validation import (
-    _resolve_deploy_dates,
-    generate_deployment_report,
-    validate_deployment_request,
-    validate_image_availability,
-    validate_quota_requirements,
-    validate_shard_configuration,
-)
-from deployment_api.routes.deployments_helpers import _build_deploy_env_vars
+
+# These imports are deferred to break the circular dependency:
+# services/__init__ → deployment_manager → routes/deployment_validation
+# → routes/__init__ → deployments.py → services.deployment_manager (cycle)
+# Each method that needs them imports inline at call time (safe after full init).
 from deployment_api.utils.quota_requirements import (
     VmQuotaShape,
     multiply_resources,
@@ -60,7 +56,11 @@ class DeploymentManager:
         Returns:
             Error dict if validation fails, None if valid
         """
-        return cast(dict[str, object] | None, validate_deployment_request(deploy_request))
+        from deployment_api.routes.deployment_validation import (
+            validate_deployment_request as _validate_deployment_request,
+        )
+
+        return cast(dict[str, object] | None, _validate_deployment_request(deploy_request))
 
     async def calculate_quota_requirements(
         self, deploy_request: DeployRequest, config_dir: str = "configs"
@@ -205,9 +205,19 @@ class DeploymentManager:
         service_cfg: dict[str, object] = cast(
             dict[str, object], loader_for_validation.load_service_config(deploy_request.service)
         )
+        from deployment_api.routes.deployment_validation import (
+            validate_image_availability as _validate_image_availability,
+        )
+        from deployment_api.routes.deployment_validation import (
+            validate_quota_requirements as _validate_quota_requirements,
+        )
+        from deployment_api.routes.deployment_validation import (
+            validate_shard_configuration as _validate_shard_configuration,
+        )
+
         shard_error: dict[str, object] | None = cast(
             dict[str, object] | None,
-            validate_shard_configuration(service_cfg, deploy_request),
+            _validate_shard_configuration(service_cfg, deploy_request),
         )
         if shard_error:
             raise ValueError(str(shard_error))
@@ -216,7 +226,7 @@ class DeploymentManager:
         # Note: full quota validation done in calculate_quota_requirements
         quota_error: dict[str, object] | None = cast(
             dict[str, object] | None,
-            validate_quota_requirements({}, 0),
+            _validate_quota_requirements({}, 0),
         )
         if quota_error:
             raise ValueError(str(quota_error))
@@ -237,7 +247,7 @@ class DeploymentManager:
         )
         image_error: dict[str, object] | None = cast(
             dict[str, object] | None,
-            validate_image_availability(docker_image_for_validation, region_for_validation),
+            _validate_image_availability(docker_image_for_validation, region_for_validation),
         )
         if image_error:
             raise ValueError(str(image_error))
@@ -358,6 +368,10 @@ class DeploymentManager:
         """
         try:
             # Resolve effective dates (local config-level check, no deployment_service import needed)  # noqa: E501
+            from deployment_api.routes.deployment_validation import (
+                _resolve_deploy_dates,
+            )
+
             _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)
 
             # Use region from request or default
@@ -392,6 +406,10 @@ class DeploymentManager:
             )
             job_name: str = cast(
                 str, service_config.get("cloud_run_job_name", deploy_request.service)
+            )
+
+            from deployment_api.routes.deployments_helpers import (
+                _build_deploy_env_vars,
             )
 
             # Submit deployment to deployment-service HTTP API
@@ -505,4 +523,8 @@ class DeploymentManager:
         state = state_service.get_deployment_state(deployment_id)
         if not state:
             return {"error": f"Deployment {deployment_id} not found"}
-        return cast(dict[str, object], generate_deployment_report(state, None, None))
+        from deployment_api.routes.deployment_validation import (
+            generate_deployment_report as _generate_deployment_report,
+        )
+
+        return cast(dict[str, object], _generate_deployment_report(state, None, None))
