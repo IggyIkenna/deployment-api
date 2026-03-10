@@ -42,7 +42,7 @@ def status_str(val: object) -> str:
         d = cast(dict[str, object], val)
         return cast(str, d.get("status", "unknown"))
     elif hasattr(val, "status"):
-        return cast(str, val.status)
+        return str(val.status)  # type: ignore[union-attr]  # hasattr confirms existence
     else:
         return str(val)
 
