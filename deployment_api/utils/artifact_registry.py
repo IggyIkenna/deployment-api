@@ -63,7 +63,7 @@ def _get_auth_token() -> str | None:
         return None
 
 
-async def get_image_info(image_url: str) -> dict[str, object] | None:  # noqa: C901
+async def get_image_info(image_url: str) -> dict[str, object] | None:
     """
     Get image digest and metadata from Artifact Registry.
 

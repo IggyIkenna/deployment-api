@@ -53,7 +53,7 @@ router = APIRouter()
 
 
 @router.get("/last-updated/batch")
-async def get_last_updated_batch(  # noqa: C901
+async def get_last_updated_batch(
     request: Request,
     services: list[str] | None = Query(None, description="List of services (default: all known)"),
 ):
@@ -96,6 +96,7 @@ async def get_last_updated_batch(  # noqa: C901
 
     # Parallel check (max 15 concurrent to avoid overwhelming GCS)
     from concurrent.futures import Future
+
     with ThreadPoolExecutor(max_workers=min(15, len(tasks))) as executor:
         futures: dict[Future[dict[str, object]], tuple[str, str]] = {
             executor.submit(check_bucket_latest, svc, cat, bucket): (svc, cat)
@@ -346,7 +347,9 @@ async def get_data_status_turbo_impl(  # noqa: C901
                     folder=folder,
                     data_type=data_type,
                     path_prefix=path_prefix,
-                    expected_start_dates_config=cast(dict[str, object], expected_start_dates_config),
+                    expected_start_dates_config=cast(
+                        dict[str, object], expected_start_dates_config
+                    ),
                     all_dates=all_dates,
                     upstream_avail_dates=upstream_dates,
                 )
@@ -363,15 +366,27 @@ async def get_data_status_turbo_impl(  # noqa: C901
             if "error" in query_result:
                 return query_result
 
-            found_dates = query_result["found_dates"]
-            venue_data = query_result["venue_data"]
-            sub_dimension_data = query_result["sub_dimension_data"]
-            query_result["inst_type_data"]
-            query_result["venue_data_types"]
-            query_result["venue_folders"]
-            query_result.get("timeframe_data") or {}
-            query_result.get("venue_timeframes") or {}
-            query_result.get("venue_date_blob_timestamps") or {}
+            found_dates_raw = query_result.get("found_dates")
+            found_dates: set[str] = (
+                cast(set[str], found_dates_raw) if isinstance(found_dates_raw, set) else set()
+            )
+            venue_data_raw = query_result.get("venue_data")
+            venue_data: dict[str, object] = (
+                cast(dict[str, object], venue_data_raw) if isinstance(venue_data_raw, dict) else {}
+            )
+            sub_dimension_data_raw = query_result.get("sub_dimension_data")
+            sub_dimension_data: dict[str, object] = (
+                cast(dict[str, object], sub_dimension_data_raw)
+                if isinstance(sub_dimension_data_raw, dict)
+                else {}
+            )
+            # consume but discard unused fields from query result
+            _ = query_result.get("inst_type_data")
+            _ = query_result.get("venue_data_types")
+            _ = query_result.get("venue_folders")
+            _ = query_result.get("timeframe_data")
+            _ = query_result.get("venue_timeframes")
+            _ = query_result.get("venue_date_blob_timestamps")
 
             # Build result dictionary with found data
             result: dict[str, object] = {
@@ -400,18 +415,28 @@ async def get_data_status_turbo_impl(  # noqa: C901
 
             # Add sub-dimension data if requested
             if include_sub_dimensions and sub_dimension_data:
-                result[sub_dimension_name or "sub_dimension"] = {
-                    name: {
-                        "dates_found": len(dates),
-                        "dates_found_list": sorted(dates) if include_dates_list else None,
+                sub_dim_result: dict[str, object] = {}
+                for sd_name_raw, sd_dates_raw in sub_dimension_data.items():
+                    sd_name = str(sd_name_raw)
+                    sd_dates: set[str] = (
+                        cast(set[str], sd_dates_raw) if isinstance(sd_dates_raw, set) else set()
+                    )
+                    sub_dim_result[sd_name] = {
+                        "dates_found": len(sd_dates),
+                        "dates_found_list": sorted(sd_dates) if include_dates_list else None,
                     }
-                    for name, dates in sub_dimension_data.items()
-                }
+                result[sub_dimension_name or "sub_dimension"] = sub_dim_result
 
             # Add venue data if available
             if venue_data:
-                venues_dict = {}
-                for venue_name, venue_dates in venue_data.items():
+                venues_dict: dict[str, object] = {}
+                for venue_name_raw, venue_dates_raw in venue_data.items():
+                    venue_name = str(venue_name_raw)
+                    venue_dates: set[str] = (
+                        cast(set[str], venue_dates_raw)
+                        if isinstance(venue_dates_raw, set)
+                        else set()
+                    )
                     # Get expected dates for this venue
                     venue_expected_dates = get_expected_dates_for_venue(
                         all_dates,
@@ -448,7 +473,7 @@ async def get_data_status_turbo_impl(  # noqa: C901
 
                 # Add venue summary
                 expected_venues = get_expected_venues_for_category(venue_data_types_config, cat)
-                actual_venues = set(venue_data.keys())
+                actual_venues: set[str] = set(venue_data.keys())
                 result["venue_summary"] = {
                     "expected": sorted(expected_venues),
                     "found": sorted(actual_venues),
@@ -468,7 +493,9 @@ async def get_data_status_turbo_impl(  # noqa: C901
         futures = {executor.submit(check_category, cat): cat for cat in categories}
         for future in as_completed(futures):
             result = future.result()
-            results[result["category"]] = result
+            cat_key_raw = result.get("category")
+            cat_key = str(cat_key_raw) if isinstance(cat_key_raw, str) else ""
+            results[cat_key] = result
 
     # Calculate overall totals using extracted functions
     total_venue_expected, total_venue_found, expected_missing, unexpected_missing = (
@@ -483,12 +510,18 @@ async def get_data_status_turbo_impl(  # noqa: C901
     )
 
     # Calculate category-level totals for reference
-    total_expected_category = sum(
-        r.get("dates_expected", 0) for r in results.values() if "error" not in r
-    )
-    total_found_category = sum(
-        r.get("dates_found", 0) for r in results.values() if "error" not in r
-    )
+    total_expected_category = 0
+    total_found_category = 0
+    for _r_raw in results.values():
+        if not isinstance(_r_raw, dict):
+            continue
+        _r = cast(dict[str, object], _r_raw)
+        if "error" in _r:
+            continue
+        _exp_raw = _r.get("dates_expected")
+        _fnd_raw = _r.get("dates_found")
+        total_expected_category += int(_exp_raw) if isinstance(_exp_raw, int) else 0
+        total_found_category += int(_fnd_raw) if isinstance(_fnd_raw, int) else 0
 
     # Calculate overall file counts if requested
     overall_file_counts = calculate_overall_file_counts(results, include_file_counts)

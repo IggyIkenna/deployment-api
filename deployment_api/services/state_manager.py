@@ -382,7 +382,7 @@ class StateManager:
             if now_ts - pending_ts(val) >= retry_seconds and vm_status(vm_map, jid) == "RUNNING"
         ]
 
-    def cleanup_state_ttl(self) -> int:  # noqa: C901
+    def cleanup_state_ttl(self) -> int:
         """
         Clean up old deployment states based on TTL.
 

@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from deployment_api import __version__ as _api_version
 from deployment_api import settings
-from deployment_api.auth import AUTH_ENVIRONMENT as _auth_environment
+from deployment_api.auth import AUTH_ENVIRONMENT as _AUTH_ENVIRONMENT
 from deployment_api.utils.storage_client import get_storage_client as get_storage_client_with_pool
 from deployment_api.workers.auto_sync import (
     auto_sync_running_deployments as _auto_sync_running_deployments,
@@ -143,9 +143,9 @@ def create_app() -> FastAPI:
         description="API for managing and monitoring service deployments",
         version=_api_version,
         lifespan=lifespan,
-        docs_url="/docs" if _auth_environment != "production" else None,
-        redoc_url="/redoc" if _auth_environment != "production" else None,
-        openapi_url="/openapi.json" if _auth_environment != "production" else None,
+        docs_url="/docs" if _AUTH_ENVIRONMENT != "production" else None,
+        redoc_url="/redoc" if _AUTH_ENVIRONMENT != "production" else None,
+        openapi_url="/openapi.json" if _AUTH_ENVIRONMENT != "production" else None,
     )
 
     # Build CORS allowed origins from env vars

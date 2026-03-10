@@ -383,7 +383,7 @@ def compute_classification_counts(
     return counts
 
 
-def build_existing_dates_sets(  # noqa: C901
+def build_existing_dates_sets(
     turbo_result: dict[str, object],
 ) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
     """Build category+date and venue+date sets from turbo data status result.
@@ -435,7 +435,7 @@ def build_existing_dates_sets(  # noqa: C901
     return existing_cat_dates, existing_venue_dates
 
 
-def _compute_verified_succeeded_shard_ids(  # noqa: C901
+def _compute_verified_succeeded_shard_ids(
     state: DeploymentState,
     existing_cat_dates: dict[str, set[str]],
     existing_venue_dates: dict[str, dict[str, set[str]]],

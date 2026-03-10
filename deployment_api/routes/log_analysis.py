@@ -17,6 +17,205 @@ logger = logging.getLogger(__name__)
 _log_analysis_cache: dict[str, dict[str, object]] = {}
 _log_analysis_cache_ttl = 60  # Cache log analysis for 60 seconds
 
+# Patterns to search for — module-level constants for clarity and reuse
+_ERROR_PATTERNS: list[tuple[str, str]] = [
+    (r"\bERROR\b", "ERROR"),
+    (r"\bCRITICAL\b", "CRITICAL"),
+    (r"\bFATAL\b", "FATAL"),
+    (r"\bException\b", "EXCEPTION"),
+    (r"\bFailed\b.*:", "FAILED"),
+    (r"Error:", "ERROR"),
+]
+
+_WARNING_PATTERNS: list[tuple[str, str]] = [
+    (r"\bWARNING\b", "WARNING"),
+    (r"\bWARN\b", "WARN"),
+    (r"\bdeprecated\b", "DEPRECATED"),
+    (r"\bretry\b", "RETRY"),
+    (r"\btimeout\b", "TIMEOUT"),
+]
+
+# Stack trace patterns
+_STACK_TRACE_PATTERNS: list[str] = [
+    r"Traceback \(most recent call last\)",
+    r"^\s+at .+\(.+:\d+\)",  # JavaScript stack trace
+    r"^\s+File .+line \d+",  # Python stack trace
+]
+
+# Success patterns (strong indicators of successful completion)
+_SUCCESS_PATTERNS: list[str] = [
+    r"Processing complete",
+    r"All shards completed successfully",
+    r"Deployment completed successfully",
+    r"Task completed successfully",
+    r"✓.*complete",
+]
+
+
+def _classify_log_line(
+    line: str,
+    line_num: int,
+    shard_id: object,
+    vm_name: str,
+) -> tuple[dict[str, object] | None, dict[str, object] | None, bool, dict[str, object] | None]:
+    """Classify a single log line against all pattern groups.
+
+    Returns (error_entry|None, warning_entry|None, is_stack_trace, success_entry|None).
+    """
+    error_entry: dict[str, object] | None = None
+    warning_entry: dict[str, object] | None = None
+    is_stack_trace = False
+    success_entry: dict[str, object] | None = None
+
+    # Check for errors
+    for pattern, error_type in _ERROR_PATTERNS:
+        if re.search(pattern, line, re.IGNORECASE):
+            error_entry = {
+                "line": line,
+                "type": error_type,
+                "shard_id": shard_id,
+                "vm_name": vm_name,
+                "line_number": line_num,
+            }
+            break
+
+    # Check for warnings
+    for pattern, warn_type in _WARNING_PATTERNS:
+        if re.search(pattern, line, re.IGNORECASE):
+            warning_entry = {
+                "line": line,
+                "type": warn_type,
+                "shard_id": shard_id,
+                "vm_name": vm_name,
+                "line_number": line_num,
+            }
+            break
+
+    # Check for stack traces
+    for pattern in _STACK_TRACE_PATTERNS:
+        if re.search(pattern, line):
+            is_stack_trace = True
+            break
+
+    # Check for success indicators
+    for pattern in _SUCCESS_PATTERNS:
+        if re.search(pattern, line, re.IGNORECASE):
+            success_entry = {
+                "line": line,
+                "shard_id": shard_id,
+                "vm_name": vm_name,
+                "line_number": line_num,
+            }
+            break
+
+    return error_entry, warning_entry, is_stack_trace, success_entry
+
+
+def _get_vm_name_from_shard(shard: dict[str, object]) -> str:
+    """Extract VM name from shard compute_info, or return empty string."""
+    _compute_raw: object = shard.get("compute_info")
+    compute_info: dict[str, object] = (
+        cast(dict[str, object], _compute_raw) if isinstance(_compute_raw, dict) else {}
+    )
+    if not compute_info:
+        return ""
+    vm_name_raw = compute_info.get("vm_name")
+    return str(vm_name_raw) if isinstance(vm_name_raw, str) else ""
+
+
+def _scan_log_lines(
+    log_text: str,
+    shard_id: object,
+    vm_name: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]]:
+    """Scan raw log text lines and classify each one.
+
+    Returns (errors, warnings, stack_traces_found, success_indicators).
+    """
+    errors: list[dict[str, object]] = []
+    warnings: list[dict[str, object]] = []
+    stack_traces_found = False
+    success: list[dict[str, object]] = []
+
+    for line_num, raw_line in enumerate(log_text.split("\n"), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        err, warn, is_st, succ = _classify_log_line(line, line_num, shard_id, vm_name)
+        if err:
+            errors.append(err)
+        if warn:
+            warnings.append(warn)
+        if is_st:
+            stack_traces_found = True
+        if succ:
+            success.append(succ)
+
+    return errors, warnings, stack_traces_found, success
+
+
+def _analyze_shard_vm(
+    shard: dict[str, object],
+    state_manager: object,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]]:
+    """Analyze logs for a single shard (VM-based deployment)."""
+    empty: tuple[
+        list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]
+    ] = ([], [], False, [])
+
+    try:
+        vm_name = _get_vm_name_from_shard(shard)
+        if not vm_name:
+            return empty
+
+        # Get serial console output
+        get_console_fn = getattr(state_manager, "get_vm_serial_console", None)
+        logs: object = get_console_fn(vm_name) if callable(get_console_fn) else None
+        if not logs or not isinstance(logs, str):
+            return empty
+
+        return _scan_log_lines(logs, shard.get("shard_id"), vm_name)
+
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("Error analyzing shard %s logs: %s", shard.get("shard_id"), e)
+
+    return empty
+
+
+def _get_cached_analysis(deployment_id: str, now: float) -> dict[str, object] | None:
+    """Return cached analysis if still fresh, else None."""
+    cache_entry = _log_analysis_cache.get(deployment_id)
+    if cache_entry:
+        ts_raw = cache_entry.get("timestamp")
+        ts = float(ts_raw) if isinstance(ts_raw, (int, float)) else 0.0
+        if now - ts < _log_analysis_cache_ttl:
+            data_raw = cache_entry.get("data")
+            if isinstance(data_raw, dict):
+                return cast(dict[str, object], data_raw)
+    return None
+
+
+def _determine_status_detail(
+    status_val: str,
+    has_errors: bool,
+    stack_traces_found: bool,
+    has_success_indicators: bool,
+    has_warnings: bool,
+) -> str:
+    """Determine the status_detail string from log analysis results."""
+    if status_val != "completed":
+        return status_val  # Keep failed/succeeded as-is
+
+    if has_errors or stack_traces_found:
+        return "failed_with_errors"
+    if has_success_indicators and not has_warnings:
+        return "succeeded"
+    if has_success_indicators and has_warnings:
+        return "succeeded_with_warnings"
+    if has_warnings:
+        return "completed_with_warnings"
+    return "completed"  # No strong indicators either way
+
 
 def analyze_deployment_logs_sync(
     state_manager: object, deployment_id: str, state: object
@@ -30,16 +229,10 @@ def analyze_deployment_logs_sync(
     Returns:
         dict: Log analysis results with errors, warnings, and status_detail
     """
-    # Check cache first
     now = time.time()
-    cache_entry = _log_analysis_cache.get(deployment_id)
-    if cache_entry:
-        ts_raw = cache_entry.get("timestamp")
-        ts = float(ts_raw) if isinstance(ts_raw, (int, float)) else 0.0
-        if now - ts < _log_analysis_cache_ttl:
-            data_raw = cache_entry.get("data")
-            if isinstance(data_raw, dict):
-                return cast(dict[str, object], data_raw)
+    cached = _get_cached_analysis(deployment_id, now)
+    if cached is not None:
+        return cached
 
     # Only analyze completed/failed deployments (don't slow down running ones)
     status_attr = getattr(state, "status", "")
@@ -49,40 +242,6 @@ def analyze_deployment_logs_sync(
             "status_detail": status_val,  # Keep original status for running/pending
             "log_analysis": None,
         }
-
-    # Patterns to search for
-    error_patterns = [
-        (r"\bERROR\b", "ERROR"),
-        (r"\bCRITICAL\b", "CRITICAL"),
-        (r"\bFATAL\b", "FATAL"),
-        (r"\bException\b", "EXCEPTION"),
-        (r"\bFailed\b.*:", "FAILED"),
-        (r"Error:", "ERROR"),
-    ]
-
-    warning_patterns = [
-        (r"\bWARNING\b", "WARNING"),
-        (r"\bWARN\b", "WARN"),
-        (r"\bdeprecated\b", "DEPRECATED"),
-        (r"\bretry\b", "RETRY"),
-        (r"\btimeout\b", "TIMEOUT"),
-    ]
-
-    # Stack trace patterns
-    stack_trace_patterns = [
-        r"Traceback \(most recent call last\)",
-        r"^\s+at .+\(.+:\d+\)",  # JavaScript stack trace
-        r"^\s+File .+line \d+",  # Python stack trace
-    ]
-
-    # Success patterns (strong indicators of successful completion)
-    success_patterns = [
-        r"Processing complete",
-        r"All shards completed successfully",
-        r"Deployment completed successfully",
-        r"Task completed successfully",
-        r"✓.*complete",
-    ]
 
     try:
         get_shards_fn = getattr(state_manager, "get_deployment_shards", None)
@@ -120,101 +279,14 @@ def analyze_deployment_logs_sync(
         stack_traces_found = False
         success_indicators: list[dict[str, object]] = []
 
-        def _analyze_shard_vm(
-            shard: dict[str, object],
-        ) -> tuple[list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]]:
-            """Analyze logs for a single shard (VM-based deployment)."""
-            shard_errors: list[dict[str, object]] = []
-            shard_warnings: list[dict[str, object]] = []
-            shard_stack_traces = False
-            shard_success: list[dict[str, object]] = []
-
-            try:
-                # Get logs from shard serial console (VM deployment)
-                _compute_raw: object = shard.get("compute_info")
-                compute_info: dict[str, object] = (
-                    cast(dict[str, object], _compute_raw) if isinstance(_compute_raw, dict) else {}
-                )
-                if not compute_info:
-                    return shard_errors, shard_warnings, shard_stack_traces, shard_success
-
-                vm_name_raw = compute_info.get("vm_name")
-                vm_name = str(vm_name_raw) if isinstance(vm_name_raw, str) else ""
-                if not vm_name:
-                    return shard_errors, shard_warnings, shard_stack_traces, shard_success
-
-                # Get serial console output
-                get_console_fn = getattr(state_manager, "get_vm_serial_console", None)
-                logs: object = get_console_fn(vm_name) if callable(get_console_fn) else None
-                if not logs:
-                    return shard_errors, shard_warnings, shard_stack_traces, shard_success
-
-                log_lines = logs.split("\n") if isinstance(logs, str) else []
-
-                for line_num, line in enumerate(log_lines, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Check for errors
-                    for pattern, error_type in error_patterns:
-                        if re.search(pattern, line, re.IGNORECASE):
-                            shard_errors.append(
-                                {
-                                    "line": line,
-                                    "type": error_type,
-                                    "shard_id": shard.get("shard_id"),
-                                    "vm_name": vm_name,
-                                    "line_number": line_num,
-                                }
-                            )
-                            break
-
-                    # Check for warnings
-                    for pattern, warn_type in warning_patterns:
-                        if re.search(pattern, line, re.IGNORECASE):
-                            shard_warnings.append(
-                                {
-                                    "line": line,
-                                    "type": warn_type,
-                                    "shard_id": shard.get("shard_id"),
-                                    "vm_name": vm_name,
-                                    "line_number": line_num,
-                                }
-                            )
-                            break
-
-                    # Check for stack traces
-                    for pattern in stack_trace_patterns:
-                        if re.search(pattern, line):
-                            shard_stack_traces = True
-                            break
-
-                    # Check for success indicators
-                    for pattern in success_patterns:
-                        if re.search(pattern, line, re.IGNORECASE):
-                            shard_success.append(
-                                {
-                                    "line": line,
-                                    "shard_id": shard.get("shard_id"),
-                                    "vm_name": vm_name,
-                                    "line_number": line_num,
-                                }
-                            )
-                            break
-
-            except (OSError, ValueError, RuntimeError) as e:
-                logger.warning("Error analyzing shard %s logs: %s", shard.get("shard_id"), e)
-
-            return shard_errors, shard_warnings, shard_stack_traces, shard_success
-
         # Parallel analysis of shard logs (limit concurrency to avoid overwhelming)
         max_workers = min(10, len(shards_to_check))
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all shard analysis tasks
             futures = {
-                executor.submit(_analyze_shard_vm, shard): shard for shard in shards_to_check
+                executor.submit(_analyze_shard_vm, shard, state_manager): shard
+                for shard in shards_to_check
             }
 
             # Collect results as they complete
@@ -239,26 +311,9 @@ def analyze_deployment_logs_sync(
         has_warnings = len(all_warnings) > 0
         has_success_indicators = len(success_indicators) > 0
 
-        # Status logic for "completed" deployments:
-        # - If has strong success indicators and no errors -> "succeeded"
-        # - If has errors -> "failed_with_errors"
-        # - If has stack traces -> "failed_with_errors"
-        # - If has only warnings -> "succeeded_with_warnings"
-        # - Otherwise -> keep original status
-
-        if status_val == "completed":
-            if has_errors or stack_traces_found:
-                status_detail = "failed_with_errors"
-            elif has_success_indicators and not has_warnings:
-                status_detail = "succeeded"
-            elif has_success_indicators and has_warnings:
-                status_detail = "succeeded_with_warnings"
-            elif has_warnings:
-                status_detail = "completed_with_warnings"
-            else:
-                status_detail = "completed"  # No strong indicators either way
-        else:
-            status_detail = status_val  # Keep failed/succeeded as-is
+        status_detail = _determine_status_detail(
+            status_val, has_errors, stack_traces_found, has_success_indicators, has_warnings
+        )
 
         log_analysis_data: dict[str, object] = {
             "errors": all_errors[:50],  # Limit to first 50 errors to avoid huge responses

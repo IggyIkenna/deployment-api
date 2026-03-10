@@ -258,7 +258,7 @@ class DataStatusService:
             logger.error("Error calculating missing shards: %s", e)
             return {"error": str(e)}
 
-    def _calculate_completion_rate(self, data_status_result: dict[str, object]) -> float:  # noqa: C901
+    def _calculate_completion_rate(self, data_status_result: dict[str, object]) -> float:
         """
         Calculate completion rate from data status result.
 
@@ -370,7 +370,7 @@ class DataStatusService:
 
         return last_updated_info
 
-    async def validate_data_completeness(  # noqa: C901
+    async def validate_data_completeness(
         self,
         service: str,
         date: str,

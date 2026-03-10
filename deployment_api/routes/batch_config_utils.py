@@ -6,6 +6,7 @@ data types, venues, and service configurations.
 """
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -159,33 +160,33 @@ def load_venue_data_types() -> dict[str, dict[str, object]]:
     return cast(dict[str, dict[str, object]], raw)
 
 
-def _get_cat_config(venue_config: dict[str, object], category: str) -> dict[str, object]:
+def _get_cat_config(venue_config: Mapping[str, object], category: str) -> dict[str, object]:
     """Get category config dict safely."""
     cat_val = venue_config.get(category)
     return cast(dict[str, object], cat_val) if isinstance(cat_val, dict) else {}
 
 
-def _get_venues_dict(cat_config: dict[str, object]) -> dict[str, object]:
+def _get_venues_dict(cat_config: Mapping[str, object]) -> dict[str, object]:
     """Get venues dict from a category config safely."""
     venues_val = cat_config.get("venues")
     return cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
 
 
-def get_expected_venues_for_category(venue_config: dict[str, object], category: str) -> set[str]:
+def get_expected_venues_for_category(venue_config: Mapping[str, object], category: str) -> set[str]:
     """Get the set of expected venues for a category from venue_data_types.yaml."""
     cat_config = _get_cat_config(venue_config, category)
     venues = _get_venues_dict(cat_config)
-    return {str(k) for k in venues.keys()}
+    return {str(k) for k in venues}
 
 
-def is_venue_expected(venue_config: dict[str, object], category: str, venue: str) -> bool:
+def is_venue_expected(venue_config: Mapping[str, object], category: str, venue: str) -> bool:
     """Check if a venue is expected for a category."""
     expected_venues = get_expected_venues_for_category(venue_config, category)
     return venue in expected_venues
 
 
 def get_expected_data_types_for_venue(
-    venue_config: dict[str, object], category: str, venue: str
+    venue_config: Mapping[str, object], category: str, venue: str
 ) -> list[str]:
     """Get expected data_types for a specific venue from venue_data_types.yaml."""
     cat_config = _get_cat_config(venue_config, category)
@@ -199,7 +200,7 @@ def get_expected_data_types_for_venue(
 
 
 def get_expected_instrument_types_for_venue(
-    venue_config: dict[str, object], category: str, venue: str
+    venue_config: Mapping[str, object], category: str, venue: str
 ) -> list[str]:
     """Get expected instrument_types for a specific venue from venue_data_types.yaml."""
     cat_config = _get_cat_config(venue_config, category)
@@ -213,21 +214,21 @@ def get_expected_instrument_types_for_venue(
 
 
 def _get_service_config(
-    expected_dates_config: dict[str, object], service: str
+    expected_dates_config: Mapping[str, object], service: str
 ) -> dict[str, object]:
     """Get service config dict safely."""
     svc_val = expected_dates_config.get(service)
     return cast(dict[str, object], svc_val) if isinstance(svc_val, dict) else {}
 
 
-def _get_category_config(service_config: dict[str, object], category: str) -> dict[str, object]:
+def _get_category_config(service_config: Mapping[str, object], category: str) -> dict[str, object]:
     """Get category config dict safely from service config."""
     cat_val = service_config.get(category)
     return cast(dict[str, object], cat_val) if isinstance(cat_val, dict) else {}
 
 
 def get_data_type_start_date(
-    expected_dates_config: dict[str, object],
+    expected_dates_config: Mapping[str, object],
     service: str,
     category: str,
     venue: str,
@@ -272,7 +273,7 @@ def get_data_type_start_date(
 
 
 def is_data_type_available_for_venue(
-    expected_dates_config: dict[str, object],
+    expected_dates_config: Mapping[str, object],
     service: str,
     category: str,
     venue: str,
@@ -301,7 +302,7 @@ def is_data_type_available_for_venue(
 
 
 def get_category_start_date(
-    expected_dates_config: dict[str, object], service: str, category: str
+    expected_dates_config: Mapping[str, object], service: str, category: str
 ) -> str | None:
     """Get the expected start date for a service/category."""
     service_config = _get_service_config(expected_dates_config, service)
@@ -313,7 +314,7 @@ def get_category_start_date(
 
 
 def get_venue_start_date(
-    expected_dates_config: dict[str, object], service: str, category: str, venue: str
+    expected_dates_config: Mapping[str, object], service: str, category: str, venue: str
 ) -> str | None:
     """Get venue-specific start date, falling back to category start.
 
@@ -339,7 +340,7 @@ def get_venue_start_date(
 
 def get_expected_dates_for_venue(
     all_dates: set[str],
-    expected_dates_config: dict[str, object],
+    expected_dates_config: Mapping[str, object],
     service: str,
     category: str,
     venue: str,

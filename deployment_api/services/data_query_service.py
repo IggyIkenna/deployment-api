@@ -205,7 +205,7 @@ class DataQueryService:
 
         return venue_filters
 
-    async def get_instruments_list(  # noqa: C901
+    async def get_instruments_list(
         self,
         category: str,
         venue: str | None = None,

@@ -294,7 +294,7 @@ def validate_deployment_request(deploy_request: _DeployRequestProtocol) -> dict[
     return None
 
 
-def validate_shard_configuration(  # noqa: C901
+def validate_shard_configuration(
     service_config: dict[str, object], deploy_request: _DeployRequestProtocol
 ) -> dict[str, object] | None:
     """
