@@ -56,11 +56,9 @@ class DeploymentManager:
         Returns:
             Error dict if validation fails, None if valid
         """
-        from deployment_api.routes.deployment_validation import (
-            validate_deployment_request as _validate_deployment_request,
-        )
+        from deployment_api.routes.deployment_validation import validate_deployment_request
 
-        return cast(dict[str, object] | None, _validate_deployment_request(deploy_request))
+        return validate_deployment_request(deploy_request)
 
     async def calculate_quota_requirements(
         self, deploy_request: DeployRequest, config_dir: str = "configs"
@@ -206,28 +204,18 @@ class DeploymentManager:
             dict[str, object], loader_for_validation.load_service_config(deploy_request.service)
         )
         from deployment_api.routes.deployment_validation import (
-            validate_image_availability as _validate_image_availability,
-        )
-        from deployment_api.routes.deployment_validation import (
-            validate_quota_requirements as _validate_quota_requirements,
-        )
-        from deployment_api.routes.deployment_validation import (
-            validate_shard_configuration as _validate_shard_configuration,
+            validate_image_availability,
+            validate_quota_requirements,
+            validate_shard_configuration,
         )
 
-        shard_error: dict[str, object] | None = cast(
-            dict[str, object] | None,
-            _validate_shard_configuration(service_cfg, deploy_request),
-        )
+        shard_error = validate_shard_configuration(service_cfg, deploy_request)
         if shard_error:
             raise ValueError(str(shard_error))
 
         # Validate quota requirements (simplified: no shape/count data here)
         # Note: full quota validation done in calculate_quota_requirements
-        quota_error: dict[str, object] | None = cast(
-            dict[str, object] | None,
-            _validate_quota_requirements({}, 0),
-        )
+        quota_error = validate_quota_requirements({}, 0)
         if quota_error:
             raise ValueError(str(quota_error))
 
@@ -245,9 +233,8 @@ class DeploymentManager:
             if raw_docker_image
             else f"{region_for_validation}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"  # noqa: E501
         )
-        image_error: dict[str, object] | None = cast(
-            dict[str, object] | None,
-            _validate_image_availability(docker_image_for_validation, region_for_validation),
+        image_error = validate_image_availability(
+            docker_image_for_validation, region_for_validation
         )
         if image_error:
             raise ValueError(str(image_error))
@@ -368,11 +355,9 @@ class DeploymentManager:
         """
         try:
             # Resolve effective dates (local config-level check, no deployment_service import needed)  # noqa: E501
-            from deployment_api.routes.deployment_validation import (
-                _resolve_deploy_dates,
-            )
+            from deployment_api.routes.deployment_validation import resolve_deploy_dates
 
-            _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)
+            _eff_start, _eff_end = resolve_deploy_dates(deploy_request, config_dir)
 
             # Use region from request or default
             deployment_region: str = deploy_request.region or self.default_region
@@ -408,9 +393,7 @@ class DeploymentManager:
                 str, service_config.get("cloud_run_job_name", deploy_request.service)
             )
 
-            from deployment_api.routes.deployments_helpers import (
-                _build_deploy_env_vars,
-            )
+            from deployment_api.routes.deployments_helpers import build_deploy_env_vars
 
             # Submit deployment to deployment-service HTTP API
             # deployment-service owns DeploymentOrchestrator execution logic
@@ -423,10 +406,15 @@ class DeploymentManager:
                 docker_image=docker_image,
                 job_name=job_name,
                 compute_config=compute_config,
-                env_vars=_build_deploy_env_vars(
-                    deployment_region=deployment_region,
-                    compute_type=deploy_request.compute,
-                    compute_config=compute_config,
+                env_vars=build_deploy_env_vars(
+                    service=deploy_request.service,
+                    project_id=self.default_project_id,
+                    deployment_id=deployment_id,
+                    max_concurrent=deploy_request.max_concurrent or self.default_max_concurrent,
+                    deployment_mode=deploy_request.compute,
+                    deploy_mode=deploy_request.mode,
+                    operational_mode=deploy_request.operational_mode,
+                    cloud_provider=deploy_request.cloud_provider,
                 ),
                 max_concurrent=deploy_request.max_concurrent or self.default_max_concurrent,
                 shards=shard_list,
@@ -523,8 +511,6 @@ class DeploymentManager:
         state = state_service.get_deployment_state(deployment_id)
         if not state:
             return {"error": f"Deployment {deployment_id} not found"}
-        from deployment_api.routes.deployment_validation import (
-            generate_deployment_report as _generate_deployment_report,
-        )
+        from deployment_api.routes.deployment_validation import generate_deployment_report
 
-        return cast(dict[str, object], _generate_deployment_report(state, None, None))
+        return generate_deployment_report(state, None, None)
