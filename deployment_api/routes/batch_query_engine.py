@@ -6,6 +6,7 @@ from cloud storage with optimized parallel processing.
 """
 
 import logging
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import cast
@@ -29,7 +30,7 @@ def query_specific_prefixes_for_category(  # noqa: C901
     folder: list[str] | None,
     data_type: list[str] | None,
     path_prefix: str,
-    expected_start_dates_config: dict[str, object],
+    expected_start_dates_config: Mapping[str, object],
     all_dates: set[str],
     upstream_avail_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict[str, object]:
@@ -396,7 +397,7 @@ def query_generic_prefixes_for_category(  # noqa: C901
 
 def get_expected_dates_for_category(
     all_dates: set[str],
-    expected_start_dates_config: dict[str, object],
+    expected_start_dates_config: Mapping[str, object],
     service: str,
     cat: str,
 ) -> set[str]:

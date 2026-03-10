@@ -39,7 +39,7 @@ DEFAULT_STATE_BUCKET = _settings.STATE_BUCKET
 DEPLOYMENT_ENV = getattr(_settings, "DEPLOYMENT_ENV", "default")
 
 
-def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:  # noqa: C901
+def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:
     """
     Extract severity level and logger name from log line.
 

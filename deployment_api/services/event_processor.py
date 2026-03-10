@@ -124,7 +124,7 @@ class EventProcessor:
                 return entry.get("zone")
         return None
 
-    def process_vm_updates(  # noqa: C901
+    def process_vm_updates(
         self,
         deployment_id: str,
         state: dict[str, object],

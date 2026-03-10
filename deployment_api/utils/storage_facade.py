@@ -89,7 +89,7 @@ def list_objects(
     return _list_objects_api(bucket_name, prefix, max_results, delimiter)
 
 
-def _list_objects_fuse(  # noqa: C901
+def _list_objects_fuse(
     bucket_name: str,
     prefix: str,
     max_results: int | None,

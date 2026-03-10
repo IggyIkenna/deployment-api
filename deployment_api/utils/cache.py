@@ -257,7 +257,7 @@ class GCSCache:
 
         return get_storage_client()
 
-    async def _load_from_gcs(self) -> None:  # noqa: C901
+    async def _load_from_gcs(self) -> None:
         """Load cache from GCS into local memory."""
         if self._loaded:
             return

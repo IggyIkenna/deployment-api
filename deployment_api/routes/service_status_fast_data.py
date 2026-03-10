@@ -25,7 +25,7 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
     """
     from deployment_api.utils.storage_facade import list_objects, list_prefixes
 
-    def _get_timestamps_sync():  # noqa: C901
+    def _get_timestamps_sync():
         try:
             buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
 

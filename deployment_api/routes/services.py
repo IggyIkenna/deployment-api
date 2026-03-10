@@ -123,7 +123,7 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
     """
     cache_key = f"config:dimensions:{service_name}"
 
-    async def _fetch():  # noqa: C901
+    async def _fetch():
         def _load_dimensions_sync():
             loader = get_config_loader(request)
             config = loader.load_service_config(service_name)
@@ -244,7 +244,7 @@ async def discover_configs(
 
 
 @router.get("/{service_name}/list-directories")
-async def list_directories(  # noqa: C901
+async def list_directories(
     service_name: str,
     cloud_path: str,
     request: Request,

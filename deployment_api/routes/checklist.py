@@ -46,7 +46,7 @@ def _format_phase_name(phase_key: str) -> str:
     return name.replace("_", " ").title()
 
 
-def _parse_checklist(checklist_data: dict[str, object]) -> dict[str, object]:  # noqa: C901
+def _parse_checklist(checklist_data: dict[str, object]) -> dict[str, object]:
     """Parse checklist YAML into structured response.
 
     Returns dict with:

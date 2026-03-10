@@ -125,7 +125,7 @@ class SyncService:
             logger.error("[SYNC_SERVICE] Error saving %s: %s", state_path, e)
             return False
 
-    def filter_active_deployments(  # noqa: C901
+    def filter_active_deployments(
         self, state_paths: list[str], min_age_minutes: int = 5
     ) -> list[tuple[str, dict[str, object]]]:
         """
@@ -448,7 +448,7 @@ class SyncService:
 
         return synced, len(active_states)
 
-    def _cleanup_recent_orphans(  # noqa: C901
+    def _cleanup_recent_orphans(
         self, state_paths: list[str], active_states: list[tuple[str, dict[str, object]]]
     ) -> int:
         """

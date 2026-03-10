@@ -445,7 +445,7 @@ async def list_triggers(  # noqa: C901
     )
 
 
-async def _get_recent_builds_for_triggers(  # noqa: C901
+async def _get_recent_builds_for_triggers(
     trigger_ids: list[str],
 ) -> dict[str, BuildInfoDict]:
     """Get the most recent build for each trigger using parallel filtered queries.
@@ -565,7 +565,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
                     }
             return None
 
-        def _run_trigger_sync() -> TriggerRunResultDict:  # noqa: C901
+        def _run_trigger_sync() -> TriggerRunResultDict:
             _cb = _cloudbuild_v1()
             client = _get_gcp_build_client()
 
@@ -778,7 +778,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
 
 
 @router.get("/library-status/{library}")
-async def get_library_status(library: str) -> LibraryStatusDict:  # noqa: C901
+async def get_library_status(library: str) -> LibraryStatusDict:
     """
     Get detailed status for a library/SDK (like unified-trading-library).
 

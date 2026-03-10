@@ -360,7 +360,7 @@ class PathCombinatorics:
 
         logger.info("Loaded service dimensions for %s services", len(self.service_dimensions))
 
-    def get_service_prefixes_for_date(  # noqa: C901
+    def get_service_prefixes_for_date(
         self,
         service: str,
         category: str,

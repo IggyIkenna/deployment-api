@@ -6,6 +6,7 @@ venue-weighted statistics, and building the final response.
 """
 
 import logging
+from collections.abc import Mapping
 from typing import cast
 
 from .batch_config_utils import get_expected_dates_for_venue
@@ -61,7 +62,7 @@ def calculate_overall_file_counts(
 def calculate_venue_weighted_totals(  # noqa: C901
     results: dict[str, object],
     all_dates: set[str],
-    expected_start_dates_config: dict[str, object],
+    expected_start_dates_config: Mapping[str, object],
     service: str,
     upstream_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> tuple[int, int, int, int]:
@@ -200,7 +201,7 @@ def calculate_venue_weighted_totals(  # noqa: C901
 def update_category_completion_percentages(  # noqa: C901
     results: dict[str, object],
     all_dates: set[str],
-    expected_start_dates_config: dict[str, object],
+    expected_start_dates_config: Mapping[str, object],
     service: str,
     upstream_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> None:

@@ -261,7 +261,7 @@ async def get_service_dependencies(service_name: str, request: Request):  # noqa
         if not deps_path.exists():
             raise HTTPException(status_code=404, detail="dependencies.yaml not found")
 
-        def _load_service_deps_sync() -> dict[str, object] | None:  # noqa: C901
+        def _load_service_deps_sync() -> dict[str, object] | None:
             with open(deps_path) as f:
                 data = cast(dict[str, object], yaml.safe_load(f))
 
