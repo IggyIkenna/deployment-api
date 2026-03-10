@@ -5,6 +5,7 @@ Handles VM status updates, Cloud Run execution monitoring, and shard
 status processing for deployment state management.
 """
 
+import asyncio as _asyncio
 import importlib as _importlib
 import json
 import logging
@@ -13,6 +14,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from deployment_api import settings
+from deployment_api.clients import deployment_service_client as _ds_client
 from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.service_utils import parse_service_event, update_shard_state_from_event
 from deployment_api.utils.storage_facade import read_object_text
@@ -212,9 +214,6 @@ class EventProcessor:
             True if state was updated, False otherwise
         """
         try:
-            from backends.base import JobStatus
-            from backends.cloud_run import CloudRunBackend
-
             shards_raw2: object = state.get("shards") or []
             shards = (
                 cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
@@ -244,58 +243,86 @@ class EventProcessor:
             if not job_ids:
                 return False
 
-            # Batch query Cloud Run executions
+            # Resolve service_account_email from config
             try:
                 service_account_email = ValidationUtils.get_required(
                     cast(dict[str, object], config), "service_account_email", "Cloud Run backend"
-                )
-                service_name = ValidationUtils.get_required(
-                    cast(dict[str, object], config), "cloud_run_service_name", "Cloud Run backend"
                 )
             except ConfigurationError as e:
                 logger.error("[EVENT_PROCESSOR] %s: %s", deployment_id, e)
                 return False
 
-            backend = CloudRunBackend(
-                project_id=self.project_id,
-                region=config.get("region") or "asia-northeast1",
-                service_account_email=service_account_email,
-                service_name=service_name,
-            )
+            # Parse execution name to extract region and job_name
+            def _parse_exec_name(name: str) -> tuple[str | None, str | None]:
+                parts = name.split("/")
+                region: str | None = None
+                job_name: str | None = None
+                for i, p in enumerate(parts):
+                    if p == "locations" and i + 1 < len(parts):
+                        region = parts[i + 1]
+                    if p == "jobs" and i + 1 < len(parts):
+                        job_name = parts[i + 1]
+                return region, job_name
 
-            statuses = backend.get_execution_statuses(job_ids[:50])  # Limit batch size
+            # Group executions by (region, job_name)
+            groups: dict[tuple[str, str], list[str]] = {}
+            for job_id in job_ids[:50]:  # Limit batch size
+                r, j = _parse_exec_name(job_id)
+                r = r or cast(str, config.get("region") or "asia-northeast1")
+                j = j or cast(str, config.get("job_name") or "unknown")
+                groups.setdefault((r, j), []).append(job_id)
+
             updated = False
-
-            for job_id, status in statuses.items():
-                shard_id = job_id_to_shard_id.get(job_id)
-                if not shard_id:
+            for (region, job_name), group_job_ids in groups.items():
+                try:
+                    raw_statuses = _asyncio.run(
+                        _ds_client.get_cloud_run_status_batch(
+                            project_id=self.project_id,
+                            region=region,
+                            service_account_email=service_account_email,
+                            job_name=job_name,
+                            job_ids=group_job_ids,
+                        )
+                    )
+                except (OSError, ValueError, RuntimeError) as e:
+                    logger.debug(
+                        "[EVENT_PROCESSOR] Cloud Run status batch failed for %s/%s: %s",
+                        region,
+                        job_name,
+                        e,
+                    )
                     continue
 
-                # Find and update shard
-                for shard in shards:
-                    if shard.get("shard_id") == shard_id:
-                        old_status = shard.get("status")
+                for job_id, status in raw_statuses.items():
+                    shard_id = job_id_to_shard_id.get(job_id)
+                    if not shard_id:
+                        continue
 
-                        if status == JobStatus.SUCCEEDED:
-                            shard["status"] = "succeeded"
-                            shard["completed_at"] = datetime.now(UTC).isoformat()
-                        elif status == JobStatus.FAILED:
-                            shard["status"] = "failed"
-                            shard["completed_at"] = datetime.now(UTC).isoformat()
-                        elif status == JobStatus.CANCELLED:
-                            shard["status"] = "cancelled"
-                            shard["completed_at"] = datetime.now(UTC).isoformat()
+                    # Find and update shard
+                    for shard in shards:
+                        if shard.get("shard_id") == shard_id:
+                            old_status = shard.get("status")
 
-                        if old_status != shard.get("status"):
-                            updated = True
-                            logger.info(
-                                "[EVENT_PROCESSOR] %s: Cloud Run shard %s %s → %s",
-                                deployment_id,
-                                shard_id,
-                                old_status,
-                                shard.get("status"),
-                            )
-                        break
+                            if status == "SUCCEEDED":
+                                shard["status"] = "succeeded"
+                                shard["completed_at"] = datetime.now(UTC).isoformat()
+                            elif status == "FAILED":
+                                shard["status"] = "failed"
+                                shard["completed_at"] = datetime.now(UTC).isoformat()
+                            elif status == "CANCELLED":
+                                shard["status"] = "cancelled"
+                                shard["completed_at"] = datetime.now(UTC).isoformat()
+
+                            if old_status != shard.get("status"):
+                                updated = True
+                                logger.info(
+                                    "[EVENT_PROCESSOR] %s: Cloud Run shard %s %s -> %s",
+                                    deployment_id,
+                                    shard_id,
+                                    old_status,
+                                    shard.get("status"),
+                                )
+                            break
 
             return updated
 

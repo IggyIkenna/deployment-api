@@ -23,13 +23,6 @@ sys.modules.setdefault(
         ValidationUtils=MagicMock(get_required=MagicMock(return_value="value")),
     ),
 )
-# Mock backends module (lazy imported inside _process_cloud_run_status)
-sys.modules.setdefault("backends", MagicMock())
-sys.modules.setdefault(
-    "backends.base",
-    MagicMock(JobStatus=MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")),
-)
-sys.modules.setdefault("backends.cloud_run", MagicMock())
 
 from deployment_api.workers.deployment_processor import (
     _handle_orphan_vm_cleanup,
@@ -634,22 +627,9 @@ class TestProcessDeploymentsBatchExtended:
             list_objs=[obj], read_text="SUCCESS:done", write_fn=capture_write
         )
 
-        # _process_cloud_run_status will be called; mock backends
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = {}
-        cr_backend_class = MagicMock(return_value=cr_backend)
-        job_status = MagicMock()
-        job_status.SUCCEEDED = "SUCCEEDED"
-        job_status.FAILED = "FAILED"
-        job_status.RUNNING = "RUNNING"
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=job_status),
-                "backends.cloud_run": MagicMock(CloudRunBackend=cr_backend_class),
-                "backends": MagicMock(),
-            },
+        with patch(
+            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            return_value={},
         ):
             synced, num_active = self._run_batch(state, facade=facade)
 
@@ -682,21 +662,9 @@ class TestProcessDeploymentsBatchExtended:
             list_objs=[obj], read_text="FAILED:error msg", write_fn=capture_write
         )
 
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = {}
-        cr_backend_class = MagicMock(return_value=cr_backend)
-        job_status = MagicMock()
-        job_status.SUCCEEDED = "SUCCEEDED"
-        job_status.FAILED = "FAILED"
-        job_status.RUNNING = "RUNNING"
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=job_status),
-                "backends.cloud_run": MagicMock(CloudRunBackend=cr_backend_class),
-                "backends": MagicMock(),
-            },
+        with patch(
+            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            return_value={},
         ):
             synced, _ = self._run_batch(state, facade=facade)
 
@@ -723,25 +691,20 @@ class TestProcessDeploymentsBatchExtended:
         # GCS says SUCCESS for s1
         facade = _make_mock_facade(list_objs=[obj], read_text="SUCCESS", write_fn=capture_write)
 
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = {}
-        cr_backend_class = MagicMock(return_value=cr_backend)
-        job_status = MagicMock()
-        job_status.SUCCEEDED = "SUCCEEDED"
-        job_status.FAILED = "FAILED"
-        job_status.RUNNING = "RUNNING"
         notify_mock = MagicMock()
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=job_status),
-                "backends.cloud_run": MagicMock(CloudRunBackend=cr_backend_class),
-                "backends": MagicMock(),
-                "deployment_api.utils.deployment_events": MagicMock(
-                    notify_deployment_updated_sync=notify_mock
-                ),
-            },
+        with (
+            patch(
+                "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+                return_value={},
+            ),
+            patch.dict(
+                sys.modules,
+                {
+                    "deployment_api.utils.deployment_events": MagicMock(
+                        notify_deployment_updated_sync=notify_mock
+                    ),
+                },
+            ),
         ):
             synced, _ = self._run_batch(state, facade=facade)
 
@@ -767,21 +730,9 @@ class TestProcessDeploymentsBatchExtended:
 
         facade = _make_mock_facade(list_objs=[obj], read_text="FAILED", write_fn=capture_write)
 
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = {}
-        cr_backend_class = MagicMock(return_value=cr_backend)
-        job_status = MagicMock()
-        job_status.SUCCEEDED = "SUCCEEDED"
-        job_status.FAILED = "FAILED"
-        job_status.RUNNING = "RUNNING"
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=job_status),
-                "backends.cloud_run": MagicMock(CloudRunBackend=cr_backend_class),
-                "backends": MagicMock(),
-            },
+        with patch(
+            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            return_value={},
         ):
             synced, _ = self._run_batch(state, facade=facade)
 
@@ -885,24 +836,11 @@ class TestProcessDeploymentsBatchExtended:
         quota_broker.enabled.return_value = True
         quota_broker.release = MagicMock()
 
-        job_status = MagicMock()
-        job_status.SUCCEEDED = "SUCCEEDED"
-        job_status.FAILED = "FAILED"
-        job_status.RUNNING = "RUNNING"
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = {}
-
         mock_events = MagicMock(notify_deployment_updated_sync=MagicMock())
         with (
-            patch.dict(
-                sys.modules,
-                {
-                    "backends.base": MagicMock(JobStatus=job_status),
-                    "backends.cloud_run": MagicMock(
-                        CloudRunBackend=MagicMock(return_value=cr_backend)
-                    ),
-                    "backends": MagicMock(),
-                },
+            patch(
+                "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+                return_value={},
             ),
             patch.dict(
                 sys.modules,
@@ -1293,23 +1231,14 @@ class TestProcessCloudRunStatus:
 
         if shard_statuses is None:
             shard_statuses = {}
+        # cr_statuses now maps job_id -> status string (e.g. "SUCCEEDED", "FAILED", "RUNNING")
         if cr_statuses is None:
             cr_statuses = {}
 
-        js = self._make_job_status()
-
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = cr_statuses
-        cr_backend_class = MagicMock(return_value=cr_backend)
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=js),
-                "backends.cloud_run": MagicMock(CloudRunBackend=cr_backend_class),
-                "backends": MagicMock(),
-            },
-        ):
+        with patch(
+            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            return_value=cr_statuses,
+        ) as mock_batch:
             updated = _process_cloud_run_status(
                 shards=shards,
                 config={"region": "us-central1", "job_name": "my-job"},
@@ -1317,59 +1246,50 @@ class TestProcessCloudRunStatus:
                 shard_statuses=shard_statuses,
                 updated=False,
             )
-        return updated, shard_statuses, cr_backend
+        return updated, shard_statuses, mock_batch
 
     def test_no_running_shards_returns_unchanged(self):
-        """Lines 627-636: no running shards -> job_ids empty -> backend not called."""
+        """No running shards -> job_ids empty -> HTTP batch not called."""
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "succeeded"}]
-        updated, shard_statuses, cr_backend = self._run(shards)
-        cr_backend.get_status_batch.assert_not_called()
+        updated, shard_statuses, mock_batch = self._run(shards)
+        mock_batch.assert_not_called()
         assert updated is False
 
     def test_running_shard_succeeded_updates_status(self):
-        """Lines 676-677: SUCCEEDED status from cloud run -> shard_statuses updated."""
+        """SUCCEEDED status string from HTTP batch -> shard_statuses updated."""
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "running"}]
-        js = self._make_job_status()
-        info = MagicMock()
-        info.status = "SUCCEEDED"
-        cr_statuses = {"exec-1": info}
+        cr_statuses = {"exec-1": "SUCCEEDED"}
 
         _, shard_statuses, _ = self._run(shards, cr_statuses=cr_statuses)
         assert shard_statuses.get("s1") == ("succeeded", "cloud_run")
 
     def test_running_shard_failed_updates_status(self):
-        """Lines 678-679: FAILED status from cloud run -> shard_statuses updated."""
+        """FAILED status string from HTTP batch -> shard_statuses updated."""
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "running"}]
-        js = self._make_job_status()
-        info = MagicMock()
-        info.status = "FAILED"
-        cr_statuses = {"exec-1": info}
+        cr_statuses = {"exec-1": "FAILED"}
 
         _, shard_statuses, _ = self._run(shards, cr_statuses=cr_statuses)
         assert shard_statuses.get("s1") == ("failed", "cloud_run")
 
     def test_running_shard_running_updates_status(self):
-        """Lines 680-681: RUNNING status from cloud run -> shard_statuses updated."""
+        """RUNNING status string from HTTP batch -> shard_statuses updated."""
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "running"}]
-        info = MagicMock()
-        info.status = "RUNNING"
-        cr_statuses = {"exec-1": info}
+        cr_statuses = {"exec-1": "RUNNING"}
 
         _, shard_statuses, _ = self._run(shards, cr_statuses=cr_statuses)
         assert shard_statuses.get("s1") == ("running", "cloud_run")
 
     def test_already_in_shard_statuses_skipped(self):
-        """Lines 630: shard already in shard_statuses -> skipped."""
+        """Shard already in shard_statuses -> skipped -> HTTP batch not called."""
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "running"}]
         shard_statuses = {"s1": ("succeeded", "gcs")}
 
-        _, shard_statuses_out, cr_backend = self._run(shards, shard_statuses=shard_statuses)
-        # exec-1 should not be in batch call
-        cr_backend.get_status_batch.assert_not_called()
+        _, shard_statuses_out, mock_batch = self._run(shards, shard_statuses=shard_statuses)
+        mock_batch.assert_not_called()
         assert shard_statuses_out["s1"] == ("succeeded", "gcs")
 
     def test_exec_name_with_full_path_parsed_correctly(self):
-        """Lines 641-661: exec name with full projects/.../locations/.../jobs/.../executions/... parsed."""
+        """Exec name with full projects/.../locations/.../jobs/.../executions/... parsed correctly."""
         shards = [
             {
                 "shard_id": "s1",
@@ -1377,33 +1297,20 @@ class TestProcessCloudRunStatus:
                 "status": "running",
             }
         ]
-        info = MagicMock()
-        info.status = "SUCCEEDED"
-        cr_statuses = {"projects/p/locations/us-east1/jobs/my-job/executions/exec-1": info}
+        cr_statuses = {"projects/p/locations/us-east1/jobs/my-job/executions/exec-1": "SUCCEEDED"}
 
         _, shard_statuses, _ = self._run(shards, cr_statuses=cr_statuses)
         assert shard_statuses.get("s1") == ("succeeded", "cloud_run")
 
-    def test_backend_import_error_returns_unchanged(self):
-        """Lines 682-683: import error -> returns unchanged updated=False."""
+    def test_backend_http_error_returns_unchanged(self):
+        """HTTP batch raises RuntimeError -> OSError/RuntimeError/ValueError caught -> return unchanged."""
         from deployment_api.workers.deployment_processor import _process_cloud_run_status
 
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "running"}]
 
-        # CloudRunBackend raises on instantiation -> OSError caught -> return updated=False
-        cr_backend_class = MagicMock(side_effect=OSError("cloud run unavailable"))
-        js = MagicMock()
-        js.SUCCEEDED = "SUCCEEDED"
-        js.FAILED = "FAILED"
-        js.RUNNING = "RUNNING"
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=js),
-                "backends.cloud_run": MagicMock(CloudRunBackend=cr_backend_class),
-                "backends": MagicMock(),
-            },
+        with patch(
+            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            side_effect=RuntimeError("cloud run unavailable"),
         ):
             updated = _process_cloud_run_status(
                 shards=shards,
@@ -1412,27 +1319,19 @@ class TestProcessCloudRunStatus:
                 shard_statuses={},
                 updated=False,
             )
-        # OSError/RuntimeError/ValueError -> returns False
+        # RuntimeError -> warning logged, returns False
         assert updated is False
 
     def test_no_job_name_in_config_skips_group(self):
-        """Lines 659-660: job_id has no job name component and config has no job_name -> skip group."""
+        """job_id has no job name component and config has no job_name -> skip group."""
         shards = [{"shard_id": "s1", "job_id": "bare-exec", "status": "running"}]
 
         from deployment_api.workers.deployment_processor import _process_cloud_run_status
 
-        js = self._make_job_status()
-        cr_backend = MagicMock()
-        cr_backend.get_status_batch.return_value = {}
-
-        with patch.dict(
-            sys.modules,
-            {
-                "backends.base": MagicMock(JobStatus=js),
-                "backends.cloud_run": MagicMock(CloudRunBackend=MagicMock(return_value=cr_backend)),
-                "backends": MagicMock(),
-            },
-        ):
+        with patch(
+            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            return_value={},
+        ) as mock_batch:
             updated = _process_cloud_run_status(
                 shards=shards,
                 config={},  # no job_name
@@ -1440,6 +1339,8 @@ class TestProcessCloudRunStatus:
                 shard_statuses={},
                 updated=False,
             )
+        # no job_name -> group skipped, batch never called
+        mock_batch.assert_not_called()
         assert updated is False
 
 

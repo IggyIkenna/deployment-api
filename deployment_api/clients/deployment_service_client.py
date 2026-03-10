@@ -348,6 +348,49 @@ async def cancel_vm_jobs(
 # ---------------------------------------------------------------------------
 
 
+async def get_vm_status_batch(
+    project_id: str,
+    zone: str,
+    vm_names: list[str],
+) -> dict[str, str]:
+    """
+    Get VM instance statuses in batch via the deployment-service HTTP API.
+
+    POST /api/v1/vm-jobs/status-batch
+
+    Returns:
+        Dict mapping vm_name to status string: "RUNNING", "TERMINATED", "STOPPED", "STOPPING", etc.
+
+    Raises:
+        RuntimeError: If the deployment-service HTTP call fails.
+    """
+    payload: dict[str, object] = {
+        "project_id": project_id,
+        "zone": zone,
+        "vm_names": vm_names,
+    }
+    url = f"{_base_url()}/api/v1/vm-jobs/status-batch"
+    logger.debug("POST %s (%d VMs, zone=%s)", url, len(vm_names), zone)
+    async with (
+        aiohttp.ClientSession(timeout=_timeout()) as session,
+        session.post(url, json=payload) as resp,
+    ):
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/vm-jobs/status-batch "
+                f"returned HTTP {resp.status}: {body}"
+            )
+        data: dict[str, object] = await resp.json()
+        statuses: dict[str, str] = {}
+        raw = data.get("statuses") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    statuses[k] = v
+        return statuses
+
+
 async def quota_acquire_batch(
     quota_shape: dict[str, object],
     batch_size: int,
@@ -385,6 +428,53 @@ async def quota_acquire_batch(
         data: dict[str, object] = await resp.json()
         acquired: int = int(data.get("acquired", 0))
         return acquired
+
+
+async def get_cloud_run_status_batch(
+    project_id: str,
+    region: str,
+    service_account_email: str,
+    job_name: str,
+    job_ids: list[str],
+) -> dict[str, str]:
+    """
+    Get Cloud Run execution statuses in batch via the deployment-service HTTP API.
+
+    POST /api/v1/cloud-run/status-batch
+
+    Returns:
+        Dict mapping job_id to status string: "SUCCEEDED", "FAILED", "RUNNING", "UNKNOWN"
+
+    Raises:
+        RuntimeError: If the deployment-service HTTP call fails.
+    """
+    payload = {
+        "project_id": project_id,
+        "region": region,
+        "service_account_email": service_account_email,
+        "job_name": job_name,
+        "job_ids": job_ids,
+    }
+    url = f"{_base_url()}/api/v1/cloud-run/status-batch"
+    logger.debug("POST %s (%d jobs, region=%s)", url, len(job_ids), region)
+    async with (
+        aiohttp.ClientSession(timeout=_timeout()) as session,
+        session.post(url, json=payload) as resp,
+    ):
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/cloud-run/status-batch "
+                f"returned HTTP {resp.status}: {body}"
+            )
+        data: dict[str, object] = await resp.json()
+        statuses: dict[str, str] = {}
+        raw = data.get("statuses") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    statuses[k] = v
+        return statuses
 
 
 async def quota_release_batch(
