@@ -159,14 +159,15 @@ class PathCombinatorics:
         Tick windows define date ranges where expensive tick data (trades, tbbo)
         is downloaded. Outside these windows, only cost-efficient ohlcv_1m is used.
         """
-        from typing import cast as _cast
         tradfi_config: dict[str, object] = self.config.get("TRADFI") or {}
         raw_windows_val = tradfi_config.get("tick_windows")
-        raw_windows: list[object] = _cast(list[object], raw_windows_val) if isinstance(raw_windows_val, list) else []
+        raw_windows: list[object] = (
+            cast(list[object], raw_windows_val) if isinstance(raw_windows_val, list) else []
+        )
         self.tick_windows = []
         for w in raw_windows:
             if isinstance(w, dict):
-                w_dict = _cast(dict[str, object], w)
+                w_dict = cast(dict[str, object], w)
                 start_val = w_dict.get("start")
                 end_val = w_dict.get("end")
                 if isinstance(start_val, str) and isinstance(end_val, str):
@@ -191,10 +192,9 @@ class PathCombinatorics:
             logger.warning("venue_data_types.yaml not found at %s", config_path)
             return
 
-        from typing import cast as _cast
         with open(config_path) as f:
-            loaded = yaml.safe_load(f)
-        self.config = _cast(dict[str, dict[str, object]], loaded) if isinstance(loaded, dict) else {}
+            raw: object = cast(object, yaml.safe_load(f))
+        self.config = cast(dict[str, dict[str, object]], raw) if isinstance(raw, dict) else {}
         logger.debug("Loaded venue_data_types.yaml with %s categories", len(self.config))
 
     def _build_combinatorics(self) -> None:  # noqa: C901
@@ -209,31 +209,54 @@ class PathCombinatorics:
         skipped_venues: list[str] = []
 
         for category in ["CEFI", "TRADFI", "DEFI"]:
-            cat_config = self.config.get(category, {})
-            venues = cat_config.get("venues") or {}
+            cat_config: dict[str, object] = self.config.get(category) or {}
+            venues_val = cat_config.get("venues")
+            venues: dict[str, object] = (
+                cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
+            )
 
-            for venue, venue_config in venues.items():
-                if not isinstance(venue_config, dict):
+            for venue_raw, venue_config_raw in venues.items():
+                if not isinstance(venue_config_raw, dict):
                     continue
+                venue = venue_raw
+                venue_config = cast(dict[str, object], venue_config_raw)
 
-                folders = venue_config.get("folders") or []
-                data_types = venue_config.get("data_types") or []
-                start_date = venue_config.get("start_date")
+                folders_val = venue_config.get("folders")
+                folders: list[object] = (
+                    cast(list[object], folders_val) if isinstance(folders_val, list) else []
+                )
+                data_types_val = venue_config.get("data_types")
+                data_types: list[object] | dict[str, object] = (
+                    cast(list[object], data_types_val)
+                    if isinstance(data_types_val, list)
+                    else (
+                        cast(dict[str, object], data_types_val)
+                        if isinstance(data_types_val, dict)
+                        else []
+                    )
+                )
+                start_date_val = venue_config.get("start_date")
+                start_date: str | None = start_date_val if isinstance(start_date_val, str) else None
 
                 # Filter folders by accessible_instrument_types (subscription boundary)
                 # This prevents the UI from flagging data as "missing" for instrument
                 # types we cannot download due to Tardis subscription limitations.
-                accessible_types = venue_config.get("accessible_instrument_types")
-                if accessible_types is not None:
+                accessible_types_val = venue_config.get("accessible_instrument_types")
+                if accessible_types_val is not None:
+                    accessible_types: list[object] = (
+                        cast(list[object], accessible_types_val)
+                        if isinstance(accessible_types_val, list)
+                        else []
+                    )
                     if len(accessible_types) == 0:
                         # No accessible types — skip venue entirely
                         skipped_venues.append(venue)
                         continue
                     # Filter folders to only those mapped from accessible instrument types
-                    accessible_folders = {
-                        INSTRUMENT_TYPE_TO_FOLDER.get(t) for t in accessible_types
+                    accessible_folders: set[str | None] = {
+                        INSTRUMENT_TYPE_TO_FOLDER.get(str(t)) for t in accessible_types
                     } - {None}
-                    folders = [f for f in folders if f in accessible_folders]
+                    folders = [f for f in folders if isinstance(f, str) and f in accessible_folders]
                     if not folders:
                         skipped_venues.append(venue)
                         continue
@@ -241,24 +264,38 @@ class PathCombinatorics:
                 # Handle TradFi special case: data_types can be a dict with default/tick_window
                 # Track which data types are tick_window_only (not in default)
                 tick_window_only_types: set[str] = set()
+                final_data_types: list[str] = []
                 if isinstance(data_types, dict):
-                    default_dt = set(data_types.get("default") or [])
-                    tick_window_dt = set(data_types.get("tick_window") or [])
+                    dt_dict: dict[str, object] = data_types
+                    default_val = dt_dict.get("default")
+                    tick_val = dt_dict.get("tick_window")
+                    default_list: list[str] = (
+                        cast(list[str], default_val) if isinstance(default_val, list) else []
+                    )
+                    tick_list: list[str] = (
+                        cast(list[str], tick_val) if isinstance(tick_val, list) else []
+                    )
+                    default_dt: set[str] = set(default_list)
+                    tick_window_dt: set[str] = set(tick_list)
                     # Data types in tick_window but NOT in default are tick_window_only
                     tick_window_only_types = tick_window_dt - default_dt
                     # Flatten all data types from the dict
-                    all_dt = set()
-                    for dt_list in data_types.values():
-                        if isinstance(dt_list, list):
-                            all_dt.update(dt_list)
-                    data_types = list(all_dt)
+                    all_dt: set[str] = set()
+                    for dt_list_val in dt_dict.values():
+                        if isinstance(dt_list_val, list):
+                            for item in cast(list[object], dt_list_val):
+                                if isinstance(item, str):
+                                    all_dt.add(item)
+                    final_data_types = list(all_dt)
+                else:
+                    final_data_types = [str(d) for d in data_types if d is not None]
 
                 # Create combinatorics for each folder x data_type
                 for folder_raw in folders:
-                    folder = cast(str, folder_raw) if isinstance(folder_raw, str) else ""
+                    folder = folder_raw if isinstance(folder_raw, str) else ""
                     if not folder:
                         continue
-                    for data_type in data_types:
+                    for data_type in final_data_types:
                         entry = CombinatoricEntry(
                             category=category,
                             venue=venue,
@@ -290,12 +327,28 @@ class PathCombinatorics:
                 continue
             try:
                 with open(config_path) as f:
-                    svc_config = yaml.safe_load(f) or {}
+                    raw_svc: object = cast(object, yaml.safe_load(f))
+                svc_config: dict[str, object] = (
+                    cast(dict[str, object], raw_svc) if isinstance(raw_svc, dict) else {}
+                )
                 dims: dict[str, list[str]] = {}
-                for dim in svc_config.get("dimensions") or []:
-                    name = dim.get("name")
+                raw_dimensions = svc_config.get("dimensions")
+                dimensions: list[object] = (
+                    cast(list[object], raw_dimensions) if isinstance(raw_dimensions, list) else []
+                )
+                for dim_raw in dimensions:
+                    if not isinstance(dim_raw, dict):
+                        continue
+                    dim = cast(dict[str, object], dim_raw)
+                    name_val = dim.get("name")
+                    if not isinstance(name_val, str):
+                        continue
+                    name = name_val
                     if dim.get("type") == "fixed" and "values" in dim:
-                        dims[name] = dim["values"]
+                        values_val = dim["values"]
+                        dims[name] = (
+                            cast(list[str], values_val) if isinstance(values_val, list) else []
+                        )
                 self.service_dimensions[svc] = dims
                 logger.debug(
                     "Loaded sharding dimensions for %s: %s",
@@ -490,7 +543,7 @@ class PathCombinatorics:
         target_timeframes = timeframes if timeframes else PROCESSING_TIMEFRAMES
 
         # Expand each base combinatoric with all timeframes
-        results = []
+        results: list[CombinatoricEntry] = []
         for combo in base:
             for tf in target_timeframes:
                 results.append(
@@ -549,7 +602,7 @@ class PathCombinatorics:
         # Also filter out tick_window_only combos when date is outside tick windows
         date_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
         in_tick_window = self.is_in_tick_window(date_str)
-        valid_combos = []
+        valid_combos: list[CombinatoricEntry] = []
         for c in combos:
             if c.start_date:
                 try:
@@ -564,7 +617,7 @@ class PathCombinatorics:
             valid_combos.append(c)
 
         # Generate prefixes
-        prefixes = [c.to_gcs_prefix(date_str, base_prefix) for c in valid_combos]
+        prefixes: list[str] = [c.to_gcs_prefix(date_str, base_prefix) for c in valid_combos]
 
         logger.debug(
             "Generated %s prefixes for date=%s, category=%s, venues=%s, service=%s",
@@ -592,13 +645,16 @@ class PathCombinatorics:
 
     def get_all_venues_for_category(self, category: str) -> set[str]:
         """Get all configured venues for a category."""
-        cat_config = self.config.get(category.upper(), {})
-        venues = cat_config.get("venues") or {}
-        return set(venues.keys())
+        cat_config: dict[str, object] = self.config.get(category.upper()) or {}
+        venues_val = cat_config.get("venues")
+        if not isinstance(venues_val, dict):
+            return set()
+        venues: dict[str, object] = cast(dict[str, object], venues_val)
+        return {str(k) for k in venues}
 
     def get_all_folders_for_category(self, category: str) -> set[str]:
         """Get all possible folders for a category."""
-        folders = set()
+        folders: set[str] = set()
         for c in self.combinatorics:
             if c.category == category.upper():
                 folders.add(c.folder)
@@ -606,19 +662,19 @@ class PathCombinatorics:
 
     def get_all_data_types_for_category(self, category: str) -> set[str]:
         """Get all possible data types for a category."""
-        data_types = set()
+        data_types: set[str] = set()
         for c in self.combinatorics:
             if c.category == category.upper():
                 data_types.add(c.data_type)
         return data_types
 
-    async def parallel_query_prefixes(  # noqa: C901
+    async def parallel_query_prefixes(
         self,
         bucket_or_name: object,  # bucket object (legacy) or bucket_name str
         prefixes: list[str],
-        query_fn: Callable | None = None,
+        query_fn: Callable[[str], list[str]] | None = None,
         max_workers: int = 50,
-    ) -> dict[str, object]:
+    ) -> dict[str, list[str]]:
         """
         Execute parallel GCS queries for all prefixes.
         Uses storage facade (FUSE when production) when bucket_or_name is str.
@@ -630,16 +686,16 @@ class PathCombinatorics:
             max_workers: Maximum parallel threads
 
         Returns:
-            Dict mapping prefix -> query result
+            Dict mapping prefix -> list of blob names
         """
         if not prefixes:
             return {}
 
         # Support both bucket name (str) and legacy bucket object
-        bucket_name = (
+        bucket_name: str | None = (
             bucket_or_name
             if isinstance(bucket_or_name, str)
-            else getattr(bucket_or_name, "name", None)
+            else cast(str | None, getattr(bucket_or_name, "name", None))
         )
 
         loop = asyncio.get_event_loop()
@@ -652,26 +708,22 @@ class PathCombinatorics:
 
                     objs = list_objects(bucket_name, prefix)
                     return [o.name for o in objs]
-                # Fallback for legacy bucket object (no .name)
-                if hasattr(bucket_or_name, "list_blobs"):
-                    blobs = bucket_or_name.list_blobs(prefix=prefix)
-                    return [b.name for b in blobs]
                 return []
             except (OSError, ValueError, RuntimeError) as e:
                 logger.warning("Query failed for %s: %s", prefix, e)
                 return []
 
-        query_func = query_fn or default_query
+        query_func: Callable[[str], list[str]] = query_fn if query_fn is not None else default_query
 
         # Execute all queries in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Create futures for all prefixes
-            futures = {
+            futures: dict[str, asyncio.Future[list[str]]] = {
                 prefix: loop.run_in_executor(executor, query_func, prefix) for prefix in prefixes
             }
 
             # Gather all results
-            results = {}
+            results: dict[str, list[str]] = {}
             for prefix, future in futures.items():
                 try:
                     results[prefix] = await future
@@ -682,7 +734,7 @@ class PathCombinatorics:
         logger.info(
             "Completed %s parallel queries, %s total blobs found",
             len(prefixes),
-            sum(len(r) for r in results.values() if isinstance(r, list)),
+            sum(len(r) for r in results.values()),
         )
 
         return results
@@ -707,11 +759,11 @@ class PathCombinatorics:
             List of GCS prefix strings
         """
         # Get all venues for the category(ies)
-        target_venues = set()
+        target_venues: set[str] = set()
         categories = [category.upper()] if category else ["CEFI", "TRADFI", "DEFI"]
 
         for cat in categories:
-            cat_venues = self.get_all_venues_for_category(cat)
+            cat_venues: set[str] = self.get_all_venues_for_category(cat)
             if venues:
                 # Filter to requested venues
                 venue_set = {v.upper() for v in venues}
@@ -720,7 +772,7 @@ class PathCombinatorics:
 
         # Generate prefixes (key=value format)
         base_prefix = f"instrument_availability/by_date/day={date_str}"
-        prefixes = [f"{base_prefix}/venue={venue}/" for venue in target_venues]
+        prefixes: list[str] = [f"{base_prefix}/venue={venue}/" for venue in target_venues]
 
         return prefixes
 

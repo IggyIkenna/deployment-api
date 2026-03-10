@@ -36,6 +36,7 @@ class _OrchestratorProtocol(Protocol):
         self, backend_type: str, job_name: str, zone: str | None
     ) -> _BackendProtocol | None: ...
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -181,9 +182,7 @@ class StateManager:
         try:
             if client.blob_exists(self.state_bucket, lock_blob_name):
                 raw_bytes = client.download_bytes(self.state_bucket, lock_blob_name)
-                lock_data = cast(
-                    dict[str, object], json.loads(raw_bytes.decode("utf-8") or "{}")
-                )
+                lock_data = cast(dict[str, object], json.loads(raw_bytes.decode("utf-8") or "{}"))
                 if lock_data.get("owner") == self.owner_id:
                     client.delete_blob(self.state_bucket, lock_blob_name)
                     self._held_deployment_locks.discard(deployment_id)
@@ -301,9 +300,7 @@ class StateManager:
                         _sae_raw = ValidationUtils.get_required(
                             config, "service_account_email", "orchestrator"
                         )
-                        _jn_raw = ValidationUtils.get_required(
-                            config, "job_name", "VM backend"
-                        )
+                        _jn_raw = ValidationUtils.get_required(config, "job_name", "VM backend")
                         if not isinstance(_sae_raw, str) or not isinstance(_jn_raw, str):
                             logger.error("[ORPHAN_CLEANUP] Config values must be strings")
                             return 0
@@ -417,9 +414,7 @@ class StateManager:
 
                     # Parse ISO format last_modified
                     try:
-                        blob_dt = datetime.fromisoformat(
-                            last_modified_str.replace("Z", "+00:00")
-                        )
+                        blob_dt = datetime.fromisoformat(last_modified_str.replace("Z", "+00:00"))
                     except ValueError:
                         continue
 
@@ -445,9 +440,7 @@ class StateManager:
                             )
 
                 except (OSError, ValueError, RuntimeError) as e:
-                    logger.debug(
-                        "[STATE_TTL] Error processing blob %s: %s", blob_meta.name, e
-                    )
+                    logger.debug("[STATE_TTL] Error processing blob %s: %s", blob_meta.name, e)
 
             if deleted_count > 0:
                 logger.info("[STATE_TTL] Deleted %s old deployment(s)", deleted_count)

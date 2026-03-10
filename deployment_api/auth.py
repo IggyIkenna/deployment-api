@@ -23,6 +23,7 @@ if _disable_auth_raw and _environment == "production":
 else:
     _disable_auth_guarded = _disable_auth_raw
 DISABLE_AUTH: bool = _disable_auth_guarded
+AUTH_ENVIRONMENT: str = _environment
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 service_token_header = APIKeyHeader(name="X-Service-Token", auto_error=False)

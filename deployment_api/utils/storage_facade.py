@@ -209,7 +209,7 @@ def list_prefixes(
     result: list[str] = []
     for b in blobs:
         # Extract immediate child prefix: prefix + first component after prefix + "/"
-        remainder = b.name[len(prefix):]
+        remainder = b.name[len(prefix) :]
         if "/" in remainder:
             child = remainder.split("/")[0]
             child_prefix = f"{prefix.rstrip('/')}/{child}/"

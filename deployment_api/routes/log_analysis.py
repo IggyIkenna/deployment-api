@@ -9,15 +9,18 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
 # Cache for log analysis results
-_log_analysis_cache = {}
+_log_analysis_cache: dict[str, dict[str, object]] = {}
 _log_analysis_cache_ttl = 60  # Cache log analysis for 60 seconds
 
 
-def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> dict:  # noqa: C901
+def analyze_deployment_logs_sync(
+    state_manager: object, deployment_id: str, state: object
+) -> dict[str, object]:
     """
     Analyze deployment logs for errors and warnings.
 
@@ -30,11 +33,17 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
     # Check cache first
     now = time.time()
     cache_entry = _log_analysis_cache.get(deployment_id)
-    if cache_entry and now - cache_entry["timestamp"] < _log_analysis_cache_ttl:
-        return cache_entry["data"]
+    if cache_entry:
+        ts_raw = cache_entry.get("timestamp")
+        ts = float(ts_raw) if isinstance(ts_raw, (int, float)) else 0.0
+        if now - ts < _log_analysis_cache_ttl:
+            data_raw = cache_entry.get("data")
+            if isinstance(data_raw, dict):
+                return cast(dict[str, object], data_raw)
 
     # Only analyze completed/failed deployments (don't slow down running ones)
-    status_val = state.status.value if hasattr(state.status, "value") else str(state.status)
+    status_attr = getattr(state, "status", "")
+    status_val = str(getattr(status_attr, "value", None) or status_attr)
     if status_val not in ("completed", "succeeded", "failed"):
         return {
             "status_detail": status_val,  # Keep original status for running/pending
@@ -76,7 +85,11 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
     ]
 
     try:
-        shards = state_manager.get_deployment_shards(deployment_id)
+        get_shards_fn = getattr(state_manager, "get_deployment_shards", None)
+        raw_shards: object = get_shards_fn(deployment_id) if callable(get_shards_fn) else []
+        shards: list[dict[str, object]] = (
+            cast(list[dict[str, object]], raw_shards) if isinstance(raw_shards, list) else []
+        )
 
         if not shards:
             return {
@@ -91,10 +104,9 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
             }
 
         # Filter to completed/failed shards for log analysis
-        shards_to_check = [
-            s
-            for s in shards
-            if (s.get("status") or "").lower() in ("completed", "succeeded", "failed")
+        _terminal = ("completed", "succeeded", "failed")
+        shards_to_check: list[dict[str, object]] = [
+            s for s in shards if str(s.get("status") or "").lower() in _terminal
         ]
 
         if not shards_to_check:
@@ -103,30 +115,37 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
                 "log_analysis": None,
             }
 
-        all_errors = []
-        all_warnings = []
+        all_errors: list[dict[str, object]] = []
+        all_warnings: list[dict[str, object]] = []
         stack_traces_found = False
-        success_indicators = []
+        success_indicators: list[dict[str, object]] = []
 
-        def _analyze_shard_vm(shard):  # noqa: C901
+        def _analyze_shard_vm(
+            shard: dict[str, object],
+        ) -> tuple[list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]]:
             """Analyze logs for a single shard (VM-based deployment)."""
-            shard_errors = []
-            shard_warnings = []
+            shard_errors: list[dict[str, object]] = []
+            shard_warnings: list[dict[str, object]] = []
             shard_stack_traces = False
-            shard_success = []
+            shard_success: list[dict[str, object]] = []
 
             try:
                 # Get logs from shard serial console (VM deployment)
-                compute_info = shard.get("compute_info") or {}
+                _compute_raw: object = shard.get("compute_info")
+                compute_info: dict[str, object] = (
+                    cast(dict[str, object], _compute_raw) if isinstance(_compute_raw, dict) else {}
+                )
                 if not compute_info:
                     return shard_errors, shard_warnings, shard_stack_traces, shard_success
 
-                vm_name = compute_info.get("vm_name")
+                vm_name_raw = compute_info.get("vm_name")
+                vm_name = str(vm_name_raw) if isinstance(vm_name_raw, str) else ""
                 if not vm_name:
                     return shard_errors, shard_warnings, shard_stack_traces, shard_success
 
                 # Get serial console output
-                logs = state_manager.get_vm_serial_console(vm_name)
+                get_console_fn = getattr(state_manager, "get_vm_serial_console", None)
+                logs: object = get_console_fn(vm_name) if callable(get_console_fn) else None
                 if not logs:
                     return shard_errors, shard_warnings, shard_stack_traces, shard_success
 
@@ -241,17 +260,18 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
         else:
             status_detail = status_val  # Keep failed/succeeded as-is
 
-        result = {
+        log_analysis_data: dict[str, object] = {
+            "errors": all_errors[:50],  # Limit to first 50 errors to avoid huge responses
+            "warnings": all_warnings[:50],  # Limit to first 50 warnings
+            "has_stack_traces": stack_traces_found,
+            "success_indicators": success_indicators[:10],  # Sample of success indicators
+            "shards_analyzed": len(shards_to_check),
+            "total_errors": len(all_errors),
+            "total_warnings": len(all_warnings),
+        }
+        result: dict[str, object] = {
             "status_detail": status_detail,
-            "log_analysis": {
-                "errors": all_errors[:50],  # Limit to first 50 errors to avoid huge responses
-                "warnings": all_warnings[:50],  # Limit to first 50 warnings
-                "has_stack_traces": stack_traces_found,
-                "success_indicators": success_indicators[:10],  # Sample of success indicators
-                "shards_analyzed": len(shards_to_check),
-                "total_errors": len(all_errors),
-                "total_warnings": len(all_warnings),
-            },
+            "log_analysis": log_analysis_data,
         }
 
         # Cache the result
@@ -268,7 +288,9 @@ def analyze_deployment_logs_sync(state_manager, deployment_id: str, state) -> di
         }
 
 
-async def analyze_deployment_logs(state_manager, deployment_id: str, state) -> dict:
+async def analyze_deployment_logs(
+    state_manager: object, deployment_id: str, state: object
+) -> dict[str, object]:
     """Async wrapper for log analysis."""
     return await asyncio.to_thread(
         analyze_deployment_logs_sync, state_manager, deployment_id, state

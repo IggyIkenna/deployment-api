@@ -33,7 +33,7 @@ import importlib.util
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import cast
 
 from deployment_api.settings import REDIS_URL, STATE_BUCKET
@@ -100,11 +100,12 @@ class InMemoryCache(CacheBackend):
                 return None
 
             entry = self._cache[key]
-            if time.time() > entry["expires_at"]:
+            expires_at = entry.get("expires_at")
+            if isinstance(expires_at, float) and time.time() > expires_at:
                 del self._cache[key]
                 return None
 
-            return entry["value"]
+            return entry.get("value")
 
     async def set(self, key: str, value: object, ttl: int) -> None:
         async with self._lock:
@@ -130,7 +131,12 @@ class InMemoryCache(CacheBackend):
         """Remove expired entries (called periodically)."""
         async with self._lock:
             now = time.time()
-            expired = [k for k, v in self._cache.items() if now > v["expires_at"]]
+
+            def _is_expired(v: dict[str, object]) -> bool:
+                exp = v.get("expires_at")
+                return isinstance(exp, float) and now > exp
+
+            expired = [k for k, v in self._cache.items() if _is_expired(v)]
             for k in expired:
                 del self._cache[k]
             if expired:
@@ -148,7 +154,11 @@ class RedisCache(CacheBackend):
         """Connect to Redis."""
         try:
             provider = AsyncRedisProvider(url=self.redis_url)
-            await provider._get_client()
+            get_client_fn = cast(
+                Callable[[], Coroutine[object, object, object]],
+                provider._get_client,
+            )
+            await get_client_fn()
             self._provider = provider
             logger.info("Connected to Redis at %s", self.redis_url)
         except (OSError, ValueError, RuntimeError) as e:
@@ -201,10 +211,23 @@ class RedisCache(CacheBackend):
             return 0
 
         try:
-            client = await self._provider._get_client()
-            keys = await client.keys(pattern)
+            get_client_fn = cast(
+                Callable[[], Coroutine[object, object, object]],
+                self._provider._get_client,
+            )
+            client: object = await get_client_fn()
+            keys_fn = cast(
+                Callable[[str], Coroutine[object, object, object]],
+                client.keys,
+            )
+            del_fn = cast(
+                Callable[..., Coroutine[object, object, object]],
+                client.delete,
+            )
+            keys_raw: object = await keys_fn(pattern)
+            keys: list[object] = cast(list[object], keys_raw) if isinstance(keys_raw, list) else []
             if keys:
-                await client.delete(*keys)
+                await del_fn(*keys)
             return len(keys)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Redis CLEAR_PATTERN error for %s: %s", pattern, e)
@@ -252,7 +275,7 @@ class GCSCache:
 
                     if object_exists(self.bucket_name, self.blob_path):
                         data = cast(
-                            dict[str, object],
+                            dict[str, dict[str, object]],
                             json.loads(read_object_text(self.bucket_name, self.blob_path)),
                         )
                         self._local_cache = data
@@ -268,7 +291,9 @@ class GCSCache:
                         bucket = client.bucket(self.bucket_name)
                         blob = bucket.blob(self.blob_path)
                         if blob.exists():
-                            data = cast(dict[str, object], json.loads(blob.download_as_text()))
+                            data = cast(
+                                dict[str, dict[str, object]], json.loads(blob.download_as_text())
+                            )
                             self._local_cache = data
                             logger.info("Loaded GCS cache: %s keys", len(data))
                         else:
@@ -294,10 +319,10 @@ class GCSCache:
                 client = self._get_client()
                 if not client:
                     return
-                bucket = client.bucket(self.bucket_name)
-                blob = bucket.blob(self.blob_path)
-                blob.upload_from_string(
-                    data,
+                client.upload_bytes(
+                    self.bucket_name,
+                    self.blob_path,
+                    data.encode("utf-8"),
                     content_type="application/json",
                 )
                 logger.debug("Saved cache to GCS")
@@ -313,7 +338,9 @@ class GCSCache:
             return None
 
         # Check TTL
-        if time.time() > entry.get("expires_at", 0):
+        expires_at_raw = entry.get("expires_at")
+        expires_at = float(expires_at_raw) if isinstance(expires_at_raw, (int, float)) else 0.0
+        if time.time() > expires_at:
             del self._local_cache[key]
             return None
 
@@ -381,7 +408,7 @@ class UnifiedCache:
         self.redis = RedisCache(redis_url) if REDIS_AVAILABLE else None
         self.gcs = GCSCache(storage_bucket, gcs_path) if GCS_AVAILABLE else None
         self._initialized = False
-        self._cleanup_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._shutdown_event = asyncio.Event()
 
     async def initialize(self):
@@ -394,7 +421,12 @@ class UnifiedCache:
 
         # Pre-load GCS cache
         if self.gcs:
-            await self.gcs._load_from_gcs()
+            load_fn = getattr(self.gcs, "_load_from_gcs", None)
+            if callable(load_fn):
+                _coro: Coroutine[object, object, None] = cast(
+                    Coroutine[object, object, None], load_fn()
+                )
+                await _coro
 
         # Start background cleanup task
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -402,7 +434,7 @@ class UnifiedCache:
         self._initialized = True
         logger.info(
             "Unified cache initialized (Redis: %s, GCS: %s)",
-            "enabled" if self.redis and self.redis._provider else "disabled",
+            "enabled" if self.redis and getattr(self.redis, "_provider", None) else "disabled",
             "enabled" if self.gcs else "disabled",
         )
 
@@ -503,7 +535,7 @@ class UnifiedCache:
     async def get_or_fetch(
         self,
         key: str,
-        fetch_func: Callable,
+        fetch_func: Callable[[], Coroutine[object, object, object]],
         ttl: int,
         force_refresh: bool = False,
         persist_to_gcs: bool = False,
@@ -530,7 +562,7 @@ class UnifiedCache:
                 return cached
 
         # Fetch fresh data
-        value = await fetch_func()
+        value: object = await fetch_func()
 
         # Only cache non-None values
         if value is not None:

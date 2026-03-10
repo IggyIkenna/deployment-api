@@ -64,9 +64,9 @@ async def get_last_updated_batch(  # noqa: C901
     """
     services_to_check = services or list(BUCKET_MAPPING.keys())
 
-    results = {}
+    results: dict[str, object] = {}
 
-    def check_bucket_latest(service: str, cat: str, bucket_name: str) -> dict:
+    def check_bucket_latest(service: str, cat: str, bucket_name: str) -> dict[str, object]:
         """Check latest file in a bucket. Uses storage facade (FUSE when production)."""
         try:
             blobs = list_objects(bucket_name, "", max_results=10)
@@ -88,27 +88,41 @@ async def get_last_updated_batch(  # noqa: C901
             return {"service": service, "category": cat, "error": str(e)}
 
     # Build all tasks
-    tasks = []
+    tasks: list[tuple[str, str, str]] = []
     for svc in services_to_check:
         if svc in BUCKET_MAPPING:
             for cat, bucket in BUCKET_MAPPING[svc].items():
-                tasks.append((svc, cat, bucket))
+                tasks.append((str(svc), str(cat), str(bucket)))
 
     # Parallel check (max 15 concurrent to avoid overwhelming GCS)
+    from concurrent.futures import Future
     with ThreadPoolExecutor(max_workers=min(15, len(tasks))) as executor:
-        futures = {
+        futures: dict[Future[dict[str, object]], tuple[str, str]] = {
             executor.submit(check_bucket_latest, svc, cat, bucket): (svc, cat)
             for svc, cat, bucket in tasks
         }
         for future in as_completed(futures):
-            result = future.result()
-            svc = result["service"]
+            result: dict[str, object] = future.result()
+            svc_val = result.get("service")
+            svc = str(svc_val) if isinstance(svc_val, str) else ""
             if svc not in results:
                 results[svc] = {"categories": {}}
-            results[svc]["categories"][result["category"]] = {
+            svc_entry_raw = results[svc]
+            svc_entry: dict[str, object] = (
+                cast(dict[str, object], svc_entry_raw) if isinstance(svc_entry_raw, dict) else {}
+            )
+            cats_raw = svc_entry.get("categories")
+            cats: dict[str, object] = (
+                cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
+            )
+            cat_val = result.get("category")
+            cat_key = str(cat_val) if isinstance(cat_val, str) else ""
+            cats[cat_key] = {
                 "latest": result.get("latest"),
                 "error": result.get("error"),
             }
+            svc_entry["categories"] = cats
+            results[svc] = svc_entry
 
     return {"services": results}
 
@@ -129,9 +143,9 @@ async def get_data_status_turbo_impl(  # noqa: C901
     check_upstream_availability: bool = True,
     first_day_of_month_only: bool = False,
     freshness_date: str | None = None,
-    _upstream_dates: dict[str, dict[str, set]] | None = None,
+    _upstream_dates: dict[str, dict[str, set[str]]] | None = None,
     mode: str = "batch",
-):
+) -> dict[str, object]:
     """
     Internal implementation of TURBO data status check.
 
@@ -188,7 +202,7 @@ async def get_data_status_turbo_impl(  # noqa: C901
 
     # For market-data-processing-service, fetch upstream (market-tick-data-handler) data
     # to determine which dates are actually available as candidates for processing.
-    upstream_dates = _upstream_dates  # May be pre-computed
+    upstream_dates: dict[str, dict[str, set[str]]] | None = _upstream_dates  # May be pre-computed
     if (
         service == "market-data-processing-service"
         and check_upstream_availability
@@ -217,18 +231,38 @@ async def get_data_status_turbo_impl(  # noqa: C901
         # Extract dates per category/venue from tick handler result
         # Structure: {category: {venue: set(dates)}}
         upstream_dates = {}
-        for cat_name, cat_data in tick_result.get("categories") or {}.items():
-            if not isinstance(cat_data, dict):
+        tick_categories_raw = tick_result.get("categories")
+        tick_categories: dict[str, object] = (
+            cast(dict[str, object], tick_categories_raw)
+            if isinstance(tick_categories_raw, dict)
+            else {}
+        )
+        for cat_name_raw, cat_data_raw in tick_categories.items():
+            cat_name = str(cat_name_raw)
+            if not isinstance(cat_data_raw, dict):
                 continue
+            cat_data = cast(dict[str, object], cat_data_raw)
             upstream_dates[cat_name] = {}
             # Category-level dates (for venues without breakdown)
-            cat_dates = set(cat_data.get("dates_found_list") or [])
+            dfl_raw = cat_data.get("dates_found_list")
+            dfl: list[object] = cast(list[object], dfl_raw) if isinstance(dfl_raw, list) else []
+            cat_dates: set[str] = {str(d) for d in dfl if d}
             upstream_dates[cat_name]["__category__"] = cat_dates
 
             # Venue-level dates
-            for venue_name, venue_data in cat_data.get("venues") or {}.items():
-                if isinstance(venue_data, dict):
-                    venue_dates = set(venue_data.get("dates_found_list") or [])
+            venues_raw = cat_data.get("venues")
+            venues_dict: dict[str, object] = (
+                cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
+            )
+            for venue_name_raw, venue_data_raw in venues_dict.items():
+                venue_name = str(venue_name_raw)
+                if isinstance(venue_data_raw, dict):
+                    venue_data = cast(dict[str, object], venue_data_raw)
+                    vdfl_raw = venue_data.get("dates_found_list")
+                    vdfl: list[object] = (
+                        cast(list[object], vdfl_raw) if isinstance(vdfl_raw, list) else []
+                    )
+                    venue_dates: set[str] = {str(d) for d in vdfl if d}
                     upstream_dates[cat_name][venue_name] = venue_dates
 
         logger.info(
@@ -281,12 +315,12 @@ async def get_data_status_turbo_impl(  # noqa: C901
     _date_re = re.compile(cast(str, config["date_pattern"]))
     _sub_re = re.compile(cast(str, config["sub_pattern"])) if "sub_pattern" in config else None
     sub_dimension_name = cast(str | None, config.get("sub_dimension"))
-    results = {}
+    results: dict[str, object] = {}
 
     # Determine if we should use flat listing (much faster for large date ranges)
     _use_flat_listing = len(year_months) > 6  # More than 6 months = use flat listing
 
-    def check_category(cat: str) -> dict:  # noqa: C901
+    def check_category(cat: str) -> dict[str, object]:  # noqa: C901
         """Check all date directories for a category using optimized queries."""
         bucket_name = BUCKET_MAPPING[service].get(cat)
         if not bucket_name:
@@ -294,7 +328,7 @@ async def get_data_status_turbo_impl(  # noqa: C901
 
         # Get category-specific expected dates (respects category_start from config)
         expected_dates_for_cat = get_expected_dates_for_category(
-            all_dates, expected_start_dates_config, service, cat
+            all_dates, cast(dict[str, object], expected_start_dates_config), service, cat
         )
 
         try:
@@ -312,7 +346,7 @@ async def get_data_status_turbo_impl(  # noqa: C901
                     folder=folder,
                     data_type=data_type,
                     path_prefix=path_prefix,
-                    expected_start_dates_config=expected_start_dates_config,
+                    expected_start_dates_config=cast(dict[str, object], expected_start_dates_config),
                     all_dates=all_dates,
                     upstream_avail_dates=upstream_dates,
                 )

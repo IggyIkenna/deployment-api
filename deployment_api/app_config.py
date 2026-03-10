@@ -16,10 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from deployment_api import __version__ as _api_version
 from deployment_api import settings
-from deployment_api.auth import _auth_cfg as _cloud_cfg
+from deployment_api.auth import AUTH_ENVIRONMENT as _auth_environment
 from deployment_api.utils.storage_client import get_storage_client as get_storage_client_with_pool
 from deployment_api.workers.auto_sync import (
-    _auto_sync_running_deployments,
+    auto_sync_running_deployments as _auto_sync_running_deployments,
+)
+from deployment_api.workers.auto_sync import (
     get_held_deployment_locks,
     get_owner_id,
     set_background_task_handles,
@@ -70,9 +72,9 @@ async def lifespan(app: FastAPI):  # noqa: C901
     logger.info("Background auto-sync task started")
 
     # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
-    from deployment_api.utils.deployment_events import _drain_sync_queue
+    from deployment_api.utils.deployment_events import drain_sync_queue
 
-    events_drain_task = asyncio.create_task(_drain_sync_queue())
+    events_drain_task = asyncio.create_task(drain_sync_queue())
     logger.info("Deployment events drain task started")
 
     # Store task handles in the auto_sync module
@@ -105,20 +107,19 @@ async def lifespan(app: FastAPI):  # noqa: C901
         held_deployment_locks = get_held_deployment_locks()
 
         client = get_storage_client_with_pool(project_id)  # Uses shared client with large pool
-        bucket = client.bucket(state_bucket)
 
         # Release all locks held by this instance
         released_count = 0
         for deployment_id in list(held_deployment_locks):
             try:
                 lock_blob_name = f"locks/deployment_{deployment_id}.lock"
-                lock_blob = bucket.blob(lock_blob_name)
-                if lock_blob.exists():
+                if client.blob_exists(state_bucket, lock_blob_name):
+                    raw_bytes = client.download_bytes(state_bucket, lock_blob_name)
                     lock_data = cast(
-                        dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
+                        dict[str, object], json.loads(raw_bytes.decode("utf-8") or "{}")
                     )
                     if lock_data.get("owner") == owner_id:
-                        lock_blob.delete()
+                        client.delete_blob(state_bucket, lock_blob_name)
                         released_count += 1
             except (OSError, ValueError, RuntimeError):
                 pass  # Lock may have been taken by another instance
@@ -142,9 +143,9 @@ def create_app() -> FastAPI:
         description="API for managing and monitoring service deployments",
         version=_api_version,
         lifespan=lifespan,
-        docs_url="/docs" if _cloud_cfg.environment != "production" else None,
-        redoc_url="/redoc" if _cloud_cfg.environment != "production" else None,
-        openapi_url="/openapi.json" if _cloud_cfg.environment != "production" else None,
+        docs_url="/docs" if _auth_environment != "production" else None,
+        redoc_url="/redoc" if _auth_environment != "production" else None,
+        openapi_url="/openapi.json" if _auth_environment != "production" else None,
     )
 
     # Build CORS allowed origins from env vars

@@ -101,7 +101,9 @@ def query_specific_prefixes_for_category(  # noqa: C901
     venue_data: dict[str, set[str]] = {}  # venue -> set of dates
     sub_dimension_data: dict[str, set[str]] = {}  # data_type -> set of dates
     inst_type_data: dict[str, set[str]] = {}  # folder -> set of dates
-    timeframe_data: dict[str, set[str]] = {}  # timeframe -> set of dates (for market-data-processing-service)  # noqa: E501
+    timeframe_data: dict[
+        str, set[str]
+    ] = {}  # timeframe -> set of dates (for market-data-processing-service)
 
     # NESTED tracking for full dimensional breakdown
     venue_data_types: dict[str, dict[str, set[str]]] = {}  # venue -> {data_type -> set of dates}

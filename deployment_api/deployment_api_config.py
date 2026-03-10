@@ -528,3 +528,13 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         if self.api_port != "8000":
             return self.api_port
         return "8080"
+
+    @property
+    def effective_project_id(self) -> str:
+        """Get the effective GCP project ID."""
+        return self.gcp_project_id or ""
+
+    @property
+    def effective_region(self) -> str:
+        """Get the effective GCS region."""
+        return self.gcs_region or "us-central1"

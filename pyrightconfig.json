@@ -6,6 +6,8 @@
   "reportMissingTypeStubs": false,
   "reportUnknownMemberType": "error",
   "reportUnknownVariableType": "error",
+  "reportUnusedFunction": "none",
+  "reportUnusedImport": "none",
   "venvPath": ".",
   "venv": ".venv",
   "extraPaths": [

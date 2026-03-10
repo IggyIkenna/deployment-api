@@ -8,6 +8,7 @@ to improve performance and reduce API calls.
 import asyncio
 import logging
 import time
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -120,25 +121,30 @@ def is_verification_pending(deployment_id: str) -> bool:
     return deployment_id in _verification_pending
 
 
-async def get_cached_deployments(state_manager, service=None, limit=50, force_refresh=False):
+async def get_cached_deployments(
+    state_manager: object, service: str | None = None, limit: int = 50, force_refresh: bool = False
+) -> object:
     """Get deployments with smart caching (Redis + in-memory fallback)."""
     from deployment_api.utils.cache import TTL_DEPLOYMENT_LIST, cache, deployment_list_key
 
     cache_key = deployment_list_key(service, limit)
 
-    async def fetch_fresh():
+    async def fetch_fresh() -> list[object]:
         """Fetch fresh deployment list from GCS with timeout."""
         try:
             # Add timeout to prevent hanging forever (30 second max)
-            deployments = await asyncio.wait_for(
+            list_fn = getattr(state_manager, "list_deployments", None)
+            if not callable(list_fn):
+                return []
+            raw: object = await asyncio.wait_for(
                 asyncio.to_thread(
-                    state_manager.list_deployments,
+                    list_fn,
                     service=service,
                     limit=limit,  # Only fetch what we need, not 100
                 ),
                 timeout=30.0,
             )
-            return deployments
+            return cast(list[object], raw) if isinstance(raw, list) else []
         except TimeoutError:
             logger.error("Timeout fetching deployments (service=%s, limit=%s)", service, limit)
             return []
@@ -160,8 +166,8 @@ async def invalidate_deployment_cache(deployment_id: str | None = None):
 
 
 async def get_cached_deployment_state(
-    state_manager, deployment_id: str, force_refresh: bool = False
-):
+    state_manager: object, deployment_id: str, force_refresh: bool = False
+) -> object:
     """Get deployment state with smart caching (Redis + in-memory fallback).
 
     Uses shorter TTL (10s) for active deployments and longer TTL (60s) for terminal ones.
@@ -175,17 +181,25 @@ async def get_cached_deployment_state(
 
     cache_key = deployment_key(deployment_id)
 
-    async def fetch_fresh():
+    async def fetch_fresh() -> object:
         """Fetch fresh state from GCS."""
-        return await asyncio.to_thread(state_manager.load_state, deployment_id)
+        load_fn = getattr(state_manager, "load_state", None)
+        if not callable(load_fn):
+            return None
+        raw: object = await asyncio.to_thread(load_fn, deployment_id)
+        return raw
 
-    state = await cache.get_or_fetch(cache_key, fetch_fresh, TTL_DEPLOYMENT_STATE, force_refresh)
+    state: object = await cache.get_or_fetch(
+        cache_key, fetch_fresh, TTL_DEPLOYMENT_STATE, force_refresh
+    )
 
     # Re-cache with longer TTL if the deployment is in a terminal state
     if state and hasattr(state, "status"):
-        status = state.status
+        status_attr: object = getattr(state, "status", "")
+        status = str(getattr(status_attr, "value", None) or status_attr)
     elif state and isinstance(state, dict):
-        status = state.get("status") or ""
+        status_raw = cast(dict[str, object], state).get("status")
+        status = str(status_raw) if isinstance(status_raw, str) else ""
     else:
         status = ""
     if status in (
@@ -196,9 +210,10 @@ async def get_cached_deployment_state(
         "completed_with_warnings",
         "completed_with_errors",
     ):
-        await cache.set(cache_key, state, TTL_DEPLOYMENT_STATE_TERMINAL)
+        state_to_cache: object = cast(object, state)
+        await cache.set(cache_key, state_to_cache, TTL_DEPLOYMENT_STATE_TERMINAL)
 
-    return state
+    return cast(object, state)
 
 
 async def invalidate_deployment_state_cache(deployment_id: str | None = None):
