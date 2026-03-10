@@ -328,7 +328,11 @@ async def list_checklists(request: Request):
                 )
 
         # Sort by readiness (highest first)
-        checklists.sort(key=lambda x: int(x.get("readiness_percent") or 0), reverse=True)
+        def _readiness_key(x: dict[str, object]) -> int:
+            rp = x.get("readiness_percent")
+            return int(rp) if isinstance(rp, (int, float)) else 0
+
+        checklists.sort(key=_readiness_key, reverse=True)
 
         return checklists
 

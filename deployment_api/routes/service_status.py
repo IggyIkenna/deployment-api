@@ -21,7 +21,7 @@ from typing import cast
 import yaml
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from google.auth import (  # type: ignore[import-untyped]  # google-auth stubs incomplete
-    default,
+    default,  # pyright: ignore[reportUnknownVariableType]
     impersonated_credentials,
 )
 from unified_cloud_interface import get_secret_client
@@ -181,7 +181,7 @@ async def get_service_status(service: str, request: Request):  # noqa: C901
                 logger.info("[PERF] Got default credentials in %.2fs", time.time() - token_start)
 
                 # Check if we're already running as a SA with secret access
-                if hasattr(source_credentials, "service_account_email"):
+                if hasattr(source_credentials, "service_account_email"):  # type: ignore[arg-type]  # google-auth untyped
                     sa_email: str = str(source_credentials.service_account_email)  # type: ignore[union-attr]  # google-auth untyped
                     # If running as github-token-sa, Compute Engine SA, or instruments-service SA - use directly  # noqa: E501
                     if any(

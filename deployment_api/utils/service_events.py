@@ -151,9 +151,12 @@ def update_shard_state_from_event(  # noqa: C901
         shard_state["stage_details"] = details
 
     # Parse progress counters from details (e.g., "BTC-USDT-SWAP (5/325)" or "2025-01-01 (1/30)")
-    progress_match = re.search(r"\((\d+)/(\d+)\)", details)
+    details_str: str = str(details) if not isinstance(details, str) else details  # type: ignore[arg-type]  # details is object
+    progress_match = re.search(r"\((\d+)/(\d+)\)", details_str)
     if progress_match:
-        current_s, total_s = progress_match.groups()
+        _grps = progress_match.groups()
+        current_s: str = str(_grps[0]) if _grps else ""
+        total_s: str = str(_grps[1]) if len(_grps) > 1 else ""
         try:
             current_val = int(current_s)
             total_val = int(total_s)

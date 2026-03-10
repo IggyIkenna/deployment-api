@@ -158,7 +158,7 @@ _active_workers: dict[str, multiprocessing.Process] = {}
 
 def get_active_workers() -> dict[str, dict[str, object]]:
     """Get status of all active worker processes."""
-    result = {}
+    result: dict[str, dict[str, object]] = {}
     for deployment_id, process in list(_active_workers.items()):
         result[deployment_id] = {
             "pid": process.pid,

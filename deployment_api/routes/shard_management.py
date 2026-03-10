@@ -42,7 +42,8 @@ def status_str(val: object) -> str:
         d = cast(dict[str, object], val)
         return cast(str, d.get("status", "unknown"))
     elif hasattr(val, "status"):
-        return str(val.status)  # type: ignore[union-attr]  # hasattr confirms existence
+        _status_attr: object = cast(object, val.status)  # pyright: ignore[reportAny]
+        return str(_status_attr)
     else:
         return str(val)
 

@@ -466,11 +466,12 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                             state_bucket=STATE_BUCKET,
                             state_prefix=f"deployments.{DEPLOYMENT_ENV}",
                         )
-                        backend = orch.get_backend(  # type: ignore[union-attr, arg-type]  # dynamic object
+                        _backend_raw = orch.get_backend(  # type: ignore[union-attr, arg-type]  # dynamic object
                             "vm",
                             job_name=job_name,
                             zone=config.get("zone"),
                         )
+                        backend: object = cast(object, _backend_raw)  # type: ignore[redundant-cast]  # ensure object type
                         if backend and hasattr(backend, "cancel_job_fire_and_forget"):
                             with ThreadPoolExecutor(
                                 max_workers=min(len(to_fire), orphan_max)

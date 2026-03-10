@@ -338,7 +338,7 @@ class SyncService:
 
             # Try to acquire quota for batch of shards
             batch_size = min(len(shards_to_launch), settings.DEFAULT_MAX_CONCURRENT)
-            acquired = self.quota_broker.try_acquire_batch(quota_shape, batch_size)  # type: ignore[union-attr]  # dynamic object
+            acquired = int(self.quota_broker.try_acquire_batch(quota_shape, batch_size))  # type: ignore[union-attr, arg-type]  # dynamic object
 
             if acquired == 0:
                 logger.debug("[SYNC_SERVICE] %s: No quota available for scheduling", deployment_id)
