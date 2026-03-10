@@ -25,14 +25,15 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
     """
     from deployment_api.utils.storage_facade import list_objects, list_prefixes
 
-    def _get_timestamps_sync():
+    def _get_timestamps_sync() -> dict[str, object]:  # noqa: C901
         try:
             buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
 
             if not buckets:
-                return {"latest": None, "by_category": {}}
+                empty_cat: dict[str, object] = {}
+                return {"latest": None, "by_category": empty_cat}
 
-            results = {}
+            results: dict[str, dict[str, object]] = {}
             for category, bucket_name in buckets.items():
                 try:
                     # Strategy: Find most recent date folder, then check files there
@@ -94,11 +95,11 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
                     logger.warning("Error checking %s/%s: %s", category, bucket_name, e)
                     results[category] = {"error": str(e)[:50]}
 
-            valid_timestamps = [
-                datetime.fromisoformat(r["timestamp"])
-                for r in results.values()
-                if r.get("timestamp")
-            ]
+            valid_timestamps: list[datetime] = []
+            for _r in results.values():
+                _ts: object = _r.get("timestamp")
+                if _ts and isinstance(_ts, str):
+                    valid_timestamps.append(datetime.fromisoformat(_ts))
 
             return {
                 "by_category": results,

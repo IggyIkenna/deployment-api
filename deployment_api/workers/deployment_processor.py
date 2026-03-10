@@ -949,10 +949,14 @@ def _handle_orphan_vm_cleanup(  # noqa: C901
 
     if to_fire:
         try:
-            service_account_email = ValidationUtils.get_required(
-                config, "service_account_email", "bulk cancellation orchestrator"
+            service_account_email = str(
+                ValidationUtils.get_required(
+                    config, "service_account_email", "bulk cancellation orchestrator"
+                )
             )
-            job_name = ValidationUtils.get_required(config, "job_name", "bulk cancellation backend")
+            job_name = str(
+                ValidationUtils.get_required(config, "job_name", "bulk cancellation backend")
+            )
             _cancel_vm_jobs_sync(
                 deployment_id=deployment_id,
                 project_id=PROJECT_ID,
