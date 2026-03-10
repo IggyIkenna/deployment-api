@@ -1,12 +1,9 @@
 """Service modules for deployment business logic."""
 
-from .deployment_manager import DeploymentManager
-from .deployment_state import DeploymentStateManager
-from .sync_service import SyncService
 
-
-# Placeholder imports for missing services (to prevent import errors)
-# These would need to be implemented if the data_status module is being used
+# Placeholder classes defined first to break the circular import chain:
+# services/__init__ → deployment_manager → routes/deployment_validation
+# → routes/__init__ → data_status.py → services (needs these classes)
 class DataStatusService:
     """Placeholder for DataStatusService."""
 
@@ -24,6 +21,10 @@ class DataAnalyticsService:
 
     pass
 
+
+from .deployment_manager import DeploymentManager  # noqa: E402
+from .deployment_state import DeploymentStateManager  # noqa: E402
+from .sync_service import SyncService  # noqa: E402
 
 __all__ = [
     "DataAnalyticsService",
