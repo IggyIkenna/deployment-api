@@ -116,8 +116,8 @@ async def test_run_pipeline_uat_instruments_coverage_gap_in_context() -> None:
     mock_client_instance = AsyncMock()
     mock_client_instance.messages.create = AsyncMock(side_effect=capture_call)
 
-    def mock_download(path: str) -> bytes:
-        if "instruments" in path:
+    def mock_download(bucket: str, path: str) -> bytes:
+        if "instruments" in bucket:
             return instruments_manifest
         raise Exception("not available")
 

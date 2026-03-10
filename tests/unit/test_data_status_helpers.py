@@ -15,26 +15,22 @@ class TestBucketHelper:
     def test_bucket_name_format(self):
         from deployment_api.routes import data_status_helpers
 
-        with (
-            patch("deployment_api.routes.data_status_helpers._PID", "my-project-123"),
-            patch.object(data_status_helpers, "_PID", "my-project-123"),
-        ):
+        with patch.object(data_status_helpers, "_pid", "my-project-123"):
             bucket_name = data_status_helpers._bucket("instruments-store", "CEFI")
             assert bucket_name == "instruments-store-cefi-my-project-123"
 
     def test_bucket_lowercases_category(self):
-        with patch("deployment_api.routes.data_status_helpers._PID", "proj"):
-            from deployment_api.routes import data_status_helpers
+        from deployment_api.routes import data_status_helpers
 
-            with patch.object(data_status_helpers, "_PID", "proj"):
-                bucket_name = data_status_helpers._bucket("market-data", "TRADFI")
-                assert "tradfi" in bucket_name
-                assert "TRADFI" not in bucket_name
+        with patch.object(data_status_helpers, "_pid", "proj"):
+            bucket_name = data_status_helpers._bucket("market-data", "TRADFI")
+            assert "tradfi" in bucket_name
+            assert "TRADFI" not in bucket_name
 
     def test_bucket_includes_prefix_and_project(self):
         from deployment_api.routes import data_status_helpers
 
-        with patch.object(data_status_helpers, "_PID", "test-project"):
+        with patch.object(data_status_helpers, "_pid", "test-project"):
             bucket_name = data_status_helpers._bucket("my-prefix", "DEFI")
             assert bucket_name.startswith("my-prefix-defi-")
             assert bucket_name.endswith("test-project")

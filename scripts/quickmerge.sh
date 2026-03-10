@@ -25,8 +25,8 @@
 #   --quick            Skip only act simulation (Stage 4); all other checks run
 #   --skip-tests       Pass --skip-tests to quality-gates.sh (lint+type+codex only)
 #   --skip-typecheck   Pass --skip-typecheck to quality-gates.sh (skips basedpyright only)
-#   --skip-codex       Skip codex compliance (Stage 3 §5). Human-only escape hatch.
-#   --skip-preflight   Skip pre-flight audit (Stage 2). Human-only escape hatch.
+#   --skip-codex       Skip codex compliance check (Stage 3 §5). Human-only escape hatch; never use with --agent.
+#   --skip-preflight   Skip pre-flight audit (Stage 2). Human-only escape hatch; never use with --agent.
 #
 # When to use --to-staging:
 #   feat!: / BREAKING CHANGE: commits that break downstream API contracts.
@@ -36,7 +36,7 @@
 # Pipeline:
 #   1. Dependency validation (workspace-manifest.json)
 #   1.5. PM: dependency alignment check; ALL: staging lock check (if --to-staging)
-#   2. Pre-flight audit (always runs — never skipped)
+#   2. Pre-flight audit (skippable with --skip-preflight for multi-agent use)
 #   3. Local quality gates (two-phase: auto-fix → verify)
 #   4. Act simulation (default; skip with --quick)
 #   5. Create PR + enable auto-merge (base: staging if --to-staging, else main)
@@ -293,8 +293,13 @@ PYEOF
 [ -n "$DEP_BRANCH" ] && cascade_dep_branch "$DEP_BRANCH"
 
 # ── ACTIVATE VENV ─────────────────────────────────────────────────────────────
+# USE_WORKSPACE_VENV=1: prefer .venv-workspace over repo .venv (workspace-venv-fallback.mdc)
 VENV_ACTIVATED=0
-if [ -f ".venv/bin/activate" ]; then
+if [ "${USE_WORKSPACE_VENV:-0}" = "1" ] && [ -f "${WORKSPACE_ROOT}/.venv-workspace/bin/activate" ]; then
+  source "${WORKSPACE_ROOT}/.venv-workspace/bin/activate"
+  VENV_ACTIVATED=1
+  echo "[$REPO_NAME] Using .venv-workspace (Python $(python --version 2>&1))"
+elif [ -f ".venv/bin/activate" ]; then
   source .venv/bin/activate
   VENV_ACTIVATED=1
   echo "[$REPO_NAME] Using .venv (Python $(python --version 2>&1))"
@@ -519,7 +524,7 @@ echo "STAGE 2: Pre-flight Audit"
 echo "=========================================="
 
 if [ "$SKIP_PREFLIGHT" = "true" ]; then
-  echo "[$REPO_NAME] ⏭️  Pre-flight audit SKIPPED (--skip-preflight)"
+  echo "[$REPO_NAME] ⚠️  Pre-flight audit SKIPPED (--skip-preflight)"
 else
 PREFLIGHT_SCRIPT="$WORKSPACE_ROOT/unified-trading-pm/scripts/validation/pre-flight-audit.sh"
 if [ -f "$PREFLIGHT_SCRIPT" ]; then
@@ -782,12 +787,18 @@ git fetch origin main --quiet
 if [ -n "$DEP_BRANCH" ]; then
   BRANCH="$DEP_BRANCH"
   echo "[$REPO_NAME] Using specified branch: $BRANCH"
+  if git show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
+    git checkout "$BRANCH" --quiet
+  elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
+    git checkout -B "$BRANCH" "origin/$BRANCH" --quiet
+  else
+    git checkout -b "$BRANCH" origin/main --quiet 2>/dev/null || git checkout "$BRANCH" --quiet
+  fi
 else
   BRANCH="auto/$(TZ=UTC date +%Y%m%d-%H%M%S)-$$"
   echo "[$REPO_NAME] Creating auto-generated branch: $BRANCH"
+  git checkout -b "$BRANCH" origin/main --quiet
 fi
-
-git checkout -b "$BRANCH" origin/main --quiet
 echo ""
 
 # Restore stash on new branch

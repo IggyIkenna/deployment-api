@@ -23,6 +23,6 @@ pytest-mock<4.0.0,>=3.15.0
 pytest-timeout<3.0.0,>=2.4.0
 pytest-xdist<4.0.0,>=3.6.0
 ruff==0.15.0
-basedpyright<2.0.0,>=1.21.0
+basedpyright==1.38.2
 pip-audit<3.0.0,>=2.7.0
 bandit<2.0.0,>=1.7.0
