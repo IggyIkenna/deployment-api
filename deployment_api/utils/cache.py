@@ -218,11 +218,11 @@ class RedisCache(CacheBackend):
             client: object = await get_client_fn()
             keys_fn = cast(
                 Callable[[str], Coroutine[object, object, object]],
-                client.keys,
+                client.keys,  # type: ignore[union-attr]  # client is dynamic redis type
             )
             del_fn = cast(
                 Callable[..., Coroutine[object, object, object]],
-                client.delete,
+                client.delete,  # type: ignore[union-attr]  # client is dynamic redis type
             )
             keys_raw: object = await keys_fn(pattern)
             keys: list[object] = cast(list[object], keys_raw) if isinstance(keys_raw, list) else []

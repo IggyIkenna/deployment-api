@@ -13,6 +13,7 @@ import os
 import socket
 import time as _time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -209,7 +210,7 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                                 else 0.0
                             )
                             owner_raw2: object = existing_payload.get("owner")
-                            owner = cast(str, owner_raw2) if isinstance(owner_raw2, str) else None
+                            owner = owner_raw2 if isinstance(owner_raw2, str) else None
 
                             # Allow renewal if we already own the lock or it's expired
                             is_expired = expires_at <= now.timestamp()
@@ -323,7 +324,7 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
 
                 def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:  # noqa: C901
                     """Run orphan VM cleanup only (GCS + vm_map + fire). No state write. Returns count fired."""  # noqa: E501
-                    config_raw = state.get("config") or {}
+                    config_raw: object = state.get("config") or {}
                     config = (
                         cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
                     )
@@ -331,7 +332,7 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                     compute_type = state.get("compute_type", "vm")
                     if compute_type != "vm":
                         return 0
-                    shards_raw = state.get("shards") or []
+                    shards_raw: object = state.get("shards") or []
                     shards = (
                         cast(list[dict[str, object]], shards_raw)
                         if isinstance(shards_raw, list)
@@ -384,7 +385,7 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                             PROJECT_ID, f"name:{service_name}-*"
                         )
                         for inst in instances:
-                            inst_d = cast(dict[str, object], inst)
+                            inst_d = inst
                             vm_map[str(inst_d["name"])] = {
                                 "status": inst_d.get("status"),
                                 "zone": inst_d.get("zone"),
@@ -457,14 +458,15 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                             )
                             return 0
 
-                        orch = DeploymentOrchestrator(  # noqa: F821
+                        _orch_factory = cast(Callable[..., object], _orchestrator_cls)
+                        orch = _orch_factory(  # type: ignore[operator]  # dynamically loaded class
                             project_id=PROJECT_ID,
                             region=config.get("region") or "asia-northeast1",
                             service_account_email=service_account_email,
                             state_bucket=STATE_BUCKET,
                             state_prefix=f"deployments.{DEPLOYMENT_ENV}",
                         )
-                        backend = orch.get_backend(
+                        backend = orch.get_backend(  # type: ignore[union-attr, arg-type]  # dynamic object
                             "vm",
                             job_name=job_name,
                             zone=config.get("zone"),
@@ -475,7 +477,7 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                             ) as pool:
                                 for job_id, zone in to_fire:
                                     pool.submit(
-                                        backend.cancel_job_fire_and_forget,
+                                        backend.cancel_job_fire_and_forget,  # type: ignore[union-attr]  # dynamic backend
                                         job_id,
                                         zone,
                                     )
@@ -545,7 +547,8 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                                 continue
 
                             # Check if state.json is older than TTL
-                            updated = metadata.get("updated")
+                            updated_raw: object = metadata.get("updated")
+                            updated = updated_raw if isinstance(updated_raw, datetime) else None
                             if updated and updated < cutoff:
                                 # Delete entire deployment directory
                                 delete_objects(STATE_BUCKET, dep_prefix, max_results=1000)

@@ -46,8 +46,8 @@ def _get_verification_cache(deployment_id: str) -> dict[str, object] | None:
     if isinstance(ts, float) and time.time() - ts > _VERIFICATION_CACHE_TTL_SEC:
         _verification_cache.pop(deployment_id, None)
         return None
-    data = entry.get("data")
-    return data if isinstance(data, dict) else None
+    data: object = entry.get("data")
+    return cast(dict[str, object], data) if isinstance(data, dict) else None
 
 
 def build_deploy_env_vars(
@@ -254,11 +254,12 @@ def _status_str(status: object) -> str:
     if isinstance(status, str):
         return status
     if isinstance(status, dict):
-        val = status.get("status", "unknown")
-        return str(val)
-    attr = getattr(status, "status", None)
-    if attr is not None:
-        return str(attr)
+        _sd = cast(dict[str, object], status)
+        _val: object = _sd.get("status", "unknown")
+        return str(_val)
+    _attr: object = getattr(status, "status", None)
+    if _attr is not None:
+        return str(_attr)
     return str(status)
 
 
@@ -293,13 +294,16 @@ def _extract_severity_and_logger(line: str) -> tuple[str, str]:
     stripped = line.strip()
     if stripped.startswith("{"):
         try:
-            data = _json.loads(stripped)
+            data: object = cast(object, _json.loads(stripped))
             if isinstance(data, dict):
-                raw_level = str(data.get("level") or data.get("severity") or "INFO").upper()
+                _data = cast(dict[str, object], data)
+                raw_level = str(_data.get("level") or _data.get("severity") or "INFO").upper()
                 severity = _SEVERITY_ALIASES.get(raw_level, raw_level)
                 if severity not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
                     severity = "INFO"
-                log_name = str(data.get("logger") or data.get("name") or data.get("module") or "")
+                log_name = str(
+                    _data.get("logger") or _data.get("name") or _data.get("module") or ""
+                )
                 return severity, log_name
         except (ValueError, KeyError, TypeError):
             pass

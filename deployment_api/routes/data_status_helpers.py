@@ -5,7 +5,6 @@ Contains utility functions for data status checking and processing.
 """
 
 import logging
-from typing import cast
 
 from fastapi import HTTPException
 
@@ -54,7 +53,7 @@ async def _run_data_status_cli(
             check_timeframes=check_timeframes,
             mode=mode,
         )
-        return cast(dict[str, object], result)
+        return result
     except RuntimeError as e:
         logger.error("deployment-service data-status call failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Data status check failed: {e!s}") from e

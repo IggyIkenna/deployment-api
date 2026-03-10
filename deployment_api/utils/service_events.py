@@ -53,15 +53,17 @@ def update_shard_state_from_event(  # noqa: C901
         Updated shard state
     """
     event_name = cast(str, event["event_name"])
-    details = cast(str, event["details"])
+    details: object = event["details"]
     timestamp = cast(datetime, event["timestamp"])
 
     if "stage_timings" not in shard_state or shard_state["stage_timings"] is None:
         shard_state["stage_timings"] = {}
 
     stage_timings = cast(dict[str, object], shard_state["stage_timings"])
-    _details_dict = details if isinstance(details, dict) else {}
-    _is_validation_failed = (
+    _details_dict: dict[str, object] = (
+        cast(dict[str, object], details) if isinstance(details, dict) else {}
+    )
+    _is_validation_failed: bool = (
         event_name == "FAILED" and _details_dict.get("error_category") == "validation"
     )
     if event_name in [

@@ -539,8 +539,8 @@ class DeploymentStateManager:
         if "total_shards" in deployment and "successful_shards" in deployment:
             total_raw = deployment["total_shards"]
             successful_raw = deployment["successful_shards"]
-            total = cast(int, total_raw) if isinstance(total_raw, int) else 0
-            successful = cast(int, successful_raw) if isinstance(successful_raw, int) else 0
+            total = total_raw if isinstance(total_raw, int) else 0
+            successful = successful_raw if isinstance(successful_raw, int) else 0
             if total > 0:
                 deployment["success_rate"] = round((successful / total) * 100, 1)
             else:

@@ -234,7 +234,11 @@ async def create_deployment(
     try:
         # Create background task for deployment execution
         def background_task_runner(
-            req: object, config_dir: str, shard_list: object, cli_cmd: str, dep_id: str
+            req: DeployRequest,
+            config_dir: str,
+            shard_list: list[dict[str, object]],
+            cli_cmd: str,
+            dep_id: str,
         ) -> None:
             background_tasks.add_task(
                 deployment_manager.run_deployment_background,

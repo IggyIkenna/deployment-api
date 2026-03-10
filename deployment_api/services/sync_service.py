@@ -9,6 +9,7 @@ import importlib as _importlib
 import json
 import logging
 import time as _time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -138,7 +139,7 @@ class SyncService:
         Returns:
             List of (state_path, state_dict) tuples for active deployments
         """
-        active_states = []
+        active_states: list[tuple[str, dict[str, object]]] = []
         cutoff = datetime.now(UTC) - timedelta(minutes=min_age_minutes)
 
         for state_path in state_paths:
@@ -152,7 +153,8 @@ class SyncService:
                 continue
 
             # Skip if too recently created (avoid syncing actively-launching deployments)
-            created_at_str = state.get("created_at")
+            created_at_raw = state.get("created_at")
+            created_at_str = str(created_at_raw) if created_at_raw is not None else None
             if created_at_str:
                 try:
                     created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
@@ -211,7 +213,7 @@ class SyncService:
             True if deployment was updated, False otherwise
         """
         compute_type_raw: object = state.get("compute_type", "vm")
-        compute_type = cast(str, compute_type_raw) if isinstance(compute_type_raw, str) else "vm"
+        compute_type = compute_type_raw if isinstance(compute_type_raw, str) else "vm"
         shards_raw: object = state.get("shards") or []
         shards = cast(list[dict[str, object]], shards_raw) if isinstance(shards_raw, list) else []
         updated = False
@@ -336,7 +338,7 @@ class SyncService:
 
             # Try to acquire quota for batch of shards
             batch_size = min(len(shards_to_launch), settings.DEFAULT_MAX_CONCURRENT)
-            acquired = self.quota_broker.try_acquire_batch(quota_shape, batch_size)
+            acquired = self.quota_broker.try_acquire_batch(quota_shape, batch_size)  # type: ignore[union-attr]  # dynamic object
 
             if acquired == 0:
                 logger.debug("[SYNC_SERVICE] %s: No quota available for scheduling", deployment_id)
@@ -344,16 +346,19 @@ class SyncService:
 
             # Launch the acquired batch
             try:
-                service_account_email = ValidationUtils.get_required(
-                    cast(dict[str, object], config),
-                    "service_account_email",
-                    "deployment orchestrator",
+                service_account_email = str(
+                    ValidationUtils.get_required(
+                        config,
+                        "service_account_email",
+                        "deployment orchestrator",
+                    )
                 )
             except ConfigurationError as e:
                 logger.error("[SYNC_SERVICE] %s: %s", deployment_id, e)
                 return 0
 
-            orch = DeploymentOrchestrator(  # noqa: F821
+            _orch_factory = cast(Callable[..., object], _orchestrator_cls)
+            orch = _orch_factory(
                 project_id=self.project_id,
                 region=config.get("region") or "asia-northeast1",
                 service_account_email=service_account_email,
@@ -371,7 +376,7 @@ class SyncService:
                 shard = shards_to_launch[i]
                 try:
                     # Launch shard using orchestrator
-                    job_id = orch.submit_shard(shard, config)
+                    job_id = orch.submit_shard(shard, config)  # type: ignore[union-attr, arg-type]  # dynamic object
                     if job_id:
                         shard["job_id"] = job_id
                         shard["status"] = "running"
@@ -382,7 +387,7 @@ class SyncService:
                         "[SYNC_SERVICE] Error launching shard %s: %s", shard.get("shard_id"), e
                     )
                     # Release quota for failed launch
-                    self.quota_broker.release(quota_shape, 1)
+                    self.quota_broker.release(quota_shape, 1)  # type: ignore[union-attr]  # dynamic object
 
             if launched > 0:
                 launch_elapsed = _time.time() - launch_start
@@ -480,7 +485,8 @@ class SyncService:
             if state.get("compute_type") != "vm":
                 continue
 
-            completed_at = state.get("completed_at") or state.get("updated_at")
+            completed_at_raw = state.get("completed_at") or state.get("updated_at")
+            completed_at = str(completed_at_raw) if completed_at_raw is not None else None
             if not completed_at:
                 continue
 

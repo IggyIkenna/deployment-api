@@ -236,12 +236,13 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
         if not isinstance(dates, list):
             return
 
-        if len(dates) <= max_items:
+        dates_list = cast(list[object], dates)
+        if len(dates_list) <= max_items:
             return
 
         # Truncate: first 25 + last 25
-        d[list_key] = dates[:half]
-        d[tail_key] = dates[-half:]
+        d[list_key] = dates_list[:half]
+        d[tail_key] = dates_list[-half:]
         d[truncated_key] = True
 
     # Truncate category-level dates
@@ -264,7 +265,7 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
             )
 
             # Truncate venue-level dates
-            venues_raw = cat_data.get("venues") or {}
+            venues_raw: object = cat_data.get("venues") or {}
             venues_map = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
             for _venue_name, venue_data_raw in venues_map.items():
                 venue_data = (
@@ -287,7 +288,7 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
                     )
 
                     # Truncate data_type-level dates
-                    dt_raw = venue_data.get("data_types") or {}
+                    dt_raw: object = venue_data.get("data_types") or {}
                     dt_map = cast(dict[str, object], dt_raw) if isinstance(dt_raw, dict) else {}
                     for _dt_name, dt_data_raw in dt_map.items():
                         if isinstance(dt_data_raw, dict):

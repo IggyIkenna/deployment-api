@@ -113,9 +113,9 @@ async def clear_cache():
 
         # Also clear the GCS-based file cache used by service_status
         try:
-            from .routes.service_status import _clear_gcs_cache
+            from .routes.service_status_cache import clear_gcs_cache
 
-            _clear_gcs_cache()
+            clear_gcs_cache()
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("Unexpected error during operation: %s", e, exc_info=True)
             pass

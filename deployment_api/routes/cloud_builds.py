@@ -300,8 +300,8 @@ def _format_build_info(build: object) -> BuildInfoDict:
     status_name = str(getattr(status_obj, "name", "") or "")
     create_time = getattr(build, "create_time", None)
     finish_time = getattr(build, "finish_time", None)
-    substitutions = getattr(build, "substitutions", None)
-    log_url_raw = getattr(build, "log_url", None)
+    substitutions: object = getattr(build, "substitutions", None)
+    log_url_raw: object = getattr(build, "log_url", None)
     log_url = str(log_url_raw) if log_url_raw is not None else None
 
     create_time_iso = getattr(create_time, "isoformat", None)
@@ -319,9 +319,9 @@ def _format_build_info(build: object) -> BuildInfoDict:
     if substitutions is not None:
         sub_get = getattr(substitutions, "get", None)
         if callable(sub_get):
-            sha_raw = sub_get("COMMIT_SHA") or ""
+            sha_raw: object = sub_get("COMMIT_SHA") or ""
             commit_sha = str(sha_raw)[:7] if sha_raw else None
-            branch_raw = sub_get("BRANCH_NAME")
+            branch_raw: object = sub_get("BRANCH_NAME")
             branch = str(branch_raw) if branch_raw is not None else None
 
     return {
@@ -387,7 +387,7 @@ async def list_triggers(  # noqa: C901
                 page_size=50,
             )
 
-            triggers = list(client.list_build_triggers(request=request))
+            triggers = list(client.list_build_triggers(request=request))  # type: ignore[misc]  # CloudBuild stubs partial
 
             # Populate trigger ID cache for use by history/trigger endpoints
             _populate_trigger_cache(triggers)
@@ -509,7 +509,7 @@ async def _get_recent_builds_for_triggers(
                 filter=f'build_trigger_id="{trigger_id}"',
             )
             # Use next(iter(...)) to get only the first build without exhausting the pager
-            build = next(iter(client.list_builds(request=request)), None)
+            build = next(iter(client.list_builds(request=request)), None)  # type: ignore[misc]  # CloudBuild stubs partial
             if not build:
                 return None
             return (trigger_id, _format_build_info(build))
@@ -576,7 +576,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
             _cb = _cloudbuild_v1()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
-            triggers = list(client.list_build_triggers(request=triggers_request))
+            triggers = list(client.list_build_triggers(request=triggers_request))  # type: ignore[misc]  # CloudBuild stubs partial
             _populate_trigger_cache(triggers)
             return _trigger_id_cache.get(trigger_name)
 
@@ -594,7 +594,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
                 filter=f'build_trigger_id="{trigger_id}"',
             )
             # Only check the first few builds (ordered by create_time desc)
-            for build in islice(client.list_builds(request=builds_request), 5):
+            for build in islice(client.list_builds(request=builds_request), 5):  # type: ignore[misc]  # CloudBuild stubs partial
                 if build.create_time and build.create_time >= started_after:  # type: ignore[operator]  # Timestamp vs datetime — compatible at runtime
                     return {
                         "build_id": build.id,
@@ -631,7 +631,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
             )
 
             # Run the trigger - returns a long-running operation
-            operation = client.run_build_trigger(request=run_request)
+            operation = client.run_build_trigger(request=run_request)  # type: ignore[misc]  # CloudBuild stubs partial
 
             op_name: str | None = cast(str | None, getattr(operation, "name", None))
             op_done = getattr(operation, "done", None)
@@ -646,9 +646,9 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
             # Try multiple approaches to get build info
             # Approach 1: Unpack metadata to BuildOperationMetadata
             try:
-                if hasattr(operation, "metadata") and operation.metadata:
+                if hasattr(operation, "metadata") and operation.metadata:  # type: ignore[union-attr]  # dynamic op
                     meta = _build_op_meta_cls()()
-                    if operation.metadata.Unpack(meta) and meta.build:
+                    if operation.metadata.Unpack(meta) and meta.build:  # type: ignore[union-attr]  # dynamic metadata
                         build_id = meta.build.id
                         log_url = meta.build.log_url
                         logger.info("Got build info from metadata: build_id=%s", build_id)
@@ -783,7 +783,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
                 triggers_request = _cb.ListBuildTriggersRequest(
                     parent=parent,
                 )
-                triggers = list(client.list_build_triggers(request=triggers_request))
+                triggers = list(client.list_build_triggers(request=triggers_request))  # type: ignore[misc]  # CloudBuild stubs partial
                 _populate_trigger_cache(triggers)
                 trigger_id = _trigger_id_cache.get(trigger_name)
 
@@ -797,7 +797,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
                 filter=f'build_trigger_id="{trigger_id}"',
             )
             # Use islice to stop after getting 'limit' results (avoids exhausting pager)
-            builds = list(islice(client.list_builds(request=builds_request), limit))
+            builds = list(islice(client.list_builds(request=builds_request), limit))  # type: ignore[misc]  # CloudBuild stubs partial
 
             return [_format_build_info(b) for b in builds]
 
@@ -851,7 +851,7 @@ async def get_library_status(library: str) -> LibraryStatusDict:
         if pyproject_path and pyproject_path.exists():
             with open(pyproject_path, "rb") as f:
                 pyproject: dict[str, object] = cast(dict[str, object], tomllib.load(f))
-                project_section_raw = pyproject.get("project") or {}
+                project_section_raw: object = pyproject.get("project") or {}
                 if isinstance(project_section_raw, dict):
                     project_section = cast(dict[str, object], project_section_raw)
                     version_raw = project_section.get("version")
@@ -917,14 +917,24 @@ async def check_dependencies() -> DependencyCheckResponseDict:
 
             qg_status = status.get("quality_gates_status") or {}
             if qg_status and not qg_status.get("is_passing", True):
+                _qg_status_raw: object = qg_status.get("status")
+                _qg_last_build_raw: object = qg_status.get("last_build_time")
+                _dep_services_raw: object = status.get("dependent_services") or []
                 issues.append(
-                    {
-                        "library": library,
-                        "issue": "Quality gates failing",
-                        "status": qg_status.get("status"),
-                        "last_build_time": qg_status.get("last_build_time"),
-                        "affected_services": status.get("dependent_services") or [],
-                    }
+                    cast(
+                        DependencyIssueDict,
+                        {
+                            "library": library,
+                            "issue": "Quality gates failing",
+                            "status": str(_qg_status_raw) if _qg_status_raw is not None else "",
+                            "last_build_time": str(_qg_last_build_raw)
+                            if _qg_last_build_raw is not None
+                            else None,
+                            "affected_services": [str(x) for x in _dep_services_raw]
+                            if isinstance(_dep_services_raw, list)
+                            else [],
+                        },
+                    )
                 )
 
             # Check for version mismatch
