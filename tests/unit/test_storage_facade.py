@@ -150,14 +150,10 @@ class TestListObjectsViaApi:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_returns_object_info_list(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
         mock_blob = MagicMock()
         mock_blob.name = "prefix/file.parquet"
-        mock_blob.updated = datetime(2024, 1, 15, tzinfo=UTC)
         mock_blob.size = 1024
-        mock_blob.time_created = datetime(2024, 1, 15, tzinfo=UTC)
-        mock_bucket.list_blobs.return_value = [mock_blob]
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.list_blobs.return_value = [mock_blob]
         mock_client_fn.return_value = mock_client
 
         results = list_objects("test-bucket", "prefix/")
@@ -170,9 +166,7 @@ class TestListObjectsViaApi:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_empty_bucket_returns_empty_list(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_bucket.list_blobs.return_value = []
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.list_blobs.return_value = []
         mock_client_fn.return_value = mock_client
 
         results = list_objects("test-bucket", "nonexistent/")
@@ -187,11 +181,7 @@ class TestObjectExistsViaApi:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_exists_when_blob_exists(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.blob_exists.return_value = True
         mock_client_fn.return_value = mock_client
 
         assert object_exists("test-bucket", "path/file.parquet") is True
@@ -201,11 +191,7 @@ class TestObjectExistsViaApi:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_does_not_exist(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = False
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.blob_exists.return_value = False
         mock_client_fn.return_value = mock_client
 
         assert object_exists("test-bucket", "path/missing.parquet") is False
@@ -272,13 +258,10 @@ class TestListObjectsFuse:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_fuse_error_falls_back_to_api(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
         mock_blob = MagicMock()
         mock_blob.name = "prefix/file.json"
-        mock_blob.updated = datetime.now(UTC)
         mock_blob.size = 100
-        mock_bucket.list_blobs.return_value = [mock_blob]
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.list_blobs.return_value = [mock_blob]
         mock_client_fn.return_value = mock_client
 
         with patch(
@@ -321,11 +304,7 @@ class TestObjectExistsFuse:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_fuse_error_falls_back_to_api(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.blob_exists.return_value = True
         mock_client_fn.return_value = mock_client
 
         with patch(
@@ -343,11 +322,12 @@ class TestListPrefixes:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_api_path_returns_prefixes(self, mock_client_fn, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_iterator = MagicMock()
-        mock_iterator.prefixes = ["prefix/folder1/", "prefix/folder2/"]
-        mock_bucket.list_blobs.return_value = mock_iterator
-        mock_client.bucket.return_value = mock_bucket
+        # Return blobs with names that have child prefixes
+        mock_blob1 = MagicMock()
+        mock_blob1.name = "prefix/folder1/file.json"
+        mock_blob2 = MagicMock()
+        mock_blob2.name = "prefix/folder2/file.json"
+        mock_client.list_blobs.return_value = [mock_blob1, mock_blob2]
         mock_client_fn.return_value = mock_client
 
         result = list_prefixes("test-bucket", "prefix/")
@@ -374,11 +354,9 @@ class TestListPrefixes:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_fuse_error_falls_back_to_api(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_it = MagicMock()
-        mock_it.prefixes = ["prefix/child/"]
-        mock_bucket.list_blobs.return_value = mock_it
-        mock_client.bucket.return_value = mock_bucket
+        mock_blob = MagicMock()
+        mock_blob.name = "prefix/child/file.txt"
+        mock_client.list_blobs.return_value = [mock_blob]
         mock_client_fn.return_value = mock_client
 
         with patch(
@@ -407,15 +385,12 @@ class TestReadObjectBytes:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_api_path_reads_bytes(self, mock_client_fn, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.download_as_bytes.return_value = b"hello world"
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.download_bytes.return_value = b"hello world"
         mock_client_fn.return_value = mock_client
 
         result = read_object_bytes("test-bucket", "path/file.json")
         assert result == b"hello world"
+        mock_client.download_bytes.assert_called_once_with("test-bucket", "path/file.json")
 
     @patch("deployment_api.utils.storage_facade._use_gcs_fuse", return_value=True)
     @patch("deployment_api.utils.storage_facade._is_bucket_mounted", return_value=True)
@@ -435,11 +410,7 @@ class TestReadObjectBytes:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_fuse_read_error_falls_back_to_api(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.download_as_bytes.return_value = b"api content"
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.download_bytes.return_value = b"api content"
         mock_client_fn.return_value = mock_client
 
         with patch(
@@ -457,11 +428,7 @@ class TestReadObjectText:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_decodes_utf8(self, mock_client_fn, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.download_as_bytes.return_value = b"hello text"
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.download_bytes.return_value = b"hello text"
         mock_client_fn.return_value = mock_client
 
         result = read_object_text("test-bucket", "file.txt")
@@ -475,14 +442,10 @@ class TestWriteObjectBytes:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_api_path_uploads(self, mock_client_fn, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
         mock_client_fn.return_value = mock_client
 
         write_object_bytes("test-bucket", "path/file.json", b"data")
-        mock_blob.upload_from_file.assert_called_once()
+        mock_client.upload_bytes.assert_called_once_with("test-bucket", "path/file.json", b"data")
 
     @patch("deployment_api.utils.storage_facade._use_gcs_fuse", return_value=True)
     @patch("deployment_api.utils.storage_facade._is_bucket_mounted", return_value=True)
@@ -501,10 +464,6 @@ class TestWriteObjectBytes:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_fuse_write_error_falls_back_to_api(self, mock_client_fn, mock_mounted, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
         mock_client_fn.return_value = mock_client
 
         with patch(
@@ -512,7 +471,7 @@ class TestWriteObjectBytes:
         ):
             write_object_bytes("test-bucket", "file.json", b"data")
 
-        mock_blob.upload_from_file.assert_called_once()
+        mock_client.upload_bytes.assert_called_once_with("test-bucket", "file.json", b"data")
 
 
 class TestWriteObjectText:
@@ -522,14 +481,10 @@ class TestWriteObjectText:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_encodes_and_writes(self, mock_client_fn, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
         mock_client_fn.return_value = mock_client
 
         write_object_text("test-bucket", "file.txt", "hello text")
-        mock_blob.upload_from_file.assert_called_once()
+        mock_client.upload_bytes.assert_called_once_with("test-bucket", "file.txt", b"hello text")
 
 
 class TestDeleteObject:
@@ -538,28 +493,20 @@ class TestDeleteObject:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_deletes_existing_blob(self, mock_client_fn):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.blob_exists.return_value = True
         mock_client_fn.return_value = mock_client
 
         delete_object("test-bucket", "file.json")
-        mock_blob.delete.assert_called_once()
+        mock_client.delete_blob.assert_called_once_with("test-bucket", "file.json")
 
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_skips_delete_when_not_exists(self, mock_client_fn):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = False
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.blob_exists.return_value = False
         mock_client_fn.return_value = mock_client
 
         delete_object("test-bucket", "missing.json")
-        mock_blob.delete.assert_not_called()
+        mock_client.delete_blob.assert_not_called()
 
 
 class TestListBlobsCompat:
@@ -569,13 +516,10 @@ class TestListBlobsCompat:
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_yields_object_info(self, mock_client_fn, mock_fuse):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
         mock_blob = MagicMock()
         mock_blob.name = "prefix/file.json"
-        mock_blob.updated = datetime.now(UTC)
         mock_blob.size = 100
-        mock_bucket.list_blobs.return_value = [mock_blob]
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.list_blobs.return_value = [mock_blob]
         mock_client_fn.return_value = mock_client
 
         results = list(list_blobs_compat("test-bucket", "prefix/"))
@@ -587,12 +531,11 @@ class TestGetStorageClientAndBucket:
     """Tests for get_storage_client_and_bucket function."""
 
     @patch("deployment_api.utils.storage_client.get_storage_client")
-    def test_returns_client_and_bucket(self, mock_client_fn):
+    def test_returns_client_and_bucket_name(self, mock_client_fn):
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_client.bucket.return_value = mock_bucket
         mock_client_fn.return_value = mock_client
 
         client, bucket = get_storage_client_and_bucket("test-bucket")
         assert client is mock_client
-        assert bucket is mock_bucket
+        # UCI returns bucket name as string, not a bucket object
+        assert bucket == "test-bucket"

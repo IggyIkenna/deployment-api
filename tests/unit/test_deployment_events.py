@@ -79,13 +79,10 @@ class TestNotifyDeploymentUpdated:
         q = asyncio.Queue()
         ev._sse_queues["dep-notify"] = {q}
 
-        mock_cache_mod = MagicMock()
-        mock_cache_mod.invalidate_deployment_state_cache = AsyncMock()
-
         try:
-            with patch.dict(
-                __import__("sys").modules,
-                {"deployment_api.utils.cache": mock_cache_mod},
+            with patch(
+                "deployment_api.routes.deployment_caching.invalidate_deployment_state_cache",
+                new=AsyncMock(),
             ):
                 await ev.notify_deployment_updated("dep-notify")
             msg = await asyncio.wait_for(q.get(), timeout=1.0)
@@ -95,14 +92,9 @@ class TestNotifyDeploymentUpdated:
 
     @pytest.mark.asyncio
     async def test_handles_cache_error_gracefully(self):
-        mock_cache_mod = MagicMock()
-        mock_cache_mod.invalidate_deployment_state_cache = AsyncMock(
-            side_effect=RuntimeError("cache down")
-        )
-
-        with patch.dict(
-            __import__("sys").modules,
-            {"deployment_api.utils.cache": mock_cache_mod},
+        with patch(
+            "deployment_api.routes.deployment_caching.invalidate_deployment_state_cache",
+            new=AsyncMock(side_effect=RuntimeError("cache down")),
         ):
             # Should not raise
             await ev.notify_deployment_updated("dep-cache-fail")
@@ -224,12 +216,12 @@ class TestDrainSyncQueue:
 
         with (
             patch.object(ev, "_broadcast", mock_broadcast),
-            patch.dict(
-                __import__("sys").modules,
-                {"deployment_api.utils.cache": mock_cache_mod},
+            patch(
+                "deployment_api.routes.deployment_caching.invalidate_deployment_state_cache",
+                new=AsyncMock(),
             ),
         ):
-            drain_task = asyncio.create_task(ev._drain_sync_queue())
+            drain_task = asyncio.create_task(ev.drain_sync_queue())
             await asyncio.sleep(0.1)
             drain_task.cancel()
             try:

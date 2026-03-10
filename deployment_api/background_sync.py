@@ -123,6 +123,9 @@ async def auto_sync_running_deployments():  # noqa: C901
     logger.info("[AUTO_SYNC] Background sync task stopped")
 
 
+# Private alias for testability (tests can patch this name)
+_auto_sync_running_deployments = auto_sync_running_deployments
+
 # Module-level aliases for settings constants used by processors in this module
 PROJECT_ID = settings.gcp_project_id
 STATE_BUCKET = settings.STATE_BUCKET

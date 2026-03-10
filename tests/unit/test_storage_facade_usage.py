@@ -16,25 +16,21 @@ class TestStorageFacadeUsage:
     @patch("deployment_api.utils.storage_facade._is_bucket_mounted")
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_list_objects_uses_storage_client(self, mock_get_client, mock_mounted, mock_fuse):
-        """Verify list_objects uses get_storage_client abstraction."""
+        """Verify list_objects uses UCI StorageClient abstraction."""
         mock_fuse.return_value = False
         mock_mounted.return_value = False
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
         mock_blob = MagicMock()
         mock_blob.name = "test/file.txt"
-        mock_blob.updated = None
         mock_blob.size = 100
 
-        mock_client.bucket.return_value = mock_bucket
-        mock_bucket.list_blobs.return_value = [mock_blob]
+        mock_client.list_blobs.return_value = [mock_blob]
         mock_get_client.return_value = mock_client
 
         result = list_objects("test-bucket", "test/", max_results=10)
 
         mock_get_client.assert_called_once()
-        mock_client.bucket.assert_called_once_with("test-bucket")
-        mock_bucket.list_blobs.assert_called_once()
+        mock_client.list_blobs.assert_called_once()
         assert len(result) == 1
         assert result[0].name == "test/file.txt"
 
@@ -42,21 +38,15 @@ class TestStorageFacadeUsage:
     @patch("deployment_api.utils.storage_facade._is_bucket_mounted")
     @patch("deployment_api.utils.storage_client.get_storage_client")
     def test_object_exists_uses_storage_client(self, mock_get_client, mock_mounted, mock_fuse):
-        """Verify object_exists uses get_storage_client abstraction."""
+        """Verify object_exists uses UCI StorageClient abstraction."""
         mock_fuse.return_value = False
         mock_mounted.return_value = False
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-
-        mock_client.bucket.return_value = mock_bucket
-        mock_bucket.blob.return_value = mock_blob
+        mock_client.blob_exists.return_value = True
         mock_get_client.return_value = mock_client
 
         result = object_exists("test-bucket", "test/file.txt")
 
         mock_get_client.assert_called_once()
-        mock_client.bucket.assert_called_once_with("test-bucket")
-        mock_bucket.blob.assert_called_once_with("test/file.txt")
+        mock_client.blob_exists.assert_called_once_with("test-bucket", "test/file.txt")
         assert result is True

@@ -82,7 +82,7 @@ class TestFormatBuildInfo:
     def test_empty_commit_sha(self):
         build = self._make_build(substitutions={"COMMIT_SHA": "", "BRANCH_NAME": "main"})
         result = _format_build_info(build)
-        assert result["commit_sha"] == ""  # empty string, not None
+        assert result["commit_sha"] is None  # empty COMMIT_SHA → falsy → None
 
 
 class TestTriggerCache:

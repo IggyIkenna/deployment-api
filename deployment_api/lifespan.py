@@ -33,6 +33,9 @@ from deployment_api.utils.storage_facade import (
 
 logger = logging.getLogger(__name__)
 
+# Private alias for testability (tests can patch this name)
+_auto_sync_running_deployments = auto_sync_running_deployments
+
 # Background task handles
 _background_task = None
 _events_drain_task = None
@@ -56,7 +59,7 @@ async def lifespan(app: FastAPI):  # noqa: C901
     # Start background sync task
     _shutdown_event = asyncio.Event()
     set_shutdown_event(_shutdown_event)
-    _background_task = asyncio.create_task(auto_sync_running_deployments())
+    _background_task = asyncio.create_task(_auto_sync_running_deployments())
     logger.info("Background auto-sync task started")
 
     # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
