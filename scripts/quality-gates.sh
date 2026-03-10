@@ -15,3 +15,11 @@ PYTEST_WORKERS=${PYTEST_WORKERS:-2}
 LOCAL_DEPS=()
 WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 source "${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
+
+# Codex enforcement: every entrypoint must emit STARTED, STOPPED, FAILED
+# See: unified-trading-codex/03-observability/lifecycle-events.md § Lifecycle Event QG Enforcement
+log_section "[5.X/6] UEI LIFECYCLE EVENT ENFORCEMENT (STARTED/STOPPED/FAILED)"
+for event in STARTED STOPPED FAILED; do
+    run_timeout 30 rg "log_event.*\"${event}\"" "${SOURCE_DIR}" --type py -q \
+        || log_warn "Missing log_event('${event}') in ${SERVICE_NAME} — see codex 03-observability/lifecycle-events.md"
+done

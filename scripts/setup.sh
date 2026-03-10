@@ -52,7 +52,8 @@
 #   13. Print known caveats from AGENTS.md (if present)
 #
 # Idempotency:
-#   - UI:  node_modules skipped if package.json not newer than node_modules/
+#   - UI:  node_modules skipped if package-lock.json is newer than package.json (reliable:
+#          lock file only updates on successful npm install; node_modules dir mtime is fragile)
 #   - .venv creation: skipped if .venv/ exists with correct Python version
 #   - uv lock: always runs (sibling version bumps don't update pyproject.toml timestamps)
 #   - Dep install: skipped if .setup-stamp is newer than pyproject.toml + uv.lock
@@ -188,13 +189,15 @@ if [ "$IS_UI_REPO" = true ]; then
             ISSUES=$((ISSUES + 1))
         fi
     elif [ -d "node_modules" ] && [ "$FORCE" != true ]; then
-        # Re-install only if package.json is newer than node_modules
-        if [ "package.json" -nt "node_modules" ]; then
-            log_warn "package.json changed — running npm install"
+        # Re-install when package.json is newer than package-lock.json (reliable: lock file is
+        # only updated by a *successful* npm install, so any edit to package.json will trigger
+        # reinstall here even if node_modules dir mtime was touched by a failed prior install).
+        if [ ! -f "package-lock.json" ] || [ "package.json" -nt "package-lock.json" ]; then
+            log_warn "package.json changed (or no lock file) — running npm install"
             npm install --silent
             log_ok "npm install complete"
         else
-            log_skip "node_modules up to date"
+            log_skip "node_modules up to date (package-lock.json in sync)"
         fi
     else
         npm install --silent
