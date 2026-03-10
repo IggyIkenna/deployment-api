@@ -63,9 +63,9 @@ def _parse_checklist(checklist_data: dict[str, object]) -> dict[str, object]:
     service = checklist_data.get("service_name", "unknown")
     last_updated = checklist_data.get("last_updated") or ""
 
-    categories = []
-    all_items = []
-    blocking_items = []
+    categories: list[dict[str, object]] = []
+    all_items: list[dict[str, object]] = []
+    blocking_items: list[dict[str, object]] = []
 
     # Find all phase_ keys
     phase_keys = [k for k in checklist_data if k.startswith("phase_")]
@@ -75,20 +75,22 @@ def _parse_checklist(checklist_data: dict[str, object]) -> dict[str, object]:
         phase_data = checklist_data.get(phase_key, {})
         if not isinstance(phase_data, dict):
             continue
+        phase_data_typed = cast(dict[str, object], phase_data)
 
-        phase_items = []
+        phase_items: list[dict[str, object]] = []
         phase_done = 0
         phase_total = 0
 
-        for item_key, item_data in phase_data.items():
-            if not isinstance(item_data, dict):
+        for item_key, item_data_raw in phase_data_typed.items():
+            if not isinstance(item_data_raw, dict):
                 continue
+            item_data = cast(dict[str, object], item_data_raw)
 
-            status = item_data.get("status", "pending")
-            description = item_data.get("description", item_key)
-            notes = item_data.get("notes") or ""
+            status = cast(str, item_data.get("status") or "pending")
+            description = cast(str, item_data.get("description") or item_key)
+            notes = cast(str, item_data.get("notes") or "")
             verified_date = item_data.get("verified_date")
-            is_blocking = item_data.get("blocking", False)
+            is_blocking = bool(item_data.get("blocking", False))
 
             item = {
                 "id": item_key,
@@ -134,10 +136,10 @@ def _parse_checklist(checklist_data: dict[str, object]) -> dict[str, object]:
 
     # Calculate overall stats
     total_items = len(all_items)
-    done_count = sum(1 for i in all_items if i["status"] == "done")
-    partial_count = sum(1 for i in all_items if i["status"] == "partial")
-    pending_count = sum(1 for i in all_items if i["status"] in ("pending", "not_started"))
-    na_count = sum(1 for i in all_items if i["status"] == "n/a")
+    done_count = sum(1 for i in all_items if i.get("status") == "done")
+    partial_count = sum(1 for i in all_items if i.get("status") == "partial")
+    pending_count = sum(1 for i in all_items if i.get("status") in ("pending", "not_started"))
+    na_count = sum(1 for i in all_items if i.get("status") == "n/a")
 
     # Calculate percentage (exclude n/a from total)
     applicable_total = total_items - na_count
@@ -230,7 +232,8 @@ async def validate_service_checklist(service_name: str, request: Request):
         checklist = _parse_checklist(checklist_data)
 
         blocking_items = cast(list[object], checklist.get("blocking_items") or [])
-        readiness_percent = checklist.get("readiness_percent", 0)
+        readiness_pct_raw = checklist.get("readiness_percent", 0)
+        readiness_percent = int(readiness_pct_raw) if isinstance(readiness_pct_raw, int) else 0
         warnings = _get_warnings(checklist)
 
         # Determine if ready for deployment
@@ -284,7 +287,7 @@ async def list_checklists(request: Request):
     config_dir = cast(Path, cast(FastAPI, request.app).state.config_dir)
 
     def _list_sync():
-        checklists = []
+        checklists: list[dict[str, object]] = []
 
         # Find all checklist files
         for checklist_file in config_dir.glob("checklist.*.yaml"):

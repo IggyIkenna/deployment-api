@@ -13,6 +13,12 @@ from typing import cast
 
 logger = logging.getLogger(__name__)
 
+# Module-level type aliases for execution service status structures
+_ConfigEntry = dict[str, str | bool | list[str]]
+_TimeframeMap = defaultdict[str, list[_ConfigEntry]]
+_ModeMap = defaultdict[str, _TimeframeMap]
+_BreakdownEntry = dict[str, int | list[str]]
+
 
 async def get_execution_service_data_status(  # noqa: C901
     config_path: str,
@@ -73,7 +79,7 @@ async def get_execution_service_data_status(  # noqa: C901
             version = version_match.group(1) if version_match else "V1"
 
             # Step 1: List all configs under the config path (storage facade)
-            configs = []
+            configs: list[dict[str, str]] = []
             config_objs = list_objects(bucket_name, config_prefix, max_results=10000)
 
             for obj in config_objs:
@@ -121,8 +127,8 @@ async def get_execution_service_data_status(  # noqa: C901
             # We use delimiter to get unique strategy_ids across all dates
 
             results_prefix = "results/"
-            existing_result_strategy_ids = set()
-            result_dates_by_strategy = defaultdict(set)
+            existing_result_strategy_ids: set[str] = set()
+            result_dates_by_strategy: defaultdict[str, set[str]] = defaultdict(set)
 
             # List all date directories under results/ (storage facade)
             date_prefixes = list_prefixes(bucket_name, results_prefix)
@@ -170,7 +176,9 @@ async def get_execution_service_data_status(  # noqa: C901
             # Step 3: Build hierarchical status: strategy -> mode -> timeframe -> configs
             # This enables drilling down to diagnose issues
 
-            hierarchy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+            hierarchy: defaultdict[str, _ModeMap] = defaultdict(
+                lambda: defaultdict(lambda: defaultdict(list))  # type: ignore[return-value]
+            )
 
             for config in configs:
                 strategy = config["strategy"]
@@ -179,52 +187,60 @@ async def get_execution_service_data_status(  # noqa: C901
                 result_strategy_id = config["result_strategy_id"]
 
                 has_results = result_strategy_id in existing_result_strategy_ids
-                result_dates = sorted(result_dates_by_strategy.get(result_strategy_id, []))
+                result_dates = sorted(result_dates_by_strategy.get(result_strategy_id, set()))
 
-                hierarchy[strategy][mode][timeframe].append(
-                    {
-                        "config_file": config["config_file"],
-                        "algo_name": config["algo_name"],
-                        "result_strategy_id": result_strategy_id,
-                        "has_results": has_results,
-                        "result_dates": result_dates,
-                    }
-                )
+                entry: _ConfigEntry = {
+                    "config_file": config["config_file"],
+                    "algo_name": config["algo_name"],
+                    "result_strategy_id": result_strategy_id,
+                    "has_results": has_results,
+                    "result_dates": result_dates,
+                }
+                hierarchy[strategy][mode][timeframe].append(entry)
 
             # Step 4: Build response with hierarchical breakdown and summaries
-            strategies = []
+            strategies: list[dict[str, object]] = []
             total_configs = 0
             total_with_results = 0
 
             # Also build flat breakdown by attribute for filtering
-            breakdown_by_mode = defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []})
-            breakdown_by_timeframe = defaultdict(
-                lambda: {"total": 0, "with_results": 0, "missing": []}
+            def _make_breakdown_entry() -> _BreakdownEntry:
+                return {"total": 0, "with_results": 0, "missing": []}
+
+            breakdown_by_mode: defaultdict[str, _BreakdownEntry] = defaultdict(
+                _make_breakdown_entry
             )
-            breakdown_by_algo = defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []})
+            breakdown_by_timeframe: defaultdict[str, _BreakdownEntry] = defaultdict(
+                _make_breakdown_entry
+            )
+            breakdown_by_algo: defaultdict[str, _BreakdownEntry] = defaultdict(
+                _make_breakdown_entry
+            )
 
             for strategy_name in sorted(hierarchy.keys()):
                 modes_data = hierarchy[strategy_name]
                 strategy_configs = 0
                 strategy_with_results = 0
-                strategy_result_dates = set()
+                strategy_result_dates: set[str] = set()
 
-                modes = []
+                modes: list[dict[str, object]] = []
                 for mode_name in sorted(modes_data.keys()):
                     timeframes_data = modes_data[mode_name]
                     mode_configs = 0
                     mode_with_results = 0
 
-                    timeframes = []
+                    timeframes: list[dict[str, object]] = []
                     for timeframe_name in sorted(timeframes_data.keys()):
                         configs_list = timeframes_data[timeframe_name]
                         tf_total = len(configs_list)
-                        tf_with_results = sum(1 for c in configs_list if c["has_results"])
-                        tf_missing = [c for c in configs_list if not c["has_results"]]
+                        tf_with_results = sum(1 for c in configs_list if bool(c.get("has_results")))
+                        tf_missing = [c for c in configs_list if not c.get("has_results")]
 
                         # Collect result dates
                         for c in configs_list:
-                            strategy_result_dates.update(c["result_dates"])
+                            dates_val = c.get("result_dates")
+                            if isinstance(dates_val, list):
+                                strategy_result_dates.update(str(d) for d in dates_val)
 
                         timeframes.append(
                             {
@@ -238,8 +254,8 @@ async def get_execution_service_data_status(  # noqa: C901
                                 ),
                                 "missing_configs": [
                                     {
-                                        "config_file": c["config_file"],
-                                        "algo_name": c["algo_name"],
+                                        "config_file": c.get("config_file", ""),
+                                        "algo_name": c.get("algo_name", ""),
                                     }
                                     for c in tf_missing
                                 ],
@@ -251,20 +267,29 @@ async def get_execution_service_data_status(  # noqa: C901
                         mode_with_results += tf_with_results
 
                         # Update timeframe breakdown
-                        breakdown_by_timeframe[timeframe_name]["total"] += tf_total
-                        breakdown_by_timeframe[timeframe_name]["with_results"] += tf_with_results
-                        breakdown_by_timeframe[timeframe_name]["missing"].extend(
-                            f"{strategy_name}/{mode_name}/{c['config_file']}" for c in tf_missing
+                        tf_entry = breakdown_by_timeframe[timeframe_name]
+                        tf_entry["total"] = cast(int, tf_entry["total"]) + tf_total
+                        tf_entry["with_results"] = (
+                            cast(int, tf_entry["with_results"]) + tf_with_results
+                        )
+                        cast(list[str], tf_entry["missing"]).extend(
+                            f"{strategy_name}/{mode_name}/{c.get('config_file', '')}"
+                            for c in tf_missing
                         )
 
                         # Update algo breakdown
                         for c in configs_list:
-                            breakdown_by_algo[c["algo_name"]]["total"] += 1
-                            if c["has_results"]:
-                                breakdown_by_algo[c["algo_name"]]["with_results"] += 1
+                            algo_key = str(c.get("algo_name", ""))
+                            algo_entry = breakdown_by_algo[algo_key]
+                            algo_entry["total"] = cast(int, algo_entry["total"]) + 1
+                            if c.get("has_results"):
+                                algo_entry["with_results"] = (
+                                    cast(int, algo_entry["with_results"]) + 1
+                                )
                             else:
-                                breakdown_by_algo[c["algo_name"]]["missing"].append(
-                                    f"{strategy_name}/{mode_name}/{timeframe_name}/{c['config_file']}"
+                                path = f"{strategy_name}/{mode_name}/{timeframe_name}"
+                                cast(list[str], algo_entry["missing"]).append(
+                                    f"{path}/{c.get('config_file', '')}"
                                 )
 
                     modes.append(
@@ -285,8 +310,11 @@ async def get_execution_service_data_status(  # noqa: C901
                     strategy_with_results += mode_with_results
 
                     # Update mode breakdown
-                    breakdown_by_mode[mode_name]["total"] += mode_configs
-                    breakdown_by_mode[mode_name]["with_results"] += mode_with_results
+                    mode_entry = breakdown_by_mode[mode_name]
+                    mode_entry["total"] = cast(int, mode_entry["total"]) + mode_configs
+                    mode_entry["with_results"] = (
+                        cast(int, mode_entry["with_results"]) + mode_with_results
+                    )
 
                 strategies.append(
                     {
@@ -308,21 +336,24 @@ async def get_execution_service_data_status(  # noqa: C901
                 total_with_results += strategy_with_results
 
             # Build breakdown summaries with completion %
-            def build_breakdown_summary(breakdown):
-                return {
-                    name: {
-                        "total": data["total"],
-                        "with_results": data["with_results"],
-                        "missing_count": data["total"] - data["with_results"],
+            def build_breakdown_summary(
+                breakdown: defaultdict[str, _BreakdownEntry],
+            ) -> dict[str, object]:
+                result_: dict[str, object] = {}
+                for name, data in sorted(breakdown.items()):
+                    total_ = cast(int, data["total"])
+                    with_results_ = cast(int, data["with_results"])
+                    missing_ = cast(list[str], data["missing"])
+                    result_[name] = {
+                        "total": total_,
+                        "with_results": with_results_,
+                        "missing_count": total_ - with_results_,
                         "completion_pct": (
-                            round(data["with_results"] / data["total"] * 100, 1)
-                            if data["total"] > 0
-                            else 0
+                            round(with_results_ / total_ * 100, 1) if total_ > 0 else 0
                         ),
-                        "missing_samples": data["missing"][:5],  # First 5 for preview
+                        "missing_samples": missing_[:5],
                     }
-                    for name, data in sorted(breakdown.items())
-                }
+                return result_
 
             return {
                 "config_path": config_path,
@@ -408,14 +439,14 @@ async def calculate_execution_missing_shards(  # noqa: C901
             # Generate all expected dates from date range
             filter_start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
             filter_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
-            all_expected_dates = set()
+            all_expected_dates: set[str] = set()
             current = filter_start
             while current <= filter_end:
                 all_expected_dates.add(current.strftime("%Y-%m-%d"))
                 current += timedelta(days=1)
 
             # Step 1: List all configs (storage facade)
-            configs = []
+            configs: list[dict[str, str]] = []
             config_objs = list_objects(bucket_name, config_prefix, max_results=10000)
 
             for obj in config_objs:
@@ -470,7 +501,7 @@ async def calculate_execution_missing_shards(  # noqa: C901
 
             # Step 2: List all result strategy_ids with their dates (storage facade)
             results_prefix = "results/"
-            result_dates_by_strategy = defaultdict(set)
+            result_dates_by_strategy2: defaultdict[str, set[str]] = defaultdict(set)
 
             date_prefixes = list_prefixes(bucket_name, results_prefix)
 
@@ -491,19 +522,19 @@ async def calculate_execution_missing_shards(  # noqa: C901
                         )
                         if strategy_match:
                             strategy_id = strategy_match.group(1)
-                            result_dates_by_strategy[strategy_id].add(date_str)
+                            result_dates_by_strategy2[strategy_id].add(date_str)
 
             # Step 3: Calculate missing shards for each config
-            missing_shards = []
-            breakdown_by_strategy = defaultdict(int)
-            breakdown_by_mode = defaultdict(int)
-            breakdown_by_timeframe = defaultdict(int)
-            breakdown_by_algo = defaultdict(int)
-            breakdown_by_date = defaultdict(int)
+            missing_shards: list[dict[str, str]] = []
+            breakdown_by_strategy2: defaultdict[str, int] = defaultdict(int)
+            breakdown_by_mode2: defaultdict[str, int] = defaultdict(int)
+            breakdown_by_timeframe2: defaultdict[str, int] = defaultdict(int)
+            breakdown_by_algo2: defaultdict[str, int] = defaultdict(int)
+            breakdown_by_date2: defaultdict[str, int] = defaultdict(int)
 
             for config in configs:
                 result_strategy_id = config["result_strategy_id"]
-                existing_dates = result_dates_by_strategy.get(result_strategy_id, set())
+                existing_dates = result_dates_by_strategy2.get(result_strategy_id, set())
                 missing_dates = all_expected_dates - existing_dates
 
                 for date_str in sorted(missing_dates):
@@ -517,11 +548,11 @@ async def calculate_execution_missing_shards(  # noqa: C901
                             "algo": config["algo_name"],
                         }
                     )
-                    breakdown_by_strategy[config["strategy"]] += 1
-                    breakdown_by_mode[config["mode"]] += 1
-                    breakdown_by_timeframe[config["timeframe"]] += 1
-                    breakdown_by_algo[config["algo_name"]] += 1
-                    breakdown_by_date[date_str] += 1
+                    breakdown_by_strategy2[config["strategy"]] += 1
+                    breakdown_by_mode2[config["mode"]] += 1
+                    breakdown_by_timeframe2[config["timeframe"]] += 1
+                    breakdown_by_algo2[config["algo_name"]] += 1
+                    breakdown_by_date2[date_str] += 1
 
             logger.info("[EXEC-MISSING] Calculated %s missing shards", len(missing_shards))
 
@@ -531,11 +562,11 @@ async def calculate_execution_missing_shards(  # noqa: C901
                 "total_configs": len(configs),
                 "total_dates": len(all_expected_dates),
                 "breakdown": {
-                    "by_strategy": dict(sorted(breakdown_by_strategy.items())),
-                    "by_mode": dict(sorted(breakdown_by_mode.items())),
-                    "by_timeframe": dict(sorted(breakdown_by_timeframe.items())),
-                    "by_algo": dict(sorted(breakdown_by_algo.items())),
-                    "by_date": dict(sorted(breakdown_by_date.items())),
+                    "by_strategy": dict(sorted(breakdown_by_strategy2.items())),
+                    "by_mode": dict(sorted(breakdown_by_mode2.items())),
+                    "by_timeframe": dict(sorted(breakdown_by_timeframe2.items())),
+                    "by_algo": dict(sorted(breakdown_by_algo2.items())),
+                    "by_date": dict(sorted(breakdown_by_date2.items())),
                 },
                 "filters": {
                     "config_path": config_path,

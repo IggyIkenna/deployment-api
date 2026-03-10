@@ -2061,7 +2061,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "unified-trading-library"
-version = "0.3.159"
+version = "0.3.161"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "fsspec" },

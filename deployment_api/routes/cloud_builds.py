@@ -14,6 +14,7 @@ import concurrent.futures
 import logging
 import time
 import tomllib
+from contextlib import suppress
 from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
@@ -70,9 +71,14 @@ def _get_gcp_build_client():
     # This is intentional — request types (ListBuildTriggersRequest etc.) are
     # still constructed using the cloudbuild_v1 module directly.
     if isinstance(uci_client, GCPCloudBuildClient):
-        return uci_client._client()
+        return uci_client._client()  # type: ignore[reportPrivateUsage]  # intentional — see docstring
     # Fallback: direct construction (should not be reached in production)
     return _cloudbuild_v1().CloudBuildClient()
+
+
+def get_gcp_build_client():
+    """Public alias for _get_gcp_build_client — for use by other modules in this package."""
+    return _get_gcp_build_client()
 
 
 def _build_op_meta_cls():
@@ -284,23 +290,52 @@ class BuildHistoryEntry(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     log_url: str | None = None
 
 
-def _format_build_info(build) -> BuildInfoDict:
+def _format_build_info(build: object) -> BuildInfoDict:
     """Format a Cloud Build object into a serializable dict."""
+    build_id = str(getattr(build, "id", "") or "")
+    status_obj = getattr(build, "status", None)
+    status_name = str(getattr(status_obj, "name", "") or "")
+    create_time = getattr(build, "create_time", None)
+    finish_time = getattr(build, "finish_time", None)
+    substitutions = getattr(build, "substitutions", None)
+    log_url_raw = getattr(build, "log_url", None)
+    log_url = str(log_url_raw) if log_url_raw is not None else None
+
+    create_time_str = (
+        create_time.isoformat()
+        if create_time is not None and hasattr(create_time, "isoformat")
+        else None
+    )
+    finish_time_str = (
+        finish_time.isoformat()
+        if finish_time is not None and hasattr(finish_time, "isoformat")
+        else None
+    )
+
+    duration_seconds: float | None = None
+    if finish_time is not None and create_time is not None:
+        with suppress(TypeError, AttributeError):
+            duration_seconds = (finish_time - create_time).total_seconds()  # type: ignore[operator]
+
+    commit_sha: str | None = None
+    branch: str | None = None
+    if substitutions is not None:
+        sub_get = getattr(substitutions, "get", None)
+        if callable(sub_get):
+            sha_raw = sub_get("COMMIT_SHA") or ""
+            commit_sha = str(sha_raw)[:7] if sha_raw else None
+            branch_raw = sub_get("BRANCH_NAME")
+            branch = str(branch_raw) if branch_raw is not None else None
+
     return {
-        "build_id": build.id,
-        "status": build.status.name,
-        "create_time": build.create_time.isoformat() if build.create_time else None,
-        "finish_time": build.finish_time.isoformat() if build.finish_time else None,
-        "duration_seconds": (
-            (build.finish_time - build.create_time).total_seconds()
-            if build.finish_time and build.create_time
-            else None
-        ),
-        "commit_sha": (
-            (build.substitutions.get("COMMIT_SHA") or "")[:7] if build.substitutions else None
-        ),
-        "branch": (build.substitutions.get("BRANCH_NAME") if build.substitutions else None),
-        "log_url": build.log_url,
+        "build_id": build_id,
+        "status": status_name,
+        "create_time": create_time_str,
+        "finish_time": finish_time_str,
+        "duration_seconds": duration_seconds,
+        "commit_sha": commit_sha,
+        "branch": branch,
+        "log_url": log_url,
     }
 
 
@@ -310,12 +345,15 @@ _trigger_cache_time: float = 0
 _TRIGGER_CACHE_TTL = 3600  # 1 hour
 
 
-def _populate_trigger_cache(triggers_list) -> None:
+def _populate_trigger_cache(triggers_list: list[object]) -> None:
     """Populate trigger ID cache from a list of Cloud Build trigger objects."""
     global _trigger_id_cache, _trigger_cache_time
-    new_cache = {}
+    new_cache: dict[str, str] = {}
     for t in triggers_list:
-        new_cache[t.name] = t.id
+        t_name = str(getattr(t, "name", "") or "")
+        t_id = str(getattr(t, "id", "") or "")
+        if t_name and t_id:
+            new_cache[t_name] = t_id
     _trigger_id_cache = new_cache
     _trigger_cache_time = time.time()
 

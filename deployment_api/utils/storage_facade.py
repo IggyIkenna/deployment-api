@@ -293,6 +293,54 @@ def delete_object(bucket_name: str, object_path: str) -> None:
         client.delete_blob(bucket_name, object_path)
 
 
+def delete_objects(bucket_name: str, prefix: str, max_results: int | None = None) -> int:
+    """
+    Delete all objects with the given prefix. Returns count of deleted objects.
+
+    Always uses GCS API (FUSE delete not always supported).
+    """
+    objects = list_objects(bucket_name, prefix, max_results=max_results)
+    deleted = 0
+    for obj in objects:
+        delete_object(bucket_name, obj.name)
+        deleted += 1
+    return deleted
+
+
+def get_object_metadata(bucket_name: str, object_path: str) -> dict[str, object] | None:
+    """
+    Get metadata for an object. Returns None if the object does not exist.
+
+    Returns a dict with at least 'updated' (datetime | None) and 'size' (int | None).
+    Always uses GCS API.
+    """
+    from datetime import UTC, datetime
+
+    if _use_gcs_fuse() and _is_bucket_mounted(bucket_name):
+        try:
+            path = _fuse_path(bucket_name, object_path)
+            if not path.exists() or not path.is_file():
+                return None
+            st = path.stat()
+            return {
+                "name": object_path,
+                "updated": datetime.fromtimestamp(st.st_mtime, tz=UTC) if st.st_mtime else None,
+                "size": st.st_size,
+            }
+        except (OSError, ValueError, RuntimeError):
+            pass  # Fall through to GCS API
+
+    objs = list_objects(bucket_name, object_path, max_results=1)
+    if not objs:
+        return None
+    obj = objs[0]
+    return {
+        "name": obj.name,
+        "updated": obj.updated,
+        "size": obj.size,
+    }
+
+
 def get_storage_client_and_bucket(bucket_name: str) -> tuple[object, object]:
     """Get GCS client for operations that need direct API (download, upload).
 

@@ -26,9 +26,148 @@ from deployment_api.utils.deployment_state_reader import (
 )
 from deployment_api.utils.storage_facade import list_objects
 
+from .cloud_builds import get_gcp_build_client as _get_gcp_cb_client
 from .service_status_cache import load_gcs_cache, save_gcs_cache
 
 logger = logging.getLogger(__name__)
+
+
+def _get_cache_dict(cache: dict[str, object], key: str) -> dict[str, object]:
+    """Extract a typed sub-dict from a cache dict, returning {} if not present or wrong type."""
+    raw: object = cache.get(key)
+    if isinstance(raw, dict):
+        return cast(dict[str, object], raw)
+    return {}
+
+
+def _resolve_trigger_id(
+    svc: str,
+    cache: dict[str, object],
+    trigger_ids: dict[str, object],
+) -> str | None:
+    """Return the Cloud Build trigger ID for *svc*, fetching and caching if needed."""
+    if svc not in trigger_ids:
+        trigger_result = subprocess.run(
+            [
+                "gcloud",
+                "builds",
+                "triggers",
+                "describe",
+                f"{svc}-build",
+                f"--region={DEFAULT_REGION}",
+                "--format=value(id)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if trigger_result.returncode != 0:
+            logger.warning("Trigger %s-build not found", svc)
+            return None
+        trigger_ids[svc] = trigger_result.stdout.strip()
+        cache["trigger_ids"] = trigger_ids
+        save_gcs_cache()
+    _tid2_raw: object = trigger_ids[svc]
+    return _tid2_raw if isinstance(_tid2_raw, str) else ""
+
+
+def _build_sort_key(b: object) -> datetime:
+    """Sort key for Cloud Build objects: use create_time, fall back to datetime.min."""
+    ct: object = getattr(b, "create_time", None)
+    if ct is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if isinstance(ct, datetime):
+        return ct
+    # Protobuf Timestamp: convert via seconds attribute
+    ct_seconds: object = getattr(ct, "seconds", None)
+    if ct_seconds is not None:
+        return datetime.fromtimestamp(cast(float, ct_seconds), tz=UTC)
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
+    """Fetch the most recent Cloud Build for *service* from the GCP API (blocking)."""
+    try:
+        # Load GCS cache
+        cache = load_gcs_cache()
+        trigger_ids = _get_cache_dict(cache, "trigger_ids")
+
+        trigger_id_or_none = _resolve_trigger_id(service, cache, trigger_ids)
+        if trigger_id_or_none is None:
+            return None
+        trigger_id: str = trigger_id_or_none
+
+        # Query builds (client-side filtering - server-side filter has issues)
+        # UCI CloudBuildClient routes client construction through UCI factory;
+        # request types (ListBuildsRequest) still use cloudbuild_v1 directly as
+        # they are GCP-specific types not yet abstracted by UCI.
+        from google.cloud.devtools import cloudbuild_v1  # Deferred — request types only
+
+        client = _get_gcp_cb_client()
+        parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
+
+        # Fetch recent builds without filter (API v1 filter syntax is problematic)
+        request = cloudbuild_v1.ListBuildsRequest(
+            parent=parent,
+            page_size=50,  # Fetch recent builds to filter client-side
+        )
+
+        # Get builds and filter by trigger ID client-side
+        # The list_builds member has Unknown params in GCP stubs; use Protocol to type-erase
+        from typing import Protocol
+
+        class _ListBuildsCallable(Protocol):
+            def __call__(self, *, request: object) -> object: ...
+
+        _list_fn = cast(_ListBuildsCallable, client.list_builds)
+        _pager = _list_fn(request=request)
+        all_builds: list[object] = list(cast(list[object], _pager))
+        builds = [b for b in all_builds if getattr(b, "build_trigger_id", None) == trigger_id]
+
+        builds.sort(key=_build_sort_key, reverse=True)
+        builds = builds[:1]  # Get most recent
+
+        if builds:
+            build = builds[0]
+            _ct: object = getattr(build, "create_time", None)
+            _ft: object = getattr(build, "finish_time", None)
+            _ct_iso: str | None = _ct.isoformat() if isinstance(_ct, datetime) else None
+            _dur: float | None = None
+            if isinstance(_ct, datetime) and isinstance(_ft, datetime):
+                _dur = (_ft - _ct).total_seconds()
+            _subs: object = getattr(build, "substitutions", {})
+            _subs_dict: dict[str, str] = (
+                cast(dict[str, str], _subs) if isinstance(_subs, dict) else {}
+            )
+            _commit_sha: str | None = _subs_dict.get("COMMIT_SHA") or _subs_dict.get("SHORT_SHA")
+            _status_obj: object = getattr(build, "status", None)
+            _status_name: str = (
+                getattr(_status_obj, "name", "UNKNOWN") if _status_obj is not None else "UNKNOWN"
+            )
+            result: BuildInfoDict = {
+                "build_id": cast(str, getattr(build, "id", "")),
+                "timestamp": _ct_iso,
+                "status": _status_name,
+                "duration_seconds": _dur,
+                "commit_sha": _commit_sha,
+                "error": "",
+            }
+
+            # Cache build info to GCS with timestamp
+            builds_cache3 = _get_cache_dict(cache, "builds")
+            build_times3 = _get_cache_dict(cache, "build_times")
+            builds_cache3[service] = cast(object, result)
+            build_times3[service] = datetime.now(UTC).isoformat()
+            cache["builds"] = builds_cache3
+            cache["build_times"] = build_times3
+            save_gcs_cache()
+
+            return result
+        return None
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error getting build for %s: %s", service, e)
+        return {"error": str(e)}
+
 
 # Service to GCS bucket mapping (constructed from project ID)
 _pid = default_project_id
@@ -118,26 +257,28 @@ async def get_latest_data_timestamp(  # noqa: C901
     # Check cache first (GCS scanning is slow - 6-8 seconds)
     if use_cache:
         cache = load_gcs_cache()
-        data_cache = cache.get("data_timestamps") or {}
-        data_times = cache.get("data_timestamp_times") or {}
+        data_cache = _get_cache_dict(cache, "data_timestamps")
+        data_times = _get_cache_dict(cache, "data_timestamp_times")
 
         if service in data_cache and service in data_times:
             try:
-                cache_time = datetime.fromisoformat(data_times[service])
+                _dts_raw: object = data_times[service]
+                _dts: str = _dts_raw if isinstance(_dts_raw, str) else ""
+                cache_time = datetime.fromisoformat(_dts)
                 age = datetime.now(UTC) - cache_time
                 if age < timedelta(minutes=2):  # 2-minute cache
                     logger.info(
                         "Using cached data timestamps for %s (age: %ss)", service, age.seconds
                     )
-                    return data_cache[service]
+                    return cast(DataTimestampResultDict | None, data_cache[service])
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Cache invalid for %s: %s", service, e)
 
-    def _get_timestamps_sync():
+    def _get_timestamps_sync() -> DataTimestampResultDict:
         try:
             buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
 
-            results = {}
+            results: dict[str, CategoryTimestampDict] = {}
             for category, bucket_name in buckets.items():
                 try:
                     # List recent files (reduced from 100 to 10 for speed - we only need latest)
@@ -176,7 +317,7 @@ async def get_latest_data_timestamp(  # noqa: C901
 
             # Overall latest (most recent across all categories)
             valid_timestamps = [
-                datetime.fromisoformat(r["timestamp"])
+                datetime.fromisoformat(cast(str, r.get("timestamp")))
                 for r in results.values()
                 if r.get("timestamp")
             ]
@@ -195,12 +336,12 @@ async def get_latest_data_timestamp(  # noqa: C901
 
     # Cache the result
     cache = load_gcs_cache()
-    data_cache = cache.get("data_timestamps") or {}
-    data_times = cache.get("data_timestamp_times") or {}
-    data_cache[service] = cast(object, result)
-    data_times[service] = datetime.now(UTC).isoformat()
-    cache["data_timestamps"] = data_cache
-    cache["data_timestamp_times"] = data_times
+    data_cache2 = _get_cache_dict(cache, "data_timestamps")
+    data_times2 = _get_cache_dict(cache, "data_timestamp_times")
+    data_cache2[service] = cast(object, result)
+    data_times2[service] = datetime.now(UTC).isoformat()
+    cache["data_timestamps"] = data_cache2
+    cache["data_timestamp_times"] = data_times2
     save_gcs_cache()
 
     logger.info("[PERF] get_latest_data_timestamp for %s took %.2fs", service, time.time() - start)
@@ -215,18 +356,19 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
     """Get the most recent deployment for a service (with GCS-based caching)."""
     # Load GCS cache
     cache = load_gcs_cache()
-    deployments_cache = cache.get("deployments") or {}
-    deployment_times = cache.get("deployment_times") or {}
+    deployments_cache = _get_cache_dict(cache, "deployments")
+    deployment_times = _get_cache_dict(cache, "deployment_times")
 
     # Check cache first
     now = datetime.now(UTC)
-    if use_cache and deployments_cache.get(service, None) is not None:
-        cache_time_str = deployment_times.get(service)
+    if use_cache and deployments_cache.get(service) is not None:
+        _cts_raw: object = deployment_times.get(service)
+        cache_time_str: str | None = _cts_raw if isinstance(_cts_raw, str) else None
         if cache_time_str:
             try:
                 cache_time = datetime.fromisoformat(cache_time_str)
                 if (now - cache_time) < DEPLOYMENT_CACHE_TTL:
-                    return deployments_cache[service]
+                    return cast(DeploymentInfoDict | None, deployments_cache[service])
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Deployment cache invalid for %s: %s", service, e)
 
@@ -246,26 +388,29 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
                 latest = deployments[0]
 
                 # Parse cli_args to detect --force flag
-                cli_args = latest.get("cli_args") or ""
+                _cli_args_raw: object = latest.get("cli_args")
+                cli_args: str = _cli_args_raw if isinstance(_cli_args_raw, str) else ""
                 used_force = "--force" in cli_args
 
                 # Get shard counts
-                progress = latest.get("progress") or {}
-                total_shards = (
-                    progress.get("total_shards", 0)
-                    if isinstance(progress, dict)
-                    else latest.get("total_shards", 0)
+                _progress_raw: object = latest.get("progress")
+                progress: dict[str, object] = (
+                    cast(dict[str, object], _progress_raw)
+                    if isinstance(_progress_raw, dict)
+                    else {}
                 )
-                completed = (
-                    progress.get("completed", 0)
-                    if isinstance(progress, dict)
-                    else latest.get("completed_shards", 0)
+                _ts_raw: object = (
+                    progress.get("total_shards", 0) if progress else latest.get("total_shards", 0)
                 )
-                failed = (
-                    progress.get("failed", 0)
-                    if isinstance(progress, dict)
-                    else latest.get("failed_shards", 0)
+                total_shards: int = _ts_raw if isinstance(_ts_raw, int) else 0
+                _comp_raw: object = (
+                    progress.get("completed", 0) if progress else latest.get("completed_shards", 0)
                 )
+                completed: int = _comp_raw if isinstance(_comp_raw, int) else 0
+                _fail_raw: object = (
+                    progress.get("failed", 0) if progress else latest.get("failed_shards", 0)
+                )
+                failed: int = _fail_raw if isinstance(_fail_raw, int) else 0
 
                 return {
                     "deployment_id": latest.get("deployment_id"),
@@ -295,7 +440,7 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
     return result
 
 
-async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDict | None:  # noqa: C901
+async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDict | None:
     """
     Get the most recent Cloud Build for a service.
 
@@ -304,125 +449,22 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
     # Check GCS cache first (Cloud Build API is VERY slow - 20+ seconds)
     if use_cache:
         cache = load_gcs_cache()
-        builds_cache = cache.get("builds") or {}
-        build_times = cache.get("build_times") or {}
+        builds_cache = _get_cache_dict(cache, "builds")
+        build_times = _get_cache_dict(cache, "build_times")
 
         if service in builds_cache and service in build_times:
             try:
-                cache_time = datetime.fromisoformat(build_times[service])
+                _bts_raw: object = build_times[service]
+                _bts: str = _bts_raw if isinstance(_bts_raw, str) else ""
+                cache_time = datetime.fromisoformat(_bts)
                 age = datetime.now(UTC) - cache_time
                 if age < timedelta(minutes=5):  # 5-minute cache
                     logger.info("Using cached build info for %s (age: %ss)", service, age.seconds)
-                    return builds_cache[service]
+                    return cast(BuildInfoDict | None, builds_cache[service])
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Build cache invalid for %s: %s", service, e)
 
-    def _get_build_sync():
-        try:
-            # Load GCS cache
-            cache = load_gcs_cache()
-            trigger_ids = cache.get("trigger_ids") or {}
-
-            # Get trigger ID (from GCS cache or fetch and cache)
-            if service not in trigger_ids:
-                trigger_result = subprocess.run(
-                    [
-                        "gcloud",
-                        "builds",
-                        "triggers",
-                        "describe",
-                        f"{service}-build",
-                        f"--region={DEFAULT_REGION}",
-                        "--format=value(id)",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-
-                if trigger_result.returncode != 0:
-                    logger.warning("Trigger %s-build not found", service)
-                    return None
-
-                trigger_ids[service] = trigger_result.stdout.strip()
-                cache["trigger_ids"] = trigger_ids
-                save_gcs_cache()  # Persist to GCS
-
-            trigger_id = trigger_ids[service]
-
-            # Query builds (client-side filtering - server-side filter has issues)
-            # UCI CloudBuildClient routes client construction through UCI factory;
-            # request types (ListBuildsRequest) still use cloudbuild_v1 directly as
-            # they are GCP-specific types not yet abstracted by UCI.
-            from google.cloud.devtools import cloudbuild_v1  # Deferred — request types only
-            from unified_cloud_interface import get_cloud_build_client  # Deferred — UCI boundary
-            from unified_cloud_interface.providers.gcp_compute import (
-                GCPCloudBuildClient,  # Deferred — UCI boundary
-            )
-
-            _uci_cb = get_cloud_build_client(project_id=default_project_id)
-            if isinstance(_uci_cb, GCPCloudBuildClient):
-                client = _uci_cb._client()
-            else:
-                client = cloudbuild_v1.CloudBuildClient()
-            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
-
-            # Fetch recent builds without filter (API v1 filter syntax is problematic)
-            request = cloudbuild_v1.ListBuildsRequest(
-                parent=parent,
-                page_size=50,  # Fetch recent builds to filter client-side
-            )
-
-            # Get builds and filter by trigger ID client-side
-            all_builds = list(client.list_builds(request=request))
-            builds = [b for b in all_builds if b.build_trigger_id == trigger_id]
-
-            def _build_sort_key(b: object) -> datetime:
-                ct: object = getattr(b, "create_time", None)
-                if ct is None:
-                    return datetime.min.replace(tzinfo=UTC)
-                if isinstance(ct, datetime):
-                    return ct
-                # Protobuf Timestamp: convert via seconds attribute
-                ct_seconds: object = getattr(ct, "seconds", None)
-                if ct_seconds is not None:
-                    return datetime.fromtimestamp(cast(float, ct_seconds), tz=UTC)
-                return datetime.min.replace(tzinfo=UTC)
-
-            builds.sort(key=_build_sort_key, reverse=True)
-            builds = builds[:1]  # Get most recent
-
-            if builds:
-                build = builds[0]
-                result = {
-                    "build_id": build.id,
-                    "timestamp": (build.create_time.isoformat() if build.create_time else None),
-                    "status": build.status.name,
-                    "duration_seconds": (
-                        (build.finish_time - build.create_time).total_seconds()
-                        if build.finish_time and build.create_time
-                        else None
-                    ),
-                    "commit_sha": build.substitutions.get("COMMIT_SHA")
-                    or build.substitutions.get("SHORT_SHA"),
-                }
-
-                # Cache build info to GCS with timestamp
-                builds_cache = cache.get("builds") or {}
-                build_times = cache.get("build_times") or {}
-                builds_cache[service] = result
-                build_times[service] = datetime.now(UTC).isoformat()
-                cache["builds"] = builds_cache
-                cache["build_times"] = build_times
-                save_gcs_cache()
-
-                return result
-            return None
-        except (OSError, ValueError, RuntimeError) as e:
-            logger.exception("Error getting build for %s: %s", service, e)
-            return {"error": str(e)}
-
-    return cast(BuildInfoDict | None, await asyncio.to_thread(_get_build_sync))
+    return cast(BuildInfoDict | None, await asyncio.to_thread(_fetch_build_from_api, service))
 
 
 async def get_latest_code_push(
