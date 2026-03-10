@@ -66,31 +66,25 @@ async def _compute_and_cache_verification(
     # before the fast (~3s) TURBO queries even started.
     async def _run_log_analysis() -> dict[str, object] | None:
         try:
-            result = cast(
-                dict[str, object],
-                await analyze_deployment_logs(state_manager, deployment_id, state),
-            )
+            result = await analyze_deployment_logs(state_manager, deployment_id, state)
             return cast(dict[str, object] | None, result.get("log_analysis"))
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("[VERIFY] Log analysis failed for %s: %s", deployment_id, e)
             return None
 
     async def _run_turbo() -> dict[str, object]:
-        return cast(
-            dict[str, object],
-            await get_data_status_turbo_impl(
-                service=getattr(state, "service", ""),
-                start_date=start_date,
-                end_date=end_date,
-                category=categories_from_state(state),
-                venue=None,
-                folder=None,
-                data_type=None,
-                include_sub_dimensions=True,
-                include_dates_list=True,
-                full_dates_list=True,
-                first_day_of_month_only=False,
-            ),
+        return await get_data_status_turbo_impl(
+            service=getattr(state, "service", ""),
+            start_date=start_date,
+            end_date=end_date,
+            category=categories_from_state(state),
+            venue=None,
+            folder=None,
+            data_type=None,
+            include_sub_dimensions=True,
+            include_dates_list=True,
+            full_dates_list=True,
+            first_day_of_month_only=False,
         )
 
     log_analysis, turbo_result = await asyncio.gather(_run_log_analysis(), _run_turbo())

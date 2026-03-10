@@ -464,7 +464,7 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Build cache invalid for %s: %s", service, e)
 
-    return cast(BuildInfoDict | None, await asyncio.to_thread(_fetch_build_from_api, service))
+    return await asyncio.to_thread(_fetch_build_from_api, service)
 
 
 async def get_latest_code_push(

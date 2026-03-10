@@ -427,7 +427,7 @@ async def get_services_overview(request: Request):  # noqa: C901
 
             # Check GCS cache for build info (populated by individual service views)
             cache = load_gcs_cache()
-            builds_cache_raw = cache.get("builds") or {}
+            builds_cache_raw: object = cache.get("builds") or {}
             if isinstance(builds_cache_raw, dict):
                 builds_cache = cast(dict[str, object], builds_cache_raw)
             else:

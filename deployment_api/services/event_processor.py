@@ -9,6 +9,7 @@ import asyncio as _asyncio
 import importlib as _importlib
 import json
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime
 from typing import cast
@@ -83,10 +84,11 @@ class EventProcessor:
         Returns:
             Dictionary mapping shard_id to (status, event_data) tuples
         """
-        shard_statuses = {}
+        shard_statuses: dict[str, tuple[str, dict[str, object]]] = {}
 
         for shard in shards:
-            shard_id = shard.get("shard_id")
+            shard_id_raw = shard.get("shard_id")
+            shard_id = str(shard_id_raw) if shard_id_raw is not None else ""
             if not shard_id:
                 continue
 
@@ -97,7 +99,9 @@ class EventProcessor:
                 status_text = read_object_text(self.state_bucket, status_obj_path)
                 event_data = parse_service_event(status_text)
                 if event_data:
-                    shard_statuses[shard_id] = (event_data.get("status"), event_data)
+                    status_raw = event_data.get("status")
+                    status_str = str(status_raw) if status_raw is not None else "unknown"
+                    shard_statuses[shard_id] = (status_str, event_data)
             except OSError as e:
                 logger.warning("Failed to read shard status for %s: %s", shard_id, e)
                 continue
@@ -113,15 +117,21 @@ class EventProcessor:
     def get_vm_status(self, vm_map: dict[str, object], job_id: str) -> str | None:
         """Get VM status from VM map."""
         for entry in vm_map.values():
-            if isinstance(entry, dict) and entry.get("job_id") == job_id:
-                return entry.get("status")
+            if isinstance(entry, dict):
+                entry_dict = cast(dict[str, object], entry)
+                if entry_dict.get("job_id") == job_id:
+                    raw = entry_dict.get("status")
+                    return str(raw) if raw is not None else None
         return None
 
     def get_vm_zone(self, vm_map: dict[str, object], job_id: str) -> str | None:
         """Get VM zone from VM map."""
         for entry in vm_map.values():
-            if isinstance(entry, dict) and entry.get("job_id") == job_id:
-                return entry.get("zone")
+            if isinstance(entry, dict):
+                entry_dict = cast(dict[str, object], entry)
+                if entry_dict.get("job_id") == job_id:
+                    raw = entry_dict.get("zone")
+                    return str(raw) if raw is not None else None
         return None
 
     def process_vm_updates(
@@ -221,32 +231,36 @@ class EventProcessor:
             config_raw2: object = state.get("config") or {}
             config = cast(dict[str, object], config_raw2) if isinstance(config_raw2, dict) else {}
 
-            job_ids = []
-            job_id_to_shard_id = {}
+            job_ids: list[str] = []
+            job_id_to_shard_id: dict[str, str] = {}
 
             # Collect running shards without status
             for shard in shards:
                 if shard.get("status") != "running":
                     continue
 
-                shard_id = shard.get("shard_id")
-                if not shard_id or shard_id in shard_statuses:
+                shard_id_raw = shard.get("shard_id")
+                shard_id_s = str(shard_id_raw) if shard_id_raw is not None else ""
+                if not shard_id_s or shard_id_s in shard_statuses:
                     continue
 
-                job_id = shard.get("job_id")
-                if not job_id:
+                job_id_raw = shard.get("job_id")
+                job_id_s = str(job_id_raw) if job_id_raw is not None else ""
+                if not job_id_s:
                     continue
 
-                job_ids.append(job_id)
-                job_id_to_shard_id[job_id] = shard_id
+                job_ids.append(job_id_s)
+                job_id_to_shard_id[job_id_s] = shard_id_s
 
             if not job_ids:
                 return False
 
             # Resolve service_account_email from config
             try:
-                service_account_email = ValidationUtils.get_required(
-                    cast(dict[str, object], config), "service_account_email", "Cloud Run backend"
+                service_account_email = str(
+                    ValidationUtils.get_required(
+                        config, "service_account_email", "Cloud Run backend"
+                    )
                 )
             except ConfigurationError as e:
                 logger.error("[EVENT_PROCESSOR] %s: %s", deployment_id, e)
@@ -390,17 +404,18 @@ class EventProcessor:
                 )
 
                 try:
-                    service_account_email = ValidationUtils.get_required(
-                        cast(dict[str, object], config), "service_account_email", "VM orchestrator"
+                    service_account_email_raw = ValidationUtils.get_required(
+                        config, "service_account_email", "VM orchestrator"
                     )
-                    job_name = ValidationUtils.get_required(
-                        cast(dict[str, object], config), "job_name", "VM backend"
-                    )
+                    job_name_raw = ValidationUtils.get_required(config, "job_name", "VM backend")
+                    service_account_email = str(service_account_email_raw)
+                    job_name = str(job_name_raw)
                 except ConfigurationError as e:
                     logger.error("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
                     return 0
 
-                orch = DeploymentOrchestrator(  # noqa: F821
+                _orch_factory = cast(Callable[..., object], _orchestrator_cls)
+                orch = _orch_factory(
                     project_id=self.project_id,
                     region=config.get("region") or "asia-northeast1",
                     service_account_email=service_account_email,
@@ -408,7 +423,7 @@ class EventProcessor:
                     state_prefix=f"deployments.{self.deployment_env}",
                 )
 
-                backend = orch.get_backend(
+                backend = orch.get_backend(  # type: ignore[union-attr]  # dynamic object
                     "vm",
                     job_name=job_name,
                     zone=config.get("zone"),
@@ -418,7 +433,7 @@ class EventProcessor:
                     max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
                     with _Tpe(max_workers=max_parallel) as pool:
                         for job_id, zone, _shard_id, _st in orphan_tuples:
-                            pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)
+                            pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)  # type: ignore[union-attr, arg-type]  # dynamic backend
                             # Track for retry logic
                             pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
 

@@ -82,26 +82,16 @@ async def infra_health() -> dict[str, object]:
 
         # Check Secret Manager connectivity
         try:
-            secret_client = get_secret_client(project_id)
+            get_secret_client(project_id)
             # Minimal probe: the client instantiation itself validates credentials
-            if secret_client is not None:
-                checks.append(
-                    {
-                        "name": "secret_manager",
-                        "status": "ok",
-                        "detail": "client initialised",
-                        "error": "",
-                    }
-                )
-            else:
-                checks.append(
-                    {
-                        "name": "secret_manager",
-                        "status": "skip",
-                        "detail": "no secret client",
-                        "error": "",
-                    }
-                )
+            checks.append(
+                {
+                    "name": "secret_manager",
+                    "status": "ok",
+                    "detail": "client initialised",
+                    "error": "",
+                }
+            )
         except (OSError, ValueError, RuntimeError) as e:
             err = str(e)
             checks.append({"name": "secret_manager", "status": "error", "detail": "", "error": err})

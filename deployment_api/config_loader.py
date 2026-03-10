@@ -32,9 +32,6 @@ def substitute_env_vars(value: str) -> str:
     Inlined from deployment-service config_loader.substitute_env_vars to remove
     cross-service import boundary.
     """
-    if not isinstance(value, str):
-        return value
-
     pattern = r"\$\{([^}:]+)(?::-([^}]*))?\}"
     env = get_env_copy()
 

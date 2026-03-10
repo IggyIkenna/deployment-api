@@ -166,7 +166,7 @@ def _parse_checklist(checklist_data: dict[str, object]) -> dict[str, object]:
 
 def _get_warnings(checklist: dict[str, object]) -> list[str]:
     """Extract warnings from checklist - items that are pending but not blocking."""
-    warnings = []
+    warnings: list[str] = []
 
     categories = cast(list[dict[str, object]], checklist.get("categories") or [])
     for category in categories:
@@ -328,7 +328,7 @@ async def list_checklists(request: Request):
                 )
 
         # Sort by readiness (highest first)
-        checklists.sort(key=lambda x: x.get("readiness_percent", 0), reverse=True)
+        checklists.sort(key=lambda x: int(x.get("readiness_percent") or 0), reverse=True)
 
         return checklists
 

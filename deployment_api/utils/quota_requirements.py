@@ -116,7 +116,7 @@ def recommend_max_concurrent_from_headroom(
     """
 
     safety_buffer = safety_buffer or {}
-    caps = []
+    caps: list[int] = []
     for metric, cost in (per_shard or {}).items():
         cost = float(cost or 0.0)
         if cost <= 0:

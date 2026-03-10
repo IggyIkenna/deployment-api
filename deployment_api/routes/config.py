@@ -115,7 +115,7 @@ async def get_venues_by_category(category: str, request: Request):
 
         loader = get_config_loader(request)
         venues_config = loader.load_venues_config()
-        categories_raw = venues_config.get("categories") or {}
+        categories_raw: object = venues_config.get("categories") or {}
         categories = (
             cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
         )

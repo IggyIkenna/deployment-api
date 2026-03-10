@@ -131,7 +131,7 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
 
             dimensions: list[dict[str, object]] = []
             for dim in cast(list[dict[str, object]], config.get("dimensions") or []):
-                dim_info = {
+                dim_info: dict[str, object] = {
                     "name": dim["name"],
                     "type": dim["type"],
                     "description": dim.get("description") or "",
@@ -146,8 +146,9 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
                     dim_info["parent"] = dim.get("parent")
                     # If it's venue, get values from venues config
                     if dim["name"] == "venue":
-                        dim_info["values_by_parent"] = {}
-                        categories_raw = venues_config.get("categories") or {}
+                        values_by_parent: dict[str, object] = {}
+                        dim_info["values_by_parent"] = values_by_parent
+                        categories_raw: object = venues_config.get("categories") or {}
                         categories_map = cast(dict[str, object], categories_raw)
                         for category, cat_data in categories_map.items():
                             cat_data_dict = (
@@ -155,8 +156,13 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
                                 if isinstance(cat_data, dict)
                                 else {}
                             )
-                            cat_venues = cat_data_dict.get("venues") or []
-                            dim_info["values_by_parent"][category] = cat_venues
+                            cat_venues_raw: object = cat_data_dict.get("venues") or []
+                            cat_venues: list[object] = (
+                                cast(list[object], cat_venues_raw)
+                                if isinstance(cat_venues_raw, list)
+                                else []
+                            )
+                            values_by_parent[category] = cat_venues
 
                 # Add date range info
                 elif dim["type"] == "date_range":
@@ -164,11 +170,16 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
 
                 dimensions.append(dim_info)
 
-            return {
+            cli_args_raw: object = config.get("cli_args") or {}
+            cli_args: dict[str, object] = (
+                cast(dict[str, object], cli_args_raw) if isinstance(cli_args_raw, dict) else {}
+            )
+            result_dict: dict[str, object] = {
                 "service": service_name,
                 "dimensions": dimensions,
-                "cli_args": config.get("cli_args") or {},
+                "cli_args": cli_args,
             }
+            return result_dict
 
         return await asyncio.to_thread(_load_dimensions_sync)
 
@@ -362,10 +373,11 @@ async def get_config_buckets(service_name: str, request: Request):
     }
 
     if service_name not in bucket_mappings:
+        no_buckets: list[dict[str, object]] = []
         return {
             "service": service_name,
             "default_bucket": None,
-            "buckets": [],
+            "buckets": no_buckets,
             "message": f"No config buckets configured for {service_name}",
         }
 

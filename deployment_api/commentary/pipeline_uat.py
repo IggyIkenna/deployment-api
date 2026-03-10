@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import anthropic
 from anthropic.types import TextBlock
@@ -169,7 +169,7 @@ async def _assemble_context(
         raw_bytes = storage.download_bytes(
             f"instruments-store-{project_id}", "instruments/latest/manifest.json"
         )
-        manifest: dict[str, object] = json.loads(raw_bytes)
+        manifest = cast(dict[str, object], json.loads(raw_bytes))
         context["instruments_count"] = manifest.get("count")
         context["instruments_expected_count"] = manifest.get("expected_count")
     except Exception as exc:
@@ -180,7 +180,7 @@ async def _assemble_context(
     # Feature pipeline health
     try:
         raw_bytes = storage.download_bytes(f"features-store-{project_id}", "health/latest.json")
-        health: dict[str, object] = json.loads(raw_bytes)
+        health = cast(dict[str, object], json.loads(raw_bytes))
         context["feature_row_count"] = health.get("row_count")
         context["feature_null_rate"] = health.get("null_rate")
     except Exception as exc:
@@ -191,7 +191,7 @@ async def _assemble_context(
     # ML training metrics
     try:
         raw_bytes = storage.download_bytes(f"ml-store-{project_id}", "training/latest/metrics.json")
-        metrics: dict[str, object] = json.loads(raw_bytes)
+        metrics = cast(dict[str, object], json.loads(raw_bytes))
         context["ml_loss"] = metrics.get("loss")
         context["ml_val_loss"] = metrics.get("val_loss")
         context["ml_accuracy"] = metrics.get("accuracy")
@@ -207,7 +207,7 @@ async def _assemble_context(
         raw_bytes = storage.download_bytes(
             f"execution-store-{project_id}", "t1_recon/latest/summary.json"
         )
-        recon: dict[str, object] = json.loads(raw_bytes)
+        recon = cast(dict[str, object], json.loads(raw_bytes))
         context["execution_alpha_bps"] = recon.get("execution_alpha_bps")
         context["execution_recon_date"] = recon.get("date", date_str)
     except Exception as exc:
@@ -232,7 +232,5 @@ async def _call_anthropic(
         messages=[{"role": "user", "content": user_message}],
     )
 
-    text_blocks = [
-        block for block in message.content if isinstance(block, TextBlock) or hasattr(block, "text")
-    ]
+    text_blocks = [block for block in message.content if isinstance(block, TextBlock)]
     return str(text_blocks[0].text) if text_blocks else ""

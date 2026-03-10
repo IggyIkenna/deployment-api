@@ -23,7 +23,7 @@ async def get_capabilities():
 
 
 @router.get("/service-categories/{service}")
-async def get_service_categories(service: str) -> dict:
+async def get_service_categories(service: str) -> dict[str, object]:
     """
     Get supported categories for a service from its sharding config.
 
@@ -58,11 +58,15 @@ async def get_service_categories(service: str) -> dict:
         dimensions = cast(list[dict[str, object]], config.get("dimensions") or [])
         for dim in dimensions:
             if dim.get("name") == "category":
-                values = dim.get("values") or []
+                values_raw: object = dim.get("values") or []
+                values: list[object] = (
+                    cast(list[object], values_raw) if isinstance(values_raw, list) else []
+                )
                 return {"service": service, "categories": values}
 
         # No category dimension found
-        return {"service": service, "categories": []}
+        no_categories: list[object] = []
+        return {"service": service, "categories": no_categories}
 
     except (OSError, ValueError, RuntimeError) as e:
         raise HTTPException(status_code=500, detail=f"Failed to load sharding config: {e}") from e

@@ -51,13 +51,13 @@ def _parse_image_url(image_url: str) -> dict[str, str] | None:
 def _get_auth_token() -> str | None:
     """Get OAuth2 token for Artifact Registry API."""
     try:
-        credentials, _ = google.auth.default(
+        credentials, _ = google.auth.default(  # type: ignore[misc]  # google-auth stubs incomplete
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         # Refresh credentials if needed
         request = google.auth.transport.requests.Request()
-        credentials.refresh(request)
-        return credentials.token
+        credentials.refresh(request)  # type: ignore[union-attr]  # google-auth stubs incomplete
+        return credentials.token  # type: ignore[union-attr]  # google-auth stubs incomplete
     except (OSError, ValueError, RuntimeError) as e:
         logger.error("Failed to get auth token: %s", e)
         return None
@@ -80,7 +80,8 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
     cache_key = image_url
     if cache_key in _image_cache:
         cached = _image_cache[cache_key]
-        if (datetime.now(UTC) - cached["_cached_at"]).seconds < _cache_ttl:
+        cached_at = cast(datetime, cached["_cached_at"])
+        if (datetime.now(UTC) - cached_at).seconds < _cache_ttl:
             return cached
 
     parsed = _parse_image_url(image_url)
@@ -123,7 +124,7 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
                 if tags_response.status == 200:
                     tags_data = cast(dict[str, object], await tags_response.json())
                     raw_tags = tags_data.get("tags")
-                    all_tags = raw_tags if isinstance(raw_tags, list) else []
+                    all_tags = cast(list[str], raw_tags) if isinstance(raw_tags, list) else []
 
         # Build result
         result: dict[str, object] = {
