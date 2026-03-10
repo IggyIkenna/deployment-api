@@ -91,7 +91,7 @@ def _ensure_gcp() -> None:
         )
 
 
-class BuildInfoDict(TypedDict):
+class BuildInfoDict(TypedDict):  # CORRECT-LOCAL
     """Serialized Cloud Build information."""
 
     build_id: str
@@ -104,7 +104,7 @@ class BuildInfoDict(TypedDict):
     log_url: str | None
 
 
-class TriggerDict(TypedDict, total=False):
+class TriggerDict(TypedDict, total=False):  # CORRECT-LOCAL
     """Cloud Build trigger information."""
 
     trigger_id: Required[str]
@@ -118,7 +118,7 @@ class TriggerDict(TypedDict, total=False):
     last_build: BuildInfoDict | None
 
 
-class TriggersResponseDict(TypedDict):
+class TriggersResponseDict(TypedDict):  # CORRECT-LOCAL
     """Response from list_triggers endpoint."""
 
     triggers: list[TriggerDict]
@@ -127,7 +127,7 @@ class TriggersResponseDict(TypedDict):
     region: str
 
 
-class BuildHistoryResponseDict(TypedDict):
+class BuildHistoryResponseDict(TypedDict):  # CORRECT-LOCAL
     """Response from get_build_history endpoint."""
 
     service: str
@@ -136,7 +136,7 @@ class BuildHistoryResponseDict(TypedDict):
     total: int
 
 
-class QualityGatesStatusDict(TypedDict, total=False):
+class QualityGatesStatusDict(TypedDict, total=False):  # CORRECT-LOCAL
     """Quality gates status for a library."""
 
     status: str
@@ -146,7 +146,7 @@ class QualityGatesStatusDict(TypedDict, total=False):
     branch: str | None
 
 
-class LibraryStatusDict(TypedDict, total=False):
+class LibraryStatusDict(TypedDict, total=False):  # CORRECT-LOCAL
     """Response from get_library_status endpoint."""
 
     library: str
@@ -160,7 +160,7 @@ class LibraryStatusDict(TypedDict, total=False):
     dependency_note: str
 
 
-class DependencyIssueDict(TypedDict, total=False):
+class DependencyIssueDict(TypedDict, total=False):  # CORRECT-LOCAL
     """A dependency issue found during check."""
 
     library: str
@@ -172,7 +172,7 @@ class DependencyIssueDict(TypedDict, total=False):
     installed_version: str
 
 
-class DependencyCheckResponseDict(TypedDict):
+class DependencyCheckResponseDict(TypedDict):  # CORRECT-LOCAL
     """Response from check_dependencies endpoint."""
 
     has_issues: bool
@@ -181,7 +181,7 @@ class DependencyCheckResponseDict(TypedDict):
     libraries: list[LibraryStatusDict]
 
 
-class RecentBuildDict(TypedDict):
+class RecentBuildDict(TypedDict):  # CORRECT-LOCAL
     """A recently found build (from trigger)."""
 
     build_id: str
@@ -189,7 +189,7 @@ class RecentBuildDict(TypedDict):
     status: str
 
 
-class TriggerRunResultDict(TypedDict):
+class TriggerRunResultDict(TypedDict):  # CORRECT-LOCAL
     """Result from running a build trigger."""
 
     success: bool
