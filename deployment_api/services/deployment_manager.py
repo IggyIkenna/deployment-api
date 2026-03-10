@@ -505,10 +505,10 @@ class DeploymentManager:
             Dict containing deployment report
         """
         # Load state for deployment_id and generate report
-        from deployment_api.services.deployment_state import DeploymentStateService
+        from deployment_api.services.deployment_state import DeploymentStateManager
 
-        state_service = DeploymentStateService()
-        state = state_service.get_deployment_state(deployment_id)
+        state_service = DeploymentStateManager()
+        state = state_service.get_deployment_status(deployment_id)
         if not state:
             return {"error": f"Deployment {deployment_id} not found"}
         from deployment_api.routes.deployment_validation import generate_deployment_report
