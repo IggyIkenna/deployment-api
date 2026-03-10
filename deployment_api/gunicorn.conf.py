@@ -9,8 +9,23 @@ Environment variables:
     PORT: Port to bind to (default: 8080)
 """
 
+from typing import Protocol
+
 from deployment_api.settings import PORT as _PORT
 from deployment_api.settings import WORKERS as _WORKERS
+
+
+class _GunicornLogger(Protocol):
+    def info(self, msg: str, *args: object) -> None: ...
+
+
+class _GunicornServer(Protocol):
+    log: _GunicornLogger
+
+
+class _GunicornWorker(Protocol):
+    log: _GunicornLogger
+
 
 # Server socket
 bind = f"0.0.0.0:{_PORT}"
@@ -50,31 +65,29 @@ tmp_upload_dir = None
 preload_app = True
 
 
-def pre_fork(server, worker):
+def pre_fork(server: _GunicornServer, worker: _GunicornWorker) -> None:
     """Called just before a worker is forked."""
-    pass
 
 
-def post_fork(server, worker):
+def post_fork(server: _GunicornServer, worker: _GunicornWorker) -> None:
     """Called just after a worker has been forked."""
-    pass
 
 
-def pre_exec(server):
+def pre_exec(server: _GunicornServer) -> None:
     """Called just before a new master process is forked."""
     server.log.info("Forked child, re-executing.")
 
 
-def when_ready(server):
+def when_ready(server: _GunicornServer) -> None:
     """Called when the server is ready to accept connections."""
     server.log.info("Server is ready. Spawning workers")
 
 
-def worker_int(worker):
+def worker_int(worker: _GunicornWorker) -> None:
     """Called when a worker receives INT or QUIT signal."""
     worker.log.info("worker received INT or QUIT signal")
 
 
-def worker_abort(worker):
+def worker_abort(worker: _GunicornWorker) -> None:
     """Called when a worker receives SIGABRT signal."""
     worker.log.info("worker received SIGABRT signal")

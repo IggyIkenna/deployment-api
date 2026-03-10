@@ -18,7 +18,7 @@ import os
 import sys
 from typing import cast
 
-from deployment.state import DeploymentStatus, StateManager
+from deployment_service.deployment.state import DeploymentStatus, StateManager
 
 logger = logging.getLogger(__name__)
 

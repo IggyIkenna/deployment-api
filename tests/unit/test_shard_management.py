@@ -11,13 +11,15 @@ from types import SimpleNamespace
 
 from deployment_api.routes.shard_management import (
     _INFRA_FAILURE_CATEGORIES,
-    _build_blob_timestamp_map,
     _classify_shard,
     _extract_date_range,
     _extract_error_warning_shard_ids,
     _parse_iso_dt,
     _shard_has_force,
     _status_str,
+)
+from deployment_api.routes.shard_management import (
+    build_blob_timestamp_map as _build_blob_timestamp_map,
 )
 
 
@@ -276,10 +278,10 @@ class TestClassifyShard:
 
 
 class TestClassifyAllShards:
-    """Tests for _classify_all_shards."""
+    """Tests for classify_all_shards."""
 
     def test_classifies_each_shard(self):
-        from deployment_api.routes.shard_management import _classify_all_shards
+        from deployment_api.routes.shard_management import classify_all_shards
 
         shard1 = SimpleNamespace(
             shard_id="s1",
@@ -299,12 +301,12 @@ class TestClassifyAllShards:
         )
         state = SimpleNamespace(shards=[shard1, shard2])
 
-        result = _classify_all_shards(state, log_analysis=None)
+        result = classify_all_shards(state, log_analysis=None)
         assert result["s1"] == "UNVERIFIED"  # no blob data
         assert result["s2"] == "TIMEOUT_FAILURE"
 
     def test_skips_shards_without_ids(self):
-        from deployment_api.routes.shard_management import _classify_all_shards
+        from deployment_api.routes.shard_management import classify_all_shards
 
         shard = SimpleNamespace(
             shard_id="",
@@ -315,11 +317,11 @@ class TestClassifyAllShards:
             end_time=None,
         )
         state = SimpleNamespace(shards=[shard])
-        result = _classify_all_shards(state, log_analysis=None)
+        result = classify_all_shards(state, log_analysis=None)
         assert len(result) == 0
 
     def test_uses_log_analysis_for_errors(self):
-        from deployment_api.routes.shard_management import _classify_all_shards
+        from deployment_api.routes.shard_management import classify_all_shards
 
         shard = SimpleNamespace(
             shard_id="s1",
@@ -331,15 +333,15 @@ class TestClassifyAllShards:
         )
         state = SimpleNamespace(shards=[shard])
         log_analysis = {"errors": [{"shard_id": "s1", "line": "ERROR"}], "warnings": []}
-        result = _classify_all_shards(state, log_analysis=log_analysis)
+        result = classify_all_shards(state, log_analysis=log_analysis)
         assert result["s1"] == "COMPLETED_WITH_ERRORS"
 
 
 class TestComputeClassificationCounts:
-    """Tests for _compute_classification_counts."""
+    """Tests for compute_classification_counts."""
 
     def test_counts_each_classification(self):
-        from deployment_api.routes.shard_management import _compute_classification_counts
+        from deployment_api.routes.shard_management import compute_classification_counts
 
         classifications = {
             "s1": "VERIFIED",
@@ -347,30 +349,30 @@ class TestComputeClassificationCounts:
             "s3": "DATA_MISSING",
             "s4": "TIMEOUT_FAILURE",
         }
-        counts = _compute_classification_counts(classifications)
+        counts = compute_classification_counts(classifications)
         assert counts["VERIFIED"] == 2
         assert counts["DATA_MISSING"] == 1
         assert counts["TIMEOUT_FAILURE"] == 1
 
     def test_empty_returns_empty(self):
-        from deployment_api.routes.shard_management import _compute_classification_counts
+        from deployment_api.routes.shard_management import compute_classification_counts
 
-        assert _compute_classification_counts({}) == {}
+        assert compute_classification_counts({}) == {}
 
 
 class TestBuildExistingDatesSets:
-    """Tests for _build_existing_dates_sets."""
+    """Tests for build_existing_dates_sets."""
 
     def test_extracts_dates_found_list(self):
-        from deployment_api.routes.shard_management import _build_existing_dates_sets
+        from deployment_api.routes.shard_management import build_existing_dates_sets
 
         turbo_result = {"categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
-        cat_dates, _venue_dates = _build_existing_dates_sets(turbo_result)
+        cat_dates, _venue_dates = build_existing_dates_sets(turbo_result)
         assert "CEFI" in cat_dates
         assert "2024-01-01" in cat_dates["CEFI"]
 
     def test_extracts_from_venues(self):
-        from deployment_api.routes.shard_management import _build_existing_dates_sets
+        from deployment_api.routes.shard_management import build_existing_dates_sets
 
         turbo_result = {
             "categories": {
@@ -382,30 +384,30 @@ class TestBuildExistingDatesSets:
                 }
             }
         }
-        cat_dates, venue_dates = _build_existing_dates_sets(turbo_result)
+        cat_dates, venue_dates = build_existing_dates_sets(turbo_result)
         assert "BINANCE" in venue_dates["CEFI"]
         assert "2024-01-01" in venue_dates["CEFI"]["BINANCE"]
         assert {"2024-01-01", "2024-01-02"} == cat_dates["CEFI"]
 
     def test_uses_precomputed_set(self):
-        from deployment_api.routes.shard_management import _build_existing_dates_sets
+        from deployment_api.routes.shard_management import build_existing_dates_sets
 
         dates_set = {"2024-01-01", "2024-01-15"}
         turbo_result = {"categories": {"CEFI": {"_dates_set": dates_set}}}
-        cat_dates, _ = _build_existing_dates_sets(turbo_result)
+        cat_dates, _ = build_existing_dates_sets(turbo_result)
         assert cat_dates["CEFI"] == dates_set
 
     def test_skips_error_categories(self):
-        from deployment_api.routes.shard_management import _build_existing_dates_sets
+        from deployment_api.routes.shard_management import build_existing_dates_sets
 
         turbo_result = {"categories": {"CEFI": {"error": "Failed to load data"}}}
-        cat_dates, _ = _build_existing_dates_sets(turbo_result)
+        cat_dates, _ = build_existing_dates_sets(turbo_result)
         assert "CEFI" not in cat_dates
 
     def test_empty_turbo_result(self):
-        from deployment_api.routes.shard_management import _build_existing_dates_sets
+        from deployment_api.routes.shard_management import build_existing_dates_sets
 
-        cat_dates, venue_dates = _build_existing_dates_sets({})
+        cat_dates, venue_dates = build_existing_dates_sets({})
         assert cat_dates == {}
         assert venue_dates == {}
 
@@ -523,12 +525,12 @@ class TestGetAllZonesForVmLookup:
 
 
 class TestCategoriesFromStateInShard:
-    """Tests for _categories_from_state in shard_management."""
+    """Tests for categories_from_state in shard_management."""
 
     def test_extracts_categories_from_all_shards(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _categories_from_state
+        from deployment_api.routes.shard_management import categories_from_state
 
         shards = [
             SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),
@@ -536,7 +538,7 @@ class TestCategoriesFromStateInShard:
             SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),  # duplicate
         ]
         state = SimpleNamespace(shards=shards)
-        result = _categories_from_state(state)
+        result = categories_from_state(state)
         assert result is not None
         assert "CEFI" in result
         assert "TRADFI" in result
@@ -545,25 +547,25 @@ class TestCategoriesFromStateInShard:
     def test_returns_none_for_no_categories(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _categories_from_state
+        from deployment_api.routes.shard_management import categories_from_state
 
         state = SimpleNamespace(shards=[SimpleNamespace(status="pending", dimensions={})])
-        result = _categories_from_state(state)
+        result = categories_from_state(state)
         assert result is None
 
     def test_returns_none_for_empty_state(self):
-        from deployment_api.routes.shard_management import _categories_from_state
+        from deployment_api.routes.shard_management import categories_from_state
 
-        assert _categories_from_state(None) is None
+        assert categories_from_state(None) is None
 
 
 class TestGetStateDateRangeInShard:
-    """Tests for _get_state_date_range in shard_management."""
+    """Tests for get_state_date_range in shard_management."""
 
     def test_extracts_min_max_dates(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _get_state_date_range
+        from deployment_api.routes.shard_management import get_state_date_range
 
         shards = [
             SimpleNamespace(dimensions={"date": "2024-01-05"}),
@@ -571,33 +573,33 @@ class TestGetStateDateRangeInShard:
             SimpleNamespace(dimensions={"date": "2024-01-01"}),
         ]
         state = SimpleNamespace(shards=shards)
-        start, end = _get_state_date_range(state)
+        start, end = get_state_date_range(state)
         assert start == "2024-01-01"
         assert end == "2024-01-10"
 
     def test_empty_shards_returns_none(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _get_state_date_range
+        from deployment_api.routes.shard_management import get_state_date_range
 
         state = SimpleNamespace(shards=[])
-        start, end = _get_state_date_range(state)
+        start, end = get_state_date_range(state)
         assert start is None
         assert end is None
 
     def test_no_shards_attr_returns_none(self):
-        from deployment_api.routes.shard_management import _get_state_date_range
+        from deployment_api.routes.shard_management import get_state_date_range
 
-        assert _get_state_date_range(None) == (None, None)
+        assert get_state_date_range(None) == (None, None)
 
 
 class TestComputeCompletedBreakdown:
-    """Tests for _compute_completed_breakdown in shard_management."""
+    """Tests for compute_completed_breakdown in shard_management."""
 
     def test_basic_breakdown(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _compute_completed_breakdown
+        from deployment_api.routes.shard_management import compute_completed_breakdown
 
         # shard_management._status_str checks hasattr(status, 'status'), so use a string
         shards = [
@@ -610,7 +612,7 @@ class TestComputeCompletedBreakdown:
             "errors": [{"shard_id": "s1"}],
             "warnings": [],
         }
-        result = _compute_completed_breakdown(state, log_analysis)
+        result = compute_completed_breakdown(state, log_analysis)
         assert "completed_with_errors" in result
         assert result["completed_with_errors"] == 1
         assert "s1" in result["error_shard_ids"]
@@ -619,10 +621,10 @@ class TestComputeCompletedBreakdown:
     def test_empty_shards_all_zeros(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _compute_completed_breakdown
+        from deployment_api.routes.shard_management import compute_completed_breakdown
 
         state = SimpleNamespace(shards=[])
-        result = _compute_completed_breakdown(state, log_analysis=None)
+        result = compute_completed_breakdown(state, log_analysis=None)
         assert result["completed_with_errors"] == 0
         assert result["completed_with_warnings"] == 0
         assert result["verified_clean"] == 0
@@ -630,7 +632,7 @@ class TestComputeCompletedBreakdown:
     def test_with_existing_dates_verification(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import _compute_completed_breakdown
+        from deployment_api.routes.shard_management import compute_completed_breakdown
 
         shards = [
             SimpleNamespace(
@@ -642,5 +644,5 @@ class TestComputeCompletedBreakdown:
         state = SimpleNamespace(shards=shards)
         existing_cat_dates = {"CEFI": {"2024-01-01"}}
         existing_venue_dates = {"CEFI": {"BINANCE": {"2024-01-01"}}}
-        result = _compute_completed_breakdown(state, None, existing_cat_dates, existing_venue_dates)
+        result = compute_completed_breakdown(state, None, existing_cat_dates, existing_venue_dates)
         assert result["verified_clean"] == 1

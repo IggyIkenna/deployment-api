@@ -15,11 +15,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from deployment_api import settings
 from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.storage_client import get_storage_client as get_storage_client_with_pool
+
+
+class _QuotaBrokerProtocol(Protocol):
+    def enabled(self) -> bool: ...
+    def release(self, *, lease_id: str) -> None: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +114,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
                 # acquire/release calls become no-ops and scheduling behaves as before.
                 try:
                     _quota_broker_client_cls = cast(
-                        type[object],
+                        type[_QuotaBrokerProtocol],
                         _importlib.import_module(  # noqa: F821
                             "deployment_service.deployment.quota_broker_client"
                         ).QuotaBrokerClient,
@@ -238,11 +244,11 @@ async def _auto_sync_running_deployments():  # noqa: C901
                     return 0, 0
 
                 # ---- Phase 1: Parallel scan to find active deployments ----
-                active_states = []
+                active_states: list[tuple[str, dict[str, object]]] = []
                 skipped = 0
                 scan_start = _time.monotonic()
 
-                def _scan_one(path):
+                def _scan_one(path: str) -> tuple[str, dict[str, object]] | None:
                     """Load state.json and return (path, data) if active, else None."""
                     try:
                         raw = cast(
@@ -256,7 +262,6 @@ async def _auto_sync_running_deployments():  # noqa: C901
                             return (path, raw)
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.warning("Unexpected error during scan one: %s", e, exc_info=True)
-                        pass
                     return None
 
                 with ThreadPoolExecutor(max_workers=20) as scan_pool:
@@ -436,7 +441,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
 
                 synced, num_active = process_deployments_batch(
                     active_states,
-                    bucket,
+                    cast(object, bucket),
                     now,
                     quota_broker,
                     try_acquire_deployment_lock,

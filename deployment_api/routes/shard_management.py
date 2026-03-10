@@ -10,6 +10,8 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from deployment_service.deployment.state import DeploymentState
+
 logger = logging.getLogger(__name__)
 
 # Infrastructure failure categories
@@ -37,16 +39,18 @@ def _status_str(val: object) -> str:
     if isinstance(val, str):
         return val
     elif isinstance(val, dict):
-        return val.get("status", "unknown")
+        d = cast(dict[str, object], val)
+        return cast(str, d.get("status", "unknown"))
     elif hasattr(val, "status"):
-        return str(val.status)
+        return cast(str, val.status)
     else:
         return str(val)
 
 
 def _shard_has_force(shard: object) -> bool:
     """Return True if --force was passed to this shard's CLI args."""
-    args = getattr(shard, "args", None) or []
+    args_raw: object = getattr(shard, "args", None) or []
+    args = cast(list[str], args_raw) if isinstance(args_raw, list) else []
     return "--force" in args
 
 
@@ -110,17 +114,18 @@ def _extract_error_warning_shard_ids(
     log_analysis: dict[str, object] | None,
 ) -> tuple[set[str], set[str]]:
     """Extract shard IDs that have log errors or warnings."""
-    if not log_analysis or not isinstance(log_analysis, dict):
+    if not log_analysis:
         return set(), set()
 
-    errors = log_analysis.get("errors") or []
-    warnings = log_analysis.get("warnings") or []
+    errors_raw: object = log_analysis.get("errors") or []
+    warnings_raw: object = log_analysis.get("warnings") or []
+    errors = cast(list[dict[str, object]], errors_raw) if isinstance(errors_raw, list) else []
+    warnings = cast(list[dict[str, object]], warnings_raw) if isinstance(warnings_raw, list) else []
 
-    error_shard_ids = {e.get("shard_id") for e in errors if e.get("shard_id")}
-    warning_shard_ids = {w.get("shard_id") for w in warnings if w.get("shard_id")}
-
-    error_shard_ids.discard(None)
-    warning_shard_ids.discard(None)
+    error_shard_ids: set[str] = {cast(str, e.get("shard_id")) for e in errors if e.get("shard_id")}
+    warning_shard_ids: set[str] = {
+        cast(str, w.get("shard_id")) for w in warnings if w.get("shard_id")
+    }
 
     return error_shard_ids, warning_shard_ids
 
@@ -154,7 +159,7 @@ def _classify_shard(  # noqa: C901
 
     if status == "failed":
         fc_raw: object = getattr(shard, "failure_category", None)
-        fc: str = cast(str, fc_raw) if isinstance(fc_raw, str) else ""
+        fc: str = fc_raw if isinstance(fc_raw, str) else ""
         fc_lower = fc.lower() if fc else ""
         if fc_lower in _INFRA_FAILURE_CATEGORIES:
             return "INFRA_FAILURE"
@@ -207,7 +212,7 @@ def _classify_shard(  # noqa: C901
         return "DATA_MISSING"
 
 
-def _build_blob_timestamp_map(
+def build_blob_timestamp_map(
     turbo_result: dict[str, object],
 ) -> dict[str, dict[str, dict[str, object]]]:
     """Extract per-(category, venue, date) blob timestamps from turbo result.
@@ -219,20 +224,23 @@ def _build_blob_timestamp_map(
     """
     result: dict[str, dict[str, dict[str, object]]] = {}
 
-    for cat_name, cat_data in (turbo_result.get("categories") or {} or {}).items():
+    categories_raw: object = turbo_result.get("categories") or {}
+    categories = cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
+    for cat_name, cat_data in categories.items():
         if not isinstance(cat_data, dict):
             continue
-        ts_map = cat_data.get("_venue_date_blob_timestamps")
-        if ts_map and isinstance(ts_map, dict):
-            result[cat_name] = ts_map
+        cat_data_typed = cast(dict[str, object], cat_data)
+        ts_map_raw = cat_data_typed.get("_venue_date_blob_timestamps")
+        if ts_map_raw and isinstance(ts_map_raw, dict):
+            result[cat_name] = cast(dict[str, dict[str, object]], ts_map_raw)
 
     return result
 
 
-def _resolve_shard_blob_data(  # noqa: C901
-    state,
-    existing_cat_dates: dict[str, set],
-    existing_venue_dates: dict[str, dict[str, set]],
+def resolve_shard_blob_data(  # noqa: C901
+    state: DeploymentState,
+    existing_cat_dates: dict[str, set[str]],
+    existing_venue_dates: dict[str, dict[str, set[str]]],
     blob_timestamps: dict[str, dict[str, dict[str, object]]],
 ) -> dict[str, tuple[bool, datetime | None]]:
     """Map each succeeded shard to (blob_exists, blob_updated) using turbo data.
@@ -250,20 +258,20 @@ def _resolve_shard_blob_data(  # noqa: C901
     """
     result: dict[str, tuple[bool, datetime | None]] = {}
 
-    for shard in cast(list[object], getattr(state, "shards", []) or []):
-        if _status_str(getattr(shard, "status", "")) != "succeeded":
+    for shard in state.shards:
+        if _status_str(shard.status) != "succeeded":
             continue
-        sid: object = getattr(shard, "shard_id", "")
+        sid = shard.shard_id
         if not sid:
             continue
 
-        dims: object = getattr(shard, "dimensions", None) or {}
-        dims_dict = cast(dict[str, object], dims) if isinstance(dims, dict) else {}
+        dims_raw: object = getattr(shard, "dimensions", None) or {}
+        dims_dict = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
         cat = cast(str, dims_dict.get("category") or "")
         venue_val = cast(str, dims_dict.get("venue") or "")
         start_date, _ = _extract_date_range(dims_dict.get("date"))
 
-        sid_str = cast(str, sid)
+        sid_str = sid
         if not cat or not start_date:
             result[sid_str] = (False, None)
             continue
@@ -296,7 +304,7 @@ def _resolve_shard_blob_data(  # noqa: C901
                 candidate_keys.append(venue_val)
             for dim_name in ("feature_group", "feature_type", "sub_dimension"):
                 dv_raw: object = dims_dict.get(dim_name, "")
-                dv = cast(str, dv_raw) if isinstance(dv_raw, str) else ""
+                dv = dv_raw if isinstance(dv_raw, str) else ""
                 if dv and dv not in candidate_keys:
                     candidate_keys.append(dv)
             candidate_keys.append("_all")
@@ -311,22 +319,22 @@ def _resolve_shard_blob_data(  # noqa: C901
             # Fallback: scan all sub-dimension keys if the above didn't work
             if blob_updated_raw is None:
                 for subdim_key, subdim_data in cat_ts.items():
-                    if subdim_key not in candidate_keys and isinstance(subdim_data, dict):
+                    if subdim_key not in candidate_keys:
                         ts = subdim_data.get(start_date)
                         if ts is not None:
                             blob_updated_raw = ts
                             break
 
         blob_updated: datetime | None = (
-            cast(datetime, blob_updated_raw) if isinstance(blob_updated_raw, datetime) else None
+            blob_updated_raw if isinstance(blob_updated_raw, datetime) else None
         )
         result[sid_str] = (data_exists, blob_updated)
 
     return result
 
 
-def _classify_all_shards(
-    state,
+def classify_all_shards(
+    state: DeploymentState,
     log_analysis: dict[str, object] | None,
     blob_data: dict[str, tuple[bool, datetime | None]] | None = None,
 ) -> dict[str, str]:
@@ -337,11 +345,10 @@ def _classify_all_shards(
     shard_ids_with_errors, shard_ids_with_warnings = _extract_error_warning_shard_ids(log_analysis)
 
     classifications: dict[str, str] = {}
-    for shard in cast(list[object], getattr(state, "shards", []) or []):
-        sid_raw: object = getattr(shard, "shard_id", "")
-        if not sid_raw:
+    for shard in state.shards:
+        sid = shard.shard_id
+        if not sid:
             continue
-        sid = cast(str, sid_raw)
 
         has_errors = sid in shard_ids_with_errors
         has_warnings = sid in shard_ids_with_warnings
@@ -362,7 +369,7 @@ def _classify_all_shards(
     return classifications
 
 
-def _compute_classification_counts(
+def compute_classification_counts(
     classifications: dict[str, str],
 ) -> dict[str, int]:
     """Aggregate per-shard classifications into counts."""
@@ -372,7 +379,7 @@ def _compute_classification_counts(
     return counts
 
 
-def _build_existing_dates_sets(  # noqa: C901
+def build_existing_dates_sets(  # noqa: C901
     turbo_result: dict[str, object],
 ) -> tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]:
     """Build category+date and venue+date sets from turbo data status result.
@@ -380,12 +387,15 @@ def _build_existing_dates_sets(  # noqa: C901
     Mirrors logic used by /api/data-status/missing-shards.
     """
 
-    existing_cat_dates: dict[str, set] = {}
-    existing_venue_dates: dict[str, dict[str, set]] = {}
+    existing_cat_dates: dict[str, set[str]] = {}
+    existing_venue_dates: dict[str, dict[str, set[str]]] = {}
 
-    for cat_name, cat_data in (turbo_result.get("categories") or {} or {}).items():
-        if not isinstance(cat_data, dict):
+    categories_raw: object = turbo_result.get("categories") or {}
+    categories = cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
+    for cat_name, cat_data_raw in categories.items():
+        if not isinstance(cat_data_raw, dict):
             continue
+        cat_data = cast(dict[str, object], cat_data_raw)
         if "error" in cat_data:
             continue
 
@@ -393,39 +403,44 @@ def _build_existing_dates_sets(  # noqa: C901
         existing_venue_dates[cat_name] = {}
 
         # Internal fast path: precomputed set
-        if "_dates_set" in cat_data and isinstance(cat_data.get("_dates_set"), set):
-            existing_cat_dates[cat_name] = cat_data["_dates_set"]
+        dates_set_raw = cat_data.get("_dates_set")
+        if "_dates_set" in cat_data and isinstance(dates_set_raw, set):
+            existing_cat_dates[cat_name] = cast(set[str], dates_set_raw)
             continue
 
         # Common: explicit list of dates
         if "dates_found_list" in cat_data:
-            existing_cat_dates[cat_name] = set(cat_data.get("dates_found_list") or [])
+            dates_found_raw = cast(list[str], cat_data.get("dates_found_list") or [])
+            existing_cat_dates[cat_name] = set(dates_found_raw)
             continue
 
         # Venue map
-        venues_data = cat_data.get("venues") or {}
-        if isinstance(venues_data, dict):
-            for venue_name, venue_data in venues_data.items():
-                if not isinstance(venue_data, dict):
-                    continue
-                dates_found = venue_data.get("dates_found_list") or []
-                venue_dates = set(dates_found)
-                existing_venue_dates[cat_name][venue_name] = venue_dates
-                existing_cat_dates[cat_name].update(venue_dates)
+        venues_data_raw: object = cat_data.get("venues") or {}
+        venues_data = (
+            cast(dict[str, object], venues_data_raw) if isinstance(venues_data_raw, dict) else {}
+        )
+        for venue_name, venue_data_raw in venues_data.items():
+            if not isinstance(venue_data_raw, dict):
+                continue
+            venue_data = cast(dict[str, object], venue_data_raw)
+            dates_found_raw2 = cast(list[str], venue_data.get("dates_found_list") or [])
+            venue_dates: set[str] = set(dates_found_raw2)
+            existing_venue_dates[cat_name][venue_name] = venue_dates
+            existing_cat_dates[cat_name].update(venue_dates)
 
     return existing_cat_dates, existing_venue_dates
 
 
 def _compute_verified_succeeded_shard_ids(  # noqa: C901
-    state,
-    existing_cat_dates: dict[str, set],
-    existing_venue_dates: dict[str, dict[str, set]],
-) -> set:
+    state: DeploymentState,
+    existing_cat_dates: dict[str, set[str]],
+    existing_venue_dates: dict[str, dict[str, set[str]]],
+) -> set[str]:
     """Compute set of shard IDs that succeeded and have verified data."""
     verified: set[str] = set()
 
-    for shard in cast(list[object], getattr(state, "shards", []) or []):
-        if _status_str(getattr(shard, "status", "")) != "succeeded":
+    for shard in state.shards:
+        if _status_str(shard.status) != "succeeded":
             continue
 
         dims_raw: object = getattr(shard, "dimensions", None) or {}
@@ -448,25 +463,23 @@ def _compute_verified_succeeded_shard_ids(  # noqa: C901
                     data_exists = True
 
         if data_exists:
-            sid_raw: object = getattr(shard, "shard_id", "")
-            if isinstance(sid_raw, str):
-                verified.add(sid_raw)
+            sid = shard.shard_id
+            if sid:
+                verified.add(sid)
 
     verified.discard("")
     return verified
 
 
-def _compute_completed_breakdown(
-    state,
+def compute_completed_breakdown(
+    state: DeploymentState,
     log_analysis: dict[str, object] | None,
     existing_cat_dates: dict[str, set[str]] | None = None,
     existing_venue_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict[str, object]:
     """Compute detailed breakdown of completed shards by status and verification."""
     succeeded_ids: set[str] = {
-        cast(str, getattr(s, "shard_id", ""))
-        for s in cast(list[object], getattr(state, "shards", []) or [])
-        if _status_str(getattr(s, "status", "")) == "succeeded" and getattr(s, "shard_id", None)
+        s.shard_id for s in state.shards if _status_str(s.status) == "succeeded" and s.shard_id
     }
 
     shard_ids_with_errors, shard_ids_with_warnings = _extract_error_warning_shard_ids(log_analysis)
@@ -503,7 +516,7 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
     """
     from deployment_api import settings as _settings
 
-    zones = []
+    zones: list[str] = []
 
     # Add primary region zones first
     region = primary_region or _settings.GCS_REGION or "us-central1"
@@ -525,8 +538,8 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
                 zones.extend(["europe-west1-b", "europe-west1-c", "europe-west1-d"])
 
     # Remove duplicates while preserving order
-    seen = set()
-    unique_zones = []
+    seen: set[str] = set()
+    unique_zones: list[str] = []
     for zone in zones:
         if zone not in seen:
             seen.add(zone)
@@ -535,13 +548,13 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
     return unique_zones
 
 
-def _categories_from_state(state) -> list[str] | None:
+def categories_from_state(state: DeploymentState) -> list[str] | None:
     """Extract unique categories from deployment state shards."""
-    if not state or not hasattr(state, "shards"):
+    if not state or not state.shards:
         return None
 
     categories: set[str] = set()
-    for shard in cast(list[object], getattr(state, "shards", []) or []):
+    for shard in state.shards:
         dims_raw: object = getattr(shard, "dimensions", None) or {}
         dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
         cat_raw: object = dims.get("category")
@@ -551,13 +564,13 @@ def _categories_from_state(state) -> list[str] | None:
     return sorted(categories) if categories else None
 
 
-def _get_state_date_range(state) -> tuple[str | None, str | None]:
+def get_state_date_range(state: DeploymentState) -> tuple[str | None, str | None]:
     """Extract the date range from deployment state by examining all shards."""
-    if not state or not hasattr(state, "shards"):
+    if not state or not state.shards:
         return None, None
 
     all_dates: list[str] = []
-    for shard in cast(list[object], getattr(state, "shards", []) or []):
+    for shard in state.shards:
         dims_raw: object = getattr(shard, "dimensions", None) or {}
         dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
         start_date, end_date = _extract_date_range(dims.get("date"))

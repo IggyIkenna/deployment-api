@@ -9,10 +9,17 @@ import asyncio as _asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
+
+
+class _QuotaBrokerProtocol(Protocol):
+    def enabled(self) -> bool: ...
+    def release(self, *, lease_id: str) -> None: ...
+
 
 from deployment_api import settings
 from deployment_api.clients import deployment_service_client as _ds_client
@@ -63,14 +70,14 @@ from .auto_sync import _pending_vm_deletes
 
 
 def process_deployments_batch(  # noqa: C901
-    active_states,
-    bucket,
-    now,
-    quota_broker,
-    try_acquire_deployment_lock,
-    release_deployment_lock,
-    run_orphan_cleanup_only,
-):
+    active_states: list[tuple[str, dict[str, object]]],
+    bucket: object,
+    now: datetime,
+    quota_broker: _QuotaBrokerProtocol | None,
+    try_acquire_deployment_lock: Callable[[str], bool],
+    release_deployment_lock: Callable[[str], bool],
+    run_orphan_cleanup_only: Callable[[str, dict[str, object]], int],
+) -> tuple[int, int]:
     """
     Process a batch of active deployments.
 
@@ -87,12 +94,13 @@ def process_deployments_batch(  # noqa: C901
         Tuple of (synced_count, num_active)
     """
     from deployment_api.utils.storage_facade import (
+        ObjectInfo,
         list_objects,
         read_object_text,
         write_object_text,
     )
 
-    def get_config_dir():
+    def get_config_dir() -> Path:
         """Get the configs directory path."""
 
         # Try relative to this file
@@ -106,7 +114,7 @@ def process_deployments_batch(  # noqa: C901
         raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
     # ---- Phase 2: Process active deployments concurrently ----
-    def _process_one_deployment(state_path_and_state):  # noqa: C901
+    def _process_one_deployment(state_path_and_state: tuple[str, dict[str, object]]) -> int:  # noqa: C901
         """Process a single deployment. Returns 1 if synced, 0 otherwise."""
         state_path, state = state_path_and_state
         path_parts = state_path.split("/")
@@ -119,10 +127,10 @@ def process_deployments_batch(  # noqa: C901
         try:
             logger.info("[AUTO_SYNC] Processing: %s", state_path)
 
-            config = state.get("config") or {}
+            config = cast(dict[str, object], state.get("config") or {})
             deployment_id = state_path.split("/")[1]
-            compute_type = state.get("compute_type", "vm")
-            shards = state.get("shards") or []
+            compute_type = cast(str, state.get("compute_type", "vm"))
+            shards = cast(list[dict[str, object]], state.get("shards") or [])
 
             # ---- completed_pending_delete: orphan cleanup only; transition to completed when no RUNNING VMs ----  # noqa: E501
             if state.get("status") == "completed_pending_delete":
@@ -139,14 +147,14 @@ def process_deployments_batch(  # noqa: C901
                 service_name = cast(str, state.get("service") or "")
                 if not service_name:
                     return 0
-                vm_map_cpd = {}
+                vm_map_cpd: dict[str, object] = {}
                 try:
                     from unified_cloud_interface import get_compute_engine_client
 
                     ce = get_compute_engine_client(project_id=PROJECT_ID)
                     instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")
                     for inst in instances:
-                        vm_map_cpd[inst["name"]] = {
+                        vm_map_cpd[cast(str, inst["name"])] = {
                             "status": inst["status"],
                             "zone": inst.get("zone"),
                         }
@@ -160,23 +168,24 @@ def process_deployments_batch(  # noqa: C901
 
                 def _vm_status_cpd(m: dict[str, object], jid: str) -> str | None:
                     v = m.get(jid)
-                    return (
-                        v.get("status")
-                        if isinstance(v, dict)
-                        else (v if isinstance(v, str) else None)
-                    )
+                    if isinstance(v, dict):
+                        return cast(str | None, cast(dict[str, object], v).get("status"))
+                    return v if isinstance(v, str) else None
 
                 def _vm_zone_cpd(m: dict[str, object], jid: str) -> str | None:
                     v = m.get(jid)
-                    return v.get("zone") if isinstance(v, dict) else None
+                    if isinstance(v, dict):
+                        return cast(str | None, cast(dict[str, object], v).get("zone"))
+                    return None
 
                 running_vms = [
                     (
-                        s.get("job_id"),
-                        _vm_zone_cpd(vm_map_cpd, s.get("job_id")),
+                        cast(str, s.get("job_id")),
+                        _vm_zone_cpd(vm_map_cpd, cast(str, s.get("job_id"))),
                     )
                     for s in shards
-                    if s.get("job_id") and _vm_status_cpd(vm_map_cpd, s.get("job_id")) == "RUNNING"
+                    if s.get("job_id")
+                    and _vm_status_cpd(vm_map_cpd, cast(str, s.get("job_id"))) == "RUNNING"
                 ]
                 orphan_max_cpd = settings.ORPHAN_DELETE_MAX_PARALLEL
                 to_fire_cpd = running_vms[:orphan_max_cpd]
@@ -239,10 +248,12 @@ def process_deployments_batch(  # noqa: C901
             # This handles both fast (30min) and long (10hr) jobs
 
             deployment_id = state_path.split("/")[1]
-            compute_type = state.get("compute_type", "vm")
+            compute_type = cast(str, state.get("compute_type", "vm"))
 
             # Build map of shard statuses (check both GCS files AND live VMs)
-            shard_statuses = {}  # shard_id -> ("succeeded"/"failed"/"running", source)
+            shard_statuses: dict[
+                str, tuple[str, str]
+            ] = {}  # shard_id -> ("succeeded"/"failed"/"running", source)
 
             # 1. Check GCS status files (for completed VMs that wrote completion marker)
             # Use environment-aware prefix, parallel download
@@ -253,7 +264,7 @@ def process_deployments_batch(  # noqa: C901
                 if "/status" in o.name and not o.name.endswith("/state.json")
             ]
 
-            def _read_status_obj(obj):
+            def _read_status_obj(obj: ObjectInfo) -> tuple[str, str] | None:
                 """Read status file and return (shard_id, status) or None."""
                 parts = obj.name.split("/")
                 if len(parts) < 3:
@@ -293,7 +304,7 @@ def process_deployments_batch(  # noqa: C901
                             PROJECT_ID, f"name:{service_name}-*"
                         )
                         for inst in instances:
-                            vm_map[inst["name"]] = {
+                            vm_map[cast(str, inst["name"])] = {
                                 "status": inst["status"],
                                 "zone": inst.get("zone"),
                             }
@@ -321,8 +332,8 @@ def process_deployments_batch(  # noqa: C901
             # Apply status updates based on GCS markers / VM existence / Cloud Run API.
             releases_this_tick = 0
             max_releases_per_tick = settings.AUTO_SCHEDULER_MAX_RELEASES_PER_TICK
-            for shard in state.get("shards") or []:
-                shard_id = shard.get("shard_id")
+            for shard in cast(list[dict[str, object]], state.get("shards") or []):
+                shard_id = cast(str, shard.get("shard_id"))
                 if not shard_id:
                     continue
                 if shard_id not in shard_statuses:
@@ -382,7 +393,7 @@ def process_deployments_batch(  # noqa: C901
 
             if updated:
                 # Update overall status if all shards are terminal
-                shards = state.get("shards") or []
+                shards = cast(list[dict[str, object]], state.get("shards") or [])
                 all_terminal = all(
                     s.get("status") in ["succeeded", "failed", "cancelled"] for s in shards
                 )
@@ -437,7 +448,11 @@ def process_deployments_batch(  # noqa: C901
     synced: int = 0
     if active_states:
         active_states.sort(
-            key=lambda x: sum(1 for s in x[1].get("shards") or [] if s.get("status") == "running"),
+            key=lambda x: sum(
+                1
+                for s in cast(list[dict[str, object]], x[1].get("shards") or [])
+                if s.get("status") == "running"
+            ),
             reverse=True,
         )
         max_parallel = min(
@@ -466,8 +481,14 @@ def process_deployments_batch(  # noqa: C901
 
 
 def _process_vm_health_and_status(  # noqa: C901
-    shards, vm_map, now, config, deployment_id, shard_statuses, updated
-):
+    shards: list[dict[str, object]],
+    vm_map: dict[str, object],
+    now: datetime,
+    config: dict[str, object],
+    deployment_id: str,
+    shard_statuses: dict[str, tuple[str, str]],
+    updated: bool,
+) -> bool:
     """Process VM health checks and update shard statuses."""
     # Collect running shard job_ids that need VM checks
     running_job_ids = {}  # job_id -> shard_id
@@ -503,13 +524,13 @@ def _process_vm_health_and_status(  # noqa: C901
             for shard in shards:
                 if shard.get("status") != "running":
                     continue
-                job_id = shard.get("job_id")
-                shard_id = shard.get("shard_id")
+                job_id = cast(str, shard.get("job_id"))
+                shard_id = cast(str, shard.get("shard_id"))
                 if not job_id or not shard_id or _vm_status(vm_map, job_id) != "RUNNING":
                     continue
 
                 # Check if VM has been running long enough for health checks
-                start_time_str = shard.get("start_time")
+                start_time_str = cast(str, shard.get("start_time"))
                 if not start_time_str:
                     continue
                 try:
@@ -660,7 +681,13 @@ def _get_cloud_run_status_batch_sync(
     )
 
 
-def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated):  # noqa: C901
+def _process_cloud_run_status(  # noqa: C901
+    shards: list[dict[str, object]],
+    config: dict[str, object],
+    deployment_id: str,
+    shard_statuses: dict[str, tuple[str, str]],
+    updated: bool,
+) -> bool:
     """Process Cloud Run execution status updates via deployment-service HTTP API."""
     try:
         job_ids = []
@@ -696,8 +723,8 @@ def _process_cloud_run_status(shards, config, deployment_id, shard_statuses, upd
             groups: dict[tuple[str, str], list[str]] = {}
             for job_id in job_ids:
                 r, j = parse_exec_name(job_id)
-                r = r or (config.get("region") or "asia-northeast1")
-                j = j or config.get("job_name")
+                r = r or cast(str, config.get("region") or "asia-northeast1")
+                j = j or cast(str, config.get("job_name"))
                 if not j:
                     continue
                 groups.setdefault((r, j), []).append(job_id)
@@ -806,7 +833,15 @@ def _process_stuck_shards(shards, config, compute_type, now, deployment_id, upda
     return updated
 
 
-def _launch_pending_shards(state, config, now, deployment_id, compute_type, quota_broker, updated):
+def _launch_pending_shards(
+    state: dict[str, object],
+    config: dict[str, object],
+    now: datetime,
+    deployment_id: str,
+    compute_type: str,
+    quota_broker: _QuotaBrokerProtocol | None,
+    updated: bool,
+) -> int:
     """Launch pending shards based on available capacity."""
     launched_this_tick = 0
 
@@ -817,7 +852,13 @@ def _launch_pending_shards(state, config, now, deployment_id, compute_type, quot
     return launched_this_tick
 
 
-def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment_id):  # noqa: C901
+def _handle_orphan_vm_cleanup(  # noqa: C901
+    vm_map: dict[str, object],
+    shards: list[dict[str, object]],
+    shard_statuses: dict[str, tuple[str, str]],
+    config: dict[str, object],
+    deployment_id: str,
+) -> int:
     """Handle cleanup of orphaned VMs that are still running after completion."""
     # Proactive VM termination: GCS has terminal status but VM still alive
     # Fire-and-forget: up to N parallel deletes, track pending, retry if still RUNNING after Xs
@@ -851,10 +892,10 @@ def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment
         _pending_vm_deletes[jid] = (now_ts, zone)
 
     # 2. Collect orphans to terminate
-    orphan_tuples: list[tuple[str, str | None, str, tuple]] = []
+    orphan_tuples: list[tuple[str, str | None, str, tuple[str, str]]] = []
     for shard in shards:
-        shard_id = shard.get("shard_id")
-        job_id = shard.get("job_id")
+        shard_id = cast(str, shard.get("shard_id"))
+        job_id = cast(str, shard.get("job_id"))
         if not job_id or not shard_id:
             continue
         st = shard_statuses.get(shard_id)
@@ -906,3 +947,5 @@ def _handle_orphan_vm_cleanup(vm_map, shards, shard_statuses, config, deployment
             return 0
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[AUTO_SYNC] VM fire-and-forget failed: %s", e)
+
+    return len(to_fire)
