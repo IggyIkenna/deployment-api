@@ -112,8 +112,9 @@ async def calculate_shards(
             raise RuntimeError(
                 f"deployment-service /api/v1/shards/calculate returned HTTP {resp.status}: {body}"
             )
-        data: dict[str, object] = await resp.json()
-        shards: list[dict[str, object]] = list(data.get("shards") or [])
+        data = cast(dict[str, object], await resp.json())
+        shards_val = data.get("shards")
+        shards: list[dict[str, object]] = cast(list[dict[str, object]], shards_val) if isinstance(shards_val, list) else []
         return shards
 
 
@@ -193,7 +194,7 @@ async def create_deployment(
             raise RuntimeError(
                 f"deployment-service /api/v1/deployments returned HTTP {resp.status}: {body}"
             )
-        result: dict[str, object] = await resp.json()
+        result = cast(dict[str, object], await resp.json())
         return result
 
 
@@ -268,7 +269,7 @@ async def get_data_status(
                 raise RuntimeError(
                     f"deployment-service /api/v1/data-status returned HTTP {resp.status}: {body}"
                 )
-            result: dict[str, object] = await resp.json()
+            result = cast(dict[str, object], await resp.json())
             return result
 
 
@@ -339,7 +340,7 @@ async def cancel_vm_jobs(
             raise RuntimeError(
                 f"deployment-service /api/v1/vm-jobs/cancel returned HTTP {resp.status}: {body}"
             )
-        result: dict[str, object] = await resp.json()
+        result = cast(dict[str, object], await resp.json())
         return result
 
 
@@ -381,12 +382,12 @@ async def get_vm_status_batch(
                 f"deployment-service /api/v1/vm-jobs/status-batch "
                 f"returned HTTP {resp.status}: {body}"
             )
-        data: dict[str, object] = await resp.json()
+        data = cast(dict[str, object], await resp.json())
         statuses: dict[str, str] = {}
-        raw = data.get("statuses") or {}
-        if isinstance(raw, dict):
-            for k, v in raw.items():
-                if isinstance(k, str) and isinstance(v, str):
+        raw_statuses = data.get("statuses")
+        if isinstance(raw_statuses, dict):
+            for k, v in cast(dict[str, object], raw_statuses).items():
+                if isinstance(v, str):
                     statuses[k] = v
         return statuses
 
@@ -425,8 +426,9 @@ async def quota_acquire_batch(
             raise RuntimeError(
                 f"deployment-service /api/v1/quota/acquire returned HTTP {resp.status}: {body}"
             )
-        data: dict[str, object] = await resp.json()
-        acquired: int = int(data.get("acquired", 0))
+        data = cast(dict[str, object], await resp.json())
+        acquired_raw = data.get("acquired", 0)
+        acquired: int = int(acquired_raw) if isinstance(acquired_raw, (int, float)) else 0
         return acquired
 
 
@@ -467,12 +469,12 @@ async def get_cloud_run_status_batch(
                 f"deployment-service /api/v1/cloud-run/status-batch "
                 f"returned HTTP {resp.status}: {body}"
             )
-        data: dict[str, object] = await resp.json()
+        data = cast(dict[str, object], await resp.json())
         statuses: dict[str, str] = {}
-        raw = data.get("statuses") or {}
-        if isinstance(raw, dict):
-            for k, v in raw.items():
-                if isinstance(k, str) and isinstance(v, str):
+        raw_statuses = data.get("statuses")
+        if isinstance(raw_statuses, dict):
+            for k, v in cast(dict[str, object], raw_statuses).items():
+                if isinstance(v, str):
                     statuses[k] = v
         return statuses
 
@@ -548,9 +550,9 @@ async def get_deployment_events(
                 f"deployment-service /api/v1/deployments/{deployment_id}/events "
                 f"returned HTTP {resp.status}: {body}"
             )
-        data: dict[str, object] = await resp.json()
-        events = data.get("events") or []
-        return list(cast(list[dict[str, object]], events))
+        data = cast(dict[str, object], await resp.json())
+        events_val = data.get("events")
+        return cast(list[dict[str, object]], events_val) if isinstance(events_val, list) else []
 
 
 async def get_vm_events(
@@ -577,9 +579,9 @@ async def get_vm_events(
                 f"deployment-service /api/v1/deployments/{deployment_id}/vm-events "
                 f"returned HTTP {resp.status}: {body}"
             )
-        data: dict[str, object] = await resp.json()
-        events = data.get("events") or []
-        return list(cast(list[dict[str, object]], events))
+        data = cast(dict[str, object], await resp.json())
+        events_val = data.get("events")
+        return cast(list[dict[str, object]], events_val) if isinstance(events_val, list) else []
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +632,7 @@ async def live_rollback(
                 f"deployment-service /api/v1/deployments/{deployment_id}/rollback "
                 f"returned HTTP {resp.status}: {body}"
             )
-        result: dict[str, object] = await resp.json()
+        result = cast(dict[str, object], await resp.json())
         return result
 
 
@@ -664,5 +666,5 @@ async def get_live_health(
                 f"deployment-service /api/v1/deployments/{deployment_id}/live-health "
                 f"returned HTTP {resp.status}: {body}"
             )
-        result: dict[str, object] = await resp.json()
+        result = cast(dict[str, object], await resp.json())
         return result

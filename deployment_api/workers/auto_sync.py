@@ -6,6 +6,7 @@ VM health checks, orphan cleanup, and deployment scheduling.
 """
 
 import asyncio
+import importlib as _importlib
 import json
 import logging
 import os
@@ -27,6 +28,34 @@ class _QuotaBrokerProtocol(Protocol):
     def release(self, *, lease_id: str) -> None: ...
 
 
+class _GCSBlob(Protocol):
+    """Protocol for GCS blob methods used in auto_sync."""
+    name: str
+    metageneration: int
+
+    def upload_from_string(
+        self,
+        data: str | bytes,
+        content_type: str = "application/octet-stream",
+        if_generation_match: int | None = None,
+        if_metageneration_match: int | None = None,
+    ) -> None: ...
+    def download_as_text(self, encoding: str | None = None) -> str: ...
+    def exists(self) -> bool: ...
+    def delete(self) -> None: ...
+
+
+class _GCSBucket(Protocol):
+    """Protocol for GCS bucket methods used in auto_sync."""
+    def blob(self, blob_name: str) -> _GCSBlob: ...
+    def get_blob(self, blob_name: str) -> _GCSBlob | None: ...
+
+
+class _GCSClient(Protocol):
+    """Protocol for GCS client methods used in auto_sync."""
+    def bucket(self, name: str) -> _GCSBucket: ...
+
+
 logger = logging.getLogger(__name__)
 
 # Auto-sync configuration (from centralized settings)
@@ -40,18 +69,18 @@ OWNER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 # Environment-based state separation (development vs production)
 DEPLOYMENT_ENV = settings.DEPLOYMENT_ENV
 # Track held locks for cleanup on shutdown
-_held_deployment_locks: set = set()
+_held_deployment_locks: set[str] = set()
 # Fire-and-forget VM delete tracking: job_id -> (timestamp, zone)
 # Cleaned when VM no longer in vm_map; retried if still RUNNING after ORPHAN_DELETE_RETRY_SECONDS
-_pending_vm_deletes: dict[str, tuple[float, str | None]] = {}
+pending_vm_deletes: dict[str, tuple[float, str | None]] = {}
 
 # Background task handles for auto-sync
-_background_task = None
-_events_drain_task = None
-_shutdown_event = None
+_background_task: asyncio.Task[None] | None = None
+_events_drain_task: asyncio.Task[None] | None = None
+_shutdown_event: asyncio.Event | None = None
 
 
-def get_config_dir():
+def get_config_dir() -> Path:
     """Get the configs directory path."""
     # Try relative to this file
     api_dir = Path(__file__).parent.parent
@@ -64,7 +93,7 @@ def get_config_dir():
     raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
 
-async def _auto_sync_running_deployments():  # noqa: C901
+async def _auto_sync_running_deployments() -> None:  # noqa: C901
     """
     Background task that periodically syncs status for running deployments.
 
@@ -89,7 +118,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
     # Run first sync immediately (don't wait for interval)
     first_run = True
 
-    while not _shutdown_event.is_set():
+    while _shutdown_event is None or not _shutdown_event.is_set():
         try:
             if first_run:
                 # Small delay on first run to let API fully start, but don't wait full interval
@@ -98,14 +127,14 @@ async def _auto_sync_running_deployments():  # noqa: C901
             else:
                 await asyncio.sleep(current_interval)
 
-            if _shutdown_event.is_set():
+            if _shutdown_event is not None and _shutdown_event.is_set():
                 break
 
             # Run GCS operations in thread pool to not block event loop
             def sync_running_deployments():  # noqa: C901
                 logger.info("[AUTO_SYNC] Sync cycle starting...")
-                client = get_storage_client_with_pool(PROJECT_ID)  # Uses default pool_size=200
-                bucket = client.bucket(STATE_BUCKET)
+                _raw_client = cast(_GCSClient, get_storage_client_with_pool(PROJECT_ID))
+                bucket = _raw_client.bucket(STATE_BUCKET)
                 logger.info("[AUTO_SYNC] Using bucket: %s", STATE_BUCKET)
                 now = datetime.now(UTC)
                 synced = 0
@@ -115,7 +144,7 @@ async def _auto_sync_running_deployments():  # noqa: C901
                 try:
                     _quota_broker_client_cls = cast(
                         type[_QuotaBrokerProtocol],
-                        _importlib.import_module(  # noqa: F821
+                        _importlib.import_module(
                             "deployment_service.deployment.quota_broker_client"
                         ).QuotaBrokerClient,
                     )
@@ -373,17 +402,17 @@ async def _auto_sync_running_deployments():  # noqa: C901
                     to_fire = [
                         (job_id, zone)
                         for job_id, zone, _shard_id, _st in orphan_tuples[:orphan_max]
-                        if job_id not in _pending_vm_deletes
+                        if job_id not in pending_vm_deletes
                     ]
                     for job_id, zone in to_fire:
-                        _pending_vm_deletes[job_id] = (now_ts, zone)
+                        pending_vm_deletes[job_id] = (now_ts, zone)
 
                     if not to_fire:
                         return 0
                     try:
                         _orchestrator_cls = cast(
                             type[object],
-                            _importlib.import_module(  # noqa: F821
+                            _importlib.import_module(
                                 "deployment_service.deployment.orchestrator"
                             ).DeploymentOrchestrator,
                         )

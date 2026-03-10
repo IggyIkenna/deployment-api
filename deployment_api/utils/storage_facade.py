@@ -3,7 +3,7 @@ Storage facade for GCS access with optional GCS FUSE support.
 
 When DEPLOYMENT_ENV=production and GCS buckets are mounted via Cloud Run volume
 mounts at /mnt/gcs/{bucket_name}, uses filesystem operations (faster, cached).
-Otherwise (development, or FUSE not mounted) falls back to GCS API.
+Otherwise (development, or FUSE not mounted) falls back to GCS API via UCI StorageClient.
 
 Toggle: Only use FUSE when DEPLOYMENT_ENV=production (injected at deployment).
 Local dev uses DEPLOYMENT_ENV=development and always goes through GCS API.
@@ -12,16 +12,14 @@ Local dev uses DEPLOYMENT_ENV=development and always goes through GCS API.
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from io import BytesIO
 from pathlib import Path
-from typing import cast
 
 from deployment_api.settings import DEPLOYMENT_ENV, STATE_BUCKET
 
 logger = logging.getLogger(__name__)
 
 
-def get_gcs_fuse_status() -> dict:
+def get_gcs_fuse_status() -> dict[str, object]:
     """Return API's current GCS Fuse status for UI display."""
     env_ok = DEPLOYMENT_ENV == "production"
     mounted = bool(env_ok and STATE_BUCKET and _is_bucket_mounted(STATE_BUCKET))
@@ -146,23 +144,24 @@ def _list_objects_api(
     max_results: int | None,
     delimiter: str | None,
 ) -> list[ObjectInfo]:
-    """List via GCS API."""
+    """List via GCS API using UCI StorageClient."""
     from deployment_api.utils.storage_client import get_storage_client
 
     client = get_storage_client()
-    bucket = client.bucket(bucket_name)
-    kwargs: dict = {"prefix": prefix}
-    if max_results:
-        kwargs["max_results"] = max_results
-    if delimiter:
-        kwargs["delimiter"] = delimiter
-    blobs = list(bucket.list_blobs(**kwargs))
+    blobs = list(
+        client.list_blobs(
+            bucket_name,
+            prefix=prefix,
+            max_results=max_results,
+            delimiter=delimiter,
+        )
+    )
     return [
         ObjectInfo(
             name=b.name,
-            updated=b.updated,
+            updated=None,
             size=b.size,
-            time_created=cast(datetime | None, getattr(b, "time_created", b.updated)),
+            time_created=None,
         )
         for b in blobs
     ]
@@ -178,14 +177,11 @@ def object_exists(bucket_name: str, object_path: str) -> bool:
             return path.exists() and path.is_file()
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("FUSE exists failed for %s/%s: %s", bucket_name, object_path, e)
-            pass
     # Fallback to API
     from deployment_api.utils.storage_client import get_storage_client
 
     client = get_storage_client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(object_path)
-    return blob.exists()
+    return client.blob_exists(bucket_name, object_path)
 
 
 def list_prefixes(
@@ -204,14 +200,23 @@ def list_prefixes(
             return [f"{prefix.rstrip('/')}/{p.name}/" for p in path.iterdir() if p.is_dir()]
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("FUSE list_prefixes failed for %s/%s: %s", bucket_name, prefix, e)
-            pass
     from deployment_api.utils.storage_client import get_storage_client
 
     client = get_storage_client()
-    bucket = client.bucket(bucket_name)
-    it = bucket.list_blobs(prefix=prefix, delimiter="/")
-    list(it)  # Consume to populate .prefixes
-    return list(getattr(it, "prefixes", []) or [])
+    # Use list_blobs with delimiter to get prefixes — collect all blob names and extract prefixes
+    blobs = list(client.list_blobs(bucket_name, prefix=prefix, delimiter="/"))
+    seen: set[str] = set()
+    result: list[str] = []
+    for b in blobs:
+        # Extract immediate child prefix: prefix + first component after prefix + "/"
+        remainder = b.name[len(prefix):]
+        if "/" in remainder:
+            child = remainder.split("/")[0]
+            child_prefix = f"{prefix.rstrip('/')}/{child}/"
+            if child_prefix not in seen:
+                seen.add(child_prefix)
+                result.append(child_prefix)
+    return result
 
 
 def list_blobs_compat(
@@ -219,14 +224,13 @@ def list_blobs_compat(
     prefix: str,
     max_results: int | None = None,
     delimiter: str | None = None,
-):
+) -> list[ObjectInfo]:
     """
-    Compatibility layer: returns iterator of blob-like objects with .name, .updated, .size.
+    Compatibility layer: returns list of ObjectInfo with .name, .updated, .size.
 
-    Use when callers expect blob attributes. Yields ObjectInfo (has same interface).
+    Use when callers expect blob attributes. Returns ObjectInfo (has same interface).
     """
-    objs = list_objects(bucket_name, prefix, max_results, delimiter)
-    yield from objs
+    return list_objects(bucket_name, prefix, max_results, delimiter)
 
 
 def read_object_bytes(bucket_name: str, object_path: str) -> bytes:
@@ -243,9 +247,7 @@ def read_object_bytes(bucket_name: str, object_path: str) -> bytes:
     from deployment_api.utils.storage_client import get_storage_client
 
     client = get_storage_client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(object_path)
-    return blob.download_as_bytes()
+    return client.download_bytes(bucket_name, object_path)
 
 
 def read_object_text(bucket_name: str, object_path: str) -> str:
@@ -270,9 +272,7 @@ def write_object_bytes(bucket_name: str, object_path: str, data: bytes) -> None:
     from deployment_api.utils.storage_client import get_storage_client
 
     client = get_storage_client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(object_path)
-    blob.upload_from_file(BytesIO(data), rewind=True)
+    client.upload_bytes(bucket_name, object_path, data)
 
 
 def write_object_text(bucket_name: str, object_path: str, data: str) -> None:
@@ -289,14 +289,17 @@ def delete_object(bucket_name: str, object_path: str) -> None:
     from deployment_api.utils.storage_client import get_storage_client
 
     client = get_storage_client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(object_path)
-    if blob.exists():
-        blob.delete()
+    if client.blob_exists(bucket_name, object_path):
+        client.delete_blob(bucket_name, object_path)
 
 
-def get_storage_client_and_bucket(bucket_name: str):
-    """Get GCS client and bucket for operations that need direct API (download, upload)."""
+def get_storage_client_and_bucket(bucket_name: str) -> tuple[object, object]:
+    """Get GCS client for operations that need direct API (download, upload).
+
+    Returns a tuple of (client, bucket_name) for backward compatibility.
+    The bucket_name is returned as-is since UCI StorageClient uses bucket+path directly.
+    """
     from deployment_api.utils.storage_client import get_storage_client
 
-    return get_storage_client(), get_storage_client().bucket(bucket_name)
+    client = get_storage_client()
+    return client, bucket_name

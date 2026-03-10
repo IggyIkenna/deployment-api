@@ -138,7 +138,7 @@ class PathCombinatorics:
     3. Execute parallel queries against GCS
     """
 
-    config: dict[str, object] = field(default_factory=dict)
+    config: dict[str, dict[str, object]] = field(default_factory=dict)
     combinatorics: list[CombinatoricEntry] = field(default_factory=list)
     service_dimensions: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     tick_windows: list[tuple[str, str]] = field(default_factory=list)
@@ -159,12 +159,18 @@ class PathCombinatorics:
         Tick windows define date ranges where expensive tick data (trades, tbbo)
         is downloaded. Outside these windows, only cost-efficient ohlcv_1m is used.
         """
-        tradfi_config = self.config.get("TRADFI") or {}
-        raw_windows = tradfi_config.get("tick_windows") or []
+        from typing import cast as _cast
+        tradfi_config: dict[str, object] = self.config.get("TRADFI") or {}
+        raw_windows_val = tradfi_config.get("tick_windows")
+        raw_windows: list[object] = _cast(list[object], raw_windows_val) if isinstance(raw_windows_val, list) else []
         self.tick_windows = []
         for w in raw_windows:
-            if isinstance(w, dict) and "start" in w and "end" in w:
-                self.tick_windows.append((w["start"], w["end"]))
+            if isinstance(w, dict):
+                w_dict = _cast(dict[str, object], w)
+                start_val = w_dict.get("start")
+                end_val = w_dict.get("end")
+                if isinstance(start_val, str) and isinstance(end_val, str):
+                    self.tick_windows.append((start_val, end_val))
         if self.tick_windows:
             logger.info(
                 "Loaded %s tick data window(s): %s",
@@ -185,8 +191,10 @@ class PathCombinatorics:
             logger.warning("venue_data_types.yaml not found at %s", config_path)
             return
 
+        from typing import cast as _cast
         with open(config_path) as f:
-            self.config = yaml.safe_load(f) or {}
+            loaded = yaml.safe_load(f)
+        self.config = _cast(dict[str, dict[str, object]], loaded) if isinstance(loaded, dict) else {}
         logger.debug("Loaded venue_data_types.yaml with %s categories", len(self.config))
 
     def _build_combinatorics(self) -> None:  # noqa: C901
@@ -571,6 +579,10 @@ class PathCombinatorics:
 
     def _get_base_prefix(self, service: str) -> str:
         """Get the base GCS prefix for a service."""
+        return self.get_base_prefix(service)
+
+    def get_base_prefix(self, service: str) -> str:
+        """Get the base GCS prefix for a service (public API)."""
         if service == "instruments-service":
             return "instruments"
         elif service == "market-data-processing-service":

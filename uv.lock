@@ -1900,7 +1900,7 @@ wheels = [
 
 [[package]]
 name = "unified-api-contracts"
-version = "0.1.194"
+version = "0.1.206"
 source = { editable = "../unified-api-contracts" }
 dependencies = [
     { name = "pydantic" },
@@ -1933,7 +1933,7 @@ provides-extras = ["schema-validation", "dev"]
 
 [[package]]
 name = "unified-cloud-interface"
-version = "0.11.37"
+version = "0.11.39"
 source = { editable = "../unified-cloud-interface" }
 dependencies = [
     { name = "redis" },
@@ -2012,7 +2012,7 @@ provides-extras = ["aws", "dev"]
 
 [[package]]
 name = "unified-events-interface"
-version = "0.2.20"
+version = "0.2.28"
 source = { editable = "../unified-events-interface" }
 
 [package.metadata]
@@ -2032,7 +2032,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "unified-internal-contracts"
-version = "0.1.46"
+version = "0.1.56"
 source = { editable = "../unified-internal-contracts" }
 dependencies = [
     { name = "pandas" },
@@ -2061,7 +2061,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "unified-trading-library"
-version = "0.3.137"
+version = "0.3.153"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "fsspec" },
@@ -2089,6 +2089,7 @@ requires-dist = [
     { name = "botocore", marker = "extra == 'aws'", specifier = ">=1.34.0,<2.0.0" },
     { name = "databento", marker = "extra == 'all'", specifier = ">=0.32.0,<1.0.0" },
     { name = "databento", marker = "extra == 'databento'", specifier = ">=0.32.0,<1.0.0" },
+    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110.0,<1.0.0" },
     { name = "fsspec", specifier = ">=2025.2.0,<2026.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "joblib", specifier = ">=1.3.0,<2.0.0" },
@@ -2124,7 +2125,7 @@ requires-dist = [
     { name = "unified-internal-contracts", editable = "../unified-internal-contracts" },
     { name = "web3", specifier = ">=6.0.0,<7.0.0" },
 ]
-provides-extras = ["aws", "gcp", "databento", "observability", "split-libraries", "all", "dev"]
+provides-extras = ["aws", "gcp", "databento", "api", "observability", "split-libraries", "all", "dev"]
 
 [[package]]
 name = "urllib3"

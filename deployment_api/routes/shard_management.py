@@ -34,7 +34,7 @@ _CODE_FAILURE_CATEGORIES = {
 }
 
 
-def _status_str(val: object) -> str:
+def status_str(val: object) -> str:
     """Convert various status representations to string."""
     if isinstance(val, str):
         return val
@@ -45,6 +45,10 @@ def _status_str(val: object) -> str:
         return cast(str, val.status)
     else:
         return str(val)
+
+
+# Backward compatibility alias
+_status_str = status_str
 
 
 def _shard_has_force(shard: object) -> bool:

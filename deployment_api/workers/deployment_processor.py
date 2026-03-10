@@ -66,7 +66,7 @@ DEFAULT_MAX_CONCURRENT = settings.DEFAULT_MAX_CONCURRENT
 DEPLOYMENT_ENV = settings.DEPLOYMENT_ENV
 
 # Import pending VM deletes from auto_sync
-from .auto_sync import _pending_vm_deletes
+from .auto_sync import pending_vm_deletes
 
 
 def process_deployments_batch(  # noqa: C901
@@ -191,7 +191,7 @@ def process_deployments_batch(  # noqa: C901
                 to_fire_cpd = running_vms[:orphan_max_cpd]
                 now_ts_cpd = time.time()
                 for job_id, zone in to_fire_cpd:
-                    _pending_vm_deletes[job_id] = (now_ts_cpd, zone)
+                    pending_vm_deletes[job_id] = (now_ts_cpd, zone)
                 if to_fire_cpd:
                     try:
                         _cancel_vm_jobs_sync(
@@ -204,7 +204,7 @@ def process_deployments_batch(  # noqa: C901
                             state_bucket=STATE_BUCKET,
                             state_prefix=f"deployments.{DEPLOYMENT_ENV}",
                             job_name=cast(str, config.get("job_name") or ""),
-                            jobs=[(jid, cast(str | None, z)) for jid, z in to_fire_cpd],
+                            jobs=[(jid, z) for jid, z in to_fire_cpd],
                             fire_and_forget=True,
                         )
                         logger.info(
@@ -491,12 +491,12 @@ def _process_vm_health_and_status(  # noqa: C901
 ) -> bool:
     """Process VM health checks and update shard statuses."""
     # Collect running shard job_ids that need VM checks
-    running_job_ids = {}  # job_id -> shard_id
+    running_job_ids: dict[str, str] = {}  # job_id -> shard_id
     for shard in shards:
         if shard.get("status") != "running":
             continue
-        job_id = shard.get("job_id")
-        shard_id = shard.get("shard_id")
+        job_id = cast(str, shard.get("job_id"))
+        shard_id = cast(str, shard.get("shard_id"))
         if not job_id or not shard_id:
             continue
         if shard_id in shard_statuses:
@@ -505,14 +505,14 @@ def _process_vm_health_and_status(  # noqa: C901
 
     def _vm_status(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return v.get("status") if isinstance(v, dict) else (v if isinstance(v, str) else None)
+        return cast(str | None, cast(dict[str, object], v).get("status")) if isinstance(v, dict) else (v if isinstance(v, str) else None)
 
     def _vm_zone(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return v.get("zone") if isinstance(v, dict) else None
+        return cast(str | None, cast(dict[str, object], v).get("zone")) if isinstance(v, dict) else None
 
     # VM health checks: OOM detection + startup timeout
-    vm_health_kills = []
+    vm_health_kills: list[tuple[str, str | None, str, str, str]] = []
     if vm_map:
         try:
             from unified_cloud_interface import get_compute_engine_client
@@ -590,7 +590,7 @@ def _process_vm_health_and_status(  # noqa: C901
                     else:
                         # Parse events from serial logs to update shard state
                         log_lines = serial_logs.splitlines()
-                        events = []
+                        events: list[dict[str, object]] = []
                         for line in log_lines:
                             evt = parse_service_event(line)
                             if evt:
@@ -611,7 +611,7 @@ def _process_vm_health_and_status(  # noqa: C901
     if vm_health_kills:
         try:
             jobs_to_cancel = [
-                (job_id, cast(str | None, zone))
+                (job_id, zone)
                 for job_id, zone, _sid, _reason, _msg in vm_health_kills
             ]
             _cancel_vm_jobs_sync(
@@ -690,15 +690,15 @@ def _process_cloud_run_status(  # noqa: C901
 ) -> bool:
     """Process Cloud Run execution status updates via deployment-service HTTP API."""
     try:
-        job_ids = []
-        job_id_to_shard_id = {}
+        job_ids: list[str] = []
+        job_id_to_shard_id: dict[str, str] = {}
         for shard in shards:
             if shard.get("status") != "running":
                 continue
-            shard_id = shard.get("shard_id")
+            shard_id = cast(str, shard.get("shard_id"))
             if not shard_id or shard_id in shard_statuses:
                 continue
-            job_id = shard.get("job_id")
+            job_id = cast(str, shard.get("job_id"))
             if not job_id:
                 continue
             job_ids.append(job_id)
@@ -762,19 +762,25 @@ def _process_cloud_run_status(  # noqa: C901
     return updated
 
 
-def _process_stuck_shards(shards, config, compute_type, now, deployment_id, updated):  # noqa: C901
+def _process_stuck_shards(  # noqa: C901
+    shards: list[dict[str, object]],
+    config: dict[str, object],
+    compute_type: str,
+    now: datetime,
+    deployment_id: str,
+    updated: bool,
+) -> bool:
     """Process detection and handling of stuck shards."""
     try:
         if compute_type == "vm":
             grace_seconds = settings.STUCK_SHARD_GRACE_SECONDS
-            timeout_seconds = int(
-                (config.get("compute_config") or {}).get("timeout_seconds", 0) or 0
-            )
+            _compute_config = cast(dict[str, object], config.get("compute_config") or {})
+            timeout_seconds = int(cast(int, _compute_config.get("timeout_seconds", 0)) or 0)
             if timeout_seconds > 0:
                 for shard in shards:
                     if shard.get("status") != "running":
                         continue
-                    start_time = shard.get("start_time")
+                    start_time = cast(str | None, shard.get("start_time"))
                     if not start_time:
                         continue
                     try:
@@ -820,7 +826,7 @@ def _process_stuck_shards(shards, config, compute_type, now, deployment_id, upda
                                 logger.debug("[AUTO_SYNC] Stuck VM termination failed: %s", e)
 
                         # Close the latest execution attempt (best-effort)
-                        history = shard.get("execution_history") or []
+                        history = cast(list[dict[str, object]], shard.get("execution_history") or [])
                         if history:
                             history[-1]["ended_at"] = now.isoformat()
                             history[-1]["status"] = "failed"
@@ -868,28 +874,24 @@ def _handle_orphan_vm_cleanup(  # noqa: C901
 
     def _vm_status(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return v.get("status") if isinstance(v, dict) else (v if isinstance(v, str) else None)
+        return cast(str | None, cast(dict[str, object], v).get("status")) if isinstance(v, dict) else (v if isinstance(v, str) else None)
 
     def _vm_zone(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return v.get("zone") if isinstance(v, dict) else None
+        return cast(str | None, cast(dict[str, object], v).get("zone")) if isinstance(v, dict) else None
 
     # 1. Retry: pending deletes older than Xs where VM still RUNNING
-    def _pending_ts(p: tuple | float) -> float:
-        return p[0] if isinstance(p, tuple) else p
+    def _pending_ts(p: tuple[float, str | None]) -> float:
+        return p[0]
 
     retry_job_ids = [
         jid
-        for jid, val in _pending_vm_deletes.items()
+        for jid, val in pending_vm_deletes.items()
         if now_ts - _pending_ts(val) >= orphan_retry_s and _vm_status(vm_map, jid) == "RUNNING"
     ]
     for jid in retry_job_ids:
-        zone = _vm_zone(vm_map, jid) or (
-            _pending_vm_deletes[jid][1]
-            if isinstance(_pending_vm_deletes[jid], tuple) and len(_pending_vm_deletes[jid]) > 1
-            else None
-        )
-        _pending_vm_deletes[jid] = (now_ts, zone)
+        zone = _vm_zone(vm_map, jid) or pending_vm_deletes[jid][1]
+        pending_vm_deletes[jid] = (now_ts, zone)
 
     # 2. Collect orphans to terminate
     orphan_tuples: list[tuple[str, str | None, str, tuple[str, str]]] = []
@@ -906,9 +908,9 @@ def _handle_orphan_vm_cleanup(  # noqa: C901
             orphan_tuples.append((job_id, zone, shard_id, st))
 
     # 3. Clean pending: VMs no longer in vm_map (deleted)
-    for jid in list(_pending_vm_deletes.keys()):
+    for jid in list(pending_vm_deletes.keys()):
         if jid not in vm_map:
-            del _pending_vm_deletes[jid]
+            del pending_vm_deletes[jid]
 
     # 4. Fire-and-forget: retries first, then new orphans, up to orphan_max total
     to_fire: list[tuple[str, str | None]] = []
@@ -920,9 +922,9 @@ def _handle_orphan_vm_cleanup(  # noqa: C901
     for job_id, zone, _shard_id, _st in orphan_tuples:
         if len(to_fire) >= orphan_max:
             break
-        if job_id not in _pending_vm_deletes:
+        if job_id not in pending_vm_deletes:
             to_fire.append((job_id, zone))
-            _pending_vm_deletes[job_id] = (now_ts, zone)
+            pending_vm_deletes[job_id] = (now_ts, zone)
 
     if to_fire:
         try:
@@ -938,7 +940,7 @@ def _handle_orphan_vm_cleanup(  # noqa: C901
                 state_bucket=STATE_BUCKET,
                 state_prefix=f"deployments.{DEPLOYMENT_ENV}",
                 job_name=job_name,
-                jobs=[(job_id, cast(str | None, zone)) for job_id, zone in to_fire],
+                jobs=[(job_id, zone) for job_id, zone in to_fire],
                 fire_and_forget=True,
             )
             logger.info("[AUTO_SYNC] Fired %s orphan VM deletes (job done)", len(to_fire))
