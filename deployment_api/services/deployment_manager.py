@@ -151,7 +151,7 @@ class DeploymentManager:
                 skip_existing=deploy_request.deploy_missing,
                 skip_dimensions=deploy_request.skip_dimensions or [],
                 date_granularity_override=deploy_request.date_granularity,
-                extra_filters=deploy_request.filters,
+                extra_filters=cast(dict[str, object], deploy_request.filters),
             )
         except RuntimeError as e:
             log_event(
@@ -259,8 +259,8 @@ class DeploymentManager:
 
         # Validate shard configuration
         loader_for_validation = ConfigLoader(config_dir)
-        service_cfg: dict[str, object] = cast(
-            dict[str, object], loader_for_validation.load_service_config(deploy_request.service)
+        service_cfg: dict[str, object] = loader_for_validation.load_service_config(
+            deploy_request.service
         )
         shard_error = validate_shard_configuration(service_cfg, deploy_request)
         if shard_error:
@@ -273,11 +273,8 @@ class DeploymentManager:
             raise ValueError(str(quota_error))
 
         # Validate image availability
-        _ = cast(
-            dict[str, object],
-            loader_for_validation.get_compute_recommendation(
-                deploy_request.service, deploy_request.compute
-            ),
+        _ = loader_for_validation.get_compute_recommendation(
+            deploy_request.service, deploy_request.compute
         )
         region_for_validation: str = deploy_request.region or self.default_region
         raw_docker_image = service_cfg.get("docker_image")
@@ -304,7 +301,7 @@ class DeploymentManager:
             skip_existing=deploy_request.deploy_missing,
             skip_dimensions=deploy_request.skip_dimensions or [],
             date_granularity_override=deploy_request.date_granularity,
-            extra_filters=deploy_request.filters,
+            extra_filters=cast(dict[str, object], deploy_request.filters),
         )
 
         if not raw_shards:
@@ -315,7 +312,7 @@ class DeploymentManager:
         for shard in raw_shards:
             shard_index = shard.get("shard_index", 0)
             total_shards = shard.get("total_shards", len(raw_shards))
-            dimensions = shard.get("dimensions") or {}
+            dimensions: dict[str, object] = cast(dict[str, object], shard.get("dimensions") or {})
             cli_command_raw: str = str(shard.get("cli_command") or "")
             shard_dict: dict[str, object] = {
                 "shard_id": f"{deploy_request.service}-{shard_index}",
@@ -430,12 +427,9 @@ class DeploymentManager:
                 )
 
             loader: ConfigLoader = ConfigLoader(config_dir)
-            service_config: dict[str, object] = cast(
-                dict[str, object], loader.load_service_config(deploy_request.service)
-            )
-            compute_config: dict[str, object] = cast(
-                dict[str, object],
-                loader.get_compute_recommendation(deploy_request.service, deploy_request.compute),
+            service_config: dict[str, object] = loader.load_service_config(deploy_request.service)
+            compute_config: dict[str, object] = loader.get_compute_recommendation(
+                deploy_request.service, deploy_request.compute
             )
 
             raw_docker = service_config.get("docker_image")

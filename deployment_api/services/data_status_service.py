@@ -199,7 +199,7 @@ class DataStatusService:
                         continue
                     date_info = cast(dict[str, object], date_info_raw)
                     date_str_raw: object = date_info.get("date")
-                    date_str = cast(str, date_str_raw) if isinstance(date_str_raw, str) else ""
+                    date_str = date_str_raw if isinstance(date_str_raw, str) else ""
                     missing_count = 0
 
                     venues_raw: object = date_info.get("venues")
@@ -209,9 +209,7 @@ class DataStatusService:
                                 continue
                             venue_info = cast(dict[str, object], venue_info_raw)
                             venue_name_raw: object = venue_info.get("venue")
-                            venue_name = (
-                                cast(str, venue_name_raw) if isinstance(venue_name_raw, str) else ""
-                            )
+                            venue_name = venue_name_raw if isinstance(venue_name_raw, str) else ""
                             if venue_info.get("status") == "missing":
                                 missing_count += 1
 
@@ -222,9 +220,7 @@ class DataStatusService:
 
                                 # Track by category if available
                                 cat_raw: object = venue_info.get("category", "unknown")
-                                category = (
-                                    cast(str, cat_raw) if isinstance(cat_raw, str) else "unknown"
-                                )
+                                category = cat_raw if isinstance(cat_raw, str) else "unknown"
                                 if category not in missing_by_category:
                                     missing_by_category[category] = 0
                                 missing_by_category[category] += 1
@@ -425,11 +421,9 @@ class DataStatusService:
                             continue
                         venue_info = cast(dict[str, object], venue_info_raw)
                         vname_raw: object = venue_info.get("venue", "unknown")
-                        venue_name = (
-                            cast(str, vname_raw) if isinstance(vname_raw, str) else "unknown"
-                        )
+                        venue_name = vname_raw if isinstance(vname_raw, str) else "unknown"
                         status_raw: object = venue_info.get("status")
-                        status = cast(str, status_raw) if isinstance(status_raw, str) else ""
+                        status = status_raw if isinstance(status_raw, str) else ""
 
                         if status == "missing":
                             is_complete = False
@@ -439,7 +433,7 @@ class DataStatusService:
                             validation_errors.append(
                                 {
                                     "venue": venue_name,
-                                    "error": cast(str, err_raw)
+                                    "error": err_raw
                                     if isinstance(err_raw, str)
                                     else "Unknown error",
                                 }
