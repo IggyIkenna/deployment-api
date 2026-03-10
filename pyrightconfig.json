@@ -10,6 +10,7 @@
   "reportUnusedImport": "none",
   "venvPath": ".",
   "venv": ".venv",
+  "stubPath": "stubs",
   "extraPaths": [
     "../unified-cloud-interface",
     "../unified-config-interface",
