@@ -6,6 +6,7 @@ venue-weighted statistics, and building the final response.
 """
 
 import logging
+from typing import cast
 
 from .batch_config_utils import get_expected_dates_for_venue
 
@@ -29,12 +30,20 @@ def calculate_overall_file_counts(
 
     total_files_all = 0
     total_dates_with_files = 0
-    for cat_result in results.values():
+    for cat_result_raw in results.values():
+        if not isinstance(cat_result_raw, dict):
+            continue
+        cat_result = cast(dict[str, object], cat_result_raw)
         if "error" in cat_result:
             continue
-        file_counts = cat_result.get("file_counts") or {}
-        total_files_all += file_counts.get("total_files", 0)
-        total_dates_with_files += file_counts.get("dates_with_file_counts", 0)
+        file_counts_raw = cat_result.get("file_counts")
+        file_counts: dict[str, object] = (
+            cast(dict[str, object], file_counts_raw) if isinstance(file_counts_raw, dict) else {}
+        )
+        total_files_raw = file_counts.get("total_files")
+        dates_raw = file_counts.get("dates_with_file_counts")
+        total_files_all += int(total_files_raw) if isinstance(total_files_raw, int) else 0
+        total_dates_with_files += int(dates_raw) if isinstance(dates_raw, int) else 0
 
     if total_files_all > 0:
         return {
@@ -54,7 +63,7 @@ def calculate_venue_weighted_totals(  # noqa: C901
     all_dates: set[str],
     expected_start_dates_config: dict[str, object],
     service: str,
-    upstream_dates: dict[str, dict[str, set]] | None = None,
+    upstream_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> tuple[int, int, int, int]:
     """Calculate venue-weighted totals across all categories.
 
@@ -73,31 +82,62 @@ def calculate_venue_weighted_totals(  # noqa: C901
     expected_missing = 0  # Missing data that SHOULD exist (date >= venue start)
     unexpected_missing = 0  # Kept for backwards compat but always 0 now
 
-    for cat_name, cat_result in results.items():
+    for cat_name_raw, cat_result_raw in results.items():
+        cat_name = str(cat_name_raw)
+        if not isinstance(cat_result_raw, dict):
+            continue
+        cat_result = cast(dict[str, object], cat_result_raw)
         if "error" in cat_result:
             continue
-        venue_summary = cat_result.get("venue_summary") or {}
-        venues = cat_result.get("venues") or {}
-        cat_dates_expected = cat_result.get("dates_expected", 0)
-        cat_dates_found = cat_result.get("dates_found", 0)
+
+        venue_summary_raw = cat_result.get("venue_summary")
+        venue_summary: dict[str, object] = (
+            cast(dict[str, object], venue_summary_raw)
+            if isinstance(venue_summary_raw, dict)
+            else {}
+        )
+        venues_raw = cat_result.get("venues")
+        venues: dict[str, object] = (
+            cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
+        )
+        cat_dates_expected_raw = cat_result.get("dates_expected")
+        cat_dates_expected = (
+            int(cat_dates_expected_raw) if isinstance(cat_dates_expected_raw, int) else 0
+        )
+        cat_dates_found_raw = cat_result.get("dates_found")
+        cat_dates_found = int(cat_dates_found_raw) if isinstance(cat_dates_found_raw, int) else 0
 
         if venues:
-            for _venue_name, venue_info in venues.items():
+            for _venue_name, venue_info_raw in venues.items():
+                if not isinstance(venue_info_raw, dict):
+                    continue
+                venue_info = cast(dict[str, object], venue_info_raw)
                 # Use dimension-weighted values when available (accounts for
                 # multiple expected data_types/folders per venue).
                 # Falls back to raw venue dates for services without sub-dimensions.
-                venue_expected = venue_info.get(
-                    "_dim_weighted_expected",
-                    venue_info.get(
-                        "dates_expected_venue",
-                        venue_info.get("dates_expected", 0),
-                    ),
-                )
-                venue_found = venue_info.get(
-                    "_dim_weighted_found",
-                    venue_info.get("dates_found", 0),
-                )
-                is_expected = venue_info.get("is_expected", True)
+                dim_exp_raw = venue_info.get("_dim_weighted_expected")
+                dates_exp_venue_raw = venue_info.get("dates_expected_venue")
+                dates_exp_raw = venue_info.get("dates_expected")
+                if isinstance(dim_exp_raw, int):
+                    venue_expected = dim_exp_raw
+                elif isinstance(dates_exp_venue_raw, int):
+                    venue_expected = dates_exp_venue_raw
+                elif isinstance(dates_exp_raw, int):
+                    venue_expected = dates_exp_raw
+                else:
+                    venue_expected = 0
+
+                dim_found_raw = venue_info.get("_dim_weighted_found")
+                dates_found_raw = venue_info.get("dates_found")
+                if isinstance(dim_found_raw, int):
+                    venue_found = dim_found_raw
+                elif isinstance(dates_found_raw, int):
+                    venue_found = dates_found_raw
+                else:
+                    venue_found = 0
+
+                is_expected_raw = venue_info.get("is_expected", True)
+                is_expected = bool(is_expected_raw) if isinstance(is_expected_raw, bool) else True
 
                 # Only count EXPECTED venues in the overall totals
                 # Bonus venues exist but shouldn't affect the completion percentage
@@ -114,13 +154,25 @@ def calculate_venue_weighted_totals(  # noqa: C901
             # Also count expected venues that have no data at all.
             # Use pre-computed dimension-weighted expected if available
             # (ensures consistency with dimension-weighted present venues).
-            missing_dim_exp = cat_result.get("_missing_venue_dim_expected")
+            missing_dim_exp_raw = cat_result.get("_missing_venue_dim_expected")
+            missing_dim_exp = (
+                int(missing_dim_exp_raw) if isinstance(missing_dim_exp_raw, int) else None
+            )
             if missing_dim_exp is not None and missing_dim_exp > 0:
                 expected_missing += missing_dim_exp
                 total_venue_expected += missing_dim_exp
             else:
                 # Fallback: use raw venue-specific expected dates
-                for missing_venue in venue_summary.get("expected_but_missing") or []:
+                exp_but_missing_raw = venue_summary.get("expected_but_missing")
+                exp_but_missing: list[object] = (
+                    cast(list[object], exp_but_missing_raw)
+                    if isinstance(exp_but_missing_raw, list)
+                    else []
+                )
+                for missing_venue_raw in exp_but_missing:
+                    missing_venue = str(missing_venue_raw) if missing_venue_raw else ""
+                    if not missing_venue:
+                        continue
                     venue_specific_expected = get_expected_dates_for_venue(
                         all_dates,
                         expected_start_dates_config,
@@ -150,7 +202,7 @@ def update_category_completion_percentages(  # noqa: C901
     all_dates: set[str],
     expected_start_dates_config: dict[str, object],
     service: str,
-    upstream_dates: dict[str, dict[str, set]] | None = None,
+    upstream_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> None:
     """Update category-level completion percentages to be venue-weighted.
 
@@ -163,10 +215,17 @@ def update_category_completion_percentages(  # noqa: C901
         service: Service name
         upstream_dates: Upstream availability data for cascading
     """
-    for cat_name, cat_result in results.items():
+    for cat_name_raw, cat_result_raw in results.items():
+        cat_name = str(cat_name_raw)
+        if not isinstance(cat_result_raw, dict):
+            continue
+        cat_result = cast(dict[str, object], cat_result_raw)
         if "error" in cat_result:
             continue
-        venues = cat_result.get("venues") or {}
+        venues_raw = cat_result.get("venues")
+        venues: dict[str, object] = (
+            cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
+        )
         if not venues:
             # No venue breakdown, keep date-level calculation
             continue
@@ -175,33 +234,63 @@ def update_category_completion_percentages(  # noqa: C901
         # Only count EXPECTED venues - bonus venues shouldn't affect completion %
         cat_venue_expected = 0
         cat_venue_found = 0
-        for _venue_name, venue_info in venues.items():
-            if not venue_info.get("is_expected", True):
+        for _venue_name, venue_info_raw in venues.items():
+            if not isinstance(venue_info_raw, dict):
+                continue
+            venue_info = cast(dict[str, object], venue_info_raw)
+            is_expected_raw = venue_info.get("is_expected", True)
+            is_expected = bool(is_expected_raw) if isinstance(is_expected_raw, bool) else True
+            if not is_expected:
                 continue  # Skip bonus venues
             # Use dimension-weighted values when available (accounts for
             # multiple expected data_types/folders per venue)
-            v_expected = venue_info.get(
-                "_dim_weighted_expected",
-                venue_info.get(
-                    "dates_expected_venue",
-                    venue_info.get("dates_expected", 0),
-                ),
-            )
-            v_found = venue_info.get(
-                "_dim_weighted_found",
-                venue_info.get("dates_found", 0),
-            )
+            dim_exp_raw = venue_info.get("_dim_weighted_expected")
+            dates_exp_venue_raw = venue_info.get("dates_expected_venue")
+            dates_exp_raw = venue_info.get("dates_expected")
+            if isinstance(dim_exp_raw, int):
+                v_expected = dim_exp_raw
+            elif isinstance(dates_exp_venue_raw, int):
+                v_expected = dates_exp_venue_raw
+            elif isinstance(dates_exp_raw, int):
+                v_expected = dates_exp_raw
+            else:
+                v_expected = 0
+
+            dim_found_raw = venue_info.get("_dim_weighted_found")
+            dates_found_raw = venue_info.get("dates_found")
+            if isinstance(dim_found_raw, int):
+                v_found = dim_found_raw
+            elif isinstance(dates_found_raw, int):
+                v_found = dates_found_raw
+            else:
+                v_found = 0
+
             cat_venue_expected += v_expected
             cat_venue_found += v_found
 
         # Add missing expected venues (they have 0 found but should count as expected)
         # Use pre-computed dimension-weighted expected if available
-        venue_summary = cat_result.get("venue_summary") or {}
-        missing_dim_exp = cat_result.get("_missing_venue_dim_expected")
+        venue_summary_raw = cat_result.get("venue_summary")
+        venue_summary: dict[str, object] = (
+            cast(dict[str, object], venue_summary_raw)
+            if isinstance(venue_summary_raw, dict)
+            else {}
+        )
+        missing_dim_exp_raw = cat_result.get("_missing_venue_dim_expected")
+        missing_dim_exp = int(missing_dim_exp_raw) if isinstance(missing_dim_exp_raw, int) else None
         if missing_dim_exp is not None and missing_dim_exp > 0:
             cat_venue_expected += missing_dim_exp
         else:
-            for missing_venue in venue_summary.get("expected_but_missing") or []:
+            exp_but_missing_raw = venue_summary.get("expected_but_missing")
+            exp_but_missing: list[object] = (
+                cast(list[object], exp_but_missing_raw)
+                if isinstance(exp_but_missing_raw, list)
+                else []
+            )
+            for missing_venue_raw in exp_but_missing:
+                missing_venue = str(missing_venue_raw) if missing_venue_raw else ""
+                if not missing_venue:
+                    continue
                 venue_specific_expected = get_expected_dates_for_venue(
                     all_dates,
                     expected_start_dates_config,
@@ -228,7 +317,7 @@ def build_final_response(
     sub_dimension_name: str | None,
     include_sub_dimensions: bool,
     include_file_counts: bool,
-    all_dates: set,
+    all_dates: set[str],
     total_venue_expected: int,
     total_venue_found: int,
     total_expected_category: int,
@@ -259,7 +348,7 @@ def build_final_response(
         )
         total_missing = total_expected_category - total_found_category
 
-    response = {
+    response: dict[str, object] = {
         "service": service,
         "date_range": {"start": start_date, "end": end_date, "days": len(all_dates)},
         "mode": "turbo",

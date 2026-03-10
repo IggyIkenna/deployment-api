@@ -71,7 +71,7 @@ def notify_deployment_updated_sync(deployment_id: str):
         logger.debug("Queue publish: %s", e)
 
 
-async def _drain_sync_queue():
+async def drain_sync_queue():
     while True:
         try:
             _q = _get_sync_queue()

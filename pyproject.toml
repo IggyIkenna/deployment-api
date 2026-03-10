@@ -98,6 +98,10 @@ reportUnknownVariableType = "error"
 reportUnknownArgumentType = "error"
 reportUnknownParameterType = "error"
 useLibraryCodeForTypes = true
+# Private helpers are imported directly by the test suite; disable the "not
+# accessed within module" diagnostic to avoid false positives.
+reportUnusedFunction = "none"
+reportUnusedImport = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

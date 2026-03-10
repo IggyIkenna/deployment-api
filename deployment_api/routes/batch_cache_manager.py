@@ -33,7 +33,7 @@ def check_cache_for_result(
     mode: str,
     include_dates_list: bool,
     full_dates_list: bool,
-) -> dict | None:
+) -> dict[str, object] | None:
     """Check cache for existing result and return it if found.
 
     Args:
@@ -75,7 +75,7 @@ def check_cache_for_result(
 
 
 def store_result_in_cache(
-    response: dict,
+    response: dict[str, object],
     service: str,
     start_date: str,
     end_date: str,
@@ -92,7 +92,7 @@ def store_result_in_cache(
     mode: str,
     include_dates_list: bool,
     full_dates_list: bool,
-) -> dict:
+) -> dict[str, object]:
     """Store result in cache and return potentially truncated response.
 
     Args:

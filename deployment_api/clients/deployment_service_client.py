@@ -114,7 +114,9 @@ async def calculate_shards(
             )
         data = cast(dict[str, object], await resp.json())
         shards_val = data.get("shards")
-        shards: list[dict[str, object]] = cast(list[dict[str, object]], shards_val) if isinstance(shards_val, list) else []
+        shards: list[dict[str, object]] = (
+            cast(list[dict[str, object]], shards_val) if isinstance(shards_val, list) else []
+        )
         return shards
 
 

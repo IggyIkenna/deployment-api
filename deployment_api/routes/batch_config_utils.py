@@ -8,6 +8,7 @@ data types, venues, and service configurations.
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -139,7 +140,10 @@ def load_expected_start_dates() -> dict[str, dict[str, object]]:
         logger.warning("Expected start dates config not found: %s", config_path)
         return {}
     with open(config_path) as f:
-        return yaml.safe_load(f) or {}
+        raw: object = cast(object, yaml.safe_load(f))
+    if not isinstance(raw, dict):
+        return {}
+    return cast(dict[str, dict[str, object]], raw)
 
 
 def load_venue_data_types() -> dict[str, dict[str, object]]:
@@ -149,14 +153,29 @@ def load_venue_data_types() -> dict[str, dict[str, object]]:
         logger.warning("Venue data types config not found: %s", config_path)
         return {}
     with open(config_path) as f:
-        return yaml.safe_load(f) or {}
+        raw: object = cast(object, yaml.safe_load(f))
+    if not isinstance(raw, dict):
+        return {}
+    return cast(dict[str, dict[str, object]], raw)
+
+
+def _get_cat_config(venue_config: dict[str, object], category: str) -> dict[str, object]:
+    """Get category config dict safely."""
+    cat_val = venue_config.get(category)
+    return cast(dict[str, object], cat_val) if isinstance(cat_val, dict) else {}
+
+
+def _get_venues_dict(cat_config: dict[str, object]) -> dict[str, object]:
+    """Get venues dict from a category config safely."""
+    venues_val = cat_config.get("venues")
+    return cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
 
 
 def get_expected_venues_for_category(venue_config: dict[str, object], category: str) -> set[str]:
     """Get the set of expected venues for a category from venue_data_types.yaml."""
-    cat_config = venue_config.get(category, {})
-    venues = cat_config.get("venues") or {}
-    return set(venues.keys())
+    cat_config = _get_cat_config(venue_config, category)
+    venues = _get_venues_dict(cat_config)
+    return {str(k) for k in venues.keys()}
 
 
 def is_venue_expected(venue_config: dict[str, object], category: str, venue: str) -> bool:
@@ -169,20 +188,42 @@ def get_expected_data_types_for_venue(
     venue_config: dict[str, object], category: str, venue: str
 ) -> list[str]:
     """Get expected data_types for a specific venue from venue_data_types.yaml."""
-    cat_config = venue_config.get(category, {})
-    venues = cat_config.get("venues") or {}
-    venue_cfg = venues.get(venue, {})
-    return venue_cfg.get("data_types") or []
+    cat_config = _get_cat_config(venue_config, category)
+    venues = _get_venues_dict(cat_config)
+    venue_val = venues.get(venue)
+    venue_cfg: dict[str, object] = (
+        cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
+    )
+    dt_val = venue_cfg.get("data_types")
+    return cast(list[str], dt_val) if isinstance(dt_val, list) else []
 
 
 def get_expected_instrument_types_for_venue(
     venue_config: dict[str, object], category: str, venue: str
 ) -> list[str]:
     """Get expected instrument_types for a specific venue from venue_data_types.yaml."""
-    cat_config = venue_config.get(category, {})
-    venues = cat_config.get("venues") or {}
-    venue_cfg = venues.get(venue, {})
-    return venue_cfg.get("instrument_types") or []
+    cat_config = _get_cat_config(venue_config, category)
+    venues = _get_venues_dict(cat_config)
+    venue_val = venues.get(venue)
+    venue_cfg: dict[str, object] = (
+        cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
+    )
+    it_val = venue_cfg.get("instrument_types")
+    return cast(list[str], it_val) if isinstance(it_val, list) else []
+
+
+def _get_service_config(
+    expected_dates_config: dict[str, object], service: str
+) -> dict[str, object]:
+    """Get service config dict safely."""
+    svc_val = expected_dates_config.get(service)
+    return cast(dict[str, object], svc_val) if isinstance(svc_val, dict) else {}
+
+
+def _get_category_config(service_config: dict[str, object], category: str) -> dict[str, object]:
+    """Get category config dict safely from service config."""
+    cat_val = service_config.get(category)
+    return cast(dict[str, object], cat_val) if isinstance(cat_val, dict) else {}
 
 
 def get_data_type_start_date(
@@ -198,21 +239,36 @@ def get_data_type_start_date(
     Falls back to venue start date if no data_type-specific date is configured.
     Returns None if the data_type is not available for this venue.
     """
-    service_config = expected_dates_config.get(service, {})
-    category_config = service_config.get(category, {})
-    if isinstance(category_config, dict):
-        # Check for data_type-specific start dates
-        dt_start_dates = category_config.get("data_type_start_dates") or {}
-        venue_dt_config = dt_start_dates.get(venue, {})
-        if data_type in venue_dt_config:
-            # Explicit config for this data_type (could be null = not available)
-            return venue_dt_config.get(data_type)
-        # Fall back to venue start date
-        venues = category_config.get("venues") or {}
-        if venue in venues:
-            return venues[venue]
-        return category_config.get("category_start")
-    return None
+    service_config = _get_service_config(expected_dates_config, service)
+    category_config = _get_category_config(service_config, category)
+    if not category_config:
+        return None
+
+    # Check for data_type-specific start dates
+    dt_start_val = category_config.get("data_type_start_dates")
+    dt_start_dates: dict[str, object] = (
+        cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
+    )
+    venue_dt_val = dt_start_dates.get(venue)
+    venue_dt_config: dict[str, object] = (
+        cast(dict[str, object], venue_dt_val) if isinstance(venue_dt_val, dict) else {}
+    )
+    if data_type in venue_dt_config:
+        # Explicit config for this data_type (could be null = not available)
+        dt_val = venue_dt_config.get(data_type)
+        return str(dt_val) if isinstance(dt_val, str) else None
+
+    # Fall back to venue start date
+    venues_val = category_config.get("venues")
+    venues: dict[str, object] = (
+        cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
+    )
+    if venue in venues:
+        v_val = venues[venue]
+        return str(v_val) if isinstance(v_val, str) else None
+
+    cat_start_val = category_config.get("category_start")
+    return str(cat_start_val) if isinstance(cat_start_val, str) else None
 
 
 def is_data_type_available_for_venue(
@@ -226,11 +282,17 @@ def is_data_type_available_for_venue(
 
     Returns False if the data_type has a null start date (explicitly unavailable).
     """
-    service_config = expected_dates_config.get(service, {})
-    category_config = service_config.get(category, {})
-    if isinstance(category_config, dict):
-        dt_start_dates = category_config.get("data_type_start_dates") or {}
-        venue_dt_config = dt_start_dates.get(venue, {})
+    service_config = _get_service_config(expected_dates_config, service)
+    category_config = _get_category_config(service_config, category)
+    if category_config:
+        dt_start_val = category_config.get("data_type_start_dates")
+        dt_start_dates: dict[str, object] = (
+            cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
+        )
+        venue_dt_val = dt_start_dates.get(venue)
+        venue_dt_config: dict[str, object] = (
+            cast(dict[str, object], venue_dt_val) if isinstance(venue_dt_val, dict) else {}
+        )
         if data_type in venue_dt_config:
             # Explicitly configured - check if it's null (not available)
             return venue_dt_config.get(data_type) is not None
@@ -242,11 +304,12 @@ def get_category_start_date(
     expected_dates_config: dict[str, object], service: str, category: str
 ) -> str | None:
     """Get the expected start date for a service/category."""
-    service_config = expected_dates_config.get(service, {})
-    category_config = service_config.get(category, {})
-    if isinstance(category_config, dict):
-        return category_config.get("category_start")
-    return None
+    service_config = _get_service_config(expected_dates_config, service)
+    category_config = _get_category_config(service_config, category)
+    if not category_config:
+        return None
+    cat_start_val = category_config.get("category_start")
+    return str(cat_start_val) if isinstance(cat_start_val, str) else None
 
 
 def get_venue_start_date(
@@ -257,14 +320,21 @@ def get_venue_start_date(
     Looks up venue-level start dates from expected_start_dates.yaml.
     This allows accurate completion % calculation per venue.
     """
-    service_config = expected_dates_config.get(service, {})
-    category_config = service_config.get(category, {})
-    if isinstance(category_config, dict):
-        venues = category_config.get("venues") or {}
-        if venue in venues:
-            return venues[venue]
-        return category_config.get("category_start")
-    return None
+    service_config = _get_service_config(expected_dates_config, service)
+    category_config = _get_category_config(service_config, category)
+    if not category_config:
+        return None
+
+    venues_val = category_config.get("venues")
+    venues: dict[str, object] = (
+        cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
+    )
+    if venue in venues:
+        v_val = venues[venue]
+        return str(v_val) if isinstance(v_val, str) else None
+
+    cat_start_val = category_config.get("category_start")
+    return str(cat_start_val) if isinstance(cat_start_val, str) else None
 
 
 def get_expected_dates_for_venue(
@@ -273,8 +343,8 @@ def get_expected_dates_for_venue(
     service: str,
     category: str,
     venue: str,
-    upstream_avail_dates: dict[str, dict[str, set]] | None = None,
-) -> set:
+    upstream_avail_dates: dict[str, dict[str, set[str]]] | None = None,
+) -> set[str]:
     """Get expected dates for a specific venue based on its start date.
 
     For market-data-processing-service with upstream_avail_dates:
@@ -304,7 +374,7 @@ def get_expected_dates_for_venue(
 
 def generate_date_range_and_year_months(
     start_date: str, end_date: str, first_day_of_month_only: bool = False
-) -> tuple[set, set]:
+) -> tuple[set[str], set[str]]:
     """Generate all dates in range and year-month prefixes.
 
     Args:
@@ -317,8 +387,8 @@ def generate_date_range_and_year_months(
     """
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
-    all_dates = set()
-    year_months = set()
+    all_dates: set[str] = set()
+    year_months: set[str] = set()
     current = start_dt
     while current <= end_dt:
         date_str = current.strftime("%Y-%m-%d")
