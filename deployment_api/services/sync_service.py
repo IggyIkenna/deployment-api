@@ -242,7 +242,7 @@ class SyncService:
                 state,
                 vm_map,
                 shard_statuses,
-                cast(dict[str, object], self.state_manager._pending_vm_deletes),
+                cast(dict[str, object], self.state_manager._pending_vm_deletes),  # type: ignore[reportPrivateUsage],
             )
             if orphan_count > 0:
                 logger.info(

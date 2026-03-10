@@ -26,7 +26,8 @@ setup_events(service_name="deployment-api", mode="live", sink="cloud_logging")
 setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version
-from deployment_api.auth import _auth_cfg, verify_api_key
+from deployment_api.auth import auth_cfg as _auth_cfg
+from deployment_api.auth import verify_api_key
 from deployment_api.health_routes import router as health_router
 from deployment_api.lifespan import lifespan
 from deployment_api.middleware import (

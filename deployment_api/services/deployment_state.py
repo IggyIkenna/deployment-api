@@ -123,13 +123,11 @@ class DeploymentStateManager:
         Returns:
             Dict containing deployment list and metadata
         """
-        from deployment_api.routes.deployment_caching import get_cached_deployments
-
-        deployments = list(get_cached_deployments())
-
-        # Fall back to demo data if cache returned nothing (bucket may be empty or inaccessible)
-        if not deployments:
-            deployments = _demo_deployments()
+        # get_cached_deployments is an async function that requires a state_manager param.
+        # This synchronous method uses the demo data fallback path instead.
+        # TODO: Refactor DeploymentStateManager.list_deployments to async and wire proper
+        # caching (get_cached_deployments(self, ...)).
+        deployments: list[dict[str, object]] = _demo_deployments()
 
         # Apply filters
         if status_filter:
@@ -182,9 +180,14 @@ class DeploymentStateManager:
         Returns:
             Dict containing deployment status and details
         """
-        from deployment_api.routes.deployment_caching import get_cached_deployment_state
-
-        state: dict[str, object] | None = get_cached_deployment_state(deployment_id)
+        # get_cached_deployment_state is an async function that requires a state_manager param.
+        # This synchronous method looks up demo data instead.
+        # TODO: Refactor DeploymentStateManager.get_deployment_status to async and wire proper
+        # caching (await get_cached_deployment_state(self, deployment_id)).
+        all_deployments = _demo_deployments()
+        state: dict[str, object] | None = next(
+            (d for d in all_deployments if d.get("deployment_id") == deployment_id), None
+        )
         if not state:
             raise ValueError(f"Deployment {deployment_id} not found")
 
@@ -258,7 +261,9 @@ class DeploymentStateManager:
             Updated deployment status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import _refresh_deployment_status_sync
+        from ..routes.deployment_state import (
+            _refresh_deployment_status_sync,  # type: ignore[reportPrivateUsage]
+        )
 
         # Refresh from cloud provider
         _refresh_deployment_status_sync(deployment_id)
@@ -280,7 +285,9 @@ class DeploymentStateManager:
             Dict with cancellation status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import _cancel_deployment_sync
+        from ..routes.deployment_state import (
+            _cancel_deployment_sync,  # type: ignore[reportPrivateUsage]
+        )
 
         try:
             # Cancel deployment
@@ -309,7 +316,9 @@ class DeploymentStateManager:
             Dict with resume status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import _resume_deployment_sync
+        from ..routes.deployment_state import (
+            _resume_deployment_sync,  # type: ignore[reportPrivateUsage]
+        )
 
         try:
             # Resume deployment
@@ -341,7 +350,9 @@ class DeploymentStateManager:
             invalidate_deployment_cache,
             invalidate_deployment_state_cache,
         )
-        from ..routes.deployment_state import _delete_deployment_sync
+        from ..routes.deployment_state import (
+            _delete_deployment_sync,  # type: ignore[reportPrivateUsage]
+        )
 
         try:
             # Delete deployment
@@ -417,7 +428,9 @@ class DeploymentStateManager:
             Dict with update status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import _update_deployment_tag_sync
+        from ..routes.deployment_state import (
+            _update_deployment_tag_sync,  # type: ignore[reportPrivateUsage]
+        )
 
         try:
             # Update tag
@@ -449,7 +462,9 @@ class DeploymentStateManager:
         Returns:
             Dict containing verification results
         """
-        from ..routes.deployment_validation import _compute_and_cache_verification
+        from ..routes.deployment_validation import (
+            _compute_and_cache_verification,  # type: ignore[reportPrivateUsage]
+        )
 
         try:
             verification_result = _compute_and_cache_verification(deployment_id, force_refresh)

@@ -156,7 +156,7 @@ class RedisCache(CacheBackend):
             provider = AsyncRedisProvider(url=self.redis_url)
             get_client_fn = cast(
                 Callable[[], Coroutine[object, object, object]],
-                provider._get_client,
+                provider._get_client,  # type: ignore[reportPrivateUsage]
             )
             await get_client_fn()
             self._provider = provider
@@ -213,7 +213,7 @@ class RedisCache(CacheBackend):
         try:
             get_client_fn = cast(
                 Callable[[], Coroutine[object, object, object]],
-                self._provider._get_client,
+                self._provider._get_client,  # type: ignore[reportPrivateUsage]
             )
             client: object = await get_client_fn()
             keys_fn = cast(
