@@ -30,6 +30,7 @@ class _QuotaBrokerProtocol(Protocol):
 
 class _GCSBlob(Protocol):
     """Protocol for GCS blob methods used in auto_sync."""
+
     name: str
     metageneration: int
 
@@ -47,12 +48,14 @@ class _GCSBlob(Protocol):
 
 class _GCSBucket(Protocol):
     """Protocol for GCS bucket methods used in auto_sync."""
+
     def blob(self, blob_name: str) -> _GCSBlob: ...
     def get_blob(self, blob_name: str) -> _GCSBlob | None: ...
 
 
 class _GCSClient(Protocol):
     """Protocol for GCS client methods used in auto_sync."""
+
     def bucket(self, name: str) -> _GCSBucket: ...
 
 
@@ -74,6 +77,11 @@ _held_deployment_locks: set[str] = set()
 # Cleaned when VM no longer in vm_map; retried if still RUNNING after ORPHAN_DELETE_RETRY_SECONDS
 pending_vm_deletes: dict[str, tuple[float, str | None]] = {}
 
+# Underscore-prefixed alias for pending_vm_deletes so tests can access
+# via `auto_sync._pending_vm_deletes` or import `_pending_vm_deletes` directly.
+# Both names refer to the same dict object.
+_pending_vm_deletes = pending_vm_deletes
+
 # Background task handles for auto-sync
 _background_task: asyncio.Task[None] | None = None
 _events_drain_task: asyncio.Task[None] | None = None
@@ -93,7 +101,7 @@ def get_config_dir() -> Path:
     raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
 
-async def _auto_sync_running_deployments() -> None:  # noqa: C901
+async def auto_sync_running_deployments() -> None:  # noqa: C901
     """
     Background task that periodically syncs status for running deployments.
 
@@ -560,12 +568,21 @@ async def _auto_sync_running_deployments() -> None:  # noqa: C901
     logger.info("[AUTO_SYNC] Background sync task stopped")
 
 
+# Underscore-prefixed alias so tests can call via
+# `auto_sync._auto_sync_running_deployments()` or patch it directly.
+_auto_sync_running_deployments = auto_sync_running_deployments
+
+
 def get_background_task_handles():
     """Get references to background task handles."""
     return _background_task, _events_drain_task, _shutdown_event
 
 
-def set_background_task_handles(background_task, events_drain_task, shutdown_event):
+def set_background_task_handles(
+    background_task: asyncio.Task[None],
+    events_drain_task: asyncio.Task[None],
+    shutdown_event: asyncio.Event,
+) -> None:
     """Set references to background task handles."""
     global _background_task, _events_drain_task, _shutdown_event
     _background_task = background_task
