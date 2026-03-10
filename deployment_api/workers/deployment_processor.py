@@ -65,8 +65,12 @@ STATE_BUCKET = settings.STATE_BUCKET
 DEFAULT_MAX_CONCURRENT = settings.DEFAULT_MAX_CONCURRENT
 DEPLOYMENT_ENV = settings.DEPLOYMENT_ENV
 
-# Import pending VM deletes from auto_sync
+# Import pending VM deletes from auto_sync.
+# Also expose as _pending_vm_deletes (underscore-prefixed alias) so unit tests
+# can import and manipulate the same dict object via either name.
 from .auto_sync import pending_vm_deletes
+
+_pending_vm_deletes = pending_vm_deletes
 
 
 def process_deployments_batch(  # noqa: C901
@@ -505,11 +509,19 @@ def _process_vm_health_and_status(  # noqa: C901
 
     def _vm_status(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return cast(str | None, cast(dict[str, object], v).get("status")) if isinstance(v, dict) else (v if isinstance(v, str) else None)
+        return (
+            cast(str | None, cast(dict[str, object], v).get("status"))
+            if isinstance(v, dict)
+            else (v if isinstance(v, str) else None)
+        )
 
     def _vm_zone(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return cast(str | None, cast(dict[str, object], v).get("zone")) if isinstance(v, dict) else None
+        return (
+            cast(str | None, cast(dict[str, object], v).get("zone"))
+            if isinstance(v, dict)
+            else None
+        )
 
     # VM health checks: OOM detection + startup timeout
     vm_health_kills: list[tuple[str, str | None, str, str, str]] = []
@@ -611,8 +623,7 @@ def _process_vm_health_and_status(  # noqa: C901
     if vm_health_kills:
         try:
             jobs_to_cancel = [
-                (job_id, zone)
-                for job_id, zone, _sid, _reason, _msg in vm_health_kills
+                (job_id, zone) for job_id, zone, _sid, _reason, _msg in vm_health_kills
             ]
             _cancel_vm_jobs_sync(
                 deployment_id=deployment_id,
@@ -826,7 +837,9 @@ def _process_stuck_shards(  # noqa: C901
                                 logger.debug("[AUTO_SYNC] Stuck VM termination failed: %s", e)
 
                         # Close the latest execution attempt (best-effort)
-                        history = cast(list[dict[str, object]], shard.get("execution_history") or [])
+                        history = cast(
+                            list[dict[str, object]], shard.get("execution_history") or []
+                        )
                         if history:
                             history[-1]["ended_at"] = now.isoformat()
                             history[-1]["status"] = "failed"
@@ -874,11 +887,19 @@ def _handle_orphan_vm_cleanup(  # noqa: C901
 
     def _vm_status(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return cast(str | None, cast(dict[str, object], v).get("status")) if isinstance(v, dict) else (v if isinstance(v, str) else None)
+        return (
+            cast(str | None, cast(dict[str, object], v).get("status"))
+            if isinstance(v, dict)
+            else (v if isinstance(v, str) else None)
+        )
 
     def _vm_zone(m: dict[str, object], jid: str) -> str | None:
         v = m.get(jid)
-        return cast(str | None, cast(dict[str, object], v).get("zone")) if isinstance(v, dict) else None
+        return (
+            cast(str | None, cast(dict[str, object], v).get("zone"))
+            if isinstance(v, dict)
+            else None
+        )
 
     # 1. Retry: pending deletes older than Xs where VM still RUNNING
     def _pending_ts(p: tuple[float, str | None]) -> float:

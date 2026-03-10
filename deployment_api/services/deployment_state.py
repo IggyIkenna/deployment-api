@@ -123,22 +123,11 @@ class DeploymentStateManager:
         Returns:
             Dict containing deployment list and metadata
         """
-        from deployment_api import settings as _s
-        from deployment_api.utils.deployment_state_reader import list_deployments as _read_gcs
+        from deployment_api.routes.deployment_caching import get_cached_deployments
 
-        try:
-            deployments = _read_gcs(
-                bucket_name=_s.STATE_BUCKET,
-                project_id=_s.gcp_project_id,
-                service=service_filter,
-                deployment_env=_s.DEPLOYMENT_ENV,
-                limit=limit,
-            )
-        except Exception as e:
-            logger.warning("GCS state read failed, using demo seed data: %s", e)
-            deployments = _demo_deployments()
+        deployments = list(get_cached_deployments())
 
-        # Fall back to demo data if GCS returned nothing (bucket may be empty or inaccessible)
+        # Fall back to demo data if cache returned nothing (bucket may be empty or inaccessible)
         if not deployments:
             deployments = _demo_deployments()
 
@@ -168,6 +157,20 @@ class DeploymentStateManager:
             "has_more": offset + limit < total_count,
         }
 
+    def get_deployment_state(self, deployment_id: str) -> dict[str, object] | None:
+        """
+        Return raw state dict for a deployment, or None if not found.
+
+        This is a lower-level accessor used by get_deployment_report to allow
+        callers to distinguish "not found" (returns None) from other errors.
+        In production it delegates to get_deployment_status with detailed=False
+        and catches ValueError to return None.
+        """
+        try:
+            return self.get_deployment_status(deployment_id, detailed=False)
+        except ValueError:
+            return None
+
     def get_deployment_status(self, deployment_id: str, detailed: bool = True) -> dict[str, object]:
         """
         Get detailed status for a specific deployment.
@@ -179,11 +182,9 @@ class DeploymentStateManager:
         Returns:
             Dict containing deployment status and details
         """
-        # Find state from demo data (GCS not available in local dev)
-        state: dict[str, object] | None = next(
-            (d for d in _demo_deployments() if d.get("deployment_id") == deployment_id),
-            None,
-        )
+        from deployment_api.routes.deployment_caching import get_cached_deployment_state
+
+        state: dict[str, object] | None = get_cached_deployment_state(deployment_id)
         if not state:
             raise ValueError(f"Deployment {deployment_id} not found")
 
@@ -222,21 +223,27 @@ class DeploymentStateManager:
                     shard_status = "completed"
                 else:
                     shard_status = "running" if state.get("status") == "running" else "pending"
-                demo_shards.append({
-                    "shard_id": f"{state['service']}-{i:04d}",
-                    "shard_index": i,
-                    "status": shard_status,
-                    "classification": shard_status,
-                    "dimensions": {"date": f"2026-03-{(i % 10) + 1:02d}"},
-                    "started_at": state.get("created_at"),
-                    "completed_at": state.get("updated_at") if shard_status == "completed" else None,
-                })
-            response.update({
-                "shards": demo_shards,
-                "compute_config": {"cpu": 4, "memory": "8Gi", "machine_type": "n2-standard-4"},
-                "cli_command": f"python -m deployment deploy --service {state['service']} --compute vm",
-                "error_details": None,
-            })
+                demo_shards.append(
+                    {
+                        "shard_id": f"{state['service']}-{i:04d}",
+                        "shard_index": i,
+                        "status": shard_status,
+                        "classification": shard_status,
+                        "dimensions": {"date": f"2026-03-{(i % 10) + 1:02d}"},
+                        "started_at": state.get("created_at"),
+                        "completed_at": state.get("updated_at")
+                        if shard_status == "completed"
+                        else None,
+                    }
+                )
+            response.update(
+                {
+                    "shards": demo_shards,
+                    "compute_config": {"cpu": 4, "memory": "8Gi", "machine_type": "n2-standard-4"},
+                    "cli_command": f"python -m deployment deploy --service {state['service']} --compute vm",  # noqa: E501
+                    "error_details": None,
+                }
+            )
 
         return response
 
@@ -514,3 +521,9 @@ class DeploymentStateManager:
                 deployment["success_rate"] = round((successful / total) * 100, 1)
             else:
                 deployment["success_rate"] = 0.0
+
+
+# Alias for backward compatibility and test patching.
+# Tests inject a mock by replacing sys.modules["deployment_api.services.deployment_state"]
+# and expect to find DeploymentStateService on the mock module object.
+DeploymentStateService = DeploymentStateManager

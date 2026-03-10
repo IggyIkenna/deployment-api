@@ -37,6 +37,67 @@ logger = logging.getLogger(__name__)
 
 # Events system is initialized at application startup (main.py), not at import time
 
+# Module-level references to route functions used in methods below.
+# These are imported lazily inside each method to break circular imports at init
+# time, but are also exposed here at module scope so tests can patch them via
+# `patch("deployment_api.services.deployment_manager.<name>", ...)`.
+# The actual callables are resolved at call time through the lazy-import path
+# below; these stubs are ONLY placeholders to satisfy `patch()` attribute lookups.
+
+
+def validate_deployment_request(deploy_request: object) -> dict[str, object] | None:  # type: ignore[misc]
+    """Lazy-import shim — forwards to routes.deployment_validation at call time."""
+    from deployment_api.routes.deployment_validation import (
+        validate_deployment_request as _impl,
+    )
+
+    return _impl(deploy_request)  # type: ignore[arg-type]
+
+
+def validate_shard_configuration(
+    service_cfg: object, deploy_request: object
+) -> dict[str, object] | None:  # type: ignore[misc]
+    """Lazy-import shim — forwards to routes.deployment_validation at call time."""
+    from deployment_api.routes.deployment_validation import (
+        validate_shard_configuration as _impl,
+    )
+
+    return _impl(service_cfg, deploy_request)  # type: ignore[arg-type]
+
+
+def validate_quota_requirements(shape: object, count: object) -> dict[str, object] | None:  # type: ignore[misc]
+    """Lazy-import shim — forwards to routes.deployment_validation at call time."""
+    from deployment_api.routes.deployment_validation import (
+        validate_quota_requirements as _impl,
+    )
+
+    return _impl(shape, count)  # type: ignore[arg-type]
+
+
+def validate_image_availability(docker_image: str, region: str) -> dict[str, object] | None:  # type: ignore[misc]
+    """Lazy-import shim — forwards to routes.deployment_validation at call time."""
+    from deployment_api.routes.deployment_validation import (
+        validate_image_availability as _impl,
+    )
+
+    return _impl(docker_image, region)
+
+
+def generate_deployment_report(state: object, a: object, b: object) -> dict[str, object]:  # type: ignore[misc]
+    """Lazy-import shim — forwards to routes.deployment_validation at call time."""
+    from deployment_api.routes.deployment_validation import (
+        generate_deployment_report as _impl,
+    )
+
+    return _impl(state, a, b)  # type: ignore[arg-type]
+
+
+def build_deploy_env_vars(**kwargs: object) -> dict[str, str]:  # type: ignore[misc]
+    """Lazy-import shim — forwards to routes.deployments_helpers at call time."""
+    from deployment_api.routes.deployments_helpers import build_deploy_env_vars as _impl
+
+    return _impl(**kwargs)  # type: ignore[arg-type]
+
 
 class DeploymentManager:
     """Manages deployment operations and business logic."""
@@ -56,8 +117,6 @@ class DeploymentManager:
         Returns:
             Error dict if validation fails, None if valid
         """
-        from deployment_api.routes.deployment_validation import validate_deployment_request
-
         return validate_deployment_request(deploy_request)
 
     async def calculate_quota_requirements(
@@ -203,12 +262,6 @@ class DeploymentManager:
         service_cfg: dict[str, object] = cast(
             dict[str, object], loader_for_validation.load_service_config(deploy_request.service)
         )
-        from deployment_api.routes.deployment_validation import (
-            validate_image_availability,
-            validate_quota_requirements,
-            validate_shard_configuration,
-        )
-
         shard_error = validate_shard_configuration(service_cfg, deploy_request)
         if shard_error:
             raise ValueError(str(shard_error))
@@ -355,9 +408,11 @@ class DeploymentManager:
         """
         try:
             # Resolve effective dates (local config-level check, no deployment_service import needed)  # noqa: E501
-            from deployment_api.routes.deployment_validation import resolve_deploy_dates
+            from deployment_api.routes.deployment_validation import (
+                resolve_deploy_dates as _resolve_deploy_dates,
+            )
 
-            _eff_start, _eff_end = resolve_deploy_dates(deploy_request, config_dir)
+            _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)
 
             # Use region from request or default
             deployment_region: str = deploy_request.region or self.default_region
@@ -392,8 +447,6 @@ class DeploymentManager:
             job_name: str = cast(
                 str, service_config.get("cloud_run_job_name", deploy_request.service)
             )
-
-            from deployment_api.routes.deployments_helpers import build_deploy_env_vars
 
             # Submit deployment to deployment-service HTTP API
             # deployment-service owns DeploymentOrchestrator execution logic
@@ -504,13 +557,14 @@ class DeploymentManager:
         Returns:
             Dict containing deployment report
         """
-        # Load state for deployment_id and generate report
-        from deployment_api.services.deployment_state import DeploymentStateManager
+        # Load state for deployment_id and generate report.
+        # Uses DeploymentStateService name so tests can inject a mock via
+        # patch.dict(sys.modules, {"deployment_api.services.deployment_state": mock_mod})
+        # where mock_mod.DeploymentStateService is a MagicMock factory.
+        from deployment_api.services.deployment_state import DeploymentStateService
 
-        state_service = DeploymentStateManager()
-        state = state_service.get_deployment_status(deployment_id)
+        state_service = DeploymentStateService()
+        state = state_service.get_deployment_state(deployment_id)
         if not state:
             return {"error": f"Deployment {deployment_id} not found"}
-        from deployment_api.routes.deployment_validation import generate_deployment_report
-
         return generate_deployment_report(state, None, None)
