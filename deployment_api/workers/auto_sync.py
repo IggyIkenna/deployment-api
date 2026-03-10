@@ -323,12 +323,20 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
 
                 def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:  # noqa: C901
                     """Run orphan VM cleanup only (GCS + vm_map + fire). No state write. Returns count fired."""  # noqa: E501
-                    config = state.get("config") or {}
+                    config_raw = state.get("config") or {}
+                    config = (
+                        cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
+                    )
                     deployment_id = dep_state_path.split("/")[1]
                     compute_type = state.get("compute_type", "vm")
                     if compute_type != "vm":
                         return 0
-                    shards = state.get("shards") or []
+                    shards_raw = state.get("shards") or []
+                    shards = (
+                        cast(list[dict[str, object]], shards_raw)
+                        if isinstance(shards_raw, list)
+                        else []
+                    )
                     service_name = cast(str, state.get("service") or "")
                     if not service_name:
                         return 0
@@ -339,13 +347,16 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                         if "/status" in o.name and not o.name.endswith("/state.json")
                     ]
 
-                    def _read_status(obj):
-                        parts = obj.name.split("/")
+                    def _read_status(
+                        obj: object,
+                    ) -> tuple[str, str] | None:
+                        obj_name = getattr(obj, "name", "")
+                        parts = str(obj_name).split("/")
                         if len(parts) < 3:
                             return None
                         shard_id = parts[2]
                         try:
-                            content = read_object_text(STATE_BUCKET, obj.name).strip()
+                            content = read_object_text(STATE_BUCKET, str(obj_name)).strip()
                             status_part = content.split(":")[0]
                             if status_part == "SUCCESS":
                                 return (shard_id, "succeeded")
@@ -355,17 +366,16 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                             logger.warning(
                                 "Unexpected error during read status: %s", e, exc_info=True
                             )
-                            pass
                         return None
 
-                    shard_statuses = {}
+                    shard_statuses: dict[str, tuple[str, str]] = {}
                     if status_objs:
                         with ThreadPoolExecutor(max_workers=min(len(status_objs), 20)) as pool:
                             for result in pool.map(_read_status, status_objs):
                                 if result:
                                     shard_statuses[result[0]] = (result[1], "gcs")
 
-                    vm_map = {}
+                    vm_map: dict[str, object] = {}
                     try:
                         from unified_cloud_interface import get_compute_engine_client
 
@@ -374,9 +384,10 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                             PROJECT_ID, f"name:{service_name}-*"
                         )
                         for inst in instances:
-                            vm_map[inst["name"]] = {
-                                "status": inst["status"],
-                                "zone": inst.get("zone"),
+                            inst_d = cast(dict[str, object], inst)
+                            vm_map[str(inst_d["name"])] = {
+                                "status": inst_d.get("status"),
+                                "zone": inst_d.get("zone"),
                             }
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.debug(
@@ -388,18 +399,26 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
 
                     def _vm_status(m: dict[str, object], jid: str) -> str | None:
                         v = m.get(jid)
-                        return v.get("status") if isinstance(v, dict) else v
+                        if isinstance(v, dict):
+                            status_val = cast(dict[str, object], v).get("status")
+                            return str(status_val) if isinstance(status_val, str) else None
+                        return str(v) if isinstance(v, str) else None
 
                     def _vm_zone(m: dict[str, object], jid: str) -> str | None:
                         v = m.get(jid)
-                        return v.get("zone") if isinstance(v, dict) else None
+                        if isinstance(v, dict):
+                            zone_val = cast(dict[str, object], v).get("zone")
+                            return str(zone_val) if isinstance(zone_val, str) else None
+                        return None
 
-                    orphan_tuples = []
+                    orphan_tuples: list[tuple[str, str | None, str, tuple[str, str]]] = []
                     for s in shards:
-                        job_id = s.get("job_id")
-                        shard_id = s.get("shard_id")
-                        if not job_id or not shard_id:
+                        job_id_raw = s.get("job_id")
+                        shard_id_raw = s.get("shard_id")
+                        if not job_id_raw or not shard_id_raw:
                             continue
+                        job_id = str(job_id_raw)
+                        shard_id = str(shard_id_raw)
                         st = shard_statuses.get(shard_id)
                         if not st or st[0] not in ("succeeded", "failed"):
                             continue
