@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from unified_events_interface import setup_events
 from unified_trading_library import setup_tracing
+from unified_trading_library.core.audit_middleware import RequestAuditMiddleware
+from unified_trading_library.core.events_relay import make_events_relay_router
 
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED  # noqa: F401
 
@@ -67,13 +69,12 @@ configure_middleware(app)
 
 app.add_middleware(PrometheusMiddleware, service_name="deployment-api")
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(RequestAuditMiddleware)
 
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
-_authenticated_router.include_router(
-    deployments.router, prefix="/api/deployments", tags=["Deployments"]
-)
+_authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
 _authenticated_router.include_router(
     checklist.router, prefix="/api/checklists", tags=["Checklists"]
@@ -95,6 +96,7 @@ app.include_router(_authenticated_router)
 # --- Unauthenticated health / utility routes (no API key required) ---
 app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
+app.include_router(make_events_relay_router())
 
 
 @app.get("/metrics", include_in_schema=False)
