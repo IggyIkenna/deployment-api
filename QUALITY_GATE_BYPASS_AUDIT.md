@@ -313,3 +313,11 @@ Each has a corresponding `effective_*` property that falls back to
 924 total errors. Approximately **3149+ JUSTIFIED** (workspace library stub cascade producing Unknown types, json.loads stdlib limitation, redis unresolvable from workspace root). Approximately **761 MIGRATION_PENDING** including: missing generic type args (176), implicit relative imports (123), unannotated parameters (410), missing imports (25), constant redefinition (2), optional member access without guards (2), and attribute access on incomplete config/protocol types.
 
 The single largest migration item is adding generic type arguments to the `routes/` sub-package (176 errors). The second largest is converting implicit relative imports to explicit (123 errors, mechanical fix). The third largest is installing and resolving missing `backends.*` and `deployment.*` modules (25 direct errors + cascades).
+
+---
+
+## basedpyright-baseline Suppression — Added: 2026-03-10
+
+`.basedpyright-baseline.json` suppresses **3006 pre-existing type errors** (workspace library stub cascade, json.loads Any, unknown route handler types). Full analysis above.
+
+**Migration plan:** See existing migration plan in this file — generic type args, explicit imports, missing stubs.
