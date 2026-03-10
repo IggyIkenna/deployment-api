@@ -80,12 +80,12 @@ def update_shard_state_from_event(  # noqa: C901
     # Ensure stage_timings exists
     stage_timings = _get_stage_timings(shard_state)
 
-    _is_validation_failed = event_name == "FAILED"  # simplified; no dict details to check
+    # FAILED alone → service_failed; only VALIDATION_FAILED → validation_failed
+    _is_validation_failed = False
     if event_name in [
         "VALIDATION_STARTED",
         "VALIDATION_COMPLETED",
         "VALIDATION_FAILED",
-        "FAILED",
     ] and (event_name not in ("FAILED",) or _is_validation_failed):
         if event_name == "VALIDATION_STARTED":
             shard_state["current_stage"] = "validation"

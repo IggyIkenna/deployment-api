@@ -89,7 +89,7 @@ class ShardInfo(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     shard_id: str
     shard_index: int
-    dimensions: dict
+    dimensions: dict[str, object]
     cli_args: list[str]
 
 
@@ -233,7 +233,9 @@ async def create_deployment(
     """Create a new deployment."""
     try:
         # Create background task for deployment execution
-        def background_task_runner(req, config_dir, shard_list, cli_cmd, dep_id):
+        def background_task_runner(
+            req: object, config_dir: str, shard_list: object, cli_cmd: str, dep_id: str
+        ) -> None:
             background_tasks.add_task(
                 deployment_manager.run_deployment_background,
                 req,
