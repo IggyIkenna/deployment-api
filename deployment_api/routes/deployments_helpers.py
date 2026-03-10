@@ -5,7 +5,9 @@ Contains utility functions for log analysis, state management, and other common 
 """
 
 import logging
+import re
 import time
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -30,6 +32,22 @@ def _set_verification_cache(deployment_id: str, data: dict[str, object]) -> None
 def set_verification_cache(deployment_id: str, data: dict[str, object]) -> None:
     """Public alias for _set_verification_cache."""
     _set_verification_cache(deployment_id, data)
+
+
+_VERIFICATION_CACHE_TTL_SEC = 300
+
+
+def _get_verification_cache(deployment_id: str) -> dict[str, object] | None:
+    """Get verification cache for a deployment (reads from local _verification_cache)."""
+    entry = _verification_cache.get(deployment_id)
+    if not entry:
+        return None
+    ts = entry.get("timestamp")
+    if isinstance(ts, float) and time.time() - ts > _VERIFICATION_CACHE_TTL_SEC:
+        _verification_cache.pop(deployment_id, None)
+        return None
+    data = entry.get("data")
+    return data if isinstance(data, dict) else None
 
 
 def build_deploy_env_vars(
@@ -226,3 +244,119 @@ def _extract_shard_signature(service: str, shard_args: list[str]) -> str | None:
             signature_parts.append(f"venue:{shard_args[i + 1]}")
 
     return "|".join(signature_parts) if len(signature_parts) > 1 else None
+
+
+def _status_str(status: object) -> str:
+    """Convert a status value to a string representation.
+
+    Handles str, dict (extracts 'status' key), objects with .status attr, and other types.
+    """
+    if isinstance(status, str):
+        return status
+    if isinstance(status, dict):
+        val = status.get("status", "unknown")
+        return str(val)
+    attr = getattr(status, "status", None)
+    if attr is not None:
+        return str(attr)
+    return str(status)
+
+
+# Severity aliases for common non-standard log levels
+_SEVERITY_ALIASES: dict[str, str] = {
+    "WARN": "WARNING",
+    "ERR": "ERROR",
+    "FATAL": "CRITICAL",
+    "TRACE": "DEBUG",
+}
+
+_KNOWN_SEVERITIES = frozenset(
+    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "WARN", "ERR", "FATAL", "TRACE"}
+)
+
+
+def _extract_severity_and_logger(line: str) -> tuple[str, str]:
+    """Extract severity level and logger name from a log line.
+
+    Supports:
+    - Python logging format: "LEVEL:module:message"
+    - JSON format: {"level": "...", "logger"/"name": "..."}
+    - Plain text: defaults to INFO
+
+    Returns:
+        (severity, logger_name) tuple where severity is one of
+        DEBUG, INFO, WARNING, ERROR, CRITICAL.
+    """
+    import json as _json
+
+    # Try JSON first
+    stripped = line.strip()
+    if stripped.startswith("{"):
+        try:
+            data = _json.loads(stripped)
+            if isinstance(data, dict):
+                raw_level = str(data.get("level") or data.get("severity") or "INFO").upper()
+                severity = _SEVERITY_ALIASES.get(raw_level, raw_level)
+                if severity not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+                    severity = "INFO"
+                log_name = str(data.get("logger") or data.get("name") or data.get("module") or "")
+                return severity, log_name
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    # Try Python logging format: "LEVEL:module:message"
+    parts = line.split(":", 2)
+    if len(parts) >= 2:
+        candidate = parts[0].strip().upper()
+        if candidate in _KNOWN_SEVERITIES:
+            severity = _SEVERITY_ALIASES.get(candidate, candidate)
+            log_name = parts[1].strip()
+            return severity, log_name
+
+    return "INFO", ""
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _extract_date_range(date_str: str | None) -> tuple[str | None, str | None]:
+    """Parse a date range string into (start, end) tuple.
+
+    Supported formats:
+      - None or ""           → (None, None)
+      - "YYYY-MM-DD"         → (date, date)
+      - "YYYY-MM-DD,YYYY-MM-DD" → (start, end)
+      - "YYYY-MM-DD to YYYY-MM-DD" → (start, end)
+      - "last-N-days"        → (today - N days, today)
+    """
+    if not date_str:
+        return None, None
+
+    # Comma-separated range
+    if "," in date_str:
+        parts = [p.strip() for p in date_str.split(",", 1)]
+        if len(parts) == 2 and _DATE_RE.match(parts[0]) and _DATE_RE.match(parts[1]):
+            return parts[0], parts[1]
+        return None, None
+
+    # " to " separated range
+    if " to " in date_str:
+        parts = [p.strip() for p in date_str.split(" to ", 1)]
+        if len(parts) == 2 and _DATE_RE.match(parts[0]) and _DATE_RE.match(parts[1]):
+            return parts[0], parts[1]
+        return None, None
+
+    # Relative: "last-N-days"
+    m = re.match(r"^last-(\d+)-days$", date_str)
+    if m:
+        n = int(m.group(1))
+        today = datetime.now(UTC)
+        start = (today - timedelta(days=n)).strftime("%Y-%m-%d")
+        end = today.strftime("%Y-%m-%d")
+        return start, end
+
+    # Single date
+    if _DATE_RE.match(date_str):
+        return date_str, date_str
+
+    return None, None

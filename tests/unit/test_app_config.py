@@ -238,12 +238,10 @@ class TestLifespanStartup:
         drain_task = asyncio.create_task(asyncio.sleep(0))
 
         mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        mock_blob.download_as_text.return_value = '{"owner": "test-owner"}'
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client.blob_exists.return_value = True
+        mock_client.download_bytes.return_value = b'{"owner": "test-owner"}'
+        mock_delete = MagicMock()
+        mock_client.delete_blob = mock_delete
 
         with (
             patch("deployment_api.app_config.get_config_dir", return_value=MagicMock()),
@@ -260,7 +258,7 @@ class TestLifespanStartup:
             async with app_config.lifespan(mock_app):
                 pass
 
-        mock_blob.delete.assert_called_once()
+        mock_delete.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_handles_storage_error(self):

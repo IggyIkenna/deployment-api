@@ -6,6 +6,7 @@ track_pending_vm_delete, cleanup_pending_vm_deletes, get_retry_vm_deletes,
 try_acquire_deployment_lock, release_deployment_lock.
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,14 @@ def _make_mgr(**kwargs) -> StateManager:
         state_bucket=kwargs.get("state_bucket", "test-bucket"),
         deployment_env=kwargs.get("deployment_env", "development"),
     )
+
+
+def _make_uci_mock_client():
+    """Create a mock UCI StorageClient with sensible defaults."""
+    mock_client = MagicMock()
+    mock_client.blob_exists.return_value = False
+    mock_client.download_bytes.return_value = b"{}"
+    return mock_client
 
 
 class TestStateManagerInit:
@@ -192,17 +201,15 @@ class TestGetRetryVmDeletes:
 
 
 class TestTryAcquireDeploymentLock:
-    """Tests for try_acquire_deployment_lock."""
+    """Tests for try_acquire_deployment_lock (UCI interface)."""
 
     def test_returns_true_on_successful_upload(self):
         mgr = _make_mgr()
-        mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_client = _make_uci_mock_client()
+        # blob_exists returns False -> no existing lock -> upload and acquire
+        mock_client.blob_exists.return_value = False
 
-        with patch.object(_sm_mod, "get_storage_client_with_pool", return_value=mock_client):
+        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = mgr.try_acquire_deployment_lock("dep-1")
 
         assert result is True
@@ -210,107 +217,67 @@ class TestTryAcquireDeploymentLock:
 
     def test_returns_false_when_lock_held_by_other(self):
         mgr = _make_mgr()
-        mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        # Simulate "lock already exists" by raising on upload
-        mock_blob.upload_from_string.side_effect = OSError("412 precondition failed")
-        # Simulate existing lock owned by another
-        existing_blob = MagicMock()
-        existing_blob.metageneration = 1
-        import json as _json
-
-        existing_blob.download_as_text.return_value = _json.dumps(
+        mock_client = _make_uci_mock_client()
+        mock_client.blob_exists.return_value = True
+        mock_client.download_bytes.return_value = json.dumps(
             {
                 "owner": "other-owner",
                 "expires_at": (time.time() + 9999),  # Not expired
             }
-        )
-        mock_bucket.blob.return_value = mock_blob
-        mock_bucket.get_blob.return_value = existing_blob
-        mock_client.bucket.return_value = mock_bucket
+        ).encode("utf-8")
 
-        with patch.object(_sm_mod, "get_storage_client_with_pool", return_value=mock_client):
+        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = mgr.try_acquire_deployment_lock("dep-locked")
 
         assert result is False
 
     def test_acquires_expired_lock(self):
         mgr = _make_mgr()
-        mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        # First blob.upload_from_string raises (lock exists), then blob.upload_from_string succeeds
-        call_count = {"n": 0}
-        mock_blob = MagicMock()
-
-        def upload_side_effect(*a, **kw):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise OSError("412 precondition failed")
-            # Second call (metageneration-match renewal) succeeds
-
-        mock_blob.upload_from_string.side_effect = upload_side_effect
-        existing_blob = MagicMock()
-        existing_blob.metageneration = 1
-        import json as _json
-
-        existing_blob.download_as_text.return_value = _json.dumps(
+        mock_client = _make_uci_mock_client()
+        mock_client.blob_exists.return_value = True
+        mock_client.download_bytes.return_value = json.dumps(
             {
                 "owner": "other-owner",
                 "expires_at": (time.time() - 100),  # Already expired
             }
-        )
-        mock_bucket.blob.return_value = mock_blob
-        mock_bucket.get_blob.return_value = existing_blob
-        mock_client.bucket.return_value = mock_bucket
+        ).encode("utf-8")
 
-        with patch.object(_sm_mod, "get_storage_client_with_pool", return_value=mock_client):
+        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = mgr.try_acquire_deployment_lock("dep-expired")
 
-        # The renewal path uploads to the blob - if that succeeds, result is True
-        # (depends on the implementation detail of how renewal is done)
         assert isinstance(result, bool)
 
 
 class TestReleaseDeploymentLock:
-    """Tests for release_deployment_lock."""
+    """Tests for release_deployment_lock (UCI interface)."""
 
     def test_returns_false_when_lock_not_owned(self):
         mgr = _make_mgr()
-        # Blob exists but owned by someone else
-        mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        import json as _json
+        mock_client = _make_uci_mock_client()
+        mock_client.blob_exists.return_value = True
+        mock_client.download_bytes.return_value = json.dumps({"owner": "other-owner"}).encode(
+            "utf-8"
+        )
 
-        mock_blob.download_as_text.return_value = _json.dumps({"owner": "other-owner"})
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
-
-        with patch.object(_sm_mod, "get_storage_client_with_pool", return_value=mock_client):
+        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = mgr.release_deployment_lock("dep-not-held")
 
         assert result is False
-        mock_blob.delete.assert_not_called()
+        mock_client.delete_blob.assert_not_called()
 
     def test_returns_true_when_held_and_deleted(self):
         mgr = _make_mgr()
         mgr._held_deployment_locks.add("dep-held")
 
-        mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        import json as _json
+        mock_client = _make_uci_mock_client()
+        mock_client.blob_exists.return_value = True
+        mock_client.download_bytes.return_value = json.dumps({"owner": mgr.owner_id}).encode(
+            "utf-8"
+        )
 
-        mock_blob.download_as_text.return_value = _json.dumps({"owner": mgr.owner_id})
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
-
-        with patch.object(_sm_mod, "get_storage_client_with_pool", return_value=mock_client):
+        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = mgr.release_deployment_lock("dep-held")
 
         assert result is True
-        mock_blob.delete.assert_called_once()
+        mock_client.delete_blob.assert_called_once()
         assert "dep-held" not in mgr._held_deployment_locks

@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from anthropic.types import TextBlock
 
 from deployment_api.commentary.pipeline_uat import (
     PipelineUATRequest,
@@ -60,11 +61,10 @@ async def test_run_pipeline_uat_enabled_calls_anthropic() -> None:
     config = _make_config(enabled=True, api_key="sk-test")
     request = _make_request()
 
-    mock_text_block = MagicMock()
+    mock_text_block = MagicMock(spec=TextBlock)
     mock_text_block.text = (
         "Instruments coverage is at 95%. Feature null rate is within acceptable range."
     )
-    mock_text_block.__class__ = type("TextBlock", (), {})
 
     mock_message = MagicMock()
     mock_message.content = [mock_text_block]

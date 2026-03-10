@@ -49,7 +49,6 @@ class TestLifespanStartup:
         mock_cache_mod = MagicMock()
         mock_cache_mod.cache = mock_cache_obj
 
-        mock_drain = MagicMock()
         mock_drain_mod = MagicMock()
         mock_drain_mod._drain_sync_queue = AsyncMock(return_value=None)
 
@@ -65,7 +64,7 @@ class TestLifespanStartup:
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.lifespan.get_owner_id", return_value="owner"),
-            patch("deployment_api.lifespan.get_storage_client_with_pool", return_value=MagicMock()),
+            patch("deployment_api.lifespan._storage_object_exists", return_value=False),
         ):
             async with lm.lifespan(mock_app):
                 assert mock_app.state.config_dir == tmp_path / "configs"
@@ -94,7 +93,7 @@ class TestLifespanStartup:
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.lifespan.get_owner_id", return_value="owner"),
-            patch("deployment_api.lifespan.get_storage_client_with_pool", return_value=MagicMock()),
+            patch("deployment_api.lifespan._storage_object_exists", return_value=False),
         ):
             async with lm.lifespan(mock_app):
                 pass
@@ -125,7 +124,7 @@ class TestLifespanStartup:
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.lifespan.get_owner_id", return_value="owner"),
-            patch("deployment_api.lifespan.get_storage_client_with_pool", return_value=MagicMock()),
+            patch("deployment_api.lifespan._storage_object_exists", return_value=False),
         ):
             async with lm.lifespan(mock_app):
                 pass
@@ -160,7 +159,7 @@ class TestLifespanShutdown:
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
             patch("deployment_api.lifespan.get_owner_id", return_value="owner"),
-            patch("deployment_api.lifespan.get_storage_client_with_pool", return_value=MagicMock()),
+            patch("deployment_api.lifespan._storage_object_exists", return_value=False),
         ):
             async with lm.lifespan(mock_app):
                 pass
@@ -192,7 +191,7 @@ class TestLifespanShutdown:
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value={"dep-x"}),
             patch("deployment_api.lifespan.get_owner_id", return_value="owner"),
             patch(
-                "deployment_api.lifespan.get_storage_client_with_pool",
+                "deployment_api.lifespan._storage_object_exists",
                 side_effect=OSError("network"),
             ),
         ):
@@ -215,13 +214,7 @@ class TestLifespanShutdown:
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
 
-        mock_client = MagicMock()
-        mock_bucket = MagicMock()
-        mock_blob = MagicMock()
-        mock_blob.exists.return_value = True
-        mock_blob.download_as_text.return_value = '{"owner": "test-owner"}'
-        mock_bucket.blob.return_value = mock_blob
-        mock_client.bucket.return_value = mock_bucket
+        mock_delete = MagicMock()
 
         with (
             patch("deployment_api.lifespan.get_config_dir", return_value=MagicMock()),
@@ -232,9 +225,14 @@ class TestLifespanShutdown:
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value={"dep-1"}),
             patch("deployment_api.lifespan.get_owner_id", return_value="test-owner"),
-            patch("deployment_api.lifespan.get_storage_client_with_pool", return_value=mock_client),
+            patch("deployment_api.lifespan._storage_object_exists", return_value=True),
+            patch(
+                "deployment_api.lifespan._read_storage_object_text",
+                return_value='{"owner": "test-owner"}',
+            ),
+            patch("deployment_api.lifespan._delete_storage_object", mock_delete),
         ):
             async with lm.lifespan(mock_app):
                 pass
 
-        mock_blob.delete.assert_called_once()
+        mock_delete.assert_called_once()
