@@ -8,7 +8,6 @@ status string conversion, severity extraction, and date range parsing.
 from unittest.mock import MagicMock
 
 from deployment_api.routes.deployments_helpers import (
-    _build_deploy_env_vars,
     _extract_date_range,
     _extract_severity_and_logger,
     _extract_shard_signature,
@@ -16,43 +15,93 @@ from deployment_api.routes.deployments_helpers import (
     _maybe_add_direct_gcs,
     _set_verification_cache,
     _status_str,
+    build_deploy_env_vars,
     find_duplicate_running_shards,
 )
 
 
 class TestBuildDeployEnvVars:
-    """Tests for _build_deploy_env_vars."""
+    """Tests for build_deploy_env_vars."""
 
     def test_required_fields_present(self):
-        env = _build_deploy_env_vars("instruments-service", "proj-123", "dep-abc", 4)
+        env = build_deploy_env_vars("instruments-service", "proj-123", "dep-abc", 4)
         assert env["SERVICE_NAME"] == "instruments-service"
         assert env["PROJECT_ID"] == "proj-123"
         assert env["DEPLOYMENT_ID"] == "dep-abc"
         assert env["MAX_CONCURRENT"] == "4"
 
     def test_default_deployment_mode(self):
-        env = _build_deploy_env_vars("svc", "proj", "dep", 2)
+        env = build_deploy_env_vars("svc", "proj", "dep", 2)
         assert env["DEPLOYMENT_MODE"] == "vm"
 
     def test_custom_deployment_mode(self):
-        env = _build_deploy_env_vars("svc", "proj", "dep", 2, deployment_mode="cloud-run")
+        env = build_deploy_env_vars("svc", "proj", "dep", 2, deployment_mode="cloud-run")
         assert env["DEPLOYMENT_MODE"] == "cloud-run"
 
     def test_shard_id_optional(self):
-        env = _build_deploy_env_vars("svc", "proj", "dep", 1)
+        env = build_deploy_env_vars("svc", "proj", "dep", 1)
         assert "SHARD_ID" not in env
 
     def test_shard_id_added_when_provided(self):
-        env = _build_deploy_env_vars("svc", "proj", "dep", 1, shard_id="shard-0")
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, shard_id="shard-0")
         assert env["SHARD_ID"] == "shard-0"
 
     def test_direct_gcs_not_set_by_default(self):
-        env = _build_deploy_env_vars("svc", "proj", "dep", 1)
+        env = build_deploy_env_vars("svc", "proj", "dep", 1)
         assert "ENABLE_DIRECT_GCS" not in env
 
     def test_direct_gcs_set_when_enabled(self):
-        env = _build_deploy_env_vars("svc", "proj", "dep", 1, enable_direct_gcs=True)
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, enable_direct_gcs=True)
         assert env["ENABLE_DIRECT_GCS"] == "true"
+
+    # ── Runtime topology env vars (Stream 3) ──────────────────────────────────
+
+    def test_runtime_mode_default_is_batch(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1)
+        assert env["RUNTIME_MODE"] == "batch"
+
+    def test_runtime_mode_live(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, deploy_mode="live")
+        assert env["RUNTIME_MODE"] == "live"
+
+    def test_cloud_provider_default_is_gcp(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1)
+        assert env["CLOUD_PROVIDER"] == "gcp"
+
+    def test_cloud_provider_aws(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, cloud_provider="aws")
+        assert env["CLOUD_PROVIDER"] == "aws"
+
+    def test_operational_mode_not_injected_when_empty(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, operational_mode="")
+        assert "OPERATIONAL_MODE" not in env
+
+    def test_operational_mode_injected_when_set(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, operational_mode="train_phase1")
+        assert env["OPERATIONAL_MODE"] == "train_phase1"
+
+    def test_operational_mode_execute(self):
+        env = build_deploy_env_vars(
+            "execution-service", "proj", "dep", 1, operational_mode="execute"
+        )
+        assert env["OPERATIONAL_MODE"] == "execute"
+
+    def test_all_runtime_topology_vars_together(self):
+        env = build_deploy_env_vars(
+            "ml-training-service",
+            "my-project",
+            "dep-001",
+            50,
+            deployment_mode="vm",
+            deploy_mode="batch",
+            operational_mode="train_phase2",
+            cloud_provider="gcp",
+        )
+        assert env["RUNTIME_MODE"] == "batch"
+        assert env["OPERATIONAL_MODE"] == "train_phase2"
+        assert env["CLOUD_PROVIDER"] == "gcp"
+        assert env["DEPLOYMENT_MODE"] == "vm"
+        assert env["SERVICE_NAME"] == "ml-training-service"
 
 
 class TestMaybeAddDirectGcs:

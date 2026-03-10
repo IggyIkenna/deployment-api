@@ -30,6 +30,10 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     service: str = Field(..., description="Service name to deploy")
     compute: str = Field("cloud_run", description="Compute mode: cloud_run or vm")
     mode: str = Field("batch", description="Deployment mode: 'batch' or 'live'")
+    cloud_provider: str = Field("gcp", description="Cloud provider: gcp, aws, or local")
+    operational_mode: str = Field(
+        "", description="Service-specific operational mode (e.g. train_phase1, execute)"
+    )
 
     # Date range for data processing
     start_date: str | None = Field(None, description="Start date (YYYY-MM-DD)")
@@ -61,6 +65,9 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     exclude_dates: dict[str, list[str]] | None = Field(
         None, description="Dates to exclude per category"
     )
+
+    # Logging configuration
+    log_level: str = Field("INFO", description="Log level for deployment jobs")
 
     @property
     def filters(self) -> dict[str, str]:

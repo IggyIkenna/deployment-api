@@ -47,7 +47,7 @@ def _set_verification_cache(deployment_id: str, data: dict) -> None:
     _verification_cache[deployment_id] = {"data": data, "timestamp": time.time()}
 
 
-def _build_deploy_env_vars(
+def build_deploy_env_vars(
     service: str,
     project_id: str,
     deployment_id: str,
@@ -55,12 +55,30 @@ def _build_deploy_env_vars(
     deployment_mode: str = "vm",  # or "cloud-run"
     enable_direct_gcs: bool = False,
     shard_id: str | None = None,
+    # Runtime topology env vars (Stream 3 — operational mode injection)
+    deploy_mode: str = "batch",  # "batch" | "live"
+    operational_mode: str = "",  # service-specific: "train_phase1", "execute", etc.
+    cloud_provider: str = "gcp",  # "gcp" | "aws" | "local"
 ) -> dict[str, str]:
     """
     Build standardized environment variables for deployment.
 
     These are passed to the actual deployment containers and must match
     what the services expect. See: deployment env var standardization.
+
+    Args:
+        service: Service name (e.g. "ml-training-service").
+        project_id: Cloud project / account ID.
+        deployment_id: Unique deployment ID for correlation.
+        max_concurrent: Maximum concurrent jobs / VMs.
+        deployment_mode: Compute substrate ("vm", "cloud_run", "batch", "ec2").
+        enable_direct_gcs: Pass ENABLE_DIRECT_GCS=true for high-throughput services.
+        shard_id: Optional shard identifier for per-shard containers.
+        deploy_mode: Runtime mode — "batch" (GCS transport) or "live" (PubSub/SQS).
+        operational_mode: Service-specific operational sub-mode injected as
+            OPERATIONAL_MODE (e.g. "train_phase1", "execute", "instrument").
+            Empty string omits the var so services use their own default.
+        cloud_provider: Cloud provider routing key ("gcp", "aws", "local").
     """
     env_vars = {
         "SERVICE_NAME": service,
@@ -68,7 +86,14 @@ def _build_deploy_env_vars(
         "DEPLOYMENT_ID": deployment_id,
         "MAX_CONCURRENT": str(max_concurrent),
         "DEPLOYMENT_MODE": deployment_mode,
+        # Runtime topology env vars — consumed by services via UCI/UnifiedCloudConfig
+        "RUNTIME_MODE": deploy_mode,
+        "CLOUD_PROVIDER": cloud_provider,
     }
+
+    # Inject OPERATIONAL_MODE only when non-empty so services can detect it was set
+    if operational_mode:
+        env_vars["OPERATIONAL_MODE"] = operational_mode
 
     # Optional shard-specific environment
     if shard_id:
