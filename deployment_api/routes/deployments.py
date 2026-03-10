@@ -433,3 +433,129 @@ async def get_deployment_report(deployment_id: str, request: Request) -> dict[st
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get deployment report for %s: %s", deployment_id, e)
         raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+
+
+# ── Live deployment & event stream endpoints ──────────────────────────────────
+
+
+class RollbackRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Request body for a live deployment rollback."""
+
+    service: str = Field(..., description="Cloud Run Service name")
+    region: str = Field(..., description="GCP region")
+    target_revision: str | None = Field(
+        None, description="Specific revision to roll back to (None = previous)"
+    )
+
+
+@router.get("/deployments/{deployment_id}/events")
+async def get_deployment_events(
+    deployment_id: str,
+    shard_id: str | None = Query(None, description="Filter by shard ID"),
+) -> dict[str, object]:
+    """
+    Return the full shard event stream for a deployment.
+
+    Events are written by deployment-service backends to GCS as JSONL and aggregated
+    here. Each event captures a lifecycle step (JOB_STARTED, VM_PREEMPTED, etc.)
+    with timestamp, message, and optional metadata.
+    """
+    from deployment_api.clients import deployment_service_client as _client
+
+    try:
+        events = await _client.get_deployment_events(deployment_id, shard_id=shard_id)
+        return {"deployment_id": deployment_id, "events": events, "count": len(events)}
+    except RuntimeError as e:
+        logger.error("Failed to get events for deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=502, detail="Event stream unavailable") from e
+    except (OSError, ValueError) as e:
+        logger.exception("Error fetching events for deployment %s", deployment_id)
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+
+
+@router.get("/deployments/{deployment_id}/vm-events")
+async def get_deployment_vm_events(
+    deployment_id: str,
+) -> dict[str, object]:
+    """
+    Return VM-level infrastructure events for a deployment.
+
+    Filters the full event stream to VM_PREEMPTED, VM_DELETED, VM_QUOTA_EXHAUSTED,
+    VM_ZONE_UNAVAILABLE, VM_TIMEOUT, CONTAINER_OOM, CLOUD_RUN_REVISION_FAILED.
+    Used by the History tab to surface infrastructure failure badges on shard rows.
+    """
+    from deployment_api.clients import deployment_service_client as _client
+
+    try:
+        events = await _client.get_vm_events(deployment_id)
+        return {"deployment_id": deployment_id, "events": events, "count": len(events)}
+    except RuntimeError as e:
+        logger.error("Failed to get VM events for deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=502, detail="Event stream unavailable") from e
+    except (OSError, ValueError) as e:
+        logger.exception("Error fetching VM events for deployment %s", deployment_id)
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+
+
+@router.post("/deployments/{deployment_id}/rollback")
+async def rollback_live_deployment(
+    deployment_id: str, rollback_request: RollbackRequest
+) -> dict[str, object]:
+    """
+    Roll back a live Cloud Run Service deployment to the previous revision.
+
+    Only valid for deployments with deploy_mode="live". Calls the deployment-service
+    LiveDeployer to revert traffic to the specified (or previous) Cloud Run revision.
+    """
+    from deployment_api.clients import deployment_service_client as _client
+
+    try:
+        result = await _client.live_rollback(
+            deployment_id=deployment_id,
+            service=rollback_request.service,
+            region=rollback_request.region,
+            target_revision=rollback_request.target_revision,
+        )
+        return result
+    except RuntimeError as e:
+        logger.error("Rollback failed for deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=502, detail="Rollback request failed") from e
+    except (OSError, ValueError) as e:
+        logger.exception("Error during rollback for deployment %s", deployment_id)
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+
+
+@router.get("/deployments/{deployment_id}/live-health")
+async def get_live_deployment_health(
+    deployment_id: str,
+    service: str = Query(..., description="Cloud Run Service name"),
+    region: str = Query(..., description="GCP region"),
+) -> dict[str, object]:
+    """
+    Return the current health check status of a live Cloud Run Service.
+
+    Polls the service /health endpoint and returns a structured response.
+    Used by DeploymentDetails to show a live health badge for live-mode deployments.
+    """
+    from deployment_api.clients import deployment_service_client as _client
+
+    try:
+        result = await _client.get_live_health(
+            deployment_id=deployment_id,
+            service=service,
+            region=region,
+        )
+        return result
+    except RuntimeError as e:
+        logger.error(
+            "Failed to get live health for deployment %s service %s: %s",
+            deployment_id,
+            service,
+            e,
+        )
+        raise HTTPException(status_code=502, detail="Health check unavailable") from e
+    except (OSError, ValueError) as e:
+        logger.exception(
+            "Error fetching live health for deployment %s service %s", deployment_id, service
+        )
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e

@@ -508,3 +508,161 @@ async def quota_release_batch(
             raise RuntimeError(
                 f"deployment-service /api/v1/quota/release returned HTTP {resp.status}: {body}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Event stream
+# ---------------------------------------------------------------------------
+
+
+async def get_deployment_events(
+    deployment_id: str,
+    shard_id: str | None = None,
+) -> list[dict[str, object]]:
+    """
+    Return the full shard event stream for a deployment.
+
+    GET /api/v1/deployments/{deployment_id}/events
+    Optional query: ?shard_id=<shard_id>
+
+    Returns:
+        List of event dicts with keys: deployment_id, shard_id, event_type, message,
+        timestamp, metadata.
+
+    Raises:
+        RuntimeError: If the deployment-service HTTP call fails.
+    """
+    url = f"{_base_url()}/api/v1/deployments/{deployment_id}/events"
+    params: dict[str, str] = {}
+    if shard_id is not None:
+        params["shard_id"] = shard_id
+    logger.debug("GET %s (deployment_id=%s)", url, deployment_id)
+
+    async with (
+        aiohttp.ClientSession(timeout=_timeout()) as session,
+        session.get(url, params=params) as resp,
+    ):
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/deployments/{deployment_id}/events "
+                f"returned HTTP {resp.status}: {body}"
+            )
+        data: dict[str, object] = await resp.json()
+        events = data.get("events") or []
+        return list(cast(list[dict[str, object]], events))
+
+
+async def get_vm_events(
+    deployment_id: str,
+) -> list[dict[str, object]]:
+    """
+    Return VM-level infrastructure events for a deployment.
+
+    GET /api/v1/deployments/{deployment_id}/vm-events
+
+    Returns:
+        Filtered list of VM lifecycle events (VM_PREEMPTED, CONTAINER_OOM, etc.)
+
+    Raises:
+        RuntimeError: If the deployment-service HTTP call fails.
+    """
+    url = f"{_base_url()}/api/v1/deployments/{deployment_id}/vm-events"
+    logger.debug("GET %s (deployment_id=%s)", url, deployment_id)
+
+    async with aiohttp.ClientSession(timeout=_timeout()) as session, session.get(url) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/deployments/{deployment_id}/vm-events "
+                f"returned HTTP {resp.status}: {body}"
+            )
+        data: dict[str, object] = await resp.json()
+        events = data.get("events") or []
+        return list(cast(list[dict[str, object]], events))
+
+
+# ---------------------------------------------------------------------------
+# Live deployment
+# ---------------------------------------------------------------------------
+
+
+async def live_rollback(
+    deployment_id: str,
+    service: str,
+    region: str,
+    target_revision: str | None = None,
+) -> dict[str, object]:
+    """
+    Roll back a live Cloud Run Service to a previous revision.
+
+    POST /api/v1/deployments/{deployment_id}/rollback
+
+    Args:
+        deployment_id: The live deployment ID.
+        service: Cloud Run Service name.
+        region: GCP region.
+        target_revision: Specific revision to revert to (None = previous).
+
+    Returns:
+        Dict with keys: deployment_id, service, status, events, error.
+
+    Raises:
+        RuntimeError: If the deployment-service HTTP call fails.
+    """
+    payload: dict[str, object] = {
+        "service": service,
+        "region": region,
+    }
+    if target_revision is not None:
+        payload["target_revision"] = target_revision
+
+    url = f"{_base_url()}/api/v1/deployments/{deployment_id}/rollback"
+    logger.debug("POST %s (deployment_id=%s, service=%s)", url, deployment_id, service)
+
+    async with (
+        aiohttp.ClientSession(timeout=_timeout()) as session,
+        session.post(url, json=payload) as resp,
+    ):
+        if resp.status not in (200, 202):
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/deployments/{deployment_id}/rollback "
+                f"returned HTTP {resp.status}: {body}"
+            )
+        result: dict[str, object] = await resp.json()
+        return result
+
+
+async def get_live_health(
+    deployment_id: str,
+    service: str,
+    region: str,
+) -> dict[str, object]:
+    """
+    Return current health check status for a live Cloud Run Service deployment.
+
+    GET /api/v1/deployments/{deployment_id}/live-health?service=...&region=...
+
+    Returns:
+        Dict with keys: deployment_id, service, healthy (bool), checked_at, status_code.
+
+    Raises:
+        RuntimeError: If the deployment-service HTTP call fails.
+    """
+    url = f"{_base_url()}/api/v1/deployments/{deployment_id}/live-health"
+    params: dict[str, str] = {"service": service, "region": region}
+    logger.debug("GET %s (deployment_id=%s, service=%s)", url, deployment_id, service)
+
+    async with (
+        aiohttp.ClientSession(timeout=_timeout()) as session,
+        session.get(url, params=params) as resp,
+    ):
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/deployments/{deployment_id}/live-health "
+                f"returned HTTP {resp.status}: {body}"
+            )
+        result: dict[str, object] = await resp.json()
+        return result
