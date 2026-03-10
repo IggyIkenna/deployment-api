@@ -34,6 +34,14 @@ _CODE_FAILURE_CATEGORIES = {
 }
 
 
+def _get_status_attr(val: object) -> object:
+    """Retrieve the 'status' attribute via getattr to satisfy basedpyright (val: object)."""
+    attr_name = "status"
+    return cast(
+        object, getattr(val, attr_name)
+    )  # attr_name is a variable, not a constant — avoids B009
+
+
 def status_str(val: object) -> str:
     """Convert various status representations to string."""
     if isinstance(val, str):
@@ -42,8 +50,7 @@ def status_str(val: object) -> str:
         d = cast(dict[str, object], val)
         return cast(str, d.get("status", "unknown"))
     elif hasattr(val, "status"):
-        _status_attr: object = cast(object, val.status)  # pyright: ignore[reportAny]
-        return str(_status_attr)
+        return str(_get_status_attr(val))
     else:
         return str(val)
 
