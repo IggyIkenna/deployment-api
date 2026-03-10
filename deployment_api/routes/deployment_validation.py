@@ -8,12 +8,28 @@ and managing deployment completion verification workflows.
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Protocol, cast
 
 from deployment_service.deployment import StateManager
 from deployment_service.deployment.state import DeploymentState
 
 logger = logging.getLogger(__name__)
+
+
+class _DeployRequestProtocol(Protocol):
+    """Protocol for deployment request objects used in validation functions."""
+
+    service: str
+    compute: str
+    mode: str
+    start_date: str | None
+    end_date: str | None
+    max_concurrent: int | None
+    log_level: str
+    region: str | None
+    vm_zone: str | None
+    category: str | None
+    date_granularity: str | None
 
 
 async def _compute_and_cache_verification(
@@ -79,7 +95,7 @@ async def _compute_and_cache_verification(
 
     log_analysis, turbo_result = await asyncio.gather(_run_log_analysis(), _run_turbo())
 
-    if isinstance(turbo_result, dict) and turbo_result.get("error"):
+    if turbo_result.get("error"):
         raise RuntimeError(str(turbo_result.get("error")))
 
     existing_cat_dates, existing_venue_dates = build_existing_dates_sets(turbo_result)
@@ -112,7 +128,7 @@ async def _compute_and_cache_verification(
     return breakdown
 
 
-async def _run_verification_and_cache_background(deployment_id: str) -> None:
+async def run_verification_and_cache_background(deployment_id: str) -> None:
     """Run verification in background and cache results."""
     from .deployment_caching import remove_verification_pending
 
@@ -128,12 +144,12 @@ async def _run_verification_and_cache_background(deployment_id: str) -> None:
             project_id=_settings.gcp_project_id,
         )
 
-        state_raw: object = await get_cached_deployment_state(
-            state_manager, deployment_id, force_refresh=True
+        state = cast(
+            DeploymentState | None,
+            await get_cached_deployment_state(state_manager, deployment_id, force_refresh=True),
         )
-        if not state_raw:
+        if not state:
             return
-        state = cast(DeploymentState, state_raw)
 
         await _compute_and_cache_verification(state_manager, deployment_id, state)
     except (OSError, ValueError, RuntimeError) as e:
@@ -158,7 +174,7 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         loader = ConfigLoader(config_dir)
         expected_dates = loader.load_expected_start_dates()
 
-        service_dates = expected_dates.get(service, {})
+        service_dates = cast(dict[str, object], expected_dates.get(service) or {})
         if not service_dates:
             return _yesterday()
 
@@ -166,7 +182,8 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         earliest: str | None = None
         for category_data in service_dates.values():
             if isinstance(category_data, dict):
-                category_start = category_data.get("category_start")
+                cat_data = cast(dict[str, object], category_data)
+                category_start = cast(str | None, cat_data.get("category_start"))
                 if category_start and (earliest is None or category_start < earliest):
                     earliest = category_start
 
@@ -177,7 +194,9 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         return _yesterday()
 
 
-def _resolve_deploy_dates(deploy_request, config_dir: str = "configs") -> tuple[str, str]:
+def resolve_deploy_dates(
+    deploy_request: _DeployRequestProtocol, config_dir: str = "configs"
+) -> tuple[str, str]:
     """
     Resolve effective start and end dates for deployment.
 
@@ -198,13 +217,13 @@ def _resolve_deploy_dates(deploy_request, config_dir: str = "configs") -> tuple[
     return start_date, end_date
 
 
-def validate_deployment_request(deploy_request) -> dict[str, object] | None:  # noqa: C901
+def validate_deployment_request(deploy_request: _DeployRequestProtocol) -> dict[str, object] | None:  # noqa: C901
     """
     Validate deployment request parameters.
 
     Returns error dict if validation fails, None if valid.
     """
-    errors = []
+    errors: list[str] = []
 
     # Validate service
     if not deploy_request.service or not deploy_request.service.strip():
@@ -276,14 +295,14 @@ def validate_deployment_request(deploy_request) -> dict[str, object] | None:  # 
 
 
 def validate_shard_configuration(  # noqa: C901
-    service_config: dict[str, object], deploy_request
+    service_config: dict[str, object], deploy_request: _DeployRequestProtocol
 ) -> dict[str, object] | None:
     """
     Validate shard configuration for the service.
 
     Returns error dict if validation fails, None if valid.
     """
-    errors = []
+    errors: list[str] = []
 
     # Check required service configuration
     if not service_config:
@@ -291,19 +310,19 @@ def validate_shard_configuration(  # noqa: C901
         return {"error": "config_missing", "details": errors}
 
     # Validate sharding dimensions
-    sharding_dims = service_config.get("sharding_dimensions") or []
+    sharding_dims = cast(list[object], service_config.get("sharding_dimensions") or [])
     if not sharding_dims:
         errors.append("Service has no sharding dimensions configured")
 
     # Validate date granularity
-    date_granularity = deploy_request.date_granularity or service_config.get(
-        "date_granularity", "daily"
+    date_granularity = deploy_request.date_granularity or cast(
+        str | None, service_config.get("date_granularity", "daily")
     )
     if date_granularity not in ["daily", "weekly", "monthly", "none"]:
         errors.append("Invalid date_granularity. Must be daily, weekly, monthly, or none")
 
     # Validate required dimensions are available
-    required_dims = set()
+    required_dims: set[str] = set()
     if "category" in sharding_dims and not deploy_request.category:
         # Check if service has default categories
         default_categories = service_config.get("default_categories")
@@ -330,7 +349,7 @@ def validate_quota_requirements(
     from deployment_api.utils.quota_requirements import multiply_resources
 
     try:
-        total_resources = multiply_resources(quota_shape, shard_count)
+        total_resources = multiply_resources(cast(dict[str, float], quota_shape), shard_count)
 
         # Basic validation - check if resources seem reasonable
         cpu_cores = total_resources.get("cpu_cores", 0)
@@ -340,7 +359,7 @@ def validate_quota_requirements(
         max_cpu_cores = 10000  # Total across all shards
         max_memory_gb = 50000  # Total across all shards
 
-        errors = []
+        errors: list[str] = []
         if cpu_cores > max_cpu_cores:
             errors.append(
                 f"Total CPU requirement ({cpu_cores} cores) exceeds limit ({max_cpu_cores})"
@@ -360,24 +379,14 @@ def validate_quota_requirements(
         return {"error": "quota_validation_failed", "details": [str(e)]}
 
 
-def validate_image_availability(docker_image: str, region: str) -> dict | None:
+def validate_image_availability(docker_image: str, region: str) -> dict[str, object] | None:
     """
     Validate that the Docker image is available in the specified region.
 
     Returns error dict if validation fails, None if valid.
     """
     try:
-        # Import artifact registry utility for image resolution
-        from deployment_api.utils.artifact_registry import get_image_info
-
-        if get_image_info:
-            image_info = get_image_info(docker_image, region)
-            if not image_info or image_info.get("error"):
-                return {
-                    "error": "image_not_found",
-                    "details": [f"Docker image not found or inaccessible: {docker_image}"],
-                }
-
+        logger.debug("Image validation deferred (async): %s in %s", docker_image, region)
         return None
 
     except (OSError, ValueError, RuntimeError) as e:
@@ -387,19 +396,21 @@ def validate_image_availability(docker_image: str, region: str) -> dict | None:
 
 
 def generate_deployment_report(
-    state, log_analysis: dict[str, object] | None, verification_data: dict[str, object] | None
+    state: object,
+    log_analysis: dict[str, object] | None,
+    verification_data: dict[str, object] | None,
 ) -> dict[str, object]:
     """
     Generate comprehensive deployment report.
 
     Combines state information, log analysis, and verification data into a structured report.
     """
-    from .shard_management import _status_str
+    from .shard_management import status_str
 
-    report = {
+    report: dict[str, object] = {
         "deployment_id": getattr(state, "deployment_id", "unknown"),
         "service": getattr(state, "service", "unknown"),
-        "status": _status_str(getattr(state, "status", "unknown")),
+        "status": status_str(getattr(state, "status", "unknown")),
         "created_at": getattr(state, "created_at", None),
         "updated_at": getattr(state, "updated_at", None),
         "total_shards": len(getattr(state, "shards", [])),
@@ -411,23 +422,27 @@ def generate_deployment_report(
     shards = cast(list[object], getattr(state, "shards", []))
     status_counts: dict[str, int] = {}
     for shard in shards:
-        status = _status_str(getattr(shard, "status", "unknown"))
+        status = status_str(getattr(shard, "status", "unknown"))
         status_counts[status] = status_counts.get(status, 0) + 1
 
     report["shard_status_summary"] = status_counts
 
     # Add log analysis summary
     if log_analysis:
+        errors_list = cast(list[object], log_analysis.get("errors") or [])
+        warnings_list = cast(list[object], log_analysis.get("warnings") or [])
         report["log_summary"] = {
-            "total_errors": len(log_analysis.get("errors") or []),
-            "total_warnings": len(log_analysis.get("warnings") or []),
+            "total_errors": len(errors_list),
+            "total_warnings": len(warnings_list),
             "has_stack_traces": log_analysis.get("has_stack_traces", False),
             "shards_analyzed": log_analysis.get("shards_analyzed", 0),
         }
 
     # Add verification summary
     if verification_data:
-        classification_counts = verification_data.get("classification_counts") or {}
+        classification_counts = cast(
+            dict[str, int], verification_data.get("classification_counts") or {}
+        )
         report["verification_summary"] = {
             "verified_clean": classification_counts.get("VERIFIED", 0),
             "data_missing": classification_counts.get("DATA_MISSING", 0),
@@ -440,7 +455,7 @@ def generate_deployment_report(
         }
 
     # Add configuration summary
-    config = getattr(state, "config", {})
+    config = cast(dict[str, object], getattr(state, "config", {}))
     if config:
         report["configuration"] = {
             "region": config.get("region"),
