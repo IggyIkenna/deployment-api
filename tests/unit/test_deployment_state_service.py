@@ -97,13 +97,34 @@ _DEMO_DEPS = [
     {"deployment_id": "d3", "service": "svc-a", "status": "failed", "created_at": "2024-01-01"},
 ]
 
+# GCS state dict for a real deployment (replaces the old _DEMO_DEP_ID hardcoded fixture)
+_REAL_DEP_ID = "live-exec-20260310-143022-a1b2"
+_REAL_STATE = {
+    "deployment_id": _REAL_DEP_ID,
+    "service": "execution-service",
+    "status": "running",
+    "compute_type": "cloud_run",
+    "deploy_mode": "live",
+    "created_at": "2026-03-10T14:30:22Z",
+    "updated_at": "2026-03-10T14:45:00Z",
+    "tag": "v2.4.1-canary",
+    "region": "asia-northeast1",
+    "config": {"start_date": "2026-01-01", "end_date": "2026-03-10"},
+    "shards": [
+        {"shard_id": "s1", "status": "running"},
+    ],
+    "compute_config": {"cpu": 4, "memory": "8Gi"},
+    "cli_command": "python -m deployment deploy --service execution-service --compute cloud_run",
+    "error_details": None,
+}
+
 
 class TestListDeployments:
     """Tests for DeploymentStateManager.list_deployments."""
 
     def test_returns_deployment_dict_with_expected_keys(self):
         mgr = _make_mgr()
-        with patch.object(_ds_mod, "_demo_deployments", return_value=_DEMO_DEPS):
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=_DEMO_DEPS):
             result = mgr.list_deployments()
 
         assert "deployments" in result
@@ -118,14 +139,14 @@ class TestListDeployments:
             {"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"}
             for i in range(5)
         ]
-        with patch.object(_ds_mod, "_demo_deployments", return_value=deps):
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments()
 
         assert result["total_count"] == 5
 
     def test_filters_by_status(self):
         mgr = _make_mgr()
-        with patch.object(_ds_mod, "_demo_deployments", return_value=_DEMO_DEPS):
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=_DEMO_DEPS):
             result = mgr.list_deployments(status_filter="running")
 
         assert result["total_count"] == 1
@@ -133,7 +154,9 @@ class TestListDeployments:
 
     def test_filters_by_service(self):
         mgr = _make_mgr()
-        with patch.object(_ds_mod, "_demo_deployments", return_value=_DEMO_DEPS):
+        # GCS reader already filters by service; return only svc-a results to simulate
+        svc_a_deps = [d for d in _DEMO_DEPS if d["service"] == "svc-a"]
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=svc_a_deps):
             result = mgr.list_deployments(service_filter="svc-a")
 
         assert result["total_count"] == 2
@@ -145,7 +168,7 @@ class TestListDeployments:
             {"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"}
             for i in range(10)
         ]
-        with patch.object(_ds_mod, "_demo_deployments", return_value=deps):
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments(limit=3, offset=2)
 
         assert len(result["deployments"]) == 3
@@ -159,7 +182,7 @@ class TestListDeployments:
             {"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"}
             for i in range(3)
         ]
-        with patch.object(_ds_mod, "_demo_deployments", return_value=deps):
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments(limit=10, offset=0)
 
         assert result["has_more"] is False
@@ -171,14 +194,11 @@ class TestListDeployments:
             {"deployment_id": "d2", "status": "running", "created_at": "2024-01-10"},
             {"deployment_id": "d3", "status": "running", "created_at": "2024-01-05"},
         ]
-        with patch.object(_ds_mod, "_demo_deployments", return_value=deps):
+        with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments()
 
         first = result["deployments"][0]
         assert first["deployment_id"] == "d2"  # most recent first
-
-
-_DEMO_DEP_ID = "live-exec-20260310-143022-a1b2"  # From _demo_deployments()
 
 
 class TestGetDeploymentStatus:
@@ -186,21 +206,23 @@ class TestGetDeploymentStatus:
 
     def test_raises_when_not_found(self):
         mgr = _make_mgr()
-        with pytest.raises(ValueError, match="not found"):
-            mgr.get_deployment_status("dep-missing-xyz")
+        with patch.object(_ds_mod, "_load_state", return_value=None):
+            with pytest.raises(ValueError, match="not found"):
+                mgr.get_deployment_status("dep-missing-xyz")
 
     def test_returns_status_dict(self):
         mgr = _make_mgr()
-        # Use a real demo deployment ID
-        result = mgr.get_deployment_status(_DEMO_DEP_ID)
+        with patch.object(_ds_mod, "_load_state", return_value=_REAL_STATE):
+            result = mgr.get_deployment_status(_REAL_DEP_ID)
 
-        assert result["deployment_id"] == _DEMO_DEP_ID
+        assert result["deployment_id"] == _REAL_DEP_ID
         assert result["status"] == "running"
         assert result["service"] == "execution-service"
 
     def test_detailed_false_omits_shards(self):
         mgr = _make_mgr()
-        result = mgr.get_deployment_status(_DEMO_DEP_ID, detailed=False)
+        with patch.object(_ds_mod, "_load_state", return_value=_REAL_STATE):
+            result = mgr.get_deployment_status(_REAL_DEP_ID, detailed=False)
 
         assert "shards" not in result
 
@@ -251,23 +273,24 @@ class TestRefreshDeploymentStatus:
         mock_dep_state = MagicMock()
         mock_dep_state.refresh_deployment_status_sync = MagicMock()
 
-        with patch.dict(
-            sys.modules,
-            {
-                "deployment_api.routes.deployment_state": mock_dep_state,
-                "deployment_api.routes.deployment_caching": _make_mock_caching(),
-                "deployment_api.routes.shard_management": MagicMock(
-                    _classify_all_shards=MagicMock(return_value=[]),
-                    _compute_classification_counts=MagicMock(return_value={}),
-                    _get_state_date_range=MagicMock(return_value={}),
-                ),
-            },
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "deployment_api.routes.deployment_state": mock_dep_state,
+                    "deployment_api.routes.deployment_caching": _make_mock_caching(),
+                    "deployment_api.routes.shard_management": MagicMock(
+                        _classify_all_shards=MagicMock(return_value=[]),
+                        _compute_classification_counts=MagicMock(return_value={}),
+                        _get_state_date_range=MagicMock(return_value={}),
+                    ),
+                },
+            ),
+            patch.object(_ds_mod, "_load_state", return_value=_REAL_STATE),
         ):
-            # refresh calls get_deployment_status which uses _demo_deployments
-            # so we must use a real demo deployment ID
-            result = mgr.refresh_deployment_status(_DEMO_DEP_ID)
+            result = mgr.refresh_deployment_status(_REAL_DEP_ID)
 
-        mock_dep_state.refresh_deployment_status_sync.assert_called_once_with(_DEMO_DEP_ID)
+        mock_dep_state.refresh_deployment_status_sync.assert_called_once_with(_REAL_DEP_ID)
         assert isinstance(result, dict)
 
 
@@ -453,7 +476,7 @@ class TestVerifyDeploymentCompletion:
 
     def test_returns_verification_result(self):
         mgr = _make_mgr()
-        # Current implementation returns demo dict (not_run) - verify the contract
+        # Current implementation returns not_run dict - verify the contract
         result = mgr.verify_deployment_completion("dep-1")
 
         assert result["deployment_id"] == "dep-1"
@@ -468,8 +491,8 @@ class TestVerifyDeploymentCompletion:
         assert result["force_refresh"] is True
 
     def test_raises_on_verification_error(self):
-        # The current implementation does not raise - it returns demo dict.
-        # This test verifies the demo mode response is returned without raising.
+        # The current implementation does not raise - it returns not_run dict.
+        # This test verifies the response is returned without raising.
         mgr = _make_mgr()
         result = mgr.verify_deployment_completion("dep-fail")
         assert result["status"] == "not_run"
@@ -480,7 +503,7 @@ class TestGetDeploymentLogs:
 
     def test_returns_logs_result(self):
         mgr = _make_mgr()
-        # Current implementation returns demo dict with empty logs
+        # Current implementation returns not_available dict with empty logs
         result = mgr.get_deployment_logs("dep-1")
 
         assert result["deployment_id"] == "dep-1"
@@ -493,8 +516,8 @@ class TestGetDeploymentLogs:
         assert result["shard_filter"] == "s1"
 
     def test_raises_on_log_error(self):
-        # The current implementation does not raise - it returns demo dict.
-        # This test verifies the demo mode response is returned without raising.
+        # The current implementation does not raise - it returns not_available dict.
+        # This test verifies the response is returned without raising.
         mgr = _make_mgr()
         result = mgr.get_deployment_logs("dep-fail")
         assert result["status"] == "not_available"
