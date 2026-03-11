@@ -264,15 +264,17 @@ async def get_data_status(
     url = f"{_base_url()}/api/v1/data-status"
     logger.debug("GET %s (service=%s, %s..%s)", url, service, start_date, end_date)
 
-    async with aiohttp.ClientSession(timeout=_timeout()) as session:  # noqa: SIM117
-        async with session.get(url, params=cast(dict[str, str], params)) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    f"deployment-service /api/v1/data-status returned HTTP {resp.status}: {body}"
-                )
-            result = cast(dict[str, object], await resp.json())
-            return result
+    async with (
+        aiohttp.ClientSession(timeout=_timeout()) as session,
+        session.get(url, params=cast(dict[str, str], params)) as resp,
+    ):
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"deployment-service /api/v1/data-status returned HTTP {resp.status}: {body}"
+            )
+        result = cast(dict[str, object], await resp.json())
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +299,9 @@ async def cancel_vm_jobs(
     POST /api/v1/vm-jobs/cancel
 
     This replaces:
-        orch = DeploymentOrchestrator(project_id, region, service_account_email, state_bucket, state_prefix)
+        orch = DeploymentOrchestrator(
+            project_id, region, service_account_email, state_bucket, state_prefix
+        )
         backend = orch.get_backend("vm", job_name=job_name, zone=zone)
         backend.cancel_job_fire_and_forget(job_id, zone)
 
@@ -317,7 +321,7 @@ async def cancel_vm_jobs(
 
     Raises:
         RuntimeError: If the deployment-service HTTP call fails.
-    """  # noqa: E501
+    """
     payload: dict[str, object] = {
         "deployment_id": deployment_id,
         "project_id": project_id,

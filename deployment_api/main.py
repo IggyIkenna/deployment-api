@@ -23,7 +23,9 @@ from unified_trading_library import (
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED  # noqa: F401
+from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
+
+__all__ = ["PROCESSING_LATENCY", "RECORDS_PROCESSED"]
 
 _cfg = DeploymentApiConfig()
 _event_sink = PubSubEventSink(

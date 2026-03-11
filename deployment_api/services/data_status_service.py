@@ -36,7 +36,7 @@ class DataStatusService:
         """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""
         return f"{prefix}-{category.lower()}-{self.project_id}"
 
-    async def run_data_status_cli(  # noqa: C901
+    async def run_data_status_cli(
         self,
         service: str,
         start_date: str,
@@ -147,7 +147,7 @@ class DataStatusService:
             logger.error("Error running CLI command: %s", e)
             return {"error": str(e)}
 
-    async def calculate_missing_shards(  # noqa: C901
+    async def calculate_missing_shards(
         self,
         service: str,
         start_date: str,

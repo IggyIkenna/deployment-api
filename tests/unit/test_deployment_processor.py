@@ -399,7 +399,8 @@ class TestProcessDeploymentsBatchExtended:
         if facade is None:
             facade = _make_mock_facade()
         if lock_fn is None:
-            lock_fn = lambda dep: True  # noqa: E731
+            def lock_fn(dep: object) -> bool:
+                return True
         mock_events = MagicMock(notify_deployment_updated_sync=MagicMock())
         with patch.dict(
             sys.modules,

@@ -142,7 +142,45 @@ def _extract_error_warning_shard_ids(
     return error_shard_ids, warning_shard_ids
 
 
-def _classify_shard(  # noqa: C901
+def _classify_failed_shard(shard: object) -> str:
+    """Classify a failed shard by failure_category."""
+    fc_raw: object = getattr(shard, "failure_category", None)
+    fc: str = fc_raw if isinstance(fc_raw, str) else ""
+    fc_lower = fc.lower() if fc else ""
+    if fc_lower in _INFRA_FAILURE_CATEGORIES:
+        return "INFRA_FAILURE"
+    if fc_lower == "timeout":
+        return "TIMEOUT_FAILURE"
+    if fc_lower in _CODE_FAILURE_CATEGORIES:
+        return "CODE_FAILURE"
+    return "VM_DIED"
+
+
+def _classify_blob_verification(
+    shard: object,
+    blob_exists: bool,
+    blob_updated: datetime | None,
+) -> str:
+    """Classify shard outcome based on blob existence and timestamp."""
+    is_force = _shard_has_force(shard)
+    shard_start = _parse_iso_dt(getattr(shard, "start_time", None))
+    shard_end = _parse_iso_dt(getattr(shard, "end_time", None))
+
+    if not blob_exists:
+        return "DATA_MISSING"
+
+    if blob_updated and shard_start and shard_end:
+        tolerance = 60
+        lower = shard_start - timedelta(seconds=tolerance)
+        upper = shard_end + timedelta(seconds=tolerance)
+        if lower <= blob_updated <= upper:
+            return "VERIFIED"
+        return "DATA_STALE" if is_force else "EXPECTED_SKIP"
+
+    return "VERIFIED" if is_force else "EXPECTED_SKIP"
+
+
+def _classify_shard(
     shard: object,
     blob_exists: bool | None = None,
     blob_updated: datetime | None = None,
@@ -161,67 +199,24 @@ def _classify_shard(  # noqa: C901
     """
     status = _status_str(getattr(shard, "status", ""))
 
-    # --- Tier 0: non-succeeded statuses ---
     if status == "pending":
         return "NEVER_RAN"
     if status == "cancelled":
         return "CANCELLED"
     if status == "running":
         return "STILL_RUNNING"
-
     if status == "failed":
-        fc_raw: object = getattr(shard, "failure_category", None)
-        fc: str = fc_raw if isinstance(fc_raw, str) else ""
-        fc_lower = fc.lower() if fc else ""
-        if fc_lower in _INFRA_FAILURE_CATEGORIES:
-            return "INFRA_FAILURE"
-        if fc_lower == "timeout":
-            return "TIMEOUT_FAILURE"
-        if fc_lower in _CODE_FAILURE_CATEGORIES:
-            return "CODE_FAILURE"
-        # Unknown failure or VM died without writing status
-        return "VM_DIED"
+        return _classify_failed_shard(shard)
 
-    # --- Tier 1: succeeded but check logs ---
     if has_log_errors:
         return "COMPLETED_WITH_ERRORS"
     if has_log_warnings:
         return "COMPLETED_WITH_WARNINGS"
 
-    # --- Tier 2: data verification (blob timestamp check) ---
     if blob_exists is None:
-        # Verification hasn't run / no blob data available
         return "UNVERIFIED"
 
-    is_force = _shard_has_force(shard)
-    shard_start = _parse_iso_dt(getattr(shard, "start_time", None))
-    shard_end = _parse_iso_dt(getattr(shard, "end_time", None))
-
-    if blob_exists:
-        if blob_updated and shard_start and shard_end:
-            # Add 60-second tolerance on both ends for clock skew / upload lag
-            tolerance = 60  # seconds
-            lower = shard_start - timedelta(seconds=tolerance)
-            upper = shard_end + timedelta(seconds=tolerance)
-
-            if lower <= blob_updated <= upper:
-                return "VERIFIED"
-            else:
-                # Data exists but timestamp doesn't match the job interval
-                if is_force:
-                    return "DATA_STALE"
-                else:
-                    return "EXPECTED_SKIP"
-        else:
-            # Blob exists but we can't compare timestamps (missing data)
-            if is_force:
-                # With force, data exists → tentatively verified
-                return "VERIFIED"
-            else:
-                return "EXPECTED_SKIP"
-    else:
-        # No blob at all
-        return "DATA_MISSING"
+    return _classify_blob_verification(shard, blob_exists, blob_updated)
 
 
 def build_blob_timestamp_map(
@@ -249,7 +244,61 @@ def build_blob_timestamp_map(
     return result
 
 
-def resolve_shard_blob_data(  # noqa: C901
+def _check_shard_data_exists(
+    cat: str,
+    venue_val: str,
+    start_date: str,
+    existing_cat_dates: dict[str, set[str]],
+    existing_venue_dates: dict[str, dict[str, set[str]]],
+) -> bool:
+    """Check if blob data exists for a shard using precomputed turbo sets."""
+    if cat not in existing_cat_dates:
+        return False
+    if venue_val and cat in existing_venue_dates and venue_val in existing_venue_dates[cat]:
+        return start_date in existing_venue_dates[cat][venue_val]
+    return start_date in existing_cat_dates[cat]
+
+
+def _build_candidate_keys(venue_val: str, dims_dict: dict[str, object]) -> list[str]:
+    """Build ordered list of sub-dimension candidate keys for blob timestamp lookup."""
+    keys: list[str] = []
+    if venue_val:
+        keys.append(venue_val)
+    for dim_name in ("feature_group", "feature_type", "sub_dimension"):
+        dv_raw: object = dims_dict.get(dim_name, "")
+        dv = dv_raw if isinstance(dv_raw, str) else ""
+        if dv and dv not in keys:
+            keys.append(dv)
+    keys.append("_all")
+    return keys
+
+
+def _lookup_blob_timestamp(
+    cat: str,
+    venue_val: str,
+    start_date: str,
+    dims_dict: dict[str, object],
+    blob_timestamps: dict[str, dict[str, dict[str, object]]],
+) -> datetime | None:
+    """Look up the blob updated timestamp for a shard from turbo data."""
+    if cat not in blob_timestamps:
+        return None
+    cat_ts = blob_timestamps[cat]
+    candidate_keys = _build_candidate_keys(venue_val, dims_dict)
+    for key in candidate_keys:
+        if key in cat_ts:
+            ts: object = cat_ts[key].get(start_date)
+            if ts is not None:
+                return ts if isinstance(ts, datetime) else None
+    for subdim_key, subdim_data in cat_ts.items():
+        if subdim_key not in candidate_keys:
+            ts = subdim_data.get(start_date)
+            if ts is not None:
+                return ts if isinstance(ts, datetime) else None
+    return None
+
+
+def resolve_shard_blob_data(
     state: DeploymentState,
     existing_cat_dates: dict[str, set[str]],
     existing_venue_dates: dict[str, dict[str, set[str]]],
@@ -260,88 +309,26 @@ def resolve_shard_blob_data(  # noqa: C901
     Uses the pre-computed existence sets (from turbo) and blob timestamps
     (from the same turbo queries). No additional GCS calls needed.
 
-    Blob timestamps are keyed by the service's sub-dimension value:
-      - market-tick-data-handler: keyed by venue (e.g. "BINANCE-SPOT")
-      - instruments-service:     keyed by venue (e.g. "NYSE")
-      - features-*-service:      keyed by feature_group (e.g. "technical_indicators")
-      - corporate-actions:       keyed by "_all" (no sub-dimension)
-
     Returns: {shard_id: (blob_exists, blob_updated_or_None)}
     """
     result: dict[str, tuple[bool, datetime | None]] = {}
-
     for shard in state.shards:
         if _status_str(shard.status) != "succeeded":
             continue
         sid = shard.shard_id
         if not sid:
             continue
-
         dims_raw: object = getattr(shard, "dimensions", None) or {}
         dims_dict = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
         cat = cast(str, dims_dict.get("category") or "")
         venue_val = cast(str, dims_dict.get("venue") or "")
         start_date, _ = _extract_date_range(dims_dict.get("date"))
-
-        sid_str = sid
         if not cat or not start_date:
-            result[sid_str] = (False, None)
+            result[sid] = (False, None)
             continue
-
-        # Check existence using the turbo sets
-        data_exists = False
-        if cat in existing_cat_dates:
-            if venue_val and cat in existing_venue_dates and venue_val in existing_venue_dates[cat]:
-                if start_date in existing_venue_dates[cat][venue_val]:
-                    data_exists = True
-            else:
-                if start_date in existing_cat_dates[cat]:
-                    data_exists = True
-
-        # Get blob timestamp from turbo data.
-        # Blob timestamps are keyed by the sub-dimension used in the turbo query.
-        # Try matching keys in priority order:
-        #   1. venue (market-tick, instruments)
-        #   2. feature_group / feature_type (features services)
-        #   3. _all (services with no sub-dimension, e.g. corporate-actions)
-        #   4. Scan all keys as last resort
-        blob_updated_raw: object = None
-        if data_exists and cat in blob_timestamps:
-            cat_ts = blob_timestamps[cat]
-
-            # Build list of candidate keys from shard dimensions
-            # (venue, feature_group, feature_type -- whatever sub-dimension the service uses)
-            candidate_keys: list[str] = []
-            if venue_val:
-                candidate_keys.append(venue_val)
-            for dim_name in ("feature_group", "feature_type", "sub_dimension"):
-                dv_raw: object = dims_dict.get(dim_name, "")
-                dv = dv_raw if isinstance(dv_raw, str) else ""
-                if dv and dv not in candidate_keys:
-                    candidate_keys.append(dv)
-            candidate_keys.append("_all")
-
-            for key in candidate_keys:
-                if key in cat_ts:
-                    ts: object = cat_ts[key].get(start_date)
-                    if ts is not None:
-                        blob_updated_raw = ts
-                        break
-
-            # Fallback: scan all sub-dimension keys if the above didn't work
-            if blob_updated_raw is None:
-                for subdim_key, subdim_data in cat_ts.items():
-                    if subdim_key not in candidate_keys:
-                        ts = subdim_data.get(start_date)
-                        if ts is not None:
-                            blob_updated_raw = ts
-                            break
-
-        blob_updated: datetime | None = (
-            blob_updated_raw if isinstance(blob_updated_raw, datetime) else None
-        )
-        result[sid_str] = (data_exists, blob_updated)
-
+        data_exists = _check_shard_data_exists(cat, venue_val, start_date, existing_cat_dates, existing_venue_dates)
+        blob_updated = _lookup_blob_timestamp(cat, venue_val, start_date, dims_dict, blob_timestamps) if data_exists else None
+        result[sid] = (data_exists, blob_updated)
     return result
 
 
@@ -519,7 +506,14 @@ def compute_completed_breakdown(
     }
 
 
-def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:  # noqa: C901
+_REGION_ZONES: dict[str, list[str]] = {
+    "us-central1": ["us-central1-a", "us-central1-b", "us-central1-c"],
+    "us-east1": ["us-east1-b", "us-east1-c", "us-east1-d"],
+    "europe-west1": ["europe-west1-b", "europe-west1-c", "europe-west1-d"],
+}
+
+
+def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
     """
     Get all zones to search for VMs during lookup operations.
 
@@ -528,28 +522,13 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
     """
     from deployment_api import settings as _settings
 
-    zones: list[str] = []
-
-    # Add primary region zones first
     region = primary_region or _settings.GCS_REGION or "us-central1"
-    if region == "us-central1":
-        zones.extend(["us-central1-a", "us-central1-b", "us-central1-c"])
-    elif region == "us-east1":
-        zones.extend(["us-east1-b", "us-east1-c", "us-east1-d"])
-    elif region == "europe-west1":
-        zones.extend(["europe-west1-b", "europe-west1-c", "europe-west1-d"])
+    zones: list[str] = list(_REGION_ZONES.get(region, []))
 
-    # Add all failover regions
     for failover_region in _settings.ALL_FAILOVER_REGIONS:
-        if failover_region != region:  # Don't duplicate primary
-            if failover_region == "us-central1":
-                zones.extend(["us-central1-a", "us-central1-b", "us-central1-c"])
-            elif failover_region == "us-east1":
-                zones.extend(["us-east1-b", "us-east1-c", "us-east1-d"])
-            elif failover_region == "europe-west1":
-                zones.extend(["europe-west1-b", "europe-west1-c", "europe-west1-d"])
+        if failover_region != region:
+            zones.extend(_REGION_ZONES.get(failover_region, []))
 
-    # Remove duplicates while preserving order
     seen: set[str] = set()
     unique_zones: list[str] = []
     for zone in zones:

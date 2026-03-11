@@ -283,7 +283,7 @@ class DataQueryService:
             logger.error("Error getting instruments list: %s", e)
             return {"error": str(e)}
 
-    async def get_instrument_availability(  # noqa: C901
+    async def get_instrument_availability(
         self,
         venue: str,
         instrument_type: str,

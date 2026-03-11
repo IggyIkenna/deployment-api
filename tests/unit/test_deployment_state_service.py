@@ -18,7 +18,9 @@ import pytest
 # inside method bodies (from ..routes.x import y) work correctly under
 # pytest-xdist where test_background_sync.py may have set a MagicMock at
 # sys.modules["deployment_api.services"].
-import deployment_api  # noqa: F401 — ensures real top-level package is available
+import deployment_api  # ensures real top-level package is available in sys.modules
+
+_ = deployment_api  # prevent F401
 
 # Ensure deployment_api.services is a real package with a __path__ (needed for
 # relative import resolution).  If another test has mocked it, restore a minimal stub.

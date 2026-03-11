@@ -20,7 +20,7 @@ type _ModeMap = defaultdict[str, _TimeframeMap]
 type _BreakdownEntry = dict[str, int | list[str]]
 
 
-async def get_execution_service_data_status(  # noqa: C901
+async def get_execution_service_data_status(
     config_path: str,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -60,7 +60,7 @@ async def get_execution_service_data_status(  # noqa: C901
     if cached is not None:
         return cached
 
-    def _get_status_sync():  # noqa: C901
+    def _get_status_sync():
         try:
             # Parse config_path to get bucket and prefix
             if not config_path.startswith("gs://"):
@@ -98,7 +98,8 @@ async def get_execution_service_data_status(  # noqa: C901
                         timeframe = parts[2]
                         config_file = parts[3] if len(parts) > 3 else parts[-1]
 
-                        # Extract algo name from config file (e.g., ADAPTIVE_TWAP from ADAPTIVE_TWAP_horizon_secs120_...)  # noqa: E501
+                        # Extract algo name from config file
+                        # (e.g., ADAPTIVE_TWAP from ADAPTIVE_TWAP_horizon_secs120_...)
                         algo_match = re.match(
                             r"^([A-Z_]+?)_(?:horizon|profile|display|clip|urgency|num_|participation|lambda|sigma|passive)",
                             config_file,
@@ -393,7 +394,7 @@ async def get_execution_service_data_status(  # noqa: C901
     return result
 
 
-async def calculate_execution_missing_shards(  # noqa: C901
+async def calculate_execution_missing_shards(
     config_path: str,
     start_date: str,
     end_date: str,
@@ -419,7 +420,7 @@ async def calculate_execution_missing_shards(  # noqa: C901
     """
     from deployment_api.utils.storage_facade import list_objects, list_prefixes
 
-    def _calculate_missing_sync():  # noqa: C901
+    def _calculate_missing_sync():
         try:
             # Parse config_path to get bucket and prefix
             if not config_path.startswith("gs://"):

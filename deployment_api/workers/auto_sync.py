@@ -102,7 +102,7 @@ def get_config_dir() -> Path:
     raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
 
-async def auto_sync_running_deployments() -> None:  # noqa: C901
+async def auto_sync_running_deployments() -> None:
     """
     Background task that periodically syncs status for running deployments.
 
@@ -140,7 +140,7 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                 break
 
             # Run GCS operations in thread pool to not block event loop
-            def sync_running_deployments():  # noqa: C901
+            def sync_running_deployments():
                 logger.info("[AUTO_SYNC] Sync cycle starting...")
                 _raw_client = cast(_GCSClient, get_storage_client_with_pool(PROJECT_ID))
                 bucket = _raw_client.bucket(STATE_BUCKET)
@@ -322,8 +322,11 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                     skipped,
                 )
 
-                def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:  # noqa: C901
-                    """Run orphan VM cleanup only (GCS + vm_map + fire). No state write. Returns count fired."""  # noqa: E501
+                def _run_orphan_cleanup_only(dep_state_path: str, state: dict[str, object]) -> int:
+                    """Run orphan VM cleanup only (GCS + vm_map + fire).
+
+                    No state write. Returns count fired.
+                    """
                     config_raw: object = state.get("config") or {}
                     config = (
                         cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
@@ -495,7 +498,8 @@ async def auto_sync_running_deployments() -> None:  # noqa: C901
                     return 0
 
                 # Process deployment implementations...
-                # (This would be the large _process_one_deployment function - extracted separately for brevity)  # noqa: E501
+                # (This would be the large _process_one_deployment function -
+                # extracted separately for brevity)
                 from .deployment_processor import process_deployments_batch
 
                 synced, num_active = process_deployments_batch(

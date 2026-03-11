@@ -113,18 +113,26 @@ class CombinatoricEntry:
         """Generate GCS prefix for this combinatoric and date.
 
         Uses key=value format for BigQuery hive partitioning:
-        - market-tick-data-handler: {base}/day={date}/data_type={dt}/instrument_type={folder}/venue={venue}/
+        - market-tick-data-handler:
+          {base}/day={date}/data_type={dt}/instrument_type={folder}/venue={venue}/
         - market-data-processing-service: {base}/day={date}/timeframe={tf}/data_type={dt}/
           (flat path, no instrument_type/venue folders)
-        """  # noqa: E501
+        """
         if self.timeframe:
             # market-data-processing-service: flat path
             # processed_candles/by_date/day=.../timeframe=.../data_type=.../{instrument}.parquet
-            return f"{base_prefix}/day={date_str}/timeframe={self.timeframe}/data_type={self.data_type}/"  # noqa: E501
+            return (
+                f"{base_prefix}/day={date_str}"
+                f"/timeframe={self.timeframe}/data_type={self.data_type}/"
+            )
         else:
             # market-tick-data-handler: key=value for hive partitioning
-            # raw_tick_data/by_date/day=.../data_type=.../instrument_type=equities/venue=NYSE/instrument_key=*.parquet  # noqa: E501
-            return f"{base_prefix}/day={date_str}/data_type={self.data_type}/instrument_type={self.folder}/venue={self.venue}/"  # noqa: E501
+            # raw_tick_data/by_date/day=.../data_type=.../instrument_type=equities/
+            # venue=NYSE/instrument_key=*.parquet
+            return (
+                f"{base_prefix}/day={date_str}/data_type={self.data_type}"
+                f"/instrument_type={self.folder}/venue={self.venue}/"
+            )
 
 
 @dataclass
@@ -197,7 +205,49 @@ class PathCombinatorics:
         self.config = cast(dict[str, dict[str, object]], raw) if isinstance(raw, dict) else {}
         logger.debug("Loaded venue_data_types.yaml with %s categories", len(self.config))
 
-    def _build_combinatorics(self) -> None:  # noqa: C901
+    def _resolve_data_types(
+        self, data_types: "list[object] | dict[str, object]"
+    ) -> tuple[list[str], set[str]]:
+        """Resolve data_types config into (final_data_types, tick_window_only_types)."""
+        if not isinstance(data_types, dict):
+            return [str(d) for d in data_types if d is not None], set()
+        dt_dict: dict[str, object] = data_types
+        default_val = dt_dict.get("default")
+        tick_val = dt_dict.get("tick_window")
+        default_list: list[str] = (
+            cast(list[str], default_val) if isinstance(default_val, list) else []
+        )
+        tick_list: list[str] = cast(list[str], tick_val) if isinstance(tick_val, list) else []
+        tick_window_only = set(tick_list) - set(default_list)
+        all_dt: set[str] = set()
+        for dt_list_val in dt_dict.values():
+            if isinstance(dt_list_val, list):
+                for item in cast(list[object], dt_list_val):
+                    if isinstance(item, str):
+                        all_dt.add(item)
+        return list(all_dt), tick_window_only
+
+    def _filter_folders_by_access(
+        self, venue: str, folders: list[object], venue_config: "dict[str, object]"
+    ) -> tuple[list[object], bool]:
+        """Apply accessible_instrument_types filter. Returns (filtered_folders, should_skip)."""
+        accessible_types_val = venue_config.get("accessible_instrument_types")
+        if accessible_types_val is None:
+            return folders, False
+        accessible_types: list[object] = (
+            cast(list[object], accessible_types_val)
+            if isinstance(accessible_types_val, list)
+            else []
+        )
+        if len(accessible_types) == 0:
+            return [], True
+        accessible_folders: set[str | None] = {
+            INSTRUMENT_TYPE_TO_FOLDER.get(str(t)) for t in accessible_types
+        } - {None}
+        filtered = [f for f in folders if isinstance(f, str) and f in accessible_folders]
+        return filtered, not filtered
+
+    def _build_combinatorics(self) -> None:
         """Build all valid combinatorics from the config.
 
         Respects accessible_instrument_types from venue_data_types.yaml:
@@ -238,77 +288,33 @@ class PathCombinatorics:
                 start_date_val = venue_config.get("start_date")
                 start_date: str | None = start_date_val if isinstance(start_date_val, str) else None
 
-                # Filter folders by accessible_instrument_types (subscription boundary)
-                # This prevents the UI from flagging data as "missing" for instrument
-                # types we cannot download due to Tardis subscription limitations.
-                accessible_types_val = venue_config.get("accessible_instrument_types")
-                if accessible_types_val is not None:
-                    accessible_types: list[object] = (
-                        cast(list[object], accessible_types_val)
-                        if isinstance(accessible_types_val, list)
-                        else []
-                    )
-                    if len(accessible_types) == 0:
-                        # No accessible types — skip venue entirely
-                        skipped_venues.append(venue)
-                        continue
-                    # Filter folders to only those mapped from accessible instrument types
-                    accessible_folders: set[str | None] = {
-                        INSTRUMENT_TYPE_TO_FOLDER.get(str(t)) for t in accessible_types
-                    } - {None}
-                    folders = [f for f in folders if isinstance(f, str) and f in accessible_folders]
-                    if not folders:
-                        skipped_venues.append(venue)
-                        continue
+                folders, should_skip = self._filter_folders_by_access(venue, folders, venue_config)
+                if should_skip:
+                    skipped_venues.append(venue)
+                    continue
 
-                # Handle TradFi special case: data_types can be a dict with default/tick_window
-                # Track which data types are tick_window_only (not in default)
-                tick_window_only_types: set[str] = set()
-                final_data_types: list[str] = []
-                if isinstance(data_types, dict):
-                    dt_dict: dict[str, object] = data_types
-                    default_val = dt_dict.get("default")
-                    tick_val = dt_dict.get("tick_window")
-                    default_list: list[str] = (
-                        cast(list[str], default_val) if isinstance(default_val, list) else []
-                    )
-                    tick_list: list[str] = (
-                        cast(list[str], tick_val) if isinstance(tick_val, list) else []
-                    )
-                    default_dt: set[str] = set(default_list)
-                    tick_window_dt: set[str] = set(tick_list)
-                    # Data types in tick_window but NOT in default are tick_window_only
-                    tick_window_only_types = tick_window_dt - default_dt
-                    # Flatten all data types from the dict
-                    all_dt: set[str] = set()
-                    for dt_list_val in dt_dict.values():
-                        if isinstance(dt_list_val, list):
-                            for item in cast(list[object], dt_list_val):
-                                if isinstance(item, str):
-                                    all_dt.add(item)
-                    final_data_types = list(all_dt)
-                else:
-                    final_data_types = [str(d) for d in data_types if d is not None]
+                final_data_types, tick_window_only_types = self._resolve_data_types(data_types)
 
-                # Create combinatorics for each folder x data_type
                 for folder_raw in folders:
                     folder = folder_raw if isinstance(folder_raw, str) else ""
                     if not folder:
                         continue
                     for data_type in final_data_types:
-                        entry = CombinatoricEntry(
-                            category=category,
-                            venue=venue,
-                            folder=folder,
-                            data_type=data_type,
-                            start_date=start_date,
-                            tick_window_only=data_type in tick_window_only_types,
+                        self.combinatorics.append(
+                            CombinatoricEntry(
+                                category=category,
+                                venue=venue,
+                                folder=folder,
+                                data_type=data_type,
+                                start_date=start_date,
+                                tick_window_only=data_type in tick_window_only_types,
+                            )
                         )
-                        self.combinatorics.append(entry)
 
         if skipped_venues:
             logger.info(
-                "Skipped %s venue(s) with no accessible instrument types (Tardis subscription limitation): %s",  # noqa: E501
+                "Skipped %s venue(s) with no accessible instrument types"
+                " (Tardis subscription limitation): %s",
                 len(skipped_venues),
                 ", ".join(skipped_venues),
             )

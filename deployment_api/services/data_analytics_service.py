@@ -284,7 +284,7 @@ class DataAnalyticsService:
             "cleared_at": self._cache_stats["last_cleared"].isoformat(),
         }
 
-    async def analyze_data_patterns(  # noqa: C901
+    async def analyze_data_patterns(
         self,
         service: str,
         data_status_result: dict[str, object],
