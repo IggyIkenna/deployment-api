@@ -6,8 +6,8 @@ Endpoints for service production readiness checklists.
 SSOT: unified-trading-codex/10-audit/repos/{repo}.yaml (schema v3.0)
       CR1-CR5 / DR1-DR6 / BR1-BR8 three-tier readiness model.
 
-Legacy fallback removed: deployment-service/configs/checklist.{service}.yaml
-      (old phase_N_* schema files deleted 2026-03-11; codex v3.0 is the sole source of truth)
+Checklist configs live in unified-trading-pm/configs/ (PM is the SSOT for all operational configs).
+      Old phase_N_* schema files deleted 2026-03-11; codex v3.0 is the sole source of truth.
 """
 
 import asyncio

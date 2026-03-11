@@ -6,8 +6,8 @@ This is a self-contained implementation in deployment-api to remove the cross-se
 import boundary with deployment-service. deployment-api must not import
 deployment-service as a Python package; interaction is via messaging/APIs/storage.
 
-The configs/ directory in deployment-api is a symlink to deployment-service/configs/,
-so both repos read from the same YAML files.
+Configs are read from pm-configs/ (symlink to unified-trading-pm/configs/ in local dev;
+real directory populated by cloudbuild before docker build in production).
 """
 
 import logging
