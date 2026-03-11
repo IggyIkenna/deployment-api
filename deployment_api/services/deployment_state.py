@@ -7,95 +7,16 @@ status tracking, refreshing, cancellation, and state transitions.
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import cast
 
+from deployment_api import settings as _settings
+from deployment_api.utils.deployment_state_reader import (
+    list_deployments as _gcs_list_deployments,
+)
+from deployment_api.utils.local_state_manager import load_state as _load_state
+
 logger = logging.getLogger(__name__)
-
-
-def _demo_deployments() -> list[dict[str, object]]:
-    """Return realistic demo deployments for local dev (when GCS is unavailable)."""
-    return [
-        {
-            "deployment_id": "live-exec-20260310-143022-a1b2",
-            "service": "execution-service",
-            "compute_type": "cloud_run",
-            "status": "running",
-            "deploy_mode": "live",
-            "created_at": "2026-03-10T14:30:22Z",
-            "updated_at": "2026-03-10T14:45:00Z",
-            "tag": "v2.4.1-canary",
-            "region": "asia-northeast1",
-            "parameters": {"mode": "live"},
-            "total_shards": 1,
-            "completed_shards": 0,
-            "failed_shards": 0,
-            "progress": {"total_shards": 1, "completed": 0, "failed": 0},
-        },
-        {
-            "deployment_id": "instruments-20260310-090010-c3d4",
-            "service": "instruments-service",
-            "compute_type": "vm",
-            "status": "completed",
-            "deploy_mode": "batch",
-            "created_at": "2026-03-10T09:00:10Z",
-            "updated_at": "2026-03-10T11:22:44Z",
-            "tag": "nightly-2026-03-10",
-            "region": "asia-northeast1",
-            "parameters": {"mode": "batch"},
-            "total_shards": 240,
-            "completed_shards": 238,
-            "failed_shards": 2,
-            "progress": {"total_shards": 240, "completed": 238, "failed": 2},
-        },
-        {
-            "deployment_id": "market-data-20260309-220500-e5f6",
-            "service": "market-data-processing-service",
-            "compute_type": "vm",
-            "status": "failed",
-            "deploy_mode": "batch",
-            "created_at": "2026-03-09T22:05:00Z",
-            "updated_at": "2026-03-09T23:14:33Z",
-            "tag": "v1.8.0",
-            "region": "asia-northeast1",
-            "parameters": {"mode": "batch"},
-            "total_shards": 180,
-            "completed_shards": 144,
-            "failed_shards": 36,
-            "progress": {"total_shards": 180, "completed": 144, "failed": 36},
-        },
-        {
-            "deployment_id": "features-vol-20260309-180000-g7h8",
-            "service": "features-volatility-service",
-            "compute_type": "cloud_run",
-            "status": "completed",
-            "deploy_mode": "batch",
-            "created_at": "2026-03-09T18:00:00Z",
-            "updated_at": "2026-03-09T20:31:15Z",
-            "tag": "v3.1.2",
-            "region": "asia-northeast1",
-            "parameters": {"mode": "batch"},
-            "total_shards": 96,
-            "completed_shards": 96,
-            "failed_shards": 0,
-            "progress": {"total_shards": 96, "completed": 96, "failed": 0},
-        },
-        {
-            "deployment_id": "strategy-20260309-120000-i9j0",
-            "service": "strategy-service",
-            "compute_type": "cloud_run",
-            "status": "cancelled",
-            "deploy_mode": "batch",
-            "created_at": "2026-03-09T12:00:00Z",
-            "updated_at": "2026-03-09T12:47:08Z",
-            "tag": "v5.0.0-beta",
-            "region": "us-central1",
-            "parameters": {"mode": "batch"},
-            "total_shards": 320,
-            "completed_shards": 87,
-            "failed_shards": 0,
-            "progress": {"total_shards": 320, "completed": 87, "failed": 0},
-        },
-    ]
 
 
 class DeploymentStateManager:
@@ -124,18 +45,17 @@ class DeploymentStateManager:
         Returns:
             Dict containing deployment list and metadata
         """
-        # get_cached_deployments is an async function that requires a state_manager param.
-        # This synchronous method uses the demo data fallback path instead.
-        # TODO: Refactor DeploymentStateManager.list_deployments to async and wire proper
-        # caching (get_cached_deployments(self, ...)).
-        deployments: list[dict[str, object]] = _demo_deployments()
+        deployments: list[dict[str, object]] = _gcs_list_deployments(
+            bucket_name=_settings.STATE_BUCKET,
+            project_id=_settings.gcp_project_id,
+            service=service_filter,
+            deployment_env=getattr(_settings, "DEPLOYMENT_ENV", "development"),
+            limit=limit + offset,
+        )
 
-        # Apply filters
+        # Apply status filter (service filter already applied inside _gcs_list_deployments)
         if status_filter:
             deployments = [d for d in deployments if d.get("status") == status_filter]
-
-        if service_filter:
-            deployments = [d for d in deployments if d.get("service") == service_filter]
 
         # Sort by creation time (most recent first)
         deployments.sort(key=lambda x: cast(str, x.get("created_at") or ""), reverse=True)
@@ -181,27 +101,35 @@ class DeploymentStateManager:
         Returns:
             Dict containing deployment status and details
         """
-        # get_cached_deployment_state is an async function that requires a state_manager param.
-        # This synchronous method looks up demo data instead.
-        # TODO: Refactor DeploymentStateManager.get_deployment_status to async and wire proper
-        # caching (await get_cached_deployment_state(self, deployment_id)).
-        all_deployments = _demo_deployments()
-        state: dict[str, object] | None = next(
-            (d for d in all_deployments if d.get("deployment_id") == deployment_id), None
+        state: dict[str, object] | None = _load_state(
+            deployment_id,
+            bucket=_settings.STATE_BUCKET,
         )
         if not state:
             raise ValueError(f"Deployment {deployment_id} not found")
 
-        progress = cast(dict[str, object], state.get("progress") or {})
-        total = cast(int, state.get("total_shards") or 0)
-        completed = cast(int, progress.get("completed") or 0)
-        failed = cast(int, progress.get("failed") or 0)
+        raw_shards = state.get("shards")
+        shards: list[dict[str, object]] = (
+            cast(list[dict[str, object]], raw_shards) if isinstance(raw_shards, list) else []
+        )
+        total = len(shards)
+        completed = sum(1 for s in shards if s.get("status") in ("succeeded", "completed"))
+        failed = sum(1 for s in shards if s.get("status") == "failed")
+        running = sum(1 for s in shards if s.get("status") == "running")
+
+        # Extract date range from config or shard dimensions
+        cfg_raw = state.get("config")
+        cfg: dict[str, object] = (
+            cast(dict[str, object], cfg_raw) if isinstance(cfg_raw, dict) else {}
+        )
+        start_date = str(cfg.get("start_date") or "")
+        end_date = str(cfg.get("end_date") or "")
 
         response: dict[str, object] = {
             "deployment_id": deployment_id,
             "service": state.get("service"),
             "status": state.get("status"),
-            "deploy_mode": state.get("deploy_mode", "batch"),
+            "deploy_mode": state.get("deploy_mode") or state.get("deployment_mode") or "batch",
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
             "region": state.get("region", "asia-northeast1"),
@@ -211,43 +139,19 @@ class DeploymentStateManager:
             "summary": {
                 "completed": completed,
                 "failed": failed,
-                "running": total - completed - failed if state.get("status") == "running" else 0,
-                "pending": 0,
+                "running": running,
+                "pending": total - completed - failed - running,
             },
-            "date_range": {"start": "2026-01-01", "end": "2026-03-10"},
+            "date_range": {"start": start_date, "end": end_date},
         }
 
         if detailed:
-            # Build demo shard rows so the UI shard table renders
-            demo_shards: list[dict[str, object]] = []
-            for i in range(min(total, 12)):
-                if i < failed:
-                    shard_status = "failed"
-                elif i < completed:
-                    shard_status = "completed"
-                else:
-                    shard_status = "running" if state.get("status") == "running" else "pending"
-                demo_shards.append(
-                    {
-                        "shard_id": f"{state['service']}-{i:04d}",
-                        "shard_index": i,
-                        "status": shard_status,
-                        "classification": shard_status,
-                        "dimensions": {"date": f"2026-03-{(i % 10) + 1:02d}"},
-                        "started_at": state.get("created_at"),
-                        "completed_at": state.get("updated_at")
-                        if shard_status == "completed"
-                        else None,
-                    }
-                )
             response.update(
                 {
-                    "shards": demo_shards,
-                    "compute_config": {"cpu": 4, "memory": "8Gi", "machine_type": "n2-standard-4"},
-                    "cli_command": (
-                        f"python -m deployment deploy --service {state['service']} --compute vm"
-                    ),
-                    "error_details": None,
+                    "shards": shards,
+                    "compute_config": state.get("compute_config") or {},
+                    "cli_command": state.get("cli_command") or "",
+                    "error_details": state.get("error_details"),
                 }
             )
 
@@ -461,7 +365,10 @@ class DeploymentStateManager:
         return {
             "deployment_id": deployment_id,
             "status": "not_run",
-            "message": "Verification not available in demo mode",
+            "message": (
+                "Verification not yet available via this synchronous path"
+                " — use /api/data-status for completion checking"
+            ),
             "force_refresh": force_refresh,
         }
 
@@ -490,7 +397,10 @@ class DeploymentStateManager:
         return {
             "deployment_id": deployment_id,
             "status": "not_available",
-            "message": "Log analysis not available in demo mode",
+            "message": (
+                "Log analysis not yet available via this synchronous path"
+                " — use the /api/deployments/{id}/logs route directly"
+            ),
             "shard_filter": shard_filter,
             "log_type": log_type,
             "tail_lines": tail_lines,
@@ -507,8 +417,6 @@ class DeploymentStateManager:
         # Add computed fields like duration, success rate, etc.
         if "created_at" in deployment and "updated_at" in deployment:
             try:
-                from datetime import datetime
-
                 created_raw = deployment["created_at"]
                 updated_raw = deployment["updated_at"]
                 created_str = (
