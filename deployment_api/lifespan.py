@@ -20,7 +20,7 @@ from deployment_api.background_sync import (
     get_owner_id,
     set_shutdown_event,
 )
-from deployment_api.utils.service_utils import get_config_dir
+from deployment_api.utils.service_utils import get_codex_dir, get_config_dir
 from deployment_api.utils.storage_facade import (
     delete_object as _delete_storage_object,
 )
@@ -99,6 +99,12 @@ async def lifespan(app: FastAPI):
     # Startup
     app.state.config_dir = get_config_dir()
     logger.info("Config directory: %s", app.state.config_dir)
+
+    app.state.codex_dir = get_codex_dir()
+    if app.state.codex_dir is not None:
+        logger.info("Codex readiness dir: %s", app.state.codex_dir)
+    else:
+        logger.warning("Codex readiness dir: not found — checklist endpoints will return 404 (codex v3.0 is SSOT)")
 
     # Initialize cache
     from .utils.cache import cache
