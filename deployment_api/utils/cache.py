@@ -25,7 +25,7 @@ Usage:
 Environment Variables:
     REDIS_URL: Redis connection URL (default: redis://localhost:6379/0)
     STATE_BUCKET: GCS bucket for persistent cache (default: deployment-orchestration-{project})
-    GCP_PROJECT_ID: GCP project ID (required, no default — fail fast if missing)
+    gcp_project_id: GCP project ID (required, no default — fail fast if missing)
 """
 
 import asyncio

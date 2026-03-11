@@ -63,7 +63,7 @@ def _get_gcp_build_client():
     ``google.cloud.devtools.cloudbuild_v1.CloudBuildClient`` needed by the
     request-builder helpers in this module.
     """
-    from unified_cloud_interface.providers.gcp_compute import (
+    from unified_cloud_interface.providers.gcp_compute import (  # noqa: deep-import
         GCPCloudBuildClient,  # Deferred — UCI boundary
     )
 
