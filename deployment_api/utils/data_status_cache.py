@@ -234,17 +234,22 @@ def _truncate_list_in_dict(
     d[truncated_key] = True
 
 
-def _truncate_found_missing(
-    d: dict[str, object], max_items: int, half: int
-) -> None:
+def _truncate_found_missing(d: dict[str, object], max_items: int, half: int) -> None:
     """Truncate both dates_found_list and dates_missing_list in a dict."""
-    _truncate_list_in_dict(d, "dates_found_list", "dates_found_list_tail", "dates_found_truncated", max_items, half)
-    _truncate_list_in_dict(d, "dates_missing_list", "dates_missing_list_tail", "dates_missing_truncated", max_items, half)
+    _truncate_list_in_dict(
+        d, "dates_found_list", "dates_found_list_tail", "dates_found_truncated", max_items, half
+    )
+    _truncate_list_in_dict(
+        d,
+        "dates_missing_list",
+        "dates_missing_list_tail",
+        "dates_missing_truncated",
+        max_items,
+        half,
+    )
 
 
-def _truncate_venue_dates(
-    venue_data: dict[str, object], max_items: int, half: int
-) -> None:
+def _truncate_venue_dates(venue_data: dict[str, object], max_items: int, half: int) -> None:
     """Truncate dates lists in a venue dict including nested data_types."""
     _truncate_found_missing(venue_data, max_items, half)
     dt_raw: object = venue_data.get("data_types") or {}
@@ -254,9 +259,7 @@ def _truncate_venue_dates(
             _truncate_found_missing(cast(dict[str, object], dt_data_raw), max_items, half)
 
 
-def _truncate_category_dates(
-    cat_data: dict[str, object], max_items: int, half: int
-) -> None:
+def _truncate_category_dates(cat_data: dict[str, object], max_items: int, half: int) -> None:
     """Truncate dates lists in a category dict including nested venues."""
     _truncate_found_missing(cat_data, max_items, half)
     venues_raw: object = cat_data.get("venues") or {}

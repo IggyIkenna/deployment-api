@@ -377,8 +377,13 @@ class DataQueryService:
             data_types = [data_type] if data_type else self._default_data_types(category)
 
             daily_availability = self._check_daily_availability(
-                bucket_name, venue, instrument_type, instrument,
-                data_types, effective_start, effective_end,
+                bucket_name,
+                venue,
+                instrument_type,
+                instrument,
+                data_types,
+                effective_start,
+                effective_end,
             )
 
             total_days = len(daily_availability)

@@ -21,6 +21,8 @@ COPY gunicorn.conf.py ./
 # symlinks locally (resolved by docker build context). No-op if absent.
 COPY codex-data/ ./codex-data/
 COPY pm-plans/ ./pm-plans/
+# Operational configs — SSOT is unified-trading-pm/configs/; populated by cloudbuild before docker build
+COPY pm-configs/ ./pm-configs/
 RUN id -u appuser >/dev/null 2>&1 || useradd --create-home --uid 1000 --shell /bin/bash appuser
 RUN chown -R appuser:appuser /app
 

@@ -18,31 +18,26 @@ import deployment_api.app_config as app_config
 class TestGetConfigDir:
     """Tests for get_config_dir function."""
 
-    def test_returns_path_when_configs_exists(self, tmp_path):
-        configs_dir = tmp_path / "configs"
-        configs_dir.mkdir()
-
-        # Patch Path(__file__).parent to point to tmp_path as the api_dir
-        # so repo_root = tmp_path.parent and configs_dir = tmp_path.parent / "configs"
-        # Instead, use a simpler approach: path to a fake api file inside a tmp hierarchy
+    def test_returns_path_when_pm_configs_exists(self, tmp_path):
+        # pm-configs/ bundled at repo_root — simulate Docker / local dev via symlink
         repo_root = tmp_path
-        (repo_root / "configs").mkdir(exist_ok=True)
+        (repo_root / "pm-configs").mkdir()
         fake_api_file = tmp_path / "deployment_api" / "app_config.py"
         fake_api_file.parent.mkdir(parents=True, exist_ok=True)
         fake_api_file.touch()
 
         with patch.object(app_config, "__file__", str(fake_api_file)):
             result = app_config.get_config_dir()
-            assert result == repo_root / "configs"
+            assert result == repo_root / "pm-configs"
 
     def test_raises_runtime_error_when_configs_missing(self, tmp_path):
         fake_api_file = tmp_path / "deployment_api" / "app_config.py"
         fake_api_file.parent.mkdir(parents=True, exist_ok=True)
         fake_api_file.touch()
-        # No configs dir exists
+        # No pm-configs dir exists, no sibling unified-trading-pm dir either
 
         with patch.object(app_config, "__file__", str(fake_api_file)):
-            with pytest.raises(RuntimeError, match="Could not find configs directory"):
+            with pytest.raises(RuntimeError, match="Could not find operational configs directory"):
                 app_config.get_config_dir()
 
     def test_real_call_either_returns_path_or_raises(self):
@@ -119,8 +114,8 @@ class TestLifespanStartup:
         from fastapi import FastAPI
 
         mock_app = FastAPI()
-        configs_dir = tmp_path / "configs"
-        configs_dir.mkdir()
+        pm_configs_dir = tmp_path / "pm-configs"
+        pm_configs_dir.mkdir()
 
         mock_cache_obj = AsyncMock()
         mock_cache_obj.initialize = AsyncMock()
@@ -135,7 +130,7 @@ class TestLifespanStartup:
         drain_task = asyncio.create_task(asyncio.sleep(0))
 
         with (
-            patch("deployment_api.app_config.get_config_dir", return_value=configs_dir),
+            patch("deployment_api.app_config.get_config_dir", return_value=pm_configs_dir),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
             patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
@@ -147,7 +142,7 @@ class TestLifespanStartup:
             ),
         ):
             async with app_config.lifespan(mock_app):
-                assert mock_app.state.config_dir == configs_dir
+                assert mock_app.state.config_dir == pm_configs_dir
 
     @pytest.mark.asyncio
     async def test_startup_initializes_cache(self, tmp_path):

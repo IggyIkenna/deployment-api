@@ -64,8 +64,11 @@ _BR_STAGES: list[tuple[str, str]] = [
 
 # Stages whose explicit fail status is a hard-blocking issue
 _BLOCKING_STAGES: set[str] = {
-    "cr4_quality_gate", "cr5_quickmerge",
-    "dr4_sit_pass", "dr5_load_perf", "dr6_prod_ready",
+    "cr4_quality_gate",
+    "cr5_quickmerge",
+    "dr4_sit_pass",
+    "dr5_load_perf",
+    "dr6_prod_ready",
     "br8_user_approved",
 }
 
@@ -146,7 +149,9 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
 
     cr_section = data.get("code_readiness")
     if isinstance(cr_section, dict):
-        cat = _build_category("code_readiness", "Code Readiness (CR1–CR5)", _CR_STAGES, cr_section)
+        cat = _build_category(
+            "code_readiness", "Code Readiness (CR1\u2013CR5)", _CR_STAGES, cr_section
+        )
         categories.append(cat)
         all_items.extend(cast(list[dict[str, object]], cat["items"]))
 
@@ -160,14 +165,16 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
                 "percent": 100,
                 "total_items": 1,
                 "completed_items": 1,
-                "items": [{
-                    "id": "dr_na",
-                    "description": f"Deployment readiness N/A — {na_reason}",
-                    "status": "n/a",
-                    "notes": "",
-                    "verified_date": None,
-                    "blocking": False,
-                }],
+                "items": [
+                    {
+                        "id": "dr_na",
+                        "description": f"Deployment readiness N/A — {na_reason}",
+                        "status": "n/a",
+                        "notes": "",
+                        "verified_date": None,
+                        "blocking": False,
+                    }
+                ],
             }
             categories.append(dr_na_cat)
             all_items.extend(cast(list[dict[str, object]], dr_na_cat["items"]))
@@ -177,7 +184,7 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
                 if isinstance(mode_data, dict):
                     cat = _build_category(
                         f"deployment_readiness_{mode_key}",
-                        f"Deployment Readiness — {mode_label} (DR1–DR6)",
+                        f"Deployment Readiness \u2014 {mode_label} (DR1\u2013DR6)",
                         _DR_STAGES,
                         mode_data,
                     )
@@ -186,7 +193,12 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
 
     br_section = data.get("business_readiness")
     if isinstance(br_section, dict):
-        cat = _build_category("business_readiness", "Business Readiness (BR1–BR8)", _BR_STAGES, br_section)
+        cat = _build_category(
+            "business_readiness",
+            "Business Readiness (BR1\u2013BR8)",
+            _BR_STAGES,
+            br_section,
+        )
         categories.append(cat)
         all_items.extend(cast(list[dict[str, object]], cat["items"]))
 
@@ -197,12 +209,14 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
                 (c["display_name"] for c in categories if item in cast(list[object], c["items"])),
                 "",
             )
-            blocking_items.append({
-                "id": item["id"],
-                "description": item["description"],
-                "category": parent_cat,
-                "notes": item.get("notes", ""),
-            })
+            blocking_items.append(
+                {
+                    "id": item["id"],
+                    "description": item["description"],
+                    "category": parent_cat,
+                    "notes": item.get("notes", ""),
+                }
+            )
 
     done_count = sum(1 for i in all_items if i.get("status") == "done")
     partial_count = sum(1 for i in all_items if i.get("status") == "partial")
@@ -277,16 +291,18 @@ def _list_all_checklists(codex_dir: Path) -> list[dict[str, object]]:
         service_name = yaml_file.stem
         try:
             parsed = _load_checklist(codex_dir, service_name)
-            results.append({
-                "service": service_name,
-                "readiness_percent": parsed["readiness_percent"],
-                "total_items": parsed["total_items"],
-                "completed_items": parsed["completed_items"],
-                "pending_items": parsed["pending_items"],
-                "blocking_count": len(cast(list[object], parsed["blocking_items"])),
-                "last_updated": parsed["last_updated"],
-                "schema": parsed.get("schema", "codex-v3.0"),
-            })
+            results.append(
+                {
+                    "service": service_name,
+                    "readiness_percent": parsed["readiness_percent"],
+                    "total_items": parsed["total_items"],
+                    "completed_items": parsed["completed_items"],
+                    "pending_items": parsed["pending_items"],
+                    "blocking_count": len(cast(list[object], parsed["blocking_items"])),
+                    "last_updated": parsed["last_updated"],
+                    "schema": parsed.get("schema", "codex-v3.0"),
+                }
+            )
         except (OSError, ValueError, RuntimeError) as e:
             results.append({"service": service_name, "readiness_percent": 0, "error": str(e)})
 
@@ -368,7 +384,9 @@ async def validate_service_checklist(service_name: str, request: Request) -> dic
         checklist = _load_checklist(codex_dir, service_name)
         blocking_items = cast(list[object], checklist.get("blocking_items") or [])
         readiness_pct_raw = checklist.get("readiness_percent", 0)
-        readiness_percent = int(readiness_pct_raw) if isinstance(readiness_pct_raw, (int, float)) else 0
+        readiness_percent = (
+            int(readiness_pct_raw) if isinstance(readiness_pct_raw, (int, float)) else 0
+        )
         warnings = _get_warnings(checklist)
         is_ready = len(blocking_items) == 0 and readiness_percent >= 95
         can_proceed = len(blocking_items) == 0

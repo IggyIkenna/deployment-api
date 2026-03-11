@@ -1,7 +1,7 @@
 """
 Unit tests for routes/deployment_state.py sync helper functions.
 
-Tests call sync helpers directly, patching StateManager and storage utilities.
+Tests call sync helpers directly, patching load_state/save_state and storage utilities.
 """
 
 from unittest.mock import MagicMock, patch
@@ -17,31 +17,22 @@ from deployment_api.routes.deployment_state import (
 )
 
 
-def _make_state(
-    status="RUNNING",
+def _make_state_dict(
+    status="running",
     compute_type="cloud_run",
     shards=None,
     deployment_id="dep-1",
-):
-    """Create a minimal mock deployment state."""
-    state = MagicMock()
-    state.deployment_id = deployment_id
-    state.status = MagicMock()
-    state.status.value = status
-    state.compute_type = compute_type
-    state.shards = shards or []
-    state.updated_at = None
-    state.tag = None
-    return state
-
-
-def _mock_state_manager(state=None):
-    """Create a mock StateManager that returns the given state."""
-    sm = MagicMock()
-    sm.load_state.return_value = state
-    sm.save_state.return_value = None
-    sm.delete_state.return_value = None
-    return sm
+    tag=None,
+) -> dict:
+    """Create a minimal dict-based deployment state."""
+    return {
+        "deployment_id": deployment_id,
+        "status": status,
+        "compute_type": compute_type,
+        "shards": shards if shards is not None else [],
+        "tag": tag,
+        "updated_at": None,
+    }
 
 
 class TestParseExecutionName:
@@ -70,10 +61,8 @@ class TestParseExecutionName:
 
 
 class TestCheckShardLogsForErrors:
-    def _make_shard(self, shard_id="shard-1"):
-        shard = MagicMock()
-        shard.shard_id = shard_id
-        return shard
+    def _make_shard(self, shard_id="shard-1") -> dict:
+        return {"shard_id": shard_id}
 
     def test_returns_false_when_log_not_found(self):
         shard = self._make_shard()
@@ -120,60 +109,42 @@ class TestCheckShardLogsForErrors:
 
 class TestCancelDeploymentSync:
     def test_returns_not_found_when_state_missing(self):
-        sm = _mock_state_manager(state=None)
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with patch.object(_ds_routes, "load_state", return_value=None):
             result = cancel_deployment_sync("missing-dep")
         assert result["error"] == "not_found"
         assert result["deployment_id"] == "missing-dep"
 
     def test_returns_already_terminal_message(self):
-        from deployment.state import DeploymentStatus
-
-        state = _make_state()
-        state.status = DeploymentStatus.COMPLETED
-        sm = _mock_state_manager(state=state)
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        state = _make_state_dict(status="completed")
+        with patch.object(_ds_routes, "load_state", return_value=state):
             result = cancel_deployment_sync("dep-1")
         assert result["cancelled"] is False
 
     def test_cancels_running_shards(self):
-        from deployment.state import DeploymentStatus, ShardStatus
-
-        shard1 = MagicMock()
-        shard1.status = ShardStatus.RUNNING
-        shard2 = MagicMock()
-        shard2.status = ShardStatus.PENDING
-        shard3 = MagicMock()
-        shard3.status = ShardStatus.COMPLETED  # should not be cancelled
-
-        state = _make_state()
-        state.status = DeploymentStatus.RUNNING
-        state.shards = [shard1, shard2, shard3]
-        sm = _mock_state_manager(state=state)
+        shard1 = {"status": "running"}
+        shard2 = {"status": "pending"}
+        shard3 = {"status": "completed"}  # should not be cancelled
+        state = _make_state_dict(status="running", shards=[shard1, shard2, shard3])
 
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state") as mock_save,
             patch.object(_ds_routes, "notify_deployment_updated_sync"),
         ):
             result = cancel_deployment_sync("dep-1")
 
         assert result["cancelled"] is True
         assert result["cancelled_shards"] == 2
-        assert shard1.status == ShardStatus.CANCELLED
-        assert shard2.status == ShardStatus.CANCELLED
-        assert shard3.status == ShardStatus.COMPLETED  # unchanged
-        sm.save_state.assert_called_once_with(state)
+        assert shard1["status"] == "cancelled"
+        assert shard2["status"] == "cancelled"
+        assert shard3["status"] == "completed"  # unchanged
+        mock_save.assert_called_once()
 
     def test_swallows_notify_error(self):
-        from deployment.state import DeploymentStatus
-
-        state = _make_state()
-        state.status = DeploymentStatus.RUNNING
-        state.shards = []
-        sm = _mock_state_manager(state=state)
-
+        state = _make_state_dict(status="running", shards=[])
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state"),
             patch.object(
                 _ds_routes, "notify_deployment_updated_sync", side_effect=OSError("notify failed")
             ),
@@ -184,80 +155,57 @@ class TestCancelDeploymentSync:
 
 class TestResumeDeploymentSync:
     def test_returns_not_found_when_state_missing(self):
-        sm = _mock_state_manager(state=None)
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with patch.object(_ds_routes, "load_state", return_value=None):
             result = resume_deployment_sync("missing-dep")
         assert result["error"] == "not_found"
 
     def test_returns_cannot_resume_for_running(self):
-        from deployment.state import DeploymentStatus
-
-        state = _make_state()
-        state.status = DeploymentStatus.RUNNING
-        sm = _mock_state_manager(state=state)
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        state = _make_state_dict(status="running")
+        with patch.object(_ds_routes, "load_state", return_value=state):
             result = resume_deployment_sync("dep-1")
         assert result["resumed"] is False
 
     def test_resumes_failed_and_cancelled_shards(self):
-        from deployment.state import DeploymentStatus, ShardStatus
-
-        shard1 = MagicMock()
-        shard1.status = ShardStatus.FAILED
-        shard2 = MagicMock()
-        shard2.status = ShardStatus.CANCELLED
-        shard3 = MagicMock()
-        shard3.status = ShardStatus.COMPLETED  # should not be resumed
-
-        state = _make_state()
-        state.status = DeploymentStatus.CANCELLED
-        state.shards = [shard1, shard2, shard3]
-        sm = _mock_state_manager(state=state)
+        shard1 = {"status": "failed"}
+        shard2 = {"status": "cancelled"}
+        shard3 = {"status": "completed"}  # should not be resumed
+        state = _make_state_dict(status="cancelled", shards=[shard1, shard2, shard3])
 
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state") as mock_save,
             patch.object(_ds_routes, "notify_deployment_updated_sync"),
         ):
             result = resume_deployment_sync("dep-1")
 
         assert result["resumed"] is True
         assert result["resumed_shards"] == 2
-        assert shard1.status == ShardStatus.PENDING
-        assert shard2.status == ShardStatus.PENDING
-        assert shard3.status == ShardStatus.COMPLETED  # unchanged
-        sm.save_state.assert_called_once_with(state)
+        assert shard1["status"] == "pending"
+        assert shard2["status"] == "pending"
+        assert shard3["status"] == "completed"  # unchanged
+        mock_save.assert_called_once()
 
     def test_returns_no_shards_to_resume_message(self):
-        from deployment.state import DeploymentStatus, ShardStatus
+        shard1 = {"status": "completed"}
+        state = _make_state_dict(status="failed", shards=[shard1])
 
-        shard1 = MagicMock()
-        shard1.status = ShardStatus.COMPLETED
-
-        state = _make_state()
-        state.status = DeploymentStatus.FAILED
-        state.shards = [shard1]
-        sm = _mock_state_manager(state=state)
-
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state") as mock_save,
+        ):
             result = resume_deployment_sync("dep-1")
 
         assert result["resumed"] is False
         assert result["resumed_shards"] == 0
-        sm.save_state.assert_not_called()
+        mock_save.assert_not_called()
 
     def test_swallows_notify_error(self):
-        from deployment.state import DeploymentStatus, ShardStatus
-
-        shard1 = MagicMock()
-        shard1.status = ShardStatus.FAILED
-
-        state = _make_state()
-        state.status = DeploymentStatus.FAILED
-        state.shards = [shard1]
-        sm = _mock_state_manager(state=state)
+        shard1 = {"status": "failed"}
+        state = _make_state_dict(status="failed", shards=[shard1])
 
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state"),
             patch.object(
                 _ds_routes,
                 "notify_deployment_updated_sync",
@@ -270,39 +218,32 @@ class TestResumeDeploymentSync:
 
 class TestDeleteDeploymentSync:
     def test_returns_not_found_when_state_missing(self):
-        sm = _mock_state_manager(state=None)
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with patch.object(_ds_routes, "load_state", return_value=None):
             result = delete_deployment_sync("missing-dep")
         assert result["error"] == "not_found"
 
     def test_deletes_state_and_objects(self):
-        state = _make_state()
-        sm = _mock_state_manager(state=state)
-
+        state = _make_state_dict()
         mock_obj = MagicMock()
-        mock_obj.name = "deployments.test/dep-1/state.json"
+        mock_obj.name = "deployments.test/dep-1/some-file.txt"
 
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
             patch.object(_ds_routes, "list_objects", return_value=[mock_obj]),
             patch.object(_ds_routes, "delete_object") as mock_delete,
         ):
             result = delete_deployment_sync("dep-1")
 
         assert result["deleted"] is True
-        # The implementation uses delete_object directly (not state_manager.delete_state).
-        # Expect at least one call: the listed object cleanup call.
+        # Should have at least the state file deletion + listed object deletion
         assert mock_delete.call_count >= 1
-        # The listed object should be deleted
         mock_delete.assert_any_call(_ds_routes.DEFAULT_STATE_BUCKET, mock_obj.name)
 
     def test_continues_when_delete_state_fails(self):
-        state = _make_state()
-        sm = _mock_state_manager(state=state)
-        sm.delete_state.side_effect = OSError("bucket unavailable")
-
+        state = _make_state_dict()
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "delete_object", side_effect=OSError("bucket unavailable")),
             patch.object(_ds_routes, "list_objects", return_value=[]),
         ):
             result = delete_deployment_sync("dep-1")
@@ -310,11 +251,10 @@ class TestDeleteDeploymentSync:
         assert result["deleted"] is True  # function still returns deleted=True
 
     def test_continues_when_list_objects_fails(self):
-        state = _make_state()
-        sm = _mock_state_manager(state=state)
-
+        state = _make_state_dict()
         with (
-            patch.object(_ds_routes, "StateManager", return_value=sm),
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "delete_object"),
             patch.object(_ds_routes, "list_objects", side_effect=OSError("failed")),
         ):
             result = delete_deployment_sync("dep-1")
@@ -324,31 +264,32 @@ class TestDeleteDeploymentSync:
 
 class TestUpdateDeploymentTagSync:
     def test_returns_not_found_when_state_missing(self):
-        sm = _mock_state_manager(state=None)
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with patch.object(_ds_routes, "load_state", return_value=None):
             result = update_deployment_tag_sync("missing-dep", "v2.0")
         assert result["error"] == "not_found"
 
     def test_updates_tag_and_saves(self):
-        state = _make_state()
-        state.tag = "v1.0"
-        sm = _mock_state_manager(state=state)
+        state = _make_state_dict(tag="v1.0")
 
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state") as mock_save,
+        ):
             result = update_deployment_tag_sync("dep-1", "v2.0")
 
         assert result["updated"] is True
         assert result["old_tag"] == "v1.0"
         assert result["new_tag"] == "v2.0"
-        assert state.tag == "v2.0"
-        sm.save_state.assert_called_once_with(state)
+        assert state["tag"] == "v2.0"
+        mock_save.assert_called_once()
 
     def test_updates_to_none_tag(self):
-        state = _make_state()
-        state.tag = "v1.0"
-        sm = _mock_state_manager(state=state)
+        state = _make_state_dict(tag="v1.0")
 
-        with patch.object(_ds_routes, "StateManager", return_value=sm):
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "save_state"),
+        ):
             result = update_deployment_tag_sync("dep-1", None)
 
         assert result["updated"] is True

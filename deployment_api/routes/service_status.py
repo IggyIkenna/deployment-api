@@ -61,11 +61,14 @@ def _get_token_sync() -> str | None:
 
         if hasattr(source_credentials, "service_account_email"):  # type: ignore[arg-type]
             sa_email: str = str(source_credentials.service_account_email)  # type: ignore[union-attr]
-            if any(x in sa_email for x in [
-                "github-token-sa@",
-                "compute@developer.gserviceaccount.com",
-                "instruments-service",
-            ]):
+            if any(
+                x in sa_email
+                for x in [
+                    "github-token-sa@",
+                    "compute@developer.gserviceaccount.com",
+                    "instruments-service",
+                ]
+            ):
                 logger.info("[PERF] Running as %s, accessing secret directly", sa_email)
                 return cast(str | None, get_secret_client().get_secret("github-token"))
 
@@ -237,6 +240,7 @@ async def _get_quick_status(service: str) -> dict[str, object]:
             "health": "error",
             "error": str(e)[:100],
         }
+
 
 # Allowlist of valid service names derived from workspace-manifest.json repositories.
 # This prevents user-supplied service names from being passed unsanitised to

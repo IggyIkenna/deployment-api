@@ -63,7 +63,9 @@ def _list_exec_configs(
     for obj in config_objs:
         if not obj.name.endswith(".json"):
             continue
-        rel_path = obj.name[len(config_prefix):] if obj.name.startswith(config_prefix) else obj.name
+        rel_path = (
+            obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
+        )
         parts = rel_path.split("/")
         if len(parts) < 4:
             continue
@@ -80,15 +82,17 @@ def _list_exec_configs(
             continue
         result_strategy_id = f"{cfg_strategy}_{cfg_mode}_{cfg_timeframe}_{version}"
         path = f"gs://{bucket_name}/{obj.name}" if include_gs_prefix else obj.name
-        configs.append({
-            "path": path,
-            "strategy": cfg_strategy,
-            "mode": cfg_mode,
-            "timeframe": cfg_timeframe,
-            "config_file": config_file,
-            "algo_name": algo_name,
-            "result_strategy_id": result_strategy_id,
-        })
+        configs.append(
+            {
+                "path": path,
+                "strategy": cfg_strategy,
+                "mode": cfg_mode,
+                "timeframe": cfg_timeframe,
+                "config_file": config_file,
+                "algo_name": algo_name,
+                "result_strategy_id": result_strategy_id,
+            }
+        )
     return configs
 
 
@@ -206,22 +210,24 @@ def _summarize_hierarchy(
                     dates_val = c.get("result_dates")
                     if isinstance(dates_val, list):
                         strategy_result_dates.update(str(d) for d in dates_val)
-                timeframes.append({
-                    "timeframe": timeframe_name,
-                    "total": tf_total,
-                    "with_results": tf_with_results,
-                    "completion_pct": (
-                        round(tf_with_results / tf_total * 100, 1) if tf_total > 0 else 0
-                    ),
-                    "missing_configs": [
-                        {
-                            "config_file": c.get("config_file") or "",
-                            "algo_name": c.get("algo_name") or "",
-                        }
-                        for c in tf_missing
-                    ],
-                    "configs": configs_list,
-                })
+                timeframes.append(
+                    {
+                        "timeframe": timeframe_name,
+                        "total": tf_total,
+                        "with_results": tf_with_results,
+                        "completion_pct": (
+                            round(tf_with_results / tf_total * 100, 1) if tf_total > 0 else 0
+                        ),
+                        "missing_configs": [
+                            {
+                                "config_file": c.get("config_file") or "",
+                                "algo_name": c.get("algo_name") or "",
+                            }
+                            for c in tf_missing
+                        ],
+                        "configs": configs_list,
+                    }
+                )
                 mode_configs += tf_total
                 mode_with_results += tf_with_results
                 tf_entry = breakdown_by_timeframe[timeframe_name]
@@ -242,38 +248,45 @@ def _summarize_hierarchy(
                             f"{p}/{c.get('config_file') or ''}"
                         )
 
-            modes.append({
-                "mode": mode_name,
-                "total": mode_configs,
-                "with_results": mode_with_results,
-                "completion_pct": (
-                    round(mode_with_results / mode_configs * 100, 1) if mode_configs > 0 else 0
-                ),
-                "timeframes": timeframes,
-            })
+            modes.append(
+                {
+                    "mode": mode_name,
+                    "total": mode_configs,
+                    "with_results": mode_with_results,
+                    "completion_pct": (
+                        round(mode_with_results / mode_configs * 100, 1) if mode_configs > 0 else 0
+                    ),
+                    "timeframes": timeframes,
+                }
+            )
             strategy_configs += mode_configs
             strategy_with_results += mode_with_results
             mode_entry = breakdown_by_mode[mode_name]
             mode_entry["total"] = cast(int, mode_entry["total"]) + mode_configs
             mode_entry["with_results"] = cast(int, mode_entry["with_results"]) + mode_with_results
 
-        strategies.append({
-            "strategy": strategy_name,
-            "total": strategy_configs,
-            "with_results": strategy_with_results,
-            "completion_pct": (
-                round(strategy_with_results / strategy_configs * 100, 1)
-                if strategy_configs > 0 else 0
-            ),
-            "result_dates": sorted(strategy_result_dates),
-            "result_date_count": len(strategy_result_dates),
-            "modes": modes,
-        })
+        strategies.append(
+            {
+                "strategy": strategy_name,
+                "total": strategy_configs,
+                "with_results": strategy_with_results,
+                "completion_pct": (
+                    round(strategy_with_results / strategy_configs * 100, 1)
+                    if strategy_configs > 0
+                    else 0
+                ),
+                "result_dates": sorted(strategy_result_dates),
+                "result_date_count": len(strategy_result_dates),
+                "modes": modes,
+            }
+        )
         total_configs += strategy_configs
         total_with_results += strategy_with_results
 
     return (
-        strategies, total_configs, total_with_results,
+        strategies,
+        total_configs,
+        total_with_results,
         _build_breakdown_summary(breakdown_by_mode),
         _build_breakdown_summary(breakdown_by_timeframe),
         _build_breakdown_summary(breakdown_by_algo),
@@ -313,6 +326,7 @@ async def get_execution_service_data_status(
         get_exec_cached_result,
         set_exec_cached_result,
     )
+
     # Check cache first
     cached = get_exec_cached_result(config_path, start_date, end_date)
     if cached is not None:
@@ -330,11 +344,13 @@ async def get_execution_service_data_status(
 
             filter_start = (
                 datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
-                if start_date else None
+                if start_date
+                else None
             )
             filter_end = (
                 datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
-                if end_date else None
+                if end_date
+                else None
             )
             existing_ids, dates_by_strategy = _collect_result_strategy_ids(
                 bucket_name, filter_start, filter_end
@@ -396,9 +412,7 @@ def _list_missing_configs_filtered(
         if not obj.name.endswith(".json"):
             continue
         rel_path = (
-            obj.name[len(config_prefix):]
-            if obj.name.startswith(config_prefix)
-            else obj.name
+            obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
         )
         parts = rel_path.split("/")
         if len(parts) < 4:
@@ -456,9 +470,7 @@ def _collect_result_dates_in_range(
         if result_date < filter_start or result_date > filter_end:
             continue
         for strategy_prefix in list_prefixes(bucket_name, date_prefix):
-            strategy_match = re.search(
-                r"results/\d{4}-\d{2}-\d{2}/([^/]+)/", strategy_prefix
-            )
+            strategy_match = re.search(r"results/\d{4}-\d{2}-\d{2}/([^/]+)/", strategy_prefix)
             if strategy_match:
                 result_dates_by_strategy[strategy_match.group(1)].add(date_str)
 

@@ -249,7 +249,7 @@ def _get_category_blob_timestamp(bucket_name: str, category: str) -> CategoryTim
     if not blobs:
         return {}
     latest_blob = max(
-        blobs, key=lambda b: (b.updated if b.updated else datetime.min.replace(tzinfo=UTC))
+        blobs, key=lambda b: b.updated if b.updated else datetime.min.replace(tzinfo=UTC)
     )
     latest_ts = latest_blob.updated if latest_blob.updated else None
     if latest_ts and latest_ts.tzinfo is None:

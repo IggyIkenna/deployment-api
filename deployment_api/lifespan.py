@@ -104,7 +104,10 @@ async def lifespan(app: FastAPI):
     if app.state.codex_dir is not None:
         logger.info("Codex readiness dir: %s", app.state.codex_dir)
     else:
-        logger.warning("Codex readiness dir: not found — checklist endpoints will return 404 (codex v3.0 is SSOT)")
+        logger.warning(
+            "Codex readiness dir: not found — checklist endpoints will return 404 "
+            "(codex v3.0 is SSOT)"
+        )
 
     app.state.plans_dir = get_plans_dir()
     if app.state.plans_dir is not None:

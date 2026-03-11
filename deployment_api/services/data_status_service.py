@@ -52,13 +52,24 @@ class DataStatusService:
     ) -> list[str]:
         """Build the data-status CLI command list."""
         cmd = [
-            sys.executable, "-m", "deployment_service", "data-status",
-            "-s", service, "--start-date", start_date, "--end-date", end_date,
-            "--output", "json", "--mode", mode,
+            sys.executable,
+            "-m",
+            "deployment_service",
+            "data-status",
+            "-s",
+            service,
+            "--start-date",
+            start_date,
+            "--end-date",
+            end_date,
+            "--output",
+            "json",
+            "--mode",
+            mode,
         ]
-        for cat in (categories or []):
+        for cat in categories or []:
             cmd.extend(["-c", cat])
-        for venue in (venues or []):
+        for venue in venues or []:
             cmd.extend(["-v", venue])
         if show_missing:
             cmd.append("--show-missing")
@@ -94,9 +105,17 @@ class DataStatusService:
         Returns parsed JSON output from CLI command.
         """
         cmd = self._build_cli_cmd(
-            service, start_date, end_date, categories, venues,
-            show_missing, check_venues, check_data_types,
-            check_feature_groups, check_timeframes, mode,
+            service,
+            start_date,
+            end_date,
+            categories,
+            venues,
+            show_missing,
+            check_venues,
+            check_data_types,
+            check_feature_groups,
+            check_timeframes,
+            mode,
         )
         logger.info("Running CLI: %s", " ".join(cmd))
 
@@ -166,8 +185,13 @@ class DataStatusService:
         """
         try:
             result = await self.run_data_status_cli(
-                service=service, start_date=start_date, end_date=end_date,
-                categories=categories, venues=venues, show_missing=True, mode=mode,
+                service=service,
+                start_date=start_date,
+                end_date=end_date,
+                categories=categories,
+                venues=venues,
+                show_missing=True,
+                mode=mode,
             )
             if "error" in result:
                 return result

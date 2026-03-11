@@ -65,6 +65,11 @@ steps:
         mkdir -p pm-plans
         cp -r /tmp/unified-trading-pm/plans/. pm-plans/
         echo "pm-plans: $(find pm-plans -name '*.plan.md' 2>/dev/null | wc -l) plan files bundled"
+
+        echo "Copying unified-trading-pm/configs (operational configs SSOT)..."
+        mkdir -p pm-configs
+        cp -r /tmp/unified-trading-pm/configs/. pm-configs/
+        echo "pm-configs: $(ls pm-configs/*.yaml 2>/dev/null | wc -l) YAML files bundled"
     waitFor: ["-"]
 
   - name: "gcr.io/cloud-builders/docker"

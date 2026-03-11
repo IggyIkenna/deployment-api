@@ -79,9 +79,7 @@ def _read_shard_statuses(
         shard_id = shard.get("shard_id")
         if not shard_id:
             continue
-        path = (
-            f"deployments.{deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
-        )
+        path = f"deployments.{deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
         try:
             text = read_object_text(state_bucket, path)
             event_data = parse_service_event(text)
@@ -118,13 +116,16 @@ def _fire_orphan_deletes(
     zone_raw = config.get("zone")
     zone_cfg = zone_raw if isinstance(zone_raw, str) else None
 
-    orch = cast(_OrchestratorProtocol, orch_cls(
-        project_id=project_id,
-        region=region,
-        service_account_email=service_account_email,
-        state_bucket=state_bucket,
-        state_prefix=f"deployments.{deployment_env}",
-    ))
+    orch = cast(
+        _OrchestratorProtocol,
+        orch_cls(
+            project_id=project_id,
+            region=region,
+            service_account_email=service_account_email,
+            state_bucket=state_bucket,
+            state_prefix=f"deployments.{deployment_env}",
+        ),
+    )
     backend = orch.get_backend("vm", job_name=job_name, zone=zone_cfg)
     if backend is None:
         return 0

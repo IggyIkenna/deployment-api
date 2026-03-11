@@ -103,7 +103,9 @@ _authenticated_router.include_router(
     capabilities.router, prefix="/api/capabilities", tags=["Capabilities"]
 )
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds
-_authenticated_router.include_router(builds.router)  # /api/builds/{service} + /api/deployments/{service}/deploy
+_authenticated_router.include_router(
+    builds.router
+)  # /api/builds/{service} + /api/deployments/{service}/deploy
 _authenticated_router.include_router(config_management.router, prefix="/api")
 _authenticated_router.include_router(commentary.router, prefix="/api", tags=["Commentary"])
 app.include_router(_authenticated_router)

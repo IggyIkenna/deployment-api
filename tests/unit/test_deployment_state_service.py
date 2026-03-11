@@ -70,11 +70,11 @@ def _with_mock_routes(deps=None, state=None, classified=None, counts=None, date_
     mock_caching.invalidate_deployment_cache = AsyncMock()
 
     mock_dep_state = MagicMock()
-    mock_dep_state._cancel_deployment_sync = MagicMock()
-    mock_dep_state._refresh_deployment_status_sync = MagicMock()
-    mock_dep_state._resume_deployment_sync = MagicMock()
-    mock_dep_state._delete_deployment_sync = MagicMock()
-    mock_dep_state._update_deployment_tag_sync = MagicMock()
+    mock_dep_state.cancel_deployment_sync = MagicMock()
+    mock_dep_state.refresh_deployment_status_sync = MagicMock()
+    mock_dep_state.resume_deployment_sync = MagicMock()
+    mock_dep_state.delete_deployment_sync = MagicMock()
+    mock_dep_state.update_deployment_tag_sync = MagicMock()
 
     mock_shard = MagicMock()
     mock_shard._classify_all_shards = MagicMock(return_value=classified or [])
@@ -228,9 +228,7 @@ class TestCancelDeployment:
     def test_raises_on_cancel_error(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._cancel_deployment_sync = MagicMock(
-            side_effect=RuntimeError("cancel failed")
-        )
+        mock_dep_state.cancel_deployment_sync = MagicMock(side_effect=RuntimeError("cancel failed"))
 
         with (
             patch.dict(
@@ -251,7 +249,7 @@ class TestRefreshDeploymentStatus:
     def test_calls_refresh_sync(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._refresh_deployment_status_sync = MagicMock()
+        mock_dep_state.refresh_deployment_status_sync = MagicMock()
 
         with patch.dict(
             sys.modules,
@@ -269,7 +267,7 @@ class TestRefreshDeploymentStatus:
             # so we must use a real demo deployment ID
             result = mgr.refresh_deployment_status(_DEMO_DEP_ID)
 
-        mock_dep_state._refresh_deployment_status_sync.assert_called_once_with(_DEMO_DEP_ID)
+        mock_dep_state.refresh_deployment_status_sync.assert_called_once_with(_DEMO_DEP_ID)
         assert isinstance(result, dict)
 
 
@@ -279,7 +277,7 @@ class TestResumeDeployment:
     def test_returns_resumed_status(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._resume_deployment_sync = MagicMock()
+        mock_dep_state.resume_deployment_sync = MagicMock()
 
         with patch.dict(
             sys.modules,
@@ -296,7 +294,7 @@ class TestResumeDeployment:
     def test_raises_on_resume_error(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._resume_deployment_sync = MagicMock(side_effect=OSError("connect failed"))
+        mock_dep_state.resume_deployment_sync = MagicMock(side_effect=OSError("connect failed"))
 
         with (
             patch.dict(
@@ -317,7 +315,7 @@ class TestDeleteDeployment:
     def test_returns_deleted_status(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._delete_deployment_sync = MagicMock()
+        mock_dep_state.delete_deployment_sync = MagicMock()
 
         with patch.dict(
             sys.modules,
@@ -334,9 +332,7 @@ class TestDeleteDeployment:
     def test_raises_on_delete_error(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._delete_deployment_sync = MagicMock(
-            side_effect=RuntimeError("delete failed")
-        )
+        mock_dep_state.delete_deployment_sync = MagicMock(side_effect=RuntimeError("delete failed"))
 
         with (
             patch.dict(
@@ -357,7 +353,7 @@ class TestBulkDeleteDeployments:
     def test_all_successful(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._delete_deployment_sync = MagicMock()
+        mock_dep_state.delete_deployment_sync = MagicMock()
 
         with patch.dict(
             sys.modules,
@@ -383,7 +379,7 @@ class TestBulkDeleteDeployments:
                 raise RuntimeError("second delete failed")
 
         mock_dep_state = MagicMock()
-        mock_dep_state._delete_deployment_sync = MagicMock(side_effect=failing_delete)
+        mock_dep_state.delete_deployment_sync = MagicMock(side_effect=failing_delete)
 
         with patch.dict(
             sys.modules,
@@ -419,7 +415,7 @@ class TestUpdateDeploymentTag:
     def test_returns_updated_status(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._update_deployment_tag_sync = MagicMock()
+        mock_dep_state.update_deployment_tag_sync = MagicMock()
 
         with patch.dict(
             sys.modules,
@@ -437,7 +433,7 @@ class TestUpdateDeploymentTag:
     def test_raises_on_update_error(self):
         mgr = _make_mgr()
         mock_dep_state = MagicMock()
-        mock_dep_state._update_deployment_tag_sync = MagicMock(side_effect=ValueError("bad tag"))
+        mock_dep_state.update_deployment_tag_sync = MagicMock(side_effect=ValueError("bad tag"))
 
         with (
             patch.dict(

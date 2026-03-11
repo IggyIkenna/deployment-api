@@ -129,7 +129,8 @@ def list_deployments(
         prefixes: list[str] = [str(b) for b in cast(list[object], prefixes_attr)]
 
         valid_prefixes: list[str] = [
-            f for f in prefixes
+            f
+            for f in prefixes
             if (n := f.rstrip("/").split("/")[-1]) and n.count("-") >= 3 and not n.startswith("d-")
         ]
         valid_prefixes.sort(reverse=True)

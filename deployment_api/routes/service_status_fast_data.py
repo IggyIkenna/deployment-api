@@ -46,9 +46,7 @@ def _find_latest_ts_for_bucket(bucket_name: str) -> "datetime | None":
 
     for prefix in _PREFIXES_TO_TRY:
         prefixes_found = list_prefixes(bucket_name, prefix)
-        date_prefixes = [
-            p for p in prefixes_found if re.search(r"day=\d{4}-\d{2}-\d{2}", p)
-        ]
+        date_prefixes = [p for p in prefixes_found if re.search(r"day=\d{4}-\d{2}-\d{2}", p)]
         if date_prefixes:
             date_prefixes.sort(reverse=True)
             recent_objs = list_objects(bucket_name, date_prefixes[0], max_results=10)

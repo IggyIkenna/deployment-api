@@ -287,7 +287,10 @@ class SyncService:
             vms_per_min = launched / (elapsed / 60) if elapsed > 0 else 0
             logger.info(
                 "[SYNC_SERVICE] %s: Launched %s shards in %.1fs (%.0f shards/min)",
-                deployment_id, launched, elapsed, vms_per_min,
+                deployment_id,
+                launched,
+                elapsed,
+                vms_per_min,
             )
         return launched
 
@@ -414,9 +417,7 @@ class SyncService:
             return 0
 
         try:
-            return self._acquire_and_launch(
-                deployment_id, config, shards_to_launch
-            )
+            return self._acquire_and_launch(deployment_id, config, shards_to_launch)
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("[SYNC_SERVICE] Scheduling error for %s: %s", deployment_id, e)
             return 0

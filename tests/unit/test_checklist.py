@@ -46,7 +46,13 @@ class TestParseChecklist:
         cr_statuses: dict[str, str] | None = None,
     ) -> dict[str, object]:
         cr: dict[str, object] = {}
-        for stage in ["cr1_functionality", "cr2_unit_tests", "cr3_integration_tests", "cr4_quality_gate", "cr5_quickmerge"]:
+        for stage in [
+            "cr1_functionality",
+            "cr2_unit_tests",
+            "cr3_integration_tests",
+            "cr4_quality_gate",
+            "cr5_quickmerge",
+        ]:
             status = (cr_statuses or {}).get(stage, "pass")
             cr[stage] = {"status": status, "notes": ""}
         return {
@@ -74,7 +80,9 @@ class TestParseChecklist:
         assert result["readiness_percent"] == 100
 
     def test_pending_items(self):
-        data = self._make_codex_data(cr_statuses={"cr1_functionality": "pass", "cr2_unit_tests": "fail"})
+        data = self._make_codex_data(
+            cr_statuses={"cr1_functionality": "pass", "cr2_unit_tests": "fail"}
+        )
         result = _parse_checklist(data)
         assert result["total_items"] == 5
         # cr2 is fail -> pending; remaining 4 are pass -> done
@@ -82,7 +90,16 @@ class TestParseChecklist:
         assert result["readiness_percent"] < 100
 
     def test_partial_items_count_as_half(self):
-        cr_statuses = dict.fromkeys(["cr1_functionality", "cr2_unit_tests", "cr3_integration_tests", "cr4_quality_gate", "cr5_quickmerge"], "partial")
+        cr_statuses = dict.fromkeys(
+            [
+                "cr1_functionality",
+                "cr2_unit_tests",
+                "cr3_integration_tests",
+                "cr4_quality_gate",
+                "cr5_quickmerge",
+            ],
+            "partial",
+        )
         data = self._make_codex_data(cr_statuses=cr_statuses)
         result = _parse_checklist(data)
         assert result["partial_items"] == 5
@@ -170,7 +187,7 @@ class TestParseChecklist:
             },
         }
         result = _parse_checklist(data)
-        assert result["blocking_items"][0]["category"] == "Code Readiness (CR1–CR5)"
+        assert result["blocking_items"][0]["category"] == "Code Readiness (CR1\u2013CR5)"
 
 
 class TestGetWarnings:

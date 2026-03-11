@@ -297,12 +297,14 @@ class DataAnalyticsService:
             total_venues = len(venues_info)
             completed_venues = sum(1 for v in venues_info if v.get("status") != "missing")
             completion_rate = (completed_venues / total_venues * 100) if total_venues > 0 else 0
-            daily_completions.append({
-                "date": date_str,
-                "completion_rate": completion_rate,
-                "total_venues": total_venues,
-                "completed_venues": completed_venues,
-            })
+            daily_completions.append(
+                {
+                    "date": date_str,
+                    "completion_rate": completion_rate,
+                    "total_venues": total_venues,
+                    "completed_venues": completed_venues,
+                }
+            )
             for venue_info in venues_info:
                 venue_name = cast(str, venue_info.get("venue", "unknown"))
                 status = cast(str, venue_info.get("status", "unknown"))

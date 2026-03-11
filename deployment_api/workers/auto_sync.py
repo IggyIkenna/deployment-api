@@ -202,17 +202,13 @@ def _release_deployment_lock(
     try:
         lock_blob = bucket.blob(lock_blob_name)
         if lock_blob.exists():
-            lock_data = cast(
-                dict[str, object], json.loads(lock_blob.download_as_text() or "{}")
-            )
+            lock_data = cast(dict[str, object], json.loads(lock_blob.download_as_text() or "{}"))
             if lock_data.get("owner") == OWNER_ID:
                 lock_blob.delete()
                 _held_deployment_locks.discard(deployment_id)
                 return True
     except (OSError, ValueError, RuntimeError) as e:
-        logger.warning(
-            "Unexpected error during release deployment lock: %s", e, exc_info=True
-        )
+        logger.warning("Unexpected error during release deployment lock: %s", e, exc_info=True)
     _held_deployment_locks.discard(deployment_id)
     return False
 
@@ -223,9 +219,7 @@ def _scan_one_state_path(
 ) -> tuple[str, dict[str, object]] | None:
     """Load state.json and return (path, data) if active, else None."""
     try:
-        raw = cast(
-            dict[str, object], json.loads(read_object_text(STATE_BUCKET, path))
-        )
+        raw = cast(dict[str, object], json.loads(read_object_text(STATE_BUCKET, path)))
         if raw.get("status") in (
             "pending",
             "running",
@@ -270,9 +264,7 @@ def _read_shard_status_from_obj(
         if status_part in ("FAILED", "ZOMBIE"):
             return (shard_id, "failed")
     except (OSError, ValueError, RuntimeError) as e:
-        logger.warning(
-            "Unexpected error during read status: %s", e, exc_info=True
-        )
+        logger.warning("Unexpected error during read status: %s", e, exc_info=True)
     return None
 
 
@@ -286,9 +278,7 @@ def _build_vm_map(service_name: str, deployment_id: str) -> dict[str, object] | 
         from unified_cloud_interface import get_compute_engine_client
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
-        instances = ce.aggregated_list_instances(
-            PROJECT_ID, f"name:{service_name}-*"
-        )
+        instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")
         for inst in instances:
             inst_d = inst
             vm_map[str(inst_d["name"])] = {
@@ -324,13 +314,9 @@ def _fire_orphan_vm_deletes(
             service_account_email = ValidationUtils.get_required(
                 config, "service_account_email", "auto_sync orchestrator"
             )
-            job_name = ValidationUtils.get_required(
-                config, "job_name", "auto_sync VM backend"
-            )
+            job_name = ValidationUtils.get_required(config, "job_name", "auto_sync VM backend")
         except ConfigurationError as e:
-            logger.error(
-                "[AUTO_SYNC] %s: Configuration error - %s", deployment_id, e
-            )
+            logger.error("[AUTO_SYNC] %s: Configuration error - %s", deployment_id, e)
             return 0
 
         _orch_factory = cast(Callable[..., object], _orchestrator_cls)
@@ -348,9 +334,7 @@ def _fire_orphan_vm_deletes(
         )
         backend: object = cast(object, _backend_raw)  # type: ignore[redundant-cast]  # ensure object type
         if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-            with ThreadPoolExecutor(
-                max_workers=min(len(to_fire), orphan_max)
-            ) as pool:
+            with ThreadPoolExecutor(max_workers=min(len(to_fire), orphan_max)) as pool:
                 for job_id, zone in to_fire:
                     pool.submit(
                         backend.cancel_job_fire_and_forget,  # type: ignore[union-attr]  # dynamic backend
@@ -364,9 +348,7 @@ def _fire_orphan_vm_deletes(
             )
             return len(to_fire)
     except (OSError, ValueError, RuntimeError) as e:
-        logger.debug(
-            "[AUTO_SYNC] Orphan cleanup fire failed for %s: %s", deployment_id, e
-        )
+        logger.debug("[AUTO_SYNC] Orphan cleanup fire failed for %s: %s", deployment_id, e)
     return 0
 
 
@@ -439,19 +421,13 @@ def _run_orphan_cleanup_only(
     No state write. Returns count fired.
     """
     config_raw: object = state.get("config") or {}
-    config = (
-        cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
-    )
+    config = cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
     deployment_id = dep_state_path.split("/")[1]
     compute_type = state.get("compute_type", "vm")
     if compute_type != "vm":
         return 0
     shards_raw: object = state.get("shards") or []
-    shards = (
-        cast(list[dict[str, object]], shards_raw)
-        if isinstance(shards_raw, list)
-        else []
-    )
+    shards = cast(list[dict[str, object]], shards_raw) if isinstance(shards_raw, list) else []
     service_name = cast(str, state.get("service") or "")
     if not service_name:
         return 0
@@ -497,8 +473,7 @@ def _parallel_scan_active_states(
 
     with ThreadPoolExecutor(max_workers=20) as scan_pool:
         futures = {
-            scan_pool.submit(_scan_one_state_path, p, read_object_text): p
-            for p in state_paths
+            scan_pool.submit(_scan_one_state_path, p, read_object_text): p for p in state_paths
         }
         for future in as_completed(futures, timeout=30):
             try:
@@ -542,9 +517,7 @@ def sync_running_deployments() -> tuple[int, int]:
 
     # List deployment directories via storage facade (FUSE when production)
     deployments_prefix = f"deployments.{DEPLOYMENT_ENV}/"
-    logger.info(
-        "[AUTO_SYNC] Listing deployment directories (prefix=%s)...", deployments_prefix
-    )
+    logger.info("[AUTO_SYNC] Listing deployment directories (prefix=%s)...", deployments_prefix)
     try:
         from deployment_api.utils.storage_facade import (
             list_objects,
@@ -612,9 +585,7 @@ def _run_state_ttl_cleanup(current_interval: float) -> None:
             deleted_count += _check_and_delete_old_deployment(dep_prefix, cutoff, delete_objects)
 
         if deleted_count > 0:
-            logger.info(
-                "[AUTO_SYNC] TTL cleanup: deleted %s old deployment(s)", deleted_count
-            )
+            logger.info("[AUTO_SYNC] TTL cleanup: deleted %s old deployment(s)", deleted_count)
     except (OSError, ValueError, RuntimeError) as e:
         logger.debug("[AUTO_SYNC] State TTL cleanup error: %s", e)
 
@@ -649,9 +620,7 @@ def _check_and_delete_old_deployment(
             )
             return 1
     except (OSError, ValueError, RuntimeError) as e:
-        logger.debug(
-            "[AUTO_SYNC] TTL cleanup error for %s: %s", deployment_id, e
-        )
+        logger.debug("[AUTO_SYNC] TTL cleanup error for %s: %s", deployment_id, e)
     return 0
 
 
@@ -695,9 +664,7 @@ async def auto_sync_running_deployments() -> None:
             # Run GCS operations in thread pool to not block event loop
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor(max_workers=1) as executor:
-                synced, num_active = await loop.run_in_executor(
-                    executor, sync_running_deployments
-                )
+                synced, num_active = await loop.run_in_executor(executor, sync_running_deployments)
 
             if synced > 0:
                 logger.info("[AUTO_SYNC] Synced %s deployment(s)", synced)
