@@ -543,7 +543,9 @@ def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentB
     client = _get_gcp_build_client()
     parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
     builds_request = _cb.ListBuildsRequest(
-        parent=parent, page_size=5, filter=f'build_trigger_id="{trigger_id}"',
+        parent=parent,
+        page_size=5,
+        filter=f'build_trigger_id="{trigger_id}"',
     )
     for build in islice(client.list_builds(request=builds_request), 5):  # type: ignore[misc]
         if build.create_time and build.create_time >= started_after:  # type: ignore[operator]
@@ -577,9 +579,7 @@ def _extract_build_id_from_op(
     return build_id, log_url
 
 
-def _run_trigger_operation_sync(
-    trigger_name: str, branch: str
-) -> TriggerRunResultDict:
+def _run_trigger_operation_sync(trigger_name: str, branch: str) -> TriggerRunResultDict:
     """Run the Cloud Build trigger synchronously. Returns trigger result metadata."""
     _cb = _cloudbuild_v1()
     client = _get_gcp_build_client()
@@ -590,7 +590,8 @@ def _run_trigger_operation_sync(
     name = f"projects/{default_project_id}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
     logger.info("Attempting to run trigger: %s on branch %s", name, branch)
     run_request = _cb.RunBuildTriggerRequest(
-        name=name, source=_cb.RepoSource(branch_name=branch),
+        name=name,
+        source=_cb.RepoSource(branch_name=branch),
     )
     operation = client.run_build_trigger(request=run_request)  # type: ignore[misc]
     op_name: str | None = cast(str | None, getattr(operation, "name", None))
@@ -600,8 +601,11 @@ def _run_trigger_operation_sync(
     if build_id:
         logger.info("Got build info: build_id=%s", build_id)
     return {
-        "success": True, "build_id": build_id, "log_url": log_url,
-        "trigger_id": trigger_id, "trigger_time": trigger_time,
+        "success": True,
+        "build_id": build_id,
+        "log_url": log_url,
+        "trigger_id": trigger_id,
+        "trigger_time": trigger_time,
     }
 
 

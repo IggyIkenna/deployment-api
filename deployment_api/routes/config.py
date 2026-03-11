@@ -249,9 +249,7 @@ async def get_dependencies(request: Request):
         ) from e
 
 
-def _load_service_deps_from_file(
-    deps_path: Path, service_name: str
-) -> dict[str, object] | None:
+def _load_service_deps_from_file(deps_path: Path, service_name: str) -> dict[str, object] | None:
     """Load and build service dependency info from a dependencies.yaml file."""
     with open(deps_path) as f:
         data = cast(dict[str, object], yaml.safe_load(f))
@@ -271,11 +269,13 @@ def _load_service_deps_from_file(
     dag_edges: list[dict[str, object]] = []
     for svc_name, svc_data in services.items():
         for upstream in cast(list[dict[str, object]], svc_data.get("upstream") or []):
-            dag_edges.append({
-                "from": upstream.get("service"),
-                "to": svc_name,
-                "required": upstream.get("required", False),
-            })
+            dag_edges.append(
+                {
+                    "from": upstream.get("service"),
+                    "to": svc_name,
+                    "required": upstream.get("required", False),
+                }
+            )
     return {
         "service": service_name,
         "description": service_data.get("description"),

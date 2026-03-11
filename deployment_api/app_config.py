@@ -98,16 +98,30 @@ def _release_deployment_locks_gcs() -> None:
 
 
 def get_config_dir() -> Path:
-    """Get the configs directory path."""
-    # Try relative to this file
-    api_dir = Path(__file__).parent
-    repo_root = api_dir.parent
-    configs_dir = repo_root / "configs"
+    """Get the operational configs directory path.
 
-    if configs_dir.exists():
-        return configs_dir
+    Search order:
+    1. repo_root/pm-configs/  -- symlink to ../unified-trading-pm/configs (local dev)
+                              -- real dir populated by cloudbuild before docker build (prod)
+    2. workspace sibling      -- ../unified-trading-pm/configs
 
-    raise RuntimeError(f"Could not find configs directory at {configs_dir}")
+    SSOT: unified-trading-pm/configs/ (PM is the canonical source for operational configs)
+    """
+    api_dir = Path(__file__).parent  # deployment_api/
+    repo_root = api_dir.parent  # deployment-api/
+
+    bundled = repo_root / "pm-configs"
+    if bundled.exists():
+        return bundled
+
+    sibling = repo_root.parent / "unified-trading-pm" / "configs"
+    if sibling.exists():
+        return sibling
+
+    raise RuntimeError(
+        "Could not find operational configs directory. "
+        "Expected pm-configs/ (bundled) or ../unified-trading-pm/configs (sibling)."
+    )
 
 
 def get_ui_dist_dir() -> Path | None:

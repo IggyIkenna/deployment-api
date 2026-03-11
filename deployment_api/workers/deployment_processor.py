@@ -316,9 +316,7 @@ def _collect_unhealthy_vms(
             continue
 
         try:
-            serial_logs = ce_client.get_serial_port_output(
-                PROJECT_ID, zone, job_id, start=-8192
-            )
+            serial_logs = ce_client.get_serial_port_output(PROJECT_ID, zone, job_id, start=-8192)
             kill = _inspect_vm_shard_health(
                 serial_logs, job_id, zone, shard_id, running_seconds, oom_threshold, startup_timeout
             )
@@ -493,8 +491,7 @@ def _collect_retry_orphans(
     return [
         jid
         for jid, val in pending_vm_deletes.items()
-        if now_ts - val[0] >= orphan_retry_s
-        and _vm_status_from_map(vm_map, jid) == "RUNNING"
+        if now_ts - val[0] >= orphan_retry_s and _vm_status_from_map(vm_map, jid) == "RUNNING"
     ]
 
 
@@ -780,9 +777,7 @@ def _finalise_updated_state(
     from deployment_api.utils.storage_facade import write_object_text
 
     shards = cast(list[dict[str, object]], state.get("shards") or [])
-    all_terminal = all(
-        s.get("status") in ("succeeded", "failed", "cancelled") for s in shards
-    )
+    all_terminal = all(s.get("status") in ("succeeded", "failed", "cancelled") for s in shards)
     if all_terminal:
         failed_count = sum(1 for s in shards if s.get("status") == "failed")
         if compute_type == "vm":
@@ -834,8 +829,14 @@ def _run_deployment_batch_concurrent(
             shards = cast(list[dict[str, object]], state.get("shards") or [])
 
             cpd_result = _handle_completed_pending_delete(
-                state, state_path, deployment_id, compute_type,
-                shards, config, now, release_deployment_lock,
+                state,
+                state_path,
+                deployment_id,
+                compute_type,
+                shards,
+                config,
+                now,
+                release_deployment_lock,
             )
             if cpd_result is not None:
                 return cpd_result
@@ -896,9 +897,7 @@ def _process_active_deployment(
 
     # For Cloud Run: refresh running executions in batch.
     if compute_type == "cloud_run":
-        updated = _process_cloud_run_status(
-            shards, config, deployment_id, shard_statuses, updated
-        )
+        updated = _process_cloud_run_status(shards, config, deployment_id, shard_statuses, updated)
 
     # Apply status updates based on GCS markers / VM existence / Cloud Run API.
     apply_updated, _ = _apply_shard_status_updates(
@@ -956,8 +955,11 @@ def process_deployments_batch(
     synced: int = 0
     if active_states:
         synced = _run_deployment_batch_concurrent(
-            active_states, now, quota_broker,
-            try_acquire_deployment_lock, release_deployment_lock,
+            active_states,
+            now,
+            quota_broker,
+            try_acquire_deployment_lock,
+            release_deployment_lock,
         )
 
     # ---- Phase 2b: Orphan cleanup for recently-completed deployments ----
@@ -990,9 +992,7 @@ def _apply_vm_health_kills(
     if not vm_health_kills:
         return updated
     try:
-        jobs_to_cancel = [
-            (job_id, zone) for job_id, zone, _sid, _reason, _msg in vm_health_kills
-        ]
+        jobs_to_cancel = [(job_id, zone) for job_id, zone, _sid, _reason, _msg in vm_health_kills]
         _cancel_vm_jobs_sync(
             deployment_id=deployment_id,
             project_id=PROJECT_ID,
@@ -1013,9 +1013,7 @@ def _apply_vm_health_kills(
                     shard["failure_category"] = reason
                     updated = True
                     break
-            logger.warning(
-                "[AUTO_SYNC] VM health check killed %s: %s - %s", job_id, reason, msg
-            )
+            logger.warning("[AUTO_SYNC] VM health check killed %s: %s - %s", job_id, reason, msg)
     except (OSError, ValueError, RuntimeError) as e:
         logger.debug("[AUTO_SYNC] VM health kill failed: %s", e)
     return updated
@@ -1139,9 +1137,7 @@ def _process_vm_health_and_status(
             logger.debug("[AUTO_SYNC] VM health check error: %s", e)
 
     # Terminate unhealthy VMs and mark shards failed.
-    updated = _apply_vm_health_kills(
-        vm_health_kills, shards, config, deployment_id, now, updated
-    )
+    updated = _apply_vm_health_kills(vm_health_kills, shards, config, deployment_id, now, updated)
 
     if running_job_ids:
         # Resolve running shards via the vm_map (dict lookup).
@@ -1263,8 +1259,7 @@ def _process_stuck_shards(
                 shard["status"] = "failed"
                 shard["end_time"] = now.isoformat()
                 shard["error_message"] = (
-                    f"Stuck shard: exceeded timeout"
-                    f" ({timeout_seconds}s + {grace_seconds}s grace)"
+                    f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"
                 )
                 shard["failure_category"] = "timeout"
                 _terminate_stuck_vm(shard, config, deployment_id, now)
@@ -1323,9 +1318,7 @@ def _handle_orphan_vm_cleanup(
             del pending_vm_deletes[jid]
 
     # 4. Fire-and-forget: retries first, then new orphans, up to orphan_max total.
-    to_fire = _build_orphan_fire_list(
-        retry_job_ids, orphan_tuples, vm_map, orphan_max, now_ts
-    )
+    to_fire = _build_orphan_fire_list(retry_job_ids, orphan_tuples, vm_map, orphan_max, now_ts)
 
     if to_fire:
         try:

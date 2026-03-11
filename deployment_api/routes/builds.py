@@ -81,10 +81,7 @@ def _tag_to_entry(tag: str) -> BuildEntry:
     else:
         # Reverse branch slug: feat-my-feature → feat/my-feature
         pm = _BRANCH_PREFIX_RE.match(suffix)
-        if pm:
-            branch = f"{pm.group(1)}/{pm.group(2)}"
-        else:
-            branch = suffix
+        branch = f"{pm.group(1)}/{pm.group(2)}" if pm else suffix
 
     major, minor, _ = (int(x) for x in version.split("."))
     is_v1 = major >= 1 or (major == 1 and minor >= 0)
@@ -130,7 +127,8 @@ async def _list_ar_tags(service: str, project: str) -> list[str]:
         from google.cloud import artifactregistry_v1  # type: ignore[import-untyped]
 
         client = artifactregistry_v1.ArtifactRegistryAsyncClient()
-        parent = f"projects/{project}/locations/asia-northeast1/repositories/{_AR_REPO}/packages/{service}"
+        repo = f"projects/{project}/locations/asia-northeast1/repositories/{_AR_REPO}"
+        parent = f"{repo}/packages/{service}"
         tags: list[str] = []
         request = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)
         async for tag in await client.list_tags(request):

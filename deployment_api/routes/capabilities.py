@@ -1,11 +1,11 @@
 """API capabilities and runtime info for UI display."""
 
-from pathlib import Path
 from typing import cast
 
 import yaml
 from fastapi import APIRouter, HTTPException
 
+from deployment_api.utils.service_utils import get_config_dir
 from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
 router = APIRouter()
@@ -43,7 +43,7 @@ async def get_service_categories(service: str) -> dict[str, object]:
         - features-calendar-service: []  # No category dimension
     """
     # Load sharding config
-    config_path = Path(__file__).parent.parent.parent / f"configs/sharding.{service}.yaml"
+    config_path = get_config_dir() / f"sharding.{service}.yaml"
 
     if not config_path.exists():
         raise HTTPException(

@@ -359,8 +359,14 @@ def _resolve_shard_blob_data(
         if not cat or not start_date:
             result[sid] = (False, None)
             continue
-        data_exists = _check_shard_data_exists(cat, venue_val, start_date, existing_cat_dates, existing_venue_dates)
-        blob_ts = _lookup_blob_ts(cat, venue_val, start_date, dims, blob_timestamps) if data_exists else None
+        data_exists = _check_shard_data_exists(
+            cat, venue_val, start_date, existing_cat_dates, existing_venue_dates
+        )
+        blob_ts = (
+            _lookup_blob_ts(cat, venue_val, start_date, dims, blob_timestamps)
+            if data_exists
+            else None
+        )
         result[sid] = (data_exists, blob_ts)
     return result
 

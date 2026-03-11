@@ -49,9 +49,9 @@ def _accumulate_combo_result(
     venue_folders.setdefault(combo.venue, {}).setdefault(combo.folder, set()).add(date_str)
     if combo.timeframe:
         timeframe_data.setdefault(combo.timeframe, set()).add(date_str)
-        venue_timeframes.setdefault(combo.venue, {}).setdefault(
-            combo.timeframe, set()
-        ).add(date_str)
+        venue_timeframes.setdefault(combo.venue, {}).setdefault(combo.timeframe, set()).add(
+            date_str
+        )
     if blob_updated is not None:
         existing_ts = venue_date_blob_timestamps.get(combo.venue, {}).get(date_str)
         if existing_ts is None or blob_updated < existing_ts:
@@ -153,7 +153,10 @@ def query_specific_prefixes_for_category(
     total_queries = sum(len(p) for p in prefixes_by_date.values())
     logger.info(
         "[TURBO] Querying %s specific prefixes for %s (%s dates, %s combos per date)",
-        total_queries, cat, len(prefixes_by_date), len(combos),
+        total_queries,
+        cat,
+        len(prefixes_by_date),
+        len(combos),
     )
 
     with ThreadPoolExecutor(max_workers=100) as executor:
@@ -168,23 +171,35 @@ def query_specific_prefixes_for_category(
         for future_obj, date_str in all_futures:
             try:
                 typed_future: Future[tuple[bool, CombinatoricEntry, datetime | None]] = cast(
-                    Future[tuple[bool, CombinatoricEntry, datetime | None]], future_obj,
+                    Future[tuple[bool, CombinatoricEntry, datetime | None]],
+                    future_obj,
                 )
                 has_data, combo, blob_updated = typed_future.result(timeout=30)
                 if has_data:
                     _accumulate_combo_result(
-                        date_str, combo, blob_updated,
-                        found_dates, venue_data, sub_dimension_data, inst_type_data,
-                        venue_data_types, venue_folders, timeframe_data,
-                        venue_timeframes, venue_date_blob_timestamps,
+                        date_str,
+                        combo,
+                        blob_updated,
+                        found_dates,
+                        venue_data,
+                        sub_dimension_data,
+                        inst_type_data,
+                        venue_data_types,
+                        venue_folders,
+                        timeframe_data,
+                        venue_timeframes,
+                        venue_date_blob_timestamps,
                     )
             except (OSError, ValueError, RuntimeError) as e:
                 logger.debug("Query failed: %s", e)
 
     logger.info(
         "[TURBO] Found data in %s dates, %s venues, %s data_types, %s folders, %s timeframes",
-        len(found_dates), len(venue_data), len(sub_dimension_data),
-        len(inst_type_data), len(timeframe_data),
+        len(found_dates),
+        len(venue_data),
+        len(sub_dimension_data),
+        len(inst_type_data),
+        len(timeframe_data),
     )
 
     return {
@@ -285,7 +300,10 @@ def query_generic_prefixes_for_category(
     all_entries: list[tuple[str, str, str | None]] = []
     for date_str in dates_to_check:
         entries = path_combinatorics.get_service_prefixes_for_date(
-            service=service, category=cat, date_str=date_str, venue_filter=venue,
+            service=service,
+            category=cat,
+            date_str=date_str,
+            venue_filter=venue,
         )
         for prefix, sub_dim_value in entries:
             all_entries.append((date_str, prefix, sub_dim_value))
@@ -293,9 +311,15 @@ def query_generic_prefixes_for_category(
     if not all_entries:
         logger.warning("[TURBO] No combinatoric prefixes for %s/%s", cat, service)
         return {
-            "found_dates": set(), "venue_data": {}, "sub_dimension_data": {},
-            "inst_type_data": {}, "venue_data_types": {}, "venue_folders": {},
-            "timeframe_data": {}, "venue_timeframes": {}, "venue_date_blob_timestamps": {},
+            "found_dates": set(),
+            "venue_data": {},
+            "sub_dimension_data": {},
+            "inst_type_data": {},
+            "venue_data_types": {},
+            "venue_folders": {},
+            "timeframe_data": {},
+            "venue_timeframes": {},
+            "venue_date_blob_timestamps": {},
         }
 
     found_dates: set[str] = set()
@@ -305,7 +329,10 @@ def query_generic_prefixes_for_category(
 
     logger.info(
         "[TURBO] Querying %s generic combinatoric prefixes for %s/%s (%s dates)",
-        len(all_entries), cat, service, len(dates_to_check),
+        len(all_entries),
+        cat,
+        service,
+        len(dates_to_check),
     )
 
     with ThreadPoolExecutor(max_workers=100) as executor:
@@ -319,15 +346,24 @@ def query_generic_prefixes_for_category(
                 has_data, blob_updated = future.result(timeout=30)
                 if has_data:
                     _accumulate_generic_result(
-                        date_str, sub_dim_value, blob_updated, service,
-                        found_dates, sub_dimension_data, venue_data, venue_date_blob_timestamps,
+                        date_str,
+                        sub_dim_value,
+                        blob_updated,
+                        service,
+                        found_dates,
+                        sub_dimension_data,
+                        venue_data,
+                        venue_date_blob_timestamps,
                     )
             except (OSError, ValueError, RuntimeError) as e:
                 logger.debug("Generic prefix query failed: %s", e)
 
     logger.info(
         "[TURBO] Generic combinatorics found data in %s dates, %s sub-dimensions for %s/%s",
-        len(found_dates), len(sub_dimension_data), cat, service,
+        len(found_dates),
+        len(sub_dimension_data),
+        cat,
+        service,
     )
 
     return {

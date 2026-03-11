@@ -245,7 +245,10 @@ class EventProcessor:
             if old_status != shard.get("status"):
                 logger.info(
                     "[EVENT_PROCESSOR] %s: Cloud Run shard %s %s -> %s",
-                    deployment_id, shard_id, old_status, shard.get("status"),
+                    deployment_id,
+                    shard_id,
+                    old_status,
+                    shard.get("status"),
                 )
                 return True
             break
@@ -306,7 +309,9 @@ class EventProcessor:
             except (OSError, ValueError, RuntimeError) as e:
                 logger.debug(
                     "[EVENT_PROCESSOR] Cloud Run status batch failed for %s/%s: %s",
-                    region, job_name, e,
+                    region,
+                    job_name,
+                    e,
                 )
                 continue
             for job_id, status in raw_statuses.items():
@@ -451,7 +456,9 @@ class EventProcessor:
             state_prefix=f"deployments.{self.deployment_env}",
         )
         backend: object = orch.get_backend(  # type: ignore[union-attr, arg-type, return-value]  # dynamic object
-            "vm", job_name=job_name, zone=config.get("zone"),
+            "vm",
+            job_name=job_name,
+            zone=config.get("zone"),
         )
 
         if not backend or not hasattr(backend, "cancel_job_fire_and_forget"):
