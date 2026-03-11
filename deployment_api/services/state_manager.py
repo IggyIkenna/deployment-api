@@ -40,6 +40,127 @@ class _OrchestratorProtocol(Protocol):
 logger = logging.getLogger(__name__)
 
 
+def _get_vm_field(vm_map: dict[str, object], job_id: str, field: str) -> str | None:
+    """Get a string field from the vm_map entry matching job_id."""
+    for raw_entry in vm_map.values():
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = cast(dict[str, object], raw_entry)
+        if entry.get("job_id") == job_id:
+            val = entry.get(field)
+            return val if isinstance(val, str) else None
+    return None
+
+
+def _read_vm_map(state_bucket: str, deployment_env: str, deployment_id: str) -> dict[str, object]:
+    """Read VM status map from GCS."""
+    from deployment_api.utils.storage_facade import read_object_text
+
+    status_path = f"deployments.{deployment_env}/{deployment_id}/vm_status.json"
+    try:
+        status_raw = read_object_text(state_bucket, status_path)
+        return cast(dict[str, object], json.loads(status_raw))
+    except (OSError, ValueError, RuntimeError):
+        return {}
+
+
+def _read_shard_statuses(
+    state_bucket: str,
+    deployment_env: str,
+    deployment_id: str,
+    shards: list[dict[str, object]],
+) -> dict[str, tuple[object, dict[str, object]]]:
+    """Read status for each shard from GCS."""
+    from deployment_api.utils.service_utils import parse_service_event
+    from deployment_api.utils.storage_facade import read_object_text
+
+    shard_statuses: dict[str, tuple[object, dict[str, object]]] = {}
+    for shard in shards:
+        shard_id = shard.get("shard_id")
+        if not shard_id:
+            continue
+        path = (
+            f"deployments.{deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
+        )
+        try:
+            text = read_object_text(state_bucket, path)
+            event_data = parse_service_event(text)
+            if event_data:
+                shard_statuses[str(shard_id)] = (event_data.get("status"), event_data)
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.warning("Skipping item during operation: %s", e)
+    return shard_statuses
+
+
+def _fire_orphan_deletes(
+    orphan_tuples: "list[tuple[str, str | None, str, tuple[object, dict[str, object]]]]",
+    config: dict[str, object],
+    project_id: str,
+    deployment_env: str,
+    state_bucket: str,
+    orch_cls: "type[object]",
+) -> int:
+    """Create orchestrator and fire cancel for each orphan VM. Returns count fired."""
+    try:
+        _sae_raw = ValidationUtils.get_required(config, "service_account_email", "orchestrator")
+        _jn_raw = ValidationUtils.get_required(config, "job_name", "VM backend")
+        if not isinstance(_sae_raw, str) or not isinstance(_jn_raw, str):
+            logger.error("[ORPHAN_CLEANUP] Config values must be strings")
+            return 0
+        service_account_email: str = _sae_raw
+        job_name: str = _jn_raw
+    except ConfigurationError as e:
+        logger.error("[ORPHAN_CLEANUP] Configuration error: %s", e)
+        return 0
+
+    region_raw = config.get("region")
+    region = region_raw if isinstance(region_raw, str) else "asia-northeast1"
+    zone_raw = config.get("zone")
+    zone_cfg = zone_raw if isinstance(zone_raw, str) else None
+
+    orch = cast(_OrchestratorProtocol, orch_cls(
+        project_id=project_id,
+        region=region,
+        service_account_email=service_account_email,
+        state_bucket=state_bucket,
+        state_prefix=f"deployments.{deployment_env}",
+    ))
+    backend = orch.get_backend("vm", job_name=job_name, zone=zone_cfg)
+    if backend is None:
+        return 0
+
+    max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
+    with _Tpe(max_workers=max_parallel) as pool:
+        for job_id, zone, _shard_id, _st in orphan_tuples:
+            pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)
+
+    logger.info("[ORPHAN_CLEANUP] Fired %s orphan VM deletes", len(orphan_tuples))
+    return len(orphan_tuples)
+
+
+def _find_orphan_vms(
+    shards: list[dict[str, object]],
+    shard_statuses: dict[str, tuple[object, dict[str, object]]],
+    vm_map: dict[str, object],
+) -> list[tuple[str, str | None, str, tuple[object, dict[str, object]]]]:
+    """Identify shards that are terminal but whose VM is still RUNNING."""
+    orphan_tuples: list[tuple[str, str | None, str, tuple[object, dict[str, object]]]] = []
+    for shard in shards:
+        shard_id_raw: object = shard.get("shard_id")
+        job_id_raw: object = shard.get("job_id")
+        if not job_id_raw or not shard_id_raw:
+            continue
+        shard_id = cast(str, shard_id_raw)
+        job_id = cast(str, job_id_raw)
+        st = shard_statuses.get(shard_id)
+        if not st or st[0] not in ("succeeded", "failed"):
+            continue
+        if _get_vm_field(vm_map, job_id, "status") == "RUNNING":
+            zone = _get_vm_field(vm_map, job_id, "zone")
+            orphan_tuples.append((job_id, zone, shard_id, st))
+    return orphan_tuples
+
+
 class StateManager:
     """
     Manages deployment state, locks, and VM lifecycle operations.
@@ -216,133 +337,28 @@ class StateManager:
         if not shards:
             return 0
 
+        deployment_id = cast(str, state.get("deployment_id") or "")
         try:
-            from deployment_api.utils.service_utils import parse_service_event
-            from deployment_api.utils.storage_facade import read_object_text
-
-            # Read VM status
-            status_path = (
-                f"deployments.{self.deployment_env}/{state.get('deployment_id')}/vm_status.json"
+            vm_map = _read_vm_map(self.state_bucket, self.deployment_env, deployment_id)
+            shard_statuses = _read_shard_statuses(
+                self.state_bucket, self.deployment_env, deployment_id, shards
             )
-            try:
-                status_raw = read_object_text(self.state_bucket, status_path)
-                vm_map = cast(dict[str, object], json.loads(status_raw))
-            except (OSError, ValueError, RuntimeError):
-                vm_map = {}
-
-            # Read shard statuses
-            shard_statuses: dict[str, tuple[object, dict[str, object]]] = {}
-            for shard in shards:
-                shard_id = shard.get("shard_id")
-                if not shard_id:
-                    continue
-                status_obj_path = (
-                    f"deployments.{self.deployment_env}"
-                    f"/{state.get('deployment_id')}/shards/{shard_id}/status.txt"
-                )
-                try:
-                    status_text = read_object_text(self.state_bucket, status_obj_path)
-                    event_data = parse_service_event(status_text)
-                    if event_data:
-                        shard_statuses[str(shard_id)] = (event_data.get("status"), event_data)
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.warning("Skipping item during operation: %s", e)
-                    continue
-
-            def vm_status(the_vm_map: dict[str, object], job_id: str) -> str | None:
-                """Get VM status from vm_map."""
-                for raw_entry in the_vm_map.values():
-                    if not isinstance(raw_entry, dict):
-                        continue
-                    entry = cast(dict[str, object], raw_entry)
-                    if entry.get("job_id") == job_id:
-                        val = entry.get("status")
-                        return val if isinstance(val, str) else None
-                return None
-
-            def vm_zone(the_vm_map: dict[str, object], job_id: str) -> str | None:
-                """Get VM zone from vm_map."""
-                for raw_entry in the_vm_map.values():
-                    if not isinstance(raw_entry, dict):
-                        continue
-                    entry = cast(dict[str, object], raw_entry)
-                    if entry.get("job_id") == job_id:
-                        val = entry.get("zone")
-                        return val if isinstance(val, str) else None
-                return None
-
-            # Find orphan VMs to terminate
-            orphan_tuples: list[tuple[str, str | None, str, tuple[object, dict[str, object]]]] = []
-            for shard in shards:
-                shard_id_raw: object = shard.get("shard_id")
-                job_id_raw: object = shard.get("job_id")
-                if not job_id_raw or not shard_id_raw:
-                    continue
-                shard_id = cast(str, shard_id_raw)
-                job_id = cast(str, job_id_raw)
-
-                st = shard_statuses.get(shard_id)
-                if not st or st[0] not in ("succeeded", "failed"):
-                    continue
-
-                if vm_status(vm_map, job_id) == "RUNNING":
-                    zone = vm_zone(vm_map, job_id)
-                    orphan_tuples.append((job_id, zone, shard_id, st))
+            orphan_tuples = _find_orphan_vms(shards, shard_statuses, vm_map)
 
             if orphan_tuples:
                 try:
                     _raw_module = _importlib.import_module(
                         "deployment_service.deployment.orchestrator"
                     )
-                    _raw_cls: type[object] = cast(
-                        type[object],
-                        _raw_module.DeploymentOrchestrator,
+                    orch_cls = cast(type[object], _raw_module.DeploymentOrchestrator)
+                    return _fire_orphan_deletes(
+                        orphan_tuples,
+                        config,
+                        self.project_id,
+                        self.deployment_env,
+                        self.state_bucket,
+                        orch_cls,
                     )
-
-                    try:
-                        _sae_raw = ValidationUtils.get_required(
-                            config, "service_account_email", "orchestrator"
-                        )
-                        _jn_raw = ValidationUtils.get_required(config, "job_name", "VM backend")
-                        if not isinstance(_sae_raw, str) or not isinstance(_jn_raw, str):
-                            logger.error("[ORPHAN_CLEANUP] Config values must be strings")
-                            return 0
-                        service_account_email: str = _sae_raw
-                        job_name: str = _jn_raw
-                    except ConfigurationError as e:
-                        logger.error("[ORPHAN_CLEANUP] Configuration error: %s", e)
-                        return 0
-
-                    region_raw = config.get("region")
-                    region = region_raw if isinstance(region_raw, str) else "asia-northeast1"
-                    zone_raw = config.get("zone")
-                    zone_cfg = zone_raw if isinstance(zone_raw, str) else None
-
-                    orch_kwargs: dict[str, object] = {
-                        "project_id": self.project_id,
-                        "region": region,
-                        "service_account_email": service_account_email,
-                        "state_bucket": self.state_bucket,
-                        "state_prefix": f"deployments.{self.deployment_env}",
-                    }
-                    orch = cast(_OrchestratorProtocol, _raw_cls(**orch_kwargs))
-                    backend = orch.get_backend(
-                        "vm",
-                        job_name=job_name,
-                        zone=zone_cfg,
-                    )
-
-                    if backend is not None:
-                        max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
-                        with _Tpe(max_workers=max_parallel) as pool:
-                            for job_id, zone, _shard_id, _st in orphan_tuples:
-                                pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)
-
-                        logger.info(
-                            "[ORPHAN_CLEANUP] Fired %s orphan VM deletes", len(orphan_tuples)
-                        )
-                        return len(orphan_tuples)
-
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("[ORPHAN_CLEANUP] VM fire-and-forget failed: %s", e)
 
@@ -369,20 +385,13 @@ class StateManager:
         def pending_ts(p: tuple[float, str | None] | float) -> float:
             return p[0] if isinstance(p, tuple) else p
 
-        def vm_status(the_vm_map: dict[str, object], job_id: str) -> str | None:
-            for raw_entry in the_vm_map.values():
-                if not isinstance(raw_entry, dict):
-                    continue
-                entry = cast(dict[str, object], raw_entry)
-                if entry.get("job_id") == job_id:
-                    val = entry.get("status")
-                    return val if isinstance(val, str) else None
-            return None
-
         return [
             jid
             for jid, val in self._pending_vm_deletes.items()
-            if now_ts - pending_ts(val) >= retry_seconds and vm_status(vm_map, jid) == "RUNNING"
+            if (
+                now_ts - pending_ts(val) >= retry_seconds
+                and _get_vm_field(vm_map, jid, "status") == "RUNNING"
+            )
         ]
 
     def cleanup_state_ttl(self) -> int:

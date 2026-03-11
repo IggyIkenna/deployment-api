@@ -206,6 +206,117 @@ class EventProcessor:
 
         return updated, launched_this_tick
 
+    def _parse_exec_name(self, name: str) -> tuple[str | None, str | None]:
+        """Parse Cloud Run execution name to extract region and job_name."""
+        parts = name.split("/")
+        region: str | None = None
+        job_name: str | None = None
+        for i, p in enumerate(parts):
+            if p == "locations" and i + 1 < len(parts):
+                region = parts[i + 1]
+            if p == "jobs" and i + 1 < len(parts):
+                job_name = parts[i + 1]
+        return region, job_name
+
+    def _update_shard_from_cr_status(
+        self,
+        deployment_id: str,
+        shards: list[dict[str, object]],
+        shard_id: str,
+        status: str,
+    ) -> bool:
+        """Update a single shard's status from Cloud Run execution status.
+
+        Returns True if the shard status changed.
+        """
+        for shard in shards:
+            if shard.get("shard_id") != shard_id:
+                continue
+            old_status = shard.get("status")
+            if status == "SUCCEEDED":
+                shard["status"] = "succeeded"
+                shard["completed_at"] = datetime.now(UTC).isoformat()
+            elif status == "FAILED":
+                shard["status"] = "failed"
+                shard["completed_at"] = datetime.now(UTC).isoformat()
+            elif status == "CANCELLED":
+                shard["status"] = "cancelled"
+                shard["completed_at"] = datetime.now(UTC).isoformat()
+            if old_status != shard.get("status"):
+                logger.info(
+                    "[EVENT_PROCESSOR] %s: Cloud Run shard %s %s -> %s",
+                    deployment_id, shard_id, old_status, shard.get("status"),
+                )
+                return True
+            break
+        return False
+
+    def _collect_running_job_ids(
+        self,
+        shards: list[dict[str, object]],
+        shard_statuses: dict[str, tuple[str, dict[str, object]]],
+    ) -> tuple[list[str], dict[str, str]]:
+        """Collect job IDs for running shards not yet in shard_statuses."""
+        job_ids: list[str] = []
+        job_id_to_shard_id: dict[str, str] = {}
+        for shard in shards:
+            if shard.get("status") != "running":
+                continue
+            shard_id_raw = shard.get("shard_id")
+            shard_id_s = str(shard_id_raw) if shard_id_raw is not None else ""
+            if not shard_id_s or shard_id_s in shard_statuses:
+                continue
+            job_id_raw = shard.get("job_id")
+            job_id_s = str(job_id_raw) if job_id_raw is not None else ""
+            if not job_id_s:
+                continue
+            job_ids.append(job_id_s)
+            job_id_to_shard_id[job_id_s] = shard_id_s
+        return job_ids, job_id_to_shard_id
+
+    def _apply_cr_status_groups(
+        self,
+        deployment_id: str,
+        shards: list[dict[str, object]],
+        job_ids: list[str],
+        job_id_to_shard_id: dict[str, str],
+        config: dict[str, object],
+        service_account_email: str,
+    ) -> bool:
+        """Fetch Cloud Run statuses by region/job group and apply to shards."""
+        groups: dict[tuple[str, str], list[str]] = {}
+        for job_id in job_ids[:50]:
+            r, j = self._parse_exec_name(job_id)
+            r = r or cast(str, config.get("region") or "asia-northeast1")
+            j = j or cast(str, config.get("job_name") or "unknown")
+            groups.setdefault((r, j), []).append(job_id)
+
+        updated = False
+        for (region, job_name), group_job_ids in groups.items():
+            try:
+                raw_statuses = _asyncio.run(
+                    _ds_client.get_cloud_run_status_batch(
+                        project_id=self.project_id,
+                        region=region,
+                        service_account_email=service_account_email,
+                        job_name=job_name,
+                        job_ids=group_job_ids,
+                    )
+                )
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.debug(
+                    "[EVENT_PROCESSOR] Cloud Run status batch failed for %s/%s: %s",
+                    region, job_name, e,
+                )
+                continue
+            for job_id, status in raw_statuses.items():
+                shard_id = job_id_to_shard_id.get(job_id)
+                if not shard_id:
+                    continue
+                if self._update_shard_from_cr_status(deployment_id, shards, shard_id, status):
+                    updated = True
+        return updated
+
     def process_cloud_run_updates(
         self,
         deployment_id: str,
@@ -215,13 +326,7 @@ class EventProcessor:
         """
         Process Cloud Run execution updates for a deployment.
 
-        Args:
-            deployment_id: Unique identifier for the deployment
-            state: Current deployment state
-            shard_statuses: Shard status mapping
-
-        Returns:
-            True if state was updated, False otherwise
+        Returns True if state was updated, False otherwise.
         """
         try:
             shards_raw2: object = state.get("shards") or []
@@ -231,31 +336,10 @@ class EventProcessor:
             config_raw2: object = state.get("config") or {}
             config = cast(dict[str, object], config_raw2) if isinstance(config_raw2, dict) else {}
 
-            job_ids: list[str] = []
-            job_id_to_shard_id: dict[str, str] = {}
-
-            # Collect running shards without status
-            for shard in shards:
-                if shard.get("status") != "running":
-                    continue
-
-                shard_id_raw = shard.get("shard_id")
-                shard_id_s = str(shard_id_raw) if shard_id_raw is not None else ""
-                if not shard_id_s or shard_id_s in shard_statuses:
-                    continue
-
-                job_id_raw = shard.get("job_id")
-                job_id_s = str(job_id_raw) if job_id_raw is not None else ""
-                if not job_id_s:
-                    continue
-
-                job_ids.append(job_id_s)
-                job_id_to_shard_id[job_id_s] = shard_id_s
-
+            job_ids, job_id_to_shard_id = self._collect_running_job_ids(shards, shard_statuses)
             if not job_ids:
                 return False
 
-            # Resolve service_account_email from config
             try:
                 service_account_email = str(
                     ValidationUtils.get_required(
@@ -266,79 +350,9 @@ class EventProcessor:
                 logger.error("[EVENT_PROCESSOR] %s: %s", deployment_id, e)
                 return False
 
-            # Parse execution name to extract region and job_name
-            def _parse_exec_name(name: str) -> tuple[str | None, str | None]:
-                parts = name.split("/")
-                region: str | None = None
-                job_name: str | None = None
-                for i, p in enumerate(parts):
-                    if p == "locations" and i + 1 < len(parts):
-                        region = parts[i + 1]
-                    if p == "jobs" and i + 1 < len(parts):
-                        job_name = parts[i + 1]
-                return region, job_name
-
-            # Group executions by (region, job_name)
-            groups: dict[tuple[str, str], list[str]] = {}
-            for job_id in job_ids[:50]:  # Limit batch size
-                r, j = _parse_exec_name(job_id)
-                r = r or cast(str, config.get("region") or "asia-northeast1")
-                j = j or cast(str, config.get("job_name") or "unknown")
-                groups.setdefault((r, j), []).append(job_id)
-
-            updated = False
-            for (region, job_name), group_job_ids in groups.items():
-                try:
-                    raw_statuses = _asyncio.run(
-                        _ds_client.get_cloud_run_status_batch(
-                            project_id=self.project_id,
-                            region=region,
-                            service_account_email=service_account_email,
-                            job_name=job_name,
-                            job_ids=group_job_ids,
-                        )
-                    )
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.debug(
-                        "[EVENT_PROCESSOR] Cloud Run status batch failed for %s/%s: %s",
-                        region,
-                        job_name,
-                        e,
-                    )
-                    continue
-
-                for job_id, status in raw_statuses.items():
-                    shard_id = job_id_to_shard_id.get(job_id)
-                    if not shard_id:
-                        continue
-
-                    # Find and update shard
-                    for shard in shards:
-                        if shard.get("shard_id") == shard_id:
-                            old_status = shard.get("status")
-
-                            if status == "SUCCEEDED":
-                                shard["status"] = "succeeded"
-                                shard["completed_at"] = datetime.now(UTC).isoformat()
-                            elif status == "FAILED":
-                                shard["status"] = "failed"
-                                shard["completed_at"] = datetime.now(UTC).isoformat()
-                            elif status == "CANCELLED":
-                                shard["status"] = "cancelled"
-                                shard["completed_at"] = datetime.now(UTC).isoformat()
-
-                            if old_status != shard.get("status"):
-                                updated = True
-                                logger.info(
-                                    "[EVENT_PROCESSOR] %s: Cloud Run shard %s %s -> %s",
-                                    deployment_id,
-                                    shard_id,
-                                    old_status,
-                                    shard.get("status"),
-                                )
-                            break
-
-            return updated
+            return self._apply_cr_status_groups(
+                deployment_id, shards, job_ids, job_id_to_shard_id, config, service_account_email
+            )
 
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[EVENT_PROCESSOR] Cloud Run update error: %s", e)
@@ -377,7 +391,6 @@ class EventProcessor:
             return 0
 
         try:
-            # Find orphan VMs to terminate
             orphan_tuples: list[tuple[str, str | None, str, tuple[str, dict[str, object]]]] = []
             for shard in shards:
                 shard_id_raw2: object = shard.get("shard_id")
@@ -386,67 +399,72 @@ class EventProcessor:
                     continue
                 shard_id = cast(str, shard_id_raw2)
                 job_id = cast(str, job_id_raw2)
-
                 st = shard_statuses.get(shard_id)
                 if not st or st[0] not in ("succeeded", "failed"):
                     continue
-
                 if self.get_vm_status(vm_map, job_id) == "RUNNING":
                     zone = self.get_vm_zone(vm_map, job_id)
                     orphan_tuples.append((job_id, zone, shard_id, st))
 
-            if orphan_tuples:
-                _orchestrator_cls = cast(
-                    type[object],
-                    _importlib.import_module(
-                        "deployment_service.deployment.orchestrator"
-                    ).DeploymentOrchestrator,
-                )
+            if not orphan_tuples:
+                return 0
 
-                try:
-                    service_account_email_raw = ValidationUtils.get_required(
-                        config, "service_account_email", "VM orchestrator"
-                    )
-                    job_name_raw = ValidationUtils.get_required(config, "job_name", "VM backend")
-                    service_account_email = str(service_account_email_raw)
-                    job_name = str(job_name_raw)
-                except ConfigurationError as e:
-                    logger.error("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
-                    return 0
-
-                _orch_factory = cast(Callable[..., object], _orchestrator_cls)
-                orch = _orch_factory(
-                    project_id=self.project_id,
-                    region=config.get("region") or "asia-northeast1",
-                    service_account_email=service_account_email,
-                    state_bucket=self.state_bucket,
-                    state_prefix=f"deployments.{self.deployment_env}",
-                )
-
-                def _get_backend() -> object:
-                    return orch.get_backend(  # type: ignore[union-attr, arg-type, return-value]  # dynamic object
-                        "vm",
-                        job_name=job_name,
-                        zone=config.get("zone"),
-                    )
-
-                backend: object = _get_backend()
-
-                if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-                    max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
-                    with _Tpe(max_workers=max_parallel) as pool:
-                        for job_id, zone, _shard_id, _st in orphan_tuples:
-                            pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)  # type: ignore[union-attr, arg-type]  # dynamic backend
-                            # Track for retry logic
-                            pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
-
-                    logger.info("[EVENT_PROCESSOR] Fired %s orphan VM deletes", len(orphan_tuples))
-                    return len(orphan_tuples)
+            return self._fire_orphan_cleanup(
+                deployment_id, config, orphan_tuples, pending_vm_deletes
+            )
 
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
 
         return 0
+
+    def _fire_orphan_cleanup(
+        self,
+        deployment_id: str,
+        config: dict[str, object],
+        orphan_tuples: list[tuple[str, str | None, str, tuple[str, dict[str, object]]]],
+        pending_vm_deletes: dict[str, object],
+    ) -> int:
+        """Create orchestrator backend and fire cancel for each orphan VM."""
+        _orchestrator_cls = cast(
+            type[object],
+            _importlib.import_module(
+                "deployment_service.deployment.orchestrator"
+            ).DeploymentOrchestrator,
+        )
+
+        try:
+            service_account_email = str(
+                ValidationUtils.get_required(config, "service_account_email", "VM orchestrator")
+            )
+            job_name = str(ValidationUtils.get_required(config, "job_name", "VM backend"))
+        except ConfigurationError as e:
+            logger.error("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
+            return 0
+
+        _orch_factory = cast(Callable[..., object], _orchestrator_cls)
+        orch = _orch_factory(
+            project_id=self.project_id,
+            region=config.get("region") or "asia-northeast1",
+            service_account_email=service_account_email,
+            state_bucket=self.state_bucket,
+            state_prefix=f"deployments.{self.deployment_env}",
+        )
+        backend: object = orch.get_backend(  # type: ignore[union-attr, arg-type, return-value]  # dynamic object
+            "vm", job_name=job_name, zone=config.get("zone"),
+        )
+
+        if not backend or not hasattr(backend, "cancel_job_fire_and_forget"):
+            return 0
+
+        max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
+        with _Tpe(max_workers=max_parallel) as pool:
+            for job_id, zone, _shard_id, _st in orphan_tuples:
+                pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)  # type: ignore[union-attr, arg-type]  # dynamic backend
+                pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
+
+        logger.info("[EVENT_PROCESSOR] Fired %s orphan VM deletes", len(orphan_tuples))
+        return len(orphan_tuples)
 
     def notify_deployment_updated(self, deployment_id: str) -> None:
         """

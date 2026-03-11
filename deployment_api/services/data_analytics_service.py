@@ -284,6 +284,54 @@ class DataAnalyticsService:
             "cleared_at": self._cache_stats["last_cleared"].isoformat(),
         }
 
+    def _aggregate_dates_data(
+        self,
+        dates_data: list[dict[str, object]],
+    ) -> tuple[list[dict[str, object]], dict[str, dict[str, int]]]:
+        """Aggregate daily completions and per-venue stats from dates data."""
+        daily_completions: list[dict[str, object]] = []
+        venue_stats: dict[str, dict[str, int]] = {}
+        for date_info in dates_data:
+            date_str = date_info.get("date")
+            venues_info = cast(list[dict[str, object]], date_info.get("venues") or [])
+            total_venues = len(venues_info)
+            completed_venues = sum(1 for v in venues_info if v.get("status") != "missing")
+            completion_rate = (completed_venues / total_venues * 100) if total_venues > 0 else 0
+            daily_completions.append({
+                "date": date_str,
+                "completion_rate": completion_rate,
+                "total_venues": total_venues,
+                "completed_venues": completed_venues,
+            })
+            for venue_info in venues_info:
+                venue_name = cast(str, venue_info.get("venue", "unknown"))
+                status = cast(str, venue_info.get("status", "unknown"))
+                if venue_name not in venue_stats:
+                    venue_stats[venue_name] = {"total": 0, "completed": 0, "missing": 0}
+                venue_stats[venue_name]["total"] += 1
+                if status == "missing":
+                    venue_stats[venue_name]["missing"] += 1
+                else:
+                    venue_stats[venue_name]["completed"] += 1
+        return daily_completions, venue_stats
+
+    def _build_venue_reliability(
+        self,
+        venue_stats: dict[str, dict[str, int]],
+    ) -> dict[str, dict[str, object]]:
+        """Compute per-venue reliability metrics."""
+        venue_reliability: dict[str, dict[str, object]] = {}
+        for venue, stats in venue_stats.items():
+            if stats["total"] > 0:
+                reliability = (stats["completed"] / stats["total"]) * 100
+                venue_reliability[venue] = {
+                    "reliability_percent": reliability,
+                    "total_checks": stats["total"],
+                    "successful": stats["completed"],
+                    "failed": stats["missing"],
+                }
+        return venue_reliability
+
     async def analyze_data_patterns(
         self,
         service: str,
@@ -292,12 +340,7 @@ class DataAnalyticsService:
         """
         Analyze data patterns from status results.
 
-        Args:
-            service: Service name
-            data_status_result: Result from data status check
-
-        Returns:
-            Analysis of data patterns and trends
+        Returns analysis of data patterns and trends.
         """
         if "error" in data_status_result:
             return {"error": "Cannot analyze data with errors"}
@@ -317,43 +360,8 @@ class DataAnalyticsService:
             return analysis
 
         dates_data = cast(list[dict[str, object]], data_status_result["dates"])
+        daily_completions, venue_stats = self._aggregate_dates_data(dates_data)
 
-        # Analyze completion rates by date
-        daily_completions: list[dict[str, object]] = []
-        venue_stats: dict[str, dict[str, int]] = {}
-
-        for date_info in dates_data:
-            date_str = date_info.get("date")
-            venues_info = cast(list[dict[str, object]], date_info.get("venues") or [])
-
-            total_venues = len(venues_info)
-            completed_venues = sum(1 for v in venues_info if v.get("status") != "missing")
-            completion_rate = (completed_venues / total_venues * 100) if total_venues > 0 else 0
-
-            daily_completions.append(
-                {
-                    "date": date_str,
-                    "completion_rate": completion_rate,
-                    "total_venues": total_venues,
-                    "completed_venues": completed_venues,
-                }
-            )
-
-            # Track venue-specific stats
-            for venue_info in venues_info:
-                venue_name = cast(str, venue_info.get("venue", "unknown"))
-                status = cast(str, venue_info.get("status", "unknown"))
-
-                if venue_name not in venue_stats:
-                    venue_stats[venue_name] = {"total": 0, "completed": 0, "missing": 0}
-
-                venue_stats[venue_name]["total"] += 1
-                if status == "missing":
-                    venue_stats[venue_name]["missing"] += 1
-                else:
-                    venue_stats[venue_name]["completed"] += 1
-
-        # Calculate patterns
         completion_rate_stats: dict[str, object] = {}
         if daily_completions:
             completion_rates = [cast(float, d["completion_rate"]) for d in daily_completions]
@@ -364,37 +372,21 @@ class DataAnalyticsService:
                 "variance": self._calculate_variance(completion_rates),
             }
             patterns["completion_rate"] = completion_rate_stats
-
-            # Trend analysis (simple linear trend)
             trends["completion_trend"] = self._calculate_trend(completion_rates)
 
-        # Venue reliability analysis
-        venue_reliability: dict[str, dict[str, object]] = {}
-        for venue, stats in venue_stats.items():
-            if stats["total"] > 0:
-                reliability = (stats["completed"] / stats["total"]) * 100
-                venue_reliability[venue] = {
-                    "reliability_percent": reliability,
-                    "total_checks": stats["total"],
-                    "successful": stats["completed"],
-                    "failed": stats["missing"],
-                }
-
+        venue_reliability = self._build_venue_reliability(venue_stats)
         patterns["venue_reliability"] = venue_reliability
 
-        # Generate recommendations
         if completion_rate_stats and cast(float, completion_rate_stats.get("average", 100)) < 90:
             recommendations.append(
                 "Overall completion rate is below 90% - investigate data pipeline issues"
             )
 
-        # Find problematic venues (< 80% reliability)
         problematic_venues = [
             venue
             for venue, vstats in venue_reliability.items()
             if cast(float, vstats.get("reliability_percent", 100)) < 80
         ]
-
         if problematic_venues:
             recommendations.append(
                 f"Low reliability venues detected: {', '.join(problematic_venues[:5])}"

@@ -15,6 +15,80 @@ logger = logging.getLogger(__name__)
 # Service to GCS bucket mapping (imported from checkers module for consistency)
 from .service_status_checkers import SERVICE_OUTPUT_BUCKETS
 
+_PREFIXES_TO_TRY = [
+    "raw_tick_data/by_date/",  # market-tick-data-handler
+    "instruments/",  # instruments-service
+    "",  # root level
+]
+
+
+def _obj_updated(obj: object) -> datetime:
+    """Return the updated timestamp of a GCS-like object, or datetime.min."""
+    ts = cast("datetime | None", cast(dict[str, object], obj).get("updated"))  # type: ignore[arg-type]
+    # GCS blobs expose .updated as an attribute, not a dict key; use vars() fallback
+    if ts is None:
+        ts = cast("datetime | None", vars(obj).get("updated") if hasattr(obj, "__dict__") else None)
+    return ts if ts is not None else datetime.min.replace(tzinfo=UTC)
+
+
+def _latest_ts_from_objects(objs: list[object]) -> "datetime | None":
+    """Return the most recent updated timestamp from a list of GCS objects."""
+    if not objs:
+        return None
+    latest_obj = max(objs, key=_obj_updated)
+    ts = _obj_updated(latest_obj)
+    return ts if ts != datetime.min.replace(tzinfo=UTC) else None
+
+
+def _find_latest_ts_for_bucket(bucket_name: str) -> "datetime | None":
+    """Scan a single bucket for the most recent data timestamp."""
+    from deployment_api.utils.storage_facade import list_objects, list_prefixes
+
+    for prefix in _PREFIXES_TO_TRY:
+        prefixes_found = list_prefixes(bucket_name, prefix)
+        date_prefixes = [
+            p for p in prefixes_found if re.search(r"day=\d{4}-\d{2}-\d{2}", p)
+        ]
+        if date_prefixes:
+            date_prefixes.sort(reverse=True)
+            recent_objs = list_objects(bucket_name, date_prefixes[0], max_results=10)
+            return _latest_ts_from_objects(recent_objs)
+        objs = list_objects(bucket_name, prefix, max_results=500)
+        if objs:
+            return _latest_ts_from_objects(objs)
+    return None
+
+
+def _get_timestamps_sync(service: str) -> dict[str, object]:
+    """Scan all buckets for a service and return latest timestamps by category."""
+    try:
+        buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
+        if not buckets:
+            empty_cat: dict[str, object] = {}
+            return {"latest": None, "by_category": empty_cat}
+
+        results: dict[str, dict[str, object]] = {}
+        for category, bucket_name in buckets.items():
+            try:
+                ts = _find_latest_ts_for_bucket(bucket_name)
+                results[category] = {"timestamp": ts.isoformat() if ts else None}
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.warning("Error checking %s/%s: %s", category, bucket_name, e)
+                results[category] = {"error": str(e)[:50]}
+
+        valid_timestamps: list[datetime] = []
+        for _r in results.values():
+            _ts: object = _r.get("timestamp")
+            if _ts and isinstance(_ts, str):
+                valid_timestamps.append(datetime.fromisoformat(_ts))
+
+        return {
+            "by_category": results,
+            "latest": (max(valid_timestamps).isoformat() if valid_timestamps else None),
+        }
+    except (OSError, ValueError, RuntimeError) as e:
+        return {"error": str(e)[:100]}
+
 
 async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | None:
     """
@@ -23,91 +97,7 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
     For date-partitioned data (day=YYYY-MM-DD), lists date folders and checks
     the most recent one for actual file timestamps. Uses storage facade (FUSE).
     """
-    from deployment_api.utils.storage_facade import list_objects, list_prefixes
-
-    def _get_timestamps_sync() -> dict[str, object]:
-        try:
-            buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
-
-            if not buckets:
-                empty_cat: dict[str, object] = {}
-                return {"latest": None, "by_category": empty_cat}
-
-            results: dict[str, dict[str, object]] = {}
-            for category, bucket_name in buckets.items():
-                try:
-                    # Strategy: Find most recent date folder, then check files there
-                    prefixes_to_try = [
-                        "raw_tick_data/by_date/",  # market-tick-data-handler
-                        "instruments/",  # instruments-service
-                        "",  # root level
-                    ]
-
-                    latest_timestamp = None
-
-                    for prefix in prefixes_to_try:
-                        # List prefixes (folders) via storage facade
-                        prefixes_found = list_prefixes(bucket_name, prefix)
-
-                        # Look for day=YYYY-MM-DD pattern in prefixes
-                        date_prefixes = [
-                            p for p in prefixes_found if re.search(r"day=\d{4}-\d{2}-\d{2}", p)
-                        ]
-
-                        if date_prefixes:
-                            date_prefixes.sort(reverse=True)
-                            most_recent_prefix = date_prefixes[0]
-
-                            # Get files in most recent date folder
-                            recent_objs = list_objects(
-                                bucket_name, most_recent_prefix, max_results=10
-                            )
-                            if recent_objs:
-                                latest_obj = max(
-                                    recent_objs,
-                                    key=lambda o: (
-                                        o.updated if o.updated else datetime.min.replace(tzinfo=UTC)
-                                    ),
-                                )
-                                latest_timestamp = latest_obj.updated
-                            break
-                        else:
-                            # No date folders, check actual files at this prefix
-                            objs = list_objects(bucket_name, prefix, max_results=500)
-                            if objs:
-                                latest_obj = max(
-                                    objs,
-                                    key=lambda o: (
-                                        o.updated if o.updated else datetime.min.replace(tzinfo=UTC)
-                                    ),
-                                )
-                                latest_timestamp = latest_obj.updated
-                                break
-
-                    if latest_timestamp:
-                        results[category] = {
-                            "timestamp": latest_timestamp.isoformat(),
-                        }
-                    else:
-                        results[category] = {"timestamp": None}
-
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.warning("Error checking %s/%s: %s", category, bucket_name, e)
-                    results[category] = {"error": str(e)[:50]}
-
-            valid_timestamps: list[datetime] = []
-            for _r in results.values():
-                _ts: object = _r.get("timestamp")
-                if _ts and isinstance(_ts, str):
-                    valid_timestamps.append(datetime.fromisoformat(_ts))
-
-            return {
-                "by_category": results,
-                "latest": (max(valid_timestamps).isoformat() if valid_timestamps else None),
-            }
-        except (OSError, ValueError, RuntimeError) as e:
-            return {"error": str(e)[:100]}
-
     return cast(
-        dict[str, object] | None, cast(object, await asyncio.to_thread(_get_timestamps_sync))
+        dict[str, object] | None,
+        cast(object, await asyncio.to_thread(_get_timestamps_sync, service)),
     )
