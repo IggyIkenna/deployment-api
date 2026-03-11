@@ -201,7 +201,7 @@ def _check_shard_logs_for_errors(shard: dict[str, object], deployment_id: str) -
         return False
 
 
-def _refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
+def refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous helper for refresh_deployment_status.
     All blocking GCP/GCS calls are done here.
@@ -441,7 +441,7 @@ def _refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
     }
 
 
-def _cancel_deployment_sync(deployment_id: str) -> dict[str, object]:
+def cancel_deployment_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous cancellation logic.
 
@@ -496,7 +496,7 @@ def _cancel_deployment_sync(deployment_id: str) -> dict[str, object]:
     }
 
 
-def _resume_deployment_sync(deployment_id: str) -> dict[str, object]:
+def resume_deployment_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous resume logic.
 
@@ -554,7 +554,7 @@ def _resume_deployment_sync(deployment_id: str) -> dict[str, object]:
     }
 
 
-def _delete_deployment_sync(deployment_id: str) -> dict[str, object]:
+def delete_deployment_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous deletion logic.
 
@@ -591,7 +591,7 @@ def _delete_deployment_sync(deployment_id: str) -> dict[str, object]:
     }
 
 
-def _update_deployment_tag_sync(deployment_id: str, tag: str | None) -> dict[str, object]:
+def update_deployment_tag_sync(deployment_id: str, tag: str | None) -> dict[str, object]:
     """
     Synchronous tag update logic.
 

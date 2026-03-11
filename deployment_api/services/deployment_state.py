@@ -265,12 +265,10 @@ class DeploymentStateManager:
             Updated deployment status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import (
-            _refresh_deployment_status_sync,  # type: ignore[reportPrivateUsage]
-        )
+        from ..routes.deployment_state import refresh_deployment_status_sync
 
         # Refresh from cloud provider
-        _refresh_deployment_status_sync(deployment_id)
+        refresh_deployment_status_sync(deployment_id)
 
         # Invalidate cache to force refresh (async fn called from sync context)
         asyncio.run(invalidate_deployment_state_cache(deployment_id))
@@ -289,13 +287,11 @@ class DeploymentStateManager:
             Dict with cancellation status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import (
-            _cancel_deployment_sync,  # type: ignore[reportPrivateUsage]
-        )
+        from ..routes.deployment_state import cancel_deployment_sync
 
         try:
             # Cancel deployment
-            _cancel_deployment_sync(deployment_id)
+            cancel_deployment_sync(deployment_id)
 
             # Invalidate cache (async fn called from sync context)
             asyncio.run(invalidate_deployment_state_cache(deployment_id))
@@ -320,13 +316,11 @@ class DeploymentStateManager:
             Dict with resume status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import (
-            _resume_deployment_sync,  # type: ignore[reportPrivateUsage]
-        )
+        from ..routes.deployment_state import resume_deployment_sync
 
         try:
             # Resume deployment
-            _resume_deployment_sync(deployment_id)
+            resume_deployment_sync(deployment_id)
 
             # Invalidate cache (async fn called from sync context)
             asyncio.run(invalidate_deployment_state_cache(deployment_id))
@@ -354,13 +348,11 @@ class DeploymentStateManager:
             invalidate_deployment_cache,
             invalidate_deployment_state_cache,
         )
-        from ..routes.deployment_state import (
-            _delete_deployment_sync,  # type: ignore[reportPrivateUsage]
-        )
+        from ..routes.deployment_state import delete_deployment_sync
 
         try:
             # Delete deployment
-            _delete_deployment_sync(deployment_id)
+            delete_deployment_sync(deployment_id)
 
             # Invalidate caches (async fns called from sync context)
             asyncio.run(invalidate_deployment_state_cache(deployment_id))
@@ -432,13 +424,11 @@ class DeploymentStateManager:
             Dict with update status
         """
         from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import (
-            _update_deployment_tag_sync,  # type: ignore[reportPrivateUsage]
-        )
+        from ..routes.deployment_state import update_deployment_tag_sync
 
         try:
             # Update tag
-            _update_deployment_tag_sync(deployment_id, new_tag)
+            update_deployment_tag_sync(deployment_id, new_tag)
 
             # Invalidate cache (async fn called from sync context)
             asyncio.run(invalidate_deployment_state_cache(deployment_id))
