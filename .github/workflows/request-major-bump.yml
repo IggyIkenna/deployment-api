@@ -1,0 +1,186 @@
+name: request-major-bump
+
+# Human-initiated request for a MAJOR version bump (including 0.x.x → 1.0.0).
+# This workflow ONLY creates a GitHub Issue + sends Telegram alert.
+# The actual version bump happens when a human comments /approve on the issue
+# (handled by major-bump-issue-handler.yml).
+#
+# Usage (GitHub UI):
+#   Actions → request-major-bump → Run workflow
+#   Fill in: proposed_version, reason
+#
+# Usage (admin script):
+#   bash unified-trading-pm/scripts/approve-major-bump.sh {repo} {version} \
+#     --reason "..." --admin-pat $GH_PAT
+#
+# DO NOT use this to immediately bump versions — the bump requires /approve on the issue.
+# NO AGENT may trigger this on behalf of a user without explicit human instruction.
+
+on:
+  workflow_dispatch:
+    inputs:
+      proposed_version:
+        description: "New MAJOR version (e.g. 1.0.0 or 2.0.0)"
+        required: true
+        type: string
+      reason:
+        description: "Why this is a MAJOR bump (e.g. removed /v1/orders endpoint)"
+        required: true
+        type: string
+      approver:
+        description: "GitHub handle of requester (defaults to actor)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  request-major-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Validate version and read current
+        id: validate
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+
+          PROPOSED="${{ inputs.proposed_version }}"
+          REQUESTER="${{ inputs.approver || github.actor }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+
+          # Validate MAJOR.MINOR.PATCH format
+          if ! echo "$PROPOSED" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: version must be MAJOR.MINOR.PATCH format, got: $PROPOSED"
+            exit 1
+          fi
+
+          # Validate MAJOR >= 1
+          PROPOSED_MAJOR=$(echo "$PROPOSED" | cut -d. -f1)
+          if [ "$PROPOSED_MAJOR" -lt 1 ]; then
+            echo "ERROR: proposed_version must have MAJOR >= 1 (got $PROPOSED)"
+            echo "For 0.x.x bumps, semver-agent.yml handles those automatically."
+            exit 1
+          fi
+
+          # Read current version from pyproject.toml
+          CURRENT=$(grep -oP '^version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' pyproject.toml 2>/dev/null || echo "0.0.0")
+          echo "Current version: $CURRENT"
+          echo "Proposed version: $PROPOSED"
+
+          # Validate it IS a MAJOR increase
+          CURRENT_MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          if [ "$PROPOSED_MAJOR" -le "$CURRENT_MAJOR" ] && [ "$CURRENT_MAJOR" -gt 0 ]; then
+            echo "ERROR: $PROPOSED is not a MAJOR increase over current $CURRENT"
+            exit 1
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "proposed=$PROPOSED" >> "$GITHUB_OUTPUT"
+          echo "requester=$REQUESTER" >> "$GITHUB_OUTPUT"
+          echo "repo=$REPO_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Issue for approval
+        id: create-issue
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_ORG: IggyIkenna
+        run: |
+          set -euo pipefail
+
+          CURRENT="${{ steps.validate.outputs.current }}"
+          PROPOSED="${{ steps.validate.outputs.proposed }}"
+          REQUESTER="${{ steps.validate.outputs.requester }}"
+          REPO="${{ steps.validate.outputs.repo }}"
+          REASON="${{ inputs.reason }}"
+          COMMIT_SHA="${{ github.sha }}"
+
+          METADATA_JSON="{\"repo\":\"${REPO}\",\"proposed_version\":\"${PROPOSED}\",\"current_version\":\"${CURRENT}\",\"staging_branch\":\"staging\",\"staging_commit\":\"${COMMIT_SHA}\",\"reason\":\"${REASON}\"}"
+
+          ISSUE_BODY="## Major Version Bump Approval Required
+
+          Repo: ${REPO}
+          Current version: ${CURRENT}
+          Proposed version: ${PROPOSED}
+          Reason: ${REASON}
+          Requested by: @${REQUESTER}
+
+          ---
+
+          ## How to Approve or Reject
+
+          Comment /approve on this issue to approve the MAJOR bump.
+          Comment /reject on this issue to reject it and close without bumping.
+
+          Only users with write access to this repo may approve or reject.
+
+          Approving this will bump pyproject.toml to ${PROPOSED} on the staging branch.
+          The PM workspace-manifest.json staging_versions will also be updated.
+          This does NOT touch main.
+
+          ---
+
+          <!-- major-bump-metadata
+          ${METADATA_JSON}
+          -->"
+
+          ISSUE_URL=$(gh issue create \
+            --repo "${GH_ORG}/${REPO}" \
+            --title "[MAJOR BUMP PENDING] ${REPO}: ${CURRENT} to ${PROPOSED}" \
+            --body "$ISSUE_BODY" \
+            --label "major-bump-pending" \
+            --json url --jq '.url' 2>/dev/null || echo "")
+
+          if [ -z "$ISSUE_URL" ]; then
+            echo "WARNING: gh issue create failed (label 'major-bump-pending' may not exist in this repo)"
+            # Try without label
+            ISSUE_URL=$(gh issue create \
+              --repo "${GH_ORG}/${REPO}" \
+              --title "[MAJOR BUMP PENDING] ${REPO}: ${CURRENT} to ${PROPOSED}" \
+              --body "$ISSUE_BODY" \
+              --json url --jq '.url' 2>/dev/null || echo "unknown")
+          fi
+
+          echo "Issue URL: $ISSUE_URL"
+          echo "issue_url=$ISSUE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Send Telegram alert
+        env:
+          PROPOSED: ${{ steps.validate.outputs.proposed }}
+          CURRENT: ${{ steps.validate.outputs.current }}
+          REPO: ${{ steps.validate.outputs.repo }}
+          ISSUE_URL: ${{ steps.create-issue.outputs.issue_url }}
+          REQUESTER: ${{ steps.validate.outputs.requester }}
+        run: |
+          BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
+
+          if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+            MSG="Major version bump REQUESTED - Repo: ${REPO} - Version: ${CURRENT} to ${PROPOSED} - Requested by: @${REQUESTER} - Approve: ${ISSUE_URL}"
+            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${CHAT_ID}&text=${MSG}&disable_web_page_preview=false" || true
+            echo "Telegram alert sent"
+          else
+            echo "Telegram secrets not configured -- skipping alert"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Major Bump Request Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Repo | \`${{ steps.validate.outputs.repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Current version | \`${{ steps.validate.outputs.current }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Proposed version | \`${{ steps.validate.outputs.proposed }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Requested by | @${{ steps.validate.outputs.requester }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Issue | ${{ steps.create-issue.outputs.issue_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Next step: Comment /approve on the issue to proceed with the version bump." >> $GITHUB_STEP_SUMMARY
