@@ -59,6 +59,9 @@ jobs:
           uv pip install --python .venv/bin/python ruff==0.15.0 pytest pytest-cov pytest-asyncio pytest-timeout pytest-xdist basedpyright bandit pip-audit
 
       - name: Run quality gates
+        env:
+          CLOUD_MOCK_MODE: "true"
+          GCP_PROJECT_ID: "test-project"
         run: |
           export PATH="$(pwd)/.venv/bin:$PATH"
           bash scripts/quality-gates.sh --no-fix
