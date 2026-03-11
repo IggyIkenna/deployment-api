@@ -219,6 +219,30 @@ def get_codex_dir() -> Path | None:
     return None
 
 
+def get_epics_dir() -> Path | None:
+    """Get the unified-trading-codex/11-project-management/epics/ path.
+
+    Search order:
+    1. repo_root/codex-data-epics/  -- symlink to ../unified-trading-codex/11-project-management/epics
+    2. workspace sibling             -- ../unified-trading-codex/11-project-management/epics
+
+    Returns None when neither resolves; epic endpoints return 503.
+    SSOT: unified-trading-codex/11-project-management/epics/
+    """
+    api_dir = Path(__file__).parent.parent  # deployment_api/
+    repo_root = api_dir.parent  # deployment-api/
+
+    bundled = repo_root / "codex-data-epics"
+    if bundled.exists():
+        return bundled
+
+    sibling = repo_root.parent / "unified-trading-codex" / "11-project-management" / "epics"
+    if sibling.exists():
+        return sibling
+
+    return None
+
+
 def get_plans_dir() -> Path | None:
     """Get the unified-trading-pm/plans/ path for PM plan visualization.
 
