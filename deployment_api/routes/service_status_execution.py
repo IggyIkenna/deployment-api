@@ -254,8 +254,8 @@ async def get_execution_service_data_status(  # noqa: C901
                                 ),
                                 "missing_configs": [
                                     {
-                                        "config_file": c.get("config_file", ""),
-                                        "algo_name": c.get("algo_name", ""),
+                                        "config_file": c.get("config_file") or "",
+                                        "algo_name": c.get("algo_name") or "",
                                     }
                                     for c in tf_missing
                                 ],
@@ -273,13 +273,13 @@ async def get_execution_service_data_status(  # noqa: C901
                             cast(int, tf_entry["with_results"]) + tf_with_results
                         )
                         cast(list[str], tf_entry["missing"]).extend(
-                            f"{strategy_name}/{mode_name}/{c.get('config_file', '')}"
+                            f"{strategy_name}/{mode_name}/{c.get('config_file') or ''}"
                             for c in tf_missing
                         )
 
                         # Update algo breakdown
                         for c in configs_list:
-                            algo_key = str(c.get("algo_name", ""))
+                            algo_key = str(c.get("algo_name") or "")
                             algo_entry = breakdown_by_algo[algo_key]
                             algo_entry["total"] = cast(int, algo_entry["total"]) + 1
                             if c.get("has_results"):
@@ -289,7 +289,7 @@ async def get_execution_service_data_status(  # noqa: C901
                             else:
                                 path = f"{strategy_name}/{mode_name}/{timeframe_name}"
                                 cast(list[str], algo_entry["missing"]).append(
-                                    f"{path}/{c.get('config_file', '')}"
+                                    f"{path}/{c.get('config_file') or ''}"
                                 )
 
                     modes.append(

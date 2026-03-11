@@ -547,7 +547,7 @@ class DeploymentStateManager:
                 deployment["success_rate"] = 0.0
 
 
-# Alias for backward compatibility and test patching.
+# Alias for stable test patching (do not remove — relied upon by existing tests).
 # Tests inject a mock by replacing sys.modules["deployment_api.services.deployment_state"]
 # and expect to find DeploymentStateService on the mock module object.
 DeploymentStateService = DeploymentStateManager

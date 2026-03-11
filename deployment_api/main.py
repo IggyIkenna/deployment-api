@@ -15,14 +15,24 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from unified_events_interface import setup_events
-from unified_trading_library import setup_tracing
-from unified_trading_library.core.audit_middleware import RequestAuditMiddleware
-from unified_trading_library.core.events_relay import make_events_relay_router
+from unified_trading_library import (
+    PubSubEventSink,
+    RequestAuditMiddleware,
+    make_events_relay_router,
+    setup_tracing,
+)
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED  # noqa: F401
 
+_cfg = DeploymentApiConfig()
+_event_sink = PubSubEventSink(
+    project_id=_cfg.gcp_project_id,
+    topic="deployment-api-events",
+    service_name="deployment-api",
+)
 # Event logging for UTD v2 observability (before any log_event)
-setup_events(service_name="deployment-api", mode="live")
+setup_events(service_name="deployment-api", mode="live", sink=_event_sink)
 setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version

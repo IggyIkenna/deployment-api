@@ -344,7 +344,7 @@ def get_object_metadata(bucket_name: str, object_path: str) -> dict[str, object]
 def get_storage_client_and_bucket(bucket_name: str) -> tuple[object, object]:
     """Get GCS client for operations that need direct API (download, upload).
 
-    Returns a tuple of (client, bucket_name) for backward compatibility.
+    Returns a tuple of (client, bucket_name) — matches the expected return shape.
     The bucket_name is returned as-is since UCI StorageClient uses bucket+path directly.
     """
     from deployment_api.utils.storage_client import get_storage_client

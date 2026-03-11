@@ -12,7 +12,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 
-class GoogleUser(BaseModel):
+class GoogleUser(BaseModel):  # CORRECT-LOCAL
     """Google OAuth user model."""
 
     email: str

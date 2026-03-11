@@ -116,7 +116,7 @@ def _refresh_live_cloud_run_status(state: DeploymentState) -> int:  # noqa: C901
 
         # Revision conditions: type "Ready" with state CONDITION_SUCCEEDED = healthy
         ready = False
-        for cond in cast(list[object], latest.get("conditions", []) or []):
+        for cond in cast(list[object], latest.get("conditions") or []):
             if not isinstance(cond, dict):
                 continue
             cond_dict = cast(dict[str, object], cond)
