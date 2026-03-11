@@ -10,7 +10,31 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from deployment_service.deployment.state import DeploymentState
+
+def _get_shards(state: object) -> list[object]:
+    """Extract shards list from a state object (typed dataclass or plain dict)."""
+    if isinstance(state, dict):
+        raw = cast(dict[str, object], state).get("shards")
+        return cast(list[object], raw) if isinstance(raw, list) else []
+    shards_attr = getattr(state, "shards", None)
+    return cast(list[object], shards_attr) if isinstance(shards_attr, list) else []
+
+
+def _shard_id(shard: object) -> str:
+    """Return shard_id from a shard object or dict."""
+    if isinstance(shard, dict):
+        return cast(str, cast(dict[str, object], shard).get("shard_id") or "")
+    return cast(str, getattr(shard, "shard_id", "") or "")
+
+
+def _shard_dims(shard: object) -> dict[str, object]:
+    """Return dimensions dict from a shard object or dict."""
+    if isinstance(shard, dict):
+        raw = cast(dict[str, object], shard).get("dimensions")
+        return cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+    dims_raw = getattr(shard, "dimensions", None)
+    return cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
+
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +323,7 @@ def _lookup_blob_timestamp(
 
 
 def resolve_shard_blob_data(
-    state: DeploymentState,
+    state: object,
     existing_cat_dates: dict[str, set[str]],
     existing_venue_dates: dict[str, dict[str, set[str]]],
     blob_timestamps: dict[str, dict[str, dict[str, object]]],
@@ -312,10 +336,10 @@ def resolve_shard_blob_data(
     Returns: {shard_id: (blob_exists, blob_updated_or_None)}
     """
     result: dict[str, tuple[bool, datetime | None]] = {}
-    for shard in state.shards:
-        if _status_str(shard.status) != "succeeded":
+    for shard in _get_shards(state):
+        if _status_str(shard) != "succeeded":
             continue
-        sid = shard.shard_id
+        sid = _shard_id(shard)
         if not sid:
             continue
         dims_raw: object = getattr(shard, "dimensions", None) or {}
@@ -326,14 +350,20 @@ def resolve_shard_blob_data(
         if not cat or not start_date:
             result[sid] = (False, None)
             continue
-        data_exists = _check_shard_data_exists(cat, venue_val, start_date, existing_cat_dates, existing_venue_dates)
-        blob_updated = _lookup_blob_timestamp(cat, venue_val, start_date, dims_dict, blob_timestamps) if data_exists else None
+        data_exists = _check_shard_data_exists(
+            cat, venue_val, start_date, existing_cat_dates, existing_venue_dates
+        )
+        blob_updated = (
+            _lookup_blob_timestamp(cat, venue_val, start_date, dims_dict, blob_timestamps)
+            if data_exists
+            else None
+        )
         result[sid] = (data_exists, blob_updated)
     return result
 
 
 def classify_all_shards(
-    state: DeploymentState,
+    state: object,
     log_analysis: dict[str, object] | None,
     blob_data: dict[str, tuple[bool, datetime | None]] | None = None,
 ) -> dict[str, str]:
@@ -344,8 +374,8 @@ def classify_all_shards(
     shard_ids_with_errors, shard_ids_with_warnings = _extract_error_warning_shard_ids(log_analysis)
 
     classifications: dict[str, str] = {}
-    for shard in state.shards:
-        sid = shard.shard_id
+    for shard in _get_shards(state):
+        sid = _shard_id(shard)
         if not sid:
             continue
 
@@ -431,19 +461,18 @@ def build_existing_dates_sets(
 
 
 def _compute_verified_succeeded_shard_ids(
-    state: DeploymentState,
+    state: object,
     existing_cat_dates: dict[str, set[str]],
     existing_venue_dates: dict[str, dict[str, set[str]]],
 ) -> set[str]:
     """Compute set of shard IDs that succeeded and have verified data."""
     verified: set[str] = set()
 
-    for shard in state.shards:
-        if _status_str(shard.status) != "succeeded":
+    for shard in _get_shards(state):
+        if _status_str(shard) != "succeeded":
             continue
 
-        dims_raw: object = getattr(shard, "dimensions", None) or {}
-        dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
+        dims = _shard_dims(shard)
         cat = cast(str, dims.get("category") or "")
         venue_val = cast(str, dims.get("venue") or "")
         start_date, _ = _extract_date_range(dims.get("date"))
@@ -462,7 +491,7 @@ def _compute_verified_succeeded_shard_ids(
                     data_exists = True
 
         if data_exists:
-            sid = shard.shard_id
+            sid = _shard_id(shard)
             if sid:
                 verified.add(sid)
 
@@ -471,14 +500,14 @@ def _compute_verified_succeeded_shard_ids(
 
 
 def compute_completed_breakdown(
-    state: DeploymentState,
+    state: object,
     log_analysis: dict[str, object] | None,
     existing_cat_dates: dict[str, set[str]] | None = None,
     existing_venue_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict[str, object]:
     """Compute detailed breakdown of completed shards by status and verification."""
     succeeded_ids: set[str] = {
-        s.shard_id for s in state.shards if _status_str(s.status) == "succeeded" and s.shard_id
+        _shard_id(s) for s in _get_shards(state) if _status_str(s) == "succeeded" and _shard_id(s)
     }
 
     shard_ids_with_errors, shard_ids_with_warnings = _extract_error_warning_shard_ids(log_analysis)
@@ -539,15 +568,14 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
     return unique_zones
 
 
-def categories_from_state(state: DeploymentState) -> list[str] | None:
+def categories_from_state(state: object) -> list[str] | None:
     """Extract unique categories from deployment state shards."""
-    if not state or not state.shards:
+    if not state or not _get_shards(state):
         return None
 
     categories: set[str] = set()
-    for shard in state.shards:
-        dims_raw: object = getattr(shard, "dimensions", None) or {}
-        dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
+    for shard in _get_shards(state):
+        dims = _shard_dims(shard)
         cat_raw: object = dims.get("category")
         if cat_raw and isinstance(cat_raw, str):
             categories.add(cat_raw)
@@ -555,15 +583,14 @@ def categories_from_state(state: DeploymentState) -> list[str] | None:
     return sorted(categories) if categories else None
 
 
-def get_state_date_range(state: DeploymentState) -> tuple[str | None, str | None]:
+def get_state_date_range(state: object) -> tuple[str | None, str | None]:
     """Extract the date range from deployment state by examining all shards."""
-    if not state or not state.shards:
+    if not state or not _get_shards(state):
         return None, None
 
     all_dates: list[str] = []
-    for shard in state.shards:
-        dims_raw: object = getattr(shard, "dimensions", None) or {}
-        dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
+    for shard in _get_shards(state):
+        dims = _shard_dims(shard)
         start_date, end_date = _extract_date_range(dims.get("date"))
         if start_date:
             all_dates.append(start_date)

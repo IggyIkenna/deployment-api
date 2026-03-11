@@ -3,15 +3,15 @@ Deployment validation and verification utilities.
 
 Contains functions for validating deployment requests, computing verification results,
 and managing deployment completion verification workflows.
+
+NOTE: This module MUST NOT import from deployment_service Python packages.
+State loading uses deployment_api.utils.local_state_manager (HTTP/GCS boundary).
 """
 
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
-
-from deployment_service.deployment import StateManager
-from deployment_service.deployment.state import DeploymentState
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,9 @@ class _DeployRequestProtocol(Protocol):
 
 
 async def _compute_and_cache_verification(
-    state_manager: StateManager,
+    state_manager: object,
     deployment_id: str,
-    state: DeploymentState,
+    state: object,
 ) -> dict[str, object]:
     """
     Compute and cache verification results for a deployment.
@@ -74,10 +74,14 @@ async def _compute_and_cache_verification(
 
     async def _run_turbo() -> dict[str, object]:
         return await get_data_status_turbo_impl(
-            service=getattr(state, "service", ""),
+            service=str(
+                cast(dict[str, object], state).get("service", "")
+                if isinstance(state, dict)
+                else getattr(state, "service", "") or ""
+            ),
             start_date=start_date,
             end_date=end_date,
-            category=categories_from_state(state),
+            category=categories_from_state(cast(object, state)),
             venue=None,
             folder=None,
             data_type=None,
@@ -127,21 +131,19 @@ async def run_verification_and_cache_background(deployment_id: str) -> None:
     from .deployment_caching import remove_verification_pending
 
     try:
-        from deployment_service.deployment import StateManager
-
         from deployment_api import settings as _settings
+        from deployment_api.utils.local_state_manager import load_state as _load_state
 
         from .deployment_caching import get_cached_deployment_state
 
-        state_manager = StateManager(
-            bucket_name=_settings.STATE_BUCKET,
-            project_id=_settings.gcp_project_id,
-        )
+        # Thin adapter: get_cached_deployment_state calls .load_state(deployment_id)
+        class _LocalStateAdapter:
+            def load_state(self, dep_id: str) -> dict[str, object] | None:
+                return _load_state(dep_id, bucket=_settings.STATE_BUCKET)
 
-        state = cast(
-            DeploymentState | None,
-            await get_cached_deployment_state(state_manager, deployment_id, force_refresh=True),
-        )
+        state_manager = _LocalStateAdapter()
+
+        state = await get_cached_deployment_state(state_manager, deployment_id, force_refresh=True)
         if not state:
             return
 

@@ -10,6 +10,9 @@ Architecture:
 - Worker process runs the orchestrator completely independently
 - API immediately returns, allowing other requests to be served
 - Frontend polls GCS state file for progress updates
+
+NOTE: This module MUST NOT import from deployment_service. State updates
+use deployment_api.utils.local_state_manager (GCS via storage_facade).
 """
 
 import logging
@@ -18,9 +21,10 @@ import os
 import sys
 from typing import cast
 
-from deployment_service.deployment.state import DeploymentStatus, StateManager
-
 logger = logging.getLogger(__name__)
+
+# Status string constants (match deployment_service enum values)
+_STATUS_FAILED = "failed"
 
 
 def run_deployment_in_process(
@@ -72,18 +76,22 @@ def run_deployment_in_process(
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Worker failed for deployment %s: %s", deployment_id, e)
 
-        # Update state to reflect the failure
+        # Mark deployment FAILED via local_state_manager (no deployment_service import)
         try:
-            state_manager = StateManager(
-                bucket_name=state_bucket,
-                project_id=project_id,
+            from deployment_api.utils.local_state_manager import (
+                load_state as _load_state,
+            )
+            from deployment_api.utils.local_state_manager import (
+                save_state as _save_state,
             )
 
-            state = state_manager.load_state(deployment_id)
+            state = _load_state(deployment_id, bucket=state_bucket)
             if state:
-                state.status = DeploymentStatus.FAILED
-                state.config["error_message"] = str(e)
-                state_manager.save_state(state)
+                state["status"] = _STATUS_FAILED
+                config = cast(dict[str, object], state.get("config") or {})
+                config["error_message"] = str(e)
+                state["config"] = config
+                _save_state(state, bucket=state_bucket)
                 logger.info("Updated state to FAILED for %s", deployment_id)
         except (OSError, ValueError, RuntimeError) as state_err:
             logger.error("Failed to update state after error: %s", state_err)
