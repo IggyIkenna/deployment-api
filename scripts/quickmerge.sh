@@ -11,15 +11,21 @@
 # Usage:
 #   ./scripts/quickmerge.sh "commit message"
 #   ./scripts/quickmerge.sh "commit message" --files "path1 path2 path3"
-#   ./scripts/quickmerge.sh "commit message" --dep-branch "my-feature"
+#   ./scripts/quickmerge.sh "commit message" --dep-branch "my-feature"  # human-only; overrides manifest branch
 #   ./scripts/quickmerge.sh "commit message" --to-staging
+#
+# Branch resolution (no --dep-branch):
+#   1. Read active_feature_branch from unified-trading-pm/workspace-manifest.json
+#   2. Fallback to auto/YYYYMMDD-HHMMSS-$$ if manifest has no entry
+#   Currently: active_feature_branch = live-defi-rollout (set in manifest)
 #   ./scripts/quickmerge.sh "commit message" --quick
 #   ./scripts/quickmerge.sh "commit message" --skip-tests
 #   ./scripts/quickmerge.sh "commit message" --skip-typecheck
 #
 # Flags:
 #   --files "p1 p2"    Stage only these paths (multi-agent: avoid committing other agents' work)
-#   --dep-branch NAME  Branch isolation when dependencies have uncommitted changes (feature mode)
+#   --dep-branch NAME  HUMAN-ONLY. Branch isolation when deps have uncommitted changes that aren't yet
+#                      on main. Agents MUST NOT use this — they use active_feature_branch from manifest.
 #   --to-staging       Breaking change path: PR targets staging instead of main; checks staging lock.
 #                      dep-branch auto-derived from current git branch. Mutually exclusive with --dep-branch.
 #   --quick            Skip only act simulation (Stage 4); all other checks run
@@ -145,6 +151,15 @@ done
 [ "$AGENT_MODE" = true ] && SKIP_TESTS="--skip-tests"
 
 # ── FLAG VALIDATION ────────────────────────────────────────────────────────────
+# --dep-branch is HUMAN-ONLY. Agents must never pass it — they rely on active_feature_branch
+# from workspace-manifest.json. Fail loud so agents don't silently use the wrong branch.
+if [ "$AGENT_MODE" = true ] && [ -n "$DEP_BRANCH" ]; then
+  echo "❌ --dep-branch is not allowed in --agent mode."
+  echo "   Agents use active_feature_branch from workspace-manifest.json automatically."
+  echo "   Remove --dep-branch from your quickmerge call."
+  exit 1
+fi
+
 if [ "$TO_STAGING" = true ] && [ -n "$DEP_BRANCH" ]; then
   echo "❌ --to-staging and --dep-branch are mutually exclusive."
   echo "   --to-staging auto-derives the dep-branch from your current git branch."
@@ -472,10 +487,16 @@ if [ -f "$MANIFEST_PATH" ]; then
       echo "Dependencies differ from main, but no --dep-branch specified."
       echo "Your local dependency changes are intentional — do NOT discard them."
       echo ""
-      echo "Use --dep-branch NAME to create a branch for your dependency changes,"
-      echo "then proceed. Quickmerge will cascade changes to the named branch:"
+      echo "── If you are a HUMAN developer ──────────────────────────────────────"
+      echo "Use --dep-branch NAME (human-only flag) to create a feature branch for"
+      echo "your dependency changes. Quickmerge will cascade to that named branch:"
       echo ""
       echo "  bash scripts/quickmerge.sh \"$COMMIT_MSG\" --dep-branch \"my-feature\""
+      echo ""
+      echo "── If you are an AGENT ────────────────────────────────────────────────"
+      echo "Do NOT use --dep-branch. Commit the dependency changes first (in the"
+      echo "dep repo) using the active_feature_branch from workspace-manifest.json,"
+      echo "then re-run quickmerge in this repo."
       echo ""
       echo "═══════════════════════════════════════════════════════"
       exit 1
@@ -751,9 +772,26 @@ if [ -n "$DEP_BRANCH" ]; then
     git checkout -b "$BRANCH" origin/main --quiet 2>/dev/null || git checkout "$BRANCH" --quiet
   fi
 else
-  BRANCH="auto/$(TZ=UTC date +%Y%m%d-%H%M%S)-$$"
-  echo "[$REPO_NAME] Creating auto-generated branch: $BRANCH"
-  git checkout -b "$BRANCH" origin/main --quiet
+  # Read active_feature_branch from PM manifest (SSOT for feature branch name)
+  MANIFEST_PATH="$WORKSPACE_ROOT/unified-trading-pm/workspace-manifest.json"
+  MANIFEST_BRANCH=""
+  if [ -f "$MANIFEST_PATH" ]; then
+    MANIFEST_BRANCH=$(python3 -c "import json; m=json.load(open('$MANIFEST_PATH')); print(m.get('active_feature_branch',''))" 2>/dev/null || echo "")
+  fi
+  if [ -n "$MANIFEST_BRANCH" ]; then
+    BRANCH="$MANIFEST_BRANCH"
+    echo "[$REPO_NAME] Using active_feature_branch from manifest: $BRANCH"
+  else
+    BRANCH="auto/$(TZ=UTC date +%Y%m%d-%H%M%S)-$$"
+    echo "[$REPO_NAME] Creating auto-generated branch: $BRANCH"
+  fi
+  if git show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
+    git checkout "$BRANCH" --quiet
+  elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
+    git checkout -B "$BRANCH" "origin/$BRANCH" --quiet
+  else
+    git checkout -b "$BRANCH" origin/main --quiet 2>/dev/null || git checkout "$BRANCH" --quiet
+  fi
 fi
 echo ""
 
