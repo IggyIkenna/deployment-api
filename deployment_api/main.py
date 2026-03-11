@@ -59,6 +59,7 @@ from .routes import (
     config_management,
     data_status,
     deployments,
+    epics,
     infra_health,
     service_status,
     services,
@@ -93,6 +94,7 @@ _authenticated_router.include_router(config.router, prefix="/api/config", tags=[
 _authenticated_router.include_router(
     checklist.router, prefix="/api/checklists", tags=["Checklists"]
 )
+_authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])
 _authenticated_router.include_router(
     data_status.router, prefix="/api/data-status", tags=["Data Status"]
 )

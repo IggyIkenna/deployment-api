@@ -1927,24 +1927,27 @@ requires-dist = [
     { name = "ccxt", marker = "extra == 'schema-validation'", specifier = ">=4.5.24,<5.0.0" },
     { name = "databento", marker = "extra == 'schema-validation'", specifier = ">=0.32.0,<1.0.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.1,<1.0.0" },
+    { name = "httpx", marker = "extra == 'testing'", specifier = ">=0.28.1,<1.0.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0.0,<7.0.0" },
     { name = "ib-insync", marker = "extra == 'schema-validation'", specifier = ">=0.9.86,<1.0.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7.0,<3.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0,<4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.1,<10.0.0" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=9.0.1,<10.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25.0,<2.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0,<8.0.0" },
     { name = "pytest-socket", marker = "extra == 'dev'", specifier = ">=0.7.0,<1.0.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0,<3.0.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.0,<4.0.0" },
+    { name = "pyyaml", marker = "extra == 'testing'", specifier = ">=6.0.0,<7.0.0" },
     { name = "requests", marker = "extra == 'dev'", specifier = ">=2.32.5,<3.0.0" },
     { name = "requests", marker = "extra == 'schema-validation'", specifier = ">=2.32.5,<3.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
     { name = "tardis-client", marker = "extra == 'schema-validation'", specifier = ">=1.3.7,<2.0.0" },
     { name = "vcrpy", marker = "extra == 'dev'", specifier = ">=6.0.0,<7.0.0" },
 ]
-provides-extras = ["schema-validation", "dev"]
+provides-extras = ["testing", "schema-validation", "dev"]
 
 [[package]]
 name = "unified-cloud-interface"
@@ -1994,7 +1997,7 @@ provides-extras = ["gcp", "aws", "cache", "dev"]
 
 [[package]]
 name = "unified-config-interface"
-version = "0.1.57"
+version = "0.1.59"
 source = { editable = "../unified-config-interface" }
 dependencies = [
     { name = "pydantic" },
@@ -2030,7 +2033,7 @@ provides-extras = ["aws", "dev"]
 
 [[package]]
 name = "unified-events-interface"
-version = "0.2.46"
+version = "0.2.48"
 source = { editable = "../unified-events-interface" }
 
 [package.metadata]
@@ -2051,7 +2054,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "unified-internal-contracts"
-version = "0.1.91"
+version = "0.1.93"
 source = { editable = "../unified-internal-contracts" }
 dependencies = [
     { name = "pandas" },
@@ -2063,25 +2066,29 @@ dependencies = [
 requires-dist = [
     { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7.0,<2.0.0" },
     { name = "basedpyright", marker = "extra == 'dev'", specifier = "==1.38.2" },
+    { name = "numpy", marker = "extra == 'testing'", specifier = ">=1.26.0,<3.0.0" },
     { name = "pandas", specifier = ">=2.3.0,<3.0.0" },
     { name = "pandas-stubs", marker = "extra == 'dev'", specifier = ">=2.2.0,<3.0.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7.0,<3.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0,<4.0.0" },
+    { name = "pyarrow", marker = "extra == 'testing'", specifier = ">=19.0.0,<20.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.1,<10.0.0" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=9.0.1,<10.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25.0,<2.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0,<8.0.0" },
     { name = "pytest-socket", marker = "extra == 'dev'", specifier = ">=0.7.0,<1.0.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0,<3.0.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.0,<4.0.0" },
+    { name = "pyyaml", marker = "extra == 'testing'", specifier = ">=6.0.0,<7.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
     { name = "unified-api-contracts", editable = "../unified-api-contracts" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["testing", "dev"]
 
 [[package]]
 name = "unified-trading-library"
-version = "0.3.189"
+version = "0.3.191"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "fsspec" },
