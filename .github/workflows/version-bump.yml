@@ -2,7 +2,7 @@ name: version-bump
 
 on:
   push:
-    branches: [main, staging]
+    branches: [staging]
 
 permissions:
   contents: write
