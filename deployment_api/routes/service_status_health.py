@@ -48,7 +48,11 @@ def detect_anomalies(
                 {
                     "type": "deployment_without_data",
                     "severity": "warning",
-                    "message": f"Deployment ran {(deploy_time - data_time).total_seconds() / 3600:.1f}h after data update",  # noqa: E501
+                    "message": (
+                        f"Deployment ran"
+                        f" {(deploy_time - data_time).total_seconds() / 3600:.1f}h"
+                        " after data update"
+                    ),
                 }
             )
 
@@ -58,7 +62,11 @@ def detect_anomalies(
                 {
                     "type": "code_not_built",
                     "severity": "warning",
-                    "message": f"Code pushed {(code_time - build_time).total_seconds() / 60:.0f}m ago but not built",  # noqa: E501
+                    "message": (
+                        f"Code pushed"
+                        f" {(code_time - build_time).total_seconds() / 60:.0f}m"
+                        " ago but not built"
+                    ),
                 }
             )
 
@@ -79,7 +87,7 @@ def detect_anomalies(
     return anomalies
 
 
-def determine_service_health(  # noqa: C901
+def determine_service_health(
     data_ts: str | None,
     deploy_ts: str | None,
     deploy_status: str | None,
@@ -169,7 +177,7 @@ def determine_service_health(  # noqa: C901
     return health
 
 
-def determine_overview_health(  # noqa: C901
+def determine_overview_health(
     data_ts: str | None,
     deploy_ts: str | None,
     deploy_status: str | None,

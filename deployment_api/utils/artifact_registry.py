@@ -33,7 +33,11 @@ def _parse_image_url(image_url: str) -> dict[str, str] | None:
         Dict with location, project, repository, image, tag/digest
     """
     # Pattern for Artifact Registry URLs
-    pattern = r"^(?P<location>[a-z]+-[a-z]+[0-9]*)-docker\.pkg\.dev/(?P<project>[^/]+)/(?P<repository>[^/]+)/(?P<image>[^:@]+)(?::(?P<tag>[^@]+)|@(?P<digest>sha256:[a-f0-9]+))?$"  # noqa: E501
+    pattern = (
+        r"^(?P<location>[a-z]+-[a-z]+[0-9]*)-docker\.pkg\.dev"
+        r"/(?P<project>[^/]+)/(?P<repository>[^/]+)/(?P<image>[^:@]+)"
+        r"(?::(?P<tag>[^@]+)|@(?P<digest>sha256:[a-f0-9]+))?$"
+    )
 
     match = re.match(pattern, image_url)
     if not match:
@@ -71,11 +75,12 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
     GET /v2/{name}/manifests/{reference}
 
     Args:
-        image_url: Full Docker image URL (e.g., asia-northeast1-docker.pkg.dev/project/repo/image:tag)
+        image_url: Full Docker image URL
+            (e.g., asia-northeast1-docker.pkg.dev/project/repo/image:tag)
 
     Returns:
         Dict with digest, tags, created_time, etc.
-    """  # noqa: E501
+    """
     # Check cache first
     cache_key = image_url
     if cache_key in _image_cache:
@@ -104,7 +109,10 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
 
     headers = {
         "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",  # noqa: E501
+        "Accept": (
+            "application/vnd.docker.distribution.manifest.v2+json,"
+            " application/vnd.oci.image.manifest.v1+json"
+        ),
     }
 
     try:

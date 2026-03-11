@@ -212,7 +212,61 @@ def set_cached_result(
             )
 
 
-def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[str, object]:  # noqa: C901
+def _truncate_list_in_dict(
+    d: dict[str, object],
+    list_key: str,
+    tail_key: str,
+    truncated_key: str,
+    max_items: int,
+    half: int,
+) -> None:
+    """Truncate a dates list in a dict in-place."""
+    if list_key not in d:
+        return
+    dates = d[list_key]
+    if not isinstance(dates, list):
+        return
+    dates_list = cast(list[object], dates)
+    if len(dates_list) <= max_items:
+        return
+    d[list_key] = dates_list[:half]
+    d[tail_key] = dates_list[-half:]
+    d[truncated_key] = True
+
+
+def _truncate_found_missing(
+    d: dict[str, object], max_items: int, half: int
+) -> None:
+    """Truncate both dates_found_list and dates_missing_list in a dict."""
+    _truncate_list_in_dict(d, "dates_found_list", "dates_found_list_tail", "dates_found_truncated", max_items, half)
+    _truncate_list_in_dict(d, "dates_missing_list", "dates_missing_list_tail", "dates_missing_truncated", max_items, half)
+
+
+def _truncate_venue_dates(
+    venue_data: dict[str, object], max_items: int, half: int
+) -> None:
+    """Truncate dates lists in a venue dict including nested data_types."""
+    _truncate_found_missing(venue_data, max_items, half)
+    dt_raw: object = venue_data.get("data_types") or {}
+    dt_map = cast(dict[str, object], dt_raw) if isinstance(dt_raw, dict) else {}
+    for _dt_name, dt_data_raw in dt_map.items():
+        if isinstance(dt_data_raw, dict):
+            _truncate_found_missing(cast(dict[str, object], dt_data_raw), max_items, half)
+
+
+def _truncate_category_dates(
+    cat_data: dict[str, object], max_items: int, half: int
+) -> None:
+    """Truncate dates lists in a category dict including nested venues."""
+    _truncate_found_missing(cat_data, max_items, half)
+    venues_raw: object = cat_data.get("venues") or {}
+    venues_map = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
+    for _venue_name, venue_data_raw in venues_map.items():
+        if isinstance(venue_data_raw, dict):
+            _truncate_venue_dates(cast(dict[str, object], venue_data_raw), max_items, half)
+
+
+def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[str, object]:
     """
     Truncate dates lists in result for UI display.
 
@@ -224,88 +278,11 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
     """
     truncated = copy.deepcopy(result)
     half = max_items // 2
-
-    def truncate_list_in_dict(
-        d: dict[str, object], list_key: str, tail_key: str, truncated_key: str
-    ):
-        """Truncate a dates list in a dict."""
-        if list_key not in d:
-            return
-
-        dates = d[list_key]
-        if not isinstance(dates, list):
-            return
-
-        dates_list = cast(list[object], dates)
-        if len(dates_list) <= max_items:
-            return
-
-        # Truncate: first 25 + last 25
-        d[list_key] = dates_list[:half]
-        d[tail_key] = dates_list[-half:]
-        d[truncated_key] = True
-
-    # Truncate category-level dates
     cats_raw: object = truncated.get("categories") or {}
     cats_map = cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
     for _cat_name, cat_data_raw in cats_map.items():
-        cat_data = cast(dict[str, object], cat_data_raw) if isinstance(cat_data_raw, dict) else None
-        if cat_data is not None:
-            truncate_list_in_dict(
-                cat_data,
-                "dates_found_list",
-                "dates_found_list_tail",
-                "dates_found_truncated",
-            )
-            truncate_list_in_dict(
-                cat_data,
-                "dates_missing_list",
-                "dates_missing_list_tail",
-                "dates_missing_truncated",
-            )
-
-            # Truncate venue-level dates
-            venues_raw: object = cat_data.get("venues") or {}
-            venues_map = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
-            for _venue_name, venue_data_raw in venues_map.items():
-                venue_data = (
-                    cast(dict[str, object], venue_data_raw)
-                    if isinstance(venue_data_raw, dict)
-                    else None
-                )
-                if venue_data is not None:
-                    truncate_list_in_dict(
-                        venue_data,
-                        "dates_found_list",
-                        "dates_found_list_tail",
-                        "dates_found_truncated",
-                    )
-                    truncate_list_in_dict(
-                        venue_data,
-                        "dates_missing_list",
-                        "dates_missing_list_tail",
-                        "dates_missing_truncated",
-                    )
-
-                    # Truncate data_type-level dates
-                    dt_raw: object = venue_data.get("data_types") or {}
-                    dt_map = cast(dict[str, object], dt_raw) if isinstance(dt_raw, dict) else {}
-                    for _dt_name, dt_data_raw in dt_map.items():
-                        if isinstance(dt_data_raw, dict):
-                            dt_data = cast(dict[str, object], dt_data_raw)
-                            truncate_list_in_dict(
-                                dt_data,
-                                "dates_found_list",
-                                "dates_found_list_tail",
-                                "dates_found_truncated",
-                            )
-                            truncate_list_in_dict(
-                                dt_data,
-                                "dates_missing_list",
-                                "dates_missing_list_tail",
-                                "dates_missing_truncated",
-                            )
-
+        if isinstance(cat_data_raw, dict):
+            _truncate_category_dates(cast(dict[str, object], cat_data_raw), max_items, half)
     return truncated
 
 

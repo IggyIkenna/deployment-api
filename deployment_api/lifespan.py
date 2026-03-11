@@ -42,8 +42,57 @@ _events_drain_task = None
 _shutdown_event = None
 
 
+async def _cancel_background_tasks() -> None:
+    """Cancel and await the background sync and events drain tasks."""
+    global _background_task, _events_drain_task
+    if _background_task:
+        _background_task.cancel()
+        try:
+            await asyncio.wait_for(_background_task, timeout=5)
+        except asyncio.CancelledError as e:
+            logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
+        except TimeoutError:
+            logger.warning("Background auto-sync task did not stop in time")
+    if _events_drain_task:
+        _events_drain_task.cancel()
+        with suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(_events_drain_task, timeout=2)
+
+
+def _release_one_lock(deployment_id: str, held_locks: set[str]) -> int:
+    """Attempt to release a single deployment lock. Returns 1 if released, 0 otherwise."""
+    try:
+        lock_blob_name = f"locks/deployment_{deployment_id}.lock"
+        if _storage_object_exists(STATE_BUCKET, lock_blob_name):
+            lock_data = cast(
+                dict[str, object],
+                json.loads(_read_storage_object_text(STATE_BUCKET, lock_blob_name) or "{}"),
+            )
+            if lock_data.get("owner") == get_owner_id():
+                _delete_storage_object(STATE_BUCKET, lock_blob_name)
+                held_locks.discard(deployment_id)
+                return 1
+    except (OSError, ValueError, RuntimeError):
+        pass  # Lock may have been taken by another instance
+    held_locks.discard(deployment_id)
+    return 0
+
+
+def _release_deployment_locks() -> None:
+    """Release all per-deployment locks held by this instance on graceful shutdown."""
+    try:
+        released_count = 0
+        held_deployment_locks = get_held_deployment_locks()
+        for deployment_id in list(held_deployment_locks):
+            released_count += _release_one_lock(deployment_id, held_deployment_locks)
+        if released_count > 0:
+            logger.info("[SHUTDOWN] Released %s per-deployment lock(s)", released_count)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("[SHUTDOWN] Could not release locks: %s", e)
+
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: C901
+async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     global _background_task, _shutdown_event, _events_drain_task
 
@@ -73,44 +122,8 @@ async def lifespan(app: FastAPI):  # noqa: C901
     # Shutdown
     logger.info("Shutting down API...")
     _shutdown_event.set()
-    if _background_task:
-        _background_task.cancel()
-        try:
-            await asyncio.wait_for(_background_task, timeout=5)
-        except asyncio.CancelledError as e:
-            logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-            pass
-        except TimeoutError:
-            logger.warning("Background auto-sync task did not stop in time")
-    if _events_drain_task:
-        _events_drain_task.cancel()
-        with suppress(TimeoutError, asyncio.CancelledError):
-            await asyncio.wait_for(_events_drain_task, timeout=2)
-
-    # Release any held per-deployment locks on graceful shutdown
-    try:
-        # Release all locks held by this instance
-        released_count = 0
-        held_deployment_locks = get_held_deployment_locks()
-        for deployment_id in list(held_deployment_locks):
-            try:
-                lock_blob_name = f"locks/deployment_{deployment_id}.lock"
-                if _storage_object_exists(STATE_BUCKET, lock_blob_name):
-                    lock_data = cast(
-                        dict[str, object],
-                        json.loads(_read_storage_object_text(STATE_BUCKET, lock_blob_name) or "{}"),
-                    )
-                    if lock_data.get("owner") == get_owner_id():
-                        _delete_storage_object(STATE_BUCKET, lock_blob_name)
-                        released_count += 1
-            except (OSError, ValueError, RuntimeError):
-                pass  # Lock may have been taken by another instance
-            held_deployment_locks.discard(deployment_id)
-
-        if released_count > 0:
-            logger.info("[SHUTDOWN] Released %s per-deployment lock(s)", released_count)
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.warning("[SHUTDOWN] Could not release locks: %s", e)
+    await _cancel_background_tasks()
+    _release_deployment_locks()
 
     try:
         from .utils.cache import cache

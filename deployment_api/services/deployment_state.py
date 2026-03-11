@@ -244,7 +244,10 @@ class DeploymentStateManager:
                 {
                     "shards": demo_shards,
                     "compute_config": {"cpu": 4, "memory": "8Gi", "machine_type": "n2-standard-4"},
-                    "cli_command": f"python -m deployment deploy --service {state['service']} --compute vm",  # noqa: E501
+                    "cli_command": (
+                        f"python -m deployment deploy"
+                        f" --service {state['service']} --compute vm"
+                    ),
                     "error_details": None,
                 }
             )

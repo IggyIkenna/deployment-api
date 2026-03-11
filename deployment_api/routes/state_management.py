@@ -175,7 +175,42 @@ def _shard_has_force(shard: object) -> bool:
     return "--force" in args
 
 
-def _classify_shard(  # noqa: C901
+def _classify_failed_shard(shard: object) -> str:
+    """Classify a failed shard by failure_category."""
+    fc_raw: object = getattr(shard, "failure_category", None)
+    fc: str = fc_raw if isinstance(fc_raw, str) else ""
+    fc_lower = fc.lower() if fc else ""
+    if fc_lower in _INFRA_FAILURE_CATEGORIES:
+        return "INFRA_FAILURE"
+    if fc_lower == "timeout":
+        return "TIMEOUT_FAILURE"
+    if fc_lower in _CODE_FAILURE_CATEGORIES:
+        return "CODE_FAILURE"
+    return "VM_DIED"
+
+
+def _classify_blob_verification(
+    shard: object,
+    blob_exists: bool,
+    blob_updated: datetime | None,
+) -> str:
+    """Classify shard outcome based on blob existence and timestamp."""
+    is_force = _shard_has_force(shard)
+    shard_start = _parse_iso_dt(getattr(shard, "start_time", None))
+    shard_end = _parse_iso_dt(getattr(shard, "end_time", None))
+    if not blob_exists:
+        return "DATA_MISSING"
+    if blob_updated and shard_start and shard_end:
+        tolerance = 60
+        lower = shard_start - timedelta(seconds=tolerance)
+        upper = shard_end + timedelta(seconds=tolerance)
+        if lower <= blob_updated <= upper:
+            return "VERIFIED"
+        return "DATA_STALE" if is_force else "EXPECTED_SKIP"
+    return "VERIFIED" if is_force else "EXPECTED_SKIP"
+
+
+def _classify_shard(
     shard: object,  # type: object (dynamic deployment shard)
     blob_exists: bool | None = None,
     blob_updated: datetime | None = None,
@@ -193,68 +228,21 @@ def _classify_shard(  # noqa: C901
          c. Data verification (uses blob timestamp + --force flag)
     """
     status = _status_str(getattr(shard, "status", ""))
-
-    # --- Tier 0: non-succeeded statuses ---
     if status == "pending":
         return "NEVER_RAN"
     if status == "cancelled":
         return "CANCELLED"
     if status == "running":
         return "STILL_RUNNING"
-
     if status == "failed":
-        fc_raw: object = getattr(shard, "failure_category", None)
-        fc: str = fc_raw if isinstance(fc_raw, str) else ""
-        fc_lower = fc.lower() if fc else ""
-        if fc_lower in _INFRA_FAILURE_CATEGORIES:
-            return "INFRA_FAILURE"
-        if fc_lower == "timeout":
-            return "TIMEOUT_FAILURE"
-        if fc_lower in _CODE_FAILURE_CATEGORIES:
-            return "CODE_FAILURE"
-        # Unknown failure or VM died without writing status
-        return "VM_DIED"
-
-    # --- Tier 1: succeeded but check logs ---
+        return _classify_failed_shard(shard)
     if has_log_errors:
         return "COMPLETED_WITH_ERRORS"
     if has_log_warnings:
         return "COMPLETED_WITH_WARNINGS"
-
-    # --- Tier 2: data verification (blob timestamp check) ---
     if blob_exists is None:
-        # Verification hasn't run / no blob data available
         return "UNVERIFIED"
-
-    is_force = _shard_has_force(shard)
-    shard_start = _parse_iso_dt(getattr(shard, "start_time", None))
-    shard_end = _parse_iso_dt(getattr(shard, "end_time", None))
-
-    if blob_exists:
-        if blob_updated and shard_start and shard_end:
-            # Add 60-second tolerance on both ends for clock skew / upload lag
-            tolerance = 60  # seconds
-            lower = shard_start - timedelta(seconds=tolerance)
-            upper = shard_end + timedelta(seconds=tolerance)
-
-            if lower <= blob_updated <= upper:
-                return "VERIFIED"
-            else:
-                # Data exists but timestamp doesn't match the job interval
-                if is_force:
-                    return "DATA_STALE"
-                else:
-                    return "EXPECTED_SKIP"
-        else:
-            # Blob exists but we can't compare timestamps (missing data)
-            if is_force:
-                # With force, data exists → tentatively verified
-                return "VERIFIED"
-            else:
-                return "EXPECTED_SKIP"
-    else:
-        # No blob at all
-        return "DATA_MISSING"
+    return _classify_blob_verification(shard, blob_exists, blob_updated)
 
 
 def _parse_iso_dt(val: str | None) -> datetime | None:
@@ -297,7 +285,55 @@ def _build_blob_timestamp_map(
     return result
 
 
-def _resolve_shard_blob_data(  # noqa: C901
+def _check_shard_data_exists(
+    cat: str,
+    venue_val: str,
+    start_date: str,
+    existing_cat_dates: dict[str, set[str]],
+    existing_venue_dates: dict[str, dict[str, set[str]]],
+) -> bool:
+    """Check blob data exists for a shard using precomputed turbo sets."""
+    if cat not in existing_cat_dates:
+        return False
+    if venue_val and cat in existing_venue_dates and venue_val in existing_venue_dates[cat]:
+        return start_date in existing_venue_dates[cat][venue_val]
+    return start_date in existing_cat_dates[cat]
+
+
+def _lookup_blob_ts(
+    cat: str,
+    venue_val: str,
+    start_date: str,
+    dims: dict[str, object],
+    blob_timestamps: dict[str, dict[str, dict[str, object]]],
+) -> datetime | None:
+    """Look up blob timestamp for a shard from turbo data."""
+    if cat not in blob_timestamps:
+        return None
+    cat_ts = blob_timestamps[cat]
+    candidate_keys: list[str] = []
+    if venue_val:
+        candidate_keys.append(venue_val)
+    for dim_name in ("feature_group", "feature_type", "sub_dimension"):
+        dv_raw: object = dims.get(dim_name, "")
+        dv: str = dv_raw if isinstance(dv_raw, str) else ""
+        if dv and dv not in candidate_keys:
+            candidate_keys.append(dv)
+    candidate_keys.append("_all")
+    for key in candidate_keys:
+        if key in cat_ts:
+            ts: object = cat_ts[key].get(start_date)
+            if ts is not None:
+                return ts if isinstance(ts, datetime) else None
+    best: datetime | None = None
+    for _v_key, v_dates in cat_ts.items():
+        ts = v_dates.get(start_date)
+        if ts is not None and isinstance(ts, datetime) and (best is None or ts > best):
+            best = ts
+    return best
+
+
+def _resolve_shard_blob_data(
     state: object,
     existing_cat_dates: dict[str, set[str]],
     existing_venue_dates: dict[str, dict[str, set[str]]],
@@ -305,19 +341,9 @@ def _resolve_shard_blob_data(  # noqa: C901
 ) -> dict[str, tuple[bool, datetime | None]]:
     """Map each succeeded shard to (blob_exists, blob_updated) using turbo data.
 
-    Uses the pre-computed existence sets (from turbo) and blob timestamps
-    (from the same turbo queries). No additional GCS calls needed.
-
-    Blob timestamps are keyed by the service's sub-dimension value:
-      - market-tick-data-handler: keyed by venue (e.g. "BINANCE-SPOT")
-      - instruments-service:     keyed by venue (e.g. "NYSE")
-      - features-*-service:      keyed by feature_group (e.g. "technical_indicators")
-      - corporate-actions:       keyed by "_all" (no sub-dimension)
-
     Returns: {shard_id: (blob_exists, blob_updated_or_None)}
     """
     result: dict[str, tuple[bool, datetime | None]] = {}
-
     for shard in cast(list[object], getattr(state, "shards", []) or []):
         if _status_str(getattr(shard, "status", "")) != "succeeded":
             continue
@@ -325,78 +351,17 @@ def _resolve_shard_blob_data(  # noqa: C901
         if not sid_raw or not isinstance(sid_raw, str):
             continue
         sid: str = sid_raw
-
         dims_raw: object = getattr(shard, "dimensions", None) or {}
         dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
-        cat_raw = dims.get("category")
-        cat: str = str(cat_raw) if isinstance(cat_raw, str) else ""
-        venue_raw = dims.get("venue")
-        venue_val: str = str(venue_raw) if isinstance(venue_raw, str) else ""
+        cat: str = str(dims.get("category")) if isinstance(dims.get("category"), str) else ""
+        venue_val: str = str(dims.get("venue")) if isinstance(dims.get("venue"), str) else ""
         start_date, _ = _extract_date_range(dims.get("date"))
-
         if not cat or not start_date:
             result[sid] = (False, None)
             continue
-
-        # Check existence using the turbo sets
-        data_exists = False
-        if cat in existing_cat_dates:
-            if venue_val and cat in existing_venue_dates and venue_val in existing_venue_dates[cat]:
-                if start_date in existing_venue_dates[cat][venue_val]:
-                    data_exists = True
-            else:
-                if start_date in existing_cat_dates[cat]:
-                    data_exists = True
-
-        # Get blob timestamp from turbo data.
-        # Blob timestamps are keyed by the sub-dimension used in the turbo query.
-        # Try matching keys in priority order:
-        #   1. venue (market-tick, instruments)
-        #   2. feature_group / feature_type (features services)
-        #   3. _all (services with no sub-dimension, e.g. corporate-actions)
-        #   4. Scan all keys as last resort
-        blob_updated_raw: object = None
-        if data_exists and cat in blob_timestamps:
-            cat_ts = blob_timestamps[cat]
-
-            # Build list of candidate keys from shard dimensions
-            # (venue, feature_group, feature_type -- whatever sub-dimension the service uses)
-            candidate_keys: list[str] = []
-            if venue_val:
-                candidate_keys.append(venue_val)
-            for dim_name in ("feature_group", "feature_type", "sub_dimension"):
-                dv_raw: object = dims.get(dim_name, "")
-                dv: str = dv_raw if isinstance(dv_raw, str) else ""
-                if dv and dv not in candidate_keys:
-                    candidate_keys.append(dv)
-            candidate_keys.append("_all")
-
-            for key in candidate_keys:
-                if key in cat_ts:
-                    ts: object = cat_ts[key].get(start_date)
-                    if ts is not None:
-                        blob_updated_raw = ts
-                        break
-
-            # Fallback: scan all keys if no candidate matched
-            if blob_updated_raw is None:
-                for _v_key, v_dates in cat_ts.items():
-                    ts = v_dates.get(start_date)
-                    if ts is not None and (
-                        blob_updated_raw is None
-                        or (
-                            isinstance(ts, datetime)
-                            and isinstance(blob_updated_raw, datetime)
-                            and ts > blob_updated_raw
-                        )
-                    ):
-                        blob_updated_raw = ts
-
-        blob_updated: datetime | None = (
-            blob_updated_raw if isinstance(blob_updated_raw, datetime) else None
-        )
-        result[sid] = (data_exists, blob_updated)
-
+        data_exists = _check_shard_data_exists(cat, venue_val, start_date, existing_cat_dates, existing_venue_dates)
+        blob_ts = _lookup_blob_ts(cat, venue_val, start_date, dims, blob_timestamps) if data_exists else None
+        result[sid] = (data_exists, blob_ts)
     return result
 
 
@@ -692,11 +657,17 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     )
     tag: str | None = Field(
         None,
-        description="Human-readable description/annotation for this deployment (e.g., 'Fixed Curve adapter')",  # noqa: E501
+        description=(
+            "Human-readable description/annotation for this deployment"
+            " (e.g., 'Fixed Curve adapter')"
+        ),
     )
     cloud_config_path: str | None = Field(
         None,
-        description="Cloud storage path to config directory (gs://... or s3://...) for dynamic config discovery",  # noqa: E501
+        description=(
+            "Cloud storage path to config directory (gs://... or s3://...)"
+            " for dynamic config discovery"
+        ),
     )
     skip_venue_sharding: bool = Field(
         False,
@@ -718,18 +689,26 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     )
     max_concurrent: int | None = Field(
         None,
-        description="Max simultaneously running jobs/VMs. If total shards exceeds this, rolling launch is used. "  # noqa: E501
-        "Default: 2000. Hard limit: 2500.",
+        description=(
+            "Max simultaneously running jobs/VMs. If total shards exceeds this,"
+            " rolling launch is used. Default: 2000. Hard limit: 2500."
+        ),
     )
     include_all_shards: bool = Field(
         False,
-        description="If true, dry run response will include all shards (not just first 50). Use with caution for large deployments.",  # noqa: E501
+        description=(
+            "If true, dry run response will include all shards (not just first 50)."
+            " Use with caution for large deployments."
+        ),
     )
     deploy_missing_only: bool = Field(
         False,
-        description="If true, use backend to calculate missing shards (more accurate than exclude_dates). "  # noqa: E501
-        "This fetches full date lists from GCS to determine what data exists, avoiding the "
-        "truncation issue with exclude_dates passed from frontend.",
+        description=(
+            "If true, use backend to calculate missing shards"
+            " (more accurate than exclude_dates). "
+            "This fetches full date lists from GCS to determine what data exists, avoiding the "
+            "truncation issue with exclude_dates passed from frontend."
+        ),
     )
     first_day_of_month_only: bool = Field(
         False,
@@ -738,11 +717,14 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     )
     exclude_dates: dict[str, object] | None = Field(
         None,
-        description="Dates to exclude. Supports two formats: "
-        "(1) Category-level: {'CEFI': ['2024-01-01', ...]} - excludes all shards for those category+date combos. "  # noqa: E501
-        "(2) Venue-level: {'CEFI': {'BINANCE-SPOT': ['2024-01-01', ...], 'UPBIT': [...]}} - "
-        "excludes only specific category+venue+date combos. "
-        "Venue-level format enables precise 'deploy missing' for services with venue sharding.",
+        description=(
+            "Dates to exclude. Supports two formats: "
+            "(1) Category-level: {'CEFI': ['2024-01-01', ...]} - excludes all shards"
+            " for those category+date combos. "
+            "(2) Venue-level: {'CEFI': {'BINANCE-SPOT': ['2024-01-01', ...], 'UPBIT': [...]}} - "
+            "excludes only specific category+venue+date combos. "
+            "Venue-level format enables precise 'deploy missing' for services with venue sharding."
+        ),
     )
 
 

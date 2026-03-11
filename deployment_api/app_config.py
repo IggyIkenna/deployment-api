@@ -30,6 +30,73 @@ from deployment_api.workers.auto_sync import (
 logger = logging.getLogger(__name__)
 
 
+async def _cancel_tasks(
+    background_task: asyncio.Task[None] | None,
+    events_drain_task: asyncio.Task[None] | None,
+) -> None:
+    """Cancel and await the background sync and events drain tasks."""
+    if background_task:
+        background_task.cancel()
+        try:
+            await asyncio.wait_for(background_task, timeout=5)
+        except asyncio.CancelledError as e:
+            logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
+        except TimeoutError:
+            logger.warning("Background auto-sync task did not stop in time")
+    if events_drain_task:
+        events_drain_task.cancel()
+        with suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(events_drain_task, timeout=2)
+
+
+def _release_one_lock_gcs(
+    client: object,
+    state_bucket: str,
+    deployment_id: str,
+    owner_id: str,
+    held_locks: set[str],
+) -> int:
+    """Attempt to release a single deployment lock via GCS client. Returns 1 if released."""
+    blob_exists_fn = getattr(client, "blob_exists", None)
+    download_fn = getattr(client, "download_bytes", None)
+    delete_fn = getattr(client, "delete_blob", None)
+    try:
+        lock_blob_name = f"locks/deployment_{deployment_id}.lock"
+        if callable(blob_exists_fn) and blob_exists_fn(state_bucket, lock_blob_name):
+            raw_bytes: bytes = (
+                download_fn(state_bucket, lock_blob_name) if callable(download_fn) else b"{}"
+            )
+            lock_data = cast(dict[str, object], json.loads(raw_bytes.decode("utf-8") or "{}"))
+            if lock_data.get("owner") == owner_id:
+                if callable(delete_fn):
+                    delete_fn(state_bucket, lock_blob_name)
+                held_locks.discard(deployment_id)
+                return 1
+    except (OSError, ValueError, RuntimeError):
+        pass  # Lock may have been taken by another instance
+    held_locks.discard(deployment_id)
+    return 0
+
+
+def _release_deployment_locks_gcs() -> None:
+    """Release all per-deployment locks held by this instance on graceful shutdown."""
+    try:
+        project_id = settings.gcp_project_id
+        state_bucket = settings.STATE_BUCKET
+        owner_id = get_owner_id()
+        held_deployment_locks = get_held_deployment_locks()
+        client = get_storage_client_with_pool(project_id)
+        released_count = 0
+        for deployment_id in list(held_deployment_locks):
+            released_count += _release_one_lock_gcs(
+                client, state_bucket, deployment_id, owner_id, held_deployment_locks
+            )
+        if released_count > 0:
+            logger.info("[SHUTDOWN] Released %s per-deployment lock(s)", released_count)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("[SHUTDOWN] Could not release locks: %s", e)
+
+
 def get_config_dir() -> Path:
     """Get the configs directory path."""
     # Try relative to this file
@@ -55,7 +122,7 @@ def get_ui_dist_dir() -> Path | None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: C901
+async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     # Startup
     app.state.config_dir = get_config_dir()
@@ -85,50 +152,8 @@ async def lifespan(app: FastAPI):  # noqa: C901
     # Shutdown
     logger.info("Shutting down API...")
     shutdown_event.set()
-    if background_task:
-        background_task.cancel()
-        try:
-            await asyncio.wait_for(background_task, timeout=5)
-        except asyncio.CancelledError as e:
-            logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-            pass
-        except TimeoutError:
-            logger.warning("Background auto-sync task did not stop in time")
-    if events_drain_task:
-        events_drain_task.cancel()
-        with suppress(TimeoutError, asyncio.CancelledError):
-            await asyncio.wait_for(events_drain_task, timeout=2)
-
-    # Release any held per-deployment locks on graceful shutdown
-    try:
-        project_id = settings.gcp_project_id
-        state_bucket = settings.STATE_BUCKET
-        owner_id = get_owner_id()
-        held_deployment_locks = get_held_deployment_locks()
-
-        client = get_storage_client_with_pool(project_id)  # Uses shared client with large pool
-
-        # Release all locks held by this instance
-        released_count = 0
-        for deployment_id in list(held_deployment_locks):
-            try:
-                lock_blob_name = f"locks/deployment_{deployment_id}.lock"
-                if client.blob_exists(state_bucket, lock_blob_name):
-                    raw_bytes = client.download_bytes(state_bucket, lock_blob_name)
-                    lock_data = cast(
-                        dict[str, object], json.loads(raw_bytes.decode("utf-8") or "{}")
-                    )
-                    if lock_data.get("owner") == owner_id:
-                        client.delete_blob(state_bucket, lock_blob_name)
-                        released_count += 1
-            except (OSError, ValueError, RuntimeError):
-                pass  # Lock may have been taken by another instance
-            held_deployment_locks.discard(deployment_id)
-
-        if released_count > 0:
-            logger.info("[SHUTDOWN] Released %s per-deployment lock(s)", released_count)
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.warning("[SHUTDOWN] Could not release locks: %s", e)
+    await _cancel_tasks(background_task, events_drain_task)
+    _release_deployment_locks_gcs()
 
     try:
         await cache.shutdown()

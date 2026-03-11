@@ -249,8 +249,50 @@ async def get_dependencies(request: Request):
         ) from e
 
 
+def _load_service_deps_from_file(
+    deps_path: Path, service_name: str
+) -> dict[str, object] | None:
+    """Load and build service dependency info from a dependencies.yaml file."""
+    with open(deps_path) as f:
+        data = cast(dict[str, object], yaml.safe_load(f))
+    services = cast(dict[str, dict[str, object]], data.get("services") or {})
+    execution_order = cast(list[str], data.get("execution_order") or [])
+    if service_name not in services:
+        return None
+    service_data = services[service_name]
+    dependents: list[str] = []
+    for svc_name, svc_data in services.items():
+        if svc_name == service_name:
+            continue
+        for upstream in cast(list[dict[str, object]], svc_data.get("upstream") or []):
+            if upstream.get("service") == service_name:
+                dependents.append(svc_name)
+                break
+    dag_edges: list[dict[str, object]] = []
+    for svc_name, svc_data in services.items():
+        for upstream in cast(list[dict[str, object]], svc_data.get("upstream") or []):
+            dag_edges.append({
+                "from": upstream.get("service"),
+                "to": svc_name,
+                "required": upstream.get("required", False),
+            })
+    return {
+        "service": service_name,
+        "description": service_data.get("description"),
+        "upstream": service_data.get("upstream") or [],
+        "outputs": service_data.get("outputs") or [],
+        "external_dependencies": service_data.get("external_dependencies") or [],
+        "downstream_dependents": dependents,
+        "dag": {
+            "nodes": list(services.keys()),
+            "edges": dag_edges,
+            "execution_order": execution_order,
+        },
+    }
+
+
 @router.get("/dependencies/{service_name}")
-async def get_service_dependencies(service_name: str, request: Request):  # noqa: C901
+async def get_service_dependencies(service_name: str, request: Request):
     """
     Get dependencies for a specific service.
 
@@ -262,62 +304,12 @@ async def get_service_dependencies(service_name: str, request: Request):  # noqa
     """
     cache_key = f"config:dependencies:{service_name}"
 
-    async def _fetch():  # noqa: C901
+    async def _fetch():
         config_dir = cast(Path, cast(FastAPI, request.app).state.config_dir)
         deps_path: Path = config_dir / "dependencies.yaml"
-
         if not deps_path.exists():
             raise HTTPException(status_code=404, detail="dependencies.yaml not found")
-
-        def _load_service_deps_sync() -> dict[str, object] | None:
-            with open(deps_path) as f:
-                data = cast(dict[str, object], yaml.safe_load(f))
-
-            services = cast(dict[str, dict[str, object]], data.get("services") or {})
-            execution_order = cast(list[str], data.get("execution_order") or [])
-
-            if service_name not in services:
-                return None
-
-            service_data = services[service_name]
-
-            # Find downstream dependents
-            dependents: list[str] = []
-            for svc_name, svc_data in services.items():
-                if svc_name == service_name:
-                    continue
-                for upstream in cast(list[dict[str, object]], svc_data.get("upstream") or []):
-                    if upstream.get("service") == service_name:
-                        dependents.append(svc_name)
-                        break
-
-            # Build DAG context: all edges for graph visualization
-            dag_edges: list[dict[str, object]] = []
-            for svc_name, svc_data in services.items():
-                for upstream in cast(list[dict[str, object]], svc_data.get("upstream") or []):
-                    dag_edges.append(
-                        {
-                            "from": upstream.get("service"),
-                            "to": svc_name,
-                            "required": upstream.get("required", False),
-                        }
-                    )
-
-            return {
-                "service": service_name,
-                "description": service_data.get("description"),
-                "upstream": service_data.get("upstream") or [],
-                "outputs": service_data.get("outputs") or [],
-                "external_dependencies": service_data.get("external_dependencies") or [],
-                "downstream_dependents": dependents,
-                "dag": {
-                    "nodes": list(services.keys()),
-                    "edges": dag_edges,
-                    "execution_order": execution_order,
-                },
-            }
-
-        result = await asyncio.to_thread(_load_service_deps_sync)
+        result = await asyncio.to_thread(_load_service_deps_from_file, deps_path, service_name)
         if result is None:
             raise HTTPException(
                 status_code=404,

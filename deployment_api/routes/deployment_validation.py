@@ -211,7 +211,7 @@ def resolve_deploy_dates(
     return start_date, end_date
 
 
-def validate_deployment_request(deploy_request: _DeployRequestProtocol) -> dict[str, object] | None:  # noqa: C901
+def validate_deployment_request(deploy_request: _DeployRequestProtocol) -> dict[str, object] | None:
     """
     Validate deployment request parameters.
 

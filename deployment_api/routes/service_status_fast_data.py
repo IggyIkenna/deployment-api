@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from .service_status_checkers import SERVICE_OUTPUT_BUCKETS
 
 
-async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | None:  # noqa: C901
+async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | None:
     """
     FAST version: Get most recent data timestamp by checking latest date folder.
 
@@ -25,7 +25,7 @@ async def get_latest_data_timestamp_fast(service: str) -> dict[str, object] | No
     """
     from deployment_api.utils.storage_facade import list_objects, list_prefixes
 
-    def _get_timestamps_sync() -> dict[str, object]:  # noqa: C901
+    def _get_timestamps_sync() -> dict[str, object]:
         try:
             buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
 

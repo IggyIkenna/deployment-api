@@ -143,7 +143,45 @@ def maybe_add_direct_gcs(
 _maybe_add_direct_gcs = maybe_add_direct_gcs
 
 
-def find_duplicate_running_shards(  # noqa: C901
+def _check_deployment_for_conflicts(
+    state_manager: object,
+    active_deployment: dict[str, object],
+    deployment_id: str,
+    service: str,
+    new_shard_signatures: set[str],
+) -> list[dict[str, object]]:
+    """Check a single active deployment for shard conflicts."""
+    conflicts: list[dict[str, object]] = []
+    dep_id_raw = active_deployment.get("deployment_id")
+    if not isinstance(dep_id_raw, str) or dep_id_raw == deployment_id:
+        return conflicts
+    get_shards_fn = getattr(state_manager, "get_deployment_shards", None)
+    if not callable(get_shards_fn):
+        return conflicts
+    active_shards_raw: object = get_shards_fn(dep_id_raw)
+    active_shards: list[dict[str, object]] = (
+        cast(list[dict[str, object]], active_shards_raw)
+        if isinstance(active_shards_raw, list)
+        else []
+    )
+    for active_shard in active_shards:
+        args_raw = active_shard.get("args")
+        args_list: list[str] = cast(list[str], args_raw) if isinstance(args_raw, list) else []
+        active_signature = _extract_shard_signature(service, args_list)
+        if active_signature and active_signature in new_shard_signatures:
+            conflicts.append(
+                {
+                    "deployment_id": dep_id_raw,
+                    "shard_id": active_shard.get("shard_id"),
+                    "signature": active_signature,
+                    "status": active_deployment.get("status"),
+                    "started_at": active_deployment.get("started_at"),
+                }
+            )
+    return conflicts
+
+
+def find_duplicate_running_shards(
     state_manager: object, service: str, deployment_id: str, shard_args_list: list[list[str]]
 ) -> list[dict[str, object]]:
     """
@@ -154,9 +192,7 @@ def find_duplicate_running_shards(  # noqa: C901
     by date ranges or other dimensions.
     """
     conflicts: list[dict[str, object]] = []
-
     try:
-        # Get all active deployments for this service
         list_fn = getattr(state_manager, "list_deployments", None)
         if not callable(list_fn):
             return conflicts
@@ -168,55 +204,19 @@ def find_duplicate_running_shards(  # noqa: C901
             if isinstance(active_deployments_raw, list)
             else []
         )
-
-        # Convert new shard args to comparable format
-        new_shard_signatures: set[str] = set()
-        for shard_args in shard_args_list:
-            # Extract key identifying parameters (service-specific logic)
-            signature = _extract_shard_signature(service, shard_args)
-            if signature:
-                new_shard_signatures.add(signature)
-
-        # Check each active deployment for overlaps
+        new_shard_signatures: set[str] = {
+            sig
+            for shard_args in shard_args_list
+            if (sig := _extract_shard_signature(service, shard_args)) is not None
+        }
         for active_deployment in active_deployments:
-            dep_id_raw = active_deployment.get("deployment_id")
-            if not isinstance(dep_id_raw, str):
-                continue
-            if dep_id_raw == deployment_id:
-                continue  # Skip self
-
-            get_shards_fn = getattr(state_manager, "get_deployment_shards", None)
-            if not callable(get_shards_fn):
-                continue
-            active_shards_raw: object = get_shards_fn(dep_id_raw)
-            active_shards: list[dict[str, object]] = (
-                cast(list[dict[str, object]], active_shards_raw)
-                if isinstance(active_shards_raw, list)
-                else []
-            )
-
-            for active_shard in active_shards:
-                args_raw = active_shard.get("args")
-                args_list: list[str] = (
-                    cast(list[str], args_raw) if isinstance(args_raw, list) else []
+            conflicts.extend(
+                _check_deployment_for_conflicts(
+                    state_manager, active_deployment, deployment_id, service, new_shard_signatures
                 )
-                active_signature = _extract_shard_signature(service, args_list)
-
-                if active_signature and active_signature in new_shard_signatures:
-                    conflicts.append(
-                        {
-                            "deployment_id": dep_id_raw,
-                            "shard_id": active_shard.get("shard_id"),
-                            "signature": active_signature,
-                            "status": active_deployment.get("status"),
-                            "started_at": active_deployment.get("started_at"),
-                        }
-                    )
-
+            )
     except (OSError, ValueError, RuntimeError) as e:
         logger.warning("Error checking for duplicate shards: %s", e)
-        # Don't fail deployment due to conflict check failure
-
     return conflicts
 
 

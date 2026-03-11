@@ -28,11 +28,15 @@ class TestDeploymentApiStartup:
 
     def test_import_package(self) -> None:
         """Package import must succeed — verifies __init__.py is valid."""
-        import deployment_api  # noqa: F401
+        import deployment_api
+
+        assert deployment_api.__name__ == "deployment_api"
 
     def test_import_auth_module(self) -> None:
         """auth.py must import cleanly."""
-        import deployment_api.auth  # noqa: F401
+        import deployment_api.auth
+
+        assert deployment_api.auth.__name__ == "deployment_api.auth"
 
     def test_verify_service_token_exists(self) -> None:
         """verify_service_token must be exported from auth module."""

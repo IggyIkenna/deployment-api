@@ -128,7 +128,7 @@ async def get_last_updated_batch(
     return {"services": results}
 
 
-async def get_data_status_turbo_impl(  # noqa: C901
+async def get_data_status_turbo_impl(
     service: str,
     start_date: str,
     end_date: str,
@@ -273,7 +273,10 @@ async def get_data_status_turbo_impl(  # noqa: C901
 
     if service not in BUCKET_MAPPING:
         return {
-            "error": f"Service {service} not supported for turbo mode. Supported: {list(BUCKET_MAPPING.keys())}"  # noqa: E501
+            "error": (
+                f"Service {service} not supported for turbo mode."
+                f" Supported: {list(BUCKET_MAPPING.keys())}"
+            )
         }
 
     categories = category if category else list(BUCKET_MAPPING[service].keys())
@@ -307,9 +310,11 @@ async def get_data_status_turbo_impl(  # noqa: C901
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Request too large: {days} days x {total_venues} venues x {len(categories)} categories "  # noqa: E501
-                    f"= ~{estimated:,} GCS checks (limit {max_estimated_checks:,}). "
-                    "Narrow the date range (e.g. last 6-12 months), select specific categories, or add venue filter."  # noqa: E501
+                    f"Request too large: {days} days x {total_venues} venues"
+                    f" x {len(categories)} categories"
+                    f" = ~{estimated:,} GCS checks (limit {max_estimated_checks:,}). "
+                    "Narrow the date range (e.g. last 6-12 months),"
+                    " select specific categories, or add venue filter."
                 ),
             )
 
@@ -321,7 +326,7 @@ async def get_data_status_turbo_impl(  # noqa: C901
     # Determine if we should use flat listing (much faster for large date ranges)
     _use_flat_listing = len(year_months) > 6  # More than 6 months = use flat listing
 
-    def check_category(cat: str) -> dict[str, object]:  # noqa: C901
+    def check_category(cat: str) -> dict[str, object]:
         """Check all date directories for a category using optimized queries."""
         bucket_name = BUCKET_MAPPING[service].get(cat)
         if not bucket_name:

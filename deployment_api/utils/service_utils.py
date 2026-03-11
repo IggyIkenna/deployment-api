@@ -48,6 +48,74 @@ def _get_started_str(shard_state: dict[str, object]) -> str | None:
     return None
 
 
+def _record_stage_duration(
+    shard_state: dict[str, object],
+    stage_timings: dict[str, object],
+    stage_name: str,
+    end_ts: datetime,
+) -> None:
+    """Record the duration for a completed stage in stage_timings."""
+    started = _get_started_str(shard_state)
+    if not started:
+        return
+    try:
+        start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=UTC)
+        stage_timings[stage_name] = (end_ts - start_dt).total_seconds()
+    except (ValueError, TypeError) as e:
+        logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
+
+
+_STAGE_MAP: dict[str, tuple[str, str | None]] = {
+    "VALIDATION_STARTED": ("validation", "initializing"),
+    "DATA_INGESTION_STARTED": ("ingestion", "running"),
+    "PROCESSING_STARTED": ("processing", None),
+    "DATA_BROADCAST": ("broadcasting", None),
+    "PERSISTENCE_STARTED": ("persistence", None),
+}
+
+_STAGE_COMPLETED_MAP: dict[str, str] = {
+    "VALIDATION_COMPLETED": "validation",
+    "DATA_INGESTION_COMPLETED": "ingestion",
+    "PROCESSING_COMPLETED": "processing",
+    "PERSISTENCE_COMPLETED": "persistence",
+}
+
+
+def _apply_stage_event(
+    event_name: str,
+    shard_state: dict[str, object],
+    stage_timings: dict[str, object],
+    details: str,
+    timestamp: datetime,
+) -> None:
+    """Apply a stage lifecycle event to shard_state."""
+    if event_name in _STAGE_MAP:
+        stage_name, new_status = _STAGE_MAP[event_name]
+        shard_state["current_stage"] = stage_name
+        shard_state["stage_started_at"] = timestamp.isoformat()
+        if new_status:
+            shard_state["status"] = new_status
+    elif event_name in _STAGE_COMPLETED_MAP:
+        _record_stage_duration(
+            shard_state, stage_timings, _STAGE_COMPLETED_MAP[event_name], timestamp
+        )
+        if event_name == "DATA_INGESTION_COMPLETED":
+            shard_state["stage_details"] = details
+    elif event_name == "VALIDATION_FAILED":
+        shard_state["status"] = "failed"
+        shard_state["failure_category"] = "validation_failed"
+    elif event_name == "STOPPED":
+        shard_state["status"] = "completed"
+        shard_state["current_stage"] = "completed"
+        shard_state["progress"] = 100
+    elif event_name == "FAILED":
+        shard_state["status"] = "failed"
+        shard_state["failure_category"] = "service_failed"
+        shard_state["stage_details"] = details
+
+
 def _get_stage_timings(shard_state: dict[str, object]) -> dict[str, object]:
     """Return the stage_timings dict from shard_state, creating it if absent."""
     raw: object = shard_state.get("stage_timings")
@@ -58,7 +126,7 @@ def _get_stage_timings(shard_state: dict[str, object]) -> dict[str, object]:
     return result
 
 
-def update_shard_state_from_event(  # noqa: C901
+def update_shard_state_from_event(
     shard_state: dict[str, object], event: dict[str, object]
 ) -> dict[str, object]:
     """Update shard state based on parsed event.
@@ -77,93 +145,8 @@ def update_shard_state_from_event(  # noqa: C901
     timestamp_raw: object = event.get("timestamp")
     timestamp = timestamp_raw if isinstance(timestamp_raw, datetime) else datetime.now(UTC)
 
-    # Ensure stage_timings exists
     stage_timings = _get_stage_timings(shard_state)
-
-    # FAILED alone → service_failed; only VALIDATION_FAILED → validation_failed
-    _is_validation_failed = False
-    if event_name in [
-        "VALIDATION_STARTED",
-        "VALIDATION_COMPLETED",
-        "VALIDATION_FAILED",
-    ] and (event_name not in ("FAILED",) or _is_validation_failed):
-        if event_name == "VALIDATION_STARTED":
-            shard_state["current_stage"] = "validation"
-            shard_state["stage_started_at"] = timestamp.isoformat()
-            shard_state["status"] = "initializing"
-        elif event_name == "VALIDATION_COMPLETED":
-            started = _get_started_str(shard_state)
-            if started:
-                try:
-                    start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-                    if start_dt.tzinfo is None:
-                        start_dt = start_dt.replace(tzinfo=UTC)
-                    stage_timings["validation"] = (timestamp - start_dt).total_seconds()
-                except (ValueError, TypeError) as e:
-                    logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-        elif event_name == "VALIDATION_FAILED" or _is_validation_failed:
-            shard_state["status"] = "failed"
-            shard_state["failure_category"] = "validation_failed"
-
-    elif event_name in ["DATA_INGESTION_STARTED", "DATA_INGESTION_COMPLETED"]:
-        if event_name == "DATA_INGESTION_STARTED":
-            shard_state["current_stage"] = "ingestion"
-            shard_state["stage_started_at"] = timestamp.isoformat()
-            shard_state["status"] = "running"
-        elif event_name == "DATA_INGESTION_COMPLETED":
-            started = _get_started_str(shard_state)
-            if started:
-                try:
-                    start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-                    if start_dt.tzinfo is None:
-                        start_dt = start_dt.replace(tzinfo=UTC)
-                    stage_timings["ingestion"] = (timestamp - start_dt).total_seconds()
-                except (ValueError, TypeError) as e:
-                    logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-            shard_state["stage_details"] = details
-
-    elif event_name in ["PROCESSING_STARTED", "PROCESSING_COMPLETED"]:
-        if event_name == "PROCESSING_STARTED":
-            shard_state["current_stage"] = "processing"
-            shard_state["stage_started_at"] = timestamp.isoformat()
-        elif event_name == "PROCESSING_COMPLETED":
-            started = _get_started_str(shard_state)
-            if started:
-                try:
-                    start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-                    if start_dt.tzinfo is None:
-                        start_dt = start_dt.replace(tzinfo=UTC)
-                    stage_timings["processing"] = (timestamp - start_dt).total_seconds()
-                except (ValueError, TypeError) as e:
-                    logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-
-    elif event_name == "DATA_BROADCAST":
-        shard_state["current_stage"] = "broadcasting"
-
-    elif event_name in ["PERSISTENCE_STARTED", "PERSISTENCE_COMPLETED"]:
-        if event_name == "PERSISTENCE_STARTED":
-            shard_state["current_stage"] = "persistence"
-            shard_state["stage_started_at"] = timestamp.isoformat()
-        elif event_name == "PERSISTENCE_COMPLETED":
-            started = _get_started_str(shard_state)
-            if started:
-                try:
-                    start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-                    if start_dt.tzinfo is None:
-                        start_dt = start_dt.replace(tzinfo=UTC)
-                    stage_timings["persistence"] = (timestamp - start_dt).total_seconds()
-                except (ValueError, TypeError) as e:
-                    logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-
-    elif event_name == "STOPPED":
-        shard_state["status"] = "completed"
-        shard_state["current_stage"] = "completed"
-        shard_state["progress"] = 100
-
-    elif event_name == "FAILED":
-        shard_state["status"] = "failed"
-        shard_state["failure_category"] = "service_failed"
-        shard_state["stage_details"] = details
+    _apply_stage_event(event_name, shard_state, stage_timings, details, timestamp)
 
     # Parse progress counters from details (e.g., "BTC-USDT-SWAP (5/325)" or "2025-01-01 (1/30)")
     progress_match = re.search(r"\((\d+)/(\d+)\)", details)

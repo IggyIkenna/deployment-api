@@ -206,7 +206,7 @@ class EventProcessor:
 
         return updated, launched_this_tick
 
-    def process_cloud_run_updates(  # noqa: C901
+    def process_cloud_run_updates(
         self,
         deployment_id: str,
         state: dict[str, object],
@@ -344,7 +344,7 @@ class EventProcessor:
             logger.debug("[EVENT_PROCESSOR] Cloud Run update error: %s", e)
             return False
 
-    def process_orphan_vm_cleanup(  # noqa: C901
+    def process_orphan_vm_cleanup(
         self,
         deployment_id: str,
         state: dict[str, object],

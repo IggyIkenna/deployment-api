@@ -21,7 +21,10 @@ CACHE_BLOB_PATH = "cache/service_status_cache.json"
 
 
 def _load_gcs_cache() -> dict[str, object]:
-    """Load cache from GCS (shared across all instances). Uses storage facade (FUSE when production)."""  # noqa: E501
+    """Load cache from GCS (shared across all instances).
+
+    Uses storage facade (FUSE when production).
+    """
     global _local_cache, _cache_loaded
 
     if _cache_loaded:
@@ -57,7 +60,10 @@ def _load_gcs_cache() -> dict[str, object]:
 
 
 def _save_gcs_cache():
-    """Save cache to GCS (async-friendly, fire and forget). Uses storage facade (FUSE when production)."""  # noqa: E501
+    """Save cache to GCS (async-friendly, fire and forget).
+
+    Uses storage facade (FUSE when production).
+    """
     try:
         from deployment_api.utils.storage_facade import write_object_text
 

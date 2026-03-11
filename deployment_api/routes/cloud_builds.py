@@ -63,15 +63,12 @@ def _get_gcp_build_client():
     ``google.cloud.devtools.cloudbuild_v1.CloudBuildClient`` needed by the
     request-builder helpers in this module.
     """
-    from unified_cloud_interface.providers.gcp_compute import (  # noqa: deep-import
-        GCPCloudBuildClient,  # Deferred — UCI boundary
-    )
-
     uci_client = get_cloud_build_client(project_id=default_project_id)
     # GCPCloudBuildClient exposes ._client() to get the native google client.
     # This is intentional — request types (ListBuildTriggersRequest etc.) are
     # still constructed using the cloudbuild_v1 module directly.
-    if isinstance(uci_client, GCPCloudBuildClient):
+    # Use hasattr to avoid a deep import into UCI's providers sub-package.
+    if hasattr(uci_client, "_client"):
         return uci_client._client()  # type: ignore[reportPrivateUsage]  # intentional — see docstring
     # Fallback: direct construction (should not be reached in production)
     return _cloudbuild_v1().CloudBuildClient()
@@ -342,6 +339,74 @@ _trigger_cache_time: float = 0
 _TRIGGER_CACHE_TTL = 3600  # 1 hour
 
 
+def _resolve_trigger_repo(trigger: object) -> tuple[str | None, str | None]:
+    """Resolve repo name and type from a Cloud Build trigger object."""
+    t_name = str(getattr(trigger, "name", "") or "")
+    for service in SERVICES_WITH_TRIGGERS:
+        if t_name == f"{service}-build":
+            return service, "service"
+    for library in LIBRARIES_WITH_TRIGGERS:
+        if t_name == f"{library}-build":
+            return library, "library"
+    for infra in INFRASTRUCTURE_WITH_TRIGGERS:
+        if t_name == f"{infra}-build":
+            return infra, "infrastructure"
+    return None, None
+
+
+def _extract_github_info(trigger: object) -> tuple[str | None, str | None]:
+    """Extract github_repo and branch_pattern from a Cloud Build trigger object."""
+    github = getattr(trigger, "github", None)
+    repo_event = getattr(trigger, "repository_event_config", None)
+    if github:
+        owner = str(getattr(github, "owner", "") or "")
+        name = str(getattr(github, "name", "") or "")
+        github_repo: str | None = f"{owner}/{name}" if owner and name else None
+        push = getattr(github, "push", None)
+        branch_pattern: str | None = str(getattr(push, "branch", "") or "") if push else None
+        return github_repo, branch_pattern or None
+    if repo_event:
+        repo_path = str(getattr(repo_event, "repository", "") or "")
+        parts = repo_path.split("/")
+        github_repo = parts[-1] if parts else None
+        push = getattr(repo_event, "push", None)
+        branch_pattern = str(getattr(push, "branch", "") or "") if push else None
+        return github_repo, branch_pattern or None
+    return None, None
+
+
+def _build_trigger_list_sync() -> list[TriggerDict]:
+    """Synchronously fetch and classify all Cloud Build triggers."""
+    _cb = _cloudbuild_v1()
+    client = _get_gcp_build_client()
+    parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
+    request = _cb.ListBuildTriggersRequest(parent=parent, page_size=50)
+    triggers = list(client.list_build_triggers(request=request))  # type: ignore[misc]
+    _populate_trigger_cache(triggers)
+    result: list[TriggerDict] = []
+    for trigger in triggers:
+        repo_name, repo_type = _resolve_trigger_repo(trigger)
+        if not repo_name:
+            continue
+        github_repo, branch_pattern = _extract_github_info(trigger)
+        result.append(
+            cast(
+                TriggerDict,
+                {
+                    "trigger_id": str(getattr(trigger, "id", "") or ""),
+                    "trigger_name": str(getattr(trigger, "name", "") or ""),
+                    "service": repo_name,
+                    "type": repo_type,
+                    "github_repo": github_repo,
+                    "branch_pattern": branch_pattern,
+                    "disabled": bool(getattr(trigger, "disabled", False)),
+                    "status": "disabled" if getattr(trigger, "disabled", False) else "active",
+                },
+            )
+        )
+    return result
+
+
 def _populate_trigger_cache(triggers_list: Sequence[object]) -> None:
     """Populate trigger ID cache from a list of Cloud Build trigger objects."""
     global _trigger_id_cache, _trigger_cache_time
@@ -363,7 +428,7 @@ def _get_cached_trigger_id(trigger_name: str) -> str | None:
 
 
 @router.get("/triggers")
-async def list_triggers(  # noqa: C901
+async def list_triggers(
     force_refresh: bool = Query(False, description="Bypass cache and fetch fresh data"),
 ) -> TriggersResponseDict:
     """
@@ -376,98 +441,11 @@ async def list_triggers(  # noqa: C901
     _ensure_gcp()
     cache_key = f"cloud_builds:triggers:{default_project_id}:{DEFAULT_REGION}"
 
-    async def fetch_triggers():  # noqa: C901
-        def _list_triggers_sync() -> list[TriggerDict]:  # noqa: C901
-            _cb = _cloudbuild_v1()
-            client = _get_gcp_build_client()
-            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
-
-            request = _cb.ListBuildTriggersRequest(
-                parent=parent,
-                page_size=50,
-            )
-
-            triggers = list(client.list_build_triggers(request=request))  # type: ignore[misc]  # CloudBuild stubs partial
-
-            # Populate trigger ID cache for use by history/trigger endpoints
-            _populate_trigger_cache(triggers)
-
-            # Filter to services, libraries, and infrastructure we track
-            result: list[TriggerDict] = []
-            for trigger in triggers:
-                # Check if this is one of our service triggers
-                repo_name = None
-                repo_type = None
-
-                for service in SERVICES_WITH_TRIGGERS:
-                    if trigger.name == f"{service}-build":
-                        repo_name = service
-                        repo_type = "service"
-                        break
-
-                if not repo_name:
-                    # Check if it's a library
-                    for library in LIBRARIES_WITH_TRIGGERS:
-                        if trigger.name == f"{library}-build":
-                            repo_name = library
-                            repo_type = "library"
-                            break
-
-                if not repo_name:
-                    # Check if it's infrastructure
-                    for infra in INFRASTRUCTURE_WITH_TRIGGERS:
-                        if trigger.name == f"{infra}-build":
-                            repo_name = infra
-                            repo_type = "infrastructure"
-                            break
-
-                if not repo_name:
-                    continue
-
-                # Extract GitHub repo info
-                github_repo = None
-                branch_pattern = None
-                if trigger.github:
-                    github_repo = f"{trigger.github.owner}/{trigger.github.name}"
-                    if trigger.github.push and trigger.github.push.branch:
-                        branch_pattern = trigger.github.push.branch
-                elif trigger.repository_event_config:
-                    repo_config = trigger.repository_event_config
-                    if repo_config.repository:
-                        # Format: projects/PROJECT/locations/REGION/connections/CONNECTION/repositories/REPO  # noqa: E501
-                        parts = repo_config.repository.split("/")
-                        if parts:
-                            github_repo = parts[-1]
-                    if repo_config.push and repo_config.push.branch:
-                        branch_pattern = repo_config.push.branch
-
-                result.append(
-                    cast(
-                        TriggerDict,
-                        {
-                            "trigger_id": str(trigger.id or ""),
-                            "trigger_name": str(trigger.name or ""),
-                            "service": repo_name,  # Legacy field — matches existing API consumers
-                            "type": repo_type,  # "service", "library", or "infrastructure"
-                            "github_repo": github_repo,
-                            "branch_pattern": branch_pattern,
-                            "disabled": bool(trigger.disabled),
-                            "status": "disabled" if trigger.disabled else "active",
-                        },
-                    )
-                )
-
-            return result
-
-        triggers = await asyncio.to_thread(_list_triggers_sync)
-
-        # Fetch last build for each trigger
+    async def fetch_triggers():
+        triggers = await asyncio.to_thread(_build_trigger_list_sync)
         builds_info = await _get_recent_builds_for_triggers([t["trigger_id"] for t in triggers])
-
-        # Merge build info into triggers
         for trigger in triggers:
             trigger["last_build"] = builds_info.get(trigger["trigger_id"])
-
         return {
             "triggers": triggers,
             "total": len(triggers),
@@ -545,8 +523,90 @@ async def _get_recent_builds_for_triggers(
         return {}
 
 
+def _get_trigger_id_sync(trigger_name: str) -> str | None:
+    """Get the trigger ID for a trigger name (uses cache first, falls back to API)."""
+    cached_id = _get_cached_trigger_id(trigger_name)
+    if cached_id:
+        return cached_id
+    _cb = _cloudbuild_v1()
+    client = _get_gcp_build_client()
+    parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
+    triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
+    triggers = list(client.list_build_triggers(request=triggers_request))  # type: ignore[misc]
+    _populate_trigger_cache(triggers)
+    return _trigger_id_cache.get(trigger_name)
+
+
+def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentBuildDict | None:
+    """Find a build for trigger_id that started after the given time."""
+    _cb = _cloudbuild_v1()
+    client = _get_gcp_build_client()
+    parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
+    builds_request = _cb.ListBuildsRequest(
+        parent=parent, page_size=5, filter=f'build_trigger_id="{trigger_id}"',
+    )
+    for build in islice(client.list_builds(request=builds_request), 5):  # type: ignore[misc]
+        if build.create_time and build.create_time >= started_after:  # type: ignore[operator]
+            return {"build_id": build.id, "log_url": build.log_url, "status": build.status.name}
+    return None
+
+
+def _extract_build_id_from_op(
+    op_name: str | None, operation: object
+) -> tuple[str | None, str | None]:
+    """Extract build_id and log_url from a Cloud Build operation object."""
+    build_id = None
+    log_url = None
+    try:
+        if hasattr(operation, "metadata") and operation.metadata:  # type: ignore[union-attr]
+            meta = _build_op_meta_cls()()
+            if operation.metadata.Unpack(meta) and meta.build:  # type: ignore[union-attr]
+                build_id = meta.build.id
+                log_url = meta.build.log_url
+    except (OSError, ValueError, RuntimeError) as unpack_err:
+        logger.warning("Could not unpack BuildOperationMetadata: %s", unpack_err)
+    if not build_id and op_name:
+        try:
+            parts = op_name.split("/")
+            if len(parts) >= 2 and parts[-2] == "operations":
+                potential_id = parts[-1]
+                if "-" in potential_id and len(potential_id) > 30:
+                    build_id = potential_id
+        except (ValueError, KeyError, TypeError) as e:
+            logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
+    return build_id, log_url
+
+
+def _run_trigger_operation_sync(
+    trigger_name: str, branch: str
+) -> TriggerRunResultDict:
+    """Run the Cloud Build trigger synchronously. Returns trigger result metadata."""
+    _cb = _cloudbuild_v1()
+    client = _get_gcp_build_client()
+    trigger_id = _get_trigger_id_sync(trigger_name)
+    if not trigger_id:
+        logger.warning("Could not find trigger ID for %s", trigger_name)
+    trigger_time = datetime.now(UTC)
+    name = f"projects/{default_project_id}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
+    logger.info("Attempting to run trigger: %s on branch %s", name, branch)
+    run_request = _cb.RunBuildTriggerRequest(
+        name=name, source=_cb.RepoSource(branch_name=branch),
+    )
+    operation = client.run_build_trigger(request=run_request)  # type: ignore[misc]
+    op_name: str | None = cast(str | None, getattr(operation, "name", None))
+    op_done = getattr(operation, "done", None)
+    logger.info("Trigger operation returned. Operation name: %s, done: %s", op_name, op_done)
+    build_id, log_url = _extract_build_id_from_op(op_name, operation)
+    if build_id:
+        logger.info("Got build info: build_id=%s", build_id)
+    return {
+        "success": True, "build_id": build_id, "log_url": log_url,
+        "trigger_id": trigger_id, "trigger_time": trigger_time,
+    }
+
+
 @router.post("/trigger", response_model=TriggerBuildResponse)
-async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  # noqa: C901
+async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
     """
     Manually trigger a Cloud Build for a service.
 
@@ -557,7 +617,10 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
     if request.service not in ALL_REPOS_WITH_TRIGGERS:
         return TriggerBuildResponse(
             success=False,
-            message=f"Unknown service/library: {request.service}. Valid options: {', '.join(ALL_REPOS_WITH_TRIGGERS)}",  # noqa: E501
+            message=(
+                f"Unknown service/library: {request.service}."
+                f" Valid options: {', '.join(ALL_REPOS_WITH_TRIGGERS)}"
+            ),
             service=request.service,
             branch=request.branch,
         )
@@ -565,125 +628,8 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
     trigger_name = f"{request.service}-build"
 
     try:
+        result = await asyncio.to_thread(_run_trigger_operation_sync, trigger_name, request.branch)
 
-        def _get_trigger_id(client: cloudbuild_v1.CloudBuildClient) -> str | None:
-            """Get the trigger ID for this service (uses cache first)."""
-            cached_id = _get_cached_trigger_id(trigger_name)
-            if cached_id:
-                return cached_id
-
-            # Cache miss - fetch from API and populate cache
-            _cb = _cloudbuild_v1()
-            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
-            triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
-            triggers = list(client.list_build_triggers(request=triggers_request))  # type: ignore[misc]  # CloudBuild stubs partial
-            _populate_trigger_cache(triggers)
-            return _trigger_id_cache.get(trigger_name)
-
-        def _find_recent_build(
-            trigger_id: str,
-            started_after: datetime,
-        ) -> RecentBuildDict | None:
-            """Find a build for this trigger that started after the given time."""
-            _cb = _cloudbuild_v1()
-            client = _get_gcp_build_client()
-            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
-            builds_request = _cb.ListBuildsRequest(
-                parent=parent,
-                page_size=5,
-                filter=f'build_trigger_id="{trigger_id}"',
-            )
-            # Only check the first few builds (ordered by create_time desc)
-            for build in islice(client.list_builds(request=builds_request), 5):  # type: ignore[misc]  # CloudBuild stubs partial
-                if build.create_time and build.create_time >= started_after:  # type: ignore[operator]  # Timestamp vs datetime — compatible at runtime
-                    return {
-                        "build_id": build.id,
-                        "log_url": build.log_url,
-                        "status": build.status.name,
-                    }
-            return None
-
-        def _run_trigger_sync() -> TriggerRunResultDict:
-            _cb = _cloudbuild_v1()
-            client = _get_gcp_build_client()
-
-            # Get trigger ID first (needed for fallback query)
-            trigger_id = _get_trigger_id(client)
-            if not trigger_id:
-                logger.warning("Could not find trigger ID for %s", trigger_name)
-
-            # Record time before triggering (for fallback query)
-            trigger_time = datetime.now(UTC)
-
-            # Trigger name format: projects/PROJECT/locations/REGION/triggers/TRIGGER_NAME
-            name = (
-                f"projects/{default_project_id}/locations/{DEFAULT_REGION}/triggers/{trigger_name}"
-            )
-
-            logger.info("Attempting to run trigger: %s on branch %s", name, request.branch)
-
-            # Create the run trigger request
-            run_request = _cb.RunBuildTriggerRequest(
-                name=name,
-                source=_cb.RepoSource(
-                    branch_name=request.branch,
-                ),
-            )
-
-            # Run the trigger - returns a long-running operation
-            operation = client.run_build_trigger(request=run_request)  # type: ignore[misc]  # CloudBuild stubs partial
-
-            op_name: str | None = cast(str | None, getattr(operation, "name", None))
-            op_done = getattr(operation, "done", None)
-            logger.info(
-                "Trigger operation returned. Operation name: %s, done: %s", op_name, op_done
-            )
-
-            # Get the build metadata from the operation
-            build_id = None
-            log_url = None
-
-            # Try multiple approaches to get build info
-            # Approach 1: Unpack metadata to BuildOperationMetadata
-            try:
-                if hasattr(operation, "metadata") and operation.metadata:  # type: ignore[union-attr]  # dynamic op
-                    meta = _build_op_meta_cls()()
-                    if operation.metadata.Unpack(meta) and meta.build:  # type: ignore[union-attr]  # dynamic metadata
-                        build_id = meta.build.id
-                        log_url = meta.build.log_url
-                        logger.info("Got build info from metadata: build_id=%s", build_id)
-            except (OSError, ValueError, RuntimeError) as unpack_err:
-                logger.warning("Could not unpack BuildOperationMetadata: %s", unpack_err)
-
-            # Approach 2: Try to extract build ID from operation name
-            if not build_id and op_name:
-                try:
-                    # Operation name format: projects/PROJECT/locations/REGION/operations/BUILD_ID
-                    parts = op_name.split("/")
-                    if len(parts) >= 2 and parts[-2] == "operations":
-                        potential_id = parts[-1]
-                        # Build IDs are UUIDs like "a1b2c3d4-..."
-                        if "-" in potential_id and len(potential_id) > 30:
-                            build_id = potential_id
-                            logger.info("Got build_id from operation name: %s", build_id)
-                except (ValueError, KeyError, TypeError) as e:
-                    logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-                    pass
-
-            # Approach 3 is handled by the async caller after this sync function returns,
-            # so that asyncio.sleep can be used instead of blocking time.sleep.
-            return {
-                "success": True,
-                "build_id": build_id,
-                "log_url": log_url,
-                "trigger_id": trigger_id,
-                "trigger_time": trigger_time,
-            }
-
-        result = await asyncio.to_thread(_run_trigger_sync)
-
-        # Approach 3: Wait briefly and query for recent builds (done here in async context
-        # so we use asyncio.sleep instead of blocking time.sleep in the thread).
         build_id = result.get("build_id")
         log_url = result.get("log_url")
         trigger_id_result = result.get("trigger_id")
@@ -691,12 +637,10 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
 
         if not build_id and trigger_id_result and trigger_time_result:
             logger.info("Build ID not in operation response, querying recent builds...")
-            # Wait a moment for the build to be registered
             await asyncio.sleep(2)
-
             for _attempt in range(3):
                 recent_build = await asyncio.to_thread(
-                    _find_recent_build, trigger_id_result, trigger_time_result
+                    _find_recent_build_sync, trigger_id_result, trigger_time_result
                 )
                 if recent_build:
                     build_id = recent_build["build_id"]
@@ -721,7 +665,10 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
                 f"Build triggered successfully for {request.service} on branch {request.branch}"
             )
         else:
-            message = f"Build trigger called for {request.service} on branch {request.branch}, but could not get build ID. Check Cloud Build console."  # noqa: E501
+            message = (
+                f"Build trigger called for {request.service} on branch {request.branch},"
+                " but could not get build ID. Check Cloud Build console."
+            )
 
         return TriggerBuildResponse(
             success=True,
@@ -739,7 +686,10 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:  
         if "403" in error_msg or "PERMISSION_DENIED" in error_msg:
             return TriggerBuildResponse(
                 success=False,
-                message=f"Permission denied. Service account needs 'roles/cloudbuild.builds.editor' role. Error: {error_msg}",  # noqa: E501
+                message=(
+                    "Permission denied. Service account needs"
+                    f" 'roles/cloudbuild.builds.editor' role. Error: {error_msg}"
+                ),
                 service=request.service,
                 branch=request.branch,
             )

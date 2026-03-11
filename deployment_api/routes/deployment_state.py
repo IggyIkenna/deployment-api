@@ -87,7 +87,7 @@ def _extract_severity_and_logger(line: str) -> tuple[str, str | None]:
     return severity, logger_name
 
 
-def _refresh_live_cloud_run_status(state: DeploymentState) -> int:  # noqa: C901
+def _refresh_live_cloud_run_status(state: DeploymentState) -> int:
     """
     Refresh deployment state for live mode by checking Cloud Run Service revision health.
 
@@ -190,7 +190,7 @@ def _check_shard_logs_for_errors(shard: ShardState, deployment_id: str) -> bool:
         return False
 
 
-def _refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:  # noqa: C901
+def _refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous helper for refresh_deployment_status.
     All blocking GCP/GCS calls are done here.

@@ -110,8 +110,53 @@ async def get_service_config(service_name: str, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
+def _build_dim_info(dim: dict[str, object], venues_config: dict[str, object]) -> dict[str, object]:
+    """Build dimension info dict for a single dimension entry."""
+    dim_info: dict[str, object] = {
+        "name": dim["name"],
+        "type": dim["type"],
+        "description": dim.get("description") or "",
+    }
+    if dim["type"] == "fixed":
+        dim_info["values"] = dim.get("values") or []
+    elif dim["type"] == "hierarchical":
+        dim_info["parent"] = dim.get("parent")
+        if dim["name"] == "venue":
+            values_by_parent: dict[str, object] = {}
+            dim_info["values_by_parent"] = values_by_parent
+            categories_raw: object = venues_config.get("categories") or {}
+            categories_map = cast(dict[str, object], categories_raw)
+            for category, cat_data in categories_map.items():
+                cat_data_dict = (
+                    cast(dict[str, object], cat_data) if isinstance(cat_data, dict) else {}
+                )
+                cat_venues_raw: object = cat_data_dict.get("venues") or []
+                cat_venues: list[object] = (
+                    cast(list[object], cat_venues_raw) if isinstance(cat_venues_raw, list) else []
+                )
+                values_by_parent[category] = cat_venues
+    elif dim["type"] == "date_range":
+        dim_info["granularity"] = dim.get("granularity", "daily")
+    return dim_info
+
+
+def _load_dimensions_sync(loader: ConfigLoader, service_name: str) -> dict[str, object]:
+    """Load and build dimension config for a service."""
+    config = loader.load_service_config(service_name)
+    venues_config = loader.load_venues_config()
+    dimensions: list[dict[str, object]] = [
+        _build_dim_info(dim, venues_config)
+        for dim in cast(list[dict[str, object]], config.get("dimensions") or [])
+    ]
+    cli_args_raw: object = config.get("cli_args") or {}
+    cli_args: dict[str, object] = (
+        cast(dict[str, object], cli_args_raw) if isinstance(cli_args_raw, dict) else {}
+    )
+    return {"service": service_name, "dimensions": dimensions, "cli_args": cli_args}
+
+
 @router.get("/{service_name}/dimensions")
-async def get_service_dimensions(service_name: str, request: Request):  # noqa: C901
+async def get_service_dimensions(service_name: str, request: Request):
     """
     Get dimension values for a specific service.
 
@@ -124,64 +169,8 @@ async def get_service_dimensions(service_name: str, request: Request):  # noqa: 
     cache_key = f"config:dimensions:{service_name}"
 
     async def _fetch():
-        def _load_dimensions_sync():
-            loader = get_config_loader(request)
-            config = loader.load_service_config(service_name)
-            venues_config = loader.load_venues_config()
-
-            dimensions: list[dict[str, object]] = []
-            for dim in cast(list[dict[str, object]], config.get("dimensions") or []):
-                dim_info: dict[str, object] = {
-                    "name": dim["name"],
-                    "type": dim["type"],
-                    "description": dim.get("description") or "",
-                }
-
-                # Add values for fixed dimensions
-                if dim["type"] == "fixed":
-                    dim_info["values"] = dim.get("values") or []
-
-                # Add hierarchical info
-                elif dim["type"] == "hierarchical":
-                    dim_info["parent"] = dim.get("parent")
-                    # If it's venue, get values from venues config
-                    if dim["name"] == "venue":
-                        values_by_parent: dict[str, object] = {}
-                        dim_info["values_by_parent"] = values_by_parent
-                        categories_raw: object = venues_config.get("categories") or {}
-                        categories_map = cast(dict[str, object], categories_raw)
-                        for category, cat_data in categories_map.items():
-                            cat_data_dict = (
-                                cast(dict[str, object], cat_data)
-                                if isinstance(cat_data, dict)
-                                else {}
-                            )
-                            cat_venues_raw: object = cat_data_dict.get("venues") or []
-                            cat_venues: list[object] = (
-                                cast(list[object], cat_venues_raw)
-                                if isinstance(cat_venues_raw, list)
-                                else []
-                            )
-                            values_by_parent[category] = cat_venues
-
-                # Add date range info
-                elif dim["type"] == "date_range":
-                    dim_info["granularity"] = dim.get("granularity", "daily")
-
-                dimensions.append(dim_info)
-
-            cli_args_raw: object = config.get("cli_args") or {}
-            cli_args: dict[str, object] = (
-                cast(dict[str, object], cli_args_raw) if isinstance(cli_args_raw, dict) else {}
-            )
-            result_dict: dict[str, object] = {
-                "service": service_name,
-                "dimensions": dimensions,
-                "cli_args": cli_args,
-            }
-            return result_dict
-
-        return await asyncio.to_thread(_load_dimensions_sync)
+        loader = get_config_loader(request)
+        return await asyncio.to_thread(_load_dimensions_sync, loader, service_name)
 
     try:
         return await cache.get_or_fetch(cache_key, _fetch, TTL_SERVICE_CONFIG)

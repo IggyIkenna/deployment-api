@@ -73,7 +73,7 @@ from .auto_sync import pending_vm_deletes
 _pending_vm_deletes = pending_vm_deletes
 
 
-def process_deployments_batch(  # noqa: C901
+def process_deployments_batch(
     active_states: list[tuple[str, dict[str, object]]],
     bucket: object,
     now: datetime,
@@ -118,7 +118,7 @@ def process_deployments_batch(  # noqa: C901
         raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
     # ---- Phase 2: Process active deployments concurrently ----
-    def _process_one_deployment(state_path_and_state: tuple[str, dict[str, object]]) -> int:  # noqa: C901
+    def _process_one_deployment(state_path_and_state: tuple[str, dict[str, object]]) -> int:
         """Process a single deployment. Returns 1 if synced, 0 otherwise."""
         state_path, state = state_path_and_state
         path_parts = state_path.split("/")
@@ -136,7 +136,8 @@ def process_deployments_batch(  # noqa: C901
             compute_type = cast(str, state.get("compute_type", "vm"))
             shards = cast(list[dict[str, object]], state.get("shards") or [])
 
-            # ---- completed_pending_delete: orphan cleanup only; transition to completed when no RUNNING VMs ----  # noqa: E501
+            # ---- completed_pending_delete: orphan cleanup only;
+            # transition to completed when no RUNNING VMs ----
             if state.get("status") == "completed_pending_delete":
                 if compute_type != "vm":
                     state["status"] = "completed"
@@ -484,7 +485,7 @@ def process_deployments_batch(  # noqa: C901
     return synced, len(active_states)
 
 
-def _process_vm_health_and_status(  # noqa: C901
+def _process_vm_health_and_status(
     shards: list[dict[str, object]],
     vm_map: dict[str, object],
     now: datetime,
@@ -692,7 +693,7 @@ def _get_cloud_run_status_batch_sync(
     )
 
 
-def _process_cloud_run_status(  # noqa: C901
+def _process_cloud_run_status(
     shards: list[dict[str, object]],
     config: dict[str, object],
     deployment_id: str,
@@ -773,7 +774,7 @@ def _process_cloud_run_status(  # noqa: C901
     return updated
 
 
-def _process_stuck_shards(  # noqa: C901
+def _process_stuck_shards(
     shards: list[dict[str, object]],
     config: dict[str, object],
     compute_type: str,
@@ -807,7 +808,8 @@ def _process_stuck_shards(  # noqa: C901
                         shard["status"] = "failed"
                         shard["end_time"] = now.isoformat()
                         shard["error_message"] = (
-                            f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"  # noqa: E501
+                            f"Stuck shard: exceeded timeout"
+                            f" ({timeout_seconds}s + {grace_seconds}s grace)"
                         )
                         shard["failure_category"] = "timeout"
 
@@ -871,7 +873,7 @@ def _launch_pending_shards(
     return launched_this_tick
 
 
-def _handle_orphan_vm_cleanup(  # noqa: C901
+def _handle_orphan_vm_cleanup(
     vm_map: dict[str, object],
     shards: list[dict[str, object]],
     shard_statuses: dict[str, tuple[str, str]],

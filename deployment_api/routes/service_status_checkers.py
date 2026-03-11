@@ -243,7 +243,50 @@ class CodePushInfoDict(TypedDict, total=False):
     error: str
 
 
-async def get_latest_data_timestamp(  # noqa: C901
+def _get_category_blob_timestamp(bucket_name: str, category: str) -> CategoryTimestampDict:
+    """Fetch and return the latest blob timestamp for a single GCS bucket/category."""
+    blobs = list_objects(bucket_name, prefix="", max_results=10)
+    if not blobs:
+        return {}
+    latest_blob = max(
+        blobs, key=lambda b: (b.updated if b.updated else datetime.min.replace(tzinfo=UTC))
+    )
+    latest_ts = latest_blob.updated if latest_blob.updated else None
+    if latest_ts and latest_ts.tzinfo is None:
+        logger.warning("GCS blob timestamp is naive (missing timezone): %s", latest_blob.name)
+    return {
+        "timestamp": latest_ts.isoformat() if latest_ts else None,
+        "file": latest_blob.name,
+        "size_mb": round(latest_blob.size / (1024 * 1024), 2) if latest_blob.size else 0,
+    }
+
+
+def _get_service_timestamps_sync(service: str) -> DataTimestampResultDict:
+    """Synchronously fetch latest GCS blob timestamps for all categories of a service."""
+    try:
+        buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
+        results: dict[str, CategoryTimestampDict] = {}
+        for category, bucket_name in buckets.items():
+            try:
+                results[category] = _get_category_blob_timestamp(bucket_name, category)
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.warning("Error checking %s bucket %s: %s", category, bucket_name, e)
+                results[category] = {"error": str(e)}
+        valid_timestamps = [
+            datetime.fromisoformat(cast(str, r.get("timestamp")))
+            for r in results.values()
+            if r.get("timestamp")
+        ]
+        return {
+            "by_category": results,
+            "latest": (max(valid_timestamps).isoformat() if valid_timestamps else None),
+        }
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error getting data timestamps for %s: %s", service, e)
+        return {"error": str(e)}
+
+
+async def get_latest_data_timestamp(
     service: str, use_cache: bool = True
 ) -> DataTimestampResultDict | None:
     """
@@ -275,60 +318,7 @@ async def get_latest_data_timestamp(  # noqa: C901
                 logger.debug("Cache invalid for %s: %s", service, e)
 
     def _get_timestamps_sync() -> DataTimestampResultDict:
-        try:
-            buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
-
-            results: dict[str, CategoryTimestampDict] = {}
-            for category, bucket_name in buckets.items():
-                try:
-                    # List recent files (reduced from 100 to 10 for speed - we only need latest)
-                    blobs = list_objects(bucket_name, prefix="", max_results=10)
-
-                    if blobs:
-                        # Find most recently updated blob
-                        latest_blob = max(
-                            blobs,
-                            key=lambda b: (
-                                b.updated if b.updated else datetime.min.replace(tzinfo=UTC)
-                            ),
-                        )
-
-                        # Verify GCS blob timestamps are UTC-aware (RFC3339 format)
-                        # GCS always returns timestamps in UTC with timezone info
-                        latest_ts = latest_blob.updated if latest_blob.updated else None
-                        if latest_ts and latest_ts.tzinfo is None:
-                            logger.warning(
-                                "GCS blob timestamp is naive (missing timezone): %s",
-                                latest_blob.name,
-                            )
-
-                        results[category] = {
-                            "timestamp": (latest_ts.isoformat() if latest_ts else None),
-                            "file": latest_blob.name,
-                            "size_mb": (
-                                round(latest_blob.size / (1024 * 1024), 2)
-                                if latest_blob.size
-                                else 0
-                            ),
-                        }
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.warning("Error checking %s bucket %s: %s", category, bucket_name, e)
-                    results[category] = {"error": str(e)}
-
-            # Overall latest (most recent across all categories)
-            valid_timestamps = [
-                datetime.fromisoformat(cast(str, r.get("timestamp")))
-                for r in results.values()
-                if r.get("timestamp")
-            ]
-
-            return {
-                "by_category": results,
-                "latest": (max(valid_timestamps).isoformat() if valid_timestamps else None),
-            }
-        except (OSError, ValueError, RuntimeError) as e:
-            logger.exception("Error getting data timestamps for %s: %s", service, e)
-            return {"error": str(e)}
+        return _get_service_timestamps_sync(service)
 
     result = cast(
         DataTimestampResultDict | None, cast(object, await asyncio.to_thread(_get_timestamps_sync))

@@ -198,7 +198,7 @@ class SyncService:
             # Always release lock after processing
             self.state_manager.release_deployment_lock(deployment_id)
 
-    def _process_deployment_locked(  # noqa: C901
+    def _process_deployment_locked(
         self, deployment_id: str, state_path: str, state: dict[str, object]
     ) -> bool:
         """
@@ -295,7 +295,7 @@ class SyncService:
 
         return False
 
-    def _process_scheduling(self, deployment_id: str, state: dict[str, object]) -> int:  # noqa: C901
+    def _process_scheduling(self, deployment_id: str, state: dict[str, object]) -> int:
         """
         Process scheduling for pending deployments.
 

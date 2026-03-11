@@ -220,7 +220,45 @@ class DeploymentManager:
             "quota_ok": True,  # Simplified for now
         }
 
-    async def create_deployment(  # noqa: C901
+    def _build_cli_command(self, deploy_request: DeployRequest, deployment_id: str) -> str:
+        """Build the CLI command string for a deployment."""
+        cli_parts: list[str] = [
+            "python",
+            "-m",
+            "deployment",
+            "deploy",
+            "--service",
+            deploy_request.service,
+            "--compute",
+            deploy_request.compute,
+            "--max-concurrent",
+            str(deploy_request.max_concurrent or self.default_max_concurrent),
+            "--region",
+            deploy_request.region or self.default_region,
+            "--deployment-id",
+            deployment_id,
+        ]
+        if deploy_request.start_date:
+            start_date_val = deploy_request.start_date
+            start_str: str = (
+                start_date_val.isoformat()
+                if isinstance(start_date_val, _date)
+                else str(start_date_val)
+            )
+            cli_parts.extend(["--start-date", start_str])
+        if deploy_request.end_date:
+            end_date_val = deploy_request.end_date
+            end_str: str = (
+                end_date_val.isoformat() if isinstance(end_date_val, _date) else str(end_date_val)
+            )
+            cli_parts.extend(["--end-date", end_str])
+        if deploy_request.tag:
+            cli_parts.extend(["--tag", deploy_request.tag])
+        if deploy_request.vm_zone:
+            cli_parts.extend(["--vm-zone", deploy_request.vm_zone])
+        return " ".join(cli_parts)
+
+    async def create_deployment(
         self,
         deploy_request: DeployRequest,
         config_dir: str = "configs",
@@ -281,7 +319,10 @@ class DeploymentManager:
         docker_image_for_validation: str = (
             _substitute_env_vars(str(raw_docker_image))
             if raw_docker_image
-            else f"{region_for_validation}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"  # noqa: E501
+            else (
+                f"{region_for_validation}-docker.pkg.dev/{self.default_project_id}"
+                f"/{deploy_request.service}/{deploy_request.service}:latest"
+            )
         )
         image_error = validate_image_availability(
             docker_image_for_validation, region_for_validation
@@ -307,7 +348,8 @@ class DeploymentManager:
         if not raw_shards:
             raise ValueError("No shards to deploy after filtering")
 
-        # Normalise shard list: deployment-service returns dicts with shard_index, dimensions, cli_command  # noqa: E501
+        # Normalise shard list: deployment-service returns dicts with
+        # shard_index, dimensions, cli_command
         shard_list: list[dict[str, object]] = []
         for shard in raw_shards:
             shard_index = shard.get("shard_index", 0)
@@ -323,44 +365,7 @@ class DeploymentManager:
             }
             shard_list.append(shard_dict)
 
-        # Generate CLI command for the deployment
-        cli_parts: list[str] = [
-            "python",
-            "-m",
-            "deployment",
-            "deploy",
-            "--service",
-            deploy_request.service,
-            "--compute",
-            deploy_request.compute,
-            "--max-concurrent",
-            str(deploy_request.max_concurrent or self.default_max_concurrent),
-            "--region",
-            deploy_request.region or self.default_region,
-            "--deployment-id",
-            deployment_id,
-        ]
-
-        if deploy_request.start_date:
-            start_date_val = deploy_request.start_date
-            start_str: str = (
-                start_date_val.isoformat()
-                if isinstance(start_date_val, _date)
-                else str(start_date_val)
-            )
-            cli_parts.extend(["--start-date", start_str])
-        if deploy_request.end_date:
-            end_date_val = deploy_request.end_date
-            end_str: str = (
-                end_date_val.isoformat() if isinstance(end_date_val, _date) else str(end_date_val)
-            )
-            cli_parts.extend(["--end-date", end_str])
-        if deploy_request.tag:
-            cli_parts.extend(["--tag", deploy_request.tag])
-        if deploy_request.vm_zone:
-            cli_parts.extend(["--vm-zone", deploy_request.vm_zone])
-
-        cli_command: str = " ".join(cli_parts)
+        cli_command: str = self._build_cli_command(deploy_request, deployment_id)
 
         # Start background deployment if function provided
         if background_task_func:
@@ -404,7 +409,8 @@ class DeploymentManager:
         DeploymentOrchestrator execution logic.
         """
         try:
-            # Resolve effective dates (local config-level check, no deployment_service import needed)  # noqa: E501
+            # Resolve effective dates
+            # (local config-level check, no deployment_service import needed)
             from deployment_api.routes.deployment_validation import (
                 resolve_deploy_dates as _resolve_deploy_dates,
             )
@@ -436,7 +442,10 @@ class DeploymentManager:
             docker_image: str = (
                 _substitute_env_vars(str(raw_docker))
                 if raw_docker
-                else f"{deployment_region}-docker.pkg.dev/{self.default_project_id}/{deploy_request.service}/{deploy_request.service}:latest"  # noqa: E501
+                else (
+                    f"{deployment_region}-docker.pkg.dev/{self.default_project_id}"
+                    f"/{deploy_request.service}/{deploy_request.service}:latest"
+                )
             )
             job_name: str = cast(
                 str, service_config.get("cloud_run_job_name", deploy_request.service)
