@@ -111,6 +111,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 markers = [
     "integration: marks tests as integration tests (require GCP credentials)",
+    "deployment_test: requires running service container (real HTTP calls via docker-compose.single.yml)",
 ]
 
 [tool.coverage.report]
