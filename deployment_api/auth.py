@@ -19,13 +19,17 @@ auth_cfg = _auth_cfg
 _disable_auth_raw: bool = _auth_cfg.disable_auth
 _environment: str = _auth_cfg.environment
 if _disable_auth_raw and _environment == "production":
-    logging.getLogger(__name__).critical(
-        "DISABLE_AUTH=true is forbidden in production. Auth remains ENABLED."
+    log_event(
+        "AUTH_MISCONFIGURED",
+        severity="CRITICAL",
+        details={"reason": "DISABLE_AUTH_in_production", "environment": _environment},
     )
-    _disable_auth_guarded: bool = False
-else:
-    _disable_auth_guarded = _disable_auth_raw
-DISABLE_AUTH: bool = _disable_auth_guarded
+    raise RuntimeError(
+        "DISABLE_AUTH=true is forbidden in production. "
+        "Service refuses to start with auth disabled. "
+        "Unset DISABLE_AUTH or set ENVIRONMENT != production."
+    )
+DISABLE_AUTH: bool = _disable_auth_raw
 AUTH_ENVIRONMENT: str = _environment
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
