@@ -17,6 +17,10 @@ RUN uv pip install --system --no-cache-dir gunicorn[gevent] gevent \
 
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./
+# Bundled readiness data — populated by cloudbuild before docker build;
+# symlinks locally (resolved by docker build context). No-op if absent.
+COPY codex-data/ ./codex-data/
+COPY pm-plans/ ./pm-plans/
 RUN id -u appuser >/dev/null 2>&1 || useradd --create-home --uid 1000 --shell /bin/bash appuser
 RUN chown -R appuser:appuser /app
 

@@ -20,7 +20,7 @@ from deployment_api.background_sync import (
     get_owner_id,
     set_shutdown_event,
 )
-from deployment_api.utils.service_utils import get_codex_dir, get_config_dir
+from deployment_api.utils.service_utils import get_codex_dir, get_config_dir, get_plans_dir
 from deployment_api.utils.storage_facade import (
     delete_object as _delete_storage_object,
 )
@@ -105,6 +105,12 @@ async def lifespan(app: FastAPI):
         logger.info("Codex readiness dir: %s", app.state.codex_dir)
     else:
         logger.warning("Codex readiness dir: not found — checklist endpoints will return 404 (codex v3.0 is SSOT)")
+
+    app.state.plans_dir = get_plans_dir()
+    if app.state.plans_dir is not None:
+        logger.info("PM plans dir: %s", app.state.plans_dir)
+    else:
+        logger.info("PM plans dir: not found — plans visualization endpoints unavailable")
 
     # Initialize cache
     from .utils.cache import cache
