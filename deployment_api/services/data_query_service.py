@@ -283,6 +283,58 @@ class DataQueryService:
             logger.error("Error getting instruments list: %s", e)
             return {"error": str(e)}
 
+    def _venue_to_category(self, venue: str) -> str | None:
+        """Map a venue name to its market category (CEFI/TRADFI/DEFI), or None."""
+        venue_upper = venue.upper()
+        if any(k in venue_upper for k in ["BINANCE", "BYBIT", "OKX", "DERIBIT", "BITMEX"]):
+            return "CEFI"
+        if any(k in venue_upper for k in ["NYSE", "NASDAQ", "CME", "CBOE", "ICE"]):
+            return "TRADFI"
+        if any(k in venue_upper for k in ["UNISWAP", "AAVE", "CURVE", "BALANCER"]):
+            return "DEFI"
+        return None
+
+    def _parse_avail_date(self, raw: str, label: str) -> datetime | None:
+        """Parse an availability date string to a timezone-aware datetime."""
+        try:
+            if "T" in raw:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            logger.warning("Could not parse %s: %s", label, raw)
+            return None
+
+    def _default_data_types(self, category: str) -> list[str]:
+        """Return default data types for a given market category."""
+        defaults: dict[str, list[str]] = {
+            "CEFI": ["trades", "book_snapshot_5"],
+            "TRADFI": ["trades", "ohlcv_1m", "tbbo"],
+            "DEFI": ["swaps", "rate_indices"],
+        }
+        return defaults.get(category, ["trades"])
+
+    def _check_daily_availability(
+        self,
+        bucket_name: str,
+        venue: str,
+        instrument_type: str,
+        instrument: str,
+        data_types: list[str],
+        effective_start: datetime,
+        effective_end: datetime,
+    ) -> dict[str, dict[str, bool]]:
+        """Check data existence for each day in the effective range."""
+        daily: dict[str, dict[str, bool]] = {}
+        current_dt = effective_start
+        while current_dt <= effective_end:
+            date_str = current_dt.strftime("%Y-%m-%d")
+            daily[date_str] = {}
+            for dt in data_types:
+                path = f"{venue}/{instrument_type.lower()}/{instrument}/{date_str}/{dt}"
+                daily[date_str][dt] = object_exists(bucket_name, path)
+            current_dt += timedelta(days=1)
+        return daily
+
     async def get_instrument_availability(
         self,
         venue: str,
@@ -297,141 +349,42 @@ class DataQueryService:
         """
         Check instrument availability over a date range.
 
-        Args:
-            venue: Venue name
-            instrument_type: Type of instrument
-            instrument: Instrument symbol
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            data_type: Optional data type to check
-            available_from: Instrument availability start date
-            available_to: Instrument availability end date
-
-        Returns:
-            Dictionary containing availability analysis
+        Returns dictionary containing availability analysis.
         """
         try:
-            # Determine category from venue
-            venue_upper = venue.upper()
-            if any(
-                cefi in venue_upper for cefi in ["BINANCE", "BYBIT", "OKX", "DERIBIT", "BITMEX"]
-            ):
-                category = "CEFI"
-            elif any(tradfi in venue_upper for tradfi in ["NYSE", "NASDAQ", "CME", "CBOE", "ICE"]):
-                category = "TRADFI"
-            elif any(defi in venue_upper for defi in ["UNISWAP", "AAVE", "CURVE", "BALANCER"]):
-                category = "DEFI"
-            else:
+            category = self._venue_to_category(venue)
+            if not category:
                 return {"error": f"Could not determine category for venue: {venue}"}
 
-            # Bucket mapping
-            market_data_buckets = {
-                "CEFI": self.build_bucket_name("market-data", "cefi"),
-                "TRADFI": self.build_bucket_name("market-data", "tradfi"),
-                "DEFI": self.build_bucket_name("market-data", "defi"),
-            }
+            bucket_name = self.build_bucket_name("market-data", category.lower())
 
-            bucket_name = market_data_buckets.get(category)
-            if not bucket_name:
-                return {"error": f"No bucket mapping for category: {category}"}
-
-            # Parse dates
             try:
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
                 end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
             except ValueError as e:
                 return {"error": f"Invalid date format: {e}"}
 
-            # Handle availability window
-            instrument_available_from = None
-            instrument_available_to = None
+            avail_from = (
+                self._parse_avail_date(available_from, "available_from") if available_from else None
+            )
+            avail_to = (
+                self._parse_avail_date(available_to, "available_to") if available_to else None
+            )
 
-            if available_from:
-                try:
-                    if "T" in available_from:
-                        instrument_available_from = datetime.fromisoformat(
-                            available_from.replace("Z", "+00:00")
-                        )
-                    else:
-                        instrument_available_from = datetime.strptime(
-                            available_from, "%Y-%m-%d"
-                        ).replace(tzinfo=UTC)
-                except (ValueError, TypeError):
-                    logger.warning("Could not parse available_from: %s", available_from)
+            effective_start = max(start_dt, avail_from) if avail_from else start_dt
+            effective_end = min(end_dt, avail_to) if avail_to else end_dt
 
-            if available_to:
-                try:
-                    if "T" in available_to:
-                        instrument_available_to = datetime.fromisoformat(
-                            available_to.replace("Z", "+00:00")
-                        )
-                    else:
-                        instrument_available_to = datetime.strptime(
-                            available_to, "%Y-%m-%d"
-                        ).replace(tzinfo=UTC)
-                except (ValueError, TypeError):
-                    logger.warning("Could not parse available_to: %s", available_to)
+            data_types = [data_type] if data_type else self._default_data_types(category)
 
-            # Calculate effective date range
-            effective_start = start_dt
-            effective_end = end_dt
+            daily_availability = self._check_daily_availability(
+                bucket_name, venue, instrument_type, instrument,
+                data_types, effective_start, effective_end,
+            )
 
-            if instrument_available_from and instrument_available_from > effective_start:
-                effective_start = instrument_available_from
-            if instrument_available_to and instrument_available_to < effective_end:
-                effective_end = instrument_available_to
-
-            # Default data types by category
-            if not data_type:
-                if category == "CEFI":
-                    data_types = ["trades", "book_snapshot_5"]
-                elif category == "TRADFI":
-                    data_types = ["trades", "ohlcv_1m", "tbbo"]
-                elif category == "DEFI":
-                    data_types = ["swaps", "rate_indices"]
-                else:
-                    data_types = ["trades"]
-            else:
-                data_types = [data_type]
-
-            # Check availability for each date and data type
-            daily_availability: dict[str, dict[str, bool]] = {}
-
-            # Check each day in range
-            current_dt = effective_start
-            while current_dt <= effective_end:
-                date_str = current_dt.strftime("%Y-%m-%d")
-                daily_availability[date_str] = {}
-
-                for dt in data_types:
-                    # Build expected path for this instrument/date/data_type
-                    # Structure varies by category, this is simplified
-                    expected_path = (
-                        f"{venue}/{instrument_type.lower()}/{instrument}/{date_str}/{dt}"
-                    )
-
-                    # Check if data exists
-                    exists = object_exists(bucket_name, expected_path)
-                    daily_availability[date_str][dt] = exists
-
-                current_dt += timedelta(days=1)
-
-            # Calculate summary statistics
             total_days = len(daily_availability)
-            available_days = 0
+            available_days = sum(1 for d in daily_availability.values() if any(d.values()))
 
-            for date_data in daily_availability.values():
-                if any(date_data.values()):  # At least one data type available
-                    available_days += 1
-
-            summary: dict[str, object] = {
-                "total_days": total_days,
-                "available_days": available_days,
-                "missing_days": total_days - available_days,
-                "availability_rate": (available_days / total_days * 100) if total_days > 0 else 0.0,
-            }
-
-            availability: dict[str, object] = {
+            return {
                 "venue": venue,
                 "instrument_type": instrument_type,
                 "instrument": instrument,
@@ -442,10 +395,15 @@ class DataQueryService:
                 },
                 "data_types": data_types,
                 "daily_availability": daily_availability,
-                "summary": summary,
+                "summary": {
+                    "total_days": total_days,
+                    "available_days": available_days,
+                    "missing_days": total_days - available_days,
+                    "availability_rate": (
+                        available_days / total_days * 100 if total_days > 0 else 0.0
+                    ),
+                },
             }
-
-            return availability
 
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Error checking instrument availability: %s", e)

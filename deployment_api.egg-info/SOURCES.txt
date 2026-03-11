@@ -70,6 +70,7 @@ deployment_api/utils/config_validation.py
 deployment_api/utils/data_status_cache.py
 deployment_api/utils/deployment_events.py
 deployment_api/utils/deployment_state_reader.py
+deployment_api/utils/local_state_manager.py
 deployment_api/utils/path_combinatorics.py
 deployment_api/utils/quota_requirements.py
 deployment_api/utils/service_events.py

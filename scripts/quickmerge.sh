@@ -773,6 +773,11 @@ echo "STAGE 5: Create PR"
 echo "=========================================="
 echo ""
 
+# Clean ephemeral cursor files before PR (avoid committing them)
+if [ -f "${WORKSPACE_ROOT}/.cleanup-cursor-rules.sh" ]; then
+  bash "${WORKSPACE_ROOT}/.cleanup-cursor-rules.sh" 2>/dev/null || true
+fi
+
 # Stash all changes (including untracked) before branch switch
 RESTORE_STASH=0
 if [ -n "$(git status --porcelain)" ]; then

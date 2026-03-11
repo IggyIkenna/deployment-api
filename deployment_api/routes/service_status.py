@@ -50,6 +50,194 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+def _get_token_sync() -> str | None:
+    """Fetch GitHub token via Secret Manager (supports local impersonation and SA direct)."""
+    token_start = time.time()
+    try:
+        target_sa = GITHUB_TOKEN_SA
+        source_credentials, _project = default()  # type: ignore[misc]  # google-auth untyped
+        logger.info("[PERF] Got default credentials in %.2fs", time.time() - token_start)
+
+        if hasattr(source_credentials, "service_account_email"):  # type: ignore[arg-type]
+            sa_email: str = str(source_credentials.service_account_email)  # type: ignore[union-attr]
+            if any(x in sa_email for x in [
+                "github-token-sa@",
+                "compute@developer.gserviceaccount.com",
+                "instruments-service",
+            ]):
+                logger.info("[PERF] Running as %s, accessing secret directly", sa_email)
+                return cast(str | None, get_secret_client().get_secret("github-token"))
+
+        target_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+        _ = impersonated_credentials.Credentials(
+            source_credentials=source_credentials,  # type: ignore[arg-type]
+            target_principal=target_sa,
+            target_scopes=target_scopes,
+        )
+        logger.info("[PERF] About to access secret (elapsed: %.2fs)", time.time() - token_start)
+        secret_value = get_secret_client().get_secret("github-token")
+        logger.info("[PERF] Secret accessed in %.2fs total", time.time() - token_start)
+        return cast(str | None, secret_value)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning(
+            "Could not access github-token (took %.2fs): %s", time.time() - token_start, e
+        )
+        return None
+
+
+def _read_checklist(config_dir: Path, service: str) -> dict[str, object] | None:
+    """Load and summarise the YAML checklist for a service, or return None."""
+    checklist_file = f"{config_dir}/checklist.{service}.yaml"
+    logger.info("Attempting to load checklist from: %s", checklist_file)
+    if not os.path.exists(checklist_file):
+        logger.warning("Checklist file not found: %s", checklist_file)
+        return None
+    try:
+        with open(checklist_file) as f:
+            checklist_data = cast(dict[str, object], yaml.safe_load(f))
+        total_items = 0
+        completed_items = 0
+        for category in cast(list[dict[str, object]], checklist_data.get("categories") or []):
+            for item in cast(list[dict[str, object]], category.get("items") or []):
+                total_items += 1
+                if item.get("status") == "done":
+                    completed_items += 1
+        if total_items > 0:
+            result: dict[str, object] = {
+                "percent": round((completed_items / total_items) * 100, 1),
+                "completed": completed_items,
+                "total": total_items,
+            }
+            logger.info("Checklist loaded: %s", result)
+            return result
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("Could not load checklist for %s: %s", service, e, exc_info=True)
+    return None
+
+
+def _read_build_cache_for_service(service: str) -> tuple[str | None, str | None]:
+    """Return (build_ts, build_status) from GCS cache for a service."""
+    cache = load_gcs_cache()
+    builds_cache_raw: object = cache.get("builds") or {}
+    if not isinstance(builds_cache_raw, dict):
+        return None, None
+    builds_cache = cast(dict[str, object], builds_cache_raw)
+    if service not in builds_cache:
+        return None, None
+    build_info_raw = builds_cache[service]
+    if not isinstance(build_info_raw, dict):
+        return None, None
+    build_info = cast(dict[str, object], build_info_raw)
+    bt_raw = build_info.get("timestamp")
+    bs_raw = build_info.get("status")
+    build_ts = str(bt_raw) if bt_raw is not None else None
+    build_status = str(bs_raw) if bs_raw is not None else None
+    return build_ts, build_status
+
+
+async def _get_quota_manager_status(service: str) -> dict[str, object]:
+    """Return health dict for the quota-manager service via broker /health."""
+    from deployment_api import settings as api_settings
+
+    broker_url = api_settings.QUOTA_BROKER_URL
+    if not broker_url:
+        return {
+            "service": service,
+            "health": "unknown",
+            "last_data_update": None,
+            "last_deployment": None,
+            "deployment_status": None,
+            "last_build": None,
+            "build_status": None,
+            "anomaly_count": 0,
+        }
+
+    def _check_broker_health() -> bool:
+        import http.client
+        import urllib.request
+
+        try:
+            from google.auth.transport.requests import Request as AuthRequest
+            from google.oauth2 import id_token
+
+            token = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[misc]
+            req = urllib.request.Request(
+                f"{broker_url}/health",
+                method="GET",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with cast(
+                http.client.HTTPResponse,
+                urllib.request.urlopen(req, timeout=5),  # nosec B310
+            ) as resp:
+                return resp.status == 200
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug("Quota broker health check failed: %s", e)
+            return False
+
+    ok = await asyncio.to_thread(_check_broker_health)
+    return {
+        "service": service,
+        "health": "healthy" if ok else "error",
+        "last_data_update": None,
+        "last_deployment": None,
+        "deployment_status": None,
+        "last_build": None,
+        "build_status": None,
+        "anomaly_count": 0,
+    }
+
+
+async def _get_quick_status(service: str) -> dict[str, object]:
+    """Get overview status for a single service (data timestamps + cached deployment info)."""
+    if service == "quota-manager":
+        return await _get_quota_manager_status(service)
+    try:
+        data_info, deployment_info = await asyncio.gather(
+            get_latest_data_timestamp_fast(service),
+            get_latest_deployment(service, use_cache=True),
+            return_exceptions=True,
+        )
+
+        data_ts: str | None = None
+        if isinstance(data_info, dict) and "latest" in data_info:
+            data_ts = cast(str | None, data_info["latest"])
+
+        deploy_ts: str | None = None
+        deploy_status: str | None = None
+        if isinstance(deployment_info, dict) and "timestamp" in deployment_info:
+            ts_raw = deployment_info["timestamp"]
+            deploy_ts = str(ts_raw) if ts_raw is not None else None
+            status_raw = deployment_info.get("status")
+            deploy_status = str(status_raw).lower() if status_raw is not None else None
+
+        build_ts, build_status = _read_build_cache_for_service(service)
+
+        health = determine_overview_health(
+            data_ts=data_ts,
+            deploy_ts=deploy_ts,
+            deploy_status=deploy_status,
+            build_status=build_status,
+        )
+
+        return {
+            "service": service,
+            "health": health,
+            "last_data_update": data_ts,
+            "last_deployment": deploy_ts,
+            "deployment_status": deploy_status,
+            "last_build": build_ts,
+            "build_status": build_status,
+            "anomaly_count": 0,
+        }
+    except (OSError, ValueError, RuntimeError) as e:
+        return {
+            "service": service,
+            "health": "error",
+            "error": str(e)[:100],
+        }
+
 # Allowlist of valid service names derived from workspace-manifest.json repositories.
 # This prevents user-supplied service names from being passed unsanitised to
 # subprocess (gcloud) arguments.
@@ -168,61 +356,8 @@ async def get_service_status(service: str, request: Request):
     timing["parallel_fetch_ms"] = int((time.time() - parallel_start) * 1000)
 
     # GitHub requires token - access via Secret Manager API
-    # Uses Cloud Build SA impersonation (semantically correct - Cloud Build uses GitHub)
-    # Works locally (via impersonation) and on VMs (direct SA credentials)
     github_token = None
     try:
-
-        def _get_token_sync():
-            token_start = time.time()
-            try:
-                # Use dedicated GitHub Token SA (created by Ikenna)
-                target_sa = GITHUB_TOKEN_SA
-
-                # Get source credentials
-                source_credentials, _project = default()  # type: ignore[misc]  # google-auth untyped
-                logger.info("[PERF] Got default credentials in %.2fs", time.time() - token_start)
-
-                # Check if we're already running as a SA with secret access
-                if hasattr(source_credentials, "service_account_email"):  # type: ignore[arg-type]  # google-auth untyped
-                    sa_email: str = str(source_credentials.service_account_email)  # type: ignore[union-attr]  # google-auth untyped
-                    # If running as github-token-sa, Compute Engine SA,
-                    # or instruments-service SA - use directly
-                    if any(
-                        x in sa_email
-                        for x in [
-                            "github-token-sa@",
-                            "compute@developer.gserviceaccount.com",
-                            "instruments-service",
-                        ]
-                    ):
-                        logger.info("[PERF] Running as %s, accessing secret directly", sa_email)
-                        secret_client = get_secret_client()
-                        secret_value = secret_client.get_secret("github-token")
-                        return secret_value
-
-                # Running locally - impersonate GitHub Token SA
-                target_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
-                _ = impersonated_credentials.Credentials(
-                    source_credentials=source_credentials,  # type: ignore[arg-type]  # google-auth untyped
-                    target_principal=target_sa,
-                    target_scopes=target_scopes,
-                )
-
-                logger.info(
-                    "[PERF] About to access secret (elapsed: %.2fs)", time.time() - token_start
-                )
-                secret_client = get_secret_client()
-                secret_value = secret_client.get_secret("github-token")
-                logger.info("[PERF] Secret accessed in %.2fs total", time.time() - token_start)
-                return secret_value
-
-            except (OSError, ValueError, RuntimeError) as e:
-                logger.warning(
-                    "Could not access github-token (took %.2fs): %s", time.time() - token_start, e
-                )
-                return None
-
         token_overall_start = time.time()
         github_token = await asyncio.to_thread(_get_token_sync)
         logger.info("[PERF] GitHub token fetch took %.2fs total", time.time() - token_overall_start)
@@ -271,38 +406,8 @@ async def get_service_status(service: str, request: Request):
     )
 
     # Fetch checklist status (quick lookup from YAML file)
-    checklist_status = None
-
-    try:
-        config_dir = cast(Path, cast(FastAPI, request.app).state.config_dir)
-        checklist_file = f"{config_dir}/checklist.{service}.yaml"
-
-        logger.info("Attempting to load checklist from: %s", checklist_file)
-
-        if os.path.exists(checklist_file):
-            with open(checklist_file) as f:
-                checklist_data = cast(dict[str, object], yaml.safe_load(f))
-
-            total_items = 0
-            completed_items = 0
-
-            for category in cast(list[dict[str, object]], checklist_data.get("categories") or []):
-                for item in cast(list[dict[str, object]], category.get("items") or []):
-                    total_items += 1
-                    if item.get("status") == "done":
-                        completed_items += 1
-
-            if total_items > 0:
-                checklist_status = {
-                    "percent": round((completed_items / total_items) * 100, 1),
-                    "completed": completed_items,
-                    "total": total_items,
-                }
-                logger.info("Checklist loaded: %s", checklist_status)
-        else:
-            logger.warning("Checklist file not found: %s", checklist_file)
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.warning("Could not load checklist for %s: %s", service, e, exc_info=True)
+    config_dir = cast(Path, cast(FastAPI, request.app).state.config_dir)
+    checklist_status = _read_checklist(config_dir, service)
 
     # Data coverage - intentionally skipped (too slow for status page)
     # Use dedicated Data Status tab for detailed coverage info
@@ -351,129 +456,8 @@ async def get_services_overview(request: Request):
     if "quota-manager" not in services:
         services = sorted([*services, "quota-manager"])
 
-    # Fetch data timestamps + cached deployments (fast with caching)
-    async def get_quick_status(service: str) -> dict[str, object]:
-        """Get status info - data timestamps + cached deployment info."""
-        # Quota-manager: health from quota broker /health (no sharding/deployment in this dashboard)
-        if service == "quota-manager":
-            from deployment_api import settings as api_settings
-
-            broker_url = api_settings.QUOTA_BROKER_URL
-            if not broker_url:
-                return {
-                    "service": service,
-                    "health": "unknown",
-                    "last_data_update": None,
-                    "last_deployment": None,
-                    "deployment_status": None,
-                    "last_build": None,
-                    "build_status": None,
-                    "anomaly_count": 0,
-                }
-
-            def _check_broker_health() -> bool:
-                import urllib.request
-
-                try:
-                    from google.auth.transport.requests import Request as AuthRequest
-                    from google.oauth2 import id_token
-
-                    token = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[misc]  # google-auth untyped
-                    req = urllib.request.Request(
-                        f"{broker_url}/health",
-                        method="GET",
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    import http.client
-
-                    with cast(
-                        http.client.HTTPResponse,
-                        urllib.request.urlopen(req, timeout=5),  # nosec B310
-                    ) as resp:
-                        return resp.status == 200
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.debug("Quota broker health check failed: %s", e)
-                    return False
-
-            ok = await asyncio.to_thread(_check_broker_health)
-            return {
-                "service": service,
-                "health": "healthy" if ok else "error",
-                "last_data_update": None,
-                "last_deployment": None,
-                "deployment_status": None,
-                "last_build": None,
-                "build_status": None,
-                "anomaly_count": 0,
-            }
-        try:
-            # Parallel fetch: data timestamps + deployment (cached, fast after first call)
-            data_info, deployment_info = await asyncio.gather(
-                get_latest_data_timestamp_fast(service),
-                get_latest_deployment(service, use_cache=True),  # Uses 5-min cache
-                return_exceptions=True,
-            )
-
-            data_ts: str | None = None
-            if isinstance(data_info, dict) and "latest" in data_info:
-                data_ts = cast(str | None, data_info["latest"])
-
-            deploy_ts: str | None = None
-            deploy_status: str | None = None
-            if isinstance(deployment_info, dict) and "timestamp" in deployment_info:
-                ts_raw = deployment_info["timestamp"]
-                deploy_ts = str(ts_raw) if ts_raw is not None else None
-                status_raw = deployment_info.get("status")
-                deploy_status = str(status_raw) if status_raw is not None else None
-                # Normalize status to lowercase string for comparison
-                if deploy_status:
-                    deploy_status = str(deploy_status).lower()
-
-            # Check GCS cache for build info (populated by individual service views)
-            cache = load_gcs_cache()
-            builds_cache_raw: object = cache.get("builds") or {}
-            if isinstance(builds_cache_raw, dict):
-                builds_cache = cast(dict[str, object], builds_cache_raw)
-            else:
-                builds_cache: dict[str, object] = {}
-            build_ts: str | None = None
-            build_status: str | None = None
-            if service in builds_cache:
-                build_info_raw = builds_cache[service]
-                if isinstance(build_info_raw, dict):
-                    build_info = cast(dict[str, object], build_info_raw)
-                    bt_raw = build_info.get("timestamp")
-                    build_ts = str(bt_raw) if bt_raw is not None else None
-                    bs_raw = build_info.get("status")
-                    build_status = str(bs_raw) if bs_raw is not None else None
-
-            # Determine health using extracted function
-            health = determine_overview_health(
-                data_ts=data_ts,
-                deploy_ts=deploy_ts,
-                deploy_status=deploy_status,
-                build_status=build_status,
-            )
-
-            return {
-                "service": service,
-                "health": health,
-                "last_data_update": data_ts,
-                "last_deployment": deploy_ts,
-                "deployment_status": deploy_status,
-                "last_build": build_ts,
-                "build_status": build_status,
-                "anomaly_count": 0,
-            }
-        except (OSError, ValueError, RuntimeError) as e:
-            return {
-                "service": service,
-                "health": "error",
-                "error": str(e)[:100],
-            }
-
     # Fetch all in parallel (fast - only GCS lookups)
-    results = await asyncio.gather(*[get_quick_status(svc) for svc in services])
+    results = await asyncio.gather(*[_get_quick_status(svc) for svc in services])
 
     return {
         "services": list(results),

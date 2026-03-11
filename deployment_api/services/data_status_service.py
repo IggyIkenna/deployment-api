@@ -36,6 +36,44 @@ class DataStatusService:
         """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""
         return f"{prefix}-{category.lower()}-{self.project_id}"
 
+    def _build_cli_cmd(
+        self,
+        service: str,
+        start_date: str,
+        end_date: str,
+        categories: list[str] | None,
+        venues: list[str] | None,
+        show_missing: bool,
+        check_venues: bool,
+        check_data_types: bool,
+        check_feature_groups: bool,
+        check_timeframes: bool,
+        mode: str,
+    ) -> list[str]:
+        """Build the data-status CLI command list."""
+        cmd = [
+            sys.executable, "-m", "deployment_service", "data-status",
+            "-s", service, "--start-date", start_date, "--end-date", end_date,
+            "--output", "json", "--mode", mode,
+        ]
+        for cat in (categories or []):
+            cmd.extend(["-c", cat])
+        for venue in (venues or []):
+            cmd.extend(["-v", venue])
+        if show_missing:
+            cmd.append("--show-missing")
+        if check_venues:
+            cmd.append("--check-venues")
+        elif check_feature_groups:
+            cmd.append("--check-feature-groups")
+        elif check_timeframes:
+            cmd.append("--check-timeframes")
+        elif service in ["market-tick-data-handler", "market-data-processing-service"]:
+            cmd.append("--fast")
+        if check_data_types:
+            cmd.append("--check-data-types")
+        return cmd
+
     async def run_data_status_cli(
         self,
         service: str,
@@ -53,81 +91,22 @@ class DataStatusService:
         """
         Run data-status CLI command and return parsed JSON output.
 
-        Args:
-            service: Service name to check
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-            categories: Optional list of categories to filter
-            venues: Optional list of venues to filter
-            show_missing: Whether to show missing data details
-            check_venues: Whether to check venue availability
-            check_data_types: Whether to check data types
-            check_feature_groups: Whether to check feature groups
-            check_timeframes: Whether to check timeframes
-            mode: Processing mode (batch/live)
-
-        Returns:
-            Parsed JSON output from CLI command
+        Returns parsed JSON output from CLI command.
         """
-        # Build CLI command
-        cmd = [
-            sys.executable,
-            "-m",
-            "deployment_service",
-            "data-status",
-            "-s",
-            service,
-            "--start-date",
-            start_date,
-            "--end-date",
-            end_date,
-            "--output",
-            "json",
-            "--mode",
-            mode,
-        ]
-
-        # Add category filters
-        if categories:
-            for cat in categories:
-                cmd.extend(["-c", cat])
-
-        # Add venue filters
-        if venues:
-            for venue in venues:
-                cmd.extend(["-v", venue])
-
-        # Add show-missing flag
-        if show_missing:
-            cmd.append("--show-missing")
-
-        # Add check flags
-        if check_venues:
-            cmd.append("--check-venues")
-        elif check_feature_groups:
-            cmd.append("--check-feature-groups")
-        elif check_timeframes:
-            cmd.append("--check-timeframes")
-        else:
-            # Auto-enable fast mode for venue-sharded services with large buckets
-            if service in ["market-tick-data-handler", "market-data-processing-service"]:
-                cmd.append("--fast")
-
-        # Add check-data-types flag
-        if check_data_types:
-            cmd.append("--check-data-types")
-
+        cmd = self._build_cli_cmd(
+            service, start_date, end_date, categories, venues,
+            show_missing, check_venues, check_data_types,
+            check_feature_groups, check_timeframes, mode,
+        )
         logger.info("Running CLI: %s", " ".join(cmd))
 
         try:
-            # Run CLI command asynchronously
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=None,  # Use current working directory
+                cwd=None,
             )
-
             stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
@@ -135,7 +114,6 @@ class DataStatusService:
                 logger.error(error_msg)
                 return {"error": error_msg, "stderr": stderr.decode()}
 
-            # Parse JSON output
             try:
                 result = cast(dict[str, object], json.loads(stdout.decode()))
                 return result
@@ -146,6 +124,31 @@ class DataStatusService:
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Error running CLI command: %s", e)
             return {"error": str(e)}
+
+    def _tally_missing_venues(
+        self,
+        date_info: dict[str, object],
+        missing_by_venue: dict[str, int],
+        missing_by_category: dict[str, int],
+    ) -> int:
+        """Count missing venues in a date entry and update tallies in-place."""
+        missing_count = 0
+        venues_raw: object = date_info.get("venues")
+        if not (venues_raw and isinstance(venues_raw, list)):
+            return 0
+        for venue_info_raw in cast(list[object], venues_raw):
+            if not isinstance(venue_info_raw, dict):
+                continue
+            venue_info = cast(dict[str, object], venue_info_raw)
+            venue_name_raw: object = venue_info.get("venue")
+            venue_name = venue_name_raw if isinstance(venue_name_raw, str) else ""
+            if venue_info.get("status") == "missing":
+                missing_count += 1
+                missing_by_venue[venue_name] = missing_by_venue.get(venue_name, 0) + 1
+                cat_raw: object = venue_info.get("category", "unknown")
+                category = cat_raw if isinstance(cat_raw, str) else "unknown"
+                missing_by_category[category] = missing_by_category.get(category, 0) + 1
+        return missing_count
 
     async def calculate_missing_shards(
         self,
@@ -159,39 +162,21 @@ class DataStatusService:
         """
         Calculate missing shards for a service over a date range.
 
-        Args:
-            service: Service name to check
-            start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
-            categories: Optional list of categories to filter
-            venues: Optional list of venues to filter
-            mode: Processing mode (batch/live)
-
-        Returns:
-            Dictionary containing missing shards analysis
+        Returns dictionary containing missing shards analysis.
         """
         try:
-            # Get data status with missing details
             result = await self.run_data_status_cli(
-                service=service,
-                start_date=start_date,
-                end_date=end_date,
-                categories=categories,
-                venues=venues,
-                show_missing=True,
-                mode=mode,
+                service=service, start_date=start_date, end_date=end_date,
+                categories=categories, venues=venues, show_missing=True, mode=mode,
             )
-
             if "error" in result:
                 return result
 
-            # Extract missing shards information
             missing_by_date: dict[str, int] = {}
             missing_by_venue: dict[str, int] = {}
             missing_by_category: dict[str, int] = {}
             total_missing = 0
 
-            # Process the result to extract missing information
             dates_raw: object = result.get("dates")
             if dates_raw and isinstance(dates_raw, list):
                 for date_info_raw in cast(list[object], dates_raw):
@@ -200,36 +185,13 @@ class DataStatusService:
                     date_info = cast(dict[str, object], date_info_raw)
                     date_str_raw: object = date_info.get("date")
                     date_str = date_str_raw if isinstance(date_str_raw, str) else ""
-                    missing_count = 0
-
-                    venues_raw: object = date_info.get("venues")
-                    if venues_raw and isinstance(venues_raw, list):
-                        for venue_info_raw in cast(list[object], venues_raw):
-                            if not isinstance(venue_info_raw, dict):
-                                continue
-                            venue_info = cast(dict[str, object], venue_info_raw)
-                            venue_name_raw: object = venue_info.get("venue")
-                            venue_name = venue_name_raw if isinstance(venue_name_raw, str) else ""
-                            if venue_info.get("status") == "missing":
-                                missing_count += 1
-
-                                # Track by venue
-                                if venue_name not in missing_by_venue:
-                                    missing_by_venue[venue_name] = 0
-                                missing_by_venue[venue_name] += 1
-
-                                # Track by category if available
-                                cat_raw: object = venue_info.get("category", "unknown")
-                                category = cat_raw if isinstance(cat_raw, str) else "unknown"
-                                if category not in missing_by_category:
-                                    missing_by_category[category] = 0
-                                missing_by_category[category] += 1
-
+                    missing_count = self._tally_missing_venues(
+                        date_info, missing_by_venue, missing_by_category
+                    )
                     if missing_count > 0 and date_str:
                         missing_by_date[date_str] = missing_count
                         total_missing += missing_count
 
-            # Add summary statistics
             missing_analysis: dict[str, object] = {
                 "service": service,
                 "date_range": {"start": start_date, "end": end_date},
@@ -238,16 +200,15 @@ class DataStatusService:
                 "missing_by_venue": missing_by_venue,
                 "missing_by_category": missing_by_category,
                 "summary": {
-                    "total_days_checked": len(cast(list[object], dates_raw))
-                    if isinstance(dates_raw, list)
-                    else 0,
+                    "total_days_checked": (
+                        len(cast(list[object], dates_raw)) if isinstance(dates_raw, list) else 0
+                    ),
                     "days_with_missing": len(missing_by_date),
                     "venues_with_missing": len(missing_by_venue),
                     "categories_with_missing": len(missing_by_category),
                     "completion_rate": self._calculate_completion_rate(result),
                 },
             }
-
             return missing_analysis
 
         except (OSError, ValueError, RuntimeError) as e:
