@@ -180,6 +180,55 @@ def get_config_dir() -> Path:
     raise RuntimeError(f"Could not find configs directory at {configs_dir}")
 
 
+def get_codex_dir() -> Path | None:
+    """Get the unified-trading-codex/10-audit/repos/ path.
+
+    Search order:
+    1. repo_root/codex-data/  -- symlink to ../unified-trading-codex/10-audit/repos (local dev)
+                              -- real dir populated by cloudbuild before docker build (prod)
+    2. workspace sibling      -- ../unified-trading-codex/10-audit/repos (GHA sibling clone)
+
+    Returns None when neither resolves; checklist endpoints return 503.
+    SSOT: unified-trading-codex/10-audit/repos/ (schema v3.0)
+    """
+    api_dir = Path(__file__).parent.parent  # deployment_api/
+    repo_root = api_dir.parent  # deployment-api/
+
+    bundled = repo_root / "codex-data"
+    if bundled.exists():
+        return bundled
+
+    sibling = repo_root.parent / "unified-trading-codex" / "10-audit" / "repos"
+    if sibling.exists():
+        return sibling
+
+    return None
+
+
+def get_plans_dir() -> Path | None:
+    """Get the unified-trading-pm/plans/ path for PM plan visualization.
+
+    Search order:
+    1. repo_root/pm-plans/    -- symlink to ../unified-trading-pm/plans (local dev)
+                              -- real dir populated by cloudbuild before docker build (prod)
+    2. workspace sibling      -- ../unified-trading-pm/plans
+
+    Returns None when neither resolves; plans endpoints return empty.
+    """
+    api_dir = Path(__file__).parent.parent  # deployment_api/
+    repo_root = api_dir.parent  # deployment-api/
+
+    bundled = repo_root / "pm-plans"
+    if bundled.exists():
+        return bundled
+
+    sibling = repo_root.parent / "unified-trading-pm" / "plans"
+    if sibling.exists():
+        return sibling
+
+    return None
+
+
 def get_ui_dist_dir() -> Path | None:
     """Get the UI dist directory if it exists (for production serving)."""
     api_dir = Path(__file__).parent.parent  # Go up from utils to api
