@@ -80,7 +80,8 @@ done
 # ── REPO-SPECIFIC SETTINGS (edit per repo) ──────────────────────────────────
 # Override these in each repo's copy. Only PACKAGE_NAME is required.
 PACKAGE_NAME="${PACKAGE_NAME:-}"        # e.g. "unified_api_contracts" — auto-detected from pyproject.toml if empty
-REQUIRED_PYTHON="${REQUIRED_PYTHON:-3.13}"  # Major.minor — read from pyproject.toml if possible
+REQUIRED_PYTHON="${REQUIRED_PYTHON:-3.13}"       # Major.minor — read from pyproject.toml if possible
+REQUIRED_PYTHON_FULL="${REQUIRED_PYTHON_FULL:-3.13.9}"  # Exact patch — workspace standard (must match bootstrap)
 REQUIRED_RUFF="${REQUIRED_RUFF:-0.15.0}"
 # ── END REPO-SPECIFIC ───────────────────────────────────────────────────────
 
@@ -233,25 +234,60 @@ fi
 # ── END UI REPO FLOW — Python repo continues below ──────────────────────────
 
 # ── [1] PYTHON VERSION ─────────────────────────────────────────────────────
-log_step "Python version (requires $REQUIRED_PYTHON)"
+log_step "Python version (requires $REQUIRED_PYTHON_FULL)"
+
+python_version_full() {
+    local cmd="$1"
+    "$cmd" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 2>/dev/null || true
+}
 
 PYTHON_CMD=""
-for cmd in "python${REQUIRED_PYTHON}" python3 python; do
-    if command -v "$cmd" &>/dev/null; then
-        VER=$("$cmd" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        if [ "$VER" = "$REQUIRED_PYTHON" ]; then
-            PYTHON_CMD="$cmd"
-            break
+# Check pyenv exact version first (fastest on pyenv machines)
+for candidate in \
+    "$HOME/.pyenv/versions/${REQUIRED_PYTHON_FULL}/bin/python" \
+    "$HOME/.pyenv/versions/${REQUIRED_PYTHON_FULL}/bin/python3" \
+    "python${REQUIRED_PYTHON}" \
+    python3 python; do
+    for expanded in $candidate; do
+        command -v "$expanded" &>/dev/null || [ -x "$expanded" ] || continue
+        VER=$(python_version_full "$expanded")
+        MM=$(echo "$VER" | grep -oE '^[0-9]+\.[0-9]+' || true)
+        if [ "$VER" = "$REQUIRED_PYTHON_FULL" ]; then
+            PYTHON_CMD="$expanded"
+            break 2
         fi
-    fi
+        # Accept correct major.minor as a fallback candidate (warn on patch mismatch)
+        if [ "$MM" = "$REQUIRED_PYTHON" ] && [ -z "$PYTHON_CMD" ]; then
+            PYTHON_CMD="$expanded"
+        fi
+    done
 done
 
 if [ -n "$PYTHON_CMD" ]; then
-    log_ok "Python $VER ($PYTHON_CMD)"
+    ACTUAL_FULL=$(python_version_full "$PYTHON_CMD")
+    if [ "$ACTUAL_FULL" = "$REQUIRED_PYTHON_FULL" ]; then
+        log_ok "Python $ACTUAL_FULL ($PYTHON_CMD)"
+    else
+        log_warn "Python $ACTUAL_FULL found (workspace standard is $REQUIRED_PYTHON_FULL)"
+        echo "  Fix: pyenv install $REQUIRED_PYTHON_FULL && pyenv global $REQUIRED_PYTHON_FULL && pyenv rehash"
+        echo "  Or:  uv python install $REQUIRED_PYTHON_FULL  (then set UV_PYTHON_PREFERENCE=system)"
+    fi
+    # Warn if Python is from uv's own cache — venvs will break if the cache is wiped
+    if echo "$PYTHON_CMD" | grep -q "\.local/share/uv/python"; then
+        log_warn "Python is from uv's internal cache ($PYTHON_CMD)"
+        echo "  Venvs created from this Python break if ~/.local/share/uv/python/ is wiped."
+        echo "  Recommended: install via pyenv and add to ~/.bashrc:"
+        echo "    export UV_PYTHON=\"\$PYENV_ROOT/versions/$REQUIRED_PYTHON_FULL/bin/python3.13\""
+        echo "    export UV_PYTHON_PREFERENCE=system"
+        echo "    export UV_PYTHON_DOWNLOADS=never"
+    fi
+    # Rehash pyenv shims so this Python version is on PATH (no-op if pyenv not installed)
+    command -v pyenv &>/dev/null && pyenv rehash 2>/dev/null || true
 else
-    log_fail "Python $REQUIRED_PYTHON not found"
-    echo "  Install: pyenv install ${REQUIRED_PYTHON}.0 && pyenv local ${REQUIRED_PYTHON}.0"
-    echo "  Or: brew install python@${REQUIRED_PYTHON}"
+    log_fail "Python $REQUIRED_PYTHON_FULL not found"
+    echo "  Install: pyenv install $REQUIRED_PYTHON_FULL && pyenv global $REQUIRED_PYTHON_FULL && pyenv rehash"
+    echo "  Or:      uv python install $REQUIRED_PYTHON_FULL"
+    echo "  Or (macOS): brew install python@${REQUIRED_PYTHON}"
     ISSUES=$((ISSUES + 1))
     [ "$CHECK_ONLY" = true ] || exit 1
 fi
@@ -305,14 +341,34 @@ elif [ "$CHECK_ONLY" = true ]; then
         ISSUES=$((ISSUES + 1))
     fi
 elif [ -d ".venv" ] && [ "$FORCE" != true ]; then
-    VENV_PY=$(".venv/bin/python" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || echo "")
-    if [ "$VENV_PY" = "$REQUIRED_PYTHON" ]; then
-        log_skip ".venv exists (Python $VENV_PY)"
-    else
-        log_warn ".venv has Python $VENV_PY, need $REQUIRED_PYTHON — recreating"
+    # Check pyvenv.cfg home= path is still valid (breaks when uv Python cache is wiped)
+    PYVENV_CFG=".venv/pyvenv.cfg"
+    VENV_HOME=""
+    [ -f "$PYVENV_CFG" ] && VENV_HOME=$(grep '^home = ' "$PYVENV_CFG" 2>/dev/null | sed 's/home = //' || true)
+    if [ -n "$VENV_HOME" ] && [ ! -d "$VENV_HOME" ]; then
+        log_warn ".venv pyvenv.cfg home path no longer exists: $VENV_HOME"
+        log_warn "Venv is broken (likely uv Python cache was wiped) — recreating"
         rm -rf .venv
         uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
-        log_ok "Recreated .venv with Python $REQUIRED_PYTHON"
+        log_ok "Recreated .venv (healed broken home path)"
+    else
+        VENV_FULL=$(python_version_full ".venv/bin/python" 2>/dev/null || true)
+        VENV_MM=$(echo "$VENV_FULL" | grep -oE '^[0-9]+\.[0-9]+' || true)
+        if [ "$VENV_MM" = "$REQUIRED_PYTHON" ]; then
+            if [ "$VENV_FULL" != "$REQUIRED_PYTHON_FULL" ] && [ -n "$VENV_FULL" ]; then
+                log_warn ".venv has Python $VENV_FULL (workspace standard is $REQUIRED_PYTHON_FULL) — recreating"
+                rm -rf .venv
+                uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
+                log_ok "Recreated .venv with Python $REQUIRED_PYTHON_FULL"
+            else
+                log_skip ".venv exists (Python $VENV_FULL)"
+            fi
+        else
+            log_warn ".venv has Python $VENV_MM, need $REQUIRED_PYTHON — recreating"
+            rm -rf .venv
+            uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
+            log_ok "Recreated .venv with Python $REQUIRED_PYTHON"
+        fi
     fi
 else
     uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
@@ -351,7 +407,18 @@ else
     # Always run uv lock — the timestamp check (uv.lock newer than pyproject.toml) is
     # insufficient: sibling workspace package version bumps don't touch THIS repo's
     # pyproject.toml, so the lock silently goes stale and uv falls back to PyPI wheels.
-    uv lock 2>/dev/null && log_ok "uv.lock synced" || log_warn "uv lock failed (non-fatal)"
+    #
+    # Graceful fallback: repos with irreconcilable optional extras (e.g. openbb vs ruff)
+    # cause uv lock to fail trying to resolve all extras simultaneously.
+    # In that case we fall through to uv pip install -e ".[dev]" in step [8] directly.
+    UV_LOCK_FAILED=false
+    if ! uv lock 2>/dev/null; then
+        log_warn "uv lock failed — optional dep conflict likely (e.g. incompatible extras)"
+        echo "  Falling back to direct uv pip install (skipping lock step)"
+        UV_LOCK_FAILED=true
+    else
+        log_ok "uv.lock synced"
+    fi
 fi
 
 # ── [7] LOCAL PATH DEPENDENCIES ─────────────────────────────────────────────
@@ -453,7 +520,12 @@ log_step "ripgrep (required by quality-gates.sh)"
 if command -v rg &>/dev/null; then
     log_ok "ripgrep $(rg --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo 'installed')"
 else
-    log_fail "ripgrep not found — install: brew install ripgrep"
+    log_fail "ripgrep not found"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "  Install: brew install ripgrep"
+    else
+        echo "  Install: sudo apt-get install -y ripgrep  OR  cargo install ripgrep"
+    fi
     ISSUES=$((ISSUES + 1))
 fi
 

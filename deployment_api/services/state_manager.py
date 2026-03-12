@@ -12,6 +12,7 @@ import os
 import socket
 import time as _time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
@@ -96,7 +97,7 @@ def _fire_orphan_deletes(
     project_id: str,
     deployment_env: str,
     state_bucket: str,
-    orch_cls: "type[object]",
+    orch_cls: "Callable[..., _OrchestratorProtocol]",
 ) -> int:
     """Create orchestrator and fire cancel for each orphan VM. Returns count fired."""
     try:
@@ -116,15 +117,12 @@ def _fire_orphan_deletes(
     zone_raw = config.get("zone")
     zone_cfg = zone_raw if isinstance(zone_raw, str) else None
 
-    orch = cast(
-        _OrchestratorProtocol,
-        orch_cls(
-            project_id=project_id,
-            region=region,
-            service_account_email=service_account_email,
-            state_bucket=state_bucket,
-            state_prefix=f"deployments.{deployment_env}",
-        ),
+    orch = orch_cls(
+        project_id=project_id,
+        region=region,
+        service_account_email=service_account_email,
+        state_bucket=state_bucket,
+        state_prefix=f"deployments.{deployment_env}",
     )
     backend = orch.get_backend("vm", job_name=job_name, zone=zone_cfg)
     if backend is None:
@@ -351,7 +349,9 @@ class StateManager:
                     _raw_module = _importlib.import_module(
                         "deployment_service.deployment.orchestrator"
                     )
-                    orch_cls = cast(type[object], _raw_module.DeploymentOrchestrator)
+                    orch_cls = cast(
+                        Callable[..., _OrchestratorProtocol], _raw_module.DeploymentOrchestrator
+                    )
                     return _fire_orphan_deletes(
                         orphan_tuples,
                         config,

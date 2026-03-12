@@ -244,7 +244,9 @@ class PathCombinatorics:
         accessible_folders: set[str | None] = {
             INSTRUMENT_TYPE_TO_FOLDER.get(str(t)) for t in accessible_types
         } - {None}
-        filtered = [f for f in folders if isinstance(f, str) and f in accessible_folders]
+        filtered: list[object] = [
+            f for f in folders if isinstance(f, str) and f in accessible_folders
+        ]
         return filtered, not filtered
 
     def _build_combinatorics(self) -> None:

@@ -8,7 +8,7 @@ import asyncio
 import logging
 import re
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
 logger = logging.getLogger(__name__)
@@ -98,8 +98,8 @@ def _list_exec_configs(
 
 def _collect_result_strategy_ids(
     bucket_name: str,
-    filter_start: "datetime.date | None",
-    filter_end: "datetime.date | None",
+    filter_start: date | None,
+    filter_end: date | None,
 ) -> tuple[set[str], defaultdict[str, set[str]]]:
     """Scan results/ prefix and return (existing_ids, dates_by_strategy)."""
     from deployment_api.utils.storage_facade import list_prefixes
@@ -454,8 +454,8 @@ def _list_missing_configs_filtered(
 
 def _collect_result_dates_in_range(
     bucket_name: str,
-    filter_start: "datetime.date",
-    filter_end: "datetime.date",
+    filter_start: date,
+    filter_end: date,
 ) -> defaultdict[str, set[str]]:
     """Scan results/ and return dates per strategy_id within [filter_start, filter_end]."""
     from deployment_api.utils.storage_facade import list_prefixes

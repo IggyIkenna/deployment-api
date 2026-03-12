@@ -70,7 +70,7 @@ def _get_token_sync() -> str | None:
                 ]
             ):
                 logger.info("[PERF] Running as %s, accessing secret directly", sa_email)
-                return cast(str | None, get_secret_client().get_secret("github-token"))
+                return get_secret_client().get_secret("github-token")
 
         target_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
         _ = impersonated_credentials.Credentials(
@@ -81,7 +81,7 @@ def _get_token_sync() -> str | None:
         logger.info("[PERF] About to access secret (elapsed: %.2fs)", time.time() - token_start)
         secret_value = get_secret_client().get_secret("github-token")
         logger.info("[PERF] Secret accessed in %.2fs total", time.time() - token_start)
-        return cast(str | None, secret_value)
+        return secret_value
     except (OSError, ValueError, RuntimeError) as e:
         logger.warning(
             "Could not access github-token (took %.2fs): %s", time.time() - token_start, e

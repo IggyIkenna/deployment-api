@@ -63,8 +63,8 @@ def _release_one_lock_gcs(
     try:
         lock_blob_name = f"locks/deployment_{deployment_id}.lock"
         if callable(blob_exists_fn) and blob_exists_fn(state_bucket, lock_blob_name):
-            raw_bytes: bytes = (
-                download_fn(state_bucket, lock_blob_name) if callable(download_fn) else b"{}"
+            raw_bytes: bytes = cast(
+                bytes, download_fn(state_bucket, lock_blob_name) if callable(download_fn) else b"{}"
             )
             lock_data = cast(dict[str, object], json.loads(raw_bytes.decode("utf-8") or "{}"))
             if lock_data.get("owner") == owner_id:
