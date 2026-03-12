@@ -223,7 +223,8 @@ def get_epics_dir() -> Path | None:
     """Get the unified-trading-codex/11-project-management/epics/ path.
 
     Search order:
-    1. repo_root/codex-data-epics/  -- symlink to ../unified-trading-codex/11-project-management/epics
+    1. repo_root/codex-data-epics/  -- symlink to
+       ../unified-trading-codex/11-project-management/epics
     2. workspace sibling             -- ../unified-trading-codex/11-project-management/epics
 
     Returns None when neither resolves; epic endpoints return 503.
