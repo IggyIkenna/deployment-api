@@ -24,6 +24,8 @@ dependencies = [
     "prometheus-client>=0.20.0,<1.0.0",
     # HTTP client
     "httpx>=0.28.1,<1.0.0",
+    # GitHub API (service status checkers)
+    "PyGithub>=2.0.0,<3.0.0",
     # Async HTTP (service status checks)
     "aiohttp>=3.13.2,<4.0.0",
     # Cache
