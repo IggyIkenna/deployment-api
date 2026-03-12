@@ -462,9 +462,17 @@ else
         for dep in $DEPS; do
             DEP_PATH="$WORKSPACE_ROOT/$dep"
             if [ -d "$DEP_PATH" ] && [ -f "$DEP_PATH/pyproject.toml" ]; then
-                uv pip install -e "$DEP_PATH" --reinstall --quiet 2>/dev/null && log_ok "$dep" || log_warn "$dep install failed"
+                if ! uv pip install -e "$DEP_PATH" --reinstall --quiet 2>/dev/null; then
+                    log_fail "$dep editable install failed — check pyproject.toml and uv.lock in $dep"
+                    ISSUES=$((ISSUES + 1))
+                    [ "$CHECK_ONLY" = true ] || exit 1
+                fi
+                log_ok "$dep"
             else
-                log_warn "$dep not found at $DEP_PATH — install from Artifact Registry if needed"
+                log_fail "$dep not found at $DEP_PATH — sibling repo must be checked out locally"
+                log_fail "  Clone it, then re-run setup: bash scripts/setup.sh"
+                ISSUES=$((ISSUES + 1))
+                [ "$CHECK_ONLY" = true ] || exit 1
             fi
         done
     else
@@ -505,12 +513,20 @@ if [ "$IN_CI" = true ] || [ "$CHECK_ONLY" = true ] || [ "$ISOLATED" = true ]; th
 elif [ ! -f "$MANIFEST_PATH" ]; then
     : # no manifest — nothing to re-pin
 elif [ -n "${DEPS:-}" ]; then
+    REPIN_FAIL=false
     for dep in $DEPS; do
         DEP_PATH="$WORKSPACE_ROOT/$dep"
         if [ -d "$DEP_PATH" ] && [ -f "$DEP_PATH/pyproject.toml" ]; then
-            uv pip install -e "$DEP_PATH" --reinstall --quiet 2>/dev/null || true
+            if ! uv pip install -e "$DEP_PATH" --reinstall --quiet 2>/dev/null; then
+                log_fail "$dep re-pin failed in step 8b — step 8 may have overwritten it with a wheel"
+                REPIN_FAIL=true
+            fi
         fi
     done
+    if [ "$REPIN_FAIL" = true ]; then
+        log_fail "One or more sibling deps could not be re-pinned as editable — do not proceed"
+        exit 1
+    fi
     log_ok "Workspace sibling deps re-pinned as editable (step 8b)"
 fi
 
@@ -548,18 +564,24 @@ else
 fi
 
 # ── [11] IMPORT SMOKE TEST ─────────────────────────────────────────────────
-log_step "pytest deps (required by quality-gates.sh)"
+log_step "pytest deps (installed by step [8] uv pip install -e .[dev], verifying now)"
 if [ -d "tests" ]; then
   PY_CMD="${PYTHON_CMD:-python3}"
   [ -f ".venv/bin/python" ] && PY_CMD=".venv/bin/python"
+  PYTEST_MISSING=()
   for mod in pytest pytest_cov pytest_timeout xdist; do
     if $PY_CMD -c "import $mod" 2>/dev/null; then
       log_ok "$mod"
     else
-      log_fail "$mod not found — add to pyproject.toml [project.optional-dependencies] dev: pytest, pytest-cov, pytest-xdist, pytest-timeout"
-      ISSUES=$((ISSUES + 1))
+      PYTEST_MISSING+=("$mod")
     fi
   done
+  if [ "${#PYTEST_MISSING[@]}" -gt 0 ]; then
+    log_warn "pytest deps not installed (step [8] should have done this): ${PYTEST_MISSING[*]}"
+    log_warn "Add missing entries to pyproject.toml [project.optional-dependencies] dev:"
+    log_warn "  pytest, pytest-cov, pytest-xdist, pytest-timeout"
+    log_warn "Then re-run: bash scripts/setup.sh --force"
+  fi
 else
   log_skip "No tests/ — pytest deps optional"
 fi
