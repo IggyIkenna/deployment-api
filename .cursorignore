@@ -25,8 +25,7 @@
 **/.cache/
 **/*.egg-info/
 
-# Data and logs (often large)
-**/data/
+# Logs (often large)
 **/logs/
 
 # Common data / document file types (large or binary, exclude from index)
