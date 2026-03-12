@@ -7,6 +7,7 @@ Optimized functions for quickly getting data timestamps using date-partitioned l
 import asyncio
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast
 
@@ -31,7 +32,7 @@ def _obj_updated(obj: object) -> datetime:
     return ts if ts is not None else datetime.min.replace(tzinfo=UTC)
 
 
-def _latest_ts_from_objects(objs: list[object]) -> "datetime | None":
+def _latest_ts_from_objects(objs: Sequence[object]) -> "datetime | None":
     """Return the most recent updated timestamp from a list of GCS objects."""
     if not objs:
         return None

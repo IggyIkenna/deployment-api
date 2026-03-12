@@ -6,6 +6,7 @@ and result aggregation.
 """
 
 import logging
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import cast
@@ -202,7 +203,9 @@ def _build_venue_entry(
         "dates_found": len(venue_dates),
         "dates_expected": len(venue_expected_dates),
         "dates_expected_venue": len(venue_expected_dates),
-        "is_expected": is_venue_expected(venue_data_types_config, cat, venue_name),
+        "is_expected": is_venue_expected(
+            cast(Mapping[str, object], venue_data_types_config), cat, venue_name
+        ),
         "completion_pct": (
             round(len(venue_dates) / len(venue_expected_dates) * 100, 1)
             if venue_expected_dates
@@ -220,7 +223,7 @@ def _build_venues_result(
     cat: str,
     service: str,
     all_dates: set[str],
-    expected_start_dates_config: dict[str, object],
+    expected_start_dates_config: Mapping[str, object],
     upstream_dates: dict[str, dict[str, set[str]]] | None,
     venue_data_types_config: object,
     include_dates_list: bool,
@@ -248,7 +251,9 @@ def _build_venues_result(
             venue_data_types_config,
             include_dates_list,
         )
-    expected_venues = get_expected_venues_for_category(venue_data_types_config, cat)
+    expected_venues = get_expected_venues_for_category(
+        cast(Mapping[str, object], venue_data_types_config), cat
+    )
     actual_venues: set[str] = set(venue_data.keys())
     venue_summary: dict[str, object] = {
         "expected": sorted(expected_venues),
@@ -264,7 +269,7 @@ def _check_category(
     cat: str,
     service: str,
     all_dates: set[str],
-    expected_start_dates_config: dict[str, object],
+    expected_start_dates_config: Mapping[str, object],
     venue: list[str] | None,
     folder: list[str] | None,
     data_type: list[str] | None,
@@ -282,7 +287,7 @@ def _check_category(
         return {"category": cat, "error": f"No bucket for category {cat}"}
 
     expected_dates_for_cat = get_expected_dates_for_category(
-        all_dates, cast(dict[str, object], expected_start_dates_config), service, cat
+        all_dates, expected_start_dates_config, service, cat
     )
 
     try:
@@ -298,7 +303,7 @@ def _check_category(
                 folder=folder,
                 data_type=data_type,
                 path_prefix=path_prefix,
-                expected_start_dates_config=cast(dict[str, object], expected_start_dates_config),
+                expected_start_dates_config=expected_start_dates_config,
                 all_dates=all_dates,
                 upstream_avail_dates=upstream_dates,
             )

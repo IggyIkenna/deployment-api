@@ -461,7 +461,8 @@ class EventProcessor:
             zone=config.get("zone"),
         )
 
-        if not backend or not hasattr(backend, "cancel_job_fire_and_forget"):
+        _backend = cast(object, backend)
+        if not _backend or not hasattr(_backend, "cancel_job_fire_and_forget"):
             return 0
 
         max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)

@@ -18,8 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -110,7 +111,7 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
     if not manifest_path.is_file():
         return []
     try:
-        manifest: dict[str, object] = json.loads(manifest_path.read_text())
+        manifest = cast(dict[str, object], json.loads(manifest_path.read_text()))
         deployed: dict[str, dict[str, str]] = manifest.get("deployed_versions", {})  # type: ignore[assignment]
         env_deployed = deployed.get(env, {})
         tag = env_deployed.get(service, "")
@@ -126,14 +127,14 @@ async def _list_ar_tags(service: str, project: str) -> list[str]:
     try:
         from google.cloud import artifactregistry_v1  # type: ignore[import-untyped]
 
-        client = artifactregistry_v1.ArtifactRegistryAsyncClient()
+        ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # type: ignore[reportUnknownMemberType]
         repo = f"projects/{project}/locations/asia-northeast1/repositories/{_AR_REPO}"
         parent = f"{repo}/packages/{service}"
         tags: list[str] = []
-        request = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)
-        async for tag in await client.list_tags(request):
+        ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # type: ignore[reportUnknownMemberType]
+        async for tag in await ar_client.list_tags(ar_request):  # type: ignore[union-attr]
             # Tag name format: .../tags/{tag_name}
-            tag_name = tag.name.split("/")[-1]
+            tag_name: str = str(getattr(cast(object, tag), "name", "")).split("/")[-1]
             tags.append(tag_name)
         return tags
     except Exception as e:
@@ -213,8 +214,6 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
     region = "asia-northeast1"
 
     try:
-        import subprocess
-
         result = subprocess.run(
             [
                 "gcloud",

@@ -54,7 +54,7 @@ def _cloudbuild_v1():
     return cloudbuild_v1
 
 
-def _get_gcp_build_client():
+def _get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     """Return the underlying GCP CloudBuildClient via UCI factory.
 
     Uses ``unified_cloud_interface.get_cloud_build_client()`` so that credentials
@@ -67,14 +67,14 @@ def _get_gcp_build_client():
     # GCPCloudBuildClient exposes ._client() to get the native google client.
     # This is intentional — request types (ListBuildTriggersRequest etc.) are
     # still constructed using the cloudbuild_v1 module directly.
-    # Use hasattr to avoid a deep import into UCI's providers sub-package.
     if hasattr(uci_client, "_client"):
-        return uci_client._client()  # type: ignore[reportPrivateUsage]  # intentional — see docstring
+        _native: object = uci_client._client()  # type: ignore[reportUnknownMemberType, reportPrivateUsage]
+        return cast("cloudbuild_v1.CloudBuildClient", _native)
     # Fallback: direct construction (should not be reached in production)
     return _cloudbuild_v1().CloudBuildClient()
 
 
-def get_gcp_build_client():
+def get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     """Public alias for _get_gcp_build_client — for use by other modules in this package."""
     return _get_gcp_build_client()
 
@@ -356,21 +356,23 @@ def _resolve_trigger_repo(trigger: object) -> tuple[str | None, str | None]:
 
 def _extract_github_info(trigger: object) -> tuple[str | None, str | None]:
     """Extract github_repo and branch_pattern from a Cloud Build trigger object."""
-    github = getattr(trigger, "github", None)
-    repo_event = getattr(trigger, "repository_event_config", None)
+    github: object = cast(object, getattr(trigger, "github", None))
+    repo_event: object = cast(object, getattr(trigger, "repository_event_config", None))
     if github:
-        owner = str(getattr(github, "owner", "") or "")
-        name = str(getattr(github, "name", "") or "")
+        owner = str(cast(object, getattr(github, "owner", "")) or "")
+        name = str(cast(object, getattr(github, "name", "")) or "")
         github_repo: str | None = f"{owner}/{name}" if owner and name else None
-        push = getattr(github, "push", None)
-        branch_pattern: str | None = str(getattr(push, "branch", "") or "") if push else None
+        push: object = cast(object, getattr(github, "push", None))
+        branch_pattern: str | None = (
+            str(cast(object, getattr(push, "branch", "")) or "") if push else None
+        )
         return github_repo, branch_pattern or None
     if repo_event:
-        repo_path = str(getattr(repo_event, "repository", "") or "")
+        repo_path = str(cast(object, getattr(repo_event, "repository", "")) or "")
         parts = repo_path.split("/")
         github_repo = parts[-1] if parts else None
-        push = getattr(repo_event, "push", None)
-        branch_pattern = str(getattr(push, "branch", "") or "") if push else None
+        push = cast(object, getattr(repo_event, "push", None))
+        branch_pattern = str(cast(object, getattr(push, "branch", "")) or "") if push else None
         return github_repo, branch_pattern or None
     return None, None
 

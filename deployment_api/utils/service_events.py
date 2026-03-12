@@ -135,8 +135,9 @@ def update_shard_state_from_event(
         event_name == "FAILED" and _details_dict.get("error_category") == "validation"
     )
 
+    _details_as_object = cast(object, details)
     _apply_stage_event(
-        event_name, is_validation_failed, shard_state, stage_timings, details, timestamp
+        event_name, is_validation_failed, shard_state, stage_timings, _details_as_object, timestamp
     )
 
     # Parse progress counters from details (e.g., "BTC-USDT-SWAP (5/325)" or "2025-01-01 (1/30)")

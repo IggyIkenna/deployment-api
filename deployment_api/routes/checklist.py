@@ -149,15 +149,17 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
 
     cr_section = data.get("code_readiness")
     if isinstance(cr_section, dict):
+        cr_dict = cast(dict[str, object], cr_section)
         cat = _build_category(
-            "code_readiness", "Code Readiness (CR1\u2013CR5)", _CR_STAGES, cr_section
+            "code_readiness", "Code Readiness (CR1\u2013CR5)", _CR_STAGES, cr_dict
         )
         categories.append(cat)
         all_items.extend(cast(list[dict[str, object]], cat["items"]))
 
     dr_section = data.get("deployment_readiness")
     if isinstance(dr_section, dict):
-        na_reason = dr_section.get("na_reason")
+        dr_dict = cast(dict[str, object], dr_section)
+        na_reason = dr_dict.get("na_reason")
         if na_reason:
             dr_na_cat: dict[str, object] = {
                 "name": "deployment_readiness",
@@ -180,24 +182,26 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
             all_items.extend(cast(list[dict[str, object]], dr_na_cat["items"]))
         else:
             for mode_key, mode_label in [("batch", "Batch"), ("live", "Live")]:
-                mode_data = dr_section.get(mode_key)
+                mode_data = dr_dict.get(mode_key)
                 if isinstance(mode_data, dict):
+                    mode_dict = cast(dict[str, object], mode_data)
                     cat = _build_category(
                         f"deployment_readiness_{mode_key}",
                         f"Deployment Readiness \u2014 {mode_label} (DR1\u2013DR6)",
                         _DR_STAGES,
-                        mode_data,
+                        mode_dict,
                     )
                     categories.append(cat)
                     all_items.extend(cast(list[dict[str, object]], cat["items"]))
 
     br_section = data.get("business_readiness")
     if isinstance(br_section, dict):
+        br_dict = cast(dict[str, object], br_section)
         cat = _build_category(
             "business_readiness",
             "Business Readiness (BR1\u2013BR8)",
             _BR_STAGES,
-            br_section,
+            br_dict,
         )
         categories.append(cat)
         all_items.extend(cast(list[dict[str, object]], cat["items"]))
@@ -306,7 +310,7 @@ def _list_all_checklists(codex_dir: Path) -> list[dict[str, object]]:
         except (OSError, ValueError, RuntimeError) as e:
             results.append({"service": service_name, "readiness_percent": 0, "error": str(e)})
 
-    results.sort(key=lambda x: int(x.get("readiness_percent") or 0), reverse=True)
+    results.sort(key=lambda x: int(cast(int, x.get("readiness_percent") or 0)), reverse=True)
     return results
 
 

@@ -63,8 +63,8 @@ _EPIC_DISPLAY_ORDER = ["defi", "cefi", "tradfi", "sports"]
 
 def _load_yaml(path: Path) -> dict[str, object]:
     with path.open() as f:
-        data = yaml.safe_load(f)
-    return cast(dict[str, object], data) if data is not None else {}
+        data = cast(dict[str, object] | None, yaml.safe_load(f))
+    return data if data is not None else {}
 
 
 def _cr_ordinal(stage: str | None) -> int:
@@ -83,10 +83,12 @@ def _get_branch_status(
     acr = repo_data.get("asset_class_readiness")
     if not isinstance(acr, dict):
         return {}
-    class_data = acr.get(asset_class) or acr.get("core") or {}
-    if not isinstance(class_data, dict):
+    acr_dict = cast(dict[str, object], acr)
+    class_data_val: object = acr_dict.get(asset_class) or acr_dict.get("core") or {}
+    if not isinstance(class_data_val, dict):
         return {}
-    branch_status = class_data.get("branch_status")
+    class_dict = cast(dict[str, object], class_data_val)
+    branch_status: object = class_dict.get("branch_status")
     return cast(dict[str, object], branch_status) if isinstance(branch_status, dict) else {}
 
 
@@ -98,8 +100,9 @@ def _get_asset_class_data(
     acr = repo_data.get("asset_class_readiness")
     if not isinstance(acr, dict):
         return {}
-    result = acr.get(asset_class) or acr.get("core") or {}
-    return cast(dict[str, object], result) if isinstance(result, dict) else {}
+    acr_dict2 = cast(dict[str, object], acr)
+    result_val: object = acr_dict2.get(asset_class) or acr_dict2.get("core") or {}
+    return cast(dict[str, object], result_val) if isinstance(result_val, dict) else {}
 
 
 def _is_repo_complete(
@@ -321,8 +324,9 @@ async def list_epics(request: Request) -> list[dict[str, object]]:
       - codex_dir (10-audit/repos/) for per-repo data
       - epics_dir (11-project-management/epics/) for epic definitions
     """
-    epics_dir: Path | None = getattr(request.app.state, "epics_dir", None)
-    codex_dir: Path | None = getattr(request.app.state, "codex_dir", None)
+    _state: object = getattr(getattr(request, "app", None), "state", None)
+    epics_dir = cast(Path | None, getattr(_state, "epics_dir", None))
+    codex_dir = cast(Path | None, getattr(_state, "codex_dir", None))
 
     if epics_dir is None:
         raise HTTPException(
@@ -371,8 +375,9 @@ async def get_epic_detail(epic_id: str, request: Request) -> dict[str, object]:
     Get detailed epic status: per-repo CR/BR stages, branch status,
     data availability, feature groups, ML models, and blocking reasons.
     """
-    epics_dir: Path | None = getattr(request.app.state, "epics_dir", None)
-    codex_dir: Path | None = getattr(request.app.state, "codex_dir", None)
+    _state: object = getattr(getattr(request, "app", None), "state", None)
+    epics_dir = cast(Path | None, getattr(_state, "epics_dir", None))
+    codex_dir = cast(Path | None, getattr(_state, "codex_dir", None))
 
     if epics_dir is None:
         raise HTTPException(status_code=503, detail="Epics directory not configured.")

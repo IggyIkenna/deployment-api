@@ -368,11 +368,12 @@ def _collect_shard_statuses(
 
     shard_statuses: dict[str, tuple[str, str]] = {}
     if status_objs:
+
+        def _fetch(obj: object) -> tuple[str, str] | None:
+            return _read_shard_status_from_obj(obj, read_object_text)
+
         with ThreadPoolExecutor(max_workers=min(len(status_objs), 20)) as pool:
-            for result in pool.map(
-                lambda obj: _read_shard_status_from_obj(obj, read_object_text),
-                status_objs,
-            ):
+            for result in pool.map(_fetch, status_objs):
                 if result:
                     shard_statuses[result[0]] = (result[1], "gcs")
     return shard_statuses
