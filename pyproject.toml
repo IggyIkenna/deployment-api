@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=75,<82", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 
 
@@ -59,10 +59,6 @@ dev = [
     "pip-audit>=2.7.0,<3.0.0",
     "bandit>=1.7.0,<2.0.0",
 ]
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["deployment_api*"]
 
 [tool.ruff]
 line-length = 100
