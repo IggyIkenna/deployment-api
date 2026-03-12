@@ -1,7 +1,3 @@
-# Quality Gates for deployment-api
-#
-# Runs lint, type check, and tests. Clones workspace deps via GH_PAT.
-#
 name: Quality Gates
 
 on:
@@ -12,62 +8,8 @@ on:
 
 jobs:
   quality-gates:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python CI tools
-        uses: IggyIkenna/unified-trading-pm/.github/actions/setup-python-tools@main
-        with:
-          python-version: "3.13.9"
-
-      - name: Checkout dependencies
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-          DEP_BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: |
-          BRANCH="${DEP_BRANCH:-main}"
-          if [ -n "$GH_PAT" ]; then
-            for dep in unified-cloud-interface unified-events-interface; do
-            (git clone -b "$BRANCH" "https://x-access-token:${GH_PAT}@github.com/IggyIkenna/${dep}.git" ../${dep} 2>/dev/null || git clone -b main "https://x-access-token:${GH_PAT}@github.com/IggyIkenna/${dep}.git" ../${dep} 2>/dev/null) || true
-            (git clone -b "$BRANCH" "https://x-access-token:${GH_PAT}@github.com/IggyIkenna/unified-trading-pm.git" ../unified-trading-pm 2>/dev/null \
-              || git clone -b main "https://x-access-token:${GH_PAT}@github.com/IggyIkenna/unified-trading-pm.git" ../unified-trading-pm 2>/dev/null) || true
-            done
-          else
-            echo "::notice::GH_PAT not set - installing deps from PyPI/Artifact Registry only"
-          fi
-
-      - name: Install dependencies
-        run: |
-          uv venv .venv
-          for dep in unified-cloud-interface unified-events-interface; do
-            [ -d "../$dep" ] && uv pip install --python .venv/bin/python -e ../$dep 2>/dev/null || true
-          done
-          uv pip install --python .venv/bin/python -e ".[dev]" || uv pip install --python .venv/bin/python -e .
-          uv pip install --python .venv/bin/python ruff==0.15.0 pytest pytest-cov pytest-asyncio pytest-timeout pytest-xdist basedpyright bandit pip-audit
-
-      - name: Run quality gates
-        env:
-          CLOUD_PROVIDER: "local"
-          CLOUD_MOCK_MODE: "true"
-          GCP_PROJECT_ID: "test-project"
-        run: |
-          export PATH="$(pwd)/.venv/bin:$PATH"
-          bash scripts/quality-gates.sh --no-fix
-      - name: Record CI status
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          [ -z "${GH_PAT}" ] && echo "GH_PAT not set — skipping ci-status-update" && exit 0
-          STATUS="${{ job.status == 'success' && 'PASSING' || 'FAILING' }}"
-          curl -s -X POST \
-            -H "Authorization: token ${GH_PAT}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository_owner }}/unified-trading-pm/dispatches" \
-            -d "{\"event_type\": \"ci-status-update\", \"client_payload\": {\"repo\": \"${{ github.event.repository.name }}\", \"status\": \"${STATUS}\", \"sha\": \"${{ github.sha }}\"}}"
+    uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates.yml@live-defi-rollout
+    with:
+      dep_repos: "unified-cloud-interface unified-events-interface unified-events-interface unified-trading-library unified-cloud-interface unified-config-interface"
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}
