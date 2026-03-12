@@ -39,9 +39,9 @@
 #       Reads unified-trading-pm/workspace-manifest.json; installs sibling repos
 #       Installs jq automatically (apt/brew) if needed; exits 1 if jq unavailable
 #       NOTE: step 7 runs BEFORE step 8 so siblings are resolvable during install.
-#    8. Install project + dev deps (uv pip install -e ".[dev]")
+#    8. Install project + dev deps (uv pip install -e .)
 #    8b. Re-pin workspace sibling deps as editable (re-runs after step 8)
-#        uv pip install -e ".[dev]" in step 8 may resolve siblings from PyPI/
+#        uv pip install -e . in step 8 may resolve siblings from PyPI/
 #        Artifact Registry and overwrite the editable installs from step 7.
 #        Step 8b forces the local editable version to win.
 #    9. Verify ripgrep available (required by quality-gates.sh) — always runs
@@ -409,7 +409,7 @@ else
     #
     # Graceful fallback: repos with irreconcilable optional extras (e.g. openbb vs ruff)
     # cause uv lock to fail trying to resolve all extras simultaneously.
-    # In that case we fall through to uv pip install -e ".[dev]" in step [8] directly.
+    # In that case we fall through to uv pip install -e . in step [8] directly.
     UV_LOCK_FAILED=false
     if ! uv lock 2>/dev/null; then
         log_warn "uv lock failed — optional dep conflict likely (e.g. incompatible extras)"
@@ -421,7 +421,7 @@ else
 fi
 
 # ── [7] LOCAL PATH DEPENDENCIES ─────────────────────────────────────────────
-# NOTE: Step 7 runs BEFORE step 8 (uv pip install -e ".[dev]") so that sibling
+# NOTE: Step 7 runs BEFORE step 8 (uv pip install -e .) so that sibling
 # packages are already present as editables when pip resolves the dependency
 # graph. Step 8b (below) re-pins them afterwards to guard against step 8
 # overwriting editables with wheels pulled from PyPI/Artifact Registry.
@@ -492,12 +492,12 @@ elif [ "$CHECK_ONLY" = true ]; then
 elif [ ! -f "pyproject.toml" ]; then
     log_skip "No pyproject.toml"
 else
-    uv pip install -e ".[dev]" --quiet 2>/dev/null || uv pip install -e . --quiet 2>/dev/null
+    uv pip install -e . --quiet 2>/dev/null
     log_ok "Dependencies installed"
 fi
 
 # ── [8b] RE-PIN WORKSPACE SIBLING DEPS AS EDITABLE ─────────────────────────
-# NOTE: Step 8 (uv pip install -e ".[dev]") resolves ALL deps from pyproject.toml
+# NOTE: Step 8 (uv pip install -e .) resolves ALL deps from pyproject.toml
 # and may pull workspace siblings as wheels from PyPI/Artifact Registry,
 # overwriting the editable installs from step 7. This step re-pins every local
 # sibling back to its editable source so the local checkout always wins.
@@ -557,7 +557,7 @@ else
 fi
 
 # ── [11] IMPORT SMOKE TEST ─────────────────────────────────────────────────
-log_step "pytest deps (installed by step [8] uv pip install -e .[dev], verifying now)"
+log_step "pytest deps (installed by step [8] uv pip install -e ., verifying now)"
 if [ -d "tests" ]; then
   PY_CMD="${PYTHON_CMD:-python3}"
   [ -f ".venv/bin/python" ] && PY_CMD=".venv/bin/python"
@@ -571,7 +571,7 @@ if [ -d "tests" ]; then
   done
   if [ "${#PYTEST_MISSING[@]}" -gt 0 ]; then
     log_warn "pytest deps not installed (step [8] should have done this): ${PYTEST_MISSING[*]}"
-    log_warn "Add missing entries to pyproject.toml [project.optional-dependencies] dev:"
+    log_warn "Add missing entries to pyproject.toml [project.dependencies]:"
     log_warn "  pytest, pytest-cov, pytest-xdist, pytest-timeout"
     log_warn "Then re-run: bash scripts/setup.sh --force"
   fi
