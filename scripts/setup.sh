@@ -56,9 +56,9 @@
 #          lock file only updates on successful npm install; node_modules dir mtime is fragile)
 #   - .venv creation: skipped if .venv/ exists with correct Python version
 #   - uv lock: always runs (sibling version bumps don't update pyproject.toml timestamps)
-#   - Dep install: skipped if .setup-stamp is newer than pyproject.toml + uv.lock
+#   - Dep install: always runs — same reason as uv lock; timestamp/stamp checks are
+#     unreliable across machines and timezones; uv pip install is fast/idempotent
 #   - Each step prints [SKIP] or [OK], never re-does work unnecessarily
-#   - --force bypasses all skip checks and reinstalls from scratch
 #
 # CI detection (GITHUB_ACTIONS, CI, or CLOUD_BUILD set):
 #   Python repo: steps 1-8 (install/setup) are skipped — CI manages its own env.
@@ -153,7 +153,6 @@ if [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ] || [ -n "${CLOUD_BUILD:-}" ]
     echo -e "  ${YELLOW}CI detected — skipping venv/deps setup (CI manages its own env)${NC}"
 fi
 
-SETUP_STAMP="$PROJECT_ROOT/.setup-stamp"
 ISSUES=0
 
 # ── REPO TYPE DETECTION ─────────────────────────────────────────────────────
@@ -483,23 +482,17 @@ fi
 # ── [8] PROJECT DEPS ───────────────────────────────────────────────────────
 log_step "Project dependencies"
 
+# Always run — same reasoning as uv lock (step [6]): timestamp/stamp checks are
+# unreliable across machines, timezones, and sibling version bumps that don't touch
+# this repo's pyproject.toml. uv pip install is fast/idempotent when nothing changed.
 if [ "$IN_CI" = true ]; then
     log_skip "CI mode"
 elif [ "$CHECK_ONLY" = true ]; then
     log_skip "Check mode"
 elif [ ! -f "pyproject.toml" ]; then
     log_skip "No pyproject.toml"
-elif [ -f "$SETUP_STAMP" ] && [ "$SETUP_STAMP" -nt "pyproject.toml" ] && [ "$FORCE" != true ]; then
-    if [ ! -f "uv.lock" ] || [ "$SETUP_STAMP" -nt "uv.lock" ]; then
-        log_skip "Dependencies up to date (stamp is current)"
-    else
-        uv pip install -e ".[dev]" --quiet 2>/dev/null || uv pip install -e . --quiet 2>/dev/null
-        touch "$SETUP_STAMP"
-        log_ok "Dependencies installed (uv.lock changed)"
-    fi
 else
     uv pip install -e ".[dev]" --quiet 2>/dev/null || uv pip install -e . --quiet 2>/dev/null
-    touch "$SETUP_STAMP"
     log_ok "Dependencies installed"
 fi
 

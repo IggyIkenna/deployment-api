@@ -53,6 +53,7 @@ jobs:
 
       - name: Run quality gates
         env:
+          CLOUD_PROVIDER: "local"
           CLOUD_MOCK_MODE: "true"
           GCP_PROJECT_ID: "test-project"
         run: |
