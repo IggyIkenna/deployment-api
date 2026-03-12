@@ -459,7 +459,7 @@ MANIFEST_PATH="$WORKSPACE_ROOT/unified-trading-pm/workspace-manifest.json"
 if [ -f "$MANIFEST_PATH" ]; then
   DEPS=$(jq -r '.repositories["'"$REPO_NAME"'"].dependencies[]?.name // empty' "$MANIFEST_PATH" 2>/dev/null || echo "")
   if [ -n "$DEPS" ]; then
-    echo "Checking dependencies vs origin/main (from workspace-manifest.json)..."
+    echo "Checking dependencies vs origin/$DEP_REF_BRANCH (from workspace-manifest.json active_feature_branch)..."
     HAS_DIFF=false
     LAST_DEP_PATH=""
     for dep in $DEPS; do
@@ -467,12 +467,12 @@ if [ -f "$MANIFEST_PATH" ]; then
       if [ -d "$dep_path" ]; then
         cd "$dep_path"
         git fetch origin main --quiet 2>/dev/null || true
-        if ! git diff origin/main --quiet 2>/dev/null; then
+        if ! git diff "$REF" --quiet 2>/dev/null; then
           HAS_DIFF=true
           LAST_DEP_PATH="$dep_path"
-          echo "❌ $dep: DIFFERS from main"
+          echo "❌ $dep: DIFFERS from $REF"
         else
-          echo "✅ $dep: Matches main"
+          echo "✅ $dep: Matches $REF"
         fi
         cd "$REPO_DIR"
       fi
@@ -484,7 +484,7 @@ if [ -f "$MANIFEST_PATH" ]; then
       echo "❌ DEPENDENCY CONFLICT DETECTED"
       echo "═══════════════════════════════════════════════════════"
       echo ""
-      echo "Dependencies differ from main, but no --dep-branch specified."
+      echo "Dependencies differ from $REF, but no --dep-branch specified."
       echo "Your local dependency changes are intentional — do NOT discard them."
       echo ""
       echo "── If you are a HUMAN developer ──────────────────────────────────────"
