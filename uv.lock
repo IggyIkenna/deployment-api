@@ -2146,6 +2146,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
     { name = "starlette", specifier = ">=0.40.0,<1.0.0" },
+    { name = "unified-cloud-interface", extras = ["gcp"], marker = "extra == 'dev'", editable = "../unified-cloud-interface" },
     { name = "unified-cloud-interface", extras = ["gcp"], marker = "extra == 'gcp'", editable = "../unified-cloud-interface" },
     { name = "unified-cloud-interface", extras = ["gcp", "aws"], marker = "extra == 'all'", editable = "../unified-cloud-interface" },
     { name = "unified-config-interface", marker = "extra == 'all'", editable = "../unified-config-interface" },
