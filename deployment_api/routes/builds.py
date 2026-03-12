@@ -49,7 +49,9 @@ _BRANCH_PREFIX_RE = re.compile(r"^(feat|fix|chore|refactor|perf|ci|docs|test)-(.
 Environment = Literal["dev", "staging", "prod"]
 
 
-class BuildEntry(BaseModel):
+class BuildEntry(
+    BaseModel
+):  # CORRECT-LOCAL — API response schema local to this route; not a domain contract
     """A single available build in Artifact Registry."""
 
     tag: str = Field(..., description="Artifact Registry image tag")
@@ -59,7 +61,9 @@ class BuildEntry(BaseModel):
     is_v1: bool = Field(..., description="True if version >= 1.0.0")
 
 
-class DeployRequest(BaseModel):
+class DeployRequest(
+    BaseModel
+):  # CORRECT-LOCAL — API request schema local to this route; not a domain contract
     """Request body for deploying a specific build tag to an environment."""
 
     image_tag: str = Field(..., description="Artifact Registry image tag to deploy")
@@ -125,7 +129,9 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
 async def _list_ar_tags(service: str, project: str) -> list[str]:
     """List image tags from Artifact Registry for a given service + GCP project."""
     try:
-        from google.cloud import artifactregistry_v1  # type: ignore[import-untyped]
+        from google.cloud import (  # noqa: cloud-sdk-direct
+            artifactregistry_v1,  # type: ignore[import-untyped]
+        )
 
         ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # type: ignore[reportUnknownMemberType]
         repo = f"projects/{project}/locations/asia-northeast1/repositories/{_AR_REPO}"

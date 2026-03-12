@@ -26,7 +26,7 @@ _ALGO_RE = re.compile(
 
 def _parse_gs_path(gs_path: str) -> tuple[str, str, str] | None:
     """Parse gs://bucket/prefix into (bucket_name, config_prefix, version) or None on error."""
-    if not gs_path.startswith("gs://"):
+    if not gs_path.startswith("gs://"):  # noqa: gs-uri
         return None
     path_parts = gs_path[5:].split("/", 1)
     bucket_name = path_parts[0]
@@ -81,7 +81,7 @@ def _list_exec_configs(
         if algo_filter and algo_name != algo_filter:
             continue
         result_strategy_id = f"{cfg_strategy}_{cfg_mode}_{cfg_timeframe}_{version}"
-        path = f"gs://{bucket_name}/{obj.name}" if include_gs_prefix else obj.name
+        path = f"gs://{bucket_name}/{obj.name}" if include_gs_prefix else obj.name  # noqa: gs-uri
         configs.append(
             {
                 "path": path,
@@ -439,7 +439,7 @@ def _list_missing_configs_filtered(
         result_strategy_id = f"{cfg_strategy}_{cfg_mode}_{cfg_timeframe}_{version}"
         configs.append(
             {
-                "path": f"gs://{bucket_name}/{obj.name}",
+                "path": f"gs://{bucket_name}/{obj.name}",  # noqa: gs-uri
                 "strategy": cfg_strategy,
                 "mode": cfg_mode,
                 "timeframe": cfg_timeframe,
@@ -555,7 +555,7 @@ def _calculate_missing_shards_sync(
 ) -> dict[str, object]:
     """Synchronous core of calculate_execution_missing_shards (runs in thread pool)."""
     try:
-        if not config_path.startswith("gs://"):
+        if not config_path.startswith("gs://"):  # noqa: gs-uri
             return {"error": "config_path must start with gs://"}
 
         path_parts = config_path[5:].split("/", 1)

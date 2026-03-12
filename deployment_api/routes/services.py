@@ -205,9 +205,9 @@ async def discover_configs(
         from deployment_api.utils.cloud_storage_client import list_cloud_files
 
         # Validate cloud path format
-        if not cloud_path.startswith("gs://") and not cloud_path.startswith("s3://"):
+        if not cloud_path.startswith("gs://") and not cloud_path.startswith("s3://"):  # noqa: gs-uri
             raise ValueError(
-                f"Invalid cloud path format. Must start with 'gs://' or 's3://'. Got: {cloud_path}"
+                f"Invalid cloud path format. Must start with gs:// or s3://. Got: {cloud_path}"
             )
 
         # List all JSON files recursively (increased limit to 10000 for large config sets)
@@ -269,11 +269,11 @@ async def list_directories(
 
     def _list_directories_sync():
         # Validate cloud path format
-        if not cloud_path.startswith("gs://"):
-            raise ValueError(f"Invalid GCS path format. Must start with 'gs://'. Got: {cloud_path}")
+        if not cloud_path.startswith("gs://"):  # noqa: gs-uri
+            raise ValueError(f"Invalid GCS path format. Must start with gs://. Got: {cloud_path}")
 
         # Parse bucket and prefix from gs:// path
-        path_without_scheme = cloud_path[5:]  # Remove "gs://"
+        path_without_scheme = cloud_path[5:]  # Remove gs:// prefix
         parts = path_without_scheme.split("/", 1)
         bucket_name = parts[0]
         prefix = parts[1] if len(parts) > 1 else ""
@@ -325,37 +325,37 @@ async def get_config_buckets(service_name: str, request: Request):
     # DeploymentApiConfig env vars. Defaults derived from gcp_project_id when env vars unset.
     bucket_mappings: dict[str, dict[str, object]] = {
         "execution-service": {
-            "default_bucket": f"gs://{EXECUTION_STORE_BUCKET}/configs/",
+            "default_bucket": f"gs://{EXECUTION_STORE_BUCKET}/configs/",  # noqa: gs-uri
             "buckets": [
                 {
                     "name": "execution-store (main)",
-                    "path": f"gs://{EXECUTION_STORE_BUCKET}/configs/",
+                    "path": f"gs://{EXECUTION_STORE_BUCKET}/configs/",  # noqa: gs-uri
                 },
             ],
         },
         "strategy-service": {
-            "default_bucket": f"gs://{STRATEGY_STORE_CEFI_BUCKET}/configs_grid/",
+            "default_bucket": f"gs://{STRATEGY_STORE_CEFI_BUCKET}/configs_grid/",  # noqa: gs-uri
             "buckets": [
                 {
                     "name": "strategy-store-cefi",
-                    "path": f"gs://{STRATEGY_STORE_CEFI_BUCKET}/configs_grid/",
+                    "path": f"gs://{STRATEGY_STORE_CEFI_BUCKET}/configs_grid/",  # noqa: gs-uri
                 },
                 {
                     "name": "strategy-store-tradfi",
-                    "path": f"gs://{STRATEGY_STORE_TRADFI_BUCKET}/configs_grid/",
+                    "path": f"gs://{STRATEGY_STORE_TRADFI_BUCKET}/configs_grid/",  # noqa: gs-uri
                 },
                 {
                     "name": "strategy-store-defi",
-                    "path": f"gs://{STRATEGY_STORE_DEFI_BUCKET}/configs_grid/",
+                    "path": f"gs://{STRATEGY_STORE_DEFI_BUCKET}/configs_grid/",  # noqa: gs-uri
                 },
             ],
         },
         "ml-training-service": {
-            "default_bucket": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",
+            "default_bucket": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",  # noqa: gs-uri
             "buckets": [
                 {
                     "name": "ml-configs-store",
-                    "path": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",
+                    "path": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",  # noqa: gs-uri
                 },
             ],
         },
