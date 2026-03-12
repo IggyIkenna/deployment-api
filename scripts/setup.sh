@@ -25,6 +25,9 @@
 #   UI.1. Check Node.js version
 #   UI.2. Run npm install (idempotent: skips if node_modules newer than package.json)
 #   UI.3. Check TypeScript / tsc available
+#   UI.4. Build library dist/ if missing (only for repos where "main" points to dist/)
+#         Library repos (e.g. unified-trading-ui-kit) have dist/ gitignored; consumers
+#         reference them via file: paths and need dist/ to exist before QG can run.
 #   → exits 0 after UI setup (never falls through to Python steps)
 #
 #   ── PYTHON REPO PATH ──────────────────────────────────────────────────────
@@ -210,6 +213,38 @@ if [ "$IS_UI_REPO" = true ]; then
         log_ok "tsc $TSC_VER"
     else
         log_warn "tsc not found in node_modules (will be available after npm install)"
+    fi
+
+    # ── [UI.4] BUILD LIBRARY (if this repo is a library with gitignored dist/) ──
+    # Detected by: package.json has "main" or "exports" pointing to dist/.
+    # Libraries (e.g. unified-trading-ui-kit) have dist/ gitignored; consumers reference
+    # them via file: paths and need dist/ to exist before quality-gates can run.
+    # This step auto-builds dist/ when it is missing or empty — skipped for app repos.
+    if [ "$IN_CI" = false ] && [ "$CHECK_ONLY" = false ]; then
+        IS_LIB_REPO=false
+        if [ -f "package.json" ]; then
+            PKG_MAIN=$(node -e "const p=require('./package.json'); console.log(p.main||'')" 2>/dev/null || echo "")
+            if [[ "$PKG_MAIN" == *"dist/"* ]]; then
+                IS_LIB_REPO=true
+            fi
+        fi
+        if [ "$IS_LIB_REPO" = true ]; then
+            DIST_EMPTY=true
+            if [ -d "dist" ] && [ "$(ls -A dist 2>/dev/null)" ]; then
+                DIST_EMPTY=false
+            fi
+            if [ "$DIST_EMPTY" = true ] || [ "$FORCE" = true ]; then
+                log_step "Build library dist/ (main points to dist/, dist/ missing or empty)"
+                if npm run build --silent 2>&1; then
+                    log_ok "npm run build complete — dist/ ready"
+                else
+                    log_warn "npm run build failed — consumers may fail to import; run: npm run build"
+                    ISSUES=$((ISSUES + 1))
+                fi
+            else
+                log_skip "dist/ exists and is non-empty (library already built)"
+            fi
+        fi
     fi
 
     echo ""
@@ -521,6 +556,20 @@ elif [ -n "${DEPS:-}" ]; then
         exit 1
     fi
     log_ok "Workspace sibling deps re-pinned as editable (step 8b)"
+fi
+
+# ── [8c] UV SYNC (transitive deps of path deps) ─────────────────────────────
+# Steps 8 / 8b use uv pip install -e . and re-pin editables; that can leave
+# transitive deps of path packages (e.g. google-cloud-storage from UCI) missing.
+# uv sync applies the full lock file so all transitives are installed.
+if [ "$IN_CI" = true ] || [ "$CHECK_ONLY" = true ]; then
+    : # skip — CI manages env; check mode is read-only
+elif [ -f "uv.lock" ] && [ -f "pyproject.toml" ]; then
+    if uv sync --quiet 2>/dev/null; then
+        log_ok "uv sync (lock applied, transitives installed)"
+    else
+        log_warn "uv sync failed — import smoke test may fail; run: uv sync"
+    fi
 fi
 
 # ── [9] RIPGREP CHECK ──────────────────────────────────────────────────────
