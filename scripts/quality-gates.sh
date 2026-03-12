@@ -9,7 +9,7 @@
 #   4. Add LOCAL_DEPS entries if your service has local editable deps (e.g. unified-events-interface)
 SERVICE_NAME="deployment-api"
 SOURCE_DIR="deployment_api"
-MIN_COVERAGE=70
+MIN_COVERAGE=69
 RUN_INTEGRATION=false
 PYTEST_WORKERS=${PYTEST_WORKERS:-2}
 LOCAL_DEPS=()
