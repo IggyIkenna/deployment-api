@@ -136,8 +136,11 @@ if _ui_dist:
 @app.get("/api/health")
 async def health_check_with_config() -> dict[str, object]:
     """Detailed health check. Includes GCS FUSE status for UI display."""
+    from unified_config_interface import UnifiedCloudConfig
+
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
+    _cloud_cfg = UnifiedCloudConfig()
     return {
         "status": "healthy",
         "version": _api_version,
@@ -145,4 +148,6 @@ async def health_check_with_config() -> dict[str, object]:
             str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None
         ),
         "gcs_fuse": get_gcs_fuse_status(),
+        "cloud_provider": _cloud_cfg.cloud_provider,
+        "mock_mode": _cloud_cfg.cloud_mock_mode,
     }

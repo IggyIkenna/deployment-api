@@ -9,6 +9,7 @@ import logging
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
+from unified_config_interface import UnifiedCloudConfig
 
 from deployment_api import __version__ as _api_version
 from deployment_api.utils.service_utils import get_ui_dist_dir
@@ -16,6 +17,8 @@ from deployment_api.utils.service_utils import get_ui_dist_dir
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_cloud_cfg = UnifiedCloudConfig()
 
 
 @router.get("/")
@@ -28,9 +31,14 @@ async def root():
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, str | bool]:
     """Standard Cloud Run liveness probe."""
-    return {"status": "ok", "service": "deployment-api"}
+    return {
+        "status": "ok",
+        "service": "deployment-api",
+        "cloud_provider": _cloud_cfg.cloud_provider,
+        "mock_mode": _cloud_cfg.cloud_mock_mode,
+    }
 
 
 @router.get("/api/health")
