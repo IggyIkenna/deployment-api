@@ -3151,7 +3151,7 @@ requires-dist = [
 
 [[package]]
 name = "unified-config-interface"
-version = "0.1.59"
+version = "0.2.1"
 source = { editable = "../unified-config-interface" }
 dependencies = [
     { name = "bandit" },

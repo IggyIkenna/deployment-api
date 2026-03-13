@@ -405,6 +405,7 @@ elif [ -d ".venv" ] && [ "$FORCE" != true ]; then
         fi
     fi
 else
+    rm -rf .venv  # ensure clean slate (handles --force on stale venv and fresh creation)
     uv venv .venv --python "$PYTHON_CMD" 2>/dev/null || "$PYTHON_CMD" -m venv .venv
     log_ok "Created .venv"
 fi
