@@ -10,6 +10,7 @@ from . import (
     deployments,
     service_status,
     services,
+    user_management,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "deployments",
     "service_status",
     "services",
+    "user_management",
 ]

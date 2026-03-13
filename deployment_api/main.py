@@ -63,6 +63,7 @@ from .routes import (
     infra_health,
     service_status,
     services,
+    user_management,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,9 @@ _authenticated_router.include_router(
 )  # /api/builds/{service} + /api/deployments/{service}/deploy
 _authenticated_router.include_router(config_management.router, prefix="/api")
 _authenticated_router.include_router(commentary.router, prefix="/api", tags=["Commentary"])
+_authenticated_router.include_router(
+    user_management.router, prefix="/api/user-management", tags=["User Management"]
+)
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---
