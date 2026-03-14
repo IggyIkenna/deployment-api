@@ -6,21 +6,24 @@ Pure route handlers that delegate business logic to service modules.
 """
 
 import logging
+import uuid
 from typing import cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 # Import service modules for business logic
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.deployment_manager import DeploymentManager
 from deployment_api.services.deployment_state import DeploymentStateManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Initialize service managers
+# Initialize service managers and config
 deployment_manager = DeploymentManager()
 state_manager = DeploymentStateManager()
+_cfg = DeploymentApiConfig()
 
 
 # Pydantic models for request/response
@@ -143,6 +146,16 @@ async def list_deployments(
     service: str | None = Query(None, description="Filter by service"),
 ) -> dict[str, object]:
     """List deployments with optional filtering and pagination."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        items = get_store().list("deployments")
+        if status:
+            items = [d for d in items if d.get("status") == status]
+        if service:
+            items = [d for d in items if d.get("service") == service]
+        page = items[offset : offset + limit]
+        return {"deployments": page, "total": len(items), "limit": limit, "offset": offset}
     try:
         result = state_manager.list_deployments(
             limit=limit,
@@ -168,6 +181,13 @@ async def get_deployment_status(
     detailed: bool = Query(True, description="Include detailed shard information"),
 ) -> dict[str, object]:
     """Get detailed status for a specific deployment."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        item = get_store().get("deployments", deployment_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+        return item
     try:
         result = state_manager.get_deployment_status(deployment_id, detailed=detailed)
         return result
@@ -231,6 +251,28 @@ async def create_deployment(
     deploy_request: DeployRequest, request: Request, background_tasks: BackgroundTasks
 ) -> DeploymentResult:
     """Create a new deployment."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        dep_id = f"dep-mock-{uuid.uuid4().hex[:8]}"
+        new_deployment: dict[str, object] = {
+            "deployment_id": dep_id,
+            "id": dep_id,
+            "service": deploy_request.service,
+            "status": "pending",
+            "total_shards": deploy_request.max_shards or 1,
+            "compute": deploy_request.compute,
+            "mode": deploy_request.mode,
+            "cloud_provider": deploy_request.cloud_provider,
+            "created_at": "2026-03-14T12:00:00Z",
+        }
+        get_store().create("deployments", new_deployment)
+        return DeploymentResult(
+            deployment_id=dep_id,
+            status="pending",
+            total_shards=deploy_request.max_shards or 1,
+            cli_command=f"mock deploy --service {deploy_request.service}",
+        )
     try:
         # Create background task for deployment execution
         def background_task_runner(
@@ -278,6 +320,13 @@ async def create_deployment(
 @router.post("/deployments/{deployment_id}/cancel")
 async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, str]:
     """Cancel a running deployment."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        updated = get_store().update("deployments", deployment_id, {"status": "cancelled"})
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+        return {"deployment_id": deployment_id, "status": "cancelled"}
     try:
         result = state_manager.cancel_deployment(deployment_id)
         return result
@@ -297,6 +346,13 @@ async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, s
 @router.post("/deployments/{deployment_id}/resume")
 async def resume_deployment(deployment_id: str, request: Request) -> dict[str, str]:
     """Resume a cancelled or failed deployment."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        updated = get_store().update("deployments", deployment_id, {"status": "running"})
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+        return {"deployment_id": deployment_id, "status": "running"}
     try:
         result = state_manager.resume_deployment(deployment_id)
         return result
@@ -316,6 +372,18 @@ async def update_deployment(
     deployment_id: str, update_request: UpdateDeploymentRequest, request: Request
 ) -> dict[str, str]:
     """Update deployment properties."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        fields: dict[str, object] = {}
+        if update_request.tag:
+            fields["tag"] = update_request.tag
+        if not fields:
+            raise HTTPException(status_code=400, detail="No update parameters provided")
+        updated = get_store().update("deployments", deployment_id, fields)
+        if updated is None:
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+        return {"deployment_id": deployment_id, "status": "updated"}
     try:
         if update_request.tag:
             result = state_manager.update_deployment_tag(deployment_id, update_request.tag)
@@ -336,6 +404,13 @@ async def update_deployment(
 @router.delete("/deployments/{deployment_id}")
 async def delete_deployment(deployment_id: str, request: Request) -> dict[str, str]:
     """Delete a deployment and its resources."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        deleted = get_store().delete("deployments", deployment_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+        return {"deployment_id": deployment_id, "status": "deleted"}
     try:
         result = state_manager.delete_deployment(deployment_id)
         return result

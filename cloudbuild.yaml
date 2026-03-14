@@ -1,10 +1,39 @@
-# Cloud Build for deployment-api
-# ARCHITECTURE: Test the artifact you deploy
-#   1. Build Docker image
-#   2. Run quality gates INSIDE the image
-#   3. Push ONLY if tests pass
+# Cloud Build Template — Unified Trading System API Services
+#
+# API variant: NO pull-base-image (APIs use slimmer base, no UTL dependency).
+# Generated from PM template. Placeholders: deployment-api, unified-trading-system.
+#
+# Required step IDs:
+#   - configure-docker, ensure-repo, build, quality-gates, push, scan-check
+#
+# Add "# deploy-via-dispatch" after title if deploy_via_dispatch: true in manifest.
+#
+# Variable conventions:
+#   deployment-api   — e.g. batch-audit-api
+#   unified-trading-system  — e.g. unified-trading-system
+
+substitutions:
+  _SERVICE_NAME: "deployment-api"
+  _REGISTRY_REPO: "unified-trading-system"
 
 steps:
+steps:
+  # ── Auth pre-check: fail fast if SA lacks AR access ─
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
+    id: "auth-precheck"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        TOKEN=$$(gcloud auth print-access-token) || { echo "FAIL: No GCP token"; exit 1; }
+        STATUS=$$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $$TOKEN" "https://asia-northeast1-python.pkg.dev/$PROJECT_ID/unified-libraries/simple/" || echo "000")
+        if [ "$$STATUS" != "200" ] && [ "$$STATUS" != "404" ]; then echo "FAIL: Python AR $$STATUS"; exit 1; fi
+        gcloud artifacts repositories describe unified-trading-system --location=asia-northeast1 --quiet || { echo "FAIL: Docker AR"; exit 1; }
+        echo "Auth pre-check passed"
+    waitFor: ["-"]
+
+  # ── STEP 1: Configure Docker authentication ───────────────────────────────
   - name: "gcr.io/cloud-builders/gcloud"
     id: "configure-docker"
     args:
@@ -17,84 +46,29 @@ steps:
     args:
       - "-c"
       - |
-        gcloud artifacts repositories describe unified-services \
+        gcloud artifacts repositories describe ${_REGISTRY_REPO} \
           --location=asia-northeast1 &>/dev/null || \
-        gcloud artifacts repositories create unified-services \
-          --repository-format=docker --location=asia-northeast1 \
-          --description="deployment-api and related services"
-    waitFor: ["-"]
-
-  - name: "gcr.io/cloud-builders/docker"
-    id: "pull-base"
-    args:
-      [
-        "pull",
-        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest",
-      ]
-    waitFor: ["configure-docker"]
-
-  # Fetch readiness data from sibling repos before docker build.
-  # Replaces symlinks (codex-data/ pm-plans/) with real directory content
-  # so COPY directives in the Dockerfile bundle them into the image.
-  - name: "gcr.io/cloud-builders/git"
-    id: "fetch-readiness-data"
-    entrypoint: "bash"
-    secretEnv: ["GITHUB_PAT"]
-    args:
-      - "-c"
-      - |
-        set -euo pipefail
-
-        # Remove symlinks — replace with real dirs for docker COPY
-        rm -f codex-data pm-plans
-
-        echo "Cloning unified-trading-codex (shallow)..."
-        git clone --depth 1 \
-          "https://x-access-token:${GITHUB_PAT}@github.com/IggyIkenna/unified-trading-codex" \
-          /tmp/unified-trading-codex
-
-        mkdir -p codex-data
-        cp -r /tmp/unified-trading-codex/10-audit/repos/. codex-data/
-        echo "codex-data: $(ls codex-data/*.yaml 2>/dev/null | wc -l) YAML files bundled"
-
-        echo "Cloning unified-trading-pm (shallow)..."
-        git clone --depth 1 \
-          "https://x-access-token:${GITHUB_PAT}@github.com/IggyIkenna/unified-trading-pm" \
-          /tmp/unified-trading-pm
-
-        mkdir -p pm-plans
-        cp -r /tmp/unified-trading-pm/plans/. pm-plans/
-        echo "pm-plans: $(find pm-plans -name '*.plan.md' 2>/dev/null | wc -l) plan files bundled"
-
-        echo "Copying unified-trading-pm/configs (operational configs SSOT)..."
-        mkdir -p pm-configs
-        cp -r /tmp/unified-trading-pm/configs/. pm-configs/
-        echo "pm-configs: $(ls pm-configs/*.yaml 2>/dev/null | wc -l) YAML files bundled"
+        gcloud artifacts repositories create ${_REGISTRY_REPO} \
+          --repository-format=docker \
+          --location=asia-northeast1 \
+          --description="${_SERVICE_NAME} Docker images"
+        gcloud artifacts repositories update ${_REGISTRY_REPO} \
+          --location=asia-northeast1 \
+          --enable-vulnerability-scanning 2>/dev/null || true
     waitFor: ["-"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "build"
     args:
       - "build"
-      - "--target"
-      - "api"
+      - "-f"
+      - "Dockerfile"
       - "-t"
-      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:$SHORT_SHA"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
       - "-t"
-      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:latest"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "."
-    waitFor: ["pull-base", "ensure-repo", "fetch-readiness-data"]
-
-  - name: "gcr.io/cloud-builders/docker"
-    id: "build-dev"
-    args:
-      - "build"
-      - "--target"
-      - "api-dev"
-      - "-t"
-      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev"
-      - "."
-    waitFor: ["build"]
+    waitFor: ["configure-docker", "ensure-repo"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "quality-gates"
@@ -103,57 +77,58 @@ steps:
       - "-c"
       - |
         set -e
-        docker run --rm --entrypoint "" \
-          -e CLOUD_BUILD=true -e CLOUD_MOCK_MODE=true \
-          -e GCP_PROJECT_ID=$PROJECT_ID -e GCP_PROJECT_ID=$PROJECT_ID \
-          asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:dev \
-          /bin/bash -c "scripts/quality-gates.sh --no-fix --quick" || { echo "❌ Quality gates failed"; exit 1; }
-    waitFor: ["build-dev"]
+        docker run --rm \
+          --entrypoint "" \
+          -e CLOUD_BUILD=true \
+          -e CLOUD_MOCK_MODE=true \
+          -e GCP_PROJECT_ID=$PROJECT_ID \
+          asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA \
+          /bin/bash -c "bash scripts/quality-gates.sh --no-fix --quick"
+    waitFor: ["build"]
 
   - name: "gcr.io/cloud-builders/docker"
-    id: "push-image"
+    id: "push"
     args:
       [
         "push",
         "--all-tags",
-        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}",
       ]
     waitFor: ["quality-gates"]
 
-  # Step: Vulnerability scan — check for CRITICAL CVEs in pushed image
   - name: "gcr.io/cloud-builders/gcloud"
     id: "scan-check"
     entrypoint: "bash"
     args:
       - "-c"
       - |
-        IMAGE="asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-services/deployment-api:$SHORT_SHA"
-        echo "Waiting for Container Analysis vulnerability scan on $IMAGE..."
+        IMAGE="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+        echo "Waiting for Container Analysis vulnerability scan on $$IMAGE..."
         for i in $(seq 1 18); do
-          RESULT=$(gcloud artifacts docker images describe "$IMAGE" \
+          RESULT=$(gcloud artifacts docker images describe "$$IMAGE" \
             --show-package-vulnerability --format="json" 2>/dev/null)
-          if [ -n "$RESULT" ]; then
-            CRITICAL=$(echo "$RESULT" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('package_vulnerability_summary',{}).get('vulnerabilities',{}).get('CRITICAL',[])))" 2>/dev/null || echo "0")
-            if [ "$CRITICAL" != "0" ]; then
-              echo "SCAN FAILED: $CRITICAL CRITICAL CVEs found in $IMAGE"
+          if [ -n "$$RESULT" ]; then
+            CRITICAL=$(echo "$$RESULT" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d.get('package_vulnerability_summary',{}).get('vulnerabilities',{}).get('CRITICAL',[])))" 2>/dev/null || echo "0")
+            if [ "$$CRITICAL" != "0" ]; then
+              echo "SCAN FAILED: $$CRITICAL CRITICAL CVEs found in $$IMAGE"
               exit 1
             fi
             echo "Scan complete: 0 CRITICAL CVEs"
             exit 0
           fi
-          echo "Scan not ready (attempt $i/18) — waiting 10s..."
+          echo "Scan not ready (attempt $$i/18) — waiting 10s..."
           sleep 10
         done
-        echo "WARNING: Scan did not complete in 3 minutes — proceeding"
+        echo "WARNING: Vulnerability scan timed out — proceeding"
         exit 0
-    waitFor: ["push-image"]
+    waitFor: ["push"]
 
-availableSecrets:
-  secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/github-pat/versions/latest
-      env: "GITHUB_PAT"
+images:
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
 
 options:
-  machineType: "E2_HIGHCPU_8"
   logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+
 timeout: "600s"
