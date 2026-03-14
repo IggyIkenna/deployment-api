@@ -222,7 +222,6 @@ SERVICES_WITH_TRIGGERS = [
     "position-balance-monitor-service",
     "risk-and-exposure-service",
     "alerting-service",
-    "strategy-validation-service",
     "execution-results-api",
     "market-data-api",
     "client-reporting-api",

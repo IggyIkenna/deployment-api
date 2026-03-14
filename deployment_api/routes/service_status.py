@@ -282,7 +282,6 @@ VALID_SERVICES: frozenset[str] = frozenset(
         "pnl-attribution-service",
         "position-balance-monitor-service",
         "risk-and-exposure-service",
-        "strategy-validation-service",
         "execution-results-api",
         "market-data-api",
         "client-reporting-api",
