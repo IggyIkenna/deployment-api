@@ -11,7 +11,7 @@ handles this via update() calls.
 
 from __future__ import annotations
 
-from unified_trading_library.core.mock_state_store import MockStateStore
+from unified_trading_library import MockStateStore
 
 from deployment_api.mock_data import MOCK_CONFIGS, MOCK_DEPLOYMENTS, MOCK_SERVICES
 
