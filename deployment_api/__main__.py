@@ -11,7 +11,7 @@ _reload = _cfg.runtime_mode == "local"
 
 uvicorn.run(
     "deployment_api.main:app",
-    host="0.0.0.0",
+    host="0.0.0.0",  # nosec B104 — container runtime binds to all interfaces
     port=_port,
     reload=_reload,
 )

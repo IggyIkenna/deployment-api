@@ -13,6 +13,15 @@ import pytest
 import deployment_api.routes.deployments as _dep_routes
 
 
+@pytest.fixture(autouse=True)
+def _disable_mock_mode():
+    """Force live code path so patches on state_manager/deployment_manager take effect."""
+    original = _dep_routes._cfg.cloud_mock_mode
+    _dep_routes._cfg.cloud_mock_mode = False
+    yield
+    _dep_routes._cfg.cloud_mock_mode = original
+
+
 def _make_request(headers=None):
     req = MagicMock()
     req.headers = headers or {}
