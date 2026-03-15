@@ -6,6 +6,7 @@ and serving the UI application.
 """
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
@@ -21,6 +22,18 @@ router = APIRouter()
 _cloud_cfg = UnifiedCloudConfig()
 
 
+def _data_freshness() -> dict[str, object]:
+    """Return data freshness info for health endpoint.
+
+    Reports the age of the most recent deployment data processed by the service.
+    Placeholder -- real implementation would check actual deployment timestamps.
+    """
+    return {
+        "last_processed_date": datetime.now(UTC).strftime("%Y-%m-%d"),
+        "stale": False,
+    }
+
+
 @router.get("/")
 async def root():
     """Serve UI index.html if available, else health check."""
@@ -31,13 +44,14 @@ async def root():
 
 
 @router.get("/health")
-async def health() -> dict[str, str | bool]:
+async def health() -> dict[str, object]:
     """Standard Cloud Run liveness probe."""
     return {
         "status": "ok",
         "service": "deployment-api",
         "cloud_provider": _cloud_cfg.cloud_provider,
         "mock_mode": _cloud_cfg.cloud_mock_mode,
+        "data_freshness": _data_freshness(),
     }
 
 

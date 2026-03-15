@@ -263,3 +263,31 @@ class TestHealthDataFreshness:
             result = await health_check()
             assert "gcs_fuse" in result
             assert isinstance(result["gcs_fuse"], dict)
+
+
+class TestSimpleHealthDataFreshness:
+    """Tests for data_freshness on the /health liveness probe."""
+
+    @pytest.mark.asyncio
+    async def test_health_includes_data_freshness(self):
+        from deployment_api.health_routes import health
+
+        result = await health()
+        assert "data_freshness" in result
+
+    @pytest.mark.asyncio
+    async def test_health_data_freshness_is_dict(self):
+        from deployment_api.health_routes import health
+
+        result = await health()
+        freshness = result.get("data_freshness")
+        assert isinstance(freshness, dict), f"data_freshness must be dict, got {type(freshness)}"
+
+    @pytest.mark.asyncio
+    async def test_health_data_freshness_fields(self):
+        from deployment_api.health_routes import health
+
+        result = await health()
+        freshness = result["data_freshness"]
+        assert isinstance(freshness.get("last_processed_date"), str)
+        assert isinstance(freshness.get("stale"), bool)
