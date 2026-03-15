@@ -46,11 +46,23 @@ def _ensure_services_mocked() -> None:
     import DeploymentManager) must work. We achieve this by creating real
     ModuleType objects with MagicMock attributes and registering all sub-modules
     in sys.modules before any test file is collected.
+
+    user_management is loaded as a REAL module (not mocked) because it defines
+    Pydantic request/response models used as FastAPI type annotations in routes.
+    MagicMock cannot substitute for Pydantic BaseModel subclasses.
     """
     if "deployment_api.services" in sys.modules:
         return
 
-    # Build the top-level services package module
+    # Load user_management as a REAL module BEFORE replacing the services package.
+    # It defines Pydantic BaseModel subclasses (CreateUserRequest, AssignRoleRequest,
+    # UpdateUserRequest) used as FastAPI route parameter types — MagicMock cannot
+    # substitute for these.
+    import importlib
+
+    real_um = importlib.import_module("deployment_api.services.user_management")
+
+    # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
     services_mod.__path__ = []  # type: ignore[attr-defined]  # marks it as a package
@@ -63,7 +75,11 @@ def _ensure_services_mocked() -> None:
 
     sys.modules["deployment_api.services"] = services_mod
 
-    # Sub-module list mirrors deployment_api/services/
+    # Re-register user_management as a real module on the fake services package
+    sys.modules["deployment_api.services.user_management"] = real_um
+    services_mod.user_management = real_um
+
+    # Sub-module list mirrors deployment_api/services/ (excluding user_management)
     sub_modules = [
         "data_analytics_service",
         "data_query_service",
