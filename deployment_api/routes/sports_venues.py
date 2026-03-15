@@ -41,28 +41,40 @@ class VenueHealthResponse(BaseModel):
 
 MOCK_VENUES: list[dict[str, object]] = [
     {
-        "venue_key": "betfair_ex_uk", "display_name": "Betfair Exchange UK",
-        "status": "active", "has_credentials": True,
+        "venue_key": "betfair_ex_uk",
+        "display_name": "Betfair Exchange UK",
+        "status": "active",
+        "has_credentials": True,
         "credential_secret_path": "sports-betfair_ex_uk-credentials",
-        "execution_method": "rest_api", "venue_category": "exchange",
+        "execution_method": "rest_api",
+        "venue_category": "exchange",
     },
     {
-        "venue_key": "pinnacle", "display_name": "Pinnacle",
-        "status": "active", "has_credentials": True,
+        "venue_key": "pinnacle",
+        "display_name": "Pinnacle",
+        "status": "active",
+        "has_credentials": True,
         "credential_secret_path": "sports-pinnacle-credentials",
-        "execution_method": "rest_api", "venue_category": "bookmaker_api",
+        "execution_method": "rest_api",
+        "venue_category": "bookmaker_api",
     },
     {
-        "venue_key": "draftkings", "display_name": "DraftKings",
-        "status": "active", "has_credentials": True,
+        "venue_key": "draftkings",
+        "display_name": "DraftKings",
+        "status": "active",
+        "has_credentials": True,
         "credential_secret_path": "sports-draftkings-credentials",
-        "execution_method": "browser_automation", "venue_category": "scraper",
+        "execution_method": "browser_automation",
+        "venue_category": "scraper",
     },
     {
-        "venue_key": "bet365_au", "display_name": "bet365 (Australia)",
-        "status": "disabled", "has_credentials": False,
+        "venue_key": "bet365_au",
+        "display_name": "bet365 (Australia)",
+        "status": "disabled",
+        "has_credentials": False,
         "credential_secret_path": None,
-        "execution_method": "browser_automation", "venue_category": "scraper",
+        "execution_method": "browser_automation",
+        "venue_category": "scraper",
     },
 ]
 
@@ -111,7 +123,9 @@ def check_venue_health(
             notes="Mock mode — no real connectivity check",
         )
     logger.info("check_venue_health: venue=%s", venue_key)
-    return VenueHealthResponse(venue_key=venue_key, reachable=False, notes="Live check not configured")
+    return VenueHealthResponse(
+        venue_key=venue_key, reachable=False, notes="Live check not configured"
+    )
 
 
 @router.post("/{venue_key}/enable")
@@ -120,7 +134,11 @@ def enable_venue(
 ) -> dict[str, object]:
     """Enable a sports venue for betting."""
     if _cloud_cfg.cloud_mock_mode:
-        return {"venue_key": venue_key, "status": "enabled", "message": f"{venue_key} enabled for betting"}
+        return {
+            "venue_key": venue_key,
+            "status": "enabled",
+            "message": f"{venue_key} enabled for betting",
+        }
     logger.info("enable_venue: %s", venue_key)
     return {"venue_key": venue_key, "status": "live_not_configured"}
 

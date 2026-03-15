@@ -250,7 +250,9 @@ class TestHealthDataFreshness:
 
             result = await health_check()
             freshness = result.get("data_freshness")
-            assert isinstance(freshness, dict), f"data_freshness must be dict, got {type(freshness)}"
+            assert isinstance(freshness, dict), (
+                f"data_freshness must be dict, got {type(freshness)}"
+            )
 
     @pytest.mark.asyncio
     async def test_health_data_freshness_fields(self):

@@ -186,7 +186,9 @@ async def get_deployment_status(
 
         item = get_store().get("deployments", deployment_id)
         if item is None:
-            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+            raise HTTPException(
+                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
+            )
         return item
     try:
         result = state_manager.get_deployment_status(deployment_id, detailed=detailed)
@@ -325,7 +327,9 @@ async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         updated = get_store().update("deployments", deployment_id, {"status": "cancelled"})
         if updated is None:
-            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+            raise HTTPException(
+                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
+            )
         return {"deployment_id": deployment_id, "status": "cancelled"}
     try:
         result = state_manager.cancel_deployment(deployment_id)
@@ -351,7 +355,9 @@ async def resume_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         updated = get_store().update("deployments", deployment_id, {"status": "running"})
         if updated is None:
-            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+            raise HTTPException(
+                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
+            )
         return {"deployment_id": deployment_id, "status": "running"}
     try:
         result = state_manager.resume_deployment(deployment_id)
@@ -382,7 +388,9 @@ async def update_deployment(
             raise HTTPException(status_code=400, detail="No update parameters provided")
         updated = get_store().update("deployments", deployment_id, fields)
         if updated is None:
-            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+            raise HTTPException(
+                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
+            )
         return {"deployment_id": deployment_id, "status": "updated"}
     try:
         if update_request.tag:
@@ -409,7 +417,9 @@ async def delete_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         deleted = get_store().delete("deployments", deployment_id)
         if not deleted:
-            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
+            raise HTTPException(
+                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
+            )
         return {"deployment_id": deployment_id, "status": "deleted"}
     try:
         result = state_manager.delete_deployment(deployment_id)
