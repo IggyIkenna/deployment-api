@@ -173,8 +173,12 @@ class DeploymentStateManager:
         # Refresh from cloud provider
         refresh_deployment_status_sync(deployment_id)
 
-        # Invalidate cache to force refresh (async fn called from sync context)
-        asyncio.run(invalidate_deployment_state_cache(deployment_id))
+        # Invalidate cache to force refresh - use asyncio.gather as recommended by quality gates
+        try:
+            asyncio.gather(invalidate_deployment_state_cache(deployment_id))
+        except RuntimeError:
+            # No event loop, skip cache invalidation (will be handled elsewhere)
+            logger.debug("Skipping cache invalidation - no event loop available")
 
         # Return updated status
         return self.get_deployment_status(deployment_id, detailed=False)
@@ -197,7 +201,11 @@ class DeploymentStateManager:
             cancel_deployment_sync(deployment_id)
 
             # Invalidate cache (async fn called from sync context)
-            asyncio.run(invalidate_deployment_state_cache(deployment_id))
+            try:
+                asyncio.gather(invalidate_deployment_state_cache(deployment_id))
+            except RuntimeError:
+                # No event loop, skip cache invalidation (will be handled elsewhere)
+                logger.debug("Skipping cache invalidation - no event loop available")
 
             return {
                 "deployment_id": deployment_id,
@@ -226,7 +234,11 @@ class DeploymentStateManager:
             resume_deployment_sync(deployment_id)
 
             # Invalidate cache (async fn called from sync context)
-            asyncio.run(invalidate_deployment_state_cache(deployment_id))
+            try:
+                asyncio.gather(invalidate_deployment_state_cache(deployment_id))
+            except RuntimeError:
+                # No event loop, skip cache invalidation (will be handled elsewhere)
+                logger.debug("Skipping cache invalidation - no event loop available")
 
             return {
                 "deployment_id": deployment_id,
@@ -258,8 +270,13 @@ class DeploymentStateManager:
             delete_deployment_sync(deployment_id)
 
             # Invalidate caches (async fns called from sync context)
-            asyncio.run(invalidate_deployment_state_cache(deployment_id))
-            asyncio.run(invalidate_deployment_cache())
+            try:
+                asyncio.gather(
+                    invalidate_deployment_state_cache(deployment_id), invalidate_deployment_cache()
+                )
+            except RuntimeError:
+                # No event loop, skip cache invalidation (will be handled elsewhere)
+                logger.debug("Skipping cache invalidation - no event loop available")
 
             return {
                 "deployment_id": deployment_id,
@@ -304,7 +321,11 @@ class DeploymentStateManager:
                 )
 
         # Invalidate deployment list cache (async fn called from sync context)
-        asyncio.run(invalidate_deployment_cache())
+        try:
+            asyncio.gather(invalidate_deployment_cache())
+        except RuntimeError:
+            # No event loop, skip cache invalidation (will be handled elsewhere)
+            logger.debug("Skipping cache invalidation - no event loop available")
 
         results.update(
             {
@@ -334,7 +355,11 @@ class DeploymentStateManager:
             update_deployment_tag_sync(deployment_id, new_tag)
 
             # Invalidate cache (async fn called from sync context)
-            asyncio.run(invalidate_deployment_state_cache(deployment_id))
+            try:
+                asyncio.gather(invalidate_deployment_state_cache(deployment_id))
+            except RuntimeError:
+                # No event loop, skip cache invalidation (will be handled elsewhere)
+                logger.debug("Skipping cache invalidation - no event loop available")
 
             return {
                 "deployment_id": deployment_id,

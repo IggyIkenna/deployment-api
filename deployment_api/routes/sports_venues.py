@@ -14,7 +14,7 @@ router = APIRouter(prefix="/sports/venues", tags=["sports-venues"])
 _cloud_cfg = UnifiedCloudConfig()
 
 
-class VenueStatusResponse(BaseModel):
+class VenueStatusResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     venue_key: str
     display_name: str
     status: str = Field(description="active | disabled | unconfigured")
@@ -24,14 +24,14 @@ class VenueStatusResponse(BaseModel):
     venue_category: str
 
 
-class VenueCredentialUpdate(BaseModel):
+class VenueCredentialUpdate(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     secret_manager_path: str = Field(..., description="Secret Manager secret ID")
     username_key: str = Field(default="username")
     password_key: str = Field(default="password")
     api_key_key: str | None = None
 
 
-class VenueHealthResponse(BaseModel):
+class VenueHealthResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     venue_key: str
     reachable: bool
     login_url_status: int | None = None

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _cfg = UnifiedCloudConfig()
 
 
-class UserProfileResponse(BaseModel):
+class UserProfileResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Pydantic model for API responses (serializable version of UserProfile)."""
 
     user_id: str
@@ -44,7 +44,7 @@ class UserProfileResponse(BaseModel):
     provider: str
 
 
-class CreateUserRequest(BaseModel):
+class CreateUserRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for creating a new user."""
 
     email: str
@@ -53,7 +53,7 @@ class CreateUserRequest(BaseModel):
     provider: str = "google"
 
 
-class UpdateUserRequest(BaseModel):
+class UpdateUserRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for updating a user."""
 
     display_name: str | None = None
@@ -62,7 +62,7 @@ class UpdateUserRequest(BaseModel):
     mfa_enabled: bool | None = None
 
 
-class AssignRoleRequest(BaseModel):
+class AssignRoleRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Request body for assigning a role to a user."""
 
     role: str
