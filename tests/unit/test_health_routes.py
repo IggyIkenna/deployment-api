@@ -235,3 +235,32 @@ class TestServeSpa:
 
             result = await serve_spa("history/2024")
             assert isinstance(result, FileResponse)
+
+
+class TestHealthDataFreshness:
+    """Regression guard: data_freshness must be a dict, not str|bool."""
+
+    @pytest.mark.asyncio
+    async def test_health_data_freshness_is_dict(self):
+        with patch(
+            "deployment_api.utils.storage_facade.get_gcs_fuse_status",
+            return_value={},
+        ):
+            from deployment_api.health_routes import health_check
+
+            result = await health_check()
+            freshness = result.get("data_freshness")
+            assert isinstance(freshness, dict), f"data_freshness must be dict, got {type(freshness)}"
+
+    @pytest.mark.asyncio
+    async def test_health_data_freshness_fields(self):
+        with patch(
+            "deployment_api.utils.storage_facade.get_gcs_fuse_status",
+            return_value={},
+        ):
+            from deployment_api.health_routes import health_check
+
+            result = await health_check()
+            freshness = result["data_freshness"]
+            assert isinstance(freshness.get("last_processed_date"), str)
+            assert isinstance(freshness.get("stale"), bool)
