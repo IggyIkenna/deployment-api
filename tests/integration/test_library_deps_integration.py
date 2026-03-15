@@ -36,3 +36,10 @@ def test_unified_cloud_interface_import() -> None:
     from unified_cloud_interface import get_storage_client
 
     assert callable(get_storage_client)
+
+
+@pytest.mark.integration
+def test_unified_internal_contracts_import() -> None:
+    from unified_internal_contracts import LifecycleEventType
+
+    assert LifecycleEventType is not None
