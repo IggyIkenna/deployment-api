@@ -283,7 +283,17 @@ class TestFilterActiveDeployments:
         assert "dep-1" in result[0][0]
 
 
+# The conftest pre-loads real modules, then the top-of-file del/re-import may create a
+# new module object whose __dict__ diverges from the SyncService class's __globals__.
+# Use types.SimpleNamespace wrapping the function's __globals__ to ensure patch.object
+# targets the dict that the running code actually reads.
+import types as _types
+
 import deployment_api.services.sync_service as _sync_service_mod
+
+_sync_globals_ns = _types.SimpleNamespace(
+    **{"__dict__": SyncService._initialize_quota_broker.__globals__}
+)
 
 
 class TestInitializeQuotaBroker:
@@ -292,7 +302,9 @@ class TestInitializeQuotaBroker:
     def _call_with_importlib(self, mock_import_module):
         """Helper: inject _importlib into module globals then call _initialize_quota_broker."""
         svc = _make_service()
-        with patch.object(_sync_service_mod, "_importlib", mock_import_module, create=True):
+        with patch.dict(
+            SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_import_module}
+        ):
             return svc._initialize_quota_broker()
 
     def test_returns_quota_broker_when_import_succeeds(self):
@@ -621,7 +633,9 @@ class TestProcessScheduling:
         state = {"config": {}, "shards": [{"status": "pending"}]}
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=None,
@@ -641,7 +655,9 @@ class TestProcessScheduling:
         }
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=MagicMock(),
@@ -665,7 +681,9 @@ class TestProcessScheduling:
         mock_orch_cls = MagicMock(return_value=mock_orch_instance)
         mock_importlib, _ = self._make_mock_importlib(orch_cls=mock_orch_cls)
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch.object(_sync_service_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
@@ -693,7 +711,9 @@ class TestProcessScheduling:
         mock_importlib, _ = self._make_mock_importlib(orch_cls=mock_orch_cls)
         fake_shape = MagicMock()
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch.object(_sync_service_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
@@ -715,7 +735,9 @@ class TestProcessScheduling:
         }
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=MagicMock(),
@@ -735,7 +757,9 @@ class TestProcessScheduling:
         }
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=MagicMock(),
@@ -759,7 +783,9 @@ class TestProcessScheduling:
         mock_orch_cls = MagicMock(return_value=mock_orch_instance)
         mock_importlib, _ = self._make_mock_importlib(orch_cls=mock_orch_cls)
         with (
-            patch.object(_sync_service_mod, "_importlib", mock_importlib, create=True),
+            patch.dict(
+                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
+            ),
             patch.object(_sync_service_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",

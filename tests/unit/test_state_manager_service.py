@@ -31,6 +31,10 @@ sys.modules["deployment_api.services"] = _svc_pkg
 import deployment_api.services.state_manager as _sm_mod
 from deployment_api.services.state_manager import StateManager
 
+# The conftest pre-loads real modules, then del/re-import may diverge the module __dict__
+# from the class __globals__. Use the class __globals__ directly for reliable patching.
+_sm_globals = StateManager._client.__globals__
+
 
 def _make_mgr(**kwargs) -> StateManager:
     return StateManager(
@@ -209,7 +213,7 @@ class TestTryAcquireDeploymentLock:
         # blob_exists returns False -> no existing lock -> upload and acquire
         mock_client.blob_exists.return_value = False
 
-        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
+        with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.try_acquire_deployment_lock("dep-1")
 
         assert result is True
@@ -226,7 +230,7 @@ class TestTryAcquireDeploymentLock:
             }
         ).encode("utf-8")
 
-        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
+        with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.try_acquire_deployment_lock("dep-locked")
 
         assert result is False
@@ -242,7 +246,7 @@ class TestTryAcquireDeploymentLock:
             }
         ).encode("utf-8")
 
-        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
+        with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.try_acquire_deployment_lock("dep-expired")
 
         assert isinstance(result, bool)
@@ -259,7 +263,7 @@ class TestReleaseDeploymentLock:
             "utf-8"
         )
 
-        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
+        with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.release_deployment_lock("dep-not-held")
 
         assert result is False
@@ -275,7 +279,7 @@ class TestReleaseDeploymentLock:
             "utf-8"
         )
 
-        with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
+        with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.release_deployment_lock("dep-held")
 
         assert result is True

@@ -26,8 +26,11 @@ _services_dir = str(Path(__file__).parent.parent.parent / "deployment_api" / "se
 _svc_pkg.__path__ = [_services_dir]  # type: ignore[attr-defined]
 sys.modules["deployment_api.services"] = _svc_pkg
 
-import deployment_api.services.event_processor as _ep_mod
 from deployment_api.services.event_processor import EventProcessor
+
+# The conftest pre-loads real modules, then del/re-import may diverge the module __dict__
+# from the class __globals__. Use the class __globals__ directly for reliable patching.
+_ep_globals = EventProcessor.read_vm_status_map.__globals__
 
 
 def _make_ep(**kwargs) -> EventProcessor:
@@ -159,7 +162,9 @@ class TestReadVmStatusMap:
         ep = _make_ep()
         vm_data = {"vm-1": {"status": "RUNNING", "job_id": "vm-1"}}
 
-        with patch.object(_ep_mod, "read_object_text", return_value=json.dumps(vm_data)):
+        with patch.dict(
+            _ep_globals, {"read_object_text": MagicMock(return_value=json.dumps(vm_data))}
+        ):
             result = ep.read_vm_status_map("dep-1")
 
         assert result == vm_data
@@ -167,7 +172,9 @@ class TestReadVmStatusMap:
     def test_returns_empty_on_read_error(self):
         ep = _make_ep()
 
-        with patch.object(_ep_mod, "read_object_text", side_effect=OSError("not found")):
+        with patch.dict(
+            _ep_globals, {"read_object_text": MagicMock(side_effect=OSError("not found"))}
+        ):
             result = ep.read_vm_status_map("dep-1")
 
         assert result == {}
@@ -175,7 +182,7 @@ class TestReadVmStatusMap:
     def test_returns_empty_on_invalid_json(self):
         ep = _make_ep()
 
-        with patch.object(_ep_mod, "read_object_text", return_value="not-json"):
+        with patch.dict(_ep_globals, {"read_object_text": MagicMock(return_value="not-json")}):
             result = ep.read_vm_status_map("dep-1")
 
         assert result == {}
@@ -189,13 +196,14 @@ class TestReadShardStatuses:
         shards = [{"shard_id": "s1"}, {"shard_id": "s2"}]
         event_json = json.dumps({"status": "succeeded", "some_key": "val"})
 
-        with (
-            patch.object(_ep_mod, "read_object_text", return_value=event_json),
-            patch.object(
-                _ep_mod,
-                "parse_service_event",
-                return_value={"status": "succeeded", "some_key": "val"},
-            ),
+        with patch.dict(
+            _ep_globals,
+            {
+                "read_object_text": MagicMock(return_value=event_json),
+                "parse_service_event": MagicMock(
+                    return_value={"status": "succeeded", "some_key": "val"}
+                ),
+            },
         ):
             result = ep.read_shard_statuses("dep-1", shards)
 
@@ -206,7 +214,9 @@ class TestReadShardStatuses:
         ep = _make_ep()
         shards = [{"shard_id": "s1"}]
 
-        with patch.object(_ep_mod, "read_object_text", side_effect=OSError("not found")):
+        with patch.dict(
+            _ep_globals, {"read_object_text": MagicMock(side_effect=OSError("not found"))}
+        ):
             result = ep.read_shard_statuses("dep-1", shards)
 
         assert result == {}
@@ -223,9 +233,12 @@ class TestReadShardStatuses:
         ep = _make_ep()
         shards = [{"shard_id": "s1"}]
 
-        with (
-            patch.object(_ep_mod, "read_object_text", return_value="some text"),
-            patch.object(_ep_mod, "parse_service_event", return_value=None),
+        with patch.dict(
+            _ep_globals,
+            {
+                "read_object_text": MagicMock(return_value="some text"),
+                "parse_service_event": MagicMock(return_value=None),
+            },
         ):
             result = ep.read_shard_statuses("dep-1", shards)
 
