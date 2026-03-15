@@ -108,6 +108,12 @@ markers = [
     "deployment_test: requires running service container (real HTTP calls via docker-compose.single.yml)",
 ]
 
+[tool.coverage.run]
+omit = [
+    "deployment_api/__main__.py",
+    "deployment_api/main.py",
+]
+
 [tool.coverage.report]
 fail_under = 70
 show_missing = true

@@ -193,7 +193,7 @@ class StateManager:
 
     def _client(self) -> StorageClient:
         """Get UCI StorageClient for this project."""
-        return _get_storage_client(self.project_id)
+        return _get_storage_client(project_id=self.project_id)
 
     @property
     def held_deployment_locks(self) -> set[str]:

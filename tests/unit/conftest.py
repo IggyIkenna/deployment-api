@@ -66,16 +66,15 @@ def _ensure_services_mocked() -> None:
     sys.modules["deployment_api.services.user_management"] = real_um
     services_mod.user_management = real_um
 
-    # Sub-module list mirrors deployment_api/services/ (excluding user_management)
+    # Sub-module list — only modules that need mocking (circular import breakers).
+    # Real modules (sync_service, event_processor, state_manager) are NOT mocked
+    # because their tests import and test them directly.
     sub_modules = [
         "data_analytics_service",
         "data_query_service",
         "data_status_service",
         "deployment_manager",
         "deployment_state",
-        "event_processor",
-        "state_manager",
-        "sync_service",
     ]
 
     for sub in sub_modules:
@@ -270,10 +269,14 @@ def _ensure_external_packages_mocked() -> None:
                 "ShardState": MagicMock(),
             },
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
+            "deployment.quota_broker_client": {"QuotaBrokerClient": MagicMock()},
         }.items():
             full = f"deployment_service.{sub_name}"
             sub_mod = ModuleType(full)
             sub_mod.__package__ = "deployment_service"
+            # Mark sub-packages (like deployment) so they can have their own sub-modules
+            if "." not in sub_name:
+                sub_mod.__path__ = []  # type: ignore[attr-defined]
             for attr, val in attrs.items():
                 setattr(sub_mod, attr, val)
             sys.modules[full] = sub_mod

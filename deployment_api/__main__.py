@@ -6,7 +6,7 @@ import uvicorn
 from unified_config_interface import UnifiedCloudConfig
 
 _cfg = UnifiedCloudConfig()
-_port = _cfg.port if hasattr(_cfg, "port") else 8004
+_port: int = getattr(_cfg, "port", 8004)  # config-bootstrap: PORT for uvicorn dev server
 _reload = _cfg.runtime_mode == "local"
 
 uvicorn.run(
