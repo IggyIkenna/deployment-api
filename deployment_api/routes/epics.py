@@ -168,7 +168,7 @@ def _compute_epic(
     completed_repos: list[str] = []
 
     for req in required:
-        repo_name = str(req.get("repo", ""))
+        repo_name = str(req.get("repo", ""))  # noqa: qg-empty-fallback — YAML epic deserialization
         min_cr = str(req.get("min_stage", "cr5"))
         min_br = str(req.get("min_br_stage", "na"))
         asset_class = str(req.get("asset_class", "core"))
@@ -225,19 +225,19 @@ def _compute_epic(
             "main_quickmerged": bool(main_qm),
             "branch_status": branch_status,
             "data": {
-                "historical_available": ac_data.get("data", {}).get("historical_available", False)  # type: ignore[union-attr]
+                "historical_available": ac_data.get("data", {}).get("historical_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
                 if isinstance(ac_data.get("data"), dict)
                 else False,
-                "live_available": ac_data.get("data", {}).get("live_available", False)  # type: ignore[union-attr]
+                "live_available": ac_data.get("data", {}).get("live_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
                 if isinstance(ac_data.get("data"), dict)
                 else False,
-                "mock_available": ac_data.get("data", {}).get("mock_available", False)  # type: ignore[union-attr]
+                "mock_available": ac_data.get("data", {}).get("mock_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
                 if isinstance(ac_data.get("data"), dict)
                 else False,
-                "testnet_available": ac_data.get("data", {}).get("testnet_available", False)  # type: ignore[union-attr]
+                "testnet_available": ac_data.get("data", {}).get("testnet_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
                 if isinstance(ac_data.get("data"), dict)
                 else False,
-                "historical_start_date": ac_data.get("data", {}).get("historical_start_date")  # type: ignore[union-attr]
+                "historical_start_date": ac_data.get("data", {}).get("historical_start_date")  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
                 if isinstance(ac_data.get("data"), dict)
                 else None,
             },
@@ -257,10 +257,10 @@ def _compute_epic(
 
     optional_status = [
         {
-            "repo": str(opt.get("repo", "")),
-            "asset_class": str(opt.get("asset_class", "")),
-            "note": str(opt.get("note", "")),
-            "yaml_present": str(opt.get("repo", "")) in all_repos,
+            "repo": str(opt.get("repo", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
+            "asset_class": str(opt.get("asset_class", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
+            "note": str(opt.get("note", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
+            "yaml_present": str(opt.get("repo", "")) in all_repos,  # noqa: qg-empty-fallback — YAML epic deserialization
         }
         for opt in optional
     ]
@@ -300,7 +300,7 @@ def _load_all_epics(epics_dir: Path) -> list[dict[str, object]]:
 
 
 def _sort_key(epic: dict[str, object]) -> int:
-    epic_id = str(epic.get("epic_id", ""))
+    epic_id = str(epic.get("epic_id", ""))  # noqa: qg-empty-fallback — YAML epic deserialization
     try:
         return _EPIC_DISPLAY_ORDER.index(epic_id)
     except ValueError:

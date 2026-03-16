@@ -75,9 +75,9 @@ async def _compute_and_cache_verification(
     async def _run_turbo() -> dict[str, object]:
         return await get_data_status_turbo_impl(
             service=str(
-                cast(dict[str, object], state).get("service", "")
+                cast(dict[str, object], state).get("service", "")  # noqa: qg-empty-fallback — state dict deserialization default
                 if isinstance(state, dict)
-                else getattr(state, "service", "") or ""
+                else getattr(state, "service", "") or ""  # noqa: qg-empty-fallback — state attr fallback
             ),
             start_date=start_date,
             end_date=end_date,

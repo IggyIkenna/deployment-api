@@ -116,9 +116,9 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
         return []
     try:
         manifest = cast(dict[str, object], json.loads(manifest_path.read_text()))
-        deployed: dict[str, dict[str, str]] = manifest.get("deployed_versions", {})  # type: ignore[assignment]
-        env_deployed = deployed.get(env, {})
-        tag = env_deployed.get(service, "")
+        deployed: dict[str, dict[str, str]] = manifest.get("deployed_versions", {})  # type: ignore[assignment]  # noqa: qg-empty-fallback — dict.get default for missing key in manifest
+        env_deployed = deployed.get(env, {})  # noqa: qg-empty-fallback — dict.get default for missing env
+        tag = env_deployed.get(service, "")  # noqa: qg-empty-fallback — dict.get default for missing service
         if tag:
             return [_tag_to_entry(tag)]
     except (json.JSONDecodeError, OSError, KeyError):

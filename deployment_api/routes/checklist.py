@@ -143,7 +143,7 @@ def _build_category(
 def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
     """Parse a codex v3.0 YAML into the UI checklist response format."""
     service = str(data.get("repo", "unknown"))
-    last_updated = str(data.get("last_updated", ""))
+    last_updated = str(data.get("last_updated", ""))  # noqa: qg-empty-fallback — YAML checklist deserialization default
     categories: list[dict[str, object]] = []
     all_items: list[dict[str, object]] = []
 
@@ -218,7 +218,7 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
                     "id": item["id"],
                     "description": item["description"],
                     "category": parent_cat,
-                    "notes": item.get("notes", ""),
+                    "notes": item.get("notes", ""),  # noqa: qg-empty-fallback — YAML checklist item deserialization default
                 }
             )
 

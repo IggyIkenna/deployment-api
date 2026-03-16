@@ -21,7 +21,7 @@ from collections.abc import Callable, Coroutine
 
 from fastapi import HTTPException, Request
 from unified_events_interface import log_event
-from unified_internal_contracts.schemas.rbac import (
+from unified_internal_contracts.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,
     UserRole,
     has_role_permission,

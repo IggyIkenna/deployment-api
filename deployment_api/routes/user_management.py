@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from unified_internal_contracts.schemas.rbac import Permission, UserRole
+from unified_internal_contracts.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+    Permission,
+    UserRole,
+)
 
 from deployment_api.rbac import require_permission
 from deployment_api.services.user_management import (

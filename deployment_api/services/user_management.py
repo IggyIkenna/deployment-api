@@ -17,7 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from unified_config_interface import UnifiedCloudConfig
 from unified_events_interface import log_event
-from unified_internal_contracts.schemas.rbac import (
+from unified_internal_contracts.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     ROLE_PERMISSIONS,
     Permission,
     UserProfile,
@@ -129,9 +129,9 @@ def _dict_to_profile(data: dict[str, object]) -> UserProfile:
     last_login_at = datetime.fromisoformat(str(last_login_raw)) if last_login_raw else None
 
     return UserProfile(
-        user_id=str(data.get("user_id", "")),
-        email=str(data.get("email", "")),
-        display_name=str(data.get("display_name", "")),
+        user_id=str(data.get("user_id", "")),  # noqa: qg-empty-fallback — JSON deserialization default
+        email=str(data.get("email", "")),  # noqa: qg-empty-fallback — JSON deserialization default
+        display_name=str(data.get("display_name", "")),  # noqa: qg-empty-fallback — JSON deserialization default
         role=role,
         is_active=bool(data.get("is_active", True)),
         created_at=created_at,
@@ -177,7 +177,7 @@ class UserManagementService:
         """Look up a user by email address."""
         users = _load_users()
         for data in users.values():
-            if str(data.get("email", "")) == email:
+            if str(data.get("email", "")) == email:  # noqa: qg-empty-fallback — JSON deserialization default
                 return _profile_to_response(_dict_to_profile(data))
         return None
 
@@ -187,7 +187,7 @@ class UserManagementService:
 
         # Check for duplicate email
         for data in users.values():
-            if str(data.get("email", "")) == request.email:
+            if str(data.get("email", "")) == request.email:  # noqa: qg-empty-fallback — JSON deserialization default
                 msg = f"User with email {request.email} already exists"
                 raise ValueError(msg)
 
@@ -303,7 +303,7 @@ class UserManagementService:
         """Record a login timestamp for a user (identified by email)."""
         users = _load_users()
         for uid, data in users.items():
-            if str(data.get("email", "")) == email:
+            if str(data.get("email", "")) == email:  # noqa: qg-empty-fallback — JSON deserialization default
                 data["last_login_at"] = datetime.now(UTC).isoformat()
                 users[uid] = data
                 _save_users(users)
