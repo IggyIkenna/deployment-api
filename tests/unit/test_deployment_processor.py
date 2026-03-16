@@ -455,24 +455,15 @@ class TestProcessDeploymentsBatchExtended:
             "config": {},
             "service": "my-service",
         }
-        inst_client = MagicMock()
-        inst_client.aggregated_list.side_effect = OSError("no network")
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.AggregatedListInstancesRequest.return_value = MagicMock()
 
-        # For `from google.cloud import compute_v1` to use our mock, patch google.cloud
-        gc_mock = MagicMock()
-        gc_mock.compute_v1 = compute_v1_mock
+        ce_mock = MagicMock()
+        ce_mock.aggregated_list_instances.side_effect = OSError("no network")
 
         facade = _make_mock_facade()
         with (
-            patch.dict(
-                sys.modules,
-                {
-                    "google.cloud": gc_mock,
-                    "google.cloud.compute_v1": compute_v1_mock,
-                },
+            patch(
+                "unified_cloud_interface.get_compute_engine_client",
+                return_value=ce_mock,
             ),
             patch.dict(sys.modules, {"deployment_api.utils.storage_facade": facade}),
         ):
@@ -546,23 +537,12 @@ class TestProcessDeploymentsBatchExtended:
             "service": "my-service",
         }
 
-        zone_scope = MagicMock()
-        zone_scope.__str__ = lambda self: "zones/us-central1-a"
-        inst = MagicMock()
-        inst.name = "vm-1"
-        inst.status = "RUNNING"
-        resp = MagicMock()
-        resp.instances = [inst]
-
-        inst_client = MagicMock()
-        inst_client.aggregated_list.return_value = [(zone_scope, resp)]
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.AggregatedListInstancesRequest.return_value = MagicMock()
-
-        # google.cloud mock must expose .compute_v1 as our mock
-        gc_mock = MagicMock()
-        gc_mock.compute_v1 = compute_v1_mock
+        # UCI get_compute_engine_client().aggregated_list_instances() returns
+        # a list of dicts with name/status/zone keys.
+        ce_mock = MagicMock()
+        ce_mock.aggregated_list_instances.return_value = [
+            {"name": "vm-1", "status": "RUNNING", "zone": "us-central1-a"},
+        ]
 
         # Build the mock orchestrator/backend via _importlib
         backend = MagicMock()
@@ -578,11 +558,13 @@ class TestProcessDeploymentsBatchExtended:
 
         facade = _make_mock_facade()
         with (
+            patch(
+                "unified_cloud_interface.get_compute_engine_client",
+                return_value=ce_mock,
+            ),
             patch.dict(
                 sys.modules,
                 {
-                    "google.cloud": gc_mock,
-                    "google.cloud.compute_v1": compute_v1_mock,
                     "deployment_api.utils.storage_facade": facade,
                 },
             ),
@@ -760,18 +742,12 @@ class TestProcessDeploymentsBatchExtended:
             "service": "my-service",
         }
 
-        inst_client = MagicMock()
-        inst_client.aggregated_list.return_value = []
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.AggregatedListInstancesRequest.return_value = MagicMock()
+        ce_mock = MagicMock()
+        ce_mock.aggregated_list_instances.return_value = []
 
-        with patch.dict(
-            sys.modules,
-            {
-                "google.cloud.compute_v1": compute_v1_mock,
-                "google.cloud": MagicMock(),
-            },
+        with patch(
+            "unified_cloud_interface.get_compute_engine_client",
+            return_value=ce_mock,
         ):
             synced, num_active = self._run_batch(state)
 
@@ -794,18 +770,12 @@ class TestProcessDeploymentsBatchExtended:
             "service": "my-service",
         }
 
-        inst_client = MagicMock()
-        inst_client.aggregated_list.side_effect = OSError("network error")
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.AggregatedListInstancesRequest.return_value = MagicMock()
+        ce_mock = MagicMock()
+        ce_mock.aggregated_list_instances.side_effect = OSError("network error")
 
-        with patch.dict(
-            sys.modules,
-            {
-                "google.cloud.compute_v1": compute_v1_mock,
-                "google.cloud": MagicMock(),
-            },
+        with patch(
+            "unified_cloud_interface.get_compute_engine_client",
+            return_value=ce_mock,
         ):
             synced, num_active = self._run_batch(state)
 
@@ -920,18 +890,12 @@ class TestProcessDeploymentsBatchExtended:
 
         facade = _make_mock_facade(list_objs=[obj], read_text="SUCCESS", write_fn=capture_write)
 
-        inst_client = MagicMock()
-        inst_client.aggregated_list.return_value = []
-        compute_v1_mock = MagicMock()
-        compute_v1_mock.InstancesClient.return_value = inst_client
-        compute_v1_mock.AggregatedListInstancesRequest.return_value = MagicMock()
+        ce_mock = MagicMock()
+        ce_mock.aggregated_list_instances.return_value = []
 
-        with patch.dict(
-            sys.modules,
-            {
-                "google.cloud.compute_v1": compute_v1_mock,
-                "google.cloud": MagicMock(),
-            },
+        with patch(
+            "unified_cloud_interface.get_compute_engine_client",
+            return_value=ce_mock,
         ):
             synced, _ = self._run_batch(state, facade=facade)
 

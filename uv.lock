@@ -3395,7 +3395,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.1,<7.0.0" },
     { name = "ruff", specifier = "==0.15.0" },
-    { name = "starlette", specifier = ">=0.40.0,<1.0.0" },
+    { name = "starlette", specifier = ">=0.46.3,<1.0.0" },
     { name = "unified-api-contracts", editable = "../unified-api-contracts" },
     { name = "unified-cloud-interface", editable = "../unified-cloud-interface" },
     { name = "unified-config-interface", editable = "../unified-config-interface" },
