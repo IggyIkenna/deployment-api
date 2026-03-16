@@ -213,7 +213,7 @@ jobs:
           ISSUE_URL: ${{ github.event.issue.html_url }}
         run: |
           BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
-          CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
+          CHAT_ID="${{ vars.TELEGRAM_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}"
 
           if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
             if [ "$ACTION" = "approve" ]; then

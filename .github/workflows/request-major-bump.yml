@@ -168,8 +168,8 @@ jobs:
             exit 1
           fi
           if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "::error::TELEGRAM_CHAT_ID secret is not set on this repo."
-            echo "::error::Fix: gh secret set TELEGRAM_CHAT_ID --repo ${GH_ORG}/${REPO}"
+            echo "::error::TELEGRAM_CHAT_ID is not set (checked vars.TELEGRAM_CHAT_ID and secrets.TELEGRAM_CHAT_ID)."
+            echo "::error::Fix: gh variable set TELEGRAM_CHAT_ID --repo ${GH_ORG}/${REPO} --body '<chat-id>'"
             exit 1
           fi
 
