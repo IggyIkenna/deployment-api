@@ -9,6 +9,20 @@ name: request-major-bump
 # NO AGENT may trigger this on behalf of a user without explicit human instruction.
 
 on:
+  workflow_dispatch:
+    inputs:
+      proposed_version:
+        description: "New MAJOR version (e.g. 1.0.0 or 2.0.0)"
+        required: true
+        type: string
+      reason:
+        description: "Why this is a MAJOR bump (e.g. removed /v1/orders endpoint)"
+        required: true
+        type: string
+      approver:
+        description: "GitHub handle of requester (defaults to actor)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -145,7 +159,7 @@ jobs:
           ISSUE_URL: ${{ steps.create-issue.outputs.issue_url }}
           REQUESTER: ${{ steps.validate.outputs.requester }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
         run: |
           # Validate Telegram secrets are present -- FAIL if missing
           if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
