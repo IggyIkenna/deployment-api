@@ -163,3 +163,20 @@ jobs:
             --body "$PR_BODY" \
             --base staging \
             --head "$BRANCH"
+
+  notify-failure:
+    name: Telegram — Dep Update Failure
+    needs: [update-dep]
+    if: always() && needs.update-dep.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram failure alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
+          [ -z "$TELEGRAM_CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
+          MSG="❌ Dep update FAILED — ${{ github.event.repository.name }} (${{ github.event.client_payload.dep_name }}). View: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=${MSG}" -d "disable_web_page_preview=true" || true

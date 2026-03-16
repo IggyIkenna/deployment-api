@@ -205,3 +205,20 @@ jobs:
           echo "| Issue | ${{ steps.create-issue.outputs.issue_url }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Next step: Comment /approve on the issue to proceed with the version bump." >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    name: Telegram — Major Bump Request Failure
+    needs: [request-major-bump]
+    if: always() && needs.request-major-bump.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram failure alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
+          [ -z "$TELEGRAM_CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
+          MSG="❌ Major bump request FAILED — ${{ github.event.repository.name }} (proposed: ${{ inputs.proposed_version }}). View: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=${MSG}" -d "disable_web_page_preview=true" || true

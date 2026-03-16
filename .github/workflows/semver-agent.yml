@@ -448,12 +448,14 @@ jobs:
 
       # ── TELEGRAM NOTIFY ─────────────────────────────────────────────────────
       - name: Notify Telegram
-        if: always() && env.TELEGRAM_BOT_TOKEN != ''
+        if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
           STATUS: ${{ job.status }}
         run: |
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
+          [ -z "$TELEGRAM_CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
           TEXT="*semver-agent* | deployment-api | ${STATUS} | branch: staging | triggered by QG pass on staging (pre-SIT)"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
