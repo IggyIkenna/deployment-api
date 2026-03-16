@@ -4,11 +4,20 @@ name: update-dependency-version
 # Updates pyproject.toml to pin the new minimum version for the changed dependency.
 #
 # Routing logic (based on bump_type in payload):
-#   MAJOR bump → create branch + PR targeting staging (quality gates required — breaking change)
-#   MINOR/PATCH → direct commit to staging with [skip ci] (compatible update, no QG needed)
+#   MAJOR bump -> create branch + PR targeting staging (quality gates required -- breaking change)
+#   MINOR/PATCH -> direct commit to staging with [skip ci] (compatible update, no QG needed)
 #
 # Dispatch payload:
-#   {dep_name: "repo-name", dep_version: "X.Y.Z", constraint: ">=X.Y.0,<X+1.0.0", bump_type: "major|minor|patch"}
+#   {dep_name, dep_version, constraint, bump_type, is_breaking, chain_depth}
+#
+# Constraint capping (Phase 2): if this repo has a dependency_caps entry in the PM manifest
+# for the incoming dep, the constraint update is SKIPPED and a warning is logged. The repo
+# stays pinned to the old version until the cap is manually removed. This mirrors external
+# dep pinning (e.g., "pandas>=1.5,<2.0") -- the downstream repo can keep working with the
+# last stable version while fixing code against the new breaking version.
+#
+# SSOT: unified-trading-pm/scripts/workflow-templates/update-dependency-version.yml
+# Rollout: bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh
 
 on:
   repository_dispatch:
@@ -23,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -39,6 +48,8 @@ jobs:
           CONSTRAINT="${{ github.event.client_payload.constraint }}"
           BUMP_TYPE="${{ github.event.client_payload.bump_type }}"
           BUMP_TYPE="${BUMP_TYPE:-patch}"  # default to patch if not provided
+          IS_BREAKING="${{ github.event.client_payload.is_breaking }}"
+          IS_BREAKING="${IS_BREAKING:-false}"
 
           if [ -z "$DEP_NAME" ] || [ -z "$CONSTRAINT" ]; then
             echo "Missing dep_name or constraint. Skipping."
@@ -47,8 +58,33 @@ jobs:
           fi
 
           if ! grep -q "\"${DEP_NAME}" pyproject.toml; then
-            echo "$DEP_NAME not found in pyproject.toml — skipping."
+            echo "$DEP_NAME not found in pyproject.toml -- skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # -- Constraint cap check (Phase 2) --
+          # If PM manifest has a dependency_caps entry for this repo+dep, skip the constraint update.
+          # The repo stays on the old version until the cap is manually removed.
+          REPO_NAME="${{ github.event.repository.name }}"
+          MANIFEST_URL="https://raw.githubusercontent.com/${{ github.repository_owner }}/unified-trading-pm/main/workspace-manifest.json"
+          CAP=$(curl -sf "$MANIFEST_URL" 2>/dev/null | python3 -c "
+          import json, sys
+          try:
+              m = json.load(sys.stdin)
+              caps = m.get('repositories', {}).get('${REPO_NAME}', {}).get('dependency_caps', {})
+              cap = caps.get('${DEP_NAME}', '')
+              print(cap)
+          except Exception:
+              print('')
+          " 2>/dev/null || echo "")
+
+          if [ -n "$CAP" ]; then
+            echo "Dependency cap active: $REPO_NAME pins $DEP_NAME to $CAP -- skipping constraint update to $CONSTRAINT"
+            echo "Remove dependency_caps.$DEP_NAME from $REPO_NAME in workspace-manifest.json to unpin."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "capped=true" >> "$GITHUB_OUTPUT"
+            echo "cap_constraint=$CAP" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -69,16 +105,19 @@ jobs:
               sys.exit(1)
           with open("pyproject.toml", "w") as f:
               f.write(new_content)
-          print(f"Updated {dep} → {constraint} ({count} occurrence(s))")
+          print(f"Updated {dep} -> {constraint} ({count} occurrence(s))")
           PYEOF
 
           echo "dep_name=$DEP_NAME" >> "$GITHUB_OUTPUT"
           echo "dep_version=$DEP_VERSION" >> "$GITHUB_OUTPUT"
           echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
+          echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Commit (MINOR/PATCH — direct commit to staging)
-        if: steps.update.outputs.skip != 'true' && steps.update.outputs.bump_type != 'major'
+      - name: Commit (MINOR/PATCH non-breaking -- direct commit to staging)
+        if:
+          steps.update.outputs.skip != 'true' && steps.update.outputs.bump_type != 'major' &&
+          steps.update.outputs.is_breaking != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -92,8 +131,10 @@ jobs:
           git commit -m "chore(deps): pin ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }} [skip ci]"
           git push origin staging
 
-      - name: Create PR to staging (MAJOR — requires quality gates)
-        if: steps.update.outputs.skip != 'true' && steps.update.outputs.bump_type == 'major'
+      - name: Create PR to staging (MAJOR or breaking -- requires quality gates)
+        if:
+          steps.update.outputs.skip != 'true' && (steps.update.outputs.bump_type == 'major' ||
+          steps.update.outputs.is_breaking == 'true')
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           PR_BODY:

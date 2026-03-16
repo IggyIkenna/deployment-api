@@ -12,9 +12,9 @@ name: Semver Agent
 #
 # If commit label disagrees with API diff, posts FAILING commit status on staging HEAD to block staging-to-main.yml
 #
-# Placeholders replaced by rollout-agent-workflows.sh:
+# Placeholders replaced by rollout-semver-agent.sh:
 #   deployment-api  — e.g. market-tick-data-service
-#   deployment_api    — e.g. market_tick_data_service (underscore form)
+#   deployment_api — e.g. market_tick_data_service (underscore form)
 #
 # Pre-1.0.0 semver rules:
 #   feat!: / BREAKING CHANGE: → MINOR bump (never auto-cross to 1.0.0)
@@ -28,7 +28,7 @@ name: Semver Agent
 #   fix: / internal change         → PATCH bump
 #
 # Dispatch payload to unified-trading-pm:
-#   { repo, version, branch, commit_sha }
+#   { repo, version, branch, commit_sha, is_breaking }
 #
 # Secrets required:
 #   GH_PAT  — cross-repo dispatch and issue creation
@@ -43,7 +43,7 @@ env:
   GH_TOKEN: ${{ secrets.GH_PAT }}
   SERVICE_NAME: "deployment-api"
   SOURCE_DIR: "deployment_api"
-  GH_ORG: IggyIkenna
+  GH_ORG: ${{ github.repository_owner }}
 
 permissions:
   contents: read
@@ -59,14 +59,14 @@ jobs:
 
     steps:
       - name: Checkout repo at staging commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
       - name: Checkout unified-trading-codex (readiness checklist)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.GH_ORG }}/unified-trading-codex
           path: ../unified-trading-codex
@@ -126,7 +126,7 @@ jobs:
               -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
-              -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\"}}")
+              -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\", \"is_breaking\": \"false\"}}")
             if [ "$HTTP_STATUS" = "204" ]; then
               echo "Dispatched successfully to unified-trading-pm (always_patch)"
             else
@@ -214,17 +214,25 @@ jobs:
 
           # File-level diff analysis for public API changes
           if [ "$BASELINE" = "0.0.0" ]; then
-            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              DIFF_BASE="HEAD~1"
+              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+            else
+              # First commit in repo — diff against the empty tree
+              DIFF_BASE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+              CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
+            fi
           else
             BASELINE_SHA_FOR_DIFF=$(git log --oneline --all | grep -m1 "bump version to ${BASELINE}" | awk '{print $1}' 2>/dev/null || echo "HEAD~1")
+            DIFF_BASE="${BASELINE_SHA_FOR_DIFF}"
             CHANGED_FILES=$(git diff --name-only "${BASELINE_SHA_FOR_DIFF}..HEAD" 2>/dev/null || echo "")
           fi
 
           # Check public __init__.py exports
           INIT_PY=$(find . -name "__init__.py" -path "*deployment_api/__init__.py" | head -1 || echo "")
           if [ -n "$INIT_PY" ] && echo "$CHANGED_FILES" | grep -q "__init__.py"; then
-            REMOVED_EXPORTS=$(git diff HEAD~1 HEAD -- "$INIT_PY" 2>/dev/null | grep "^-" | grep -E "^-[^-]" | grep -v "^---" || echo "")
-            ADDED_EXPORTS=$(git diff HEAD~1 HEAD -- "$INIT_PY" 2>/dev/null | grep "^+" | grep -E "^\+[^+]" | grep -v "^+++" || echo "")
+            REMOVED_EXPORTS=$(git diff "$DIFF_BASE" HEAD -- "$INIT_PY" 2>/dev/null | grep "^-" | grep -E "^-[^-]" | grep -v "^---" || echo "")
+            ADDED_EXPORTS=$(git diff "$DIFF_BASE" HEAD -- "$INIT_PY" 2>/dev/null | grep "^+" | grep -E "^\+[^+]" | grep -v "^+++" || echo "")
             if [ -n "$REMOVED_EXPORTS" ] && [ "$BUMP" != "breaking" ]; then
               echo "WARNING: Removed lines in public __init__.py — MAJOR signal (removed/renamed export)"
               BUMP="breaking"
@@ -235,7 +243,7 @@ jobs:
 
           # Check HTTP route removals
           if echo "$CHANGED_FILES" | grep -qE "\.(py)$"; then
-            ROUTE_REMOVALS=$(git diff HEAD~1 HEAD 2>/dev/null | grep "^-" | grep -E "@(app|router)\.(get|post|put|delete|patch)\(" | grep -v "^---" || echo "")
+            ROUTE_REMOVALS=$(git diff "$DIFF_BASE" HEAD 2>/dev/null | grep "^-" | grep -E "@(app|router)\.(get|post|put|delete|patch)\(" | grep -v "^---" || echo "")
             if [ -n "$ROUTE_REMOVALS" ] && [ "$BUMP" != "breaking" ]; then
               echo "WARNING: Detected removed HTTP routes — MAJOR signal"
               BUMP="breaking"
@@ -328,11 +336,18 @@ jobs:
 
           echo "Version: $CURRENT → $NEW_VERSION (bump=$BUMP, reason=$BUMP_REASON)"
 
+          # Track whether this is a breaking change (feat!, removed exports, removed routes)
+          IS_BREAKING="false"
+          if [ "$BUMP" = "breaking" ]; then
+            IS_BREAKING="true"
+          fi
+
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
           echo "bump_reason=$BUMP_REASON" >> "$GITHUB_OUTPUT"
+          echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
 
       - name: Open GitHub Issue for MAJOR bump approval (post-1.0.0)
         if: steps.compute.outputs.bump == 'major_blocked'
@@ -414,13 +429,14 @@ jobs:
           COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
           OWNER="${{ github.repository_owner }}"
 
-          echo "Dispatching version-bump: repo=$REPO version=$VERSION branch=$BRANCH commit_sha=$COMMIT_SHA"
+          IS_BREAKING="${{ steps.compute.outputs.is_breaking }}"
+          echo "Dispatching version-bump: repo=$REPO version=$VERSION branch=$BRANCH commit_sha=$COMMIT_SHA is_breaking=$IS_BREAKING"
 
           HTTP_STATUS=$(curl -s -o /tmp/dispatch_response.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
-            -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"${REPO}\", \"version\": \"${VERSION}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\"}}")
+            -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"${REPO}\", \"version\": \"${VERSION}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\", \"is_breaking\": \"${IS_BREAKING}\"}}")
 
           if [ "$HTTP_STATUS" = "204" ]; then
             echo "Dispatched successfully to unified-trading-pm"

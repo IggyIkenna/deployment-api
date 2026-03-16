@@ -6,6 +6,9 @@ name: Staging Lock Check
 #
 # Required status check name: "Staging Lock Check / check-staging-lock"
 # Register on the staging branch protection ruleset.
+#
+# SSOT: unified-trading-pm/scripts/workflow-templates/staging-lock-check.yml
+# Rollout: bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh
 
 on:
   pull_request:
@@ -25,6 +28,7 @@ jobs:
       - name: Check PM staging lock status
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_ORG: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
@@ -32,10 +36,10 @@ jobs:
           MANIFEST=$(curl -sL \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/IggyIkenna/unified-trading-pm/contents/workspace-manifest.json")
+            "https://api.github.com/repos/${GH_ORG}/unified-trading-pm/contents/workspace-manifest.json")
 
           if [ -z "$MANIFEST" ]; then
-            echo "WARNING: Could not fetch PM manifest — assuming unlocked"
+            echo "WARNING: Could not fetch PM manifest -- assuming unlocked"
             exit 0
           fi
 
@@ -45,8 +49,8 @@ jobs:
             REASON=$(echo "$MANIFEST" | python3 -c "import json,sys; m=json.load(sys.stdin); print(m.get('staging_status',{}).get('locked_reason','SIT running'))" 2>/dev/null || echo "SIT running")
             echo "Staging is LOCKED: $REASON"
             echo "This PR will auto-merge once SIT completes and staging is unlocked."
-            echo "No action needed — the check will re-run automatically when staging unlocks."
+            echo "No action needed -- the check will re-run automatically when staging unlocks."
             exit 1
           fi
 
-          echo "Staging is unlocked — will auto-merge when all checks pass"
+          echo "Staging is unlocked -- will auto-merge when all checks pass"

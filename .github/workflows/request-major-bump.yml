@@ -1,36 +1,14 @@
 name: request-major-bump
 
-# Human-initiated request for a MAJOR version bump (including 0.x.x → 1.0.0).
+# Human-initiated request for a MAJOR version bump (including 0.x.x -> 1.0.0).
 # This workflow ONLY creates a GitHub Issue + sends Telegram alert.
 # The actual version bump happens when a human comments /approve on the issue
 # (handled by major-bump-issue-handler.yml).
 #
-# Usage (GitHub UI):
-#   Actions → request-major-bump → Run workflow
-#   Fill in: proposed_version, reason
-#
-# Usage (admin script):
-#   bash unified-trading-pm/scripts/approve-major-bump.sh {repo} {version} \
-#     --reason "..." --admin-pat $GH_PAT
-#
-# DO NOT use this to immediately bump versions — the bump requires /approve on the issue.
+# DO NOT use this to immediately bump versions -- the bump requires /approve on the issue.
 # NO AGENT may trigger this on behalf of a user without explicit human instruction.
 
 on:
-  workflow_dispatch:
-    inputs:
-      proposed_version:
-        description: "New MAJOR version (e.g. 1.0.0 or 2.0.0)"
-        required: true
-        type: string
-      reason:
-        description: "Why this is a MAJOR bump (e.g. removed /v1/orders endpoint)"
-        required: true
-        type: string
-      approver:
-        description: "GitHub handle of requester (defaults to actor)"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -41,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.GH_PAT }}
 
@@ -91,7 +69,7 @@ jobs:
         id: create-issue
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          GH_ORG: IggyIkenna
+          GH_ORG: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
@@ -131,21 +109,29 @@ jobs:
           ${METADATA_JSON}
           -->"
 
+          # Try with label first, fall back to without label
           ISSUE_URL=$(gh issue create \
             --repo "${GH_ORG}/${REPO}" \
             --title "[MAJOR BUMP PENDING] ${REPO}: ${CURRENT} to ${PROPOSED}" \
             --body "$ISSUE_BODY" \
             --label "major-bump-pending" \
-            --json url --jq '.url' 2>/dev/null || echo "")
+            2>&1 || echo "")
 
-          if [ -z "$ISSUE_URL" ]; then
-            echo "WARNING: gh issue create failed (label 'major-bump-pending' may not exist in this repo)"
-            # Try without label
+          if [ -z "$ISSUE_URL" ] || ! echo "$ISSUE_URL" | grep -q "http"; then
+            echo "Label-based issue creation failed. Retrying without label..."
             ISSUE_URL=$(gh issue create \
               --repo "${GH_ORG}/${REPO}" \
               --title "[MAJOR BUMP PENDING] ${REPO}: ${CURRENT} to ${PROPOSED}" \
               --body "$ISSUE_BODY" \
-              --json url --jq '.url' 2>/dev/null || echo "unknown")
+              2>&1 || echo "")
+          fi
+
+          # HARD FAIL if issue creation failed -- do not silently continue
+          if [ -z "$ISSUE_URL" ] || ! echo "$ISSUE_URL" | grep -q "http"; then
+            echo "::error::Failed to create GitHub issue for MAJOR bump approval."
+            echo "::error::ISSUE_URL='$ISSUE_URL' -- expected a valid URL."
+            echo "::error::Check: (1) GH_PAT has issues:write scope, (2) 'major-bump-pending' label exists on $REPO"
+            exit 1
           fi
 
           echo "Issue URL: $ISSUE_URL"
@@ -158,17 +144,38 @@ jobs:
           REPO: ${{ steps.validate.outputs.repo }}
           ISSUE_URL: ${{ steps.create-issue.outputs.issue_url }}
           REQUESTER: ${{ steps.validate.outputs.requester }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
-          CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
+          # Validate Telegram secrets are present -- FAIL if missing
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN secret is not set on this repo."
+            echo "::error::Fix: gh secret set TELEGRAM_BOT_TOKEN --repo ${GH_ORG}/${REPO}"
+            exit 1
+          fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::error::TELEGRAM_CHAT_ID secret is not set on this repo."
+            echo "::error::Fix: gh secret set TELEGRAM_CHAT_ID --repo ${GH_ORG}/${REPO}"
+            exit 1
+          fi
 
-          if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
-            MSG="Major version bump REQUESTED - Repo: ${REPO} - Version: ${CURRENT} to ${PROPOSED} - Requested by: @${REQUESTER} - Approve: ${ISSUE_URL}"
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${CHAT_ID}&text=${MSG}&disable_web_page_preview=false" || true
-            echo "Telegram alert sent"
+          # Validate issue URL is not empty
+          if [ -z "$ISSUE_URL" ] || [ "$ISSUE_URL" = "unknown" ]; then
+            echo "::error::ISSUE_URL is empty or unknown -- issue creation failed silently."
+            exit 1
+          fi
+
+          MSG="MAJOR BUMP REQUESTED -- Repo: ${REPO} -- Version: ${CURRENT} to ${PROPOSED} -- Requested by: @${REQUESTER} -- Approve: ${ISSUE_URL}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MSG}" \
+            -d "disable_web_page_preview=true")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::Telegram send failed (HTTP $HTTP_CODE) -- issue was created at $ISSUE_URL but notification failed"
           else
-            echo "Telegram secrets not configured -- skipping alert"
+            echo "Telegram alert sent successfully"
           fi
 
       - name: Summary
