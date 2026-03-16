@@ -528,7 +528,10 @@ elif [ "$CHECK_ONLY" = true ]; then
 elif [ ! -f "pyproject.toml" ]; then
     log_skip "No pyproject.toml"
 else
-    uv pip install -e . --quiet 2>/dev/null
+    if ! uv pip install -e . --quiet 2>/dev/null; then
+        log_fail "Project editable install failed — check pyproject.toml and uv.lock"
+        exit 1
+    fi
     log_ok "Dependencies installed"
 fi
 
@@ -634,8 +637,8 @@ log_step "Import smoke test"
 if [ -n "$PACKAGE_NAME" ]; then
     SMOKE_PYTHON="${PYTHON_CMD:-python3}"
     [ -f ".venv/bin/python" ] && SMOKE_PYTHON=".venv/bin/python"
-    SMOKE_OUT=$($SMOKE_PYTHON -c "import $PACKAGE_NAME" 2>&1 || true)
-    if $SMOKE_PYTHON -c "import $PACKAGE_NAME" 2>/dev/null; then
+    SMOKE_OUT=$($SMOKE_PYTHON -c "import $PACKAGE_NAME" 2>&1) && SMOKE_RC=0 || SMOKE_RC=$?
+    if [ "$SMOKE_RC" -eq 0 ]; then
         log_ok "import $PACKAGE_NAME"
     else
         if [ "$ISOLATED" = true ]; then
