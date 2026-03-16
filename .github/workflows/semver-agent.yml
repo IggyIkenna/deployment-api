@@ -13,8 +13,8 @@ name: Semver Agent
 # If commit label disagrees with API diff, posts FAILING commit status on staging HEAD to block staging-to-main.yml
 #
 # Placeholders replaced by rollout-agent-workflows.sh:
-#   {{SERVICE_NAME}}  — e.g. market-tick-data-service
-#   {{SOURCE_DIR}}    — e.g. market_tick_data_service (underscore form)
+#   deployment-api  — e.g. market-tick-data-service
+#   deployment_api    — e.g. market_tick_data_service (underscore form)
 #
 # Pre-1.0.0 semver rules:
 #   feat!: / BREAKING CHANGE: → MINOR bump (never auto-cross to 1.0.0)
@@ -41,8 +41,8 @@ on:
 
 env:
   GH_TOKEN: ${{ secrets.GH_PAT }}
-  SERVICE_NAME: "{{SERVICE_NAME}}"
-  SOURCE_DIR: "{{SOURCE_DIR}}"
+  SERVICE_NAME: "deployment-api"
+  SOURCE_DIR: "deployment_api"
   GH_ORG: IggyIkenna
 
 permissions:
@@ -51,7 +51,7 @@ permissions:
 
 jobs:
   semver:
-    name: Semver Agent — {{SERVICE_NAME}}
+    name: Semver Agent — deployment-api
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Only run when Quality Gates passed — never on failure
@@ -79,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Semver Agent: {{SERVICE_NAME}} ==="
+          echo "=== Semver Agent: deployment-api ==="
           echo "Triggered by Quality Gates passing on staging (SHA: ${{ github.event.workflow_run.head_sha }})"
 
           # ── semver_policy check: read from PM manifest ──
@@ -92,12 +92,12 @@ jobs:
           import json, sys
           m = json.load(sys.stdin)
           repos = m.get('repositories', {})
-          repo = repos.get('{{SERVICE_NAME}}', {})
+          repo = repos.get('deployment-api', {})
           print(repo.get('semver_policy', 'agent'))
           " 2>/dev/null || echo "agent")
           fi
 
-          echo "semver_policy for {{SERVICE_NAME}}: $SEMVER_POLICY"
+          echo "semver_policy for deployment-api: $SEMVER_POLICY"
 
           if [ "$SEMVER_POLICY" = "always_patch" ]; then
             echo "semver_policy=always_patch: skipping label mismatch check, applying patch bump directly."
@@ -118,7 +118,7 @@ jobs:
             echo "bump_reason=always_patch policy (no label check)" >> "$GITHUB_OUTPUT"
             SHA="${{ github.event.workflow_run.head_sha }}"
             OWNER="${{ github.repository_owner }}"
-            gh api POST "/repos/${OWNER}/{{SERVICE_NAME}}/statuses/${SHA}" \
+            gh api POST "/repos/${OWNER}/deployment-api/statuses/${SHA}" \
               --field state=success \
               --field context="semver-agent/label-check" \
               --field description="always_patch policy: patch bump applied, label check skipped." || true
@@ -126,7 +126,7 @@ jobs:
               -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
-              -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"{{SERVICE_NAME}}\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\"}}")
+              -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\"}}")
             if [ "$HTTP_STATUS" = "204" ]; then
               echo "Dispatched successfully to unified-trading-pm (always_patch)"
             else
@@ -149,7 +149,7 @@ jobs:
           import json, sys
           m = json.load(sys.stdin)
           staging = m.get('staging_versions', {})
-          v = staging.get('{{SERVICE_NAME}}', '')
+          v = staging.get('deployment-api', '')
           print(v if v else '0.0.0')
           " 2>/dev/null || echo "0.0.0")
           else
@@ -157,7 +157,7 @@ jobs:
             BASELINE="0.0.0"
           fi
 
-          echo "Baseline staging version for {{SERVICE_NAME}}: $BASELINE"
+          echo "Baseline staging version for deployment-api: $BASELINE"
 
           # ── Step 2: Determine commit range for diff ──
           echo ""
@@ -221,7 +221,7 @@ jobs:
           fi
 
           # Check public __init__.py exports
-          INIT_PY=$(find . -name "__init__.py" -path "*{{SOURCE_DIR}}/__init__.py" | head -1 || echo "")
+          INIT_PY=$(find . -name "__init__.py" -path "*deployment_api/__init__.py" | head -1 || echo "")
           if [ -n "$INIT_PY" ] && echo "$CHANGED_FILES" | grep -q "__init__.py"; then
             REMOVED_EXPORTS=$(git diff HEAD~1 HEAD -- "$INIT_PY" 2>/dev/null | grep "^-" | grep -E "^-[^-]" | grep -v "^---" || echo "")
             ADDED_EXPORTS=$(git diff HEAD~1 HEAD -- "$INIT_PY" 2>/dev/null | grep "^+" | grep -E "^\+[^+]" | grep -v "^+++" || echo "")
@@ -271,7 +271,7 @@ jobs:
           if [ "$EXPECTED_FROM_LABEL" != "none" ] && [ "$EXPECTED_FROM_LABEL" != "$BUMP" ]; then
             echo "MISMATCH: commit label says $EXPECTED_FROM_LABEL but API diff resolves $BUMP"
             echo "Posting FAILING commit status to block staging-to-main promotion."
-            gh api POST "/repos/${OWNER}/{{SERVICE_NAME}}/statuses/${SHA}" \
+            gh api POST "/repos/${OWNER}/deployment-api/statuses/${SHA}" \
               --field state=failure \
               --field context="semver-agent/label-check" \
               --field description="Label mismatch: commit says ${EXPECTED_FROM_LABEL}, API diff says ${BUMP}. Fix commit message and re-push to staging." || true
@@ -279,7 +279,7 @@ jobs:
             exit 0
           else
             echo "Label matches API diff (or label is chore/docs/none — no bump needed): $BUMP bump confirmed."
-            gh api POST "/repos/${OWNER}/{{SERVICE_NAME}}/statuses/${SHA}" \
+            gh api POST "/repos/${OWNER}/deployment-api/statuses/${SHA}" \
               --field state=success \
               --field context="semver-agent/label-check" \
               --field description="Label matches API diff: ${BUMP} bump confirmed." || true
@@ -343,18 +343,18 @@ jobs:
           NEXT="${{ steps.compute.outputs.next_version }}"
           BUMP_REASON="${{ steps.compute.outputs.bump_reason }}"
 
-          echo "Opening MAJOR bump approval issue for {{SERVICE_NAME}} ($CURRENT → $NEXT)"
+          echo "Opening MAJOR bump approval issue for deployment-api ($CURRENT → $NEXT)"
 
-          CHECKLIST_FILE="../unified-trading-codex/10-audit/repos/{{SERVICE_NAME}}.yaml"
+          CHECKLIST_FILE="../unified-trading-codex/10-audit/repos/deployment-api.yaml"
           if [ -f "$CHECKLIST_FILE" ]; then
             CHECKLIST_BODY=$(head -80 "$CHECKLIST_FILE")
           else
-            CHECKLIST_BODY="Readiness checklist not found at: 10-audit/repos/{{SERVICE_NAME}}.yaml"
+            CHECKLIST_BODY="Readiness checklist not found at: 10-audit/repos/deployment-api.yaml"
           fi
 
           ISSUE_BODY="## Major Version Bump Approval Required
 
-          **Repo:** \`{{SERVICE_NAME}}\`
+          **Repo:** \`deployment-api\`
           **Current version:** \`$CURRENT\`
           **Proposed version:** \`$NEXT\`
           **Reason:** $BUMP_REASON
@@ -395,8 +395,8 @@ jobs:
           > **Note:** \`--user-approved\` is NEVER set by \`--agent\` automatically."
 
           gh issue create \
-            --repo "${GH_ORG}/{{SERVICE_NAME}}" \
-            --title "[MAJOR BUMP REQUIRED] {{SERVICE_NAME}}: $BUMP_REASON" \
+            --repo "${GH_ORG}/deployment-api" \
+            --title "[MAJOR BUMP REQUIRED] deployment-api: $BUMP_REASON" \
             --body "$ISSUE_BODY" \
             --label "major-bump-approval" \
             || echo "WARNING: Issue creation failed (label may not exist) — continuing"
@@ -408,7 +408,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          REPO="{{SERVICE_NAME}}"
+          REPO="deployment-api"
           VERSION="${{ steps.compute.outputs.new_version }}"
           BRANCH="staging"
           COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
@@ -438,7 +438,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
           STATUS: ${{ job.status }}
         run: |
-          TEXT="*semver-agent* | {{SERVICE_NAME}} | ${STATUS} | branch: staging | triggered by QG pass on staging (pre-SIT)"
+          TEXT="*semver-agent* | deployment-api | ${STATUS} | branch: staging | triggered by QG pass on staging (pre-SIT)"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d text="${TEXT}" \
