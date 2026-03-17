@@ -68,6 +68,12 @@ async def health_check():
     }
 
 
+@router.get("/version")
+async def version() -> dict[str, str]:
+    """Return service version information."""
+    return {"version": _api_version, "service": "deployment-api"}
+
+
 @router.get("/readiness")
 async def readiness() -> dict[str, str]:
     """Standard Cloud Run readiness probe."""

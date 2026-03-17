@@ -36,6 +36,21 @@ async def infra_health() -> dict[str, object]:
     Returns:
         JSON with status ("ok" | "degraded" | "error" | "skip"), check details, and errors.
     """
+    from deployment_api.deployment_api_config import DeploymentApiConfig
+
+    _api_cfg = DeploymentApiConfig()
+    if _api_cfg.cloud_mock_mode:
+        mock_errors: list[str] = []
+        return {
+            "status": "ok",
+            "project_id": "mock-project",
+            "summary": {"ok": 2, "error": 0, "skip": 0, "total": 2},
+            "checks": [
+                {"name": "gcs_state_bucket", "status": "ok", "detail": "mock", "error": ""},
+                {"name": "secret_manager", "status": "ok", "detail": "mock", "error": ""},
+            ],
+            "errors": mock_errors,
+        }
     try:
         from unified_cloud_interface import get_secret_client, get_storage_client
 

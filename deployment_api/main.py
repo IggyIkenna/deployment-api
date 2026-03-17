@@ -10,10 +10,11 @@ import logging
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import BaseModel, Field
 from unified_events_interface import setup_events
 from unified_trading_library import (
     PubSubEventSink,
@@ -128,6 +129,32 @@ app.include_router(make_events_relay_router())
 async def metrics() -> Response:
     """Prometheus metrics endpoint."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+class PipelineTriggerRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Request body for triggering a data pipeline."""
+
+    date: str = Field(..., description="Date to process (YYYY-MM-DD)")
+    venue: str = Field(..., description="Venue identifier")
+    instrument: str | None = Field(None, description="Instrument filter")
+
+
+@app.post("/pipeline/trigger", include_in_schema=False)
+async def pipeline_trigger(request: PipelineTriggerRequest) -> dict[str, object]:
+    """Trigger a data pipeline run for a given date and venue.
+
+    In mock mode, returns a synthetic pipeline_id without triggering real work.
+    In production mode, delegates to the deployment manager.
+    """
+    if _cfg.cloud_mock_mode:
+        return {
+            "pipeline_id": "mock-pipeline-001",
+            "status": "triggered",
+            "date": request.date,
+            "venue": request.venue,
+        }
+    # Production path: not yet implemented
+    raise HTTPException(status_code=501, detail="Pipeline trigger not yet implemented")
 
 
 # Mount static files if UI dist exists (production mode)

@@ -210,6 +210,13 @@ async def verify_deployment_completion(
     force: bool = Query(False, description="Force refresh of verification"),
 ) -> dict[str, object]:
     """Verify deployment completion and data integrity."""
+    if _cfg.cloud_mock_mode:
+        return {
+            "deployment_id": deployment_id,
+            "verified": True,
+            "status": "completed",
+            "mock": True,
+        }
     try:
         result = state_manager.verify_deployment_completion(deployment_id, force_refresh=force)
         return result
@@ -370,6 +377,43 @@ async def resume_deployment(deployment_id: str, request: Request) -> dict[str, s
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to resume deployment %s: %s", deployment_id, e)
+        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+
+
+@router.post("/deployments/{deployment_id}/retry-failed")
+async def retry_failed_shards(
+    deployment_id: str,
+    request: Request,
+    dry_run: bool = Query(False, description="Preview retry without executing"),
+) -> dict[str, object]:
+    """Retry failed shards in a deployment."""
+    if _cfg.cloud_mock_mode:
+        from deployment_api.mock_state import get_store
+
+        item = get_store().get("deployments", deployment_id)
+        if item is None:
+            raise HTTPException(
+                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
+            )
+        if not dry_run:
+            get_store().update("deployments", deployment_id, {"status": "retrying"})
+        return {
+            "deployment_id": deployment_id,
+            "status": "retrying" if not dry_run else "dry_run",
+            "retried_shards": 0,
+            "dry_run": dry_run,
+        }
+    try:
+        result = state_manager.retry_failed_shards(deployment_id, dry_run=dry_run)
+        return result
+    except (ValueError, AttributeError) as e:
+        logger.exception("Deployment not found for retry: %s", deployment_id)
+        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+    except ConnectionError as e:
+        logger.error("Cloud provider connection failed during retry for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Failed to retry deployment %s: %s", deployment_id, e)
         raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
 
 
@@ -558,6 +602,23 @@ async def get_deployment_events(
     here. Each event captures a lifecycle step (JOB_STARTED, VM_PREEMPTED, etc.)
     with timestamp, message, and optional metadata.
     """
+    if _cfg.cloud_mock_mode:
+        mock_events: list[dict[str, object]] = [
+            {
+                "event_type": "JOB_STARTED",
+                "timestamp": "2026-03-17T00:00:00Z",
+                "message": "Deployment started",
+                "deployment_id": deployment_id,
+            },
+            {
+                "event_type": "JOB_COMPLETED",
+                "timestamp": "2026-03-17T00:00:01Z",
+                "message": "Deployment completed",
+                "deployment_id": deployment_id,
+            },
+        ]
+        return {"deployment_id": deployment_id, "events": mock_events, "count": len(mock_events)}
+
     from deployment_api.clients import deployment_service_client as _client
 
     try:
@@ -582,6 +643,10 @@ async def get_deployment_vm_events(
     VM_ZONE_UNAVAILABLE, VM_TIMEOUT, CONTAINER_OOM, CLOUD_RUN_REVISION_FAILED.
     Used by the History tab to surface infrastructure failure badges on shard rows.
     """
+    if _cfg.cloud_mock_mode:
+        empty_events: list[dict[str, object]] = []
+        return {"deployment_id": deployment_id, "events": empty_events, "count": 0}
+
     from deployment_api.clients import deployment_service_client as _client
 
     try:
@@ -605,6 +670,15 @@ async def rollback_live_deployment(
     Only valid for deployments with deploy_mode="live". Calls the deployment-service
     LiveDeployer to revert traffic to the specified (or previous) Cloud Run revision.
     """
+    if _cfg.cloud_mock_mode:
+        return {
+            "deployment_id": deployment_id,
+            "service": rollback_request.service,
+            "status": "rolled_back",
+            "events": [],
+            "error": None,
+        }
+
     from deployment_api.clients import deployment_service_client as _client
 
     try:
@@ -635,6 +709,15 @@ async def get_live_deployment_health(
     Polls the service /health endpoint and returns a structured response.
     Used by DeploymentDetails to show a live health badge for live-mode deployments.
     """
+    if _cfg.cloud_mock_mode:
+        return {
+            "deployment_id": deployment_id,
+            "service": service,
+            "healthy": True,
+            "checked_at": "2026-03-17T00:00:00Z",
+            "status_code": 200,
+        }
+
     from deployment_api.clients import deployment_service_client as _client
 
     try:
