@@ -197,13 +197,13 @@ if [ "$IS_UI_REPO" = true ]; then
         # reinstall here even if node_modules dir mtime was touched by a failed prior install).
         if [ ! -f "package-lock.json" ] || [ "package.json" -nt "package-lock.json" ]; then
             log_warn "package.json changed (or no lock file) — running npm install"
-            npm install --silent --force
+            npm install --silent --legacy-peer-deps
             log_ok "npm install complete"
         else
             log_skip "node_modules up to date (package-lock.json in sync)"
         fi
     else
-        npm install --silent --force
+        npm install --silent --legacy-peer-deps
         log_ok "npm install complete"
     fi
 
