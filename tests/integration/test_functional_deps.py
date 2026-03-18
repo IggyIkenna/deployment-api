@@ -77,7 +77,7 @@ class TestUnifiedConfigInterfaceFunctional:
 
         cfg = UnifiedCloudConfig()
         assert cfg.cloud_provider == "local"
-        assert cfg.cloud_mock_mode is True
+        assert cfg.is_mock_mode() is True
 
 
 # ---------------------------------------------------------------------------

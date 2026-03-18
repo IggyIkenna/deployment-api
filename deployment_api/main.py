@@ -146,7 +146,7 @@ async def pipeline_trigger(request: PipelineTriggerRequest) -> dict[str, object]
     In mock mode, returns a synthetic pipeline_id without triggering real work.
     In production mode, delegates to the deployment manager.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         return {
             "pipeline_id": "mock-pipeline-001",
             "status": "triggered",
@@ -182,5 +182,5 @@ async def health_check_with_config() -> dict[str, object]:
         ),
         "gcs_fuse": get_gcs_fuse_status(),
         "cloud_provider": _cloud_cfg.cloud_provider,
-        "mock_mode": _cloud_cfg.cloud_mock_mode,
+        "mock_mode": _cloud_cfg.is_mock_mode(),
     }

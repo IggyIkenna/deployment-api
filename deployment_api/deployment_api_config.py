@@ -369,10 +369,12 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Absolute path to the workspace root",
     )
 
-    cloud_mock_mode: bool = Field(
+    cloud_mock_mode: bool = Field(  # DEPRECATED: use is_mock_mode() instead
         default=False,
         validation_alias=AliasChoices("CLOUD_MOCK_MODE"),
-        description="Enable cloud mock mode for testing",
+        description=(
+            "DEPRECATED: Use is_mock_mode() instead. Legacy field kept for env var binding."
+        ),
     )
 
     # =========================================================================

@@ -233,7 +233,7 @@ def _ensure_external_packages_mocked() -> None:
         _mock_config_instance.broker_max_wait_seconds = 30
         # Misc
         _mock_config_instance.workspace_root = "/tmp/test-workspace"
-        _mock_config_instance.cloud_mock_mode = False
+        _mock_config_instance.is_mock_mode.return_value = False
         _mock_config_instance.enforce_single_region = False
         _mock_config_instance.disable_auth = False
         _mock_config_instance.api_key = "test-api-key"

@@ -12,14 +12,20 @@ import pytest
 # Ensure deployment_api.routes.deployments can be imported cleanly
 import deployment_api.routes.deployments as _dep_routes
 
+# Suppress cloud_mock_mode deprecation warnings from fixture save/restore
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+
 
 @pytest.fixture(autouse=True)
 def _disable_mock_mode():
     """Force live code path so patches on state_manager/deployment_manager take effect."""
-    original = _dep_routes._cfg.cloud_mock_mode
+    original_data_mode = _dep_routes._cfg.data_mode
+    original_cloud_mock = _dep_routes._cfg.cloud_mock_mode
+    _dep_routes._cfg.data_mode = "real"
     _dep_routes._cfg.cloud_mock_mode = False
     yield
-    _dep_routes._cfg.cloud_mock_mode = original
+    _dep_routes._cfg.data_mode = original_data_mode
+    _dep_routes._cfg.cloud_mock_mode = original_cloud_mock
 
 
 def _make_request(headers=None):

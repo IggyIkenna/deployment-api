@@ -50,7 +50,7 @@ async def list_services(request: Request):
     Returns:
         List of services with their descriptions and dimensions.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         items = get_store().list("services")

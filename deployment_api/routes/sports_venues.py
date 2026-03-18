@@ -84,7 +84,7 @@ def list_sports_venues(
     status_filter: str | None = Query(None, description="Filter: active | disabled | unconfigured"),
 ) -> dict[str, object]:
     """List all configured sports venues with their status."""
-    if _cloud_cfg.cloud_mock_mode:
+    if _cloud_cfg.is_mock_mode():
         venues = MOCK_VENUES
         if status_filter:
             venues = [v for v in venues if v["status"] == status_filter]
@@ -99,7 +99,7 @@ def update_venue_credentials(
     body: VenueCredentialUpdate = ...,
 ) -> dict[str, object]:
     """Update venue credential reference in Secret Manager."""
-    if _cloud_cfg.cloud_mock_mode:
+    if _cloud_cfg.is_mock_mode():
         return {
             "venue_key": venue_key,
             "status": "updated",
@@ -114,7 +114,7 @@ def check_venue_health(
     venue_key: str = Path(..., description="Venue identifier"),
 ) -> VenueHealthResponse:
     """Health check for venue connectivity (login URL reachable, API responding)."""
-    if _cloud_cfg.cloud_mock_mode:
+    if _cloud_cfg.is_mock_mode():
         return VenueHealthResponse(
             venue_key=venue_key,
             reachable=True,
@@ -133,7 +133,7 @@ def enable_venue(
     venue_key: str = Path(..., description="Venue identifier"),
 ) -> dict[str, object]:
     """Enable a sports venue for betting."""
-    if _cloud_cfg.cloud_mock_mode:
+    if _cloud_cfg.is_mock_mode():
         return {
             "venue_key": venue_key,
             "status": "enabled",
@@ -148,7 +148,7 @@ def disable_venue(
     venue_key: str = Path(..., description="Venue identifier"),
 ) -> dict[str, object]:
     """Disable a sports venue for betting."""
-    if _cloud_cfg.cloud_mock_mode:
+    if _cloud_cfg.is_mock_mode():
         return {"venue_key": venue_key, "status": "disabled", "message": f"{venue_key} disabled"}
     logger.info("disable_venue: %s", venue_key)
     return {"venue_key": venue_key, "status": "live_not_configured"}

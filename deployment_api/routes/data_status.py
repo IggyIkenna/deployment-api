@@ -46,7 +46,7 @@ async def get_data_status(
     Returns completion percentages broken down by category and venue,
     with optional list of missing dates.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         sources: list[dict[str, object]] = []
         return {
             "status": "ok",
@@ -160,7 +160,7 @@ async def get_data_status_turbo(
     include_dates_list: bool = Query(False, description="Include sorted list of dates found"),
 ):
     """Get data status with turbo mode caching (5-minute cache TTL)."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         sources: list[dict[str, object]] = []
         return {
             "status": "ok",

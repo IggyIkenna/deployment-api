@@ -50,7 +50,7 @@ async def health() -> dict[str, object]:
         "status": "ok",
         "service": "deployment-api",
         "cloud_provider": _cloud_cfg.cloud_provider,
-        "mock_mode": _cloud_cfg.cloud_mock_mode,
+        "mock_mode": _cloud_cfg.is_mock_mode(),
         "data_freshness": _data_freshness(),
     }
 

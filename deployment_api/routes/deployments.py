@@ -146,7 +146,7 @@ async def list_deployments(
     service: str | None = Query(None, description="Filter by service"),
 ) -> dict[str, object]:
     """List deployments with optional filtering and pagination."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         items = get_store().list("deployments")
@@ -181,7 +181,7 @@ async def get_deployment_status(
     detailed: bool = Query(True, description="Include detailed shard information"),
 ) -> dict[str, object]:
     """Get detailed status for a specific deployment."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         item = get_store().get("deployments", deployment_id)
@@ -210,7 +210,7 @@ async def verify_deployment_completion(
     force: bool = Query(False, description="Force refresh of verification"),
 ) -> dict[str, object]:
     """Verify deployment completion and data integrity."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         return {
             "deployment_id": deployment_id,
             "verified": True,
@@ -260,7 +260,7 @@ async def create_deployment(
     deploy_request: DeployRequest, request: Request, background_tasks: BackgroundTasks
 ) -> DeploymentResult:
     """Create a new deployment."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         dep_id = f"dep-mock-{uuid.uuid4().hex[:8]}"
@@ -329,7 +329,7 @@ async def create_deployment(
 @router.post("/deployments/{deployment_id}/cancel")
 async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, str]:
     """Cancel a running deployment."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         updated = get_store().update("deployments", deployment_id, {"status": "cancelled"})
@@ -357,7 +357,7 @@ async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, s
 @router.post("/deployments/{deployment_id}/resume")
 async def resume_deployment(deployment_id: str, request: Request) -> dict[str, str]:
     """Resume a cancelled or failed deployment."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         updated = get_store().update("deployments", deployment_id, {"status": "running"})
@@ -387,7 +387,7 @@ async def retry_failed_shards(
     dry_run: bool = Query(False, description="Preview retry without executing"),
 ) -> dict[str, object]:
     """Retry failed shards in a deployment."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         item = get_store().get("deployments", deployment_id)
@@ -422,7 +422,7 @@ async def update_deployment(
     deployment_id: str, update_request: UpdateDeploymentRequest, request: Request
 ) -> dict[str, str]:
     """Update deployment properties."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         fields: dict[str, object] = {}
@@ -456,7 +456,7 @@ async def update_deployment(
 @router.delete("/deployments/{deployment_id}")
 async def delete_deployment(deployment_id: str, request: Request) -> dict[str, str]:
     """Delete a deployment and its resources."""
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
         deleted = get_store().delete("deployments", deployment_id)
@@ -602,7 +602,7 @@ async def get_deployment_events(
     here. Each event captures a lifecycle step (JOB_STARTED, VM_PREEMPTED, etc.)
     with timestamp, message, and optional metadata.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         mock_events: list[dict[str, object]] = [
             {
                 "event_type": "JOB_STARTED",
@@ -643,7 +643,7 @@ async def get_deployment_vm_events(
     VM_ZONE_UNAVAILABLE, VM_TIMEOUT, CONTAINER_OOM, CLOUD_RUN_REVISION_FAILED.
     Used by the History tab to surface infrastructure failure badges on shard rows.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         empty_events: list[dict[str, object]] = []
         return {"deployment_id": deployment_id, "events": empty_events, "count": 0}
 
@@ -670,7 +670,7 @@ async def rollback_live_deployment(
     Only valid for deployments with deploy_mode="live". Calls the deployment-service
     LiveDeployer to revert traffic to the specified (or previous) Cloud Run revision.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         return {
             "deployment_id": deployment_id,
             "service": rollback_request.service,
@@ -709,7 +709,7 @@ async def get_live_deployment_health(
     Polls the service /health endpoint and returns a structured response.
     Used by DeploymentDetails to show a live health badge for live-mode deployments.
     """
-    if _cfg.cloud_mock_mode:
+    if _cfg.is_mock_mode():
         return {
             "deployment_id": deployment_id,
             "service": service,

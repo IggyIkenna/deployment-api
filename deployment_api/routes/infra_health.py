@@ -39,7 +39,7 @@ async def infra_health() -> dict[str, object]:
     from deployment_api.deployment_api_config import DeploymentApiConfig
 
     _api_cfg = DeploymentApiConfig()
-    if _api_cfg.cloud_mock_mode:
+    if _api_cfg.is_mock_mode():
         mock_errors: list[str] = []
         return {
             "status": "ok",
