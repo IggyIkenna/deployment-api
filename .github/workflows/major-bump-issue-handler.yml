@@ -27,6 +27,10 @@ permissions:
   contents: write
   issues: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   handle-major-bump:
     runs-on: ubuntu-latest
