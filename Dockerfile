@@ -11,9 +11,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ripgrep tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
-RUN uv pip install --system --no-cache-dir gunicorn[gevent] gevent \
-    && uv pip install --system --no-cache-dir -e .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --system \
+    && uv pip install --system --no-cache-dir gunicorn[gevent] gevent
 
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./
@@ -37,5 +37,5 @@ FROM api AS api-dev
 USER root
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
-RUN uv pip install --system --no-cache-dir -e ".[dev]" && chown -R appuser:appuser /app
+RUN uv sync --frozen --no-dev --system && chown -R appuser:appuser /app
 USER appuser
