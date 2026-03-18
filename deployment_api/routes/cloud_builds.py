@@ -68,7 +68,7 @@ def _get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     # This is intentional — request types (ListBuildTriggersRequest etc.) are
     # still constructed using the cloudbuild_v1 module directly.
     if hasattr(uci_client, "_client"):
-        _native: object = uci_client._client()  # type: ignore[reportUnknownMemberType, reportPrivateUsage]
+        _native: object = uci_client._client()  # pyright: ignore[reportUnknownMemberType, reportPrivateUsage]  # UCI internal accessor
         return cast("cloudbuild_v1.CloudBuildClient", _native)
     # Fallback: direct construction (should not be reached in production)
     return _cloudbuild_v1().CloudBuildClient()
@@ -300,15 +300,17 @@ def _format_build_info(build: object) -> BuildInfoDict:
     log_url_raw: object = getattr(build, "log_url", None)
     log_url = str(log_url_raw) if log_url_raw is not None else None
 
-    create_time_iso = getattr(create_time, "isoformat", None)
-    create_time_str: str | None = str(create_time_iso()) if callable(create_time_iso) else None  # type: ignore[misc]
-    finish_time_iso = getattr(finish_time, "isoformat", None)
-    finish_time_str: str | None = str(finish_time_iso()) if callable(finish_time_iso) else None  # type: ignore[misc]
+    create_time_iso: object = getattr(create_time, "isoformat", None)
+    create_time_str: str | None = str(create_time_iso()) if callable(create_time_iso) else None
+    finish_time_iso: object = getattr(finish_time, "isoformat", None)
+    finish_time_str: str | None = str(finish_time_iso()) if callable(finish_time_iso) else None
 
     duration_seconds: float | None = None
     if finish_time is not None and create_time is not None:
         with suppress(TypeError, AttributeError):
-            duration_seconds = (finish_time - create_time).total_seconds()  # type: ignore[operator]
+            delta: object = getattr(finish_time, "__sub__", lambda _: None)(create_time)
+            if delta is not None and hasattr(delta, "total_seconds"):
+                duration_seconds = float(delta.total_seconds())
 
     commit_sha: str | None = None
     branch: str | None = None
@@ -382,7 +384,7 @@ def _build_trigger_list_sync() -> list[TriggerDict]:
     client = _get_gcp_build_client()
     parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
     request = _cb.ListBuildTriggersRequest(parent=parent, page_size=50)
-    triggers = list(client.list_build_triggers(request=request))  # type: ignore[misc]
+    triggers = list(client.list_build_triggers(request=request))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
     _populate_trigger_cache(triggers)
     result: list[TriggerDict] = []
     for trigger in triggers:
@@ -488,7 +490,7 @@ async def _get_recent_builds_for_triggers(
                 filter=f'build_trigger_id="{trigger_id}"',
             )
             # Use next(iter(...)) to get only the first build without exhausting the pager
-            build = next(iter(client.list_builds(request=request)), None)  # type: ignore[misc]  # CloudBuild stubs partial
+            build = next(iter(client.list_builds(request=request)), None)  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
             if not build:
                 return None
             return (trigger_id, _format_build_info(build))
@@ -533,7 +535,7 @@ def _get_trigger_id_sync(trigger_name: str) -> str | None:
     client = _get_gcp_build_client()
     parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
     triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
-    triggers = list(client.list_build_triggers(request=triggers_request))  # type: ignore[misc]
+    triggers = list(client.list_build_triggers(request=triggers_request))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
     _populate_trigger_cache(triggers)
     return _trigger_id_cache.get(trigger_name)
 
@@ -548,8 +550,8 @@ def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentB
         page_size=5,
         filter=f'build_trigger_id="{trigger_id}"',
     )
-    for build in islice(client.list_builds(request=builds_request), 5):  # type: ignore[misc]
-        if build.create_time and build.create_time >= started_after:  # type: ignore[operator]
+    for build in islice(client.list_builds(request=builds_request), 5):  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
+        if build.create_time and build.create_time >= started_after:
             return {"build_id": build.id, "log_url": build.log_url, "status": build.status.name}
     return None
 
@@ -561,9 +563,15 @@ def _extract_build_id_from_op(
     build_id = None
     log_url = None
     try:
-        if hasattr(operation, "metadata") and operation.metadata:  # type: ignore[union-attr]
+        if hasattr(operation, "metadata") and getattr(operation, "metadata", None):
             meta = _build_op_meta_cls()()
-            if operation.metadata.Unpack(meta) and meta.build:  # type: ignore[union-attr]
+            op_metadata: object = getattr(operation, "metadata", None)
+            if (
+                op_metadata is not None
+                and hasattr(op_metadata, "Unpack")
+                and op_metadata.Unpack(meta)
+                and meta.build
+            ):
                 build_id = meta.build.id
                 log_url = meta.build.log_url
     except (OSError, ValueError, RuntimeError) as unpack_err:
@@ -594,7 +602,7 @@ def _run_trigger_operation_sync(trigger_name: str, branch: str) -> TriggerRunRes
         name=name,
         source=_cb.RepoSource(branch_name=branch),
     )
-    operation = client.run_build_trigger(request=run_request)  # type: ignore[misc]
+    operation = client.run_build_trigger(request=run_request)  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
     op_name: str | None = cast(str | None, getattr(operation, "name", None))
     op_done = getattr(operation, "done", None)
     logger.info("Trigger operation returned. Operation name: %s, done: %s", op_name, op_done)
@@ -738,7 +746,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
                 triggers_request = _cb.ListBuildTriggersRequest(
                     parent=parent,
                 )
-                triggers = list(client.list_build_triggers(request=triggers_request))  # type: ignore[misc]  # CloudBuild stubs partial
+                triggers = list(client.list_build_triggers(request=triggers_request))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
                 _populate_trigger_cache(triggers)
                 trigger_id = _trigger_id_cache.get(trigger_name)
 
@@ -752,7 +760,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
                 filter=f'build_trigger_id="{trigger_id}"',
             )
             # Use islice to stop after getting 'limit' results (avoids exhausting pager)
-            builds = list(islice(client.list_builds(request=builds_request), limit))  # type: ignore[misc]  # CloudBuild stubs partial
+            builds = list(islice(client.list_builds(request=builds_request), limit))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
 
             return [_format_build_info(b) for b in builds]
 

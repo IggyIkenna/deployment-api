@@ -729,7 +729,7 @@ def _resolve_gcs_shard_statuses(
     if status_objs:
         with ThreadPoolExecutor(max_workers=min(len(status_objs), 20)) as pool:
             for result in pool.map(
-                lambda o: _read_gcs_status_obj(STATE_BUCKET, o.name),  # type: ignore[union-attr]
+                lambda o: _read_gcs_status_obj(STATE_BUCKET, str(getattr(o, "name", ""))),
                 status_objs,
             ):
                 if result:

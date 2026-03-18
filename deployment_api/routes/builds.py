@@ -116,7 +116,10 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
         return []
     try:
         manifest = cast(dict[str, object], json.loads(manifest_path.read_text()))
-        deployed: dict[str, dict[str, str]] = manifest.get("deployed_versions", {})  # type: ignore[assignment]  # noqa: qg-empty-fallback — dict.get default for missing key in manifest
+        deployed_raw: object = manifest.get("deployed_versions")  # noqa: qg-empty-fallback — dict.get default for missing key in manifest
+        deployed: dict[str, dict[str, str]] = (
+            cast(dict[str, dict[str, str]], deployed_raw) if isinstance(deployed_raw, dict) else {}
+        )
         env_deployed = deployed.get(env, {})  # noqa: qg-empty-fallback — dict.get default for missing env
         tag = env_deployed.get(service, "")  # noqa: qg-empty-fallback — dict.get default for missing service
         if tag:
@@ -130,15 +133,19 @@ async def _list_ar_tags(service: str, project: str) -> list[str]:
     """List image tags from Artifact Registry for a given service + GCP project."""
     try:
         from google.cloud import (  # noqa: cloud-sdk-direct
-            artifactregistry_v1,  # type: ignore[import-untyped]
+            artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs]  # no stubs for artifactregistry
         )
 
-        ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # type: ignore[reportUnknownMemberType]
+        ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # pyright: ignore[reportUnknownMemberType]
         repo = f"projects/{project}/locations/asia-northeast1/repositories/{_AR_REPO}"
         parent = f"{repo}/packages/{service}"
         tags: list[str] = []
-        ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # type: ignore[reportUnknownMemberType]
-        async for tag in await ar_client.list_tags(ar_request):  # type: ignore[union-attr]
+        ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # pyright: ignore[reportUnknownMemberType]
+        _list_tags_fn: object = getattr(ar_client, "list_tags", None)
+        _pager: object = await _list_tags_fn(ar_request) if callable(_list_tags_fn) else None
+        if _pager is None:
+            return tags
+        async for tag in _pager:  # pyright: ignore[reportUnknownVariableType]
             # Tag name format: .../tags/{tag_name}
             tag_name: str = str(getattr(cast(object, tag), "name", "")).split("/")[-1]
             tags.append(tag_name)

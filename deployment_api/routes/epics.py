@@ -56,6 +56,27 @@ _BR_ORDINALS: dict[str, int] = {
 _EPIC_DISPLAY_ORDER = ["defi", "cefi", "tradfi", "sports"]
 
 
+def _extract_data_fields(ac_data: dict[str, object]) -> dict[str, object]:
+    """Extract nested data fields from ac_data safely, avoiding union-attr on .get() chains."""
+    data_raw = ac_data.get("data")
+    if not isinstance(data_raw, dict):
+        return {
+            "historical_available": False,
+            "live_available": False,
+            "mock_available": False,
+            "testnet_available": False,
+            "historical_start_date": None,
+        }
+    data_dict = cast(dict[str, object], data_raw)
+    return {
+        "historical_available": data_dict.get("historical_available", False),
+        "live_available": data_dict.get("live_available", False),
+        "mock_available": data_dict.get("mock_available", False),
+        "testnet_available": data_dict.get("testnet_available", False),
+        "historical_start_date": data_dict.get("historical_start_date"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -224,23 +245,7 @@ def _compute_epic(
             "br_required": min_br.upper() if min_br.lower() != "na" else "na",
             "main_quickmerged": bool(main_qm),
             "branch_status": branch_status,
-            "data": {
-                "historical_available": ac_data.get("data", {}).get("historical_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
-                if isinstance(ac_data.get("data"), dict)
-                else False,
-                "live_available": ac_data.get("data", {}).get("live_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
-                if isinstance(ac_data.get("data"), dict)
-                else False,
-                "mock_available": ac_data.get("data", {}).get("mock_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
-                if isinstance(ac_data.get("data"), dict)
-                else False,
-                "testnet_available": ac_data.get("data", {}).get("testnet_available", False)  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
-                if isinstance(ac_data.get("data"), dict)
-                else False,
-                "historical_start_date": ac_data.get("data", {}).get("historical_start_date")  # type: ignore[union-attr]  # noqa: qg-empty-fallback — safe navigation for nested YAML data
-                if isinstance(ac_data.get("data"), dict)
-                else None,
-            },
+            "data": _extract_data_fields(ac_data),
             "feature_groups": ac_data.get("feature_groups") or [],
             "ml_models": ac_data.get("ml_models") or [],
             "venue_deps": ac_data.get("venue_deps") or [],

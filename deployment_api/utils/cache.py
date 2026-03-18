@@ -154,11 +154,13 @@ class RedisCache(CacheBackend):
         """Connect to Redis."""
         try:
             provider = AsyncRedisProvider(url=self.redis_url)
-            get_client_fn = cast(
-                Callable[[], Coroutine[object, object, object]],
-                provider._get_client,  # type: ignore[reportPrivateUsage]
-            )
-            await get_client_fn()
+            _get_client_attr: object = getattr(provider, "_get_client", None)
+            if callable(_get_client_attr):
+                get_client_fn = cast(
+                    Callable[[], Coroutine[object, object, object]],
+                    _get_client_attr,
+                )
+                await get_client_fn()
             self._provider = provider
             logger.info("Connected to Redis at %s", self.redis_url)
         except (OSError, ValueError, RuntimeError) as e:
@@ -211,18 +213,25 @@ class RedisCache(CacheBackend):
             return 0
 
         try:
+            _get_client_attr: object = getattr(self._provider, "_get_client", None)
+            if not callable(_get_client_attr):
+                return 0
             get_client_fn = cast(
                 Callable[[], Coroutine[object, object, object]],
-                self._provider._get_client,  # type: ignore[reportPrivateUsage]
+                _get_client_attr,
             )
             client: object = await get_client_fn()
+            _keys_attr: object = getattr(client, "keys", None)
+            _del_attr: object = getattr(client, "delete", None)
+            if not callable(_keys_attr) or not callable(_del_attr):
+                return 0
             keys_fn = cast(
                 Callable[[str], Coroutine[object, object, object]],
-                client.keys,  # type: ignore[union-attr]  # client is dynamic redis type
+                _keys_attr,
             )
             del_fn = cast(
                 Callable[..., Coroutine[object, object, object]],
-                client.delete,  # type: ignore[union-attr]  # client is dynamic redis type
+                _del_attr,
             )
             keys_raw: object = await keys_fn(pattern)
             keys: list[object] = cast(list[object], keys_raw) if isinstance(keys_raw, list) else []

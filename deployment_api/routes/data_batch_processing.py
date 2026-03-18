@@ -13,7 +13,7 @@ from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from deployment_api.utils.path_combinatorics import get_path_combinatorics
+from deployment_api.utils.path_combinatorics import PathCombinatorics, get_path_combinatorics
 from deployment_api.utils.storage_facade import (
     list_objects,
 )
@@ -146,7 +146,7 @@ def _check_instruments_request_size(
     categories: list[str],
     start_date: str,
     end_date: str,
-    path_combinatorics: object,
+    path_combinatorics: PathCombinatorics,
 ) -> None:
     """Raise HTTPException if the instruments-service request is estimated to be too large."""
     max_estimated_checks = 35_000
@@ -155,8 +155,7 @@ def _check_instruments_request_size(
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
     total_venues = sum(
-        len(path_combinatorics.get_all_venues_for_category(cat))  # type: ignore[union-attr]
-        for cat in categories
+        len(path_combinatorics.get_all_venues_for_category(cat)) for cat in categories
     )
     days = (end_dt - start_dt).days + 1
     estimated = days * total_venues

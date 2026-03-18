@@ -45,36 +45,36 @@ logger = logging.getLogger(__name__)
 # below; these stubs are ONLY placeholders to satisfy `patch()` attribute lookups.
 
 
-def validate_deployment_request(deploy_request: object) -> dict[str, object] | None:  # type: ignore[misc]
+def validate_deployment_request(deploy_request: DeployRequest) -> dict[str, object] | None:
     """Lazy-import shim — forwards to routes.deployment_validation at call time."""
     from deployment_api.routes.deployment_validation import (
         validate_deployment_request as _impl,
     )
 
-    return _impl(deploy_request)  # type: ignore[arg-type]
+    return _impl(deploy_request)
 
 
 def validate_shard_configuration(
-    service_cfg: object, deploy_request: object
-) -> dict[str, object] | None:  # type: ignore[misc]
+    service_cfg: dict[str, object], deploy_request: DeployRequest
+) -> dict[str, object] | None:
     """Lazy-import shim — forwards to routes.deployment_validation at call time."""
     from deployment_api.routes.deployment_validation import (
         validate_shard_configuration as _impl,
     )
 
-    return _impl(service_cfg, deploy_request)  # type: ignore[arg-type]
+    return _impl(service_cfg, deploy_request)
 
 
-def validate_quota_requirements(shape: object, count: object) -> dict[str, object] | None:  # type: ignore[misc]
+def validate_quota_requirements(shape: dict[str, object], count: int) -> dict[str, object] | None:
     """Lazy-import shim — forwards to routes.deployment_validation at call time."""
     from deployment_api.routes.deployment_validation import (
         validate_quota_requirements as _impl,
     )
 
-    return _impl(shape, count)  # type: ignore[arg-type]
+    return _impl(shape, count)
 
 
-def validate_image_availability(docker_image: str, region: str) -> dict[str, object] | None:  # type: ignore[misc]
+def validate_image_availability(docker_image: str, region: str) -> dict[str, object] | None:
     """Lazy-import shim — forwards to routes.deployment_validation at call time."""
     from deployment_api.routes.deployment_validation import (
         validate_image_availability as _impl,
@@ -83,20 +83,46 @@ def validate_image_availability(docker_image: str, region: str) -> dict[str, obj
     return _impl(docker_image, region)
 
 
-def generate_deployment_report(state: object, a: object, b: object) -> dict[str, object]:  # type: ignore[misc]
+def generate_deployment_report(
+    state: object,
+    log_analysis: dict[str, object] | None,
+    verification_data: dict[str, object] | None,
+) -> dict[str, object]:
     """Lazy-import shim — forwards to routes.deployment_validation at call time."""
     from deployment_api.routes.deployment_validation import (
         generate_deployment_report as _impl,
     )
 
-    return _impl(state, a, b)  # type: ignore[arg-type]
+    return _impl(state, log_analysis, verification_data)
 
 
-def build_deploy_env_vars(**kwargs: object) -> dict[str, str]:  # type: ignore[misc]
+def build_deploy_env_vars(
+    service: str = "",
+    project_id: str = "",
+    deployment_id: str = "",
+    max_concurrent: int = 100,
+    deployment_mode: str = "vm",
+    enable_direct_gcs: bool = False,
+    shard_id: str | None = None,
+    deploy_mode: str = "batch",
+    operational_mode: str = "",
+    cloud_provider: str = "gcp",
+) -> dict[str, str]:
     """Lazy-import shim — forwards to routes.deployments_helpers at call time."""
     from deployment_api.routes.deployments_helpers import build_deploy_env_vars as _impl
 
-    return _impl(**kwargs)  # type: ignore[arg-type]
+    return _impl(
+        service=service,
+        project_id=project_id,
+        deployment_id=deployment_id,
+        max_concurrent=max_concurrent,
+        deployment_mode=deployment_mode,
+        enable_direct_gcs=enable_direct_gcs,
+        shard_id=shard_id,
+        deploy_mode=deploy_mode,
+        operational_mode=operational_mode,
+        cloud_provider=cloud_provider,
+    )
 
 
 class DeploymentManager:

@@ -20,7 +20,7 @@ from typing import cast
 
 import yaml
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from google.auth import (  # type: ignore[import-untyped]  # google-auth stubs incomplete
+from google.auth import (  # pyright: ignore[reportMissingTypeStubs]  # google-auth has no complete stubs
     default,  # pyright: ignore[reportUnknownVariableType]
     impersonated_credentials,
 )
@@ -56,11 +56,12 @@ def _get_token_sync() -> str | None:
     token_start = time.time()
     try:
         target_sa = GITHUB_TOKEN_SA
-        source_credentials, _project = default()  # type: ignore[misc]  # google-auth untyped
+        creds_result: tuple[object, object] = default()  # pyright: ignore[reportUnknownMemberType]  # google-auth stubs
+        source_credentials: object = creds_result[0]
         logger.info("[PERF] Got default credentials in %.2fs", time.time() - token_start)
 
-        if hasattr(source_credentials, "service_account_email"):  # type: ignore[arg-type]
-            sa_email: str = str(source_credentials.service_account_email)  # type: ignore[union-attr]
+        if hasattr(source_credentials, "service_account_email"):
+            sa_email: str = str(getattr(source_credentials, "service_account_email", ""))
             if any(
                 x in sa_email
                 for x in [
@@ -74,7 +75,7 @@ def _get_token_sync() -> str | None:
 
         target_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
         _ = impersonated_credentials.Credentials(
-            source_credentials=source_credentials,  # type: ignore[arg-type]
+            source_credentials=source_credentials,  # pyright: ignore[reportArgumentType]  # google-auth untyped credentials
             target_principal=target_sa,
             target_scopes=target_scopes,
         )
@@ -164,7 +165,7 @@ async def _get_quota_manager_status(service: str) -> dict[str, object]:
             from google.auth.transport.requests import Request as AuthRequest
             from google.oauth2 import id_token
 
-            token = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[misc]
+            token = id_token.fetch_id_token(AuthRequest(), broker_url)  # pyright: ignore[reportUnknownMemberType]  # google-auth stubs
             req = urllib.request.Request(
                 f"{broker_url}/health",
                 method="GET",

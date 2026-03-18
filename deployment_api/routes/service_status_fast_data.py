@@ -25,7 +25,8 @@ _PREFIXES_TO_TRY = [
 
 def _obj_updated(obj: object) -> datetime:
     """Return the updated timestamp of a GCS-like object, or datetime.min."""
-    ts = cast("datetime | None", cast(dict[str, object], obj).get("updated"))  # type: ignore[arg-type]
+    ts_raw: object = getattr(obj, "updated", None) if hasattr(obj, "updated") else None
+    ts: datetime | None = cast("datetime | None", ts_raw) if ts_raw is not None else None
     # GCS blobs expose .updated as an attribute, not a dict key; use vars() fallback
     if ts is None:
         ts = cast("datetime | None", vars(obj).get("updated") if hasattr(obj, "__dict__") else None)

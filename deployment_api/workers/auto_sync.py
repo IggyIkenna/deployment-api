@@ -320,24 +320,29 @@ def _fire_orphan_vm_deletes(
             return 0
 
         _orch_factory = cast(Callable[..., object], _orchestrator_cls)
-        orch = _orch_factory(  # type: ignore[operator]  # dynamically loaded class
+        orch: object = _orch_factory(
             project_id=PROJECT_ID,
             region=config.get("region") or "asia-northeast1",
             service_account_email=service_account_email,
             state_bucket=STATE_BUCKET,
             state_prefix=f"deployments.{DEPLOYMENT_ENV}",
         )
-        _backend_raw = orch.get_backend(  # type: ignore[union-attr, arg-type]  # dynamic object
-            "vm",
-            job_name=job_name,
-            zone=config.get("zone"),
+        _get_backend_fn: object = getattr(orch, "get_backend", None)
+        backend: object = (
+            _get_backend_fn(
+                "vm",
+                job_name=job_name,
+                zone=config.get("zone"),
+            )
+            if callable(_get_backend_fn)
+            else None
         )
-        backend: object = cast(object, _backend_raw)  # type: ignore[redundant-cast]  # ensure object type
         if backend and hasattr(backend, "cancel_job_fire_and_forget"):
+            _cancel_fn = backend.cancel_job_fire_and_forget
             with ThreadPoolExecutor(max_workers=min(len(to_fire), orphan_max)) as pool:
                 for job_id, zone in to_fire:
                     pool.submit(
-                        backend.cancel_job_fire_and_forget,  # type: ignore[union-attr]  # dynamic backend
+                        _cancel_fn,
                         job_id,
                         zone,
                     )

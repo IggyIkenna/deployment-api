@@ -151,7 +151,7 @@ def _build_hierarchy_from_configs(
 ) -> defaultdict[str, _ModeMap]:
     """Build strategy->mode->timeframe->configs hierarchy from config list."""
     hierarchy: defaultdict[str, _ModeMap] = defaultdict(
-        lambda: defaultdict(lambda: defaultdict(list))  # type: ignore[return-value]
+        lambda: defaultdict(lambda: defaultdict(list))  # pyright: ignore[reportReturnType]  # nested defaultdict factory
     )
     for config in configs:
         result_strategy_id = config["result_strategy_id"]
