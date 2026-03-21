@@ -7,11 +7,12 @@ Includes background task for auto-syncing running deployment statuses.
 """
 
 import logging
+import uuid
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
@@ -88,6 +89,28 @@ configure_middleware(app)
 app.add_middleware(PrometheusMiddleware, service_name="deployment-api")  # pyright: ignore[reportArgumentType]
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(RequestAuditMiddleware)
+
+
+# --- Standard error handler ---
+@app.exception_handler(HTTPException)
+async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": f"HTTP_{exc.status_code}",
+                "message": detail.get("message", str(exc.detail))
+                if isinstance(detail, dict)
+                else str(exc.detail),
+                "details": detail if isinstance(detail, dict) else None,
+            },
+            "request_id": request_id,
+        },
+    )
+
 
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
