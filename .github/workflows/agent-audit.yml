@@ -1,0 +1,50 @@
+name: Agent Audit
+# Agent Audit Workflow — deployment-api
+
+# Triggered by overnight-agent-orchestrator.yml for nightly quality-gate validation.
+# Runs quality gates (and optionally the Claude Code audit agent if ANTHROPIC_API_KEY is set).
+# Reports pass/fail to the orchestrator Telegram morning summary.
+#
+# To enable full Claude audit: add ANTHROPIC_API_KEY repo secret and
+# copy scripts/run-agent.sh from market-tick-data-service as prototype.
+
+on:
+  workflow_dispatch:
+    inputs:
+      audit_only:
+        description: "Run audit only (skip quality gates + quickmerge)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      skip_quickmerge:
+        description: "Run audit + QG but skip PR creation"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      dep_branch:
+        description: "Sibling repo branch to clone (falls back to main)"
+        required: false
+        default: "main"
+      attempt:
+        description: "Retry attempt number (1 = first run)"
+        required: false
+        default: "1"
+      prior_context:
+        description: "Failure context from previous attempt (injected into prompt)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    name: Quality Gates
+    uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates.yml@live-defi-rollout
+    with:
+      dep_repos: ""
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}

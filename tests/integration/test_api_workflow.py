@@ -29,9 +29,11 @@ setup_events("deployment-api", "test")
 
 # Patch PubSubEventSink and setup_tracing to prevent network calls during
 # deployment_api.main module load
-with patch("deployment_api.main.PubSubEventSink"), \
-     patch("deployment_api.main.setup_events"), \
-     patch("deployment_api.main.setup_tracing"):
+with (
+    patch("deployment_api.main.PubSubEventSink"),
+    patch("deployment_api.main.setup_events"),
+    patch("deployment_api.main.setup_tracing"),
+):
     from deployment_api.main import app
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]

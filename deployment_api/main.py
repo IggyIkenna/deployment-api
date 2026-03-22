@@ -95,17 +95,22 @@ app.add_middleware(RequestAuditMiddleware)
 @app.exception_handler(HTTPException)
 async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    request_id: str = getattr(request.state, "request_id", str(uuid.uuid4()))
+    raw_detail: str | dict[str, str] = (
+        exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    )
+    message = (
+        raw_detail.get("message", str(exc.detail))
+        if isinstance(raw_detail, dict)
+        else str(raw_detail)
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": {
                 "code": f"HTTP_{exc.status_code}",
-                "message": detail.get("message", str(exc.detail))
-                if isinstance(detail, dict)
-                else str(exc.detail),
-                "details": detail if isinstance(detail, dict) else None,
+                "message": message,
+                "details": raw_detail if isinstance(raw_detail, dict) else None,
             },
             "request_id": request_id,
         },
