@@ -641,16 +641,28 @@ if [ -n "$PACKAGE_NAME" ]; then
     if [ "$SMOKE_RC" -eq 0 ]; then
         log_ok "import $PACKAGE_NAME"
     else
-        if [ "$ISOLATED" = true ]; then
-            log_warn "import $PACKAGE_NAME FAILED (isolated mode — missing workspace deps may cause this)"
-        else
-            log_fail "import $PACKAGE_NAME FAILED"
-            ISSUES=$((ISSUES + 1))
+        # Retry once: stale uv.lock is the most common cause of import failures
+        # after adding new deps. Regenerate lock + sync, then retry import.
+        echo "      [RETRY] Import failed — regenerating uv.lock and re-syncing..."
+        if uv lock --quiet 2>/dev/null && uv sync --quiet 2>/dev/null; then
+            SMOKE_OUT=$($SMOKE_PYTHON -c "import $PACKAGE_NAME" 2>&1) && SMOKE_RC=0 || SMOKE_RC=$?
+            if [ "$SMOKE_RC" -eq 0 ]; then
+                log_ok "import $PACKAGE_NAME (passed after uv lock + sync retry)"
+            fi
         fi
-        if [ -n "$SMOKE_OUT" ]; then
-            echo "      --- traceback ---"
-            echo "$SMOKE_OUT" | sed 's/^/      /'
-            echo "      ---"
+        # If still failing after retry, report the error
+        if [ "$SMOKE_RC" -ne 0 ]; then
+            if [ "$ISOLATED" = true ]; then
+                log_warn "import $PACKAGE_NAME FAILED (isolated mode — missing workspace deps may cause this)"
+            else
+                log_fail "import $PACKAGE_NAME FAILED"
+                ISSUES=$((ISSUES + 1))
+            fi
+            if [ -n "$SMOKE_OUT" ]; then
+                echo "      --- traceback ---"
+                echo "$SMOKE_OUT" | sed 's/^/      /'
+                echo "      ---"
+            fi
         fi
     fi
 else

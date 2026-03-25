@@ -2315,11 +2315,11 @@ wheels = [
 
 [[package]]
 name = "pyasn1"
-version = "0.6.2"
+version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fe/b6/6e630dff89739fcd427e3f72b3d905ce0acb85a45d4ec3e2678718a3487f/pyasn1-0.6.2.tar.gz", hash = "sha256:9b59a2b25ba7e4f8197db7686c09fb33e658b98339fadb826e9512629017833b", size = 146586, upload-time = "2026-01-16T18:04:18.534Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/5f/6583902b6f79b399c9c40674ac384fd9cd77805f9e6205075f828ef11fb2/pyasn1-0.6.3.tar.gz", hash = "sha256:697a8ecd6d98891189184ca1fa05d1bb00e2f84b5977c481452050549c8a72cf", size = 148685, upload-time = "2026-03-17T01:06:53.382Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/b5/a96872e5184f354da9c84ae119971a0a4c221fe9b27a4d94bd43f2596727/pyasn1-0.6.2-py3-none-any.whl", hash = "sha256:1eb26d860996a18e9b6ed05e7aae0e9fc21619fcee6af91cca9bad4fbea224bf", size = 83371, upload-time = "2026-01-16T18:04:17.174Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/a0/7d793dce3fa811fe047d6ae2431c672364b462850c6235ae306c0efd025f/pyasn1-0.6.3-py3-none-any.whl", hash = "sha256:a80184d120f0864a52a073acc6fc642847d0be408e7c7252f31390c0f4eadcde", size = 83997, upload-time = "2026-03-17T01:06:52.036Z" },
 ]
 
 [[package]]
@@ -3076,7 +3076,7 @@ wheels = [
 
 [[package]]
 name = "unified-api-contracts"
-version = "0.2.38"
+version = "0.1.20"
 source = { editable = "../unified-api-contracts" }
 dependencies = [
     { name = "bandit" },
@@ -3129,7 +3129,7 @@ requires-dist = [
 
 [[package]]
 name = "unified-cloud-interface"
-version = "0.11.39"
+version = "0.11.6"
 source = { editable = "../unified-cloud-interface" }
 dependencies = [
     { name = "bandit" },
@@ -3198,13 +3198,14 @@ requires-dist = [
 
 [[package]]
 name = "unified-config-interface"
-version = "0.2.1"
+version = "0.1.17"
 source = { editable = "../unified-config-interface" }
 dependencies = [
     { name = "bandit" },
     { name = "basedpyright" },
     { name = "pip-audit" },
     { name = "pre-commit" },
+    { name = "pyasn1" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pytest" },
@@ -3218,6 +3219,7 @@ dependencies = [
     { name = "ruff" },
     { name = "unified-cloud-interface" },
     { name = "unified-events-interface" },
+    { name = "unified-internal-contracts" },
 ]
 
 [package.metadata]
@@ -3226,6 +3228,7 @@ requires-dist = [
     { name = "basedpyright", specifier = "==1.38.2" },
     { name = "pip-audit", specifier = ">=2.7.0,<3.0.0" },
     { name = "pre-commit", specifier = ">=3.0,<4.0.0" },
+    { name = "pyasn1", specifier = ">=0.6.3,<0.7.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.12.0,<3.0.0" },
     { name = "pytest", specifier = ">=9.0.1,<10.0.0" },
@@ -3239,11 +3242,12 @@ requires-dist = [
     { name = "ruff", specifier = "==0.15.0" },
     { name = "unified-cloud-interface", editable = "../unified-cloud-interface" },
     { name = "unified-events-interface", editable = "../unified-events-interface" },
+    { name = "unified-internal-contracts", editable = "../unified-internal-contracts" },
 ]
 
 [[package]]
 name = "unified-events-interface"
-version = "0.2.48"
+version = "0.2.2"
 source = { editable = "../unified-events-interface" }
 dependencies = [
     { name = "bandit" },
@@ -3276,7 +3280,7 @@ requires-dist = [
 
 [[package]]
 name = "unified-internal-contracts"
-version = "0.1.95"
+version = "0.1.2"
 source = { editable = "../unified-internal-contracts" }
 dependencies = [
     { name = "bandit" },
@@ -3325,7 +3329,7 @@ requires-dist = [
 
 [[package]]
 name = "unified-trading-library"
-version = "0.3.191"
+version = "0.3.167"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "bandit" },
