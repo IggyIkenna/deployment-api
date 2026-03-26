@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from pydantic import BaseModel
-from unified_internal_contracts.schemas.rbac import (
+from unified_api_contracts.internal.schemas.rbac import (
     UserRole,  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
 )
 

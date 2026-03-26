@@ -39,7 +39,7 @@ def test_unified_cloud_interface_import() -> None:
 
 
 @pytest.mark.integration
-def test_unified_internal_contracts_import() -> None:
-    from unified_internal_contracts import LifecycleEventType
+def test_unified_api_contracts_internal_import() -> None:
+    from unified_api_contracts.internal import LifecycleEventType
 
     assert LifecycleEventType is not None

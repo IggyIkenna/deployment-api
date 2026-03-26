@@ -205,7 +205,7 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_user_role_enum_has_expected_members(self) -> None:
         """UserRole enum includes VIEWER, OPERATOR, ADMIN, SUPER_ADMIN."""
-        from unified_internal_contracts.schemas.rbac import UserRole
+        from unified_api_contracts.internal.schemas.rbac import UserRole
 
         assert UserRole.VIEWER is not None
         assert UserRole.OPERATOR is not None
@@ -214,14 +214,14 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_permission_enum_has_members(self) -> None:
         """Permission enum has at least one member."""
-        from unified_internal_contracts.schemas.rbac import Permission
+        from unified_api_contracts.internal.schemas.rbac import Permission
 
         members = list(Permission)
         assert len(members) > 0
 
     def test_role_permissions_mapping(self) -> None:
         """ROLE_PERMISSIONS maps each UserRole to a frozenset of Permissions."""
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             ROLE_PERMISSIONS,
             Permission,
             UserRole,
@@ -240,7 +240,7 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_has_role_permission_function(self) -> None:
         """has_role_permission checks permission membership correctly."""
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             ROLE_PERMISSIONS,
             UserRole,
             has_role_permission,
@@ -256,7 +256,7 @@ class TestUnifiedInternalContractsFunctional:
         """UserProfile can be created and returns effective_permissions()."""
         from datetime import UTC, datetime
 
-        from unified_internal_contracts.schemas.rbac import UserProfile, UserRole
+        from unified_api_contracts.internal.schemas.rbac import UserProfile, UserRole
 
         profile = UserProfile(
             user_id="test-user-001",
@@ -277,7 +277,7 @@ class TestUnifiedInternalContractsFunctional:
         """UserProfile.has_permission() correctly checks role-based permissions."""
         from datetime import UTC, datetime
 
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             ROLE_PERMISSIONS,
             UserProfile,
             UserRole,
@@ -299,7 +299,7 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_user_role_string_values(self) -> None:
         """UserRole values can be converted to/from strings."""
-        from unified_internal_contracts.schemas.rbac import UserRole
+        from unified_api_contracts.internal.schemas.rbac import UserRole
 
         for role in UserRole:
             # Roundtrip: enum -> str -> enum
@@ -419,7 +419,7 @@ class TestCrossDepIntegration:
 
     def test_rbac_permission_check_integration(self) -> None:
         """has_role_permission works for role-based checks used by rbac.py."""
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             Permission,
             UserRole,
             has_role_permission,
