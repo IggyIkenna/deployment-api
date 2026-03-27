@@ -16,13 +16,13 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
-from unified_events_interface import setup_events
 from unified_trading_library import (
     PubSubEventSink,
     RequestAuditMiddleware,
     make_events_relay_router,
     setup_tracing,
 )
+from unified_trading_library.events_interface import setup_events
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
@@ -197,7 +197,7 @@ if _ui_dist:
 @app.get("/api/health")
 async def health_check_with_config() -> dict[str, object]:
     """Detailed health check. Includes GCS FUSE status for UI display."""
-    from unified_config_interface import UnifiedCloudConfig
+    from unified_trading_library.config_interface import UnifiedCloudConfig
 
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 

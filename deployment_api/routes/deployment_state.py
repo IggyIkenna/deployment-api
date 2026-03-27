@@ -116,7 +116,7 @@ def _refresh_live_cloud_run_status(state: dict[str, object]) -> int:
     shards = get_shards(state)
 
     try:
-        from unified_cloud_interface import get_compute_client
+        from unified_trading_library.cloud_interface import get_compute_client
 
         compute = get_compute_client(project_id=project_id)
         revisions_list = compute.list_revisions(service_name, region)

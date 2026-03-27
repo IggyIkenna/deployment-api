@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
-from unified_config_interface import UnifiedCloudConfig
+from unified_trading_library.config_interface import UnifiedCloudConfig
 
 from deployment_api import __version__ as _api_version
 from deployment_api.utils.service_utils import get_ui_dist_dir

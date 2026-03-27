@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING, cast
 import anthropic
 from anthropic.types import TextBlock
 from pydantic import BaseModel
-from unified_cloud_interface import get_data_sink, get_storage_client
-from unified_events_interface import log_event
+from unified_trading_library.cloud_interface import get_data_sink, get_storage_client
+from unified_trading_library.events_interface import log_event
 
 if TYPE_CHECKING:
     from deployment_api.deployment_api_config import DeploymentApiConfig

@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
-from unified_config_interface import UnifiedCloudConfig
+from unified_trading_library.config_interface import UnifiedCloudConfig
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sports/venues", tags=["sports-venues"])

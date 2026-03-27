@@ -65,7 +65,7 @@ def notify_deployment_updated_sync(deployment_id: str):
     except (AttributeError, RuntimeError) as e:
         logger.debug("Sync queue put: %s", e)
     try:
-        from unified_cloud_interface import get_queue_client
+        from unified_trading_library.cloud_interface import get_queue_client
 
         get_queue_client().publish("deployment:updated", deployment_id.encode())
     except (OSError, ValueError, RuntimeError) as e:

@@ -25,7 +25,7 @@ from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import â
     UserRole,
     has_role_permission,
 )
-from unified_events_interface import log_event
+from unified_trading_library.events_interface import log_event
 
 from deployment_api.auth import DISABLE_AUTH
 from deployment_api.services.user_management import UserManagementService

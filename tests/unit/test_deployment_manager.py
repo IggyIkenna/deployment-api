@@ -60,8 +60,8 @@ for _rmod, _rmock in _ROUTE_MOCKS.items():
     if _rmod not in sys.modules:
         sys.modules[_rmod] = _rmock
 
-# Ensure unified_events_interface is mocked so log_event is importable
-sys.modules.setdefault("unified_events_interface", MagicMock(log_event=MagicMock()))
+# Ensure unified_trading_library.events_interface is mocked so log_event is importable
+sys.modules.setdefault("unified_trading_library.events_interface", MagicMock(log_event=MagicMock()))
 
 from deployment_api.services.deployment_manager import DeploymentManager
 

@@ -26,8 +26,10 @@ sys.modules.setdefault(
     "deployment_service.config_loader",
     MagicMock(ConfigLoader=_mock_config_loader_cls),
 )
-# Mock unified_cloud_interface to avoid RuntimeMode import chain
-sys.modules.setdefault("unified_cloud_interface", MagicMock(AsyncRedisProvider=MagicMock()))
+# Mock unified_trading_library.cloud_interface to avoid RuntimeMode import chain
+sys.modules.setdefault(
+    "unified_trading_library.cloud_interface", MagicMock(AsyncRedisProvider=MagicMock())
+)
 
 # Mock the routes package so __init__ doesn't fire
 if "deployment_api.routes" not in sys.modules:

@@ -462,7 +462,7 @@ class TestProcessDeploymentsBatchExtended:
         facade = _make_mock_facade()
         with (
             patch(
-                "unified_cloud_interface.get_compute_engine_client",
+                "unified_trading_library.cloud_interface.get_compute_engine_client",
                 return_value=ce_mock,
             ),
             patch.dict(sys.modules, {"deployment_api.utils.storage_facade": facade}),
@@ -504,7 +504,7 @@ class TestProcessDeploymentsBatchExtended:
         notify_mock = MagicMock()
         with (
             patch(
-                "unified_cloud_interface.get_compute_engine_client",
+                "unified_trading_library.cloud_interface.get_compute_engine_client",
                 return_value=ce_mock,
             ),
             patch.dict(
@@ -559,7 +559,7 @@ class TestProcessDeploymentsBatchExtended:
         facade = _make_mock_facade()
         with (
             patch(
-                "unified_cloud_interface.get_compute_engine_client",
+                "unified_trading_library.cloud_interface.get_compute_engine_client",
                 return_value=ce_mock,
             ),
             patch.dict(
@@ -746,7 +746,7 @@ class TestProcessDeploymentsBatchExtended:
         ce_mock.aggregated_list_instances.return_value = []
 
         with patch(
-            "unified_cloud_interface.get_compute_engine_client",
+            "unified_trading_library.cloud_interface.get_compute_engine_client",
             return_value=ce_mock,
         ):
             synced, num_active = self._run_batch(state)
@@ -774,7 +774,7 @@ class TestProcessDeploymentsBatchExtended:
         ce_mock.aggregated_list_instances.side_effect = OSError("network error")
 
         with patch(
-            "unified_cloud_interface.get_compute_engine_client",
+            "unified_trading_library.cloud_interface.get_compute_engine_client",
             return_value=ce_mock,
         ):
             synced, num_active = self._run_batch(state)
@@ -894,7 +894,7 @@ class TestProcessDeploymentsBatchExtended:
         ce_mock.aggregated_list_instances.return_value = []
 
         with patch(
-            "unified_cloud_interface.get_compute_engine_client",
+            "unified_trading_library.cloud_interface.get_compute_engine_client",
             return_value=ce_mock,
         ):
             synced, _ = self._run_batch(state, facade=facade)
@@ -990,7 +990,7 @@ class TestProcessVmHealthAndStatusExtended:
 
         with (
             patch(
-                "unified_cloud_interface.get_compute_engine_client",
+                "unified_trading_library.cloud_interface.get_compute_engine_client",
                 return_value=ce_client,
             ),
             patch("deployment_api.workers.deployment_processor.settings") as mock_settings,

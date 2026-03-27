@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from unified_events_interface import setup_events
+from unified_trading_library.events_interface import setup_events
 
 # Pre-initialize events in test mode before any application import
 setup_events("deployment-api", "test")

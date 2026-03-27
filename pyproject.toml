@@ -36,9 +36,6 @@ dependencies = [
     "anthropic<1.0.0,>=0.49.0",
     # Internal libraries
     "unified-trading-library>=0.1.0,<1.0.0",
-    "unified-events-interface>=0.1.0,<1.0.0",
-    "unified-config-interface>=0.1.0,<1.0.0",
-    "unified-cloud-interface>=0.1.0,<1.0.0",
     "unified-api-contracts>=0.1.0,<1.0.0",
     "pytest>=9.0.1,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
@@ -57,9 +54,6 @@ dependencies = [
 
 [tool.uv.sources]
 unified-trading-library = { path = "../unified-trading-library", editable = true}
-unified-events-interface = { path = "../unified-events-interface", editable = true}
-unified-config-interface = { path = "../unified-config-interface", editable = true}
-unified-cloud-interface = { path = "../unified-cloud-interface", editable = true}
 unified-api-contracts = { path = "../unified-api-contracts", editable = true}
 [tool.ruff]
 line-length = 100

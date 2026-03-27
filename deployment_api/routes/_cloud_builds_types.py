@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Required, TypedDict, cast
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
-from unified_cloud_interface import get_cloud_build_client
+from unified_trading_library.cloud_interface import get_cloud_build_client
 
 from deployment_api.settings import (
     CLOUD_PROVIDER,
