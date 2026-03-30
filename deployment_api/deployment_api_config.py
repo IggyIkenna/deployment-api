@@ -497,7 +497,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         """Get the effective ML configs store bucket with project_id fallback."""
         if self.ml_configs_store_bucket:
             return self.ml_configs_store_bucket
-        return f"ml-configs-store-{self.gcp_project_id}"
+        return f"ml-configs-store-{self.gcp_project_id}"  # CORRECT-LOCAL
 
     @property
     def effective_state_bucket(self) -> str:

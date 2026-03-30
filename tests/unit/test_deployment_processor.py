@@ -615,7 +615,7 @@ class TestProcessDeploymentsBatchExtended:
         )
 
         with patch(
-            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
             return_value={},
         ):
             synced, num_active = self._run_batch(state, facade=facade)
@@ -650,7 +650,7 @@ class TestProcessDeploymentsBatchExtended:
         )
 
         with patch(
-            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
             return_value={},
         ):
             synced, _ = self._run_batch(state, facade=facade)
@@ -681,7 +681,7 @@ class TestProcessDeploymentsBatchExtended:
         notify_mock = MagicMock()
         with (
             patch(
-                "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+                "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
                 return_value={},
             ),
             patch.dict(
@@ -718,7 +718,7 @@ class TestProcessDeploymentsBatchExtended:
         facade = _make_mock_facade(list_objs=[obj], read_text="FAILED", write_fn=capture_write)
 
         with patch(
-            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
             return_value={},
         ):
             synced, _ = self._run_batch(state, facade=facade)
@@ -814,7 +814,7 @@ class TestProcessDeploymentsBatchExtended:
         mock_events = MagicMock(notify_deployment_updated_sync=MagicMock())
         with (
             patch(
-                "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+                "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
                 return_value={},
             ),
             patch.dict(
@@ -993,9 +993,10 @@ class TestProcessVmHealthAndStatusExtended:
                 "unified_trading_library.cloud_interface.get_compute_engine_client",
                 return_value=ce_client,
             ),
-            patch("deployment_api.workers.deployment_processor.settings") as mock_settings,
+            patch("deployment_api.workers._deployment_processor_vm.settings") as mock_settings,
             patch(
-                "deployment_api.workers.deployment_processor._cancel_vm_jobs_sync", return_value={}
+                "deployment_api.workers._deployment_processor_vm._cancel_vm_jobs_sync",
+                return_value={},
             ),
         ):
             mock_settings.OOM_KILL_THRESHOLD = oom_threshold
@@ -1184,7 +1185,7 @@ class TestProcessCloudRunStatus:
             cr_statuses = {}
 
         with patch(
-            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
             return_value=cr_statuses,
         ) as mock_batch:
             updated = _process_cloud_run_status(
@@ -1257,7 +1258,7 @@ class TestProcessCloudRunStatus:
         shards = [{"shard_id": "s1", "job_id": "exec-1", "status": "running"}]
 
         with patch(
-            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
             side_effect=RuntimeError("cloud run unavailable"),
         ):
             updated = _process_cloud_run_status(
@@ -1277,7 +1278,7 @@ class TestProcessCloudRunStatus:
         from deployment_api.workers.deployment_processor import _process_cloud_run_status
 
         with patch(
-            "deployment_api.workers.deployment_processor._get_cloud_run_status_batch_sync",
+            "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
             return_value={},
         ) as mock_batch:
             updated = _process_cloud_run_status(
@@ -1309,7 +1310,8 @@ class TestProcessStuckShardsExtended:
         with (
             patch("deployment_api.workers.deployment_processor.settings") as mock_settings,
             patch(
-                "deployment_api.workers.deployment_processor._cancel_vm_jobs_sync", return_value={}
+                "deployment_api.workers._deployment_processor_vm_cleanup._cancel_vm_jobs_sync",
+                return_value={},
             ) as mock_cancel,
         ):
             mock_settings.STUCK_SHARD_GRACE_SECONDS = 300
@@ -1441,9 +1443,12 @@ class TestHandleOrphanVmCleanupExtended:
             config = {"service_account_email": "sa@proj.iam", "job_name": "my-job"}
 
         with (
-            patch("deployment_api.workers.deployment_processor.settings") as mock_settings,
             patch(
-                "deployment_api.workers.deployment_processor._cancel_vm_jobs_sync", return_value={}
+                "deployment_api.workers._deployment_processor_vm_cleanup.settings"
+            ) as mock_settings,
+            patch(
+                "deployment_api.workers._deployment_processor_vm_cleanup._cancel_vm_jobs_sync",
+                return_value={},
             ) as mock_cancel,
         ):
             mock_settings.ORPHAN_DELETE_MAX_PARALLEL = 5

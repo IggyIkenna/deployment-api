@@ -29,12 +29,20 @@ from typing import cast
 
 from deployment_api import settings
 
-from ._deployment_processor_cloud_run import _process_cloud_run_status
+from ._deployment_processor_cloud_run import (
+    _get_cloud_run_status_batch_sync as _get_cloud_run_status_batch_sync,
+)
+from ._deployment_processor_cloud_run import (
+    _process_cloud_run_status,
+)
 from ._deployment_processor_helpers import (
     STATE_BUCKET,
     _apply_shard_status_updates,
     _QuotaBrokerProtocol,
     _resolve_gcs_shard_statuses,
+)
+from ._deployment_processor_helpers import (
+    _cancel_vm_jobs_sync as _cancel_vm_jobs_sync,
 )
 from ._deployment_processor_vm import (
     _build_vm_map_for_service,
@@ -43,7 +51,10 @@ from ._deployment_processor_vm import (
     _terminate_stuck_vm,
 )
 
-# Re-export pending_vm_deletes so tests can access it from this module.
+# Re-export symbols so tests can import from this module.
+from ._deployment_processor_vm_cleanup import (
+    _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,
+)
 from .auto_sync import pending_vm_deletes
 
 _pending_vm_deletes = pending_vm_deletes

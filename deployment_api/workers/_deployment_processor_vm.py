@@ -5,7 +5,7 @@ Covers:
 - OOM / startup-timeout detection (_check_oom_death_loop, _check_startup_timeout)
 - Serial-log health inspection (_inspect_vm_shard_health, _collect_unhealthy_vms)
 - Running shard / VM reconciliation (_reconcile_running_shards_with_vm_map)
-- Serial-log event parsing for healthy VMs (_apply_serial_log_events, _parse_healthy_vm_serial_events)
+- Serial-log event parsing for healthy VMs (_apply_serial_log_events)
 - VM health kill application (_apply_vm_health_kills)
 - VM map builder (_build_vm_map_for_service)
 - Running job ID collection (_collect_running_job_ids)

@@ -171,11 +171,11 @@ def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
 
 # Service to GCS bucket mapping (constructed from project ID)
 _pid = default_project_id
-SERVICE_OUTPUT_BUCKETS = {
-    "instruments-service": {
-        "CEFI": f"instruments-store-cefi-{_pid}",
-        "DEFI": f"instruments-store-defi-{_pid}",
-        "TRADFI": f"instruments-store-tradfi-{_pid}",
+SERVICE_OUTPUT_BUCKETS = {  # CORRECT-LOCAL
+    "instruments-service": {  # CORRECT-LOCAL
+        "CEFI": f"instruments-store-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"instruments-store-defi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
     },
     "market-tick-data-handler": {
         "CEFI": f"market-data-tick-cefi-{_pid}",

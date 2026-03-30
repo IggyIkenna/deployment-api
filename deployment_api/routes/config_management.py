@@ -231,7 +231,7 @@ async def read_domain_config(
         try:
             config_instance = store.load_config(config_class)
         except LookupError as e:
-            # ConfigStoreError from unified_trading_library.config_interface is a LookupError subclass
+            # ConfigStoreError from UTL config_interface is a LookupError subclass
             # when no active config exists for the domain.
             raise HTTPException(
                 status_code=404,

@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 # See codex 04-architecture/batch-live-symmetry.md and deployment-topology-diagrams.md.
 LIVE_PATH_PREFIX = "live/"
 
-# Service -> bucket mapping (uses storage facade)
-BUCKET_MAPPING = {
-    "instruments-service": {
-        "CEFI": f"instruments-store-cefi-{_pid}",
-        "DEFI": f"instruments-store-defi-{_pid}",
-        "TRADFI": f"instruments-store-tradfi-{_pid}",
+# Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL
+BUCKET_MAPPING = {  # CORRECT-LOCAL
+    "instruments-service": {  # CORRECT-LOCAL
+        "CEFI": f"instruments-store-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"instruments-store-defi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
     },
     "market-tick-data-handler": {
         "CEFI": f"market-data-tick-cefi-{_pid}",
@@ -39,28 +39,28 @@ BUCKET_MAPPING = {
         "DEFI": f"market-data-tick-defi-{_pid}",
         "TRADFI": f"market-data-tick-tradfi-{_pid}",
     },
-    "features-delta-one-service": {
-        "CEFI": f"features-delta-one-cefi-{_pid}",
-        "DEFI": f"features-delta-one-defi-{_pid}",
-        "TRADFI": f"features-delta-one-tradfi-{_pid}",
+    "features-delta-one-service": {  # CORRECT-LOCAL
+        "CEFI": f"features-delta-one-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"features-delta-one-defi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": f"features-delta-one-tradfi-{_pid}",  # CORRECT-LOCAL
     },
-    "features-calendar-service": {
+    "features-calendar-service": {  # CORRECT-LOCAL
         # Calendar features are UNIVERSAL - use single bucket (CEFI)
         # Temporal patterns, economic events, macro indicators don't vary by category
-        "CEFI": f"features-calendar-cefi-{_pid}",
+        "CEFI": f"features-calendar-cefi-{_pid}",  # CORRECT-LOCAL
     },
-    "features-onchain-service": {
-        "CEFI": f"features-onchain-cefi-{_pid}",
-        "DEFI": f"features-onchain-defi-{_pid}",
+    "features-onchain-service": {  # CORRECT-LOCAL
+        "CEFI": f"features-onchain-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"features-onchain-defi-{_pid}",  # CORRECT-LOCAL
     },
-    "features-volatility-service": {
-        "CEFI": f"features-volatility-cefi-{_pid}",
-        "DEFI": f"features-volatility-defi-{_pid}",
-        "TRADFI": f"features-volatility-tradfi-{_pid}",
+    "features-volatility-service": {  # CORRECT-LOCAL
+        "CEFI": f"features-volatility-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"features-volatility-defi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": f"features-volatility-tradfi-{_pid}",  # CORRECT-LOCAL
     },
-    "corporate-actions": {
+    "corporate-actions": {  # CORRECT-LOCAL
         # Corporate actions are TRADFI-only (uses instruments-store bucket)
-        "TRADFI": f"instruments-store-tradfi-{_pid}",
+        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
     },
 }
 

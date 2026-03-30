@@ -38,7 +38,7 @@ async def get_service_categories(service: str) -> dict[str, object]:
         {"service": str, "categories": List[str]}
 
     Examples:
-        - instruments-service: ["CEFI", "DEFI", "TRADFI"]
+        - instruments-service: ["CEFI", "DEFI", "TRADFI"]  # CORRECT-LOCAL
         - corporate-actions: ["TRADFI"]
         - features-calendar-service: []  # No category dimension
     """

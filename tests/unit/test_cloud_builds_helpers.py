@@ -110,7 +110,9 @@ class TestTriggerCache:
         triggers = [SimpleNamespace(name="trigger-a", id="id-001")]
         _populate_trigger_cache(triggers)
         # Simulate expired cache by backdating the cache time
-        with patch("deployment_api.routes.cloud_builds._trigger_cache_time", time.time() - 7200):
+        with patch(
+            "deployment_api.routes._cloud_builds_trigger._trigger_cache_time", time.time() - 7200
+        ):
             result = _get_cached_trigger_id("trigger-a")
         assert result is None
 

@@ -260,7 +260,7 @@ class PathCombinatorics:
         self.combinatorics = []
         skipped_venues: list[str] = []
 
-        for category in ["CEFI", "TRADFI", "DEFI"]:
+        for category in ["CEFI", "TRADFI", "DEFI"]:  # CORRECT-LOCAL
             cat_config: dict[str, object] = self.config.get(category) or {}
             venues_val = cat_config.get("venues")
             venues: dict[str, object] = (
@@ -768,7 +768,7 @@ class PathCombinatorics:
         """
         # Get all venues for the category(ies)
         target_venues: set[str] = set()
-        categories = [category.upper()] if category else ["CEFI", "TRADFI", "DEFI"]
+        categories = [category.upper()] if category else ["CEFI", "TRADFI", "DEFI"]  # CORRECT-LOCAL
 
         for cat in categories:
             cat_venues: set[str] = self.get_all_venues_for_category(cat)
