@@ -23,11 +23,13 @@ from typing import cast
 from fastapi import APIRouter, HTTPException, Query
 from unified_trading_library import __version__ as uts_version
 
-from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import (
+    CLOUD_MOCK_MODE,
+    CLOUD_PROVIDER,
     GITHUB_ORG,
     WORKSPACE_ROOT,
 )
+from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 
@@ -55,6 +57,13 @@ from ._cloud_builds_types import (
     _cloudbuild_v1,
     _ensure_gcp,
     _get_gcp_build_client,
+)
+from ._code_builds_aws import (
+    get_codebuild_history_sync,
+    get_recent_builds_for_projects_sync,
+    is_aws_provider,
+    list_codebuild_projects_sync,
+    start_codebuild_sync,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +105,63 @@ async def list_triggers(
     Results are cached for 5 minutes (TTL_BUILD_INFO) to avoid slow Cloud Build API calls.
     Use force_refresh=true to bypass cache.
     """
+    if CLOUD_MOCK_MODE or CLOUD_PROVIDER == "local":
+        mock_triggers = [
+            {
+                "trigger_id": f"mock-trigger-{svc}",
+                "name": f"{svc}-build",
+                "description": f"Build trigger for {svc}",
+                "repo": f"IggyIkenna/{svc}",
+                "branch": "live-defi-rollout",
+                "status": "SUCCESS",
+                "last_build": {
+                    "build_id": f"mock-build-{svc}-001",
+                    "status": "SUCCESS",
+                    "create_time": "2026-03-29T06:00:00Z",
+                    "finish_time": "2026-03-29T06:08:30Z",
+                    "duration_seconds": 510,
+                    "commit_sha": "abc1234",
+                    "branch": "live-defi-rollout",
+                    "log_url": f"https://console.cloud.google.com/cloud-build/builds/mock-{svc}",
+                },
+            }
+            for svc in SERVICES_WITH_TRIGGERS
+        ]
+        return cast(
+            TriggersResponseDict,
+            {
+                "triggers": mock_triggers,
+                "total": len(mock_triggers),
+                "project": default_project_id or "mock-project",
+                "region": DEFAULT_REGION,
+            },
+        )
+
+    if is_aws_provider():
+        cache_key = f"code_builds:triggers:aws:{DEFAULT_REGION}"
+
+        async def fetch_aws_triggers():
+            triggers = await asyncio.to_thread(list_codebuild_projects_sync)
+            builds_info = await asyncio.to_thread(
+                get_recent_builds_for_projects_sync,
+                [t["trigger_id"] for t in triggers],
+            )
+            for trigger in triggers:
+                trigger["last_build"] = builds_info.get(trigger["trigger_id"])
+            return {
+                "triggers": triggers,
+                "total": len(triggers),
+                "project": "aws",
+                "region": "ap-northeast-1",
+            }
+
+        return cast(
+            TriggersResponseDict,
+            await cache.get_or_fetch(
+                cache_key, fetch_aws_triggers, TTL_BUILD_INFO, force_refresh=force_refresh
+            ),
+        )
+
     _ensure_gcp()
     cache_key = f"cloud_builds:triggers:{default_project_id}:{DEFAULT_REGION}"
 
@@ -124,14 +190,63 @@ async def list_triggers(
 # ---------------------------------------------------------------------------
 
 
+async def _trigger_gcp_build(trigger_name: str, service: str, branch: str) -> TriggerBuildResponse:
+    """Execute GCP Cloud Build trigger and resolve build ID."""
+    result = await asyncio.to_thread(_run_trigger_operation_sync, trigger_name, branch)
+
+    build_id = result.get("build_id")
+    log_url = result.get("log_url")
+    trigger_id_result = result.get("trigger_id")
+    trigger_time_result = result.get("trigger_time")
+
+    if not build_id and trigger_id_result and trigger_time_result:
+        logger.info("Build ID not in operation response, querying recent builds...")
+        await asyncio.sleep(2)
+        for _attempt in range(3):
+            recent_build = await asyncio.to_thread(
+                _find_recent_build_sync, trigger_id_result, trigger_time_result
+            )
+            if recent_build:
+                build_id = recent_build["build_id"]
+                log_url = recent_build.get("log_url")
+                logger.info("Found build via query: build_id=%s", build_id)
+                break
+            await asyncio.sleep(1)
+
+    if not build_id:
+        logger.warning("Could not extract build_id from any source")
+
+    # Fall back to Cloud Build console URL if no direct log URL was returned
+    if not log_url:
+        log_url = (
+            f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}/{build_id}?project={default_project_id}"
+            if build_id
+            else f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}?project={default_project_id}"
+        )
+
+    message = (
+        f"Build triggered successfully for {service} on branch {branch}"
+        if build_id
+        else f"Build trigger called for {service} on branch {branch},"
+        " but could not get build ID. Check Cloud Build console."
+    )
+
+    return TriggerBuildResponse(
+        success=True,
+        build_id=build_id,
+        log_url=log_url,
+        message=message,
+        service=service,
+        branch=branch,
+    )
+
+
 @router.post("/trigger", response_model=TriggerBuildResponse)
 async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
     """
-    Manually trigger a Cloud Build for a service.
+    Manually trigger a Cloud Build / CodeBuild for a service.
 
-    This runs the build trigger as if code was pushed to the specified branch.
-
-    Requires: roles/cloudbuild.builds.editor on the service account.
+    Dispatches to GCP Cloud Build or AWS CodeBuild based on CLOUD_PROVIDER.
     """
     if request.service not in ALL_REPOS_WITH_TRIGGERS:
         return TriggerBuildResponse(
@@ -146,59 +261,32 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
 
     trigger_name = f"{request.service}-build"
 
+    # AWS CodeBuild path
+    if is_aws_provider():
+        try:
+            result = await asyncio.to_thread(start_codebuild_sync, trigger_name, request.branch)
+            return TriggerBuildResponse(
+                success=True,
+                build_id=result.get("build_id"),
+                log_url=result.get("log_url"),
+                message=f"CodeBuild triggered for {request.service} on branch {request.branch}",
+                service=request.service,
+                branch=request.branch,
+            )
+        except Exception as e:
+            logger.exception("Error triggering CodeBuild for %s: %s", request.service, e)
+            return TriggerBuildResponse(
+                success=False,
+                message=f"Failed to trigger CodeBuild: {e}",
+                service=request.service,
+                branch=request.branch,
+            )
+
+    # GCP Cloud Build path
     try:
-        result = await asyncio.to_thread(_run_trigger_operation_sync, trigger_name, request.branch)
+        return await _trigger_gcp_build(trigger_name, request.service, request.branch)
 
-        build_id = result.get("build_id")
-        log_url = result.get("log_url")
-        trigger_id_result = result.get("trigger_id")
-        trigger_time_result = result.get("trigger_time")
-
-        if not build_id and trigger_id_result and trigger_time_result:
-            logger.info("Build ID not in operation response, querying recent builds...")
-            await asyncio.sleep(2)
-            for _attempt in range(3):
-                recent_build = await asyncio.to_thread(
-                    _find_recent_build_sync, trigger_id_result, trigger_time_result
-                )
-                if recent_build:
-                    build_id = recent_build["build_id"]
-                    log_url = recent_build.get("log_url")
-                    logger.info("Found build via query: build_id=%s", build_id)
-                    break
-                await asyncio.sleep(1)
-
-        if not build_id:
-            logger.warning("Could not extract build_id from any source")
-
-        # Fall back to Cloud Build console URL if no direct log URL was returned
-        if not log_url:
-            log_url = (
-                f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}/{build_id}?project={default_project_id}"
-                if build_id
-                else f"https://console.cloud.google.com/cloud-build/builds;region={DEFAULT_REGION}?project={default_project_id}"
-            )
-
-        if build_id:
-            message = (
-                f"Build triggered successfully for {request.service} on branch {request.branch}"
-            )
-        else:
-            message = (
-                f"Build trigger called for {request.service} on branch {request.branch},"
-                " but could not get build ID. Check Cloud Build console."
-            )
-
-        return TriggerBuildResponse(
-            success=True,
-            build_id=build_id,
-            log_url=log_url,
-            message=message,
-            service=request.service,
-            branch=request.branch,
-        )
-
-    except (OSError, ValueError, RuntimeError) as e:
+    except Exception as e:
         error_msg = str(e)
 
         # Check for permission errors
@@ -240,8 +328,43 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
             detail=f"Unknown service/library: {service}. Valid options: {ALL_REPOS_WITH_TRIGGERS}",
         )
 
+    if CLOUD_MOCK_MODE or CLOUD_PROVIDER == "local":
+        return {
+            "service": service,
+            "trigger_name": f"{service}-build",
+            "builds": [
+                {
+                    "build_id": f"mock-build-{service}-{i:03d}",
+                    "status": "SUCCESS" if i < 3 else "FAILURE",
+                    "create_time": f"2026-03-{29 - i:02d}T06:00:00Z",
+                    "finish_time": f"2026-03-{29 - i:02d}T06:08:30Z",
+                    "duration_seconds": 510,
+                    "commit_sha": f"abc{i:04d}",
+                    "branch": "live-defi-rollout",
+                    "log_url": f"https://console.cloud.google.com/cloud-build/builds/mock-{service}-{i}",
+                }
+                for i in range(min(limit, 5))
+            ],
+            "total": min(limit, 5),
+        }
+
     trigger_name = f"{service}-build"
 
+    # AWS CodeBuild path
+    if is_aws_provider():
+        try:
+            history = await asyncio.to_thread(get_codebuild_history_sync, trigger_name, limit)
+            return {
+                "service": service,
+                "trigger_name": trigger_name,
+                "builds": history,
+                "total": len(history),
+            }
+        except Exception as e:
+            logger.exception("Error getting CodeBuild history for %s: %s", service, e)
+            raise HTTPException(status_code=500, detail=f"CodeBuild API error: {e}") from e
+
+    # GCP Cloud Build path
     try:
 
         def _get_history_sync() -> list[object]:
@@ -265,11 +388,11 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
             if not trigger_id:
                 return []
 
-            # Get builds filtered by trigger ID (API-level filter, much faster)
+            # Use project_id (v1 API style) — regional parent path fails with 400 on REST transport
             builds_request = _cb.ListBuildsRequest(
-                parent=parent,
+                project_id=default_project_id,
                 page_size=limit,
-                filter=f'build_trigger_id="{trigger_id}"',
+                filter=f'trigger_id="{trigger_id}"',
             )
             # Use islice to stop after getting 'limit' results (avoids exhausting pager)
             builds = list(islice(client.list_builds(request=builds_request), limit))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
@@ -286,9 +409,9 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
             "total": len(history),
         }
 
-    except (OSError, ValueError, RuntimeError) as e:
+    except Exception as e:
         logger.exception("Error getting build history for %s: %s", service, e)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(status_code=500, detail=f"Cloud Build API error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
