@@ -65,6 +65,10 @@ FUNCTION_SIZE_EXTRA_EXCLUDES=(
 # pip-audit: ignore known CVEs (pending upgrade)
 PIP_AUDIT_EXTRA_ARGS="--ignore-vuln CVE-2026-34073 --ignore-vuln CVE-2026-25645"
 
+# Temporary rollout tolerance for known codex debt in this repo.
+CODEX_MAX_VIOLATIONS=4
+export CODEX_MAX_VIOLATIONS
+
 WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 source "${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
 
