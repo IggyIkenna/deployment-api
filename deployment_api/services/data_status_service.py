@@ -9,7 +9,12 @@ import asyncio
 import json
 import logging
 import sys
-from typing import cast
+from typing import ClassVar, cast
+
+import pandas as pd
+from unified_api_contracts import VenueMapping
+from unified_api_contracts.internal import MarketCategory
+from unified_trading_library import read_availability_index
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -169,6 +174,18 @@ class DataStatusService:
                 missing_by_category[category] = missing_by_category.get(category, 0) + 1
         return missing_count
 
+    # ── Bucket resolution (mirrors deployment-service ManifestReader) ──
+    _BUCKET_TEMPLATES: ClassVar[dict[str, str]] = {
+        "instruments-service": "instruments-store-{cat}-{pid}",
+        "corporate-actions": "instruments-store-{cat}-{pid}",
+        "market-tick-data-service": "market-data-tick-{cat}-{pid}",
+        "market-data-processing-service": "market-data-tick-{cat}-{pid}",
+        "features-delta-one-service": "features-delta-one-{cat}-{pid}",
+        "features-volatility-service": "features-volatility-{cat}-{pid}",
+        "features-onchain-service": "features-onchain-{pid}",
+        "features-sports-service": "features-sports-{cat}-{pid}",
+    }
+
     async def calculate_missing_shards(
         self,
         service: str,
@@ -178,66 +195,115 @@ class DataStatusService:
         venues: list[str] | None = None,
         mode: str = "batch",
     ) -> dict[str, object]:
-        """
-        Calculate missing shards for a service over a date range.
+        """Calculate missing shards by reading manifest indices directly.
 
-        Returns dictionary containing missing shards analysis.
+        Uses read_availability_index (same as deployment-service CLI) instead
+        of shelling out to the data-status CLI subprocess.
+        Runs in a thread to avoid blocking the async event loop.
         """
+        return await asyncio.to_thread(
+            self._calculate_missing_shards_sync,
+            service,
+            start_date,
+            end_date,
+            categories,
+            venues,
+        )
+
+    def _calculate_missing_shards_sync(
+        self,
+        service: str,
+        start_date: str,
+        end_date: str,
+        categories: list[str] | None = None,
+        venues: list[str] | None = None,
+    ) -> dict[str, object]:
+        """Synchronous implementation of missing shard calculation."""
         try:
-            result = await self.run_data_status_cli(
-                service=service,
-                start_date=start_date,
-                end_date=end_date,
-                categories=categories,
-                venues=venues,
-                show_missing=True,
-                mode=mode,
-            )
-            if "error" in result:
-                return result
-
+            cat_list = categories or [str(c) for c in MarketCategory]
             missing_by_date: dict[str, int] = {}
-            missing_by_venue: dict[str, int] = {}
             missing_by_category: dict[str, int] = {}
             total_missing = 0
+            total_days_checked = 0
 
-            dates_raw: object = result.get("dates")
-            if dates_raw and isinstance(dates_raw, list):
-                for date_info_raw in cast(list[object], dates_raw):
-                    if not isinstance(date_info_raw, dict):
-                        continue
-                    date_info = cast(dict[str, object], date_info_raw)
-                    date_str_raw: object = date_info.get("date")
-                    date_str = date_str_raw if isinstance(date_str_raw, str) else ""
-                    missing_count = self._tally_missing_venues(
-                        date_info, missing_by_venue, missing_by_category
-                    )
-                    if missing_count > 0 and date_str:
-                        missing_by_date[date_str] = missing_count
-                        total_missing += missing_count
+            for cat in cat_list:
+                cat_result = self._scan_category_manifest(service, cat, start_date, end_date)
+                if not cat_result:
+                    continue
+                for md in cat_result["missing"]:
+                    missing_by_date[md] = missing_by_date.get(md, 0) + 1
+                missing_by_category[cat] = len(cat_result["missing"])
+                total_missing += len(cat_result["missing"])
+                total_days_checked += cat_result["days_checked"]
 
-            missing_analysis: dict[str, object] = {
+            days_total = max(1, total_days_checked)
+            days_complete = days_total - len(missing_by_date)
+            completion = round(days_complete / days_total * 100, 2)
+
+            return {
                 "service": service,
                 "date_range": {"start": start_date, "end": end_date},
                 "total_missing": total_missing,
                 "missing_by_date": missing_by_date,
-                "missing_by_venue": missing_by_venue,
+                "missing_by_venue": {},
                 "missing_by_category": missing_by_category,
                 "summary": {
-                    "total_days_checked": (
-                        len(cast(list[object], dates_raw)) if isinstance(dates_raw, list) else 0
-                    ),
+                    "total_days_checked": total_days_checked,
                     "days_with_missing": len(missing_by_date),
-                    "venues_with_missing": len(missing_by_venue),
+                    "venues_with_missing": 0,
                     "categories_with_missing": len(missing_by_category),
-                    "completion_rate": self._calculate_completion_rate(result),
+                    "completion_rate": completion,
                 },
             }
-            return missing_analysis
-
-        except (OSError, ValueError, RuntimeError) as e:
-            logger.error("Error calculating missing shards: %s", e)
+        except Exception as e:
+            logger.exception("Error calculating missing shards")
             return {"error": str(e)}
+
+    def _scan_category_manifest(
+        self,
+        service: str,
+        cat: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, list[str] | int] | None:
+        """Read manifest index for one category and return missing dates."""
+        template = self._BUCKET_TEMPLATES.get(service)
+        if not template:
+            return None
+        bucket = template.format(cat=cat.lower(), pid=self.project_id)
+
+        try:
+            index = read_availability_index(bucket)
+        except Exception:
+            logger.debug("No manifest index in %s", bucket)
+            return None
+
+        if index.empty:
+            return None
+
+        mask = (index["date"] >= start_date) & (index["date"] <= end_date)
+        if "service_name" in index.columns:
+            mask = mask & (index["service_name"] == service)
+        filtered = index.loc[mask]
+
+        # Clamp start to earliest venue launch date
+        effective_start = start_date
+        venue_mapping = VenueMapping()
+        if "venue" in filtered.columns and not filtered.empty:
+            for v in filtered["venue"].unique():
+                base_v = v.split(":")[0] if ":" in v else v
+                vs = venue_mapping.get_venue_start_date(base_v)
+                if vs:
+                    effective_start = max(effective_start, vs)
+
+        all_dates = pd.date_range(effective_start, end_date, freq="D")
+        found_dates = set(filtered["date"].unique())
+        missing = [
+            d.strftime("%Y-%m-%d") for d in all_dates if d.strftime("%Y-%m-%d") not in found_dates
+        ]
+        if not missing:
+            return None
+        return {"missing": missing, "days_checked": len(all_dates)}
 
     def _calculate_completion_rate(self, data_status_result: dict[str, object]) -> float:
         """
