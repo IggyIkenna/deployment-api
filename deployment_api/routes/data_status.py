@@ -146,6 +146,77 @@ async def get_last_updated(
         ) from e
 
 
+@router.get("/manifest")
+async def get_data_status_manifest(
+    service: str = Query(..., description="Service name"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    category: list[str] | None = Query(None, description="Filter by category"),
+):
+    """Get data status from manifest availability indices (fastest path)."""
+    if _cfg.is_mock_mode():
+        return {
+            "service": service,
+            "date_range": {"start": start_date, "end": end_date, "days": 0},
+            "mode": "turbo",
+            "sub_dimension": "venue",
+            "overall_completion_pct": 0.0,
+            "overall_dates_found": 0,
+            "overall_dates_expected": 0,
+            "categories": {},
+            "mock": True,
+        }
+    try:
+        result = await data_status_service.get_manifest_status(
+            service=service,
+            start_date=start_date,
+            end_date=end_date,
+            categories=category,
+        )
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_data_status_manifest")
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/coverage-summary")
+async def get_coverage_summary(
+    service: str = Query("instruments-service", description="Service name"),
+    categories: str | None = Query(None, description="Comma-separated categories"),
+):
+    """Get coverage summary with shard counts and latest-day instrument totals."""
+    if _cfg.is_mock_mode():
+        return {
+            "service": service,
+            "categories": {},
+            "totals": {
+                "shards": 0,
+                "instrument_rows": 0,
+                "dates_across_categories": 0,
+                "latest_day_instruments": 0,
+            },
+            "mock": True,
+        }
+    try:
+        cat_list = categories.split(",") if categories else None
+        result = await data_status_service.get_coverage_summary(
+            service=service,
+            categories=cat_list,
+        )
+        return result
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_coverage_summary")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
 @router.get("/turbo")
 async def get_data_status_turbo(
     request: Request,
@@ -210,6 +281,9 @@ async def get_turbo_cache_stats():
 async def clear_turbo_cache():
     """Clear the turbo mode cache."""
     try:
+        from deployment_api.services.data_status_service import clear_index_cache
+
+        clear_index_cache()
         return await data_analytics_service.clear_cache()
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in clear_turbo_cache")

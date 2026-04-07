@@ -9,6 +9,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+from unified_api_contracts.internal import MarketCategory
+
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import (
     ObjectInfo,
@@ -129,18 +131,19 @@ class DataQueryService:
             Dictionary containing available venues by category
         """
         # Service to bucket mappings
+        _all_cats = [cat.value.lower() for cat in MarketCategory]
         service_mappings = {
             "market-tick-data-handler": {
                 "prefix": "market-data",
-                "categories": ["cefi", "tradfi", "defi"],
+                "categories": _all_cats,
             },
             "market-data-processing-service": {
                 "prefix": "processed-market-data",
-                "categories": ["cefi", "tradfi", "defi"],
+                "categories": _all_cats,
             },
             "instruments-service": {
                 "prefix": "instruments",
-                "categories": ["cefi", "tradfi", "defi"],
+                "categories": _all_cats,
             },
             "features-equity-service": {
                 "prefix": "features-equity",

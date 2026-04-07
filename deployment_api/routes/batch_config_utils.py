@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 import yaml
+from unified_api_contracts.internal import MarketCategory
 
 from deployment_api.settings import gcp_project_id as _pid
 
@@ -21,24 +22,20 @@ logger = logging.getLogger(__name__)
 # See codex 04-architecture/batch-live-symmetry.md and deployment-topology-diagrams.md.
 LIVE_PATH_PREFIX = "live/"
 
+# Build per-category bucket dicts from MarketCategory enum — SSOT in UAC.
+_instruments_buckets = {
+    cat.value: f"instruments-store-{cat.value.lower()}-{_pid}" for cat in MarketCategory
+}
+_tick_buckets = {
+    cat.value: f"market-data-tick-{cat.value.lower()}-{_pid}" for cat in MarketCategory
+}
+
 # Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL
 BUCKET_MAPPING = {  # CORRECT-LOCAL
-    "instruments-service": {  # CORRECT-LOCAL
-        "CEFI": f"instruments-store-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"instruments-store-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
-    },
-    "market-tick-data-handler": {
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
-    },
-    "market-data-processing-service": {
-        # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
-    },
+    "instruments-service": _instruments_buckets,
+    "market-tick-data-handler": _tick_buckets,
+    # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
+    "market-data-processing-service": _tick_buckets,
     "features-delta-one-service": {  # CORRECT-LOCAL
         "CEFI": f"features-delta-one-cefi-{_pid}",  # CORRECT-LOCAL
         "DEFI": f"features-delta-one-defi-{_pid}",  # CORRECT-LOCAL
