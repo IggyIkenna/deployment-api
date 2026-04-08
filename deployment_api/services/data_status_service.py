@@ -550,19 +550,21 @@ class DataStatusService:
         venue_found_total = 0
         venue_expected_total = 0
         for v in sorted(str(x) for x in filtered["venue"].unique()):
-            v_dates = {str(d) for d in filtered[filtered["venue"] == v]["date"].unique()}
+            v_dates_all = {str(d) for d in filtered[filtered["venue"] == v]["date"].unique()}
             vs = venue_mapping.get_venue_start_date(v)
             if not vs and ":" in v:
                 vs = venue_mapping.get_venue_start_date(v.split(":")[0])
-            if not vs and v_dates:
-                vs = min(v_dates)
+            if not vs and v_dates_all:
+                vs = min(v_dates_all)
             eff_start = max(start_date, vs) if vs else start_date
-            v_all_dates = [
+            v_all_dates = {
                 d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
-            ]
+            }
+            # Only count dates within the expected range (avoid >100%)
+            v_dates = v_dates_all & v_all_dates
             expected = len(v_all_dates)
             found = len(v_dates)
-            v_missing = sorted(set(v_all_dates) - v_dates)
+            v_missing = sorted(v_all_dates - v_dates)
             venues_dict[v] = {
                 "dates_found": found,
                 "dates_expected": expected,
