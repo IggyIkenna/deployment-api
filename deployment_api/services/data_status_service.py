@@ -557,20 +557,23 @@ class DataStatusService:
             if not vs and v_dates_all:
                 vs = min(v_dates_all)
             eff_start = max(start_date, vs) if vs else start_date
-            v_all_dates = {
-                d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
-            }
+            # Use venue-specific trading schedule (weekdays for tradfi, 24/7 for crypto)
+            v_expected_list = venue_mapping.get_expected_trading_dates(v, eff_start, end_date)
+            v_all_dates = set(v_expected_list)
             # Only count dates within the expected range (avoid >100%)
             v_dates = v_dates_all & v_all_dates
             expected = len(v_all_dates)
             found = len(v_dates)
             v_missing = sorted(v_all_dates - v_dates)
+            v_found_sorted = sorted(v_dates)
             venues_dict[v] = {
                 "dates_found": found,
                 "dates_expected": expected,
                 "dates_expected_venue": expected,
                 "dates_missing": len(v_missing),
                 "missing_dates": v_missing,
+                "dates_found_list": v_found_sorted,
+                "dates_missing_list": v_missing,
                 "completion_pct": round(found / max(1, expected) * 100, 2),
                 "venue_start_date": vs,
             }
@@ -648,6 +651,7 @@ class DataStatusService:
         else:
             cat_pct = round(cat_found / max(1, total_days) * 100, 2)
 
+        cat_found_sorted = sorted(cat_found_dates)
         return {
             "category": cat,
             "bucket": bucket,
@@ -660,6 +664,8 @@ class DataStatusService:
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,
             "missing_dates": cat_missing,
+            "dates_found_list": cat_found_sorted,
+            "dates_missing_list": cat_missing,
             "venues": venues_dict,
             "_venue_found": venue_found_total,
             "_venue_expected": venue_expected_total,

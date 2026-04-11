@@ -259,7 +259,7 @@ VALID_SERVICES: frozenset[str] = frozenset(
         "execution-algo-library",
         "matching-engine-library",
         "unified-feature-calculator-library",
-        "unified-market-interface",
+        # UMI: archived — merged into MTDS as market_interface
         "unified-ml-interface",
         "unified-trade-execution-interface",
         "unified-sports-execution-interface",
