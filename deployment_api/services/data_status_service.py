@@ -228,6 +228,11 @@ class DataStatusService:
         "features-sports-service": "features-sports-{cat}-{pid}",
     }
 
+    # Categories whose bucket name doesn't follow the template pattern
+    _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
+        ("market-tick-data-service", "gas-fees"): "gas-fees-{pid}",
+    }
+
     async def calculate_missing_shards(
         self,
         service: str,
@@ -312,7 +317,12 @@ class DataStatusService:
         template = self._BUCKET_TEMPLATES.get(service)
         if not template:
             return None
-        bucket = template.format(cat=cat.lower(), pid=self.project_id)
+        override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
+        bucket = (
+            override.format(pid=self.project_id)
+            if override
+            else template.format(cat=cat.lower(), pid=self.project_id)
+        )
 
         try:
             index = _read_index_cached(bucket)
@@ -411,7 +421,12 @@ class DataStatusService:
             template = self._BUCKET_TEMPLATES.get(service)
             if not template:
                 continue
-            bucket = template.format(cat=cat.lower(), pid=self.project_id)
+            override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
+            bucket = (
+                override.format(pid=self.project_id)
+                if override
+                else template.format(cat=cat.lower(), pid=self.project_id)
+            )
             try:
                 index = _read_index_cached(bucket)
             except Exception:
@@ -609,7 +624,12 @@ class DataStatusService:
         if not template:
             return empty
 
-        bucket = template.format(cat=cat.lower(), pid=self.project_id)
+        # Check category-specific overrides first (e.g. gas-fees bucket)
+        override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
+        if override:
+            bucket = override.format(pid=self.project_id)
+        else:
+            bucket = template.format(cat=cat.lower(), pid=self.project_id)
         empty["bucket"] = bucket
         try:
             index = _read_index_cached(bucket)
