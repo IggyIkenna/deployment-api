@@ -20,6 +20,7 @@ import logging
 from typing import cast
 
 import aiohttp
+import aiohttp.resolver
 
 from deployment_api import settings as _settings
 
@@ -38,6 +39,12 @@ def _base_url() -> str:
 def _timeout() -> aiohttp.ClientTimeout:
     """Return the default timeout for deployment-service calls."""
     return aiohttp.ClientTimeout(total=_settings.DEPLOYMENT_SERVICE_TIMEOUT_SECONDS)
+
+
+def _make_session(**kwargs: object) -> aiohttp.ClientSession:
+    """Create an aiohttp session with ThreadedResolver (OS DNS)."""
+    connector = aiohttp.TCPConnector(resolver=aiohttp.resolver.ThreadedResolver())
+    return aiohttp.ClientSession(connector=connector, **kwargs)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +111,7 @@ async def calculate_shards(
     logger.debug("POST %s (service=%s)", url, service)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status != 200:
@@ -188,7 +195,7 @@ async def create_deployment(
     logger.debug("POST %s (deployment_id=%s, service=%s)", url, deployment_id, service)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status not in (200, 201, 202):
@@ -265,7 +272,7 @@ async def get_data_status(
     logger.debug("GET %s (service=%s, %s..%s)", url, service, start_date, end_date)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.get(url, params=cast(dict[str, str], params)) as resp,
     ):
         if resp.status != 200:
@@ -338,7 +345,7 @@ async def cancel_vm_jobs(
     logger.debug("POST %s (deployment_id=%s, %d jobs)", url, deployment_id, len(jobs))
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status not in (200, 202):
@@ -379,7 +386,7 @@ async def get_vm_status_batch(
     url = f"{_base_url()}/api/v1/vm-jobs/status-batch"
     logger.debug("POST %s (%d VMs, zone=%s)", url, len(vm_names), zone)
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status != 200:
@@ -424,7 +431,7 @@ async def quota_acquire_batch(
     logger.debug("POST %s (batch_size=%d)", url, batch_size)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status != 200:
@@ -466,7 +473,7 @@ async def get_cloud_run_status_batch(
     url = f"{_base_url()}/api/v1/cloud-run/status-batch"
     logger.debug("POST %s (%d jobs, region=%s)", url, len(job_ids), region)
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status != 200:
@@ -508,7 +515,7 @@ async def quota_release_batch(
     logger.debug("POST %s (batch_size=%d)", url, batch_size)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status not in (200, 204):
@@ -547,7 +554,7 @@ async def get_deployment_events(
     logger.debug("GET %s (deployment_id=%s)", url, deployment_id)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.get(url, params=params) as resp,
     ):
         if resp.status != 200:
@@ -578,7 +585,7 @@ async def get_vm_events(
     url = f"{_base_url()}/api/v1/deployments/{deployment_id}/vm-events"
     logger.debug("GET %s (deployment_id=%s)", url, deployment_id)
 
-    async with aiohttp.ClientSession(timeout=_timeout()) as session, session.get(url) as resp:
+    async with _make_session(timeout=_timeout()) as session, session.get(url) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise RuntimeError(
@@ -629,7 +636,7 @@ async def live_rollback(
     logger.debug("POST %s (deployment_id=%s, service=%s)", url, deployment_id, service)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.post(url, json=payload) as resp,
     ):
         if resp.status not in (200, 202):
@@ -663,7 +670,7 @@ async def get_live_health(
     logger.debug("GET %s (deployment_id=%s, service=%s)", url, deployment_id, service)
 
     async with (
-        aiohttp.ClientSession(timeout=_timeout()) as session,
+        _make_session(timeout=_timeout()) as session,
         session.get(url, params=params) as resp,
     ):
         if resp.status != 200:

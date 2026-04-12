@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import aiohttp
+import aiohttp.resolver
 import google.auth
 import google.auth.transport.requests
 
@@ -119,7 +120,8 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
 
     try:
         timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        connector = aiohttp.TCPConnector(resolver=aiohttp.resolver.ThreadedResolver())
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             # Get manifest (this returns the digest in Docker-Content-Digest header)
             async with session.get(manifest_url, headers=headers) as response:
                 if response.status != 200:
