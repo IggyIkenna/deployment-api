@@ -13,8 +13,16 @@ import time
 from typing import ClassVar, cast
 
 import pandas as pd
-from unified_api_contracts import VenueMapping
+from unified_api_contracts import (
+    VenueMapping,
+    get_expected_data_types_for_venue,
+    get_venue_data_type_start_date,
+)
 from unified_api_contracts.internal import MarketCategory
+from unified_api_contracts.sports import (
+    get_all_prediction_league_ids,
+    get_league_fixture_calendar,
+)
 from unified_trading_library import read_availability_index
 
 from deployment_api.settings import gcp_project_id as _pid
@@ -548,6 +556,20 @@ class DataStatusService:
             "categories": result_categories,
         }
 
+    # Sports reference venues — fixture-dependent, not every-calendar-day expected.
+    # Expected dates = dates where ANY sports reference entity has data (fixture calendar).
+    _SPORTS_REFERENCE_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "FOOTYSTATS_",
+        "TRANSFERMARKT_",
+        "UNDERSTAT_",
+        "SFI_",
+        "API_FOOTBALL_",
+    )
+
+    def _is_sports_reference_venue(self, venue: str) -> bool:
+        """Check if a venue is a sports reference entity (fixture-dependent)."""
+        return venue.startswith(self._SPORTS_REFERENCE_PREFIXES)
+
     def _build_venue_breakdown(
         self,
         filtered: pd.DataFrame,
@@ -556,32 +578,66 @@ class DataStatusService:
         venue_mapping: VenueMapping,
         cat_found: int,
         total_days: int,
+        service: str = "",
     ) -> tuple[dict[str, object], int, int]:
-        """Build per-venue stats from filtered index data."""
+        """Build per-venue stats from filtered index data.
+
+        Includes data_type sub-dimension for services that write per-data-type
+        manifest entries (e.g. market-tick-data-service).
+
+        For sports reference venues (FOOTYSTATS_*, TRANSFERMARKT_*, etc.), the
+        expected-date denominator uses a fixture calendar derived from the dates
+        where ANY sports reference entity has data, rather than every calendar
+        day.  This avoids penalising coverage for off-season / no-fixture days.
+        """
         if "venue" not in filtered.columns or filtered.empty:
             return {}, cat_found, total_days
+
+        has_data_type = (
+            "data_type" in filtered.columns
+            and not filtered["data_type"].isna().all()
+            and (filtered["data_type"].str.len() > 0).any()
+        )
+
+        # Build fixture calendar — union of dates across all sports reference
+        # venues in this category.  Used as the expected-date set for each
+        # individual sports reference venue instead of all calendar days.
+        all_venues = [str(x) for x in filtered["venue"].unique()]
+        sports_ref_venues = [v for v in all_venues if self._is_sports_reference_venue(v)]
+        fixture_calendar: set[str] | None = None
+        if sports_ref_venues:
+            sports_mask = filtered["venue"].isin(sports_ref_venues)
+            fixture_calendar = {str(d) for d in filtered.loc[sports_mask, "date"].unique()}
 
         venues_dict: dict[str, object] = {}
         venue_found_total = 0
         venue_expected_total = 0
-        for v in sorted(str(x) for x in filtered["venue"].unique()):
-            v_dates_all = {str(d) for d in filtered[filtered["venue"] == v]["date"].unique()}
+        for v in sorted(all_venues):
+            v_mask = filtered["venue"] == v
+            v_df = filtered[v_mask]
+            v_dates_all = {str(d) for d in v_df["date"].unique()}
             vs = venue_mapping.get_venue_start_date(v)
             if not vs and ":" in v:
                 vs = venue_mapping.get_venue_start_date(v.split(":")[0])
             if not vs and v_dates_all:
                 vs = min(v_dates_all)
             eff_start = max(start_date, vs) if vs else start_date
-            # Use venue-specific trading schedule (weekdays for tradfi, 24/7 for crypto)
-            v_expected_list = venue_mapping.get_expected_trading_dates(v, eff_start, end_date)
-            v_all_dates = set(v_expected_list)
-            # Only count dates within the expected range (avoid >100%)
+
+            # Sports reference venues: expected = fixture calendar dates
+            # (only dates where matches exist), not all calendar days.
+            if self._is_sports_reference_venue(v) and fixture_calendar is not None:
+                v_all_dates = {d for d in fixture_calendar if d >= eff_start}
+            else:
+                v_expected_list = venue_mapping.get_expected_trading_dates(v, eff_start, end_date)
+                v_all_dates = set(v_expected_list)
+
             v_dates = v_dates_all & v_all_dates
             expected = len(v_all_dates)
             found = len(v_dates)
             v_missing = sorted(v_all_dates - v_dates)
             v_found_sorted = sorted(v_dates)
-            venues_dict[v] = {
+
+            venue_entry: dict[str, object] = {
                 "dates_found": found,
                 "dates_expected": expected,
                 "dates_expected_venue": expected,
@@ -592,9 +648,135 @@ class DataStatusService:
                 "completion_pct": round(found / max(1, expected) * 100, 2),
                 "venue_start_date": vs,
             }
+
+            # Data type sub-dimension (for MTDS and similar multi-data-type services)
+            if has_data_type:
+                dt_breakdown = self._build_data_type_breakdown(
+                    v_df,
+                    v,
+                    eff_start,
+                    end_date,
+                    venue_mapping,
+                )
+                if dt_breakdown:
+                    venue_entry["data_types"] = dt_breakdown
+
+            # League sub-dimension (sports venues with league_id data)
+            league_breakdown = self._build_league_breakdown(v_df, eff_start, end_date)
+            if league_breakdown:
+                venue_entry["leagues"] = league_breakdown
+
+            venues_dict[v] = venue_entry
             venue_found_total += found
             venue_expected_total += expected
         return venues_dict, venue_found_total, venue_expected_total
+
+    def _build_data_type_breakdown(
+        self,
+        venue_df: pd.DataFrame,
+        venue: str,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+    ) -> dict[str, object]:
+        """Build per-data-type stats for a single venue.
+
+        Uses UAC get_expected_data_types_for_venue() to know which data types
+        should exist, and get_venue_data_type_start_date() for per-data-type ranges.
+        """
+        if "data_type" not in venue_df.columns:
+            return {}
+
+        # Get expected data types from UAC
+        expected_dts = get_expected_data_types_for_venue(venue)
+        # Also include data types actually present in the index (may have extras)
+        present_dts = {str(dt) for dt in venue_df["data_type"].unique() if dt and str(dt).strip()}
+        all_dts = sorted(set(expected_dts) | present_dts)
+
+        if not all_dts:
+            return {}
+
+        dt_dict: dict[str, object] = {}
+        for dt in all_dts:
+            dt_df = venue_df[venue_df["data_type"] == dt]
+            dt_dates = {str(d) for d in dt_df["date"].unique()} if not dt_df.empty else set()
+
+            # Per-data-type start date from UAC
+            dt_start = get_venue_data_type_start_date(venue, dt)
+            dt_eff_start = max(start_date, dt_start) if dt_start else start_date
+            dt_expected_list = venue_mapping.get_expected_trading_dates(
+                venue,
+                dt_eff_start,
+                end_date,
+            )
+            dt_expected = set(dt_expected_list)
+            dt_found = dt_dates & dt_expected
+            dt_missing_dates = sorted(dt_expected - dt_found)
+
+            dt_dict[dt] = {
+                "dates_found": len(dt_found),
+                "dates_expected": len(dt_expected),
+                "dates_missing": len(dt_missing_dates),
+                "completion_pct": round(
+                    len(dt_found) / max(1, len(dt_expected)) * 100,
+                    2,
+                ),
+                "start_date": dt_start,
+                "is_expected": dt in expected_dts,
+            }
+        return dt_dict
+
+    def _build_league_breakdown(
+        self,
+        venue_df: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Build per-league stats for a sports venue.
+
+        Uses UAC league fixture calendar as the per-league denominator.
+        Leagues in UAC's prediction registry but absent from manifest
+        appear at 0%.
+        """
+        if "league_id" not in venue_df.columns:
+            return {}
+
+        leagues_in_data = {lid for lid in venue_df["league_id"].unique() if lid}
+
+        # Include all prediction leagues so newly-added ones show 0%
+        all_league_ids = set(get_all_prediction_league_ids())
+        all_leagues = sorted(leagues_in_data | all_league_ids)
+
+        if not all_leagues:
+            return {}
+
+        league_dict: dict[str, object] = {}
+        for lid in all_leagues:
+            expected_dates = get_league_fixture_calendar(lid, start_date, end_date)
+            expected_count = max(1, len(expected_dates)) if expected_dates else 1
+
+            if lid in leagues_in_data:
+                l_df = venue_df[venue_df["league_id"] == lid]
+                found_dates = {str(d) for d in l_df["date"].unique()}
+                found_count = len(found_dates)
+                missing_dates = sorted(d for d in expected_dates if d not in found_dates)
+            else:
+                found_count = 0
+                found_dates = set()
+                missing_dates = sorted(expected_dates) if expected_dates else []
+
+            league_dict[lid] = {
+                "dates_found": found_count,
+                "dates_expected": expected_count,
+                "dates_missing": len(missing_dates),
+                "missing_dates": missing_dates,
+                "dates_found_list": sorted(found_dates),
+                "completion_pct": round(
+                    found_count / max(1, expected_count) * 100,
+                    2,
+                ),
+            }
+        return league_dict
 
     def _build_manifest_category(
         self,
@@ -655,7 +837,7 @@ class DataStatusService:
         cat_missing = sorted(set(all_date_strs) - cat_found_dates)
         cat_found = len(cat_found_dates)
 
-        # Per-venue breakdown
+        # Per-venue breakdown (includes data_type sub-dimension for multi-data-type services)
         venues_dict, venue_found_total, venue_expected_total = self._build_venue_breakdown(
             filtered,
             start_date,
@@ -663,6 +845,7 @@ class DataStatusService:
             venue_mapping,
             cat_found,
             total_days,
+            service=service,
         )
 
         # Use venue-weighted completion when venues exist
