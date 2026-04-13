@@ -819,7 +819,20 @@ class DataStatusService:
             "venue_start_date": venue_start,
         }
 
-        if has_data_type:
+        # v4: instrument_type breakdown (spot, perpetuals, equity, pool, etc.)
+        has_instrument_type = (
+            "instrument_type" in v_df.columns
+            and not v_df["instrument_type"].isna().all()
+            and (v_df["instrument_type"].str.len() > 0).any()
+        )
+        if has_instrument_type:
+            itype_breakdown = self._build_instrument_type_breakdown(
+                v_df, venue, eff_start, end_date, venue_mapping, has_data_type,
+            )
+            if itype_breakdown:
+                venue_entry["instrument_types"] = itype_breakdown
+
+        if has_data_type and not has_instrument_type:
             dt_breakdown = self._build_data_type_breakdown(
                 v_df,
                 venue,
@@ -835,6 +848,55 @@ class DataStatusService:
             venue_entry["leagues"] = league_breakdown
 
         return venue_entry
+
+    def _build_instrument_type_breakdown(
+        self,
+        venue_df: pd.DataFrame,
+        venue: str,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+        has_data_type: bool,
+    ) -> dict[str, object]:
+        """Build per-instrument_type stats for a venue (v4).
+
+        Each instrument_type (spot, perpetuals, futures_chain, etc.) gets its own
+        entry with dates_found/expected and optional data_type sub-breakdown.
+        """
+        if "instrument_type" not in venue_df.columns:
+            return {}
+
+        itypes = sorted(
+            it for it in venue_df["instrument_type"].unique() if it and str(it).strip()
+        )
+        if not itypes:
+            return {}
+
+        itype_dict: dict[str, object] = {}
+        for it in itypes:
+            it_df = venue_df[venue_df["instrument_type"] == it]
+            it_dates = {str(d) for d in it_df["date"].unique()}
+            all_dates = set(venue_mapping.get_expected_trading_dates(venue, start_date, end_date))
+            found = len(it_dates & all_dates)
+            expected = len(all_dates)
+
+            entry: dict[str, object] = {
+                "dates_found": found,
+                "dates_expected": expected,
+                "completion_pct": round(found / max(1, expected) * 100, 2),
+            }
+
+            # Nest data_types within instrument_type if available
+            if has_data_type:
+                dt_sub = self._build_data_type_breakdown(
+                    it_df, venue, start_date, end_date, venue_mapping,
+                )
+                if dt_sub:
+                    entry["data_types"] = dt_sub
+
+            itype_dict[it] = entry
+
+        return itype_dict
 
     def _build_data_type_breakdown(
         self,
