@@ -759,6 +759,7 @@ class DataStatusService:
                 v_all_dates,
                 has_data_type,
                 venue_mapping,
+                category=category,
             )
 
             venues_dict[v] = venue_entry
@@ -799,6 +800,7 @@ class DataStatusService:
         v_all_dates: set[str],
         has_data_type: bool,
         venue_mapping: VenueMapping,
+        category: str = "",
     ) -> dict[str, object]:
         """Build stats dict for a single venue."""
         v_dates = v_dates_all & v_all_dates
@@ -843,9 +845,11 @@ class DataStatusService:
             if dt_breakdown:
                 venue_entry["data_types"] = dt_breakdown
 
-        league_breakdown = self._build_league_breakdown(v_df, eff_start, end_date)
-        if league_breakdown:
-            venue_entry["leagues"] = league_breakdown
+        # Leagues only for SPORTS (not CEFI/TRADFI/DEFI/PREDICTION)
+        if category.upper() in ("SPORTS",):
+            league_breakdown = self._build_league_breakdown(v_df, eff_start, end_date)
+            if league_breakdown:
+                venue_entry["leagues"] = league_breakdown
 
         return venue_entry
 
