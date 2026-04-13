@@ -1012,6 +1012,99 @@ class DataStatusService:
 
         return sub_dim_dict
 
+    def _build_chain_breakdown(
+        self,
+        filtered: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+    ) -> dict[str, object]:
+        """Build per-chain breakdown for DeFi data (v4 chain column).
+
+        Groups venues by chain, producing a hierarchy: chain → {venues, completion_pct, dates}.
+        """
+        if "chain" not in filtered.columns:
+            return {}
+
+        chains = sorted(c for c in filtered["chain"].unique() if c)
+        if not chains:
+            return {}
+
+        all_dates_range = pd.date_range(start_date, end_date, freq="D")
+        total_expected = len(all_dates_range)
+        chain_dict: dict[str, object] = {}
+
+        for chain in chains:
+            chain_mask = filtered["chain"] == chain
+            chain_df = filtered[chain_mask]
+            chain_dates = {str(d) for d in chain_df["date"].unique()}
+            chain_venues = sorted(chain_df["venue"].unique()) if not chain_df.empty else []
+            found = len(chain_dates)
+
+            chain_dict[chain] = {
+                "dates_found": found,
+                "dates_expected": total_expected,
+                "completion_pct": round(found / max(1, total_expected) * 100, 2),
+                "venues": chain_venues,
+                "venue_count": len(chain_venues),
+            }
+
+        return chain_dict
+
+    def _build_feature_group_breakdown(
+        self,
+        filtered: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Build per-feature_group breakdown (v4 feature_group column).
+
+        Groups by feature_group, with optional timeframe sub-level.
+        """
+        if "feature_group" not in filtered.columns:
+            return {}
+
+        groups = sorted(g for g in filtered["feature_group"].unique() if g)
+        if not groups:
+            return {}
+
+        all_dates_range = pd.date_range(start_date, end_date, freq="D")
+        total_expected = len(all_dates_range)
+        fg_dict: dict[str, object] = {}
+
+        for fg in groups:
+            fg_mask = filtered["feature_group"] == fg
+            fg_df = filtered[fg_mask]
+            fg_dates = {str(d) for d in fg_df["date"].unique()}
+            found = len(fg_dates)
+
+            entry: dict[str, object] = {
+                "dates_found": found,
+                "dates_expected": total_expected,
+                "completion_pct": round(found / max(1, total_expected) * 100, 2),
+            }
+
+            # Add timeframe sub-breakdown if present
+            has_tf = "timeframe" in fg_df.columns and fg_df["timeframe"].str.len().sum() > 0
+            if has_tf:
+                timeframes: dict[str, object] = {}
+                for tf in sorted(fg_df["timeframe"].unique()):
+                    if not tf:
+                        continue
+                    tf_mask = fg_df["timeframe"] == tf
+                    tf_dates = {str(d) for d in fg_df.loc[tf_mask, "date"].unique()}
+                    timeframes[tf] = {
+                        "dates_found": len(tf_dates),
+                        "dates_expected": total_expected,
+                        "completion_pct": round(len(tf_dates) / max(1, total_expected) * 100, 2),
+                    }
+                if timeframes:
+                    entry["timeframes"] = timeframes
+
+            fg_dict[fg] = entry
+
+        return fg_dict
+
     def _build_manifest_category(
         self,
         service: str,
@@ -1098,6 +1191,35 @@ class DataStatusService:
                 end_date,
             )
 
+        # v4: Build chain breakdown for DeFi (group venues by chain)
+        chains_dict: dict[str, object] = {}
+        has_chain_data = (
+            "chain" in filtered.columns
+            and not filtered.empty
+            and filtered["chain"].str.len().sum() > 0
+        )
+        if has_chain_data:
+            chains_dict = self._build_chain_breakdown(
+                filtered,
+                start_date,
+                end_date,
+                venue_mapping,
+            )
+
+        # v4: Build feature_group breakdown (for feature services)
+        feature_groups_dict: dict[str, object] = {}
+        has_fg_data = (
+            "feature_group" in filtered.columns
+            and not filtered.empty
+            and filtered["feature_group"].str.len().sum() > 0
+        )
+        if has_fg_data:
+            feature_groups_dict = self._build_feature_group_breakdown(
+                filtered,
+                start_date,
+                end_date,
+            )
+
         cat_found_sorted = sorted(cat_found_dates)
         result: dict[str, object] = {
             "category": cat,
@@ -1119,6 +1241,10 @@ class DataStatusService:
         }
         if defi_sub_dims:
             result["defi_sub_dimensions"] = defi_sub_dims
+        if chains_dict:
+            result["chains"] = chains_dict
+        if feature_groups_dict:
+            result["feature_groups"] = feature_groups_dict
         return result
 
     async def get_last_updated_info(
