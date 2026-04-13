@@ -1238,6 +1238,40 @@ class DataStatusService:
             category=cat,
         )
 
+        # When all venues are empty (sports instruments pattern), group by data_type instead
+        all_venues_empty = all(str(k).strip() == "" for k in venues_dict) if venues_dict else False
+        if all_venues_empty and "data_type" in filtered.columns:
+            # Rebuild grouping by data_type
+            dt_venues: dict[str, object] = {}
+            dt_found_total = 0
+            dt_expected_total = 0
+            for dt_val in sorted(filtered["data_type"].unique()):
+                if not dt_val or not str(dt_val).strip():
+                    continue
+                dt_mask = filtered["data_type"] == dt_val
+                dt_df = filtered[dt_mask]
+                dt_dates = {str(d) for d in dt_df["date"].unique()}
+                dt_expected = total_days
+                dt_found = len(dt_dates)
+                dt_entry: dict[str, object] = {
+                    "dates_found": dt_found,
+                    "dates_expected": dt_expected,
+                    "dates_expected_venue": dt_expected,
+                    "dates_missing": dt_expected - dt_found,
+                    "completion_pct": round(dt_found / max(1, dt_expected) * 100, 2),
+                }
+                # Add league breakdown for sports data_types
+                if cat.upper() == "SPORTS":
+                    league_breakdown = self._build_league_breakdown(dt_df, start_date, end_date)
+                    if league_breakdown:
+                        dt_entry["leagues"] = league_breakdown
+                dt_venues[str(dt_val)] = dt_entry
+                dt_found_total += dt_found
+                dt_expected_total += dt_expected
+            venues_dict = dt_venues
+            venue_found_total = dt_found_total
+            venue_expected_total = dt_expected_total
+
         # Use venue-weighted completion when venues exist
         if venues_dict:
             cat_pct = round(venue_found_total / max(1, venue_expected_total) * 100, 2)
