@@ -233,7 +233,14 @@ class DataStatusService:
         "features-delta-one-service": "features-delta-one-{cat}-{pid}",
         "features-volatility-service": "features-volatility-{cat}-{pid}",
         "features-onchain-service": "features-onchain-{pid}",
-        "features-sports-service": "features-sports-{cat}-{pid}",
+        "features-sports-service": "features-sports-{pid}",
+        "features-calendar-service": "features-calendar-{pid}",
+        "features-multi-timeframe-service": "features-multi-timeframe-{cat}-{pid}",
+        "features-cross-instrument-service": "features-cross-instrument-{cat}-{pid}",
+        "features-commodity-service": "features-commodity-{pid}",
+        "ml-training-service": "ml-models-store-{pid}",
+        "ml-inference-service": "ml-predictions-{pid}",
+        "strategy-service": "strategy-store-{pid}",
     }
 
     # Categories whose bucket name doesn't follow the template pattern
