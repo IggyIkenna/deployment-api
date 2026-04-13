@@ -1277,7 +1277,10 @@ class DataStatusService:
                 dt_mask = filtered["data_type"] == dt_val
                 dt_df = filtered[dt_mask]
                 dt_dates = {str(d) for d in dt_df["date"].unique()}
-                dt_expected = total_days
+                # Expected = dates from first data appearance (not full query range)
+                dt_start = min(dt_dates) if dt_dates else start_date
+                dt_eff_start = max(start_date, dt_start)
+                dt_expected = len(pd.date_range(dt_eff_start, end_date, freq="D"))
                 dt_found = len(dt_dates)
                 dt_entry: dict[str, object] = {
                     "dates_found": dt_found,
@@ -1286,11 +1289,13 @@ class DataStatusService:
                     "dates_missing": dt_expected - dt_found,
                     "completion_pct": round(dt_found / max(1, dt_expected) * 100, 2),
                 }
-                # Add league breakdown for sports data_types
-                if cat.upper() == "SPORTS":
-                    league_breakdown = self._build_league_breakdown(dt_df, start_date, end_date)
-                    if league_breakdown:
-                        dt_entry["leagues"] = league_breakdown
+                # Add league breakdown only for sports data_types that have league_id data
+                if cat.upper() == "SPORTS" and "league_id" in dt_df.columns:
+                    has_league_data = dt_df["league_id"].fillna("").str.len().sum() > 0
+                    if has_league_data:
+                        league_breakdown = self._build_league_breakdown(dt_df, start_date, end_date)
+                        if league_breakdown:
+                            dt_entry["leagues"] = league_breakdown
                 dt_venues[str(dt_val)] = dt_entry
                 dt_found_total += dt_found
                 dt_expected_total += dt_expected
