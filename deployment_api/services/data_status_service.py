@@ -1096,8 +1096,6 @@ class DataStatusService:
         if not chains:
             return {}
 
-        all_dates_range = pd.date_range(start_date, end_date, freq="D")
-        total_expected = len(all_dates_range)
         chain_dict: dict[str, object] = {}
 
         for chain in chains:
@@ -1105,12 +1103,33 @@ class DataStatusService:
             chain_df = filtered[chain_mask]
             chain_dates = {str(d) for d in chain_df["date"].unique()}
             chain_venues = sorted(chain_df["venue"].unique()) if not chain_df.empty else []
-            found = len(chain_dates)
+
+            # Expected = union of per-venue expected dates (respects venue start dates)
+            chain_expected_dates: set[str] = set()
+            for v in chain_venues:
+                vs = venue_mapping.get_venue_start_date(v)
+                if not vs:
+                    # Infer start from data
+                    v_mask = chain_df["venue"] == v
+                    v_dates = {str(d) for d in chain_df.loc[v_mask, "date"].unique()}
+                    vs = min(v_dates) if v_dates else start_date
+                eff_start = max(start_date, vs) if vs else start_date
+                v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
+                if not v_expected:
+                    # Fallback: all dates from venue start
+                    v_expected = {
+                        d.strftime("%Y-%m-%d")
+                        for d in pd.date_range(eff_start, end_date, freq="D")
+                    }
+                chain_expected_dates |= v_expected
+
+            expected = len(chain_expected_dates) if chain_expected_dates else 1
+            found = len(chain_dates & chain_expected_dates) if chain_expected_dates else len(chain_dates)
 
             chain_dict[chain] = {
                 "dates_found": found,
-                "dates_expected": total_expected,
-                "completion_pct": round(found / max(1, total_expected) * 100, 2),
+                "dates_expected": expected,
+                "completion_pct": round(found / max(1, expected) * 100, 2),
                 "venues": chain_venues,
                 "venue_count": len(chain_venues),
             }
@@ -1134,8 +1153,6 @@ class DataStatusService:
         if not groups:
             return {}
 
-        all_dates_range = pd.date_range(start_date, end_date, freq="D")
-        total_expected = len(all_dates_range)
         fg_dict: dict[str, object] = {}
 
         for fg in groups:
@@ -1144,10 +1161,16 @@ class DataStatusService:
             fg_dates = {str(d) for d in fg_df["date"].unique()}
             found = len(fg_dates)
 
+            # Expected = dates from first data appearance to end_date (not full query range)
+            fg_start = min(fg_dates) if fg_dates else start_date
+            fg_eff_start = max(start_date, fg_start)
+            fg_expected_range = pd.date_range(fg_eff_start, end_date, freq="D")
+            fg_expected = len(fg_expected_range)
+
             entry: dict[str, object] = {
                 "dates_found": found,
-                "dates_expected": total_expected,
-                "completion_pct": round(found / max(1, total_expected) * 100, 2),
+                "dates_expected": fg_expected,
+                "completion_pct": round(found / max(1, fg_expected) * 100, 2),
             }
 
             # Add timeframe sub-breakdown if present
@@ -1159,10 +1182,13 @@ class DataStatusService:
                         continue
                     tf_mask = fg_df["timeframe"] == tf
                     tf_dates = {str(d) for d in fg_df.loc[tf_mask, "date"].unique()}
+                    tf_start = min(tf_dates) if tf_dates else fg_eff_start
+                    tf_eff_start = max(start_date, tf_start)
+                    tf_expected = len(pd.date_range(tf_eff_start, end_date, freq="D"))
                     timeframes[tf] = {
                         "dates_found": len(tf_dates),
-                        "dates_expected": total_expected,
-                        "completion_pct": round(len(tf_dates) / max(1, total_expected) * 100, 2),
+                        "dates_expected": tf_expected,
+                        "completion_pct": round(len(tf_dates) / max(1, tf_expected) * 100, 2),
                     }
                 if timeframes:
                     entry["timeframes"] = timeframes
