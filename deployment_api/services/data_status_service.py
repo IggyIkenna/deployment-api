@@ -239,7 +239,81 @@ class DataStatusService:
     # Categories whose bucket name doesn't follow the template pattern
     _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
         ("market-tick-data-service", "gas-fees"): "gas-fees-{pid}",
+        ("market-tick-data-service", "evm-defi"): "evm-defi-{pid}",
+        ("market-tick-data-service", "solana-defi"): "solana-defi-{pid}",
+        ("market-tick-data-service", "dex-pools"): "dex-pools-{pid}",
+        ("market-tick-data-service", "dex-swaps"): "dex-swaps-{pid}",
+        ("market-tick-data-service", "lending-indices"): "lending-indices-{pid}",
+        ("market-tick-data-service", "liquidations"): "liquidations-{pid}",
+        ("market-tick-data-service", "lst-rates"): "lst-rates-{pid}",
+        ("market-tick-data-service", "oracle-prices"): "oracle-prices-{pid}",
+        ("market-tick-data-service", "perp-funding"): "perp-funding-{pid}",
     }
+
+    # DeFi sub-dimension bucket keys for MTDS — merged into DEFI category
+    _MTDS_DEFI_SUB_DIMENSIONS: ClassVar[list[str]] = [
+        "gas-fees",
+        "evm-defi",
+        "solana-defi",
+        "dex-pools",
+        "dex-swaps",
+        "lending-indices",
+        "liquidations",
+        "lst-rates",
+        "oracle-prices",
+        "perp-funding",
+    ]
+
+    def _read_defi_merged_index(self, service: str, cat: str) -> pd.DataFrame:
+        """Read availability index, merging sub-dimension buckets for MTDS DEFI.
+
+        For market-tick-data-service + DEFI category, reads the main DEFI bucket
+        AND all sub-dimension buckets (gas-fees, dex-swaps, etc.), concatenating
+        them so venues from sub-dimensions appear under DEFI in the UI.
+
+        Each row is tagged with ``_defi_source`` so the category builder can
+        produce a per-sub-dimension breakdown.
+        """
+        template = self._BUCKET_TEMPLATES.get(service)
+        if not template:
+            return pd.DataFrame()
+
+        override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
+        main_bucket = (
+            override.format(pid=self.project_id)
+            if override
+            else template.format(cat=cat.lower(), pid=self.project_id)
+        )
+
+        frames: list[pd.DataFrame] = []
+        try:
+            idx = _read_index_cached(main_bucket)
+            if not idx.empty:
+                idx = idx.copy()
+                idx["_defi_source"] = ""
+                frames.append(idx)
+        except Exception:
+            logger.debug("No manifest index in %s", main_bucket)
+
+        # Merge sub-dimension buckets for MTDS DEFI
+        if service == "market-tick-data-service" and cat.lower() == "defi":
+            for sub_dim in self._MTDS_DEFI_SUB_DIMENSIONS:
+                sub_override = self._BUCKET_CATEGORY_OVERRIDES.get((service, sub_dim))
+                if not sub_override:
+                    continue
+                sub_bucket = sub_override.format(pid=self.project_id)
+                try:
+                    sub_idx = _read_index_cached(sub_bucket)
+                    if not sub_idx.empty:
+                        sub_idx = sub_idx.copy()
+                        sub_idx["_defi_source"] = sub_dim
+                        frames.append(sub_idx)
+                except Exception:
+                    logger.debug("No sub-dimension index in %s", sub_bucket)
+
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
 
     async def calculate_missing_shards(
         self,
@@ -322,22 +396,7 @@ class DataStatusService:
         end_date: str,
     ) -> dict[str, list[str] | int] | None:
         """Read manifest index for one category and return missing dates."""
-        template = self._BUCKET_TEMPLATES.get(service)
-        if not template:
-            return None
-        override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
-        bucket = (
-            override.format(pid=self.project_id)
-            if override
-            else template.format(cat=cat.lower(), pid=self.project_id)
-        )
-
-        try:
-            index = _read_index_cached(bucket)
-        except Exception:
-            logger.debug("No manifest index in %s", bucket)
-            return None
-
+        index = self._read_defi_merged_index(service, cat)
         if index.empty:
             return None
 
@@ -426,21 +485,7 @@ class DataStatusService:
         total_latest_day_instruments = 0
 
         for cat in cat_list:
-            template = self._BUCKET_TEMPLATES.get(service)
-            if not template:
-                continue
-            override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
-            bucket = (
-                override.format(pid=self.project_id)
-                if override
-                else template.format(cat=cat.lower(), pid=self.project_id)
-            )
-            try:
-                index = _read_index_cached(bucket)
-            except Exception:
-                logger.debug("No manifest index in %s", bucket)
-                continue
-
+            index = self._read_defi_merged_index(service, cat)
             if index.empty:
                 continue
 
@@ -570,6 +615,69 @@ class DataStatusService:
         """Check if a venue is a sports reference entity (fixture-dependent)."""
         return venue.startswith(self._SPORTS_REFERENCE_PREFIXES)
 
+    # ── Reference-data-driven expected dates ──────────────────────────────
+
+    # Cache for instruments-service reference data
+    _REF_DATA_CACHE: ClassVar[dict[str, tuple[float, dict[str, set[str]]]]] = {}
+    _REF_DATA_CACHE_TTL = 300  # 5 minutes
+
+    def _get_reference_expected_dates(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, set[str]]:
+        """Read instruments-service availability index to get per-venue expected dates.
+
+        Returns {venue: {date_str, ...}} — the set of dates where instruments-service
+        has reference data for that venue.  Market data services should only be
+        expected to have data on dates where instruments actually exist.
+        """
+        cache_key = f"{category}:{start_date}:{end_date}"
+        now = time.monotonic()
+        cached = self._REF_DATA_CACHE.get(cache_key)
+        if cached and (now - cached[0]) < self._REF_DATA_CACHE_TTL:
+            return cached[1]
+
+        inst_template = self._BUCKET_TEMPLATES.get("instruments-service", "")
+        bucket = inst_template.format(cat=category.lower(), pid=self.project_id)
+        result: dict[str, set[str]] = {}
+        try:
+            idx = _read_index_cached(bucket)
+            if idx.empty:
+                return result
+            mask = (idx["date"] >= start_date) & (idx["date"] <= end_date)
+            filtered = idx.loc[mask]
+            if "venue" in filtered.columns:
+                for v in filtered["venue"].unique():
+                    v_str = str(v)
+                    v_dates = {
+                        str(d) for d in filtered.loc[filtered["venue"] == v, "date"].unique()
+                    }
+                    result[v_str] = v_dates
+        except Exception:
+            logger.debug("No instruments index for %s", bucket)
+
+        self._REF_DATA_CACHE[cache_key] = (now, result)
+        return result
+
+    # Services whose expected-date denominator comes from instruments-service
+    # reference data rather than calendar trading days.
+    _REFERENCE_DRIVEN_SERVICES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "market-tick-data-service",
+            "market-data-processing-service",
+            "features-delta-one-service",
+            "features-volatility-service",
+            "features-onchain-service",
+            "features-sports-service",
+            "features-calendar-service",
+            "features-multi-timeframe-service",
+            "features-cross-instrument-service",
+            "features-commodity-service",
+        }
+    )
+
     def _build_venue_breakdown(
         self,
         filtered: pd.DataFrame,
@@ -579,16 +687,20 @@ class DataStatusService:
         cat_found: int,
         total_days: int,
         service: str = "",
+        category: str = "",
     ) -> tuple[dict[str, object], int, int]:
         """Build per-venue stats from filtered index data.
 
         Includes data_type sub-dimension for services that write per-data-type
         manifest entries (e.g. market-tick-data-service).
 
-        For sports reference venues (FOOTYSTATS_*, TRANSFERMARKT_*, etc.), the
-        expected-date denominator uses a fixture calendar derived from the dates
-        where ANY sports reference entity has data, rather than every calendar
-        day.  This avoids penalising coverage for off-season / no-fixture days.
+        **Reference-data-driven denominator**: For market-data and feature
+        services, the expected-date set comes from instruments-service (i.e.
+        "dates where reference data exists for this venue"), NOT from calendar
+        trading days.  This means coverage = "missing market data given
+        available instruments/fixtures".
+
+        For sports reference venues the denominator is the fixture calendar.
         """
         if "venue" not in filtered.columns or filtered.empty:
             return {}, cat_found, total_days
@@ -598,6 +710,12 @@ class DataStatusService:
             and not filtered["data_type"].isna().all()
             and (filtered["data_type"].str.len() > 0).any()
         )
+
+        # Reference-data-driven expected dates from instruments-service
+        use_ref_denominator = service in self._REFERENCE_DRIVEN_SERVICES and category
+        ref_dates: dict[str, set[str]] = {}
+        if use_ref_denominator:
+            ref_dates = self._get_reference_expected_dates(category, start_date, end_date)
 
         # Build fixture calendar — union of dates across all sports reference
         # venues in this category.  Used as the expected-date set for each
@@ -623,53 +741,100 @@ class DataStatusService:
                 vs = min(v_dates_all)
             eff_start = max(start_date, vs) if vs else start_date
 
-            # Sports reference venues: expected = fixture calendar dates
-            # (only dates where matches exist), not all calendar days.
-            if self._is_sports_reference_venue(v) and fixture_calendar is not None:
-                v_all_dates = {d for d in fixture_calendar if d >= eff_start}
-            else:
-                v_expected_list = venue_mapping.get_expected_trading_dates(v, eff_start, end_date)
-                v_all_dates = set(v_expected_list)
-
-            v_dates = v_dates_all & v_all_dates
-            expected = len(v_all_dates)
-            found = len(v_dates)
-            v_missing = sorted(v_all_dates - v_dates)
-            v_found_sorted = sorted(v_dates)
-
-            venue_entry: dict[str, object] = {
-                "dates_found": found,
-                "dates_expected": expected,
-                "dates_expected_venue": expected,
-                "dates_missing": len(v_missing),
-                "missing_dates": v_missing,
-                "dates_found_list": v_found_sorted,
-                "dates_missing_list": v_missing,
-                "completion_pct": round(found / max(1, expected) * 100, 2),
-                "venue_start_date": vs,
-            }
-
-            # Data type sub-dimension (for MTDS and similar multi-data-type services)
-            if has_data_type:
-                dt_breakdown = self._build_data_type_breakdown(
-                    v_df,
-                    v,
-                    eff_start,
-                    end_date,
-                    venue_mapping,
-                )
-                if dt_breakdown:
-                    venue_entry["data_types"] = dt_breakdown
-
-            # League sub-dimension (sports venues with league_id data)
-            league_breakdown = self._build_league_breakdown(v_df, eff_start, end_date)
-            if league_breakdown:
-                venue_entry["leagues"] = league_breakdown
+            v_all_dates = self._resolve_expected_dates(
+                v,
+                eff_start,
+                end_date,
+                fixture_calendar,
+                ref_dates,
+                venue_mapping,
+            )
+            venue_entry = self._build_single_venue_entry(
+                v_df,
+                v,
+                vs,
+                eff_start,
+                end_date,
+                v_dates_all,
+                v_all_dates,
+                has_data_type,
+                venue_mapping,
+            )
 
             venues_dict[v] = venue_entry
-            venue_found_total += found
-            venue_expected_total += expected
+            venue_found_total += int(venue_entry["dates_found"])
+            venue_expected_total += int(venue_entry["dates_expected"])
         return venues_dict, venue_found_total, venue_expected_total
+
+    def _resolve_expected_dates(
+        self,
+        venue: str,
+        eff_start: str,
+        end_date: str,
+        fixture_calendar: set[str] | None,
+        ref_dates: dict[str, set[str]],
+        venue_mapping: VenueMapping,
+    ) -> set[str]:
+        """Resolve the expected-date set for a venue.
+
+        Priority:
+        1. Sports reference venues → fixture calendar
+        2. Reference-driven services → instruments-service dates
+        3. Fallback → calendar trading days
+        """
+        if self._is_sports_reference_venue(venue) and fixture_calendar is not None:
+            return {d for d in fixture_calendar if d >= eff_start}
+        if venue in ref_dates:
+            return {d for d in ref_dates[venue] if d >= eff_start}
+        return set(venue_mapping.get_expected_trading_dates(venue, eff_start, end_date))
+
+    def _build_single_venue_entry(
+        self,
+        v_df: pd.DataFrame,
+        venue: str,
+        venue_start: str | None,
+        eff_start: str,
+        end_date: str,
+        v_dates_all: set[str],
+        v_all_dates: set[str],
+        has_data_type: bool,
+        venue_mapping: VenueMapping,
+    ) -> dict[str, object]:
+        """Build stats dict for a single venue."""
+        v_dates = v_dates_all & v_all_dates
+        expected = len(v_all_dates)
+        found = len(v_dates)
+        v_missing = sorted(v_all_dates - v_dates)
+        v_found_sorted = sorted(v_dates)
+
+        venue_entry: dict[str, object] = {
+            "dates_found": found,
+            "dates_expected": expected,
+            "dates_expected_venue": expected,
+            "dates_missing": len(v_missing),
+            "missing_dates": v_missing,
+            "dates_found_list": v_found_sorted,
+            "dates_missing_list": v_missing,
+            "completion_pct": round(found / max(1, expected) * 100, 2),
+            "venue_start_date": venue_start,
+        }
+
+        if has_data_type:
+            dt_breakdown = self._build_data_type_breakdown(
+                v_df,
+                venue,
+                eff_start,
+                end_date,
+                venue_mapping,
+            )
+            if dt_breakdown:
+                venue_entry["data_types"] = dt_breakdown
+
+        league_breakdown = self._build_league_breakdown(v_df, eff_start, end_date)
+        if league_breakdown:
+            venue_entry["leagues"] = league_breakdown
+
+        return venue_entry
 
     def _build_data_type_breakdown(
         self,
@@ -778,6 +943,75 @@ class DataStatusService:
             }
         return league_dict
 
+    def _build_defi_sub_dimension_breakdown(
+        self,
+        filtered: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Build per-sub-dimension stats for DEFI category.
+
+        Groups rows by ``_defi_source`` (gas-fees, dex-pools, etc.) and produces
+        per-sub-dimension stats with venues, found/expected, and completion_pct.
+        The "main" DEFI bucket rows (source="") are shown as "defi-core".
+        """
+        if "_defi_source" not in filtered.columns:
+            return {}
+
+        # All known sub-dims plus any that appeared in the data
+        all_sources = set(self._MTDS_DEFI_SUB_DIMENSIONS)
+        data_sources = {str(s) for s in filtered["_defi_source"].unique() if s}
+        all_sources |= data_sources
+
+        sub_dim_dict: dict[str, object] = {}
+        for src in sorted(all_sources):
+            src_mask = filtered["_defi_source"] == src
+            src_df = filtered[src_mask]
+            src_dates = {str(d) for d in src_df["date"].unique()} if not src_df.empty else set()
+            src_venues = sorted(src_df["venue"].unique()) if not src_df.empty else []
+
+            # Expected = dates where ANY venue in this sub-dim has data
+            all_dates_range = pd.date_range(start_date, end_date, freq="D")
+            expected_dates = {d.strftime("%Y-%m-%d") for d in all_dates_range}
+            found_dates = src_dates & expected_dates
+            missing_dates = sorted(expected_dates - found_dates)
+
+            sub_dim_dict[src] = {
+                "dates_found": len(found_dates),
+                "dates_expected": len(expected_dates),
+                "dates_missing": len(missing_dates),
+                "completion_pct": round(
+                    len(found_dates) / max(1, len(expected_dates)) * 100,
+                    2,
+                ),
+                "venues": src_venues,
+                "venue_count": len(src_venues),
+            }
+
+        # Include "defi-core" for the main bucket rows
+        core_mask = filtered["_defi_source"] == ""
+        if core_mask.any():
+            core_df = filtered[core_mask]
+            core_dates = {str(d) for d in core_df["date"].unique()}
+            core_venues = sorted(core_df["venue"].unique())
+            all_dates_range = pd.date_range(start_date, end_date, freq="D")
+            expected_dates = {d.strftime("%Y-%m-%d") for d in all_dates_range}
+            found_dates = core_dates & expected_dates
+
+            sub_dim_dict["defi-core"] = {
+                "dates_found": len(found_dates),
+                "dates_expected": len(expected_dates),
+                "dates_missing": len(expected_dates - found_dates),
+                "completion_pct": round(
+                    len(found_dates) / max(1, len(expected_dates)) * 100,
+                    2,
+                ),
+                "venues": core_venues,
+                "venue_count": len(core_venues),
+            }
+
+        return sub_dim_dict
+
     def _build_manifest_category(
         self,
         service: str,
@@ -806,19 +1040,15 @@ class DataStatusService:
         if not template:
             return empty
 
-        # Check category-specific overrides first (e.g. gas-fees bucket)
+        # Resolve the main bucket name (for display in the response)
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
-        if override:
-            bucket = override.format(pid=self.project_id)
-        else:
-            bucket = template.format(cat=cat.lower(), pid=self.project_id)
-        empty["bucket"] = bucket
-        try:
-            index = _read_index_cached(bucket)
-        except Exception:
-            logger.debug("No manifest index in %s", bucket)
-            return empty
+        bucket = (
+            override.format(pid=self.project_id)
+            if override
+            else template.format(cat=cat.lower(), pid=self.project_id)
+        )
 
+        index = self._read_defi_merged_index(service, cat)
         if index.empty:
             return empty
 
@@ -846,6 +1076,7 @@ class DataStatusService:
             cat_found,
             total_days,
             service=service,
+            category=cat,
         )
 
         # Use venue-weighted completion when venues exist
@@ -854,8 +1085,21 @@ class DataStatusService:
         else:
             cat_pct = round(cat_found / max(1, total_days) * 100, 2)
 
+        # DeFi sub-dimension breakdown (gas-fees, dex-pools, lending-indices, etc.)
+        defi_sub_dims: dict[str, object] = {}
+        if (
+            "_defi_source" in filtered.columns
+            and service == "market-tick-data-service"
+            and cat.lower() == "defi"
+        ):
+            defi_sub_dims = self._build_defi_sub_dimension_breakdown(
+                filtered,
+                start_date,
+                end_date,
+            )
+
         cat_found_sorted = sorted(cat_found_dates)
-        return {
+        result: dict[str, object] = {
             "category": cat,
             "bucket": bucket,
             "prefixes_queried": 0,
@@ -873,6 +1117,9 @@ class DataStatusService:
             "_venue_found": venue_found_total,
             "_venue_expected": venue_expected_total,
         }
+        if defi_sub_dims:
+            result["defi_sub_dimensions"] = defi_sub_dims
+        return result
 
     async def get_last_updated_info(
         self,

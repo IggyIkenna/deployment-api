@@ -1569,3 +1569,277 @@ class TestExpectedMissingCalculation:
         cat_missing = cat_result_empty["dates_expected"] - cat_result_empty["dates_found"]
         # Should be 0 missing, so "All expected ✓" is valid
         assert cat_missing == 0
+
+
+class TestResolveExpectedDates:
+    """Tests for _resolve_expected_dates priority logic."""
+
+    def test_sports_reference_uses_fixture_calendar(self):
+        """Sports reference venues use the fixture calendar for expected dates."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        fixture_cal: set[str] = {"2025-01-10", "2025-01-15", "2025-01-20"}
+        result = svc._resolve_expected_dates(
+            "API_FOOTBALL_FIXTURES",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=fixture_cal,
+            ref_dates={},
+            venue_mapping=MagicMock(),
+        )
+        assert result == fixture_cal
+
+    def test_reference_driven_uses_ref_dates(self):
+        """Non-sports venues with ref_dates use instruments-service dates."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        ref: dict[str, set[str]] = {"BINANCE-SPOT": {"2025-01-05", "2025-01-06"}}
+        result = svc._resolve_expected_dates(
+            "BINANCE-SPOT",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=None,
+            ref_dates=ref,
+            venue_mapping=MagicMock(),
+        )
+        assert result == {"2025-01-05", "2025-01-06"}
+
+    def test_fallback_uses_trading_dates(self):
+        """Without fixture_calendar or ref_dates, falls back to VenueMapping."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        mock_vm = MagicMock()
+        mock_vm.get_expected_trading_dates.return_value = ["2025-01-02", "2025-01-03"]
+        result = svc._resolve_expected_dates(
+            "UNKNOWN-VENUE",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=None,
+            ref_dates={},
+            venue_mapping=mock_vm,
+        )
+        assert result == {"2025-01-02", "2025-01-03"}
+        mock_vm.get_expected_trading_dates.assert_called_once()
+
+    def test_eff_start_filters_fixture_calendar(self):
+        """Fixture calendar dates before eff_start are excluded."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        fixture_cal: set[str] = {"2024-12-31", "2025-01-10", "2025-01-20"}
+        result = svc._resolve_expected_dates(
+            "FOOTYSTATS_MATCH_STATS",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=fixture_cal,
+            ref_dates={},
+            venue_mapping=MagicMock(),
+        )
+        assert result == {"2025-01-10", "2025-01-20"}
+
+
+class TestBuildSingleVenueEntry:
+    """Tests for _build_single_venue_entry."""
+
+    def test_basic_venue_entry(self):
+        """Build a basic venue entry with matching dates."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        v_df = pd.DataFrame({"date": ["2025-01-01", "2025-01-02"], "venue": ["V", "V"]})
+        entry = svc._build_single_venue_entry(
+            v_df,
+            "V",
+            "2025-01-01",
+            "2025-01-01",
+            "2025-01-03",
+            v_dates_all={"2025-01-01", "2025-01-02"},
+            v_all_dates={"2025-01-01", "2025-01-02", "2025-01-03"},
+            has_data_type=False,
+            venue_mapping=MagicMock(),
+        )
+        assert entry["dates_found"] == 2
+        assert entry["dates_expected"] == 3
+        assert entry["dates_missing"] == 1
+        assert entry["completion_pct"] == pytest.approx(66.67)
+
+    def test_venue_entry_with_data_types(self):
+        """Venue entry includes data_type breakdown when has_data_type is True."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        v_df = pd.DataFrame(
+            {
+                "date": ["2025-01-01", "2025-01-01"],
+                "venue": ["V", "V"],
+                "data_type": ["trades", "book_snapshot_5"],
+            }
+        )
+        mock_vm = MagicMock()
+        mock_vm.get_expected_trading_dates.return_value = ["2025-01-01"]
+        with (
+            patch(
+                "deployment_api.services.data_status_service.get_expected_data_types_for_venue",
+                return_value=["trades", "book_snapshot_5"],
+            ),
+            patch(
+                "deployment_api.services.data_status_service.get_venue_data_type_start_date",
+                return_value=None,
+            ),
+        ):
+            entry = svc._build_single_venue_entry(
+                v_df,
+                "V",
+                "2025-01-01",
+                "2025-01-01",
+                "2025-01-01",
+                v_dates_all={"2025-01-01"},
+                v_all_dates={"2025-01-01"},
+                has_data_type=True,
+                venue_mapping=mock_vm,
+            )
+        assert "data_types" in entry
+
+
+class TestDefiSubDimensionBreakdown:
+    """Tests for _build_defi_sub_dimension_breakdown."""
+
+    def test_groups_by_defi_source(self):
+        """Groups rows by _defi_source and produces per-sub-dim stats."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        df = pd.DataFrame(
+            {
+                "date": ["2025-01-01", "2025-01-01", "2025-01-02"],
+                "venue": ["AAVE_V3", "UNISWAP_V3", "AAVE_V3"],
+                "_defi_source": ["lending-indices", "dex-pools", "lending-indices"],
+            }
+        )
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-02")
+        assert "lending-indices" in result
+        assert "dex-pools" in result
+        assert result["lending-indices"]["dates_found"] == 2
+        assert result["dex-pools"]["dates_found"] == 1
+
+    def test_core_bucket_shows_as_defi_core(self):
+        """Main DEFI bucket rows (empty source) show as defi-core."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        df = pd.DataFrame(
+            {
+                "date": ["2025-01-01"],
+                "venue": ["SOME_VENUE"],
+                "_defi_source": [""],
+            }
+        )
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
+        assert "defi-core" in result
+        assert result["defi-core"]["dates_found"] == 1
+
+    def test_empty_without_defi_source_column(self):
+        """Returns empty dict when _defi_source column is absent."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        df = pd.DataFrame({"date": ["2025-01-01"], "venue": ["V"]})
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
+        assert result == {}
+
+    def test_includes_all_known_sub_dims(self):
+        """All known sub-dimensions appear even if no data (at 0%)."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        # Only gas-fees has data, but all should appear
+        df = pd.DataFrame(
+            {
+                "date": ["2025-01-01"],
+                "venue": ["GAS_TRACKER"],
+                "_defi_source": ["gas-fees"],
+            }
+        )
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
+        # gas-fees should have data
+        assert result["gas-fees"]["dates_found"] == 1
+        # lending-indices should exist but at 0
+        assert "lending-indices" in result
+        assert result["lending-indices"]["dates_found"] == 0
+
+
+class TestReferenceExpectedDates:
+    """Tests for _get_reference_expected_dates."""
+
+    def test_returns_venue_date_mapping(self):
+        """Reads instruments index and returns per-venue date sets."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        svc._REF_DATA_CACHE.clear()
+        mock_idx = pd.DataFrame(
+            {
+                "date": ["2025-01-01", "2025-01-01", "2025-01-02"],
+                "venue": ["BINANCE-SPOT", "DERIBIT", "BINANCE-SPOT"],
+                "service_name": ["instruments-service"] * 3,
+            }
+        )
+        with patch(
+            "deployment_api.services.data_status_service._read_index_cached",
+            return_value=mock_idx,
+        ):
+            result = svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-02")
+        assert result["BINANCE-SPOT"] == {"2025-01-01", "2025-01-02"}
+        assert result["DERIBIT"] == {"2025-01-01"}
+
+    def test_empty_on_missing_bucket(self):
+        """Returns empty dict when instruments bucket doesn't exist."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        svc._REF_DATA_CACHE.clear()
+        with patch(
+            "deployment_api.services.data_status_service._read_index_cached",
+            side_effect=FileNotFoundError("no bucket"),
+        ):
+            result = svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-02")
+        assert result == {}
+
+    def test_caches_result(self):
+        """Second call returns cached result without re-reading."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        svc._REF_DATA_CACHE.clear()
+        mock_idx = pd.DataFrame(
+            {
+                "date": ["2025-01-01"],
+                "venue": ["V"],
+            }
+        )
+        with patch(
+            "deployment_api.services.data_status_service._read_index_cached",
+            return_value=mock_idx,
+        ) as mock_read:
+            svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-01")
+            svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-01")
+        mock_read.assert_called_once()

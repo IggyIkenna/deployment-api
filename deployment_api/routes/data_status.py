@@ -242,11 +242,27 @@ async def get_data_status_turbo(
             "mock": True,
         }
     try:
+        # Use manifest reader directly (faster, no CLI subprocess,
+        # returns league breakdowns for sports venues).
+        async def _manifest_source(
+            service: str,
+            start_date: str,
+            end_date: str,
+            categories: list[str] | None = None,
+            **_kw: object,
+        ) -> dict[str, object]:
+            return await data_status_service.get_manifest_status(
+                service=service,
+                start_date=start_date,
+                end_date=end_date,
+                categories=categories,
+            )
+
         result = await data_analytics_service.get_data_status_turbo(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            from_data_status_service=data_status_service.run_data_status_cli,
+            from_data_status_service=_manifest_source,
             categories=category,
             venues=venue,
         )
