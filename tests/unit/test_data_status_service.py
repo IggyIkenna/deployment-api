@@ -893,3 +893,66 @@ class TestGetManifestStatus:
             "unknown-service", "2024-01-01", "2024-01-01", categories=["CEFI"]
         )
         assert result["overall_completion_pct"] == 0.0
+
+
+class TestTransferWindowAwareness:
+    """Tests for transfer-window-aware data status denominator."""
+
+    def test_is_transfer_window_venue(self):
+        svc = _make_svc()
+        assert svc._is_transfer_window_venue("TRANSFERMARKT_TEAMS")
+        assert svc._is_transfer_window_venue("TRANSFERMARKT_LEAGUES")
+        assert not svc._is_transfer_window_venue("FOOTYSTATS_EPL")
+        assert not svc._is_transfer_window_venue("UNDERSTAT_XG")
+
+    def test_transfermarkt_not_sports_reference(self):
+        """Transfermarkt should NOT be classified as fixture-dependent."""
+        svc = _make_svc()
+        assert not svc._is_sports_reference_venue("TRANSFERMARKT_TEAMS")
+        assert not svc._is_sports_reference_venue("TRANSFERMARKT_LEAGUES")
+        # Other sports venues are still fixture-dependent
+        assert svc._is_sports_reference_venue("FOOTYSTATS_EPL")
+        assert svc._is_sports_reference_venue("UNDERSTAT_XG")
+
+    def test_resolve_transfer_window_dates_has_trigger_dates(self):
+        """Trigger dates (season start, window open/close) should be included."""
+        svc = _make_svc()
+        # Full year: should have trigger dates (season starts, window boundaries)
+        dates = svc._resolve_transfer_window_dates("2024-01-01", "2024-12-31")
+        # Multiple leagues x multiple triggers x +/-3 day tolerance
+        assert len(dates) > 20
+        # Mid-October should NOT be a trigger (no season start or window boundary)
+        assert "2024-10-15" not in dates
+
+    def test_resolve_transfer_window_dates_sparse_in_midseason(self):
+        """Mid-season months with no triggers should have few/no expected dates."""
+        svc = _make_svc()
+        # October: no European window boundary, no season start
+        dates = svc._resolve_transfer_window_dates("2024-10-01", "2024-10-31")
+        # Should be very few (maybe MLS secondary close nearby, but not many)
+        assert len(dates) < 15
+
+    def test_resolve_transfer_window_dates_summer_has_triggers(self):
+        """Summer window boundaries should produce trigger dates."""
+        svc = _make_svc()
+        # June-August: summer windows open/close across multiple leagues
+        dates = svc._resolve_transfer_window_dates("2024-06-01", "2024-08-31")
+        assert len(dates) > 10  # Multiple window open/close triggers
+
+    def test_resolve_expected_dates_transfermarkt_uses_triggers(self):
+        """Transfermarkt venue should use trigger dates, not fixture calendar."""
+        svc = _make_svc()
+        fixture_cal: set[str] = {"2024-01-06", "2024-01-13", "2024-01-20"}
+        ref_dates: dict[str, set[str]] = {}
+        vm = MagicMock()
+        result = svc._resolve_expected_dates(
+            "TRANSFERMARKT_TEAMS",
+            "2024-01-01",
+            "2024-01-31",
+            fixture_cal,
+            ref_dates,
+            vm,
+        )
+        # Should NOT be the fixture calendar (3 dates)
+        # Should be trigger-based dates from UAC calendar
+        assert result != fixture_cal

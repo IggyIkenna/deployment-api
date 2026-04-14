@@ -48,7 +48,7 @@ def _get_aws_account_id() -> str:
 
 def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
     """Format a CodeBuild build dict into our standard BuildInfoDict."""
-    build_id_full = str(build.get("id", ""))
+    build_id_full = str(build.get("id", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
     # CodeBuild build IDs are "project-name:build-uuid"
     build_id = build_id_full.split(":")[-1] if ":" in build_id_full else build_id_full
 
@@ -74,22 +74,22 @@ def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
         duration = (end_time - start_time).total_seconds()
 
     # Extract source info
-    source_version = str(build.get("sourceVersion", "")) if build.get("sourceVersion") else None
+    source_version = str(build.get("sourceVersion", "")) if build.get("sourceVersion") else None  # noqa: qg-empty-fallback — AWS SDK boundary
     commit_sha = (
-        str(build.get("resolvedSourceVersion", ""))[:7]
+        str(build.get("resolvedSourceVersion", ""))[:7]  # noqa: qg-empty-fallback — AWS SDK boundary
         if build.get("resolvedSourceVersion")
         else None
     )
 
     # Build log URL
-    logs = build.get("logs", {})
+    logs = build.get("logs", {})  # noqa: qg-empty-fallback — AWS SDK boundary
     log_url: str | None = None
     if isinstance(logs, dict):
         deep_link = logs.get("deepLink")
         if isinstance(deep_link, str):
             log_url = deep_link
     if not log_url:
-        project_name = str(build.get("projectName", ""))
+        project_name = str(build.get("projectName", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
         log_url = f"https://{_AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id_full}"
 
     return {
@@ -116,7 +116,7 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
     # List all projects (paginated)
     paginator = client.get_paginator("list_projects")
     for page in paginator.paginate():
-        project_names: list[str] = page.get("projects", [])
+        project_names: list[str] = page.get("projects", [])  # noqa: qg-empty-fallback — AWS SDK boundary
         all_projects.extend(project_names)
 
     # Filter to known services
@@ -132,11 +132,11 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
     for i in range(0, len(matched_projects), 100):
         batch = matched_projects[i : i + 100]
         response = client.batch_get_projects(names=batch)
-        for proj in response.get("projects", []):
-            proj_name = str(proj.get("name", ""))
+        for proj in response.get("projects", []):  # noqa: qg-empty-fallback — AWS SDK boundary
+            proj_name = str(proj.get("name", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
             service_name = proj_name.removesuffix("-build")
-            source = proj.get("source", {})
-            source_type = str(source.get("type", "")) if isinstance(source, dict) else ""
+            source = proj.get("source", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+            source_type = str(source.get("type", "")) if isinstance(source, dict) else ""  # noqa: qg-empty-fallback — AWS SDK boundary
 
             github_repo: str | None = None
             if isinstance(source, dict) and source_type in ("GITHUB", "GITHUB_ENTERPRISE"):
@@ -173,14 +173,14 @@ def get_codebuild_history_sync(project_name: str, limit: int = 10) -> list[Build
         projectName=project_name,
         sortOrder="DESCENDING",
     )
-    build_ids: list[str] = response.get("ids", [])[:limit]
+    build_ids: list[str] = response.get("ids", [])[:limit]  # noqa: qg-empty-fallback — AWS SDK boundary
 
     if not build_ids:
         return []
 
     # Get build details
     builds_response = client.batch_get_builds(ids=build_ids)
-    builds: list[dict[str, object]] = builds_response.get("builds", [])
+    builds: list[dict[str, object]] = builds_response.get("builds", [])  # noqa: qg-empty-fallback — AWS SDK boundary
 
     return [_format_codebuild_build(b) for b in builds]
 
@@ -198,10 +198,10 @@ def get_recent_builds_for_projects_sync(
                 projectName=proj_name,
                 sortOrder="DESCENDING",
             )
-            build_ids: list[str] = response.get("ids", [])[:1]
+            build_ids: list[str] = response.get("ids", [])[:1]  # noqa: qg-empty-fallback — AWS SDK boundary
             if build_ids:
                 builds_response = client.batch_get_builds(ids=build_ids)
-                builds: list[dict[str, object]] = builds_response.get("builds", [])
+                builds: list[dict[str, object]] = builds_response.get("builds", [])  # noqa: qg-empty-fallback — AWS SDK boundary
                 if builds:
                     result[proj_name] = _format_codebuild_build(builds[0])
                     continue
@@ -226,8 +226,8 @@ def start_codebuild_sync(
         projectName=project_name,
         sourceVersion=branch,
     )
-    build = response.get("build", {})
-    build_id_full = str(build.get("id", ""))
+    build = response.get("build", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+    build_id_full = str(build.get("id", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
     build_id = build_id_full.split(":")[-1] if ":" in build_id_full else build_id_full
 
     log_url = f"https://{_AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id_full}"

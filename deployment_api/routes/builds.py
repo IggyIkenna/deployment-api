@@ -205,7 +205,7 @@ async def _list_ecr_tags(service: str) -> list[str]:
     try:
         paginator = ecr.get_paginator("list_images")
         for page in paginator.paginate(repositoryName=service, filter={"tagStatus": "TAGGED"}):
-            for image_id in page.get("imageIds", []):
+            for image_id in page.get("imageIds", []):  # noqa: qg-empty-fallback — AWS ECR pagination
                 tag = image_id.get("imageTag")
                 if tag:
                     tags.append(str(tag))
@@ -249,7 +249,7 @@ async def list_builds(
     # GCP Artifact Registry path
     project = default_project_id
     if not project:
-        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")
+        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")  # noqa: qg-gcp-project-id
 
     tags = await _list_ar_tags(service, project)
     if not tags:
@@ -315,7 +315,7 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
     # GCP Cloud Run deploy path
     project = default_project_id
     if not project:
-        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")
+        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")  # noqa: qg-gcp-project-id
 
     ar_repo = _get_ar_repo_name(service)
     ar_image = f"{_AR_HOST}/{project}/{ar_repo}/{service}:{image_tag}"

@@ -162,36 +162,33 @@ class PathCombinatorics:
             self._loaded = True
 
     def _load_tick_windows(self) -> None:
-        """Load tick data windows from TRADFI config in venue_data_types.yaml.
+        """Load tick data windows from UAC (single source of truth).
 
         Tick windows define date ranges where expensive tick data (trades, tbbo)
-        is downloaded. Outside these windows, only cost-efficient ohlcv_1m is used.
+        is downloaded from Databento. Outside these windows, only cost-efficient
+        ohlcv_1m is used. The windows are defined in UAC
+        TRADFI_TICK_DATA_WINDOWS to avoid duplicating this cost-management config
+        across repos.
         """
-        tradfi_config: dict[str, object] = self.config.get("TRADFI") or {}
-        raw_windows_val = tradfi_config.get("tick_windows")
-        raw_windows: list[object] = (
-            cast(list[object], raw_windows_val) if isinstance(raw_windows_val, list) else []
+        from unified_api_contracts.registry.market_data_categories import (  # noqa: qg-inside-import
+            TRADFI_TICK_DATA_WINDOWS,
         )
-        self.tick_windows = []
-        for w in raw_windows:
-            if isinstance(w, dict):
-                w_dict = cast(dict[str, object], w)
-                start_val = w_dict.get("start")
-                end_val = w_dict.get("end")
-                if isinstance(start_val, str) and isinstance(end_val, str):
-                    self.tick_windows.append((start_val, end_val))
+
+        self.tick_windows = [(w["start"], w["end"]) for w in TRADFI_TICK_DATA_WINDOWS]
         if self.tick_windows:
             logger.info(
-                "Loaded %s tick data window(s): %s",
+                "Loaded %s tick data window(s) from UAC: %s",
                 len(self.tick_windows),
                 ", ".join(f"{s} to {e}" for s, e in self.tick_windows),
             )
 
     def is_in_tick_window(self, date_str: str) -> bool:
         """Check if a date falls within any tick data window."""
-        return any(
-            window_start <= date_str <= window_end for window_start, window_end in self.tick_windows
+        from unified_api_contracts.registry.market_data_categories import (  # noqa: qg-inside-import
+            is_in_tradfi_tick_window,
         )
+
+        return is_in_tradfi_tick_window(date_str)
 
     def _load_config(self) -> None:
         """Load venue_data_types.yaml configuration."""

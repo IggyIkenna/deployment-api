@@ -312,7 +312,7 @@ class DataQueryService:
         defaults: dict[str, list[str]] = {
             "CEFI": ["trades", "book_snapshot_5"],
             "TRADFI": ["trades", "ohlcv_1m", "tbbo"],
-            "DEFI": ["swaps", "rate_indices"],
+            "DEFI": ["dex_swaps", "lending_indices"],
         }
         return defaults.get(category, ["trades"])
 

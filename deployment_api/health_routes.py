@@ -158,6 +158,16 @@ async def clear_cache():
             logger.warning("Unexpected error during operation: %s", e, exc_info=True)
             pass
 
+        # Clear the availability index cache (GCS index reads)
+        try:
+            from .services.data_status_service import clear_index_cache
+
+            clear_index_cache()
+            total_cleared += 1
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.warning("Unexpected error during operation: %s", e, exc_info=True)
+            pass
+
         logger.info("[CACHE] Cleared %s cache entries", total_cleared)
 
         return {

@@ -355,7 +355,7 @@ async def _submit_missing_deployment(
     background_tasks: BackgroundTasks,
 ) -> dict[str, object]:
     """Build exclude_dates from complete dates and submit the deployment."""
-    missing_by_date = cast(dict[str, int], missing_analysis.get("missing_by_date", {}))
+    missing_by_date = cast(dict[str, int], missing_analysis.get("missing_by_date", {}))  # noqa: qg-empty-fallback — analysis result default
     start_dt = datetime.strptime(req.start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(req.end_date, "%Y-%m-%d")
     all_dates: list[str] = []

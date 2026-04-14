@@ -19,9 +19,11 @@ from unified_api_contracts import (
     get_venue_data_type_start_date,
 )
 from unified_api_contracts.internal import MarketCategory
+from unified_api_contracts.registry import is_in_tradfi_tick_window
 from unified_api_contracts.sports import (
     get_all_prediction_league_ids,
     get_league_fixture_calendar,
+    get_reference_refresh_dates,
 )
 from unified_trading_library import read_availability_index
 
@@ -29,6 +31,10 @@ from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
 
 logger = logging.getLogger(__name__)
+
+# TradFi data types that are only expected within tick windows (Databento cost mgmt).
+# Outside tick windows, only ohlcv_1m (and other non-tick types) are expected.
+_TRADFI_TICK_ONLY_DATA_TYPES: frozenset[str] = frozenset({"tbbo", "trades"})
 
 # Cache for availability index reads — avoids repeated GCS downloads
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
@@ -241,6 +247,21 @@ class DataStatusService:
         "ml-training-service": "ml-models-store-{pid}",
         "ml-inference-service": "ml-predictions-{pid}",
         "strategy-service": "strategy-store-{pid}",
+        "execution-service": "execution-store-{pid}",
+    }
+
+    # Single-bucket services (no {cat} in template) that only apply to
+    # specific categories.  If a service is listed here, categories NOT in
+    # the frozenset are skipped (empty result returned).  Services NOT
+    # listed here are assumed to apply to all categories.
+    _SERVICE_CATEGORY_RESTRICTIONS: ClassVar[dict[str, frozenset[str]]] = {
+        "market-data-processing-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-sports-service": frozenset({"SPORTS"}),
+        "features-onchain-service": frozenset({"CEFI", "DEFI"}),
+        "features-commodity-service": frozenset({"TRADFI"}),
+        "features-volatility-service": frozenset({"CEFI", "TRADFI"}),
+        "strategy-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "execution-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
     }
 
     # Categories whose bucket name doesn't follow the template pattern
@@ -403,6 +424,11 @@ class DataStatusService:
         end_date: str,
     ) -> dict[str, list[str] | int] | None:
         """Read manifest index for one category and return missing dates."""
+        # Skip categories that don't apply to this service
+        allowed = self._SERVICE_CATEGORY_RESTRICTIONS.get(service)
+        if allowed and cat.upper() not in allowed:
+            return None
+
         index = self._read_defi_merged_index(service, cat)
         if index.empty:
             return None
@@ -589,13 +615,21 @@ class DataStatusService:
                 venue_mapping,
             )
             result_categories[cat] = cat_result
-            overall_found += cat_result["_venue_found"]
-            overall_expected += cat_result["_venue_expected"]
+            vf = int(cat_result["_venue_found"])
+            ve = int(cat_result["_venue_expected"])
+            # When venue totals are zero (no-venue services like features-calendar),
+            # fall back to category-level date counts for the overall aggregation.
+            if vf == 0 and ve == 0 and int(cat_result.get("dates_found", 0)) > 0:
+                overall_found += int(cat_result["dates_found"])
+                overall_expected += int(cat_result.get("dates_expected", 0)) or total_days
+            else:
+                overall_found += vf
+                overall_expected += ve
             # Remove internal counters from output
             del cat_result["_venue_found"]
             del cat_result["_venue_expected"]
 
-        overall_pct = round(overall_found / max(1, overall_expected) * 100, 2)
+        overall_pct = min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
 
         return {
             "service": service,
@@ -612,19 +646,28 @@ class DataStatusService:
     # Expected dates = dates where ANY sports reference entity has data (fixture calendar).
     _SPORTS_REFERENCE_PREFIXES: ClassVar[tuple[str, ...]] = (
         "FOOTYSTATS_",
-        "TRANSFERMARKT_",
         "UNDERSTAT_",
         "SFI_",
         "API_FOOTBALL_",
     )
 
+    # Transfermarkt is fixture-INDEPENDENT reference data (squad composition,
+    # league metadata). It's fetched on every batch day, not just fixture days.
+    # Player values are expected year-round; transfer_records (future) only
+    # during/after transfer windows.
+    _TRANSFER_WINDOW_PREFIXES: ClassVar[tuple[str, ...]] = ("TRANSFERMARKT_",)
+
     def _is_sports_reference_venue(self, venue: str) -> bool:
         """Check if a venue is a sports reference entity (fixture-dependent)."""
         return venue.startswith(self._SPORTS_REFERENCE_PREFIXES)
 
+    def _is_transfer_window_venue(self, venue: str) -> bool:
+        """Check if a venue is transfer-window-aware (Transfermarkt)."""
+        return venue.startswith(self._TRANSFER_WINDOW_PREFIXES)
+
     # ── Reference-data-driven expected dates ──────────────────────────────
 
-    # Cache for instruments-service reference data
+    # Cache for upstream reference data (keyed by upstream:category:date_range)
     _REF_DATA_CACHE: ClassVar[dict[str, tuple[float, dict[str, set[str]]]]] = {}
     _REF_DATA_CACHE_TTL = 300  # 5 minutes
 
@@ -633,27 +676,42 @@ class DataStatusService:
         category: str,
         start_date: str,
         end_date: str,
+        service: str = "",
     ) -> dict[str, set[str]]:
-        """Read instruments-service availability index to get per-venue expected dates.
+        """Read upstream service availability index to get per-venue expected dates.
 
-        Returns {venue: {date_str, ...}} — the set of dates where instruments-service
-        has reference data for that venue.  Market data services should only be
-        expected to have data on dates where instruments actually exist.
+        Uses the denominator chain: each service's expected dates come from its
+        direct upstream (``_UPSTREAM_SERVICE_MAP``).  Falls back to
+        instruments-service if no upstream is defined.
+
+        Returns {venue: {date_str, ...}} — the set of dates where the upstream
+        service has data for that venue.
         """
-        cache_key = f"{category}:{start_date}:{end_date}"
+        upstream = self._UPSTREAM_SERVICE_MAP.get(service, "instruments-service")
+        cache_key = f"{upstream}:{category}:{start_date}:{end_date}"
         now = time.monotonic()
         cached = self._REF_DATA_CACHE.get(cache_key)
         if cached and (now - cached[0]) < self._REF_DATA_CACHE_TTL:
             return cached[1]
 
-        inst_template = self._BUCKET_TEMPLATES.get("instruments-service", "")
-        bucket = inst_template.format(cat=category.lower(), pid=self.project_id)
+        upstream_template = self._BUCKET_TEMPLATES.get(upstream, "")
+        if not upstream_template:
+            return {}
+        # For single-bucket upstreams (no {cat}), format without cat
+        if "{cat}" in upstream_template:
+            bucket = upstream_template.format(cat=category.lower(), pid=self.project_id)
+        else:
+            bucket = upstream_template.format(pid=self.project_id)
+
         result: dict[str, set[str]] = {}
         try:
             idx = _read_index_cached(bucket)
             if idx.empty:
                 return result
             mask = (idx["date"] >= start_date) & (idx["date"] <= end_date)
+            # Filter by upstream service_name if shared bucket
+            if "service_name" in idx.columns:
+                mask = mask & (idx["service_name"] == upstream)
             filtered = idx.loc[mask]
             if "venue" in filtered.columns:
                 for v in filtered["venue"].unique():
@@ -663,13 +721,33 @@ class DataStatusService:
                     }
                     result[v_str] = v_dates
         except Exception:
-            logger.debug("No instruments index for %s", bucket)
+            logger.debug("No upstream index for %s in %s", upstream, bucket)
 
         self._REF_DATA_CACHE[cache_key] = (now, result)
         return result
 
-    # Services whose expected-date denominator comes from instruments-service
-    # reference data rather than calendar trading days.
+    # Denominator chain: each downstream service uses its direct upstream's
+    # ACTUAL availability as the expected-date set.  Missing key = use
+    # instruments-service (the root reference layer).
+    _UPSTREAM_SERVICE_MAP: ClassVar[dict[str, str]] = {
+        "market-tick-data-service": "instruments-service",
+        "market-data-processing-service": "market-tick-data-service",
+        "features-delta-one-service": "market-data-processing-service",
+        "features-volatility-service": "market-data-processing-service",
+        "features-onchain-service": "market-tick-data-service",
+        "features-multi-timeframe-service": "market-data-processing-service",
+        "features-cross-instrument-service": "market-data-processing-service",
+        "features-sports-service": "market-tick-data-service",
+        "features-calendar-service": "instruments-service",
+        "features-commodity-service": "market-data-processing-service",
+        "ml-training-service": "features-delta-one-service",
+        "ml-inference-service": "features-delta-one-service",
+        "strategy-service": "ml-inference-service",
+        "execution-service": "strategy-service",
+    }
+
+    # Services whose expected-date denominator comes from upstream availability
+    # rather than calendar trading days.
     _REFERENCE_DRIVEN_SERVICES: ClassVar[frozenset[str]] = frozenset(
         {
             "market-tick-data-service",
@@ -682,6 +760,10 @@ class DataStatusService:
             "features-multi-timeframe-service",
             "features-cross-instrument-service",
             "features-commodity-service",
+            "ml-training-service",
+            "ml-inference-service",
+            "strategy-service",
+            "execution-service",
         }
     )
 
@@ -718,16 +800,18 @@ class DataStatusService:
             and (filtered["data_type"].str.len() > 0).any()
         )
 
-        # Reference-data-driven expected dates from instruments-service
+        # Reference-data-driven expected dates from upstream service
         use_ref_denominator = service in self._REFERENCE_DRIVEN_SERVICES and category
         ref_dates: dict[str, set[str]] = {}
         if use_ref_denominator:
-            ref_dates = self._get_reference_expected_dates(category, start_date, end_date)
+            ref_dates = self._get_reference_expected_dates(
+                category, start_date, end_date, service=service
+            )
 
         # Build fixture calendar — union of dates across all sports reference
         # venues in this category.  Used as the expected-date set for each
         # individual sports reference venue instead of all calendar days.
-        all_venues = [str(x) for x in filtered["venue"].unique()]
+        all_venues = [str(x) for x in filtered["venue"].unique() if str(x).strip()]
         sports_ref_venues = [v for v in all_venues if self._is_sports_reference_venue(v)]
         fixture_calendar: set[str] | None = None
         if sports_ref_venues:
@@ -767,6 +851,7 @@ class DataStatusService:
                 has_data_type,
                 venue_mapping,
                 category=category,
+                service=service,
             )
 
             venues_dict[v] = venue_entry
@@ -786,15 +871,78 @@ class DataStatusService:
         """Resolve the expected-date set for a venue.
 
         Priority:
-        1. Sports reference venues → fixture calendar
-        2. Reference-driven services → instruments-service dates
-        3. Fallback → calendar trading days
+        1. Transfermarkt → transfer-window-aware dates (year-round for squad
+           data, window+grace for transfer records)
+        2. Sports reference venues → fixture calendar
+        3. Reference-driven services → instruments-service dates
+        4. Fallback → calendar trading days
         """
+        if self._is_transfer_window_venue(venue):
+            return self._resolve_transfer_window_dates(eff_start, end_date)
         if self._is_sports_reference_venue(venue) and fixture_calendar is not None:
             return {d for d in fixture_calendar if d >= eff_start}
         if venue in ref_dates:
             return {d for d in ref_dates[venue] if d >= eff_start}
         return set(venue_mapping.get_expected_trading_dates(venue, eff_start, end_date))
+
+    @staticmethod
+    def _resolve_transfer_window_dates(start: str, end: str) -> set[str]:
+        """Return dates where Transfermarkt reference data is expected.
+
+        Uses the trigger calendar (season starts + transfer window
+        open/close dates) across all tracked leagues. Data is only
+        expected on or near these trigger dates, not every day.
+
+        A 3-day tolerance is applied to each trigger date to account
+        for batch scheduling variance (weekends, outages).
+        """
+        from datetime import date as dt_date
+
+        start_d = dt_date.fromisoformat(start)
+        end_d = dt_date.fromisoformat(end)
+
+        # Collect trigger dates from all prediction leagues across years in range
+        trigger_dates: set[dt_date] = set()
+        for year in range(start_d.year, end_d.year + 1):
+            # get_reference_refresh_dates uses EPL as representative;
+            # union across a few major leagues for broader coverage
+            for league_id in ("EPL", "MLS", "BRASILEIRAO", "J1_LEAGUE"):
+                for td in get_reference_refresh_dates(league_id, year):
+                    trigger_dates.add(td)
+
+        # Expand each trigger by +/- 3 days tolerance
+        from datetime import timedelta
+
+        expected: set[str] = set()
+        for td in trigger_dates:
+            for offset in range(-3, 4):
+                d = td + timedelta(days=offset)
+                if start_d <= d <= end_d:
+                    expected.add(d.isoformat())
+        return expected
+
+    @staticmethod
+    def _apply_dimensional_granularity(
+        venue_entry: dict[str, object],
+        breakdown: dict[str, object],
+    ) -> None:
+        """Replace venue-level found/expected with SUM across sub-dimensions.
+
+        Prevents a venue with 3 instrument_types / data_types showing 100%
+        when only 1 of 3 has data on a given day.
+        """
+        dim_found = 0
+        dim_expected = 0
+        for entry_raw in breakdown.values():
+            entry = cast(dict[str, object], entry_raw)
+            dim_found += int(entry.get("dates_found", 0))
+            dim_expected += int(entry.get("dates_expected", 0))
+        if dim_expected > 0:
+            venue_entry["dates_found"] = dim_found
+            venue_entry["dates_expected"] = dim_expected
+            venue_entry["completion_pct"] = min(
+                round(dim_found / max(1, dim_expected) * 100, 2), 100.0
+            )
 
     def _build_single_venue_entry(
         self,
@@ -808,6 +956,7 @@ class DataStatusService:
         has_data_type: bool,
         venue_mapping: VenueMapping,
         category: str = "",
+        service: str = "",
     ) -> dict[str, object]:
         """Build stats dict for a single venue."""
         v_dates = v_dates_all & v_all_dates
@@ -824,7 +973,7 @@ class DataStatusService:
             "missing_dates": v_missing,
             "dates_found_list": v_found_sorted,
             "dates_missing_list": v_missing,
-            "completion_pct": round(found / max(1, expected) * 100, 2),
+            "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             "venue_start_date": venue_start,
         }
 
@@ -836,10 +985,18 @@ class DataStatusService:
         )
         if has_instrument_type:
             itype_breakdown = self._build_instrument_type_breakdown(
-                v_df, venue, eff_start, end_date, venue_mapping, has_data_type,
+                v_df,
+                venue,
+                eff_start,
+                end_date,
+                venue_mapping,
+                has_data_type,
+                category=category,
+                service=service,
             )
             if itype_breakdown:
                 venue_entry["instrument_types"] = itype_breakdown
+                self._apply_dimensional_granularity(venue_entry, itype_breakdown)
 
         if has_data_type and not has_instrument_type:
             dt_breakdown = self._build_data_type_breakdown(
@@ -848,9 +1005,12 @@ class DataStatusService:
                 eff_start,
                 end_date,
                 venue_mapping,
+                service=service,
+                category=category,
             )
             if dt_breakdown:
                 venue_entry["data_types"] = dt_breakdown
+                self._apply_dimensional_granularity(venue_entry, dt_breakdown)
 
         # Leagues only for SPORTS (not CEFI/TRADFI/DEFI/PREDICTION)
         if category.upper() in ("SPORTS",):
@@ -868,18 +1028,23 @@ class DataStatusService:
         end_date: str,
         venue_mapping: VenueMapping,
         has_data_type: bool,
+        category: str = "",
+        service: str = "",
     ) -> dict[str, object]:
         """Build per-instrument_type stats for a venue (v4).
 
         Each instrument_type (spot, perpetuals, futures_chain, etc.) gets its own
         entry with dates_found/expected and optional data_type sub-breakdown.
+
+        When data_types are present, the instrument_type's found/expected is the
+        SUM across its data_type children (weighted aggregation), not just
+        unique-date counts. This gives correct percentages when some data_types
+        have fewer expected dates (e.g. TradFi tbbo/trades in tick windows only).
         """
         if "instrument_type" not in venue_df.columns:
             return {}
 
-        itypes = sorted(
-            it for it in venue_df["instrument_type"].unique() if it and str(it).strip()
-        )
+        itypes = sorted(it for it in venue_df["instrument_type"].unique() if it and str(it).strip())
         if not itypes:
             return {}
 
@@ -894,16 +1059,37 @@ class DataStatusService:
             entry: dict[str, object] = {
                 "dates_found": found,
                 "dates_expected": expected,
-                "completion_pct": round(found / max(1, expected) * 100, 2),
+                "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             }
 
             # Nest data_types within instrument_type if available
             if has_data_type:
                 dt_sub = self._build_data_type_breakdown(
-                    it_df, venue, start_date, end_date, venue_mapping,
+                    it_df,
+                    venue,
+                    start_date,
+                    end_date,
+                    venue_mapping,
+                    service=service,
+                    category=category,
                 )
                 if dt_sub:
                     entry["data_types"] = dt_sub
+                    # Use data_type-weighted aggregation: sum across children
+                    # so tick-window-filtered types reduce the expected total
+                    dt_found_sum = 0
+                    dt_expected_sum = 0
+                    for dt_entry_raw in dt_sub.values():
+                        dt_entry = cast(dict[str, object], dt_entry_raw)
+                        dt_found_sum += int(dt_entry.get("dates_found", 0))
+                        dt_expected_sum += int(dt_entry.get("dates_expected", 0))
+                    if dt_expected_sum > 0:
+                        entry["dates_found"] = dt_found_sum
+                        entry["dates_expected"] = dt_expected_sum
+                        entry["completion_pct"] = min(
+                            round(dt_found_sum / max(1, dt_expected_sum) * 100, 2),
+                            100.0,
+                        )
 
             itype_dict[it] = entry
 
@@ -916,20 +1102,28 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         venue_mapping: VenueMapping,
+        service: str = "",
+        category: str = "",
     ) -> dict[str, object]:
         """Build per-data-type stats for a single venue.
 
-        Uses UAC get_expected_data_types_for_venue() to know which data types
-        should exist, and get_venue_data_type_start_date() for per-data-type ranges.
+        For downstream services (MTDS, MDPS, etc.) uses UAC
+        get_expected_data_types_for_venue() to know which data types should
+        exist.  For instruments-service, only shows data types actually present
+        in the index — UAC expectations are for market data, not reference data.
+
+        TradFi tick-window handling: for TradFi venues, tbbo/trades are only
+        expected on dates within TRADFI_TICK_DATA_WINDOWS. Outside those windows,
+        only ohlcv_1m (and other non-tick types) are expected.
         """
         if "data_type" not in venue_df.columns:
             return {}
 
-        # Get expected data types from UAC
-        expected_dts = get_expected_data_types_for_venue(venue)
-        # Also include data types actually present in the index (may have extras)
+        is_tradfi = category.upper() == "TRADFI"
+
         present_dts = {str(dt) for dt in venue_df["data_type"].unique() if dt and str(dt).strip()}
-        all_dts = sorted(set(expected_dts) | present_dts)
+        expected_dts = set(get_expected_data_types_for_venue(venue, service=service))
+        all_dts = sorted(expected_dts | present_dts)
 
         if not all_dts:
             return {}
@@ -942,23 +1136,33 @@ class DataStatusService:
             # Per-data-type start date from UAC
             dt_start = get_venue_data_type_start_date(venue, dt)
             dt_eff_start = max(start_date, dt_start) if dt_start else start_date
+            # Use compound key (venue:data_type) for trading schedule lookup —
+            # e.g. POLYMARKET:CRUDE_OIL gets weekday-only, POLYMARKET:BTC gets 24/7
+            shard_key = f"{venue}:{dt}" if dt else venue
             dt_expected_list = venue_mapping.get_expected_trading_dates(
-                venue,
+                shard_key,
                 dt_eff_start,
                 end_date,
             )
             dt_expected = set(dt_expected_list)
+
+            # TradFi tick-window filter: tbbo/trades are only expected on dates
+            # within configured tick windows (Databento cost management).
+            if is_tradfi and dt in _TRADFI_TICK_ONLY_DATA_TYPES:
+                dt_expected = {d for d in dt_expected if is_in_tradfi_tick_window(d)}
+
             dt_found = dt_dates & dt_expected
             dt_missing_dates = sorted(dt_expected - dt_found)
+
+            pct = round(len(dt_found) / max(1, len(dt_expected)) * 100, 2)
 
             dt_dict[dt] = {
                 "dates_found": len(dt_found),
                 "dates_expected": len(dt_expected),
                 "dates_missing": len(dt_missing_dates),
-                "completion_pct": round(
-                    len(dt_found) / max(1, len(dt_expected)) * 100,
-                    2,
-                ),
+                "dates_found_list": sorted(dt_found),
+                "missing_dates": dt_missing_dates,
+                "completion_pct": min(pct, 100.0),
                 "start_date": dt_start,
                 "is_expected": dt in expected_dts,
             }
@@ -1009,9 +1213,9 @@ class DataStatusService:
                 "dates_missing": len(missing_dates),
                 "missing_dates": missing_dates,
                 "dates_found_list": sorted(found_dates),
-                "completion_pct": round(
-                    found_count / max(1, expected_count) * 100,
-                    2,
+                "completion_pct": min(
+                    round(found_count / max(1, expected_count) * 100, 2),
+                    100.0,
                 ),
             }
         return league_dict
@@ -1053,9 +1257,9 @@ class DataStatusService:
                 "dates_found": len(found_dates),
                 "dates_expected": len(expected_dates),
                 "dates_missing": len(missing_dates),
-                "completion_pct": round(
-                    len(found_dates) / max(1, len(expected_dates)) * 100,
-                    2,
+                "completion_pct": min(
+                    round(len(found_dates) / max(1, len(expected_dates)) * 100, 2),
+                    100.0,
                 ),
                 "venues": src_venues,
                 "venue_count": len(src_venues),
@@ -1075,9 +1279,9 @@ class DataStatusService:
                 "dates_found": len(found_dates),
                 "dates_expected": len(expected_dates),
                 "dates_missing": len(expected_dates - found_dates),
-                "completion_pct": round(
-                    len(found_dates) / max(1, len(expected_dates)) * 100,
-                    2,
+                "completion_pct": min(
+                    round(len(found_dates) / max(1, len(expected_dates)) * 100, 2),
+                    100.0,
                 ),
                 "venues": core_venues,
                 "venue_count": len(core_venues),
@@ -1125,18 +1329,21 @@ class DataStatusService:
                 if not v_expected:
                     # Fallback: all dates from venue start
                     v_expected = {
-                        d.strftime("%Y-%m-%d")
-                        for d in pd.date_range(eff_start, end_date, freq="D")
+                        d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
                     }
                 chain_expected_dates |= v_expected
 
             expected = len(chain_expected_dates) if chain_expected_dates else 1
-            found = len(chain_dates & chain_expected_dates) if chain_expected_dates else len(chain_dates)
+            found = (
+                len(chain_dates & chain_expected_dates)
+                if chain_expected_dates
+                else len(chain_dates)
+            )
 
             chain_dict[chain] = {
                 "dates_found": found,
                 "dates_expected": expected,
-                "completion_pct": round(found / max(1, expected) * 100, 2),
+                "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
                 "venues": chain_venues,
                 "venue_count": len(chain_venues),
             }
@@ -1177,7 +1384,7 @@ class DataStatusService:
             entry: dict[str, object] = {
                 "dates_found": found,
                 "dates_expected": fg_expected,
-                "completion_pct": round(found / max(1, fg_expected) * 100, 2),
+                "completion_pct": min(round(found / max(1, fg_expected) * 100, 2), 100.0),
             }
 
             # Add timeframe sub-breakdown if present
@@ -1195,7 +1402,9 @@ class DataStatusService:
                     timeframes[tf] = {
                         "dates_found": len(tf_dates),
                         "dates_expected": tf_expected,
-                        "completion_pct": round(len(tf_dates) / max(1, tf_expected) * 100, 2),
+                        "completion_pct": min(
+                            round(len(tf_dates) / max(1, tf_expected) * 100, 2), 100.0
+                        ),
                     }
                 if timeframes:
                     entry["timeframes"] = timeframes
@@ -1203,6 +1412,108 @@ class DataStatusService:
             fg_dict[fg] = entry
 
         return fg_dict
+
+    def _build_data_type_grouping(
+        self,
+        filtered: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+        cat: str,
+    ) -> tuple[dict[str, object], int, int]:
+        """Group manifest data by data_type when venues are empty.
+
+        Used for sports instruments pattern where venue column is blank but
+        data_type distinguishes different entity categories.
+        """
+        dt_venues: dict[str, object] = {}
+        dt_found_total = 0
+        dt_expected_total = 0
+        for dt_val in sorted(filtered["data_type"].unique()):
+            if not dt_val or not str(dt_val).strip():
+                continue
+            dt_mask = filtered["data_type"] == dt_val
+            dt_df = filtered[dt_mask]
+            dt_dates = {str(d) for d in dt_df["date"].unique()}
+            dt_start = min(dt_dates) if dt_dates else start_date
+            dt_eff_start = max(start_date, dt_start)
+            dt_expected = len(pd.date_range(dt_eff_start, end_date, freq="D"))
+            dt_found = len(dt_dates)
+            dt_entry: dict[str, object] = {
+                "dates_found": dt_found,
+                "dates_expected": dt_expected,
+                "dates_expected_venue": dt_expected,
+                "dates_missing": dt_expected - dt_found,
+                "completion_pct": min(round(dt_found / max(1, dt_expected) * 100, 2), 100.0),
+            }
+            if cat.upper() == "SPORTS" and "league_id" in dt_df.columns:
+                has_league_data = dt_df["league_id"].fillna("").str.len().sum() > 0
+                if has_league_data:
+                    league_breakdown = self._build_league_breakdown(dt_df, start_date, end_date)
+                    if league_breakdown:
+                        dt_entry["leagues"] = league_breakdown
+            dt_venues[str(dt_val)] = dt_entry
+            dt_found_total += dt_found
+            dt_expected_total += dt_expected
+        return dt_venues, dt_found_total, dt_expected_total
+
+    def _build_v4_sub_dimensions(
+        self,
+        filtered: pd.DataFrame,
+        service: str,
+        cat: str,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+    ) -> dict[str, object]:
+        """Build v4 manifest sub-dimension breakdowns (DeFi, chains, feature groups)."""
+        extras: dict[str, object] = {}
+
+        # DeFi sub-dimension breakdown
+        if (
+            "_defi_source" in filtered.columns
+            and service == "market-tick-data-service"
+            and cat.lower() == "defi"
+        ):
+            defi_sub_dims = self._build_defi_sub_dimension_breakdown(
+                filtered,
+                start_date,
+                end_date,
+            )
+            if defi_sub_dims:
+                extras["defi_sub_dimensions"] = defi_sub_dims
+
+        # Chain breakdown for DeFi
+        has_chain_data = (
+            "chain" in filtered.columns
+            and not filtered.empty
+            and filtered["chain"].str.len().sum() > 0
+        )
+        if has_chain_data:
+            chains_dict = self._build_chain_breakdown(
+                filtered,
+                start_date,
+                end_date,
+                venue_mapping,
+            )
+            if chains_dict:
+                extras["chains"] = chains_dict
+
+        # Feature group breakdown
+        has_fg_data = (
+            "feature_group" in filtered.columns
+            and not filtered.empty
+            and filtered["feature_group"].str.len().sum() > 0
+        )
+        if has_fg_data:
+            fg_dict = self._build_feature_group_breakdown(
+                filtered,
+                start_date,
+                end_date,
+            )
+            if fg_dict:
+                extras["feature_groups"] = fg_dict
+
+        return extras
 
     def _build_manifest_category(
         self,
@@ -1221,15 +1532,20 @@ class DataStatusService:
             "bucket": "",
             "prefixes_queried": 0,
             "dates_found": 0,
-            "dates_expected": total_days,
-            "dates_missing": total_days,
+            "dates_expected": 0,
+            "dates_missing": 0,
             "completion_pct": 0.0,
-            "missing_dates": all_date_strs,
+            "missing_dates": [],
             "venues": {},
             "_venue_found": 0,
-            "_venue_expected": total_days,
+            "_venue_expected": 0,
         }
         if not template:
+            return empty
+
+        # Skip categories that don't apply to this service (single-bucket services)
+        allowed = self._SERVICE_CATEGORY_RESTRICTIONS.get(service)
+        if allowed and cat.upper() not in allowed:
             return empty
 
         # Resolve the main bucket name (for display in the response)
@@ -1271,92 +1587,42 @@ class DataStatusService:
             category=cat,
         )
 
-        # When all venues are empty (sports instruments pattern), group by data_type instead
-        all_venues_empty = all(str(k).strip() == "" for k in venues_dict) if venues_dict else False
-        if all_venues_empty and "data_type" in filtered.columns:
-            # Rebuild grouping by data_type
-            dt_venues: dict[str, object] = {}
-            dt_found_total = 0
-            dt_expected_total = 0
-            for dt_val in sorted(filtered["data_type"].unique()):
-                if not dt_val or not str(dt_val).strip():
-                    continue
-                dt_mask = filtered["data_type"] == dt_val
-                dt_df = filtered[dt_mask]
-                dt_dates = {str(d) for d in dt_df["date"].unique()}
-                # Expected = dates from first data appearance (not full query range)
-                dt_start = min(dt_dates) if dt_dates else start_date
-                dt_eff_start = max(start_date, dt_start)
-                dt_expected = len(pd.date_range(dt_eff_start, end_date, freq="D"))
-                dt_found = len(dt_dates)
-                dt_entry: dict[str, object] = {
-                    "dates_found": dt_found,
-                    "dates_expected": dt_expected,
-                    "dates_expected_venue": dt_expected,
-                    "dates_missing": dt_expected - dt_found,
-                    "completion_pct": round(dt_found / max(1, dt_expected) * 100, 2),
-                }
-                # Add league breakdown only for sports data_types that have league_id data
-                if cat.upper() == "SPORTS" and "league_id" in dt_df.columns:
-                    has_league_data = dt_df["league_id"].fillna("").str.len().sum() > 0
-                    if has_league_data:
-                        league_breakdown = self._build_league_breakdown(dt_df, start_date, end_date)
-                        if league_breakdown:
-                            dt_entry["leagues"] = league_breakdown
-                dt_venues[str(dt_val)] = dt_entry
-                dt_found_total += dt_found
-                dt_expected_total += dt_expected
-            venues_dict = dt_venues
-            venue_found_total = dt_found_total
-            venue_expected_total = dt_expected_total
+        # When no venues or all are empty (sports instruments pattern), group
+        # by data_type.  If there are BOTH empty-venue v4 rows AND old non-empty
+        # v3 venue rows, prefer the v4 data_type grouping (it's the canonical view).
+        all_venues_empty = not venues_dict or all(str(k).strip() == "" for k in venues_dict)
+        has_empty_venue_dt_rows = (
+            "data_type" in filtered.columns
+            and "venue" in filtered.columns
+            and (filtered["venue"].str.strip() == "").any()
+            and filtered.loc[filtered["venue"].str.strip() == "", "data_type"].str.len().sum() > 0
+        )
+        if (all_venues_empty or has_empty_venue_dt_rows) and "data_type" in filtered.columns:
+            # Use only the empty-venue rows for data_type grouping
+            dt_filtered = (
+                filtered[filtered["venue"].str.strip() == ""]
+                if has_empty_venue_dt_rows and not all_venues_empty
+                else filtered
+            )
+            venues_dict, venue_found_total, venue_expected_total = self._build_data_type_grouping(
+                dt_filtered, start_date, end_date, cat
+            )
 
         # Use venue-weighted completion when venues exist
         if venues_dict:
-            cat_pct = round(venue_found_total / max(1, venue_expected_total) * 100, 2)
+            cat_pct = min(round(venue_found_total / max(1, venue_expected_total) * 100, 2), 100.0)
         else:
-            cat_pct = round(cat_found / max(1, total_days) * 100, 2)
+            cat_pct = min(round(cat_found / max(1, total_days) * 100, 2), 100.0)
 
-        # DeFi sub-dimension breakdown (gas-fees, dex-pools, lending-indices, etc.)
-        defi_sub_dims: dict[str, object] = {}
-        if (
-            "_defi_source" in filtered.columns
-            and service == "market-tick-data-service"
-            and cat.lower() == "defi"
-        ):
-            defi_sub_dims = self._build_defi_sub_dimension_breakdown(
-                filtered,
-                start_date,
-                end_date,
-            )
-
-        # v4: Build chain breakdown for DeFi (group venues by chain)
-        chains_dict: dict[str, object] = {}
-        has_chain_data = (
-            "chain" in filtered.columns
-            and not filtered.empty
-            and filtered["chain"].str.len().sum() > 0
+        # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
+        sub_dims = self._build_v4_sub_dimensions(
+            filtered,
+            service,
+            cat,
+            start_date,
+            end_date,
+            venue_mapping,
         )
-        if has_chain_data:
-            chains_dict = self._build_chain_breakdown(
-                filtered,
-                start_date,
-                end_date,
-                venue_mapping,
-            )
-
-        # v4: Build feature_group breakdown (for feature services)
-        feature_groups_dict: dict[str, object] = {}
-        has_fg_data = (
-            "feature_group" in filtered.columns
-            and not filtered.empty
-            and filtered["feature_group"].str.len().sum() > 0
-        )
-        if has_fg_data:
-            feature_groups_dict = self._build_feature_group_breakdown(
-                filtered,
-                start_date,
-                end_date,
-            )
 
         cat_found_sorted = sorted(cat_found_dates)
         result: dict[str, object] = {
@@ -1377,12 +1643,7 @@ class DataStatusService:
             "_venue_found": venue_found_total,
             "_venue_expected": venue_expected_total,
         }
-        if defi_sub_dims:
-            result["defi_sub_dimensions"] = defi_sub_dims
-        if chains_dict:
-            result["chains"] = chains_dict
-        if feature_groups_dict:
-            result["feature_groups"] = feature_groups_dict
+        result.update(sub_dims)
         return result
 
     async def get_last_updated_info(
