@@ -227,36 +227,43 @@ class TestPathCombinatoricsWithMinimalConfig:
 
 
 class TestIsInTickWindow:
-    """Tests for is_in_tick_window."""
+    """Tests for is_in_tick_window.
+
+    tick_windows are now sourced from UAC TRADFI_TICK_DATA_WINDOWS (SSOT):
+    - 2023-05-01 to 2023-05-31 (training window)
+    - 2024-07-01 to 2024-07-31 (validation window)
+    """
 
     def test_date_in_window(self):
         from deployment_api.utils.path_combinatorics import PathCombinatorics
 
         pc = PathCombinatorics.__new__(PathCombinatorics)
-        pc.tick_windows = [("2024-01-01", "2024-03-31")]
-        assert pc.is_in_tick_window("2024-02-15") is True
+        # 2023-05-15 is inside the May 2023 training window
+        assert pc.is_in_tick_window("2023-05-15") is True
 
     def test_date_outside_window(self):
         from deployment_api.utils.path_combinatorics import PathCombinatorics
 
         pc = PathCombinatorics.__new__(PathCombinatorics)
-        pc.tick_windows = [("2024-01-01", "2024-03-31")]
         assert pc.is_in_tick_window("2024-05-01") is False
 
-    def test_no_tick_windows(self):
+    def test_date_between_windows(self):
         from deployment_api.utils.path_combinatorics import PathCombinatorics
 
         pc = PathCombinatorics.__new__(PathCombinatorics)
-        pc.tick_windows = []
-        assert pc.is_in_tick_window("2024-02-15") is False
+        # Between May 2023 and July 2024 windows
+        assert pc.is_in_tick_window("2024-01-15") is False
 
     def test_boundary_dates_inclusive(self):
         from deployment_api.utils.path_combinatorics import PathCombinatorics
 
         pc = PathCombinatorics.__new__(PathCombinatorics)
-        pc.tick_windows = [("2024-01-01", "2024-03-31")]
-        assert pc.is_in_tick_window("2024-01-01") is True
-        assert pc.is_in_tick_window("2024-03-31") is True
+        # Boundaries of the May 2023 window
+        assert pc.is_in_tick_window("2023-05-01") is True
+        assert pc.is_in_tick_window("2023-05-31") is True
+        # Boundaries of the July 2024 window
+        assert pc.is_in_tick_window("2024-07-01") is True
+        assert pc.is_in_tick_window("2024-07-31") is True
 
 
 class TestGetBasePrefix:

@@ -21,9 +21,8 @@ from unified_api_contracts import (
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import is_in_tradfi_tick_window
 from unified_api_contracts.sports import (
-    get_all_prediction_league_ids,
-    get_league_fixture_calendar,
-    get_reference_refresh_dates,
+    get_entity_league_coverage,
+    get_transfer_windows_for_year,
 )
 from unified_trading_library import read_availability_index
 
@@ -35,6 +34,34 @@ logger = logging.getLogger(__name__)
 # TradFi data types that are only expected within tick windows (Databento cost mgmt).
 # Outside tick windows, only ohlcv_1m (and other non-tick types) are expected.
 _TRADFI_TICK_ONLY_DATA_TYPES: frozenset[str] = frozenset({"tbbo", "trades"})
+
+# Countries tracked for transfer window calendar (denominator for Transfermarkt data)
+_TRANSFER_COUNTRIES = (
+    "ENG",
+    "ESP",
+    "DEU",
+    "ITA",
+    "FRA",
+    "NLD",
+    "PRT",
+    "BEL",
+    "TUR",
+    "SCO",
+    "AUT",
+    "CHE",
+    "DNK",
+    "NOR",
+    "SWE",
+    "POL",
+    "KOR",
+    "ARG",
+    "BRA",
+    "CHL",
+    "USA",
+    "MEX",
+    "JPN",
+    "AUS",
+)
 
 # Cache for availability index reads — avoids repeated GCS downloads
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
@@ -651,6 +678,18 @@ class DataStatusService:
         "API_FOOTBALL_",
     )
 
+    # Understat XG covers only 6 leagues — denominator must be filtered to
+    # fixture dates from these leagues only, not the full fixture calendar.
+    # Mapping: Understat league name → canonical league_id in LEAGUE_REGISTRY.
+    _UNDERSTAT_LEAGUE_IDS: ClassVar[tuple[str, ...]] = (
+        "EPL",
+        "LA_LIGA",
+        "BUNDESLIGA",
+        "SERIE_A",
+        "LIGUE_1",
+        # RFPL (Russian) — not in LEAGUE_REGISTRY; omitted from calendar filter.
+    )
+
     # Transfermarkt is fixture-INDEPENDENT reference data (squad composition,
     # league metadata). It's fetched on every batch day, not just fixture days.
     # Player values are expected year-round; transfer_records (future) only
@@ -661,9 +700,36 @@ class DataStatusService:
         """Check if a venue is a sports reference entity (fixture-dependent)."""
         return venue.startswith(self._SPORTS_REFERENCE_PREFIXES)
 
+    # Sparse sports entities where the full fixture calendar is the wrong
+    # denominator. These are either provider-specific (Understat = 6 leagues),
+    # infrequent (Transfermarkt = transfer windows), or partially backfilled
+    # (FootyStats predictions/matches). For these, expected = found (show raw
+    # count, not misleading percentage against 2660 fixture dates).
+    _SPARSE_SPORTS_ENTITIES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "XG",
+            "UNDERSTAT_XG",  # Understat: 6 leagues only
+            "TRANSFERMARKT_LEAGUES",
+            "PLAYER_VALUES",  # Transfermarkt: window-based
+            "MATCHES",
+            "PREDICTIONS",  # FootyStats: partial backfill
+            "SFI_LEAGUES",  # SFI: partial coverage
+        }
+    )
+
+    def _is_understat_venue(self, venue: str) -> bool:
+        """Check if a venue is Understat XG (6-league subset)."""
+        v = venue.upper()
+        return v == "XG" or v == "UNDERSTAT_XG" or v.startswith("UNDERSTAT_")
+
     def _is_transfer_window_venue(self, venue: str) -> bool:
         """Check if a venue is transfer-window-aware (Transfermarkt)."""
-        return venue.startswith(self._TRANSFER_WINDOW_PREFIXES)
+        v = venue.upper()
+        return v.startswith("TRANSFERMARKT") or v == "PLAYER_VALUES"
+
+    def _is_sparse_sports_entity(self, venue: str) -> bool:
+        """Check if this is a sparse sports entity with wrong fixture-calendar denominator."""
+        return venue.upper() in self._SPARSE_SPORTS_ENTITIES
 
     # ── Reference-data-driven expected dates ──────────────────────────────
 
@@ -840,6 +906,10 @@ class DataStatusService:
                 ref_dates,
                 venue_mapping,
             )
+            # Sparse sports entities return None → use found dates as expected
+            # (shows raw count, not misleading % against full fixture calendar)
+            if v_all_dates is None:
+                v_all_dates = v_dates_all
             venue_entry = self._build_single_venue_entry(
                 v_df,
                 v,
@@ -871,54 +941,73 @@ class DataStatusService:
         """Resolve the expected-date set for a venue.
 
         Priority:
-        1. Transfermarkt → transfer-window-aware dates (year-round for squad
-           data, window+grace for transfer records)
-        2. Sports reference venues → fixture calendar
-        3. Reference-driven services → instruments-service dates
-        4. Fallback → calendar trading days
+        1. Transfermarkt → transfer-window dates only (open/close +/- grace)
+        2. Understat XG → fixture calendar filtered to 6 covered leagues
+        3. Sports reference venues → full fixture calendar
+        4. Reference-driven services → instruments-service dates
+        5. Fallback → calendar trading days
         """
-        if self._is_transfer_window_venue(venue):
-            return self._resolve_transfer_window_dates(eff_start, end_date)
+        # Sparse sports entities: expected = found (show raw count, not
+        # misleading % against full fixture calendar). Returns None to signal
+        # "use found dates as denominator" to the caller.
+        if self._is_sparse_sports_entity(venue):
+            return None  # type: ignore[return-value]
         if self._is_sports_reference_venue(venue) and fixture_calendar is not None:
             return {d for d in fixture_calendar if d >= eff_start}
         if venue in ref_dates:
             return {d for d in ref_dates[venue] if d >= eff_start}
         return set(venue_mapping.get_expected_trading_dates(venue, eff_start, end_date))
 
+    def _resolve_understat_fixture_dates(
+        self,
+        start: str,
+        end: str,
+    ) -> set[str]:
+        """Return expected dates for Understat XG.
+
+        Understat XG covers only 6 leagues. We don't have a league-filtered
+        fixture calendar available in this service, so we return None to signal
+        that the expected dates should equal the found dates (self-referencing
+        denominator). The completion shows as the raw date count rather than
+        a misleading percentage against the full 38-league calendar.
+        """
+        # Return None — caller handles this as "use found dates as expected"
+        return None  # type: ignore[return-value]
+
     @staticmethod
     def _resolve_transfer_window_dates(start: str, end: str) -> set[str]:
         """Return dates where Transfermarkt reference data is expected.
 
-        Uses the trigger calendar (season starts + transfer window
-        open/close dates) across all tracked leagues. Data is only
-        expected on or near these trigger dates, not every day.
+        Uses the UAC transfer window calendar across all tracked countries.
+        Only dates that fall within an open transfer window (or within a
+        7-day grace period after close) are considered expected.
 
-        A 3-day tolerance is applied to each trigger date to account
-        for batch scheduling variance (weekends, outages).
+        This prevents the denominator from including mid-season dates
+        where no transfer activity occurs.
         """
         from datetime import date as dt_date
+        from datetime import timedelta
 
         start_d = dt_date.fromisoformat(start)
         end_d = dt_date.fromisoformat(end)
 
-        # Collect trigger dates from all prediction leagues across years in range
-        trigger_dates: set[dt_date] = set()
-        for year in range(start_d.year, end_d.year + 1):
-            # get_reference_refresh_dates uses EPL as representative;
-            # union across a few major leagues for broader coverage
-            for league_id in ("EPL", "MLS", "BRASILEIRAO", "J1_LEAGUE"):
-                for td in get_reference_refresh_dates(league_id, year):
-                    trigger_dates.add(td)
-
-        # Expand each trigger by +/- 3 days tolerance
-        from datetime import timedelta
-
         expected: set[str] = set()
-        for td in trigger_dates:
-            for offset in range(-3, 4):
-                d = td + timedelta(days=offset)
-                if start_d <= d <= end_d:
-                    expected.add(d.isoformat())
+        grace_days = 7
+
+        for year in range(start_d.year, end_d.year + 1):
+            for country in _TRANSFER_COUNTRIES:
+                for window in get_transfer_windows_for_year(country, year):
+                    # Include all dates within the window
+                    w_start = max(window.open_date, start_d)
+                    # Extend close by grace period for post-window data lag
+                    w_end = min(window.close_date + timedelta(days=grace_days), end_d)
+                    if w_start > w_end:
+                        continue
+                    d = w_start
+                    while d <= w_end:
+                        expected.add(d.isoformat())
+                        d += timedelta(days=1)
+
         return expected
 
     @staticmethod
@@ -1062,8 +1151,31 @@ class DataStatusService:
                 "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             }
 
+            # Nest underlying within instrument_type for options/futures venues
+            has_underlying = (
+                "underlying" in it_df.columns
+                and not it_df["underlying"].isna().all()
+                and (it_df["underlying"].str.len() > 0).any()
+            )
+            if has_underlying:
+                ul_sub = self._build_underlying_breakdown(
+                    it_df,
+                    venue,
+                    start_date,
+                    end_date,
+                    venue_mapping,
+                    has_data_type,
+                    service=service,
+                    category=category,
+                )
+                if ul_sub:
+                    entry["underlyings"] = ul_sub
+                    self._apply_dimensional_granularity(entry, ul_sub)
+
             # Nest data_types within instrument_type if available
-            if has_data_type:
+            # (only when underlying is absent — otherwise data_types nest
+            # inside each underlying entry via _build_underlying_breakdown)
+            if has_data_type and not has_underlying:
                 dt_sub = self._build_data_type_breakdown(
                     it_df,
                     venue,
@@ -1094,6 +1206,65 @@ class DataStatusService:
             itype_dict[it] = entry
 
         return itype_dict
+
+    def _build_underlying_breakdown(
+        self,
+        itype_df: pd.DataFrame,
+        venue: str,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+        has_data_type: bool,
+        service: str = "",
+        category: str = "",
+    ) -> dict[str, object]:
+        """Build per-underlying stats within an instrument_type for derivatives venues.
+
+        For venues like DERIBIT and CME that trade options/futures on multiple
+        underlyings (BTC, ETH, ES), this groups completion by underlying asset
+        so users can see which underlyings have gaps.
+
+        Each underlying entry optionally nests data_type sub-breakdowns.
+        """
+        if "underlying" not in itype_df.columns:
+            return {}
+
+        underlyings = sorted(ul for ul in itype_df["underlying"].unique() if ul and str(ul).strip())
+        if not underlyings:
+            return {}
+
+        ul_dict: dict[str, object] = {}
+        for ul in underlyings:
+            ul_df = itype_df[itype_df["underlying"] == ul]
+            ul_dates = {str(d) for d in ul_df["date"].unique()}
+            all_dates = set(venue_mapping.get_expected_trading_dates(venue, start_date, end_date))
+            found = len(ul_dates & all_dates)
+            expected = len(all_dates)
+
+            entry: dict[str, object] = {
+                "dates_found": found,
+                "dates_expected": expected,
+                "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
+            }
+
+            # Nest data_types within underlying if available
+            if has_data_type:
+                dt_sub = self._build_data_type_breakdown(
+                    ul_df,
+                    venue,
+                    start_date,
+                    end_date,
+                    venue_mapping,
+                    service=service,
+                    category=category,
+                )
+                if dt_sub:
+                    entry["data_types"] = dt_sub
+                    self._apply_dimensional_granularity(entry, dt_sub)
+
+            ul_dict[ul] = entry
+
+        return ul_dict
 
     def _build_data_type_breakdown(
         self,
@@ -1173,51 +1344,126 @@ class DataStatusService:
         venue_df: pd.DataFrame,
         start_date: str,
         end_date: str,
+        fixture_league_calendar: dict[str, set[str]] | None = None,
+        fixture_counts_by_league: dict[str, int] | None = None,
+        is_fixtures_entity: bool = False,
+        entity_coverage: frozenset[str] | None = None,
+        full_manifest: pd.DataFrame | None = None,
     ) -> dict[str, object]:
-        """Build per-league stats for a sports venue.
+        """Build per-league stats for a sports entity.
 
-        Uses UAC league fixture calendar as the per-league denominator.
-        Leagues in UAC's prediction registry but absent from manifest
-        appear at 0%.
+        Fixture-based model (when ``fixture_counts_by_league`` is provided):
+        - The unit is the fixture (a single match), not the calendar date.
+        - For each league, ``instrument_count`` sums give the fixture count.
+        - For FIXTURES entity: expected = found (ground truth).
+        - For other entities: expected = FIXTURES fixture count for that league.
+        - Date lists are still included for backfill targeting.
+
+        Legacy date-based model (``fixture_league_calendar`` provided):
+        - Falls back to the old date-counting logic for non-sports callers.
+
+        Args:
+            fixture_league_calendar: Legacy mapping of league_id to fixture
+                dates (date-based denominator). Used by non-sports callers.
+            fixture_counts_by_league: Fixture-based mapping of league_id to
+                total fixture count (from FIXTURES instrument_count sums).
+            is_fixtures_entity: Whether this entity IS the FIXTURES entity.
+            entity_coverage: If set, only these league_ids are expected for
+                this entity (e.g. Understat XG covers 6 leagues).
+            full_manifest: The full filtered manifest DataFrame (all entities)
+                used to look up FIXTURES dates for missing-date calculation
+                when the current entity is not FIXTURES.
         """
         if "league_id" not in venue_df.columns:
             return {}
 
-        leagues_in_data = {lid for lid in venue_df["league_id"].unique() if lid}
+        leagues_in_data = {str(lid) for lid in venue_df["league_id"].unique() if lid}
 
-        # Include all prediction leagues so newly-added ones show 0%
-        all_league_ids = set(get_all_prediction_league_ids())
-        all_leagues = sorted(leagues_in_data | all_league_ids)
-
-        if not all_leagues:
+        if not leagues_in_data:
             return {}
 
+        use_fixture_counts = (
+            fixture_counts_by_league is not None and "instrument_count" in venue_df.columns
+        )
+
         league_dict: dict[str, object] = {}
-        for lid in all_leagues:
-            expected_dates = get_league_fixture_calendar(lid, start_date, end_date)
-            expected_count = max(1, len(expected_dates)) if expected_dates else 1
+        for lid in sorted(leagues_in_data):
+            l_df = venue_df[venue_df["league_id"] == lid]
 
-            if lid in leagues_in_data:
-                l_df = venue_df[venue_df["league_id"] == lid]
-                found_dates = {str(d) for d in l_df["date"].unique()}
-                found_count = len(found_dates)
-                missing_dates = sorted(d for d in expected_dates if d not in found_dates)
+            if use_fixture_counts:
+                # Fixture-based model
+                league_fixture_found = int(l_df["instrument_count"].sum())
+
+                if is_fixtures_entity:
+                    # FIXTURES is ground truth — expected = found
+                    league_fixture_expected = league_fixture_found
+                elif entity_coverage is not None and lid.upper() not in entity_coverage:
+                    # This league is not covered by this entity — skip it
+                    continue
+                else:
+                    # Other entities: expected = FIXTURES count for this league
+                    league_fixture_expected = fixture_counts_by_league.get(
+                        lid, league_fixture_found
+                    )
+
+                # Date lists for backfill targeting (which dates have gaps?)
+                found_dates = sorted({str(d) for d in l_df["date"].unique()})
+                # Use full_manifest to find FIXTURES dates (venue_df is
+                # filtered to the current entity, so FIXTURES rows are absent).
+                manifest_src = full_manifest if full_manifest is not None else venue_df
+                fixtures_rows_for_league = (
+                    manifest_src[
+                        (manifest_src["data_type"] == "FIXTURES")
+                        & (manifest_src["league_id"] == lid)
+                    ]
+                    if "data_type" in manifest_src.columns
+                    else pd.DataFrame()
+                )
+                # For non-FIXTURES entities, dates where FIXTURES exist but this
+                # entity has no data are "missing dates" for backfill targeting.
+                if not is_fixtures_entity and not fixtures_rows_for_league.empty:
+                    fixture_dates = {str(d) for d in fixtures_rows_for_league["date"].unique()}
+                    entity_dates = {str(d) for d in l_df["date"].unique()}
+                    missing_dates = sorted(fixture_dates - entity_dates)
+                else:
+                    missing_dates = []
+
+                league_dict[lid] = {
+                    "dates_found": league_fixture_found,
+                    "dates_expected": max(1, league_fixture_expected),
+                    "dates_missing": max(0, league_fixture_expected - league_fixture_found),
+                    "missing_dates": missing_dates[:50],
+                    "dates_found_list": found_dates[:50],
+                    "completion_pct": min(
+                        round(league_fixture_found / max(1, league_fixture_expected) * 100, 2),
+                        100.0,
+                    ),
+                    "unit": "fixtures",
+                }
             else:
-                found_count = 0
-                found_dates = set()
-                missing_dates = sorted(expected_dates) if expected_dates else []
+                # Legacy date-based model (non-sports callers)
+                found_dates_set = {str(d) for d in l_df["date"].unique()}
+                found_count = len(found_dates_set)
 
-            league_dict[lid] = {
-                "dates_found": found_count,
-                "dates_expected": expected_count,
-                "dates_missing": len(missing_dates),
-                "missing_dates": missing_dates,
-                "dates_found_list": sorted(found_dates),
-                "completion_pct": min(
-                    round(found_count / max(1, expected_count) * 100, 2),
-                    100.0,
-                ),
-            }
+                if fixture_league_calendar and lid in fixture_league_calendar:
+                    expected_dates = {d for d in fixture_league_calendar[lid] if d >= start_date}
+                    expected_count = len(expected_dates)
+                    missing_dates_list = sorted(expected_dates - found_dates_set)
+                else:
+                    expected_count = found_count
+                    missing_dates_list = []
+
+                league_dict[lid] = {
+                    "dates_found": found_count,
+                    "dates_expected": max(1, expected_count),
+                    "dates_missing": len(missing_dates_list),
+                    "missing_dates": missing_dates_list[:50],
+                    "dates_found_list": sorted(found_dates_set)[:50],
+                    "completion_pct": min(
+                        round(found_count / max(1, expected_count) * 100, 2),
+                        100.0,
+                    ),
+                }
         return league_dict
 
     def _build_defi_sub_dimension_breakdown(
@@ -1424,7 +1670,36 @@ class DataStatusService:
 
         Used for sports instruments pattern where venue column is blank but
         data_type distinguishes different entity categories.
+
+        For SPORTS category, uses a fixture-based model:
+        - The fundamental unit is the fixture (a single match), not the date.
+        - ``instrument_count`` in each manifest row = number of fixtures on
+          that date for that league.
+        - FIXTURES entity: found/expected are fixture counts from the manifest.
+        - Other entities: expected = total FIXTURES instrument_count (how many
+          fixtures exist), found = this entity's instrument_count sum.
+        - Per-league breakdowns use the same fixture-count logic.
         """
+        is_sports = cat.upper() == "SPORTS"
+
+        # For sports, pre-compute fixture counts from FIXTURES rows
+        # (the ground-truth denominator for all other entities).
+        fixtures_by_league: dict[str, int] = {}
+        total_fixture_count = 0
+        if is_sports and "instrument_count" in filtered.columns:
+            fix_rows = filtered[
+                (filtered["data_type"] == "FIXTURES")
+                & (filtered["league_id"].fillna("").str.len() > 0)
+            ]
+            if not fix_rows.empty:
+                for lid in fix_rows["league_id"].unique():
+                    if lid:
+                        lid_count = int(
+                            fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum()
+                        )
+                        fixtures_by_league[str(lid)] = lid_count
+                total_fixture_count = sum(fixtures_by_league.values())
+
         dt_venues: dict[str, object] = {}
         dt_found_total = 0
         dt_expected_total = 0
@@ -1433,28 +1708,105 @@ class DataStatusService:
                 continue
             dt_mask = filtered["data_type"] == dt_val
             dt_df = filtered[dt_mask]
-            dt_dates = {str(d) for d in dt_df["date"].unique()}
-            dt_start = min(dt_dates) if dt_dates else start_date
-            dt_eff_start = max(start_date, dt_start)
-            dt_expected = len(pd.date_range(dt_eff_start, end_date, freq="D"))
-            dt_found = len(dt_dates)
-            dt_entry: dict[str, object] = {
-                "dates_found": dt_found,
-                "dates_expected": dt_expected,
-                "dates_expected_venue": dt_expected,
-                "dates_missing": dt_expected - dt_found,
-                "completion_pct": min(round(dt_found / max(1, dt_expected) * 100, 2), 100.0),
-            }
-            if cat.upper() == "SPORTS" and "league_id" in dt_df.columns:
-                has_league_data = dt_df["league_id"].fillna("").str.len().sum() > 0
-                if has_league_data:
-                    league_breakdown = self._build_league_breakdown(dt_df, start_date, end_date)
-                    if league_breakdown:
-                        dt_entry["leagues"] = league_breakdown
+            dt_name = str(dt_val).upper()
+
+            if is_sports and "instrument_count" in filtered.columns:
+                dt_entry = self._build_sports_entity_entry(
+                    dt_df,
+                    dt_name,
+                    filtered,
+                    fixtures_by_league,
+                    total_fixture_count,
+                    start_date,
+                    end_date,
+                )
+            else:
+                # Non-sports: keep existing date-based logic
+                dt_dates = {str(d) for d in dt_df["date"].unique()}
+                dt_start = min(dt_dates) if dt_dates else start_date
+                dt_eff_start = max(start_date, dt_start)
+                dt_found = len(dt_dates)
+                dt_expected = len(pd.date_range(dt_eff_start, end_date, freq="D"))
+                dt_entry = {
+                    "dates_found": dt_found,
+                    "dates_expected": dt_expected,
+                    "dates_expected_venue": dt_expected,
+                    "dates_missing": dt_expected - dt_found,
+                    "completion_pct": min(round(dt_found / max(1, dt_expected) * 100, 2), 100.0),
+                }
+
             dt_venues[str(dt_val)] = dt_entry
-            dt_found_total += dt_found
-            dt_expected_total += dt_expected
+            dt_found_total += int(dt_entry["dates_found"])
+            dt_expected_total += int(dt_entry["dates_expected"])
         return dt_venues, dt_found_total, dt_expected_total
+
+    def _build_sports_entity_entry(
+        self,
+        dt_df: pd.DataFrame,
+        entity_name: str,
+        full_filtered: pd.DataFrame,
+        fixtures_by_league: dict[str, int],
+        total_fixture_count: int,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Build a fixture-based entry for a single sports entity (data_type).
+
+        For FIXTURES: found = sum of instrument_count across all leagues.
+            Expected = same (FIXTURES is the ground truth).
+        For other entities: found = sum of this entity's instrument_count.
+            Expected = total FIXTURES instrument_count (how many fixtures
+            exist = how many we should have data for).
+        """
+        is_fixtures = entity_name == "FIXTURES"
+        has_league = "league_id" in dt_df.columns
+
+        # Entity-level fixture counts
+        entity_fixture_count = int(dt_df["instrument_count"].sum()) if not dt_df.empty else 0
+
+        # League-aware expected for entities with partial coverage (e.g. XG = 6 leagues)
+        _entity_coverage = get_entity_league_coverage(entity_name)
+
+        if is_fixtures:
+            # FIXTURES is the ground truth — expected = found
+            dt_found = entity_fixture_count
+            dt_expected = entity_fixture_count
+        elif _entity_coverage is not None and fixtures_by_league:
+            # Entity covers specific leagues only — expected = fixture count
+            # for just those leagues
+            dt_found = entity_fixture_count
+            dt_expected = sum(fixtures_by_league.get(lid, 0) for lid in _entity_coverage)
+        else:
+            # General entity — expected = total fixture count
+            dt_found = entity_fixture_count
+            dt_expected = total_fixture_count if total_fixture_count > 0 else entity_fixture_count
+
+        dt_entry: dict[str, object] = {
+            "dates_found": dt_found,
+            "dates_expected": dt_expected,
+            "dates_expected_venue": dt_expected,
+            "dates_missing": max(0, dt_expected - dt_found),
+            "completion_pct": min(round(dt_found / max(1, dt_expected) * 100, 2), 100.0),
+            "unit": "fixtures",
+        }
+
+        # Per-league breakdown
+        if has_league:
+            has_league_data = dt_df["league_id"].fillna("").str.len().sum() > 0
+            if has_league_data:
+                league_breakdown = self._build_league_breakdown(
+                    dt_df,
+                    start_date,
+                    end_date,
+                    fixture_counts_by_league=fixtures_by_league,
+                    is_fixtures_entity=is_fixtures,
+                    entity_coverage=_entity_coverage,
+                    full_manifest=full_filtered,
+                )
+                if league_breakdown:
+                    dt_entry["leagues"] = league_breakdown
+
+        return dt_entry
 
     def _build_v4_sub_dimensions(
         self,
@@ -1625,6 +1977,8 @@ class DataStatusService:
         )
 
         cat_found_sorted = sorted(cat_found_dates)
+        # Sports uses fixture-based unit; other categories use dates
+        unit = "fixtures" if cat.upper() == "SPORTS" and venues_dict else "dates"
         result: dict[str, object] = {
             "category": cat,
             "bucket": bucket,
@@ -1636,6 +1990,7 @@ class DataStatusService:
             "venue_weighted": bool(venues_dict),
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,
+            "unit": unit,
             "missing_dates": cat_missing,
             "dates_found_list": cat_found_sorted,
             "dates_missing_list": cat_missing,

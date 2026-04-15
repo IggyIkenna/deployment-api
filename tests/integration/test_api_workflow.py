@@ -22,19 +22,25 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from unified_trading_library.events_interface import setup_events
 
-# Pre-initialize events in test mode before any application import
-setup_events("deployment-api", "test")
-
-# Patch PubSubEventSink and setup_tracing to prevent network calls during
-# deployment_api.main module load
+# Patch at the *source* modules so that when deployment_api.main runs its
+# module-level code during import, PubSubEventSink / setup_events / setup_tracing
+# are already mocked.  Patching "deployment_api.main.<name>" is too late — the
+# module-level statements execute before patch() can replace the names.
 with (
-    patch("deployment_api.main.PubSubEventSink"),
-    patch("deployment_api.main.setup_events"),
-    patch("deployment_api.main.setup_tracing"),
+    patch("unified_trading_library.event_sink.PubSubEventSink"),
+    patch("unified_trading_library.PubSubEventSink"),
+    patch("unified_trading_library.events_interface.setup_events"),
+    patch("unified_trading_library.utils.tracing.setup_tracing"),
+    patch("unified_trading_library.setup_tracing"),
 ):
     from deployment_api.main import app
+
+# Now that the app is imported, set up events in test mode so log_event()
+# calls from middleware become no-ops (log to console only).
+from unified_trading_library.events_interface import setup_events
+
+setup_events("deployment-api", "test")
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
