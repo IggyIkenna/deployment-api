@@ -956,3 +956,138 @@ class TestTransferWindowAwareness:
         # Should NOT be the fixture calendar (3 dates)
         # Should be trigger-based dates from UAC calendar
         assert result != fixture_cal
+
+
+# ── Underlying derivation + grouping helpers ────────────────────────────
+
+_derive = _dss_mod._derive_underlying_from_instrument_id
+_ensure = _dss_mod._ensure_underlying_column
+
+
+class TestDeriveUnderlyingFromInstrumentId:
+    """Tests for _derive_underlying_from_instrument_id."""
+
+    def test_perp_instrument(self):
+        assert _derive("BTC-USDT-PERP") == "BTC"
+
+    def test_spot_pair(self):
+        assert _derive("ETH-USDC") == "ETH"
+
+    def test_options_instrument(self):
+        assert _derive("BTC-USD-241227-C-100000") == "BTC"
+
+    def test_futures_instrument(self):
+        assert _derive("ES-FUT-20260320") == "ES"
+
+    def test_single_symbol(self):
+        assert _derive("SPY") == "SPY"
+
+    def test_lowercase_uppercased(self):
+        assert _derive("sol-usdt-perp") == "SOL"
+
+    def test_empty_string(self):
+        assert _derive("") == ""
+
+    def test_whitespace_only(self):
+        assert _derive("   ") == ""
+
+
+class TestEnsureUnderlyingColumn:
+    """Tests for _ensure_underlying_column."""
+
+    def test_preserves_existing_underlying(self):
+        df = pd.DataFrame({"underlying": ["BTC", "ETH"], "instrument_id": ["X-Y", "A-B"]})
+        result = _ensure(df)
+        assert list(result["underlying"]) == ["BTC", "ETH"]
+
+    def test_derives_from_instrument_id_when_underlying_missing(self):
+        df = pd.DataFrame(
+            {"instrument_id": ["BTC-USDT-PERP", "ETH-USDC"], "date": ["2024-01-01"] * 2}
+        )
+        result = _ensure(df)
+        assert "underlying" in result.columns
+        assert list(result["underlying"]) == ["BTC", "ETH"]
+
+    def test_fills_blank_rows_only(self):
+        df = pd.DataFrame(
+            {
+                "underlying": ["BTC", ""],
+                "instrument_id": ["BTC-USDT-PERP", "SOL-USDC"],
+            }
+        )
+        result = _ensure(df)
+        assert list(result["underlying"]) == ["BTC", "SOL"]
+
+    def test_no_instrument_id_column_no_crash(self):
+        df = pd.DataFrame({"date": ["2024-01-01"], "venue": ["BINANCE"]})
+        result = _ensure(df)
+        assert "underlying" not in result.columns or result["underlying"].str.len().sum() == 0
+
+
+class TestBuildUnderlyingGrouping:
+    """Tests for DataStatusService._build_underlying_grouping."""
+
+    def test_groups_by_underlying(self):
+        svc = _make_svc()
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-01", "2024-01-02", "2024-01-02"],
+                "venue": ["BINANCE", "BINANCE", "OKX-SPOT", "OKX-SPOT"],
+                "underlying": ["BTC", "ETH", "BTC", "ETH"],
+                "instrument_type": ["perpetuals", "perpetuals", "spot", "spot"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_venue_start_date.return_value = None
+        vm.get_expected_trading_dates.return_value = ["2024-01-01", "2024-01-02"]
+        result = svc._build_underlying_grouping(df, "2024-01-01", "2024-01-02", vm)
+        assert "BTC" in result
+        assert "ETH" in result
+        assert result["BTC"]["venue_count"] == 2
+        assert result["BTC"]["dates_found"] == 2
+
+    def test_derives_underlying_when_column_empty(self):
+        svc = _make_svc()
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-01"],
+                "venue": ["BINANCE", "BINANCE"],
+                "instrument_id": ["BTC-USDT-PERP", "ETH-USDC"],
+                "instrument_type": ["perpetuals", "spot"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_venue_start_date.return_value = None
+        vm.get_expected_trading_dates.return_value = ["2024-01-01"]
+        result = svc._build_underlying_grouping(df, "2024-01-01", "2024-01-01", vm)
+        assert "BTC" in result
+        assert "ETH" in result
+
+    def test_returns_empty_when_no_underlying_data(self):
+        svc = _make_svc()
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["BINANCE"],
+            }
+        )
+        vm = MagicMock()
+        result = svc._build_underlying_grouping(df, "2024-01-01", "2024-01-01", vm)
+        assert result == {}
+
+    def test_includes_instrument_types(self):
+        svc = _make_svc()
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-01"],
+                "venue": ["DERIBIT", "DERIBIT"],
+                "underlying": ["BTC", "BTC"],
+                "instrument_type": ["options", "perpetuals"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_venue_start_date.return_value = None
+        vm.get_expected_trading_dates.return_value = ["2024-01-01"]
+        result = svc._build_underlying_grouping(df, "2024-01-01", "2024-01-01", vm)
+        assert "BTC" in result
+        assert sorted(result["BTC"]["instrument_types"]) == ["options", "perpetuals"]

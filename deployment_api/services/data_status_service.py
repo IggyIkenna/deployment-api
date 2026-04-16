@@ -84,6 +84,56 @@ def clear_index_cache() -> None:
     _INDEX_CACHE.clear()
 
 
+def _derive_underlying_from_instrument_id(instrument_id: str) -> str:
+    """Extract the base asset (underlying) from a canonical instrument_id.
+
+    Handles common naming conventions:
+    - "BTC-USDT-PERP" -> "BTC"
+    - "ETH-USDC" -> "ETH"
+    - "BTC-USD-241227-C-100000" -> "BTC"
+    - "ES-FUT-20260320" -> "ES"
+    - "SPY" -> "SPY" (single-symbol equity)
+
+    The first segment before the first dash is always the base asset.
+    For single-symbol instruments (no dash), the full string is returned.
+    """
+    if not instrument_id or not instrument_id.strip():
+        return ""
+    parts = instrument_id.strip().split("-")
+    return parts[0].upper()
+
+
+def _ensure_underlying_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure the DataFrame has a populated ``underlying`` column.
+
+    If the ``underlying`` column is missing or all-empty, derives it from
+    ``instrument_id`` (when present) using ``_derive_underlying_from_instrument_id``.
+    Returns the DataFrame (modified in-place when derivation is needed).
+    """
+    has_underlying = (
+        "underlying" in df.columns
+        and not df["underlying"].isna().all()
+        and (df["underlying"].astype(str).str.len() > 0).any()
+    )
+    if has_underlying:
+        return df
+
+    if "instrument_id" not in df.columns:
+        return df
+
+    # Derive from instrument_id for rows where underlying is blank
+    if "underlying" not in df.columns:
+        df["underlying"] = ""
+    blank_mask = df["underlying"].isna() | (df["underlying"].astype(str).str.strip() == "")
+    if blank_mask.any():
+        df.loc[blank_mask, "underlying"] = (
+            df.loc[blank_mask, "instrument_id"]
+            .astype(str)
+            .map(_derive_underlying_from_instrument_id)
+        )
+    return df
+
+
 def _clamp_to_venue_starts(filtered: pd.DataFrame, start_date: str) -> str:
     """Clamp start date forward to the latest venue launch date."""
     effective_start = start_date
@@ -1659,6 +1709,96 @@ class DataStatusService:
 
         return fg_dict
 
+    def _build_underlying_grouping(
+        self,
+        filtered: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+    ) -> dict[str, object]:
+        """Build top-level per-underlying breakdown across all venues.
+
+        Groups instruments by their base asset (underlying) so the UI can show:
+        BTC -> [all BTC instruments across venues], ETH -> [all ETH instruments], etc.
+
+        Uses the ``underlying`` column from the manifest. When that column is
+        empty, falls back to deriving the underlying from ``instrument_id``
+        via ``_ensure_underlying_column``.
+        """
+        df = _ensure_underlying_column(filtered)
+
+        has_underlying = (
+            "underlying" in df.columns
+            and not df.empty
+            and df["underlying"].astype(str).str.len().sum() > 0
+        )
+        if not has_underlying:
+            return {}
+
+        underlyings = sorted(ul for ul in df["underlying"].unique() if ul and str(ul).strip())
+        if not underlyings:
+            return {}
+
+        ul_dict: dict[str, object] = {}
+
+        for ul in underlyings:
+            ul_mask = df["underlying"] == ul
+            ul_df = df[ul_mask]
+            ul_dates = {str(d) for d in ul_df["date"].unique()}
+
+            # Venues that carry this underlying
+            ul_venues = (
+                sorted(str(v) for v in ul_df["venue"].unique() if v and str(v).strip())
+                if "venue" in ul_df.columns
+                else []
+            )
+
+            # Instrument types that carry this underlying
+            ul_itypes = (
+                sorted(
+                    str(it) for it in ul_df["instrument_type"].unique() if it and str(it).strip()
+                )
+                if "instrument_type" in ul_df.columns
+                else []
+            )
+
+            # Expected = union of per-venue expected dates for venues carrying
+            # this underlying.
+            ul_expected_dates: set[str] = set()
+            for v in ul_venues:
+                vs = venue_mapping.get_venue_start_date(v)
+                if not vs:
+                    v_mask = ul_df["venue"] == v
+                    v_dates = {str(d) for d in ul_df.loc[v_mask, "date"].unique()}
+                    vs = min(v_dates) if v_dates else start_date
+                eff_start = max(start_date, vs) if vs else start_date
+                v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
+                if not v_expected:
+                    v_expected = {
+                        d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
+                    }
+                ul_expected_dates |= v_expected
+
+            if not ul_expected_dates:
+                # Fallback when no venues are present
+                ul_expected_dates = {
+                    d.strftime("%Y-%m-%d") for d in pd.date_range(start_date, end_date, freq="D")
+                }
+
+            expected = len(ul_expected_dates)
+            found = len(ul_dates & ul_expected_dates)
+
+            ul_dict[ul] = {
+                "dates_found": found,
+                "dates_expected": expected,
+                "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
+                "venues": ul_venues,
+                "venue_count": len(ul_venues),
+                "instrument_types": ul_itypes,
+            }
+
+        return ul_dict
+
     def _build_data_type_grouping(
         self,
         filtered: pd.DataFrame,
@@ -1817,7 +1957,7 @@ class DataStatusService:
         end_date: str,
         venue_mapping: VenueMapping,
     ) -> dict[str, object]:
-        """Build v4 manifest sub-dimension breakdowns (DeFi, chains, feature groups)."""
+        """Build v4 manifest sub-dimension breakdowns."""
         extras: dict[str, object] = {}
 
         # DeFi sub-dimension breakdown
@@ -1864,6 +2004,19 @@ class DataStatusService:
             )
             if fg_dict:
                 extras["feature_groups"] = fg_dict
+
+        # Underlying (base asset) grouping — top-level cross-venue view
+        # Applicable to CEFI, TRADFI, DEFI categories where instruments have
+        # a base asset (e.g. BTC, ETH, ES). Not applicable to SPORTS.
+        if cat.upper() not in ("SPORTS",):
+            ul_dict = self._build_underlying_grouping(
+                filtered,
+                start_date,
+                end_date,
+                venue_mapping,
+            )
+            if ul_dict:
+                extras["underlyings"] = ul_dict
 
         return extras
 

@@ -60,6 +60,7 @@ from .routes import (
     config,
     config_management,
     data_status,
+    deploy_events_sse,
     deployments,
     epics,
     infra_health,
@@ -151,6 +152,7 @@ app.include_router(_authenticated_router)
 app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 app.include_router(make_events_relay_router())
+app.include_router(deploy_events_sse.router)  # GET /stream/deploy-events (SSE)
 
 
 @app.get("/metrics", include_in_schema=False)
