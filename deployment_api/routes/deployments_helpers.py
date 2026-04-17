@@ -62,6 +62,9 @@ def build_deploy_env_vars(
     deploy_mode: str = "batch",  # "batch" | "live"
     operational_mode: str = "",  # service-specific: "train_phase1", "execute", etc.
     cloud_provider: str = "gcp",  # "gcp" | "aws" | "local"
+    # v7 additions — runtime_profile fan-out + client_id isolation
+    runtime_profile: object = None,  # RuntimeProfile | str | None
+    client_id: str | None = None,
 ) -> dict[str, str]:
     """
     Build standardized environment variables for deployment.
@@ -82,6 +85,15 @@ def build_deploy_env_vars(
             OPERATIONAL_MODE (e.g. "train_phase1", "execute", "instrument").
             Empty string omits the var so services use their own default.
         cloud_provider: Cloud provider routing key ("gcp", "aws", "local").
+        runtime_profile: UAC RuntimeProfile (backtest/paper/mock-live/staging/prod).
+            When set, fan out to the 5 legacy env vars (CLOUD_MOCK_MODE,
+            MOCK_STATE_MODE, DISABLE_AUTH, VITE_MOCK_API, VITE_SKIP_AUTH) plus
+            STORAGE_NAMESPACE and ALLOW_REAL_VENUE_CALLS — a single axis
+            collapse. Read from runtime-topology.yaml `runtime_profiles` via
+            UTL ``get_runtime_profile_spec``.
+        client_id: Client identifier for per-client isolated services. When set,
+            injected as CLIENT_ID env var (consumed by PBM/risk/pnl/execution
+            bus-layer isolation — Phase 6).
     """
     env_vars = {
         "SERVICE_NAME": service,
@@ -106,7 +118,52 @@ def build_deploy_env_vars(
     if enable_direct_gcs:
         env_vars["ENABLE_DIRECT_GCS"] = "true"
 
+    # v7 — runtime_profile → 5 legacy env vars + storage namespace
+    if runtime_profile is not None:
+        env_vars.update(_fanout_runtime_profile_env(runtime_profile))
+
+    # v7 — per-client isolation
+    if client_id:
+        env_vars["CLIENT_ID"] = client_id
+
     return env_vars
+
+
+def _fanout_runtime_profile_env(runtime_profile: object) -> dict[str, str]:
+    """Expand a RuntimeProfile into the 5 legacy mode env vars + storage namespace.
+
+    Reads the RuntimeProfileSpec from runtime-topology.yaml via UTL topology reader.
+    Returns an empty dict and logs a warning if the profile is unknown — callers
+    should never receive a partial env set.
+    """
+    from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
+    from unified_trading_library import get_runtime_profile_spec
+
+    profile_key = (
+        runtime_profile.value
+        if isinstance(runtime_profile, RuntimeProfile)
+        else str(runtime_profile)
+    )
+    try:
+        spec = get_runtime_profile_spec(profile_key)
+    except ValueError:
+        logger.warning(
+            "Unknown runtime_profile=%r — runtime profile env vars NOT fanned out",
+            profile_key,
+        )
+        return {}
+
+    return {
+        "RUNTIME_PROFILE": spec.profile.value,
+        "CLOUD_MOCK_MODE": "true" if spec.cloud_mock_mode else "false",
+        "MOCK_STATE_MODE": spec.mock_state_mode,
+        "DISABLE_AUTH": "true" if spec.auth_disabled else "false",
+        "VITE_MOCK_API": "true" if spec.vite_mock_api else "false",
+        "VITE_SKIP_AUTH": "true" if spec.vite_skip_auth else "false",
+        "STORAGE_NAMESPACE": spec.storage_namespace,
+        "ALLOW_REAL_VENUE_CALLS": "true" if spec.allow_real_venue_calls else "false",
+        "CHAOS_ALLOWED": "true" if spec.chaos_allowed else "false",
+    }
 
 
 def maybe_add_direct_gcs(

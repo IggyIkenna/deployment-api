@@ -107,6 +107,8 @@ def build_deploy_env_vars(
     deploy_mode: str = "batch",
     operational_mode: str = "",
     cloud_provider: str = "gcp",
+    runtime_profile: object = None,
+    client_id: str | None = None,
 ) -> dict[str, str]:
     """Lazy-import shim — forwards to routes.deployments_helpers at call time."""
     from deployment_api.routes.deployments_helpers import build_deploy_env_vars as _impl
@@ -122,6 +124,8 @@ def build_deploy_env_vars(
         deploy_mode=deploy_mode,
         operational_mode=operational_mode,
         cloud_provider=cloud_provider,
+        runtime_profile=runtime_profile,
+        client_id=client_id,
     )
 
 
@@ -497,6 +501,8 @@ class DeploymentManager:
                     deploy_mode=deploy_request.mode,
                     operational_mode=deploy_request.operational_mode,
                     cloud_provider=deploy_request.cloud_provider,
+                    runtime_profile=deploy_request.runtime_profile,
+                    client_id=deploy_request.client_id,
                 ),
                 max_concurrent=deploy_request.max_concurrent or self.default_max_concurrent,
                 shards=shard_list,
