@@ -179,13 +179,13 @@ Each has a corresponding `effective_*` property that falls back to
 **Files affected:**
 
 - `deployment_api/app_config.py` — `unified_config_interface`
-- `deployment_api/auth.py` — `unified_config_interface`, `unified_events_interface`
+- `deployment_api/auth.py` — `unified_config_interface`, `unified_trading_library.events`
 - `deployment_api/auth_middleware.py` — `unified_trading_library`
 - Multiple route and service files
 
 **Error types:** `reportMissingTypeStubs`, cascading `reportUnknownVariableType`, `reportUnknownMemberType`, `reportUnknownArgumentType`
 
-**Root cause:** Workspace libraries (`unified_config_interface`, `unified_events_interface`, `unified_trading_library`) do not ship PEP 561 stub packages. basedpyright treats every imported symbol as `Unknown`, generating the bulk of the 1195 `reportUnknownVariableType` and 1194 `reportUnknownMemberType` warnings.
+**Root cause:** Workspace libraries (`unified_config_interface`, `unified_trading_library.events`, `unified_trading_library`) do not ship PEP 561 stub packages. basedpyright treats every imported symbol as `Unknown`, generating the bulk of the 1195 `reportUnknownVariableType` and 1194 `reportUnknownMemberType` warnings.
 
 **Justification:** JUSTIFIED — Workspace library stubs are tracked under Phase 2 (library tier hardening). The cascade of Unknown types is a direct and unavoidable consequence of no `py.typed` marker or `.pyi` stubs being published.
 
