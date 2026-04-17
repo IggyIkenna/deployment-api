@@ -54,6 +54,7 @@ from deployment_api.utils.service_utils import get_ui_dist_dir
 from .routes import (
     builds,
     capabilities,
+    chaos_injections,
     checklist,
     cloud_builds,
     commentary,
@@ -67,6 +68,7 @@ from .routes import (
     service_status,
     services,
     sports_venues,
+    subscriptions,
     user_management,
 )
 
@@ -137,6 +139,12 @@ _authenticated_router.include_router(
     capabilities.router, prefix="/api/capabilities", tags=["Capabilities"]
 )
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds
+_authenticated_router.include_router(
+    subscriptions.router, prefix="/api", tags=["Client Subscriptions"]
+)
+_authenticated_router.include_router(
+    chaos_injections.router, prefix="/api", tags=["Chaos Injection"]
+)
 _authenticated_router.include_router(
     builds.router
 )  # /api/builds/{service} + /api/deployments/{service}/deploy

@@ -12,6 +12,7 @@ from typing import cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
 
 # Import service modules for business logic
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -74,6 +75,25 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     # Logging configuration
     log_level: str = Field("INFO", description="Log level for deployment jobs")
+
+    # v7 additions: runtime profile + client scoping (used by deployment-service to
+    # fan out env vars and resolve per-service client isolation)
+    runtime_profile: RuntimeProfile | None = Field(
+        None,
+        description=(
+            "Deployment runtime profile (backtest/paper/mock-live/staging/prod). "
+            "Collapses CLOUD_MOCK_MODE, MOCK_STATE_MODE, DISABLE_AUTH, VITE_MOCK_API, "
+            "VITE_SKIP_AUTH into one axis. See runtime-topology.yaml `runtime_profiles`."
+        ),
+    )
+    client_id: str | None = Field(
+        None,
+        description=(
+            "Client identifier for per-client isolation. When set, deployment-service "
+            "loads the matching ClientSubscription and materialises isolated services "
+            "per the subscription + SLA tier policy."
+        ),
+    )
 
     @property
     def filters(self) -> dict[str, str]:
