@@ -25,7 +25,7 @@ def test_unified_trading_library_config_interface_import() -> None:
 
 @pytest.mark.integration
 def test_unified_trading_library_events_interface_import() -> None:
-    from unified_trading_library.events_interface import log_event, setup_events
+    from unified_trading_library.events import log_event, setup_events
 
     assert callable(log_event)
     assert callable(setup_events)

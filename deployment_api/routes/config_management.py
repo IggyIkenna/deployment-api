@@ -135,7 +135,7 @@ def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> Non
     from unified_trading_library.cloud_interface import (
         get_event_bus,  # pyright: ignore[reportMissingTypeStubs]
     )
-    from unified_trading_library.events_interface import log_event
+    from unified_trading_library.events import log_event
 
     topic = f"{DOMAIN_TOPIC_PREFIX}{domain}"
     message_data = {

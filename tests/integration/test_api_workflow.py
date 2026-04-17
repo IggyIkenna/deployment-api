@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 with (
     patch("unified_trading_library.event_sink.PubSubEventSink"),
     patch("unified_trading_library.PubSubEventSink"),
-    patch("unified_trading_library.events_interface.setup_events"),
+    patch("unified_trading_library.events.setup_events"),
     patch("unified_trading_library.utils.tracing.setup_tracing"),
     patch("unified_trading_library.setup_tracing"),
 ):
@@ -38,7 +38,7 @@ with (
 
 # Now that the app is imported, set up events in test mode so log_event()
 # calls from middleware become no-ops (log to console only).
-from unified_trading_library.events_interface import setup_events
+from unified_trading_library.events import setup_events
 
 setup_events("deployment-api", "test")
 

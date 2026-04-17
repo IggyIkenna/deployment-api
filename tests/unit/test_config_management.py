@@ -38,9 +38,9 @@ sys.modules.setdefault(
 # unified_trading_library.cloud_interface — get_event_bus
 sys.modules.setdefault("unified_trading_library.cloud_interface", MagicMock())
 
-# unified_trading_library.events_interface — log_event / setup_events
+# unified_trading_library.events — log_event / setup_events
 _mock_uei = MagicMock()
-sys.modules.setdefault("unified_trading_library.events_interface", _mock_uei)
+sys.modules.setdefault("unified_trading_library.events", _mock_uei)
 
 # Ensure the routes package shim is registered so the direct spec-load below works
 if "deployment_api.routes" not in sys.modules:
@@ -453,7 +453,7 @@ class TestPublishDomainEvent:
             ),
             patch.dict(
                 sys.modules,
-                {"unified_trading_library.events_interface": MagicMock(log_event=mock_log)},
+                {"unified_trading_library.events": MagicMock(log_event=mock_log)},
             ),
         ):
             _cm._publish_domain_event("instruments", "gs://b/v/x.yaml", "agent")

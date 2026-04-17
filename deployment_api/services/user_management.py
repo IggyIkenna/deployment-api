@@ -22,7 +22,7 @@ from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import â
     UserRole,
 )
 from unified_trading_library.config_interface import UnifiedCloudConfig
-from unified_trading_library.events_interface import log_event
+from unified_trading_library.events import log_event
 
 logger = logging.getLogger(__name__)
 

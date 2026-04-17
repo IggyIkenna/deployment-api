@@ -168,13 +168,13 @@ class TestUnifiedEventsInterfaceFunctional:
 
     def test_setup_events_test_mode(self) -> None:
         """setup_events() in 'test' mode completes without error."""
-        from unified_trading_library.events_interface import setup_events
+        from unified_trading_library.events import setup_events
 
         setup_events("deployment-api-test", "test")
 
     def test_log_event_fires_without_error(self) -> None:
         """log_event() in test mode does not raise."""
-        from unified_trading_library.events_interface import log_event, setup_events
+        from unified_trading_library.events import log_event, setup_events
 
         setup_events("deployment-api-test-log", "test")
         log_event(
@@ -184,7 +184,7 @@ class TestUnifiedEventsInterfaceFunctional:
 
     def test_log_event_with_severity_levels(self) -> None:
         """log_event() accepts various severity levels."""
-        from unified_trading_library.events_interface import log_event, setup_events
+        from unified_trading_library.events import log_event, setup_events
 
         setup_events("deployment-api-test-sev", "test")
         for severity in ("INFO", "WARNING", "ERROR", "CRITICAL"):

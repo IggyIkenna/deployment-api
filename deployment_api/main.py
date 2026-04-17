@@ -22,7 +22,7 @@ from unified_trading_library import (
     make_events_relay_router,
     setup_tracing,
 )
-from unified_trading_library.events_interface import setup_events
+from unified_trading_library.events import setup_events
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
