@@ -640,6 +640,7 @@ dependencies = [
     { name = "pytest-xdist" },
     { name = "redis" },
     { name = "ruff" },
+    { name = "sse-starlette" },
     { name = "unified-api-contracts" },
     { name = "unified-trading-library" },
     { name = "uvicorn", extra = ["standard"] },
@@ -672,6 +673,7 @@ requires-dist = [
     { name = "pytest-xdist", specifier = ">=3.6.0,<4.0.0" },
     { name = "redis", specifier = ">=5.0.0,<6.0.0" },
     { name = "ruff", specifier = "==0.15.0" },
+    { name = "sse-starlette", specifier = ">=2.0.0,<3.0.0" },
     { name = "unified-api-contracts", editable = "../unified-api-contracts" },
     { name = "unified-trading-library", editable = "../unified-trading-library" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0,<1.0.0" },
@@ -2908,17 +2910,14 @@ wheels = [
 
 [[package]]
 name = "sse-starlette"
-version = "1.8.2"
+version = "2.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "fastapi" },
-    { name = "starlette" },
-    { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/5b/f703fd3d1b3207e49b6f992b6c4a72b79a3602129f8ebb0dd8feaa8bc52f/sse_starlette-1.8.2.tar.gz", hash = "sha256:e0f9b8dec41adc092a0a6e0694334bd3cfd3084c44c497a6ebc1fb4bdd919acd", size = 17159, upload-time = "2023-11-25T09:53:47.105Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/3e/eae74d8d33e3262bae0a7e023bb43d8bdd27980aa3557333f4632611151f/sse_starlette-2.4.1.tar.gz", hash = "sha256:7c8a800a1ca343e9165fc06bbda45c78e4c6166320707ae30b416c42da070926", size = 18635, upload-time = "2025-07-06T09:41:33.631Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/7e/d6087916bf58a4343459b47807a116a3a755e6ddd4857f375547e00f6252/sse_starlette-1.8.2-py3-none-any.whl", hash = "sha256:70cc7ef5aca4abe8a25dec1284cce4fe644dd7bf0c406d3e852e516092b7f849", size = 8928, upload-time = "2023-11-25T09:53:44.857Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/f1/6c7eaa8187ba789a6dd6d74430307478d2a91c23a5452ab339b6fbe15a08/sse_starlette-2.4.1-py3-none-any.whl", hash = "sha256:08b77ea898ab1a13a428b2b6f73cfe6d0e607a7b4e15b9bb23e4a37b087fd39a", size = 10824, upload-time = "2025-07-06T09:41:32.321Z" },
 ]
 
 [[package]]
@@ -3176,7 +3175,6 @@ dependencies = [
     { name = "ruff" },
     { name = "scikit-learn" },
     { name = "scipy" },
-    { name = "sse-starlette" },
     { name = "starlette" },
     { name = "unified-api-contracts" },
     { name = "web3" },
@@ -3236,7 +3234,6 @@ requires-dist = [
     { name = "ruff", specifier = "==0.15.0" },
     { name = "scikit-learn", specifier = ">=1.5.0,<2.0.0" },
     { name = "scipy", specifier = ">=1.15.0,<2.0.0" },
-    { name = "sse-starlette", specifier = ">=1.6.1,<2.0.0" },
     { name = "starlette", specifier = ">=0.46.3,<1.0.0" },
     { name = "unified-api-contracts", editable = "../unified-api-contracts" },
     { name = "web3", specifier = ">=6.0.0,<7.0.0" },

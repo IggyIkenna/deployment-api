@@ -70,6 +70,7 @@ from .routes import (
     sports_venues,
     subscriptions,
     user_management,
+    vm_deployments,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,7 @@ _authenticated_router.include_router(sports_venues.router)
 _authenticated_router.include_router(
     user_management.router, prefix="/api/user-management", tags=["User Management"]
 )
+_authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=["VM Deployments"])
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---

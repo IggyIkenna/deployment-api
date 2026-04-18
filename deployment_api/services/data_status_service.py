@@ -22,6 +22,7 @@ from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import is_in_tradfi_tick_window
 from unified_api_contracts.sports import (
     get_entity_league_coverage,
+    get_sports_entity_start_date,
     get_transfer_windows_for_year,
 )
 from unified_trading_library import read_availability_index
@@ -106,22 +107,14 @@ def _derive_underlying_from_instrument_id(instrument_id: str) -> str:
 def _ensure_underlying_column(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure the DataFrame has a populated ``underlying`` column.
 
-    If the ``underlying`` column is missing or all-empty, derives it from
-    ``instrument_id`` (when present) using ``_derive_underlying_from_instrument_id``.
+    Fills blank/missing ``underlying`` rows by deriving from ``instrument_id``
+    (when present) using ``_derive_underlying_from_instrument_id``. Rows whose
+    ``underlying`` is already non-empty are preserved as-is.
     Returns the DataFrame (modified in-place when derivation is needed).
     """
-    has_underlying = (
-        "underlying" in df.columns
-        and not df["underlying"].isna().all()
-        and (df["underlying"].astype(str).str.len() > 0).any()
-    )
-    if has_underlying:
-        return df
-
     if "instrument_id" not in df.columns:
         return df
 
-    # Derive from instrument_id for rows where underlying is blank
     if "underlying" not in df.columns:
         df["underlying"] = ""
     blank_mask = df["underlying"].isna() | (df["underlying"].astype(str).str.strip() == "")
@@ -1514,7 +1507,40 @@ class DataStatusService:
                         100.0,
                     ),
                 }
+
+        self._add_na_leagues(
+            league_dict, entity_coverage, fixture_counts_by_league, is_fixtures_entity
+        )
         return league_dict
+
+    @staticmethod
+    def _add_na_leagues(
+        league_dict: dict[str, object],
+        entity_coverage: frozenset[str] | None,
+        fixture_counts_by_league: dict[str, int] | None,
+        is_fixtures_entity: bool,
+    ) -> None:
+        """Add N/A entries for fixture leagues not covered by this entity.
+
+        Mutates ``league_dict`` in place, appending greyed-out entries for
+        leagues the entity does not cover (e.g. J-League has no Understat xG).
+        """
+        if entity_coverage is None or not fixture_counts_by_league or is_fixtures_entity:
+            return
+        all_fixture_leagues = set(fixture_counts_by_league.keys())
+        uncovered = all_fixture_leagues - {lid.upper() for lid in league_dict}
+        uncovered -= set(entity_coverage)
+        for lid in sorted(uncovered):
+            league_dict[lid] = {
+                "dates_found": 0,
+                "dates_expected": 0,
+                "dates_missing": 0,
+                "missing_dates": [],
+                "dates_found_list": [],
+                "completion_pct": 0.0,
+                "unit": "fixtures",
+                "not_applicable": True,
+            }
 
     def _build_defi_sub_dimension_breakdown(
         self,
@@ -1880,6 +1906,39 @@ class DataStatusService:
             dt_expected_total += int(dt_entry["dates_expected"])
         return dt_venues, dt_found_total, dt_expected_total
 
+    @staticmethod
+    def _clamp_fixtures_to_entity_start(
+        entity_name: str,
+        full_filtered: pd.DataFrame,
+        fixtures_by_league: dict[str, int],
+        total_fixture_count: int,
+    ) -> tuple[dict[str, int], int]:
+        """Recompute fixture counts excluding rows before entity start date.
+
+        Provider-specific start dates (from UAC ``SPORTS_ENTITY_START_DATES``)
+        ensure pre-start fixtures are excluded from the denominator.
+        Returns the (possibly clamped) fixtures_by_league and total count.
+        """
+        entity_start = get_sports_entity_start_date(entity_name)
+        if not entity_start or "date" not in full_filtered.columns:
+            return fixtures_by_league, total_fixture_count
+
+        fix_rows = full_filtered[
+            (full_filtered["data_type"] == "FIXTURES") & (full_filtered["date"] >= entity_start)
+        ]
+        if fix_rows.empty:
+            return {}, 0
+        if "league_id" not in fix_rows.columns:
+            return fixtures_by_league, total_fixture_count
+
+        clamped: dict[str, int] = {}
+        for lid in fix_rows["league_id"].unique():
+            if lid:
+                clamped[str(lid)] = int(
+                    fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum()
+                )
+        return clamped, sum(clamped.values())
+
     def _build_sports_entity_entry(
         self,
         dt_df: pd.DataFrame,
@@ -1907,19 +1966,30 @@ class DataStatusService:
         # League-aware expected for entities with partial coverage (e.g. XG = 6 leagues)
         _entity_coverage = get_entity_league_coverage(entity_name)
 
+        # Provider start-date clamping (excludes pre-start fixtures from expected)
+        if is_fixtures:
+            eff_fixtures_by_league = fixtures_by_league
+            eff_total_fixture_count = total_fixture_count
+        else:
+            eff_fixtures_by_league, eff_total_fixture_count = self._clamp_fixtures_to_entity_start(
+                entity_name, full_filtered, fixtures_by_league, total_fixture_count
+            )
+
         if is_fixtures:
             # FIXTURES is the ground truth — expected = found
             dt_found = entity_fixture_count
             dt_expected = entity_fixture_count
-        elif _entity_coverage is not None and fixtures_by_league:
+        elif _entity_coverage is not None and eff_fixtures_by_league:
             # Entity covers specific leagues only — expected = fixture count
             # for just those leagues
             dt_found = entity_fixture_count
-            dt_expected = sum(fixtures_by_league.get(lid, 0) for lid in _entity_coverage)
+            dt_expected = sum(eff_fixtures_by_league.get(lid, 0) for lid in _entity_coverage)
         else:
             # General entity — expected = total fixture count
             dt_found = entity_fixture_count
-            dt_expected = total_fixture_count if total_fixture_count > 0 else entity_fixture_count
+            dt_expected = (
+                eff_total_fixture_count if eff_total_fixture_count > 0 else entity_fixture_count
+            )
 
         dt_entry: dict[str, object] = {
             "dates_found": dt_found,
@@ -1938,7 +2008,7 @@ class DataStatusService:
                     dt_df,
                     start_date,
                     end_date,
-                    fixture_counts_by_league=fixtures_by_league,
+                    fixture_counts_by_league=eff_fixtures_by_league,
                     is_fixtures_entity=is_fixtures,
                     entity_coverage=_entity_coverage,
                     full_manifest=full_filtered,
