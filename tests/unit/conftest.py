@@ -49,6 +49,11 @@ def _ensure_services_mocked() -> None:
 
     real_um = importlib.import_module("deployment_api.services.user_management")
 
+    # Load data_status_drilldown as a REAL module BEFORE the services package is
+    # replaced below. Its tests patch functions inside it directly, and the
+    # module has no circular-import risk (only depends on UAC + storage facade).
+    real_drilldown = importlib.import_module("deployment_api.services.data_status_drilldown")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -65,6 +70,10 @@ def _ensure_services_mocked() -> None:
     # Re-register user_management as a real module on the fake services package
     sys.modules["deployment_api.services.user_management"] = real_um
     services_mod.user_management = real_um
+
+    # Re-register data_status_drilldown as a real module on the fake package
+    sys.modules["deployment_api.services.data_status_drilldown"] = real_drilldown
+    services_mod.data_status_drilldown = real_drilldown
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked

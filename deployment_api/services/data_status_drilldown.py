@@ -1,0 +1,615 @@
+"""Drill-down helpers for the Data Status page.
+
+Adds schema introspection, per-day instrument listing, per-venue bucket
+counts (named markets + conditionIds-inside-OTHER), and CSV downloads for
+selected instruments.
+
+Deliberately lives outside ``data_status_service.py`` to keep that module
+under the 900-line codex-compliance budget and because these concerns are
+self-contained — they don't mutate the manifest-based status pipeline, they
+just read additional artifacts on demand.
+
+All GCS reads are TTL-cached (5 min) to avoid hammering the bucket when the
+UI re-expands a venue or day.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import cast
+
+import pandas as pd
+from unified_api_contracts import SchemaContract, SchemaContractNotFoundError, lookup_contract
+from unified_api_contracts.internal.schemas.contracts import (
+    VENUE_CONTRACT_OVERRIDES,
+)
+
+from deployment_api.settings import gcp_project_id as _pid
+from deployment_api.utils.storage_facade import list_objects
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Bucket naming (mirrors DataStatusService._BUCKET_TEMPLATES without the
+# circular dependency of importing the big service).
+# ---------------------------------------------------------------------------
+
+_BUCKET_TEMPLATES: dict[str, str] = {
+    "instruments-service": "instruments-store-{cat}-{pid}",
+    "corporate-actions": "instruments-store-{cat}-{pid}",
+    "market-tick-data-service": "market-data-tick-{cat}-{pid}",
+    "market-data-processing-service": "market-data-tick-{cat}-{pid}",
+    "features-delta-one-service": "features-delta-one-{cat}-{pid}",
+    "features-volatility-service": "features-volatility-{cat}-{pid}",
+    "features-onchain-service": "features-onchain-{pid}",
+    "features-sports-service": "features-sports-{pid}",
+    "features-calendar-service": "features-calendar-{pid}",
+    "features-multi-timeframe-service": "features-multi-timeframe-{cat}-{pid}",
+    "features-cross-instrument-service": "features-cross-instrument-{cat}-{pid}",
+    "features-commodity-service": "features-commodity-{pid}",
+    "ml-training-service": "ml-models-store-{pid}",
+    "ml-inference-service": "ml-predictions-{pid}",
+    "strategy-service": "strategy-store-{pid}",
+    "execution-service": "execution-store-{pid}",
+}
+
+
+# Types that bundle many underlyings / strikes into one parquet per day.
+# For these the shard unit is the underlying root (ES, NQ, BTC), not the
+# individual contract — a single "instrument_id" selection downloads the
+# bundle parquet for that root.
+_BUNDLED_INSTRUMENT_TYPES: frozenset[str] = frozenset(
+    {
+        "options_chain",
+        "futures_chain",
+        "combo",
+        # Polymarket "OTHER" bucket also bundles many conditionIds into one file
+        # per day, but the UI pretends those are individual conditionIds because
+        # the user selects them by their in-file instrument_id.
+    }
+)
+
+
+# Venues/shards that bundle many symbols into one parquet (Polymarket OTHER,
+# options chains, etc.) — we tag these as "per_underlying" so the UI knows
+# one selection = whole bundle.
+def _is_bundled(instrument_type: str) -> bool:
+    return (instrument_type or "").lower() in _BUNDLED_INSTRUMENT_TYPES
+
+
+def build_bucket_name(service: str, category: str, project_id: str | None = None) -> str:
+    """Resolve the GCS bucket for a (service, category) pair."""
+    pid = project_id or _pid
+    template = _BUCKET_TEMPLATES.get(service)
+    if template is None:
+        raise ValueError(f"Unknown service: {service}")
+    return template.format(cat=category.lower(), pid=pid)
+
+
+# ---------------------------------------------------------------------------
+# TTL cache for read-heavy drill-down calls (5-min).
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL_SECONDS = 300.0
+_cache: dict[str, tuple[float, object]] = {}
+
+
+def _cache_get(key: str) -> object | None:
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if (time.monotonic() - ts) > _CACHE_TTL_SECONDS:
+        _cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_put(key: str, value: object) -> None:
+    _cache[key] = (time.monotonic(), value)
+
+
+def clear_drilldown_cache() -> None:
+    """Reset the TTL cache (used by tests and /turbo/clear)."""
+    _cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Schema lookup
+# ---------------------------------------------------------------------------
+
+
+def _column_dicts(contract: SchemaContract) -> list[dict[str, object]]:
+    return [
+        {
+            "name": col.name,
+            "dtype": col.dtype,
+            "nullable": col.nullable,
+            "description": col.description or "",
+        }
+        for col in contract.columns
+    ]
+
+
+def get_schema_for_shard(
+    *,
+    category: str,
+    instrument_type: str,
+    data_type: str,
+    venue: str | None = None,
+) -> dict[str, object]:
+    """Return the SchemaContract columns for a shard tuple.
+
+    Falls back gracefully when no contract is registered — returns an empty
+    column list with ``registered: False`` so the UI can render a
+    "no schema registered — running raw projection" affordance instead of
+    raising.
+    """
+    # Venue override takes priority, else base registry, else fallback.
+    try:
+        contract = lookup_contract(
+            category=category.lower(),
+            instrument_type=instrument_type,
+            data_type=data_type,
+            venue=venue,
+        )
+    except SchemaContractNotFoundError:
+        return {
+            "registered": False,
+            "category": category.lower(),
+            "instrument_type": instrument_type,
+            "data_type": data_type,
+            "venue": venue,
+            "symbol_column": None,
+            "source": "none",
+            "columns": [],
+            "message": (
+                "No contract registered for this shard. "
+                "The UI should fall back to projecting actual parquet columns."
+            ),
+        }
+
+    # Figure out whether we resolved via override or base registry.
+    source = "CONTRACT_REGISTRY"
+    if venue is not None:
+        override_key = (category.lower(), (venue or "").upper(), instrument_type, data_type)
+        if override_key in VENUE_CONTRACT_OVERRIDES:
+            source = "VENUE_CONTRACT_OVERRIDES"
+
+    return {
+        "registered": True,
+        "category": contract.category,
+        "instrument_type": contract.instrument_type,
+        "data_type": contract.data_type,
+        "venue": (venue or "").upper() if venue else None,
+        "symbol_column": contract.symbol_column,
+        "source": source,
+        "columns": _column_dicts(contract),
+        "required_row_count_min": contract.required_row_count_min,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Instruments for a given (day, venue, instrument_type, data_type) shard
+# ---------------------------------------------------------------------------
+
+
+def _shard_prefix(
+    service: str, category: str, venue: str, day: str, instrument_type: str, data_type: str
+) -> str:
+    """Build the standard ``raw_tick_data/by_date/...`` partition prefix.
+
+    Layout: ``by_date/day=<d>/category=<c>/venue=<v>/instrument_type=<it>/data_type=<dt>/``.
+    """
+    return (
+        f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+        f"venue={venue}/instrument_type={instrument_type}/data_type={data_type}/"
+    )
+
+
+def _infer_symbol_column_for_shard(
+    category: str, instrument_type: str, data_type: str, venue: str
+) -> str:
+    """Best-effort symbol column when no contract is registered.
+
+    Falls back to ``instrument_id`` (the canonical column since Phase 1.2);
+    per-venue conventions (pool_address for UNISWAP_V3 etc.) are picked up
+    automatically via ``lookup_contract`` when the contract exists.
+    """
+    try:
+        contract = lookup_contract(
+            category=category.lower(),
+            instrument_type=instrument_type,
+            data_type=data_type,
+            venue=venue,
+        )
+        return contract.symbol_column
+    except SchemaContractNotFoundError:
+        # Polymarket OTHER bucket stores conditionId as the market identifier.
+        if venue.upper() == "POLYMARKET" and instrument_type.upper() == "OTHER":
+            return "conditionId"
+        return "instrument_id"
+
+
+def _collect_parquet_files(bucket: str, prefix: str) -> list[dict[str, object]]:
+    """Return ``[{file_uri, size_bytes, _name}, ...]`` for all parquets under prefix."""
+    try:
+        objects = list_objects(bucket, prefix, max_results=10_000)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_objects failed for %s/%s: %s", bucket, prefix, exc)
+        return []
+
+    files: list[dict[str, object]] = []
+    for o in objects:
+        name = getattr(o, "name", None)
+        if not isinstance(name, str) or not name.endswith(".parquet"):
+            continue
+        size = getattr(o, "size", None)
+        files.append(
+            {
+                "file_uri": f"gs://{bucket}/{name}",
+                "size_bytes": int(size) if isinstance(size, int) else 0,
+                "_name": name,
+            }
+        )
+    return files
+
+
+def _bundling_mode(venue: str, instrument_type: str) -> str:
+    if venue.upper() == "POLYMARKET" and instrument_type.upper() == "OTHER":
+        return "per_condition_id"
+    if _is_bundled(instrument_type):
+        return "per_underlying"
+    return "per_symbol"
+
+
+def _expand_per_condition_id(
+    parquet_files: list[dict[str, object]],
+    category: str,
+    instrument_type: str,
+    data_type: str,
+    venue: str,
+) -> list[dict[str, object]]:
+    if not parquet_files:
+        return []
+    pf = parquet_files[0]
+    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
+    try:
+        distinct_ids = _distinct_values_in_parquet(str(pf["file_uri"]), symbol_col)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Failed to read bundle parquet %s: %s", pf["file_uri"], exc)
+        return []
+    return [
+        {
+            "instrument_id": sid,
+            "file_uri": pf["file_uri"],
+            "size_bytes": pf["size_bytes"],
+            "bundled_under": str(pf["_name"]).split("/")[-1],
+        }
+        for sid in distinct_ids
+    ]
+
+
+def _expand_per_file(parquet_files: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Use the file stem as instrument_id (per_symbol / per_underlying modes)."""
+    return [
+        {
+            "instrument_id": str(pf["_name"]).split("/")[-1].replace(".parquet", ""),
+            "file_uri": pf["file_uri"],
+            "size_bytes": pf["size_bytes"],
+        }
+        for pf in parquet_files
+    ]
+
+
+def list_instruments_for_shard(
+    *,
+    service: str,
+    category: str,
+    venue: str,
+    day: str,
+    instrument_type: str,
+    data_type: str,
+    project_id: str | None = None,
+) -> dict[str, object]:
+    """List the instrument_ids present in a specific shard.
+
+    Three bundling modes:
+    - ``per_symbol``: one parquet per symbol (perpetuals, spot, equities,
+      individual futures). Each file is a single instrument.
+    - ``per_underlying``: one parquet per underlying root that carries every
+      strike/expiry (options_chain, futures_chain, combo). The root IS the
+      instrument_id from the UI's perspective.
+    - ``per_condition_id``: Polymarket OTHER bucket — one parquet bundles
+      many conditionIds. The parquet is read to surface distinct market IDs.
+    """
+    cache_key = f"instruments:{service}:{category}:{venue}:{day}:{instrument_type}:{data_type}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cast_dict(cached)
+
+    bucket = build_bucket_name(service, category, project_id)
+    prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type)
+    parquet_files = _collect_parquet_files(bucket, prefix)
+    bundling = _bundling_mode(venue, instrument_type)
+
+    if bundling == "per_condition_id":
+        instruments = _expand_per_condition_id(
+            parquet_files, category, instrument_type, data_type, venue
+        )
+    else:
+        instruments = _expand_per_file(parquet_files)
+
+    result: dict[str, object] = {
+        "service": service,
+        "category": category.lower(),
+        "venue": venue,
+        "day": day,
+        "instrument_type": instrument_type,
+        "data_type": data_type,
+        "bundling": bundling,
+        "instruments": instruments,
+        "bucket": bucket,
+        "prefix": prefix,
+    }
+    _cache_put(cache_key, result)
+    return result
+
+
+def cast_dict(obj: object) -> dict[str, object]:
+    """Narrow ``object`` → ``dict[str, object]`` without runtime cost."""
+    if isinstance(obj, dict):
+        return obj  # type: ignore[return-value]
+    raise TypeError(f"Expected dict, got {type(obj).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# Bucket counts (named markets vs conditionIds inside OTHER)
+# ---------------------------------------------------------------------------
+
+
+def compute_bucket_counts(
+    *,
+    service: str,
+    category: str,
+    venue: str,
+    day: str,
+    data_type: str,
+    project_id: str | None = None,
+) -> dict[str, int]:
+    """Return ``{"named_market_count": N, "other_market_count": M}``.
+
+    - ``named_market_count`` is the number of distinct instrument_types
+      under the venue for the given day (excluding ``OTHER``).
+    - ``other_market_count`` is the number of distinct symbol-column values
+      inside the OTHER-bucket parquet (if present). Zero when there is no
+      OTHER bucket.
+
+    This performs one GCS list per venue/day and, if OTHER exists, one
+    parquet read. Results cache 5 min.
+    """
+    cache_key = f"bucket_counts:{service}:{category}:{venue}:{day}:{data_type}"
+    cached = _cache_get(cache_key)
+    if isinstance(cached, dict):
+        cached_typed: dict[str, int] = {}
+        for raw_k, raw_v in cached.items():  # pyright: ignore[reportUnknownVariableType]
+            key_str = str(raw_k)  # pyright: ignore[reportUnknownArgumentType]
+            val_int = int(raw_v) if isinstance(raw_v, (int, float, str)) else 0
+            cached_typed[key_str] = val_int
+        return cached_typed
+
+    bucket = build_bucket_name(service, category, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
+    instrument_types = _collect_instrument_types(bucket, venue_prefix)
+    named = sum(1 for it in instrument_types if it.upper() != "OTHER")
+
+    other_count = 0
+    if any(it.upper() == "OTHER" for it in instrument_types):
+        other_count = _count_distinct_in_other_bucket(
+            bucket, venue_prefix, category, venue, data_type
+        )
+
+    result = {"named_market_count": named, "other_market_count": other_count}
+    _cache_put(cache_key, result)
+    return result
+
+
+def _collect_instrument_types(bucket: str, venue_prefix: str) -> set[str]:
+    """Parse distinct instrument_type values from all object paths under the venue."""
+    try:
+        objects = list_objects(bucket, venue_prefix, max_results=10_000)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_objects failed for %s/%s: %s", bucket, venue_prefix, exc)
+        return set()
+
+    marker = "instrument_type="
+    found: set[str] = set()
+    for o in objects:
+        name = getattr(o, "name", None)
+        if not isinstance(name, str):
+            continue
+        idx = name.find(marker)
+        if idx == -1:
+            continue
+        it = name[idx + len(marker) :].split("/", 1)[0]
+        if it:
+            found.add(it)
+    return found
+
+
+def _count_distinct_in_other_bucket(
+    bucket: str, venue_prefix: str, category: str, venue: str, data_type: str
+) -> int:
+    """Read the first OTHER-bucket parquet and return the distinct-symbol count."""
+    symbol_col = _infer_symbol_column_for_shard(category, "OTHER", data_type, venue)
+    other_prefix = f"{venue_prefix}instrument_type=OTHER/data_type={data_type}/"
+    try:
+        other_objects = list_objects(bucket, other_prefix, max_results=10)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_objects OTHER failed: %s", exc)
+        return 0
+    for o in other_objects:
+        name = getattr(o, "name", None)
+        if not isinstance(name, str) or not name.endswith(".parquet"):
+            continue
+        try:
+            return len(_distinct_values_in_parquet(f"gs://{bucket}/{name}", symbol_col))
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Failed to read OTHER parquet %s: %s", name, exc)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Parquet helpers (distinct symbol values, CSV export)
+# ---------------------------------------------------------------------------
+
+# Max rows we will export as CSV in a single response. Larger requests get
+# rejected with a 413-equivalent error advising BigQuery external tables.
+MAX_CSV_ROWS: int = 500_000
+
+
+def _read_parquet_columns(gs_uri: str, columns: list[str] | None = None) -> pd.DataFrame:
+    """Read a parquet from gs:// with gcsfs + pyarrow.
+
+    We read the full row group in one shot because the files at this layer
+    are already per-day per-shard (rarely >500k rows). The return is coerced
+    to a typed ``pd.DataFrame`` at the boundary since neither ``gcsfs`` nor
+    ``pyarrow`` ship basedpyright-friendly stubs.
+    """
+
+    # Local imports to keep module import-time cheap (gcsfs pulls aiohttp).
+    import gcsfs
+    import pyarrow.parquet as pq
+
+    if not gs_uri.startswith("gs://"):
+        raise ValueError(f"Not a gs:// URI: {gs_uri}")
+    bucket_key = gs_uri[len("gs://") :]
+    # gcsfs + pyarrow lack usable type stubs; we keep every cross-boundary
+    # value narrowed to ``object`` and re-check at the DataFrame boundary.
+    fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
+    open_fn: object = getattr(fs_any, "open", None)
+    if not callable(open_fn):
+        raise RuntimeError("gcsfs.GCSFileSystem missing open()")
+    fh_obj: object = open_fn(bucket_key, "rb")
+    try:
+        read_table: object = pq.read_table  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        if not callable(read_table):  # pyright: ignore[reportUnknownArgumentType]
+            raise RuntimeError("pyarrow.parquet.read_table is not callable")
+        table: object = read_table(fh_obj, columns=columns)  # pyright: ignore[reportUnknownVariableType]
+        to_pandas: object = getattr(table, "to_pandas", None)  # pyright: ignore[reportUnknownArgumentType]
+        if not callable(to_pandas):
+            raise RuntimeError("pyarrow table missing to_pandas()")
+        df_obj: object = to_pandas()
+    finally:
+        close: object = getattr(fh_obj, "close", None)
+        if callable(close):
+            close()
+    if not isinstance(df_obj, pd.DataFrame):
+        raise RuntimeError("pyarrow returned non-DataFrame payload")
+    return df_obj
+
+
+def _distinct_values_in_parquet(gs_uri: str, column: str) -> list[str]:
+    df = _read_parquet_columns(gs_uri, [column])
+    if column not in df.columns:
+        return []
+    # Coerce each cell through str() at the boundary — pandas dtype may be Any.
+    out: set[str] = set()
+    col_series = df[column].dropna()
+    raw_values: object = col_series.unique().tolist()  # pyright: ignore[reportUnknownMemberType]
+    # pandas .tolist() is guaranteed to return a plain list at runtime.
+    values_list: list[object] = cast(list[object], raw_values)
+    for v in values_list:
+        s = str(v).strip()
+        if s:
+            out.add(s)
+    return sorted(out)
+
+
+def build_csv_export(
+    *,
+    service: str,
+    category: str,
+    venue: str,
+    day: str,
+    instrument_type: str,
+    data_type: str,
+    instrument_ids: list[str],
+    project_id: str | None = None,
+    max_rows: int = MAX_CSV_ROWS,
+) -> tuple[str, int, str]:
+    """Return ``(csv_text, row_count, filename)`` for the selected instruments.
+
+    - For per_symbol shards: reads the parquet for each selected
+      ``instrument_id`` (file stem) and concatenates.
+    - For per_underlying (options_chain / futures_chain / combo): each
+      selection is the root (ES, NQ, BTC), reads the corresponding single
+      parquet.
+    - For per_condition_id (Polymarket OTHER): reads the one bundle
+      parquet and filters to the selected conditionIds.
+
+    Raises ``ValueError`` if row count would exceed ``max_rows``.
+    """
+    listing = list_instruments_for_shard(
+        service=service,
+        category=category,
+        venue=venue,
+        day=day,
+        instrument_type=instrument_type,
+        data_type=data_type,
+        project_id=project_id,
+    )
+    bundling = str(listing["bundling"])
+    raw_instruments_obj: object = listing["instruments"]
+    raw_list = cast(
+        list[object], raw_instruments_obj if isinstance(raw_instruments_obj, list) else []
+    )
+    all_instruments: list[dict[str, object]] = []
+    for i in raw_list:
+        if isinstance(i, dict):
+            all_instruments.append(cast_dict(cast(dict[str, object], i)))
+
+    selected = set(instrument_ids) if instrument_ids else None
+
+    frames: list[pd.DataFrame] = []
+
+    if bundling == "per_condition_id" and all_instruments:
+        # Single bundle parquet, filter by symbol column.
+        pf_uri = str(all_instruments[0]["file_uri"])
+        symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
+        df = _read_parquet_columns(pf_uri)  # full parquet
+        if selected and symbol_col in df.columns:
+            df = df[df[symbol_col].astype(str).isin(selected)]
+        frames.append(df)
+    else:
+        # per_symbol or per_underlying: one parquet per instrument.
+        for inst in all_instruments:
+            iid = str(inst["instrument_id"])
+            if selected is not None and iid not in selected:
+                continue
+            uri = str(inst["file_uri"])
+            try:
+                df = _read_parquet_columns(uri)
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Failed to read %s: %s", uri, exc)
+                continue
+            frames.append(df)
+
+    if not frames:
+        return "", 0, _csv_filename(service, venue, day, instrument_type, data_type)
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    if len(combined) > max_rows:
+        raise ValueError(
+            f"CSV export would include {len(combined):,} rows (> {max_rows:,}). "
+            "Use a BigQuery external table over the parquet files instead."
+        )
+
+    csv_text = combined.to_csv(index=False)
+    return csv_text, len(combined), _csv_filename(service, venue, day, instrument_type, data_type)
+
+
+def _csv_filename(service: str, venue: str, day: str, instrument_type: str, data_type: str) -> str:
+    return f"{service}_{venue}_{day}_{instrument_type}_{data_type}.csv"

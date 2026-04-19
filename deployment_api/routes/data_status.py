@@ -8,9 +8,17 @@ Business logic delegated to service layer modules.
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services import DataAnalyticsService, DataQueryService, DataStatusService
+from deployment_api.services.data_status_drilldown import (
+    build_csv_export,
+    clear_drilldown_cache,
+    compute_bucket_counts,
+    get_schema_for_shard,
+    list_instruments_for_shard,
+)
 
 _cfg = DeploymentApiConfig()
 
@@ -493,3 +501,149 @@ async def get_multi_service_status(
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Drill-down endpoints (schema, per-day instruments, CSV download,
+# bucket counts for Polymarket-style named/OTHER split).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schema")
+async def get_schema(
+    service: str = Query(..., description="Service name (unused, kept for symmetry)"),
+    category: str = Query(..., description="Category (cefi/tradfi/defi/sports/prediction)"),
+    instrument_type: str = Query(..., description="Instrument type"),
+    data_type: str = Query(..., description="Data type"),
+    venue: str | None = Query(None, description="Venue for venue-specific overrides"),
+):
+    """Return the SchemaContract columns for a (category, instrument_type, data_type)
+    tuple, honouring venue-specific overrides (UNISWAP_V2/V3/V4 etc.).
+
+    Falls back gracefully when no contract is registered — returns
+    ``registered: false`` so the UI can fall back to a raw-column projection.
+    """
+    try:
+        return get_schema_for_shard(
+            category=category,
+            instrument_type=instrument_type,
+            data_type=data_type,
+            venue=venue,
+        )
+    except (ValueError, RuntimeError) as e:
+        logger.exception("Error in get_schema")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/instruments-for-shard")
+async def get_instruments_for_shard(
+    service: str = Query(..., description="Service name"),
+    category: str = Query(..., description="Category"),
+    venue: str = Query(..., description="Venue"),
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    instrument_type: str = Query(..., description="Instrument type"),
+    data_type: str = Query(..., description="Data type"),
+):
+    """List the instrument_ids in a single (day, venue, instrument_type,
+    data_type) shard.
+
+    Response includes a ``bundling`` hint — ``per_symbol``, ``per_underlying``
+    (options_chain/futures_chain/combo), or ``per_condition_id``
+    (Polymarket OTHER). The UI uses this to explain to the user that
+    selecting one root downloads the whole bundle parquet for that root.
+    """
+    try:
+        return list_instruments_for_shard(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            instrument_type=instrument_type,
+            data_type=data_type,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_instruments_for_shard")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/bucket-counts")
+async def get_bucket_counts(
+    service: str = Query(..., description="Service name"),
+    category: str = Query(..., description="Category"),
+    venue: str = Query(..., description="Venue"),
+    day: str = Query(..., description="Day to sample (YYYY-MM-DD)"),
+    data_type: str = Query(..., description="Data type"),
+):
+    """Return named_market_count + other_market_count for a venue+day.
+
+    ``named_market_count`` = distinct instrument_types under the venue that
+    are not ``OTHER``. ``other_market_count`` = distinct symbol-column
+    values inside the OTHER bundle parquet (conditionIds for Polymarket).
+    """
+    try:
+        return compute_bucket_counts(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            data_type=data_type,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_bucket_counts")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/download-csv")
+async def download_csv(
+    service: str = Query(..., description="Service name"),
+    category: str = Query(..., description="Category"),
+    venue: str = Query(..., description="Venue"),
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    instrument_type: str = Query(..., description="Instrument type"),
+    data_type: str = Query(..., description="Data type"),
+    instrument_ids: str = Query("", description="Comma-separated instrument IDs (empty = all)"),
+):
+    """Stream a CSV of the selected instruments for one shard.
+
+    Empty ``instrument_ids`` means "download the full shard". The server
+    caps output at 500k rows — larger requests get a 413 advising
+    BigQuery external tables.
+    """
+    ids = [s.strip() for s in instrument_ids.split(",") if s.strip()] if instrument_ids else []
+    try:
+        csv_text, row_count, filename = build_csv_export(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            instrument_type=instrument_type,
+            data_type=data_type,
+            instrument_ids=ids,
+        )
+    except ValueError as e:
+        # Row-cap exceeded.
+        raise HTTPException(status_code=413, detail=str(e)) from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Error in download_csv")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Row-Count": str(row_count),
+    }
+    return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.post("/drilldown/clear-cache")
+async def clear_drilldown_cache_endpoint():
+    """Reset the drill-down TTL cache (schema / instruments / bucket counts)."""
+    clear_drilldown_cache()
+    return {"status": "ok"}
