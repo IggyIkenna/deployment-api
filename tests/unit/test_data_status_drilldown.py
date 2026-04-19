@@ -433,15 +433,29 @@ class TestSearchAndPagination:
         assert result["has_more"] is False
 
     def test_instruments_service_full_shard_pagination(self):
-        """Low-cardinality shards (instruments-service) fit in a single page."""
-        objects = [
-            _obj(
-                f"raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=BINANCE/"
-                f"instrument_type=perpetual/data_type=instruments/{sym}.parquet"
-            )
-            for sym in ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
-        ]
-        with patch.object(drilldown, "list_objects", return_value=objects):
+        """Instruments-service: single per-(venue, day) bundle parquet.
+
+        The drill-down reads ``instrument_key`` column values from the
+        bundled parquet rather than expanding per-symbol parquet files —
+        because instruments-service doesn't partition by instrument_type /
+        data_type on disk.
+        """
+        prefix = "instrument_availability/by_date/day=2025-04-01/venue=BINANCE/"
+        objects = [_obj(f"{prefix}instruments.parquet")]
+        fake_df = pd.DataFrame(
+            {
+                "instrument_key": [
+                    "BINANCE:PERPETUAL:BTC-USDT",
+                    "BINANCE:PERPETUAL:ETH-USDT",
+                    "BINANCE:PERPETUAL:SOL-USDT",
+                ],
+                "instrument_type": ["PERPETUAL", "PERPETUAL", "PERPETUAL"],
+            }
+        )
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_read_parquet_columns", return_value=fake_df),
+        ):
             result = drilldown.list_instruments_for_shard(
                 service="instruments-service",
                 category="cefi",
@@ -452,7 +466,11 @@ class TestSearchAndPagination:
             )
         assert result["total_count"] == 3
         assert result["has_more"] is False
-        assert result["bundling"] == "per_symbol"
+        assert result["bundling"] == "per_venue_day_bundle"
+        assert result["prefix"] == prefix
+        first_instrument = result["instruments"][0]
+        assert first_instrument["instrument_id"] == "BINANCE:PERPETUAL:BTC-USDT"
+        assert first_instrument["bundled_under"] == "instruments.parquet"
 
 
 class TestIsValidInstrumentId:

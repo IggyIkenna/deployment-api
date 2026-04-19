@@ -425,11 +425,14 @@ def _expand_per_venue_day_bundle(
         return []
 
     # Filter by instrument_type when the UI provided one. instruments-service
-    # stores it as a column in the same parquet, so the filter is a simple
-    # equality on the upper-cased value.
+    # stores it as a column in the same parquet. The UI often sends the
+    # coarse family name (``SPOT``) while the parquet carries the specific
+    # sub-type (``SPOT_PAIR``), so the match is case-insensitive and allows
+    # prefix equality (``SPOT`` -> matches ``SPOT_PAIR`` / ``SPOT``).
     if instrument_type and "instrument_type" in df.columns:
         requested_it = instrument_type.upper()
-        df = df[df["instrument_type"].astype(str).str.upper() == requested_it]
+        col = df["instrument_type"].astype(str).str.upper()
+        df = df[(col == requested_it) | col.str.startswith(f"{requested_it}_")]
 
     if symbol_col not in df.columns:
         return []
