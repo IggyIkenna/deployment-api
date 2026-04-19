@@ -448,6 +448,15 @@ class DataStatusService:
         "ETHENA",
         "ETHERFI",
         "EIGENLAYER",
+        # Added 2026-04-19 after Playwright audit flagged AERODROMEV3-BASE
+        # leaking into DeFi venue summary. Canonical form is
+        # `AERODROME-BASE` + `chain='base'`; legacy is `AERODROMEV3-BASE` +
+        # `chain=''`. Filter keys on empty chain so canonical rows survive.
+        "AERODROME",
+        # Velodrome mirrors Aerodrome (same Solidly v3 fork on Optimism).
+        "VELODROME",
+        # Drift perps — recent addition to UAC KNOWN_VENUE_TOKENS 2026-04-19.
+        "DRIFT",
     )
 
     @classmethod
