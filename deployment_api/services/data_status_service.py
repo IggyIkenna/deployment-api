@@ -11,7 +11,7 @@ import logging
 import re
 import sys
 import time
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
 
 import pandas as pd
 from unified_api_contracts import (
@@ -36,6 +36,135 @@ logger = logging.getLogger(__name__)
 # TradFi data types that are only expected within tick windows (Databento cost mgmt).
 # Outside tick windows, only ohlcv_1m (and other non-tick types) are expected.
 _TRADFI_TICK_ONLY_DATA_TYPES: frozenset[str] = frozenset({"tbbo", "trades"})
+
+# Per-category coverage semantics — distinguishes "dense" categories where every
+# underlying is expected to produce data every day (CeFi, TradFi, DeFi) from
+# "event-driven" categories where underlyings only trade on a fraction of days
+# (sports fixtures, Polymarket conditionIds). For event-driven categories the
+# shards-weighted ``capture_coverage_pct`` vastly understates real coverage
+# because the denominator assumes every (underlying x day) combo should have
+# trades. The displayed ``completion_pct`` is therefore the ``attempt_coverage_pct``
+# (did we observe this underlying at all), with ``capture_coverage_pct`` kept
+# for the detail drill-down and ``empty_rate_estimate`` showing the fraction
+# of underlying-days that had no trades.
+COVERAGE_SEMANTICS: dict[str, Literal["dense", "event_driven"]] = {
+    "CEFI": "dense",
+    "TRADFI": "dense",
+    "DEFI": "dense",
+    "SPORTS": "event_driven",
+    "PREDICTION": "event_driven",
+}
+
+
+def _distinct_pairs(df: pd.DataFrame, col_a: str, col_b: str) -> int:
+    """Return count of distinct non-empty (col_a, col_b) pairs. 0 if cols missing."""
+    if col_a not in df.columns or col_b not in df.columns:
+        return 0
+    pairs = {
+        (str(a), str(b))
+        for a, b in zip(df[col_a].tolist(), df[col_b].tolist(), strict=True)
+        if a and b and str(a).strip() and str(b).strip()
+    }
+    return len(pairs)
+
+
+def _distinct_values(df: pd.DataFrame, col: str) -> int:
+    """Return count of distinct non-empty values in col. 0 if col missing."""
+    if col not in df.columns:
+        return 0
+    return len({str(v) for v in df[col].tolist() if v and str(v).strip()})
+
+
+def _sports_attempt_count(filtered: pd.DataFrame) -> int:
+    """Pick the most specific sports attempt axis available in the manifest."""
+    n = _distinct_pairs(filtered, "league_id", "fixture_type")
+    if n:
+        return n
+    n = _distinct_values(filtered, "league_id")
+    if n:
+        return n
+    n = _distinct_pairs(filtered, "venue", "instrument_type")
+    if n:
+        return n
+    return _distinct_values(filtered, "venue")
+
+
+def _compute_attempt_coverage(
+    filtered: pd.DataFrame,
+    category: str,
+) -> tuple[int, int]:
+    """Return (attempt_found, attempt_expected) for an event-driven category.
+
+    For PREDICTION (Polymarket), the attempt unit is a distinct ``underlying``
+    in the filtered manifest — an underlying is "observed" if at least one
+    shard exists for it in the date range. Since the availability manifest
+    only contains rows that were actually captured, expected == found by
+    definition: if we attempted a conditionId and it had zero trades, it
+    never reaches the manifest.
+
+    For SPORTS the attempt unit is ``(league_id, fixture_type)`` — fixtures
+    only occur on match days, so (league, fixture_type) observation is the right
+    attempt axis. When either column is missing we fall back to ``league_id``
+    alone, then to ``(venue, instrument_type)``, then to ``venue`` so this
+    is robust to manifest schema variation.
+
+    Returns ``(0, 0)`` when no suitable attempt axis is found — callers must
+    fall back to capture coverage in that case.
+    """
+    if filtered.empty:
+        return 0, 0
+    cat_upper = category.upper()
+    if cat_upper == "PREDICTION":
+        n = _distinct_values(filtered, "underlying")
+        return n, n
+    if cat_upper == "SPORTS":
+        n = _sports_attempt_count(filtered)
+        return n, n
+    return 0, 0
+
+
+def _build_coverage_metrics(
+    filtered: pd.DataFrame,
+    category: str,
+    capture_coverage_pct: float,
+) -> dict[str, object]:
+    """Resolve the event-driven vs dense coverage metrics for one category.
+
+    See ``COVERAGE_SEMANTICS`` for the per-category classification.
+
+    Dense categories (CeFi / TradFi / DeFi): every underlying is expected to
+    produce data every day, so ``attempt == capture`` and the existing
+    shards-weighted ``capture_coverage_pct`` is the right displayed number.
+    Event-driven categories (sports fixtures, Polymarket conditionIds): the
+    shards-weighted ratio understates real coverage because the denominator
+    assumes every (underlying x day) combo should have trades. We display
+    attempt coverage and expose capture + empty-rate for the drill-down.
+    """
+    coverage_semantics = COVERAGE_SEMANTICS.get(category.upper(), "dense")
+    attempt_found, attempt_expected = _compute_attempt_coverage(filtered, category)
+    if coverage_semantics == "event_driven" and attempt_expected > 0:
+        attempt_coverage_pct = min(round(attempt_found / attempt_expected * 100, 2), 100.0)
+        empty_rate_estimate: float | None = None
+        if attempt_coverage_pct > 0:
+            # empty_rate_estimate: fraction of attempted underlying-days that
+            # had no trades. Clamped to [0, 1].
+            empty_rate_estimate = max(
+                0.0,
+                min(1.0, round(1.0 - (capture_coverage_pct / attempt_coverage_pct), 4)),
+            )
+        completion_pct = attempt_coverage_pct
+    else:
+        attempt_coverage_pct = capture_coverage_pct
+        empty_rate_estimate = None
+        completion_pct = capture_coverage_pct
+    return {
+        "coverage_semantics": coverage_semantics,
+        "capture_coverage_pct": capture_coverage_pct,
+        "attempt_coverage_pct": attempt_coverage_pct,
+        "empty_rate_estimate": empty_rate_estimate,
+        "completion_pct": completion_pct,
+    }
+
 
 # Countries tracked for transfer window calendar (denominator for Transfermarkt data)
 _TRANSFER_COUNTRIES = (
@@ -2569,7 +2698,13 @@ class DataStatusService:
             cat_pct_shards = min(round(venue_found_total / venue_expected_total * 100, 2), 100.0)
         else:
             cat_pct_shards = cat_pct_dates
-        cat_pct = cat_pct_shards
+
+        coverage = _build_coverage_metrics(filtered, cat, cat_pct_shards)
+        coverage_semantics = coverage["coverage_semantics"]
+        capture_coverage_pct = coverage["capture_coverage_pct"]
+        attempt_coverage_pct = coverage["attempt_coverage_pct"]
+        empty_rate_estimate = coverage["empty_rate_estimate"]
+        cat_pct = coverage["completion_pct"]
 
         # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
         sub_dims = self._build_v4_sub_dimensions(
@@ -2603,6 +2738,10 @@ class DataStatusService:
             "completion_pct": cat_pct,
             "completion_pct_dates": cat_pct_dates,
             "completion_pct_shards_weighted": cat_pct_shards,
+            "attempt_coverage_pct": attempt_coverage_pct,
+            "capture_coverage_pct": capture_coverage_pct,
+            "coverage_semantics": coverage_semantics,
+            "empty_rate_estimate": empty_rate_estimate,
             "venue_weighted": bool(venues_dict),
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,

@@ -1917,3 +1917,106 @@ class TestServiceCategoryScope:
             "SPORTS",
             "PREDICTION",
         }
+
+
+class TestCoverageSemantics:
+    """Tests for per-category coverage semantics (dense vs event_driven).
+
+    Context: The data status page for market-tick-data-service PREDICTION was
+    showing 23.37% shards=8191/35049 because the denominator assumes every
+    Polymarket conditionId should trade every day. In reality event markets
+    come and go — the migration attempted every conditionId it found and
+    only wrote a manifest entry when rows>0. So 8191 shards represent
+    every day that had trading; the "missing" 26858 are underlying-days
+    where the market simply didn't trade.
+
+    The fix: event-driven categories (PREDICTION, SPORTS) display attempt
+    coverage (did we observe this underlying at all?) and expose capture
+    coverage + empty-rate estimate for the drill-down.
+    """
+
+    def test_prediction_polymarket_shows_100_attempt_coverage(self):
+        """99 underlyings with 8191/35049 shards: 100% attempt, 23.37% capture."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            COVERAGE_SEMANTICS,
+            _compute_attempt_coverage,
+        )
+
+        # Build a manifest slice with 99 distinct underlyings
+        rows = []
+        for i in range(99):
+            rows.append({"underlying": f"COND_{i:03d}", "date": "2025-06-01"})
+        df = pd.DataFrame(rows)
+
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "PREDICTION")
+        assert attempt_found == 99
+        assert attempt_expected == 99
+        assert COVERAGE_SEMANTICS["PREDICTION"] == "event_driven"
+
+        # Simulate the header calc in _build_manifest_category
+        capture_pct = round(8191 / 35049 * 100, 2)  # = 23.37
+        attempt_pct = round(attempt_found / attempt_expected * 100, 2)
+        empty_rate = round(1.0 - (capture_pct / attempt_pct), 4)
+
+        assert attempt_pct == 100.0
+        assert capture_pct == 23.37
+        # (100 - 23.37) / 100 = 0.7663
+        assert abs(empty_rate - 0.7663) < 1e-4
+
+    def test_dense_category_cefi_attempt_equals_capture(self):
+        """CEFI is dense — attempt == capture and empty_rate_estimate is None."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            COVERAGE_SEMANTICS,
+            _compute_attempt_coverage,
+        )
+
+        # CEFI classified as dense
+        assert COVERAGE_SEMANTICS["CEFI"] == "dense"
+        assert COVERAGE_SEMANTICS["TRADFI"] == "dense"
+        assert COVERAGE_SEMANTICS["DEFI"] == "dense"
+
+        # _compute_attempt_coverage returns (0, 0) for dense categories —
+        # the caller falls back to the shards-weighted figure in that case.
+        df = pd.DataFrame(
+            [
+                {"venue": "BINANCE-SPOT", "underlying": "BTC", "date": "2025-06-01"},
+                {"venue": "BINANCE-SPOT", "underlying": "ETH", "date": "2025-06-01"},
+            ]
+        )
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "CEFI")
+        assert attempt_found == 0
+        assert attempt_expected == 0
+
+    def test_sports_uses_league_fixture_type_attempt_axis(self):
+        """SPORTS attempt unit = (league_id, fixture_type) pair."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _compute_attempt_coverage
+
+        df = pd.DataFrame(
+            [
+                {"league_id": "EPL", "fixture_type": "match", "date": "2025-06-01"},
+                {"league_id": "EPL", "fixture_type": "match", "date": "2025-06-02"},
+                {"league_id": "EPL", "fixture_type": "outrights", "date": "2025-06-01"},
+                {"league_id": "LALIGA", "fixture_type": "match", "date": "2025-06-01"},
+            ]
+        )
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "SPORTS")
+        # 3 distinct (league, fixture_type) pairs
+        assert attempt_found == 3
+        assert attempt_expected == 3
+
+    def test_prediction_empty_frame_returns_zero(self):
+        """Empty manifest → (0, 0) so caller falls back to capture coverage."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _compute_attempt_coverage
+
+        df = pd.DataFrame(columns=["underlying", "date"])
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "PREDICTION")
+        assert attempt_found == 0
+        assert attempt_expected == 0
