@@ -435,6 +435,19 @@ class DataStatusService:
         "YEARN",
         "CONVEX",
         "ROCKETPOOL",
+        # Additional DeFi protocols observed in the DeFi availability index
+        # with empty chain column (pre-canonicalisation alias rows).
+        "CAMELOT",
+        "GMX",
+        "JITO",
+        "ORCA",
+        "MARINADE",
+        "KAMINO",
+        "MORPHO",
+        "FLUID",
+        "ETHENA",
+        "ETHERFI",
+        "EIGENLAYER",
     )
 
     @classmethod

@@ -1311,6 +1311,23 @@ class TestDefiLegacyVenueFilter:
         # NaN chain also counts as empty
         assert svc._is_legacy_defi_venue_row("AAVEV3-POLYGON", float("nan"))
 
+    def test_is_legacy_defi_venue_row_covers_extended_protocol_set(self):
+        """Second-tier DeFi protocols observed in the real manifest:
+        Camelot, GMX, Jito, Orca, Marinade, Kamino, Morpho, Fluid,
+        Ethena, Ether.fi, EigenLayer. All must be caught."""
+        svc = _make_svc()
+        assert svc._is_legacy_defi_venue_row("CAMELOTV3-ARBITRUM", "")
+        assert svc._is_legacy_defi_venue_row("GMX-ARBITRUM", "")
+        assert svc._is_legacy_defi_venue_row("JITO-SOLANA", "")
+        assert svc._is_legacy_defi_venue_row("ORCA-SOLANA", "")
+        assert svc._is_legacy_defi_venue_row("MARINADE-SOLANA", "")
+        assert svc._is_legacy_defi_venue_row("KAMINO-SOLANA", "")
+        assert svc._is_legacy_defi_venue_row("MORPHO-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("FLUID-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("ETHENA-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("ETHERFI-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("EIGENLAYER-ETHEREUM", "")
+
     def test_is_legacy_defi_venue_row_skips_canonical_rows(self):
         svc = _make_svc()
         # Canonical rows always have a non-empty chain → never legacy
