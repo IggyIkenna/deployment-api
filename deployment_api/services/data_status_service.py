@@ -83,6 +83,111 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 def clear_index_cache() -> None:
     """Clear the availability index cache."""
     _INDEX_CACHE.clear()
+    _EXPECTED_START_DATES_CACHE["value"] = None
+
+
+# ── expected_start_dates.yaml cached loader ────────────────────────────────
+# Loaded once at first use; `clear_index_cache()` resets it (also called by
+# /api/data-status/turbo/clear). The config is the SSOT for per-category
+# launch dates — used to clamp category-level aggregations to
+# max(user_start_date, category_start) so the Data Status page does not
+# score pre-launch phantom dates as "missing".
+_EXPECTED_START_DATES_CACHE: dict[str, object] = {"value": None}
+
+
+def _load_expected_start_dates_cached() -> dict[str, object]:
+    """Load expected_start_dates.yaml from the PM configs directory.
+
+    Cached for process lifetime. Returns an empty dict if the file is
+    missing (callers then fall back to the user-supplied start_date).
+    """
+    cached = _EXPECTED_START_DATES_CACHE.get("value")
+    if isinstance(cached, dict):
+        return cast(dict[str, object], cached)
+
+    # Prefer app_config.get_config_dir() (respects bundled pm-configs/ + sibling
+    # workspace lookup). Fall back to repo-relative path for test contexts where
+    # the FastAPI app hasn't been initialised.
+    import yaml
+
+    from deployment_api.app_config import get_config_dir
+
+    config_dir: object
+    try:
+        config_dir = get_config_dir()
+    except RuntimeError:
+        # Test / standalone contexts: fall back to workspace sibling
+        from pathlib import Path as _Path
+
+        here = _Path(__file__).resolve()
+        # deployment-api/deployment_api/services/data_status_service.py
+        # → workspace root = parents[4]
+        workspace_root = here.parents[4]
+        config_dir = workspace_root / "unified-trading-pm" / "configs"
+
+    yaml_path = config_dir / "expected_start_dates.yaml"  # type: ignore[operator]
+
+    if not yaml_path.exists():
+        logger.warning(
+            "expected_start_dates.yaml not found at %s — "
+            "category aggregates will NOT clamp to launch dates",
+            yaml_path,
+        )
+        _EXPECTED_START_DATES_CACHE["value"] = {}
+        return {}
+
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        _EXPECTED_START_DATES_CACHE["value"] = {}
+        return {}
+
+    _EXPECTED_START_DATES_CACHE["value"] = raw
+    return cast(dict[str, object], raw)
+
+
+def get_effective_start_date(
+    user_start_date: str,
+    service: str,
+    category: str,
+    venue: str | None = None,
+) -> str:
+    """Return ``max(user_start_date, configured_launch_date)``.
+
+    Uses `expected_start_dates.yaml` as the SSOT:
+    - If ``venue`` is provided and has a venue-specific date, that wins.
+    - Otherwise falls back to the service/category ``category_start``.
+    - If neither is configured, returns ``user_start_date`` unchanged.
+
+    This is used to clamp category-level aggregations so pre-launch dates
+    are not counted as "missing" in the Data Status page.
+    """
+    cfg = _load_expected_start_dates_cached()
+    svc_cfg_val = cfg.get(service)
+    if not isinstance(svc_cfg_val, dict):
+        return user_start_date
+    svc_cfg = cast(dict[str, object], svc_cfg_val)
+    cat_cfg_val = svc_cfg.get(category) or svc_cfg.get(category.upper())
+    if not isinstance(cat_cfg_val, dict):
+        return user_start_date
+    cat_cfg = cast(dict[str, object], cat_cfg_val)
+
+    candidate: str | None = None
+    if venue is not None:
+        venues_val = cat_cfg.get("venues")
+        if isinstance(venues_val, dict):
+            v_val = cast(dict[str, object], venues_val).get(venue)
+            if isinstance(v_val, str):
+                candidate = v_val
+
+    if candidate is None:
+        cat_start_val = cat_cfg.get("category_start")
+        if isinstance(cat_start_val, str):
+            candidate = cat_start_val
+
+    if candidate is None:
+        return user_start_date
+    return max(user_start_date, candidate)
 
 
 def _derive_underlying_from_instrument_id(instrument_id: str) -> str:
@@ -685,16 +790,13 @@ class DataStatusService:
                 venue_mapping,
             )
             result_categories[cat] = cat_result
-            vf = int(cat_result["_venue_found"])
-            ve = int(cat_result["_venue_expected"])
-            # When venue totals are zero (no-venue services like features-calendar),
-            # fall back to category-level date counts for the overall aggregation.
-            if vf == 0 and ve == 0 and int(cat_result.get("dates_found", 0)) > 0:
-                overall_found += int(cat_result["dates_found"])
-                overall_expected += int(cat_result.get("dates_expected", 0)) or total_days
-            else:
-                overall_found += vf
-                overall_expected += ve
+            # Use per-category date counts (already clamped to the configured
+            # category_start) for the overall aggregation. Venue-weighted totals
+            # are still returned on each category for sub-row rendering but are
+            # not summed into the overall percentage because aliased venues
+            # (e.g. CURVE vs CURVE-ETHEREUM) would double-count.
+            overall_found += int(cat_result.get("dates_found", 0))
+            overall_expected += int(cat_result.get("dates_expected", 0))
             # Remove internal counters from output
             del cat_result["_venue_found"]
             del cat_result["_venue_expected"]
@@ -2135,7 +2237,15 @@ class DataStatusService:
         if index.empty:
             return empty
 
-        mask = (index["date"] >= start_date) & (index["date"] <= end_date)
+        # Clamp the category-level start date to the configured launch date
+        # (from expected_start_dates.yaml). Pre-launch dates are not "missing"
+        # — they never existed. Only the aggregation math is clamped; the raw
+        # manifest data is untouched.
+        effective_start = get_effective_start_date(start_date, service, cat)
+        cat_date_strs = [d for d in all_date_strs if d >= effective_start]
+        cat_total_days = len(cat_date_strs)
+
+        mask = (index["date"] >= effective_start) & (index["date"] <= end_date)
         if "service_name" in index.columns:
             mask = mask & (index["service_name"] == service)
         filtered = index.loc[mask].copy()
@@ -2147,17 +2257,17 @@ class DataStatusService:
         cat_found_dates = (
             {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
         )
-        cat_missing = sorted(set(all_date_strs) - cat_found_dates)
+        cat_missing = sorted(set(cat_date_strs) - cat_found_dates)
         cat_found = len(cat_found_dates)
 
         # Per-venue breakdown (includes data_type sub-dimension for multi-data-type services)
         venues_dict, venue_found_total, venue_expected_total = self._build_venue_breakdown(
             filtered,
-            start_date,
+            effective_start,
             end_date,
             venue_mapping,
             cat_found,
-            total_days,
+            cat_total_days,
             service=service,
             category=cat,
         )
@@ -2180,21 +2290,23 @@ class DataStatusService:
                 else filtered
             )
             venues_dict, venue_found_total, venue_expected_total = self._build_data_type_grouping(
-                dt_filtered, start_date, end_date, cat
+                dt_filtered, effective_start, end_date, cat
             )
 
-        # Use venue-weighted completion when venues exist
-        if venues_dict:
-            cat_pct = min(round(venue_found_total / max(1, venue_expected_total) * 100, 2), 100.0)
-        else:
-            cat_pct = min(round(cat_found / max(1, total_days) * 100, 2), 100.0)
+        # Category-level completion is date-based (was ANY data available on
+        # each date in the clamped range?). Venue-weighted totals remain on
+        # the response for per-venue UI rendering but are NOT used for the
+        # category aggregate — venue-weighted over-counts aliased/placeholder
+        # venue names (e.g. CURVE vs CURVE-ETHEREUM) and drags the category
+        # number well below the true per-shard coverage shown in sub-rows.
+        cat_pct = min(round(cat_found / max(1, cat_total_days) * 100, 2), 100.0)
 
         # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
         sub_dims = self._build_v4_sub_dimensions(
             filtered,
             service,
             cat,
-            start_date,
+            effective_start,
             end_date,
             venue_mapping,
         )
@@ -2207,13 +2319,14 @@ class DataStatusService:
             "bucket": bucket,
             "prefixes_queried": 0,
             "dates_found": cat_found,
-            "dates_expected": total_days,
+            "dates_expected": cat_total_days,
             "dates_missing": len(cat_missing),
             "completion_pct": cat_pct,
             "venue_weighted": bool(venues_dict),
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,
             "unit": unit,
+            "effective_start_date": effective_start,
             "missing_dates": cat_missing,
             "dates_found_list": cat_found_sorted,
             "dates_missing_list": cat_missing,
