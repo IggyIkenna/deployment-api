@@ -175,7 +175,7 @@ class TestListInstrumentsForShard:
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
                 "venue=POLYMARKET/instrument_type=OTHER/"
-                "data_type=prediction_trades/ticks.parquet",
+                "data_type=trades/ticks.parquet",
                 size=500,
             )
         ]
@@ -194,7 +194,7 @@ class TestListInstrumentsForShard:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
             )
         assert result["bundling"] == "per_condition_id"
         iids = [i["instrument_id"] for i in result["instruments"]]
@@ -214,7 +214,7 @@ def _polymarket_listing(num_ids: int):
         _obj(
             "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
             "venue=POLYMARKET/instrument_type=OTHER/"
-            "data_type=prediction_trades/ticks.parquet",
+            "data_type=trades/ticks.parquet",
             size=500,
         )
     ]
@@ -235,7 +235,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
             )
         assert result["total_count"] == 200
         assert result["limit"] == drilldown.DEFAULT_INSTRUMENT_LIMIT
@@ -255,7 +255,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 limit=9999,
             )
         # 10 ids total, caller asked for 9999 → clamped to MAX but only 10 returned.
@@ -275,7 +275,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 limit=50,
                 offset=0,
             )
@@ -285,7 +285,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 limit=50,
                 offset=50,
             )
@@ -295,7 +295,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 limit=50,
                 offset=100,
             )
@@ -324,7 +324,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 search="trump",
             )
         iids = [i["instrument_id"] for i in result["instruments"]]
@@ -346,7 +346,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 search="trump",
                 limit=drilldown.MAX_INSTRUMENT_LIMIT,
             )
@@ -390,7 +390,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 search="",
             )
         assert result["total_count"] == 10
@@ -407,7 +407,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 offset=-10,
             )
         assert result["offset"] == 0
@@ -425,7 +425,7 @@ class TestSearchAndPagination:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 offset=500,
             )
         assert result["instruments"] == []
@@ -564,7 +564,7 @@ class TestGetShardInfo:
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
                 "venue=POLYMARKET/instrument_type=OTHER/"
-                "data_type=prediction_trades/ticks.parquet"
+                "data_type=trades/ticks.parquet"
             )
         ]
         with patch.object(drilldown, "list_objects", return_value=objects):
@@ -573,7 +573,7 @@ class TestGetShardInfo:
                 category="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
-                data_type="prediction_trades",
+                data_type="trades",
             )
         assert result["recommended_instrument_type"] == "OTHER"
         assert result["instrument_types"][0]["bundling"] == "per_condition_id"
@@ -602,21 +602,21 @@ class TestComputeBucketCounts:
         venue_level = [
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
-                "venue=POLYMARKET/instrument_type=BTC/data_type=prediction_trades/ticks.parquet"
+                "venue=POLYMARKET/instrument_type=BTC/data_type=trades/ticks.parquet"
             ),
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
-                "venue=POLYMARKET/instrument_type=ETH/data_type=prediction_trades/ticks.parquet"
+                "venue=POLYMARKET/instrument_type=ETH/data_type=trades/ticks.parquet"
             ),
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
-                "venue=POLYMARKET/instrument_type=OTHER/data_type=prediction_trades/ticks.parquet"
+                "venue=POLYMARKET/instrument_type=OTHER/data_type=trades/ticks.parquet"
             ),
         ]
         other_level = [
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
-                "venue=POLYMARKET/instrument_type=OTHER/data_type=prediction_trades/ticks.parquet"
+                "venue=POLYMARKET/instrument_type=OTHER/data_type=trades/ticks.parquet"
             )
         ]
 
@@ -638,7 +638,7 @@ class TestComputeBucketCounts:
                 category="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
-                data_type="prediction_trades",
+                data_type="trades",
             )
         assert result == {"named_market_count": 2, "other_market_count": 5}
 
@@ -711,7 +711,7 @@ class TestBuildCsvExport:
             _obj(
                 "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
                 "venue=POLYMARKET/instrument_type=OTHER/"
-                "data_type=prediction_trades/ticks.parquet"
+                "data_type=trades/ticks.parquet"
             )
         ]
         df = pd.DataFrame(
@@ -735,7 +735,7 @@ class TestBuildCsvExport:
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
-                data_type="prediction_trades",
+                data_type="trades",
                 instrument_ids=["0xabc"],
             )
         assert rows == 2
