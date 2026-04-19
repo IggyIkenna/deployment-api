@@ -619,10 +619,165 @@ class TestBuildDataTypeBreakdown:
                     df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
                 )
 
+        # Observed-but-not-UAC-declared dt is kept with is_expected=False
         assert "unexpected_type" in result
         assert result["unexpected_type"]["is_expected"] is False
-        assert "trades" in result
-        assert result["trades"]["is_expected"] is True
+        # Phantom-expected clamp (2026-04-19): UAC declared "trades" but it
+        # was never observed in this slice → dropped to avoid cartesian
+        # inflation when this function is called from a narrowed sub-slice
+        # (e.g. per-instrument_type / per-underlying). The top-level
+        # "missing data_type" signal still surfaces via the venue-level
+        # cat_total_days denominator and per-venue completion metrics.
+        assert "trades" not in result
+
+
+class TestPhantomExpectedClamp:
+    """Tests for the 2026-04-19 phantom-expected denominator clamp.
+
+    Covers the three axes where cartesian inflation was inflating
+    ``shards_expected`` on the MTDS data-status ``/turbo`` endpoint:
+
+    1. data_type x (venue, instrument_type, underlying) - UAC-declared dts
+       that never materialise for the sub-slice were counted as phantom
+       missing.
+    2. instrument_type launch date — new instrument_types inherited the
+       venue's full calendar even if they launched mid-history.
+    3. underlying launch date — same, for underlyings under an
+       instrument_type (e.g. DERIBIT SOL options post-2024).
+    """
+
+    def setup_method(self):
+        self.svc = DataStatusService(project_id="test-proj")
+
+    def test_data_type_breakdown_drops_unobserved_uac_phantoms(self):
+        """UAC declares 4 dts; only 1 observed → expected = 1, not 4."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
+                "venue": ["ODDS_API"] * 3,
+                "data_type": ["ODDS", "ODDS", "ODDS"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = [
+            "2024-01-01",
+            "2024-01-02",
+            "2024-01-03",
+        ]
+        with patch.object(
+            _dss_mod,
+            "get_expected_data_types_for_venue",
+            return_value=["ODDS", "arbitrage_opportunity", "odds_movement", "odds_snapshot"],
+        ):
+            with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
+                result = self.svc._build_data_type_breakdown(
+                    df, "ODDS_API", "2024-01-01", "2024-01-03", vm
+                )
+
+        # Only ODDS (observed) shows up. arbitrage_opportunity, odds_movement,
+        # odds_snapshot are UAC-declared but never observed → phantom → dropped.
+        assert set(result.keys()) == {"ODDS"}
+        assert result["ODDS"]["dates_found"] == 3
+        assert result["ODDS"]["dates_expected"] == 3
+
+    def test_instrument_type_breakdown_clamps_to_observed_launch(self):
+        """Instrument_type launched 2024-06-01 does not get 2024-01 phantom days."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-02", "2024-06-01"],
+                "venue": ["POLYMARKET"] * 3,
+                "instrument_type": ["BTC", "BTC", "HYPE"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.side_effect = lambda venue, start, end: (
+            pd.date_range(start, end, freq="D").strftime("%Y-%m-%d").tolist()
+        )
+
+        result = self.svc._build_instrument_type_breakdown(
+            df,
+            "POLYMARKET",
+            "2024-01-01",
+            "2024-06-01",
+            vm,
+            has_data_type=False,
+            category="PREDICTION",
+            service="market-tick-data-service",
+        )
+
+        # HYPE's effective start = 2024-06-01 (first observed) → only 1 day
+        # expected (2024-06-01 itself). BTC's effective start stays at the
+        # user-supplied 2024-01-01 → full window to 2024-06-01.
+        btc_expected = int(result["BTC"]["dates_expected"])
+        hype_expected = int(result["HYPE"]["dates_expected"])
+        assert hype_expected == 1, f"HYPE should be clamped to 1 day, got {hype_expected}"
+        assert btc_expected > hype_expected, (
+            f"BTC ({btc_expected}) should span more days than HYPE ({hype_expected})"
+        )
+
+    def test_underlying_breakdown_clamps_to_observed_launch(self):
+        """Underlying that launched mid-history does not get pre-launch phantom."""
+        df = pd.DataFrame(
+            {
+                "date": ["2022-01-01", "2022-01-02", "2024-06-01"],
+                "venue": ["DERIBIT"] * 3,
+                "instrument_type": ["options_chain"] * 3,
+                "underlying": ["BTC", "BTC", "SOL"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.side_effect = lambda venue, start, end: (
+            pd.date_range(start, end, freq="D").strftime("%Y-%m-%d").tolist()
+        )
+
+        result = self.svc._build_underlying_breakdown(
+            df,
+            "DERIBIT",
+            "2022-01-01",
+            "2024-06-01",
+            vm,
+            has_data_type=False,
+            service="market-tick-data-service",
+            category="CEFI",
+        )
+
+        # SOL's effective start = 2024-06-01 → 1 day expected.
+        # BTC stays at user-supplied 2022-01-01 → full window.
+        btc_expected = int(result["BTC"]["dates_expected"])
+        sol_expected = int(result["SOL"]["dates_expected"])
+        assert sol_expected == 1, f"SOL should be clamped to 1 day, got {sol_expected}"
+        assert btc_expected > sol_expected, (
+            f"BTC ({btc_expected}) should span more days than SOL ({sol_expected})"
+        )
+
+    def test_data_type_breakdown_falls_back_to_observed_min_when_uac_unknown(self):
+        """When UAC has no declared dt start, use earliest observed date."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-06-01", "2024-06-02"],
+                "venue": ["DRIFT", "DRIFT"],
+                "data_type": ["derivative_ticker", "derivative_ticker"],
+            }
+        )
+        vm = MagicMock()
+        # Returning the whole year would be phantom; but with the observed-min
+        # fallback we clamp to 2024-06-01 → end.
+        vm.get_expected_trading_dates.side_effect = lambda venue, start, end: (
+            pd.date_range(start, end, freq="D").strftime("%Y-%m-%d").tolist()
+        )
+        with patch.object(
+            _dss_mod,
+            "get_expected_data_types_for_venue",
+            return_value=["derivative_ticker"],
+        ):
+            with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
+                result = self.svc._build_data_type_breakdown(
+                    df, "DRIFT", "2024-01-01", "2024-06-02", vm
+                )
+
+        # Effective start clamps to observed min (2024-06-01), so expected
+        # range is 2024-06-01..2024-06-02 = 2 days, NOT 2024-01-01..2024-06-02.
+        assert result["derivative_ticker"]["dates_expected"] == 2
 
 
 class TestBuildVenueBreakdown:

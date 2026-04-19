@@ -1476,7 +1476,15 @@ class DataStatusService:
         for it in itypes:
             it_df = venue_df[venue_df["instrument_type"] == it]
             it_dates = {str(d) for d in it_df["date"].unique()}
-            all_dates = set(venue_mapping.get_expected_trading_dates(venue, start_date, end_date))
+            # Phantom-expected clamp: use the first observed date for this
+            # (venue, instrument_type) as the effective start for the
+            # expected-date calendar. Prevents cartesian inflation when a
+            # venue has N instrument_types with different launch dates
+            # (e.g. POLYMARKET: BTC since 2023-01, HYPE since 2024-11 —
+            # without this clamp, HYPE's expected days include 22 months
+            # of phantom pre-launch dates).
+            it_eff_start = max(start_date, min(it_dates)) if it_dates else start_date
+            all_dates = set(venue_mapping.get_expected_trading_dates(venue, it_eff_start, end_date))
             found = len(it_dates & all_dates)
             expected = len(all_dates)
 
@@ -1496,7 +1504,7 @@ class DataStatusService:
                 ul_sub = self._build_underlying_breakdown(
                     it_df,
                     venue,
-                    start_date,
+                    it_eff_start,
                     end_date,
                     venue_mapping,
                     has_data_type,
@@ -1514,7 +1522,7 @@ class DataStatusService:
                 dt_sub = self._build_data_type_breakdown(
                     it_df,
                     venue,
-                    start_date,
+                    it_eff_start,
                     end_date,
                     venue_mapping,
                     service=service,
@@ -1572,7 +1580,14 @@ class DataStatusService:
         for ul in underlyings:
             ul_df = itype_df[itype_df["underlying"] == ul]
             ul_dates = {str(d) for d in ul_df["date"].unique()}
-            all_dates = set(venue_mapping.get_expected_trading_dates(venue, start_date, end_date))
+            # Phantom-expected clamp: earliest observed date for this
+            # (venue, instrument_type, underlying) slice sets the effective
+            # start. Prevents cartesian inflation when a venue trades a new
+            # underlying that launched mid-history (e.g. DERIBIT SOL options
+            # launched long after BTC/ETH — counting 2018-2020 as "expected"
+            # for SOL is phantom).
+            ul_eff_start = max(start_date, min(ul_dates)) if ul_dates else start_date
+            all_dates = set(venue_mapping.get_expected_trading_dates(venue, ul_eff_start, end_date))
             found = len(ul_dates & all_dates)
             expected = len(all_dates)
 
@@ -1587,7 +1602,7 @@ class DataStatusService:
                 dt_sub = self._build_data_type_breakdown(
                     ul_df,
                     venue,
-                    start_date,
+                    ul_eff_start,
                     end_date,
                     venue_mapping,
                     service=service,
@@ -1621,6 +1636,20 @@ class DataStatusService:
         TradFi tick-window handling: for TradFi venues, tbbo/trades are only
         expected on dates within TRADFI_TICK_DATA_WINDOWS. Outside those windows,
         only ohlcv_1m (and other non-tick types) are expected.
+
+        **Phantom-expected clamp (Option a, 2026-04-19)**: UAC
+        ``get_expected_data_types_for_venue`` returns the data_types declared
+        for a venue OVERALL. When this function is called from a narrowed
+        slice (e.g. ``(venue, instrument_type, underlying)`` via
+        ``_build_underlying_breakdown``), applying the venue-level list
+        cartesian-multiplies the expected shards — e.g. DERIBIT's
+        ``options_chain`` data_type appears as "expected" under every
+        instrument_type (futures_chain, perpetual, options_chain) even though
+        it only applies to one. We therefore intersect UAC's declared set
+        with the data_types actually observed anywhere in this slice. dt's
+        declared by UAC but never observed in this slice are treated as
+        "not expected for this sub-context" — they are dropped, not counted
+        as missing phantoms.
         """
         if "data_type" not in venue_df.columns:
             return {}
@@ -1628,7 +1657,11 @@ class DataStatusService:
         is_tradfi = category.upper() == "TRADFI"
 
         present_dts = {str(dt) for dt in venue_df["data_type"].unique() if dt and str(dt).strip()}
-        expected_dts = set(get_expected_data_types_for_venue(venue, service=service))
+        uac_expected_dts = set(get_expected_data_types_for_venue(venue, service=service))
+        # Only count UAC-declared dts that this sub-slice has ever observed —
+        # drops cartesian phantoms. ``expected_dts`` retains the "is this
+        # UAC-declared?" semantic for the per-row ``is_expected`` flag.
+        expected_dts = uac_expected_dts & present_dts
         all_dts = sorted(expected_dts | present_dts)
 
         if not all_dts:
@@ -1639,9 +1672,16 @@ class DataStatusService:
             dt_df = venue_df[venue_df["data_type"] == dt]
             dt_dates = {str(d) for d in dt_df["date"].unique()} if not dt_df.empty else set()
 
-            # Per-data-type start date from UAC
+            # Per-data-type start date from UAC; when UAC has no declared
+            # start for this (venue, dt), use the earliest date observed in
+            # this slice to avoid phantom pre-launch expected dates.
             dt_start = get_venue_data_type_start_date(venue, dt)
-            dt_eff_start = max(start_date, dt_start) if dt_start else start_date
+            if dt_start:
+                dt_eff_start = max(start_date, dt_start)
+            elif dt_dates:
+                dt_eff_start = max(start_date, min(dt_dates))
+            else:
+                dt_eff_start = start_date
             # Use compound key (venue:data_type) for trading schedule lookup —
             # e.g. POLYMARKET:CRUDE_OIL gets weekday-only, POLYMARKET:BTC gets 24/7
             shard_key = f"{venue}:{dt}" if dt else venue
