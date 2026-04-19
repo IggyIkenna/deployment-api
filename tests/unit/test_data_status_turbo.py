@@ -1843,3 +1843,77 @@ class TestReferenceExpectedDates:
             svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-01")
             svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-01")
         mock_read.assert_called_once()
+
+
+class TestServiceCategoryScope:
+    """Per-Appendix A: single-scope services must not emit 0/0 rows for
+    out-of-scope categories.  Locks the fix for audit defect #7 (2026-04-19):
+    features-onchain-service returning all 5 categories as 0/0 even though it
+    only covers DEFI.
+    """
+
+    def test_features_onchain_returns_only_defi(self):
+        """features-onchain-service should only return DEFI in /turbo response."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="features-onchain-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["categories"].keys()) == {"DEFI"}
+
+    def test_features_sports_returns_only_sports(self):
+        """features-sports-service should only return SPORTS."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="features-sports-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["categories"].keys()) == {"SPORTS"}
+
+    def test_features_commodity_returns_only_tradfi(self):
+        """features-commodity-service should only return TRADFI."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="features-commodity-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["categories"].keys()) == {"TRADFI"}
+
+    def test_mdps_returns_only_cefi_tradfi_defi(self):
+        """market-data-processing-service should not render SPORTS/PREDICTION."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="market-data-processing-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["categories"].keys()) == {"CEFI", "TRADFI", "DEFI"}
+
+    def test_instruments_service_returns_all_five(self):
+        """instruments-service has no restriction — must emit all 5 categories."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="instruments-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["categories"].keys()) == {
+            "CEFI",
+            "TRADFI",
+            "DEFI",
+            "SPORTS",
+            "PREDICTION",
+        }

@@ -499,16 +499,22 @@ class DataStatusService:
         "execution-service": "execution-store-{pid}",
     }
 
-    # Single-bucket services (no {cat} in template) that only apply to
-    # specific categories.  If a service is listed here, categories NOT in
-    # the frozenset are skipped (empty result returned).  Services NOT
-    # listed here are assumed to apply to all categories.
+    # Per-service category scope (SSOT: deployment-ui-playwright-audit-checklist
+    # Appendix A — Service x category matrix).  Services listed here ONLY apply
+    # to the categories in the frozenset — categories outside this set are
+    # omitted from the /turbo response (rather than rendered as misleading 0/0).
+    # Services NOT listed (e.g. instruments-service, market-tick-data-service,
+    # market-tick-data-handler, features-calendar-service) apply to ALL 5
+    # categories (CEFI / TRADFI / DEFI / SPORTS / PREDICTION).
     _SERVICE_CATEGORY_RESTRICTIONS: ClassVar[dict[str, frozenset[str]]] = {
         "market-data-processing-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-delta-one-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-volatility-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-multi-timeframe-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-cross-instrument-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-onchain-service": frozenset({"DEFI"}),
         "features-sports-service": frozenset({"SPORTS"}),
-        "features-onchain-service": frozenset({"CEFI", "DEFI"}),
         "features-commodity-service": frozenset({"TRADFI"}),
-        "features-volatility-service": frozenset({"CEFI", "TRADFI"}),
         "strategy-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "execution-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
     }
@@ -844,6 +850,13 @@ class DataStatusService:
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = categories or [str(c) for c in MarketCategory]
+        # Filter to only the categories this service actually targets (Appendix A
+        # SSOT).  Rendering CEFI/TRADFI/SPORTS/PREDICTION as 0/0 for a
+        # DEFI-only service (e.g. features-onchain-service) is misleading — it
+        # looks like "missing data" when in fact the category is out-of-scope.
+        allowed = self._SERVICE_CATEGORY_RESTRICTIONS.get(service)
+        if allowed:
+            cat_list = [c for c in cat_list if c.upper() in allowed]
         all_dates_range = pd.date_range(start_date, end_date, freq="D")
         all_date_strs = [d.strftime("%Y-%m-%d") for d in all_dates_range]
         total_days = len(all_dates_range)
