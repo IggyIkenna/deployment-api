@@ -120,7 +120,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     )
 
     cors_dev_origins: str = Field(
-        default="http://localhost:3000,http://localhost:5174,http://127.0.0.1:5174,http://localhost:8080",
+        default="http://localhost:3000,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5183,http://127.0.0.1:5183,http://localhost:8080",
         validation_alias=AliasChoices("CORS_DEV_ORIGINS"),
         description="Comma-separated static localhost origins allowed in development mode",
     )
