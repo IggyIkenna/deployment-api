@@ -13,11 +13,15 @@ from fastapi.responses import Response
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services import DataAnalyticsService, DataQueryService, DataStatusService
 from deployment_api.services.data_status_drilldown import (
+    DEFAULT_INSTRUMENT_LIMIT,
+    MAX_INSTRUMENT_LIMIT,
     build_csv_export,
     clear_drilldown_cache,
     compute_bucket_counts,
     get_schema_for_shard,
+    get_shard_info,
     list_instruments_for_shard,
+    preview_bundle_symbols,
 )
 
 _cfg = DeploymentApiConfig()
@@ -545,14 +549,36 @@ async def get_instruments_for_shard(
     day: str = Query(..., description="Day (YYYY-MM-DD)"),
     instrument_type: str = Query(..., description="Instrument type"),
     data_type: str = Query(..., description="Data type"),
+    limit: int = Query(
+        DEFAULT_INSTRUMENT_LIMIT,
+        ge=1,
+        le=MAX_INSTRUMENT_LIMIT,
+        description="Page size (default 50, max 500)",
+    ),
+    offset: int = Query(0, ge=0, description="Page offset (default 0)"),
+    search: str | None = Query(
+        None,
+        description=(
+            "Case-insensitive substring match on instrument_id. "
+            "Ignored for per_underlying bundles. Capped at 100 matches."
+        ),
+    ),
 ):
     """List the instrument_ids in a single (day, venue, instrument_type,
     data_type) shard.
 
-    Response includes a ``bundling`` hint — ``per_symbol``, ``per_underlying``
-    (options_chain/futures_chain/combo), or ``per_condition_id``
-    (Polymarket OTHER). The UI uses this to explain to the user that
-    selecting one root downloads the whole bundle parquet for that root.
+    Response shape:
+    ``{instruments, total_count, limit, offset, has_more, bundling, search, ...}``.
+
+    ``bundling`` is ``per_symbol``, ``per_underlying`` (options_chain /
+    futures_chain / combo), or ``per_condition_id`` (Polymarket OTHER).
+    The UI uses this to explain to the user that selecting one root
+    downloads the whole bundle parquet for that root.
+
+    For ``per_underlying`` shards search is a no-op — there is one entry
+    per underlying and the user is choosing a whole bundle by its root.
+    ``total_count`` always reflects the post-search, pre-pagination count
+    so the UI can decide whether to show "Load more" / paginator.
     """
     try:
         return list_instruments_for_shard(
@@ -562,9 +588,46 @@ async def get_instruments_for_shard(
             day=day,
             instrument_type=instrument_type,
             data_type=data_type,
+            limit=limit,
+            offset=offset,
+            search=search,
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_instruments_for_shard")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/bundle-preview")
+async def get_bundle_preview(
+    service: str = Query(..., description="Service name"),
+    category: str = Query(..., description="Category"),
+    venue: str = Query(..., description="Venue"),
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    instrument_type: str = Query(..., description="Instrument type"),
+    data_type: str = Query(..., description="Data type"),
+    limit: int = Query(20, ge=1, le=200, description="Max preview symbols"),
+):
+    """Return the first N symbol-column values inside a per_underlying bundle.
+
+    Meant for the "Preview symbols inside" expander on the Instruments modal
+    so the user can eyeball what's in an options_chain / futures_chain /
+    combo parquet before downloading it. Returns ``symbols: []`` with an
+    explanatory ``message`` for non-bundled shards.
+    """
+    try:
+        return preview_bundle_symbols(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            instrument_type=instrument_type,
+            data_type=data_type,
+            limit=limit,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_bundle_preview")
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
@@ -640,6 +703,39 @@ async def download_csv(
         "X-Row-Count": str(row_count),
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.get("/shard-info")
+async def get_shard_info_endpoint(
+    service: str = Query(..., description="Service name"),
+    category: str = Query(..., description="Category"),
+    venue: str = Query(..., description="Venue"),
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    data_type: str = Query(..., description="Data type"),
+):
+    """Return the instrument_types present on a venue+day+data_type shard.
+
+    The UI uses this to resolve the ``instrument_type`` axis before opening
+    the Instruments modal — avoids guessing ``data_type`` as the
+    instrument_type for venues that actually shard by it (e.g. DERIBIT's
+    ``options_chain`` vs ``perpetual``).
+
+    Response:
+    ``{instrument_types: [{name, bundling}, ...], recommended_instrument_type}``.
+    """
+    try:
+        return get_shard_info(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            data_type=data_type,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_shard_info_endpoint")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.post("/drilldown/clear-cache")

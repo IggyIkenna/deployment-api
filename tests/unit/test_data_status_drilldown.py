@@ -165,6 +165,378 @@ class TestListInstrumentsForShard:
 
 
 # ---------------------------------------------------------------------------
+# Search + pagination (Polymarket 5k-condition shards need these)
+# ---------------------------------------------------------------------------
+
+
+def _polymarket_listing(num_ids: int):
+    """Build a `list_instruments_for_shard` fixture that returns `num_ids` IDs."""
+    objects = [
+        _obj(
+            "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
+            "venue=POLYMARKET/instrument_type=OTHER/"
+            "data_type=prediction_trades/ticks.parquet",
+            size=500,
+        )
+    ]
+    ids = [f"0x{i:04x}" for i in range(num_ids)]
+    return objects, ids
+
+
+class TestSearchAndPagination:
+    def test_default_limit_returns_page_and_total(self):
+        objects, ids = _polymarket_listing(200)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=ids),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+            )
+        assert result["total_count"] == 200
+        assert result["limit"] == drilldown.DEFAULT_INSTRUMENT_LIMIT
+        assert result["offset"] == 0
+        assert result["has_more"] is True
+        assert len(result["instruments"]) == drilldown.DEFAULT_INSTRUMENT_LIMIT
+
+    def test_limit_is_capped_at_max(self):
+        objects, ids = _polymarket_listing(10)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=ids),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                limit=9999,
+            )
+        # 10 ids total, caller asked for 9999 → clamped to MAX but only 10 returned.
+        assert result["limit"] == drilldown.MAX_INSTRUMENT_LIMIT
+        assert result["total_count"] == 10
+        assert result["has_more"] is False
+
+    def test_offset_pages_through(self):
+        objects, ids = _polymarket_listing(120)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=ids),
+        ):
+            page1 = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                limit=50,
+                offset=0,
+            )
+            page2 = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                limit=50,
+                offset=50,
+            )
+            page3 = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                limit=50,
+                offset=100,
+            )
+        assert page1["total_count"] == 120
+        assert len(page1["instruments"]) == 50
+        assert page1["has_more"] is True
+        assert len(page2["instruments"]) == 50
+        assert page2["has_more"] is True
+        assert len(page3["instruments"]) == 20
+        assert page3["has_more"] is False
+        # Pages should not overlap.
+        seen = {i["instrument_id"] for i in page1["instruments"]}
+        for p in page2["instruments"] + page3["instruments"]:
+            assert p["instrument_id"] not in seen
+
+    def test_search_case_insensitive_substring(self):
+        objects, _ids = _polymarket_listing(0)
+        custom_ids = ["TRUMP-2024", "BIDEN-2024", "trump-macro", "Other"]
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=custom_ids),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                search="trump",
+            )
+        iids = [i["instrument_id"] for i in result["instruments"]]
+        assert sorted(iids) == ["TRUMP-2024", "trump-macro"]
+        assert result["total_count"] == 2
+        assert result["search"] == "trump"
+
+    def test_search_capped_at_max_results(self):
+        # Build many matches so we verify the 100-cap.
+        matches = [f"TRUMP-{i}" for i in range(drilldown.MAX_SEARCH_RESULTS + 50)]
+        objects, _ = _polymarket_listing(0)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=matches),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                search="trump",
+                limit=drilldown.MAX_INSTRUMENT_LIMIT,
+            )
+        assert result["total_count"] == drilldown.MAX_SEARCH_RESULTS
+
+    def test_search_is_noop_for_per_underlying(self):
+        objects = [
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=DERIBIT/"
+                "instrument_type=options_chain/data_type=trades/BTC.parquet"
+            ),
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=DERIBIT/"
+                "instrument_type=options_chain/data_type=trades/ETH.parquet"
+            ),
+        ]
+        with patch.object(drilldown, "list_objects", return_value=objects):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="cefi",
+                venue="DERIBIT",
+                day="2025-04-01",
+                instrument_type="options_chain",
+                data_type="trades",
+                search="BTC",  # intentionally would filter out ETH in per_symbol
+            )
+        iids = [i["instrument_id"] for i in result["instruments"]]
+        assert "BTC" in iids and "ETH" in iids
+        assert result["bundling"] == "per_underlying"
+        assert result["total_count"] == 2
+
+    def test_empty_search_returns_all(self):
+        objects, ids = _polymarket_listing(10)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=ids),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                search="",
+            )
+        assert result["total_count"] == 10
+
+    def test_negative_offset_clamped_to_zero(self):
+        objects, ids = _polymarket_listing(5)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=ids),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                offset=-10,
+            )
+        assert result["offset"] == 0
+        assert len(result["instruments"]) == 5
+
+    def test_offset_past_end_returns_empty_page(self):
+        objects, ids = _polymarket_listing(5)
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_distinct_values_in_parquet", return_value=ids),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                instrument_type="OTHER",
+                data_type="prediction_trades",
+                offset=500,
+            )
+        assert result["instruments"] == []
+        assert result["total_count"] == 5
+        assert result["has_more"] is False
+
+    def test_instruments_service_full_shard_pagination(self):
+        """Low-cardinality shards (instruments-service) fit in a single page."""
+        objects = [
+            _obj(
+                f"raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=BINANCE/"
+                f"instrument_type=perpetual/data_type=instruments/{sym}.parquet"
+            )
+            for sym in ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+        ]
+        with patch.object(drilldown, "list_objects", return_value=objects):
+            result = drilldown.list_instruments_for_shard(
+                service="instruments-service",
+                category="cefi",
+                venue="BINANCE",
+                day="2025-04-01",
+                instrument_type="perpetual",
+                data_type="instruments",
+            )
+        assert result["total_count"] == 3
+        assert result["has_more"] is False
+        assert result["bundling"] == "per_symbol"
+
+
+class TestIsValidInstrumentId:
+    def test_accepts_normal_ids(self):
+        assert drilldown._is_valid_instrument_id("BTC-USDT-PERP") is True
+        assert drilldown._is_valid_instrument_id("0xdeadbeef") is True
+        assert drilldown._is_valid_instrument_id("BTC/USD") is True
+
+    def test_rejects_empty_and_whitespace(self):
+        assert drilldown._is_valid_instrument_id("") is False
+        assert drilldown._is_valid_instrument_id("   ") is False
+        assert drilldown._is_valid_instrument_id("BTC USDT") is False
+        assert drilldown._is_valid_instrument_id("A,B") is False
+        assert drilldown._is_valid_instrument_id("A\nB") is False
+
+
+class TestPreviewBundleSymbols:
+    def test_returns_symbols_for_per_underlying(self):
+        objects = [
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=DERIBIT/"
+                "instrument_type=options_chain/data_type=trades/BTC.parquet"
+            ),
+        ]
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(
+                drilldown,
+                "_distinct_values_in_parquet",
+                return_value=[f"BTC-OPT-{i}" for i in range(50)],
+            ),
+        ):
+            result = drilldown.preview_bundle_symbols(
+                service="market-tick-data-service",
+                category="cefi",
+                venue="DERIBIT",
+                day="2025-04-01",
+                instrument_type="options_chain",
+                data_type="trades",
+                limit=5,
+            )
+        assert result["bundling"] == "per_underlying"
+        symbols = result["symbols"]
+        assert isinstance(symbols, list)
+        assert len(symbols) == 5
+        assert result["underlying"] == "BTC"
+
+    def test_non_bundled_returns_explanatory_message(self):
+        result = drilldown.preview_bundle_symbols(
+            service="market-tick-data-service",
+            category="cefi",
+            venue="BINANCE",
+            day="2025-04-01",
+            instrument_type="perpetual",
+            data_type="trades",
+        )
+        assert result["bundling"] == "per_symbol"
+        assert result["symbols"] == []
+        assert "Preview" in str(result["message"])
+
+
+class TestGetShardInfo:
+    def test_multi_type_recommends_first_named(self):
+        objects = [
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=DERIBIT/"
+                "instrument_type=options_chain/data_type=trades/BTC.parquet"
+            ),
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=DERIBIT/"
+                "instrument_type=perpetual/data_type=trades/BTC-PERP.parquet"
+            ),
+        ]
+        with patch.object(drilldown, "list_objects", return_value=objects):
+            result = drilldown.get_shard_info(
+                service="market-tick-data-service",
+                category="cefi",
+                venue="DERIBIT",
+                day="2025-04-01",
+                data_type="trades",
+            )
+        names = [t["name"] for t in result["instrument_types"]]
+        assert "options_chain" in names and "perpetual" in names
+        # Bundling hints propagated per type.
+        options_row = next(
+            t for t in result["instrument_types"] if t["name"] == "options_chain"
+        )
+        assert options_row["bundling"] == "per_underlying"
+        assert result["recommended_instrument_type"] in names
+
+    def test_polymarket_other_only_recommends_other(self):
+        objects = [
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=prediction/"
+                "venue=POLYMARKET/instrument_type=OTHER/"
+                "data_type=prediction_trades/ticks.parquet"
+            )
+        ]
+        with patch.object(drilldown, "list_objects", return_value=objects):
+            result = drilldown.get_shard_info(
+                service="market-tick-data-service",
+                category="prediction",
+                venue="POLYMARKET",
+                day="2025-04-01",
+                data_type="prediction_trades",
+            )
+        assert result["recommended_instrument_type"] == "OTHER"
+        assert result["instrument_types"][0]["bundling"] == "per_condition_id"
+
+    def test_empty_returns_none_recommended(self):
+        with patch.object(drilldown, "list_objects", return_value=[]):
+            result = drilldown.get_shard_info(
+                service="market-tick-data-service",
+                category="cefi",
+                venue="BINANCE",
+                day="2025-04-01",
+                data_type="trades",
+            )
+        assert result["instrument_types"] == []
+        assert result["recommended_instrument_type"] is None
+
+
+# ---------------------------------------------------------------------------
 # Bucket counts
 # ---------------------------------------------------------------------------
 
