@@ -638,28 +638,91 @@ async def get_bucket_counts(
     service: str = Query(..., description="Service name"),
     category: str = Query(..., description="Category"),
     venue: str = Query(..., description="Venue"),
-    day: str = Query(..., description="Day to sample (YYYY-MM-DD)"),
-    data_type: str = Query(..., description="Data type"),
+    day: str | None = Query(
+        None,
+        description=(
+            "Day to sample (YYYY-MM-DD). Optional — defaults to yesterday UTC "
+            "so the venue badge can render without the caller having to "
+            "resolve a specific day."
+        ),
+    ),
+    data_type: str | None = Query(
+        None,
+        description=(
+            "Data type. Optional — defaults to the first data_type registered "
+            "for the shard (INSTRUMENT_DEFINITION for instruments-service, "
+            "trades for market-tick-data-service, etc.)."
+        ),
+    ),
 ):
-    """Return named_market_count + other_market_count for a venue+day.
+    """Return named_market_count + other_market_count for a venue.
 
     ``named_market_count`` = distinct instrument_types under the venue that
     are not ``OTHER``. ``other_market_count`` = distinct symbol-column
     values inside the OTHER bundle parquet (conditionIds for Polymarket).
+
+    ``day`` and ``data_type`` are optional per the audit checklist Appendix B
+    so the badge renders per-venue, not per-day+type. When omitted the server
+    resolves sensible defaults (yesterday UTC; service-default data_type).
     """
     try:
-        return compute_bucket_counts(
+        resolved_day = day or _default_bucket_counts_day()
+        resolved_data_type = data_type or _default_data_type_for_service(service)
+        result = compute_bucket_counts(
             service=service,
             category=category,
             venue=venue,
-            day=day,
-            data_type=data_type,
+            day=resolved_day,
+            data_type=resolved_data_type,
         )
+        return {
+            **result,
+            "venue": venue,
+            "day": resolved_day,
+            "data_type": resolved_data_type,
+            "count": int(result.get("named_market_count", 0))
+            + int(result.get("other_market_count", 0)),
+        }
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_bucket_counts")
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
+
+
+def _default_bucket_counts_day() -> str:
+    """Return yesterday UTC as YYYY-MM-DD (the badge's default sample day)."""
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+# Per-service default data_type — used when the caller omits data_type on
+# /bucket-counts so the badge can render without forcing the UI to resolve
+# a shard-specific type up front.
+_DEFAULT_DATA_TYPE_BY_SERVICE: dict[str, str] = {
+    "instruments-service": "INSTRUMENT_DEFINITION",
+    "market-tick-data-service": "trades",
+    "market-tick-data-handler": "trades",
+    "market-data-processing-service": "trades",
+    "features-onchain-service": "onchain",
+    "features-sports-service": "sports",
+    "features-delta-one-service": "delta_one",
+    "features-volatility-service": "volatility",
+    "features-multi-timeframe-service": "multi_timeframe",
+    "features-cross-instrument-service": "cross_instrument",
+    "features-commodity-service": "commodity",
+    "features-calendar-service": "calendar",
+    "ml-training-service": "training",
+    "ml-inference-service": "inference",
+    "strategy-service": "strategy",
+    "execution-service": "execution",
+}
+
+
+def _default_data_type_for_service(service: str) -> str:
+    """Return the default data_type for a service when the caller omits it."""
+    return _DEFAULT_DATA_TYPE_BY_SERVICE.get(service, "trades")
 
 
 @router.get("/download-csv")

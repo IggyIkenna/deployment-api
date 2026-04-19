@@ -70,6 +70,45 @@ class TestGetSchemaForShard:
         assert result["source"] == "VENUE_CONTRACT_OVERRIDES"
         assert result["venue"] == "AAVE_V3"
 
+    def test_uppercase_defi_pool_resolves_uniswap_v3_override(self):
+        """Regression from audit 2026-04-19 §5.5 — UI sends uppercase
+        ``POOL`` / ``POOL_DEFINITION`` from the availability manifest but
+        UAC keys them as ``pool`` / ``dex_pool_state``. The endpoint now
+        normalises both to the canonical form so the Uniswap V3
+        ``pool_address`` override resolves."""
+        result = drilldown.get_schema_for_shard(
+            category="DEFI",
+            instrument_type="POOL",
+            data_type="POOL_DEFINITION",
+            venue="UNISWAP_V3",
+        )
+        assert result["registered"] is True
+        assert result["symbol_column"] == "pool_address"
+        assert result["source"] == "VENUE_CONTRACT_OVERRIDES"
+        assert result["venue"] == "UNISWAP_V3"
+
+    def test_uppercase_uniswap_v4_resolves_pool_id(self):
+        result = drilldown.get_schema_for_shard(
+            category="DEFI",
+            instrument_type="POOL",
+            data_type="POOL_DEFINITION",
+            venue="UNISWAP_V4",
+        )
+        assert result["registered"] is True
+        assert result["symbol_column"] == "pool_id"
+        assert result["source"] == "VENUE_CONTRACT_OVERRIDES"
+
+    def test_uppercase_data_type_alias_resolves(self):
+        # POOL_SNAPSHOT is a UI-level alias for dex_pool_state.
+        result = drilldown.get_schema_for_shard(
+            category="DEFI",
+            instrument_type="POOL",
+            data_type="POOL_SNAPSHOT",
+            venue="CURVE",
+        )
+        assert result["registered"] is True
+        assert result["symbol_column"] == "pool_address"
+
 
 # ---------------------------------------------------------------------------
 # Instruments for shard
@@ -498,9 +537,7 @@ class TestGetShardInfo:
         names = [t["name"] for t in result["instrument_types"]]
         assert "options_chain" in names and "perpetual" in names
         # Bundling hints propagated per type.
-        options_row = next(
-            t for t in result["instrument_types"] if t["name"] == "options_chain"
-        )
+        options_row = next(t for t in result["instrument_types"] if t["name"] == "options_chain")
         assert options_row["bundling"] == "per_underlying"
         assert result["recommended_instrument_type"] in names
 

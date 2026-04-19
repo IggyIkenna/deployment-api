@@ -856,6 +856,39 @@ class TestGetCoverageSummary:
 
         assert result["totals"]["shards"] == 0
 
+    @pytest.mark.asyncio
+    async def test_drops_legacy_defi_venue_aliases(self):
+        """Regression from audit 2026-04-19 §2.A.1b — legacy pre-canonicalisation
+        DeFi alias rows like ``venue='AAVEV3-ETHEREUM' chain=''`` were leaking into
+        the Instrument Coverage Summary widget despite the per-shard rollup fix in
+        22f0024/959bdab. Both paths now apply the same legacy-alias filter so the
+        widget matches the rollup."""
+        svc = _make_svc()
+        # Mix of canonical rows (AAVE_V3 + ETHEREUM) and legacy alias rows
+        # (AAVEV3-ETHEREUM + empty chain). The filter must keep the canonical
+        # ones and drop the legacy ones.
+        index = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-01", "2024-01-02"],
+                "venue": ["AAVE_V3", "AAVEV3-ETHEREUM", "AAVEV3-POLYGON"],
+                "chain": ["ETHEREUM", "", ""],
+                "service_name": [
+                    "instruments-service",
+                    "instruments-service",
+                    "instruments-service",
+                ],
+            }
+        )
+        with patch.object(_dss_mod, "_read_index_cached", return_value=index):
+            result = await svc.get_coverage_summary("instruments-service", categories=["DEFI"])
+
+        cat = result["categories"]["DEFI"]
+        # Only the canonical AAVE_V3 row should survive.
+        assert cat["unique_venues"] == 1
+        assert "AAVEV3-ETHEREUM" not in cat["latest_day_instruments"]
+        assert "AAVEV3-POLYGON" not in cat["latest_day_instruments"]
+        assert cat["total_shards"] == 1
+
 
 class TestGetManifestStatus:
     """Tests for DataStatusService.get_manifest_status."""

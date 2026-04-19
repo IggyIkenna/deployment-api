@@ -133,6 +133,43 @@ def _column_dicts(contract: SchemaContract) -> list[dict[str, object]]:
     ]
 
 
+# Known data_type / instrument_type aliases emitted by UI / manifest that
+# don't match the canonical UAC contract keys 1:1. Source:
+# deployment-ui-playwright-audit 2026-04-19 §5.5 — the UI can send
+# ``POOL_DEFINITION`` / ``POOL_SNAPSHOT`` / ``LIQUIDITY_POOL`` / ``POOL``
+# (uppercase) while UAC keys them as ``pool`` / ``dex_pool_state``.
+_INSTRUMENT_TYPE_ALIASES: dict[str, str] = {
+    "POOL": "pool",
+    "POOL_SNAPSHOT": "pool",
+    "LIQUIDITY_POOL": "pool",
+    "DEX_POOL": "dex_pool",
+}
+
+_DATA_TYPE_ALIASES: dict[str, str] = {
+    "POOL_DEFINITION": "dex_pool_state",
+    "INSTRUMENT_DEFINITION": "dex_pool_state",
+    "POOL_SNAPSHOT": "dex_pool_state",
+    "POOL_STATE": "dex_pool_state",
+    "POOL_SWAPS": "dex_pool_swaps",
+}
+
+
+def _normalise_instrument_type(raw: str) -> str:
+    """Return the UAC-canonical instrument_type for a UI-supplied value."""
+    if raw in _INSTRUMENT_TYPE_ALIASES:
+        return _INSTRUMENT_TYPE_ALIASES[raw]
+    # Registry keys are lowercase snake_case — lowercase all-caps inputs
+    # so ``POOL`` resolves even without an explicit alias.
+    return raw.lower() if raw.isupper() else raw
+
+
+def _normalise_data_type(raw: str) -> str:
+    """Return the UAC-canonical data_type for a UI-supplied value."""
+    if raw in _DATA_TYPE_ALIASES:
+        return _DATA_TYPE_ALIASES[raw]
+    return raw.lower() if raw.isupper() else raw
+
+
 def get_schema_for_shard(
     *,
     category: str,
@@ -147,20 +184,26 @@ def get_schema_for_shard(
     "no schema registered — running raw projection" affordance instead of
     raising.
     """
+    # Normalise UI inputs so the lookup hits the UAC registry keys
+    # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
+    # from the manifest; UAC keys those as ``pool`` / ``dex_pool_state``.
+    cat_norm = category.lower()
+    it_norm = _normalise_instrument_type(instrument_type)
+    dt_norm = _normalise_data_type(data_type)
     # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(
-            category=category.lower(),
-            instrument_type=instrument_type,
-            data_type=data_type,
+            category=cat_norm,
+            instrument_type=it_norm,
+            data_type=dt_norm,
             venue=venue,
         )
     except SchemaContractNotFoundError:
         return {
             "registered": False,
-            "category": category.lower(),
-            "instrument_type": instrument_type,
-            "data_type": data_type,
+            "category": cat_norm,
+            "instrument_type": it_norm,
+            "data_type": dt_norm,
             "venue": venue,
             "symbol_column": None,
             "source": "none",
@@ -174,7 +217,7 @@ def get_schema_for_shard(
     # Figure out whether we resolved via override or base registry.
     source = "CONTRACT_REGISTRY"
     if venue is not None:
-        override_key = (category.lower(), (venue or "").upper(), instrument_type, data_type)
+        override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
         if override_key in VENUE_CONTRACT_OVERRIDES:
             source = "VENUE_CONTRACT_OVERRIDES"
 
@@ -196,13 +239,62 @@ def get_schema_for_shard(
 # ---------------------------------------------------------------------------
 
 
+# Services that bundle every instrument for a (venue, day) pair into one
+# parquet. The drill-down reads the parquet itself to surface the
+# instrument_ids because the file layout carries no per-symbol partitioning.
+_PER_VENUE_DAY_BUNDLE_SERVICES: frozenset[str] = frozenset(
+    {"instruments-service", "corporate-actions"}
+)
+
+
+# Symbol column per service for the bundled-parquet case. instruments-service
+# stores the canonical identifier as ``instrument_key``.
+_SERVICE_BUNDLE_SYMBOL_COLUMN: dict[str, str] = {
+    "instruments-service": "instrument_key",
+    "corporate-actions": "instrument_key",
+}
+
+
 def _shard_prefix(
     service: str, category: str, venue: str, day: str, instrument_type: str, data_type: str
 ) -> str:
-    """Build the standard ``raw_tick_data/by_date/...`` partition prefix.
+    """Build the GCS prefix for a shard, routed by service.
 
-    Layout: ``by_date/day=<d>/category=<c>/venue=<v>/instrument_type=<it>/data_type=<dt>/``.
+    Different services use different bucket layouts — the drill-down must
+    route per service, otherwise clicks produce empty modals because the
+    prefix points at the wrong partition scheme.
+
+    * ``instruments-service`` / ``corporate-actions`` — one parquet per
+      ``(venue, day)`` under ``instrument_availability/by_date/``. No
+      ``instrument_type`` / ``data_type`` partitioning — those live as
+      columns inside the parquet. Sports additionally groups by league.
+    * ``market-tick-data-service`` / ``market-data-processing-service`` —
+      ``raw_tick_data/by_date/day=.../category=.../venue=.../instrument_type=<lower>/data_type=<lower>/``.
+      MTDS writes the ``instrument_type`` / ``data_type`` axis values in
+      lower case on disk (e.g. ``instrument_type=spot``), so we normalise
+      the UI's upper-case inputs before building the prefix.
+    * Other services fall back to the MTDS-shaped prefix. Features / ML /
+      strategy do not surface drill-down today so this is effectively the
+      previous behaviour.
     """
+    svc = service.lower()
+    if svc in _PER_VENUE_DAY_BUNDLE_SERVICES:
+        if category.lower() == "sports":
+            # Sports groups by league inside the per-day listing; the UI
+            # passes the league label through ``instrument_type`` because
+            # that is the axis the manifest uses upstream. A dedicated
+            # league kwarg can be added when the UI learns to send one.
+            league = instrument_type or ""
+            return f"instrument_availability/by_date/day={day}/league={league}/venue={venue}/"
+        return f"instrument_availability/by_date/day={day}/venue={venue}/"
+
+    if svc in {"market-tick-data-service", "market-data-processing-service"}:
+        return (
+            f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+            f"venue={venue}/instrument_type={instrument_type.lower()}/"
+            f"data_type={data_type.lower()}/"
+        )
+
     return (
         f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
         f"venue={venue}/instrument_type={instrument_type}/data_type={data_type}/"
@@ -257,7 +349,12 @@ def _collect_parquet_files(bucket: str, prefix: str) -> list[dict[str, object]]:
     return files
 
 
-def _bundling_mode(venue: str, instrument_type: str) -> str:
+def _bundling_mode(venue: str, instrument_type: str, service: str = "") -> str:
+    # instruments-service writes one bundled parquet per (venue, day) with
+    # every instrument as a row — independent of venue / instrument_type —
+    # so the whole service is a ``per_venue_day_bundle`` mode.
+    if service and service.lower() in _PER_VENUE_DAY_BUNDLE_SERVICES:
+        return "per_venue_day_bundle"
     if venue.upper() == "POLYMARKET" and instrument_type.upper() == "OTHER":
         return "per_condition_id"
     if _is_bundled(instrument_type):
@@ -304,6 +401,58 @@ def _expand_per_file(parquet_files: list[dict[str, object]]) -> list[dict[str, o
     ]
 
 
+def _expand_per_venue_day_bundle(
+    parquet_files: list[dict[str, object]],
+    service: str,
+    instrument_type: str,
+) -> list[dict[str, object]]:
+    """Expand a ``(venue, day)`` bundle (instruments-service style).
+
+    The parquet holds every instrument for the (venue, day) pair. Each row
+    becomes one drill-down entry; ``instrument_type`` (if provided by the
+    UI) filters the rows so the modal only shows e.g. ``SPOT_PAIR`` when
+    the user asked for spot instruments.
+    """
+    if not parquet_files:
+        return []
+    pf = parquet_files[0]
+    symbol_col = _SERVICE_BUNDLE_SYMBOL_COLUMN.get(service.lower(), "instrument_key")
+    uri = str(pf["file_uri"])
+    try:
+        df = _read_parquet_columns(uri, None)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Failed to read bundle parquet %s: %s", uri, exc)
+        return []
+
+    # Filter by instrument_type when the UI provided one. instruments-service
+    # stores it as a column in the same parquet, so the filter is a simple
+    # equality on the upper-cased value.
+    if instrument_type and "instrument_type" in df.columns:
+        requested_it = instrument_type.upper()
+        df = df[df["instrument_type"].astype(str).str.upper() == requested_it]
+
+    if symbol_col not in df.columns:
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, object]] = []
+    bundled_under = str(pf["_name"]).split("/")[-1]
+    for v in df[symbol_col].dropna().tolist():  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+        sid = str(v).strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        out.append(
+            {
+                "instrument_id": sid,
+                "file_uri": uri,
+                "size_bytes": pf["size_bytes"],
+                "bundled_under": bundled_under,
+            }
+        )
+    out.sort(key=lambda d: str(d["instrument_id"]))
+    return out
+
+
 # Backend default + cap for /instruments-for-shard pagination.
 DEFAULT_INSTRUMENT_LIMIT: int = 50
 MAX_INSTRUMENT_LIMIT: int = 500
@@ -329,10 +478,9 @@ def _is_valid_instrument_id(candidate: str) -> bool:
     # multi-ID lookups through the paste field.
     if any(ch.isspace() for ch in stripped):
         return False
-    if "," in stripped:
-        return False
-    # Everything else (dashes, slashes, 0x prefixes, conditionIds) passes.
-    return True
+    # Everything else (dashes, slashes, 0x prefixes, conditionIds) passes —
+    # except commas, which would sneak multi-ID lookups through the paste field.
+    return "," not in stripped
 
 
 def _apply_search_and_pagination(
@@ -355,9 +503,7 @@ def _apply_search_and_pagination(
     if search and bundling != "per_underlying":
         needle = search.strip().lower()
         filtered = [
-            inst
-            for inst in instruments
-            if needle in str(inst.get("instrument_id", "")).lower()
+            inst for inst in instruments if needle in str(inst.get("instrument_id", "")).lower()
         ][:MAX_SEARCH_RESULTS]
 
     total = len(filtered)
@@ -391,12 +537,14 @@ def _list_instruments_full(
     bucket = build_bucket_name(service, category, project_id)
     prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type)
     parquet_files = _collect_parquet_files(bucket, prefix)
-    bundling = _bundling_mode(venue, instrument_type)
+    bundling = _bundling_mode(venue, instrument_type, service)
 
     if bundling == "per_condition_id":
         instruments = _expand_per_condition_id(
             parquet_files, category, instrument_type, data_type, venue
         )
+    elif bundling == "per_venue_day_bundle":
+        instruments = _expand_per_venue_day_bundle(parquet_files, service, instrument_type)
     else:
         instruments = _expand_per_file(parquet_files)
 

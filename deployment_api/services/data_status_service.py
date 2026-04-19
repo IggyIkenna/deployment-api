@@ -782,6 +782,31 @@ class DataStatusService:
                 index = index.copy()
                 index["venue"] = index["venue"].replace(self._VENUE_ALIASES)
 
+            # Drop pre-canonicalisation DeFi venue-alias rows (e.g.
+            # ``venue='AAVEV3-ETHEREUM' chain=''``) so they don't leak into
+            # the Instrument Coverage Summary widget. Same filter used by
+            # ``_build_manifest_category`` for the per-shard rollup.
+            # DEFI-scoped only; CeFi hyphenated venues (BINANCE-FUTURES,
+            # OKX-SWAP) live under category='cefi' and are untouched.
+            if cat.lower() == "defi" and "venue" in index.columns and not index.empty:
+                chain_series = (
+                    index["chain"]
+                    if "chain" in index.columns
+                    else pd.Series([""] * len(index), index=index.index)
+                )
+                legacy_mask = [
+                    self._is_legacy_defi_venue_row(v, c)
+                    for v, c in zip(index["venue"].tolist(), chain_series.tolist(), strict=True)
+                ]
+                if any(legacy_mask):
+                    dropped = int(sum(legacy_mask))
+                    logger.debug(
+                        "coverage-summary: filtered %d legacy DeFi venue-alias rows from %s",
+                        dropped,
+                        cat,
+                    )
+                    index = index.loc[[not m for m in legacy_mask]].copy()
+
             shards = len(index)
             unique_dates = sorted(index["date"].unique()) if "date" in index.columns else []
             unique_venues_list = sorted(index["venue"].unique()) if "venue" in index.columns else []
@@ -866,6 +891,9 @@ class DataStatusService:
 
         venue_mapping = VenueMapping()
 
+        overall_shards_found = 0
+        overall_shards_expected = 0
+
         for cat in cat_list:
             cat_result = self._build_manifest_category(
                 service,
@@ -884,11 +912,33 @@ class DataStatusService:
             # (e.g. CURVE vs CURVE-ETHEREUM) would double-count.
             overall_found += int(cat_result.get("dates_found", 0))
             overall_expected += int(cat_result.get("dates_expected", 0))
+            overall_shards_found += int(cat_result.get("_venue_found", 0))
+            overall_shards_expected += int(cat_result.get("_venue_expected", 0))
             # Remove internal counters from output
             del cat_result["_venue_found"]
             del cat_result["_venue_expected"]
 
-        overall_pct = min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
+        overall_pct_dates = min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
+        overall_pct_shards = (
+            min(round(overall_shards_found / overall_shards_expected * 100, 2), 100.0)
+            if overall_shards_expected > 0
+            else overall_pct_dates
+        )
+        # Primary ``overall_completion_pct`` mirrors the per-category
+        # ``completion_pct`` (which is shards-weighted) so the overall and
+        # sub-rows use the same metric. Where no shards denominator exists we
+        # fall back to the date-based figure so the number is still meaningful.
+        overall_pct = overall_pct_shards
+        # Flag migrations in progress so the UI can explain a suspiciously-low
+        # overall number without the user having to cross-check running VMs.
+        # Heuristic: overall < 10% of shards expected AND a backfill/migration
+        # VM is currently running for this service. We keep this shallow —
+        # deeper VM introspection lives in the deployment-service API.
+        migration_in_progress = bool(
+            overall_shards_expected > 0
+            and overall_shards_found < (overall_shards_expected * 0.1)
+            and self._has_active_migration_vm(service)
+        )
 
         return {
             "service": service,
@@ -896,10 +946,54 @@ class DataStatusService:
             "mode": "turbo",
             "sub_dimension": "venue",
             "overall_completion_pct": overall_pct,
+            "overall_completion_pct_dates": overall_pct_dates,
+            "overall_completion_pct_shards_weighted": overall_pct_shards,
             "overall_dates_found": overall_found,
             "overall_dates_expected": overall_expected,
+            "overall_shards_found": overall_shards_found,
+            "overall_shards_expected": overall_shards_expected,
+            "migration_in_progress": migration_in_progress,
             "categories": result_categories,
         }
+
+    def _has_active_migration_vm(self, service: str) -> bool:
+        """Best-effort check whether a migration/backfill VM is running.
+
+        Uses the shared ``get_compute_engine_client`` facade the rest of
+        deployment-api uses. Failures return ``False`` — this is purely an
+        advisory flag for the UI, never a gate on completion math.
+        """
+        try:
+            from unified_trading_library.cloud_interface import get_compute_engine_client
+
+            svc_key = service.replace("-service", "").replace("market-data-processing", "mdps")
+            svc_key = svc_key.replace("market-tick-data", "mtds").lower()
+            ce = get_compute_engine_client(project_id=self.project_id)
+            # aggregatedList returns every zone — we only care about name +
+            # status. The API is dict-like on the .items() mapping; each
+            # zone bucket carries an ``instances`` list we walk once.
+            raw = ce.instances().aggregatedList(project=self.project_id).execute()  # type: ignore[attr-defined]
+            items: object = raw.get("items", {}) if isinstance(raw, dict) else {}
+            if not isinstance(items, dict):
+                return False
+            for zone_bucket in items.values():  # pyright: ignore[reportUnknownVariableType]
+                if not isinstance(zone_bucket, dict):
+                    continue
+                instances = zone_bucket.get("instances") or []
+                if not isinstance(instances, list):
+                    continue
+                for inst in instances:  # pyright: ignore[reportUnknownVariableType]
+                    if not isinstance(inst, dict):
+                        continue
+                    name = str(inst.get("name") or "").lower()
+                    status = str(inst.get("status") or "").upper()
+                    if status != "RUNNING":
+                        continue
+                    if svc_key in name and "backfill" in name:
+                        return True
+            return False
+        except (ImportError, OSError, RuntimeError, KeyError, AttributeError):
+            return False
 
     # Sports reference venues — fixture-dependent, not every-calendar-day expected.
     # Expected dates = dates where ANY sports reference entity has data (fixture calendar).
@@ -2448,6 +2542,15 @@ class DataStatusService:
             "dates_found": cat_found,
             "dates_expected": cat_total_days,
             "dates_missing": len(cat_missing),
+            # ``shards_*`` mirrors ``venue_dates_*`` under canonical names so
+            # the UI can render a consistent pair alongside the row-level
+            # ``completion_pct`` (which is the shards-weighted ratio — see
+            # `cat_pct = cat_pct_shards` above). Before this field existed
+            # the UI showed ``dates_found / dates_expected`` next to a
+            # shards-weighted ``completion_pct``, which looked wrong (e.g.
+            # ``1 / 2577`` = 0.04%, but the row displayed ``20%``).
+            "shards_found": venue_found_total,
+            "shards_expected": venue_expected_total,
             "completion_pct": cat_pct,
             "completion_pct_dates": cat_pct_dates,
             "completion_pct_shards_weighted": cat_pct_shards,
