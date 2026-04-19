@@ -8,6 +8,7 @@ missing shards calculation, and status aggregation.
 import asyncio
 import json
 import logging
+import re
 import sys
 import time
 from typing import ClassVar, cast
@@ -404,6 +405,66 @@ class DataStatusService:
         "OKX": "OKX-SPOT",
         "COINBASE": "COINBASE-SPOT",
     }
+
+    # ── Pre-canonicalisation DeFi venue aliases to drop from aggregation ──
+    # The DeFi availability indices contain BOTH post-migration canonical rows
+    # (``venue=AAVE_V3`` + ``chain=ETHEREUM``) AND pre-canonicalisation rows
+    # (``venue=AAVEV3-ETHEREUM`` + ``chain=""``) where the legacy format
+    # combined protocol and chain into a single ``venue`` field. The legacy
+    # rows inflate ``venue_dates_expected`` but have no matching shard data
+    # under canonical paths, which drives DEFI category completion from ~99%
+    # to ~40%.
+    #
+    # Deterministic filter, DEFI-scoped only:
+    #   (category == 'defi') AND (venue contains '-') AND (chain is NaN/'')
+    # → drop these rows from the aggregate.
+    #
+    # CeFi hyphenated venues (``BINANCE-FUTURES``, ``OKX-SWAP``, ...) live in
+    # category=='cefi' and are therefore untouched by this filter.
+    _DEFI_LEGACY_PROTOCOL_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "AAVE",
+        "UNISWAP",
+        "CURVE",
+        "LIDO",
+        "BALANCER",
+        "COMPOUND",
+        "SUSHISWAP",
+        "PANCAKESWAP",
+        "RAYDIUM",
+        "MAKER",
+        "YEARN",
+        "CONVEX",
+        "ROCKETPOOL",
+    )
+
+    @classmethod
+    def _is_legacy_defi_venue_row(cls, venue: object, chain: object) -> bool:
+        """Detect pre-canonicalisation DeFi venue alias row.
+
+        Legacy rows look like ``venue='AAVEV3-ETHEREUM' chain=''`` — the
+        protocol+chain pair was squashed into a single field before the
+        canonical migration. New canonical rows are
+        ``venue='AAVE_V3' chain='ETHEREUM'``.
+        """
+        if not isinstance(venue, str):
+            return False
+        if "-" not in venue:
+            return False
+        # Legacy format is uppercase letters/digits with an optional 'V<N>'
+        # segment, then a hyphen, then the chain name. We treat rows as
+        # legacy only when chain is empty/NaN AND the venue name starts
+        # with a known DeFi protocol prefix. This avoids matching
+        # fictional or CeFi-shaped hyphenated venues.
+        chain_str = "" if chain is None else str(chain).strip()
+        # ``pd.isna`` returns True for NaN but is not safe on arbitrary
+        # objects; guard with the string coercion above, then also allow
+        # the literal 'nan' produced by ``str(float('nan'))``.
+        if chain_str and chain_str.lower() != "nan":
+            return False
+        head = venue.split("-", 1)[0]
+        # Strip an optional ``V<digits>`` tail: AAVEV3 → AAVE, UNISWAPV2 → UNISWAP
+        root = re.sub(r"V\d+$", "", head)
+        return root in cls._DEFI_LEGACY_PROTOCOL_PREFIXES
 
     # ── Bucket resolution (mirrors deployment-service ManifestReader) ──
     _BUCKET_TEMPLATES: ClassVar[dict[str, str]] = {
@@ -2254,6 +2315,31 @@ class DataStatusService:
         if "venue" in filtered.columns and not filtered.empty:
             filtered["venue"] = filtered["venue"].replace(self._VENUE_ALIASES)
 
+        # Drop pre-canonicalisation DeFi venue-alias rows (e.g.
+        # ``venue='AAVEV3-ETHEREUM' chain=''``) so they don't inflate
+        # ``venue_dates_expected`` against canonical rows
+        # (``venue='AAVE_V3' chain='ETHEREUM'``). DEFI-scoped only —
+        # CeFi hyphenated venues (BINANCE-FUTURES, OKX-SWAP, ...) are
+        # in category=='cefi' and are not touched.
+        if cat.lower() == "defi" and not filtered.empty and "venue" in filtered.columns:
+            chain_series = (
+                filtered["chain"]
+                if "chain" in filtered.columns
+                else pd.Series([""] * len(filtered), index=filtered.index)
+            )
+            legacy_mask = [
+                self._is_legacy_defi_venue_row(v, c)
+                for v, c in zip(filtered["venue"].tolist(), chain_series.tolist(), strict=True)
+            ]
+            if any(legacy_mask):
+                dropped = int(sum(legacy_mask))
+                logger.debug(
+                    "Filtered %d legacy DeFi venue-alias rows (pre-canonicalisation) from %s",
+                    dropped,
+                    cat,
+                )
+                filtered = filtered.loc[[not m for m in legacy_mask]].copy()
+
         cat_found_dates = (
             {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
         )
@@ -2309,13 +2395,9 @@ class DataStatusService:
         # value. Where the shards denominator is zero (categories with
         # no per-bucket breakdown yet) we fall back to the date-based
         # figure so the number is still meaningful.
-        cat_pct_dates = min(
-            round(cat_found / max(1, cat_total_days) * 100, 2), 100.0
-        )
+        cat_pct_dates = min(round(cat_found / max(1, cat_total_days) * 100, 2), 100.0)
         if venue_expected_total > 0:
-            cat_pct_shards = min(
-                round(venue_found_total / venue_expected_total * 100, 2), 100.0
-            )
+            cat_pct_shards = min(round(venue_found_total / venue_expected_total * 100, 2), 100.0)
         else:
             cat_pct_shards = cat_pct_dates
         cat_pct = cat_pct_shards

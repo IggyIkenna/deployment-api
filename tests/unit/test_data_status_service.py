@@ -1134,12 +1134,8 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
                 "_build_venue_breakdown",
                 return_value=(venues, 17, 18),  # 17 found / 18 expected
             ),
-            patch.object(
-                svc, "_build_v4_sub_dimensions", return_value={}
-            ),
-            patch.object(
-                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
-            ),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-03-14"),
         ):
             vm = MagicMock()
             result = svc._build_manifest_category(
@@ -1172,12 +1168,12 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
                 ),
             ),
             patch.object(
-                svc, "_build_venue_breakdown", return_value=({}, 0, 0),
+                svc,
+                "_build_venue_breakdown",
+                return_value=({}, 0, 0),
             ),
             patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
-            patch.object(
-                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
-            ),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-03-14"),
         ):
             vm = MagicMock()
             result = svc._build_manifest_category(
@@ -1233,9 +1229,7 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
                 return_value=({"POLYMARKET-BTC": {"completion_pct": 100.0}}, 110, 100),
             ),
             patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
-            patch.object(
-                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
-            ),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-03-14"),
         ):
             vm = MagicMock()
             result = svc._build_manifest_category(
@@ -1272,9 +1266,7 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
                 return_value=({"POLYMARKET-BTC": {}}, 9, 10),
             ),
             patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
-            patch.object(
-                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
-            ),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-03-14"),
         ):
             vm = MagicMock()
             result = svc._build_manifest_category(
@@ -1291,3 +1283,156 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
         assert "completion_pct_shards_weighted" in result
         assert result["completion_pct_shards_weighted"] == round(9 / 10 * 100, 2)
         assert result["completion_pct_dates"] == 100.0
+
+
+class TestDefiLegacyVenueFilter:
+    """Filter pre-canonicalisation DeFi venue aliases from DEFI aggregate.
+
+    The DeFi availability indices contain BOTH:
+      - Legacy rows: ``venue='AAVEV3-ETHEREUM' chain=''`` (pre-migration)
+      - Canonical rows: ``venue='AAVE_V3' chain='ETHEREUM'`` (post-migration)
+
+    The legacy rows have no matching shard paths post-migration, so they
+    inflate ``venue_dates_expected`` without contributing found dates,
+    dragging DEFI completion from ~99% to ~40%. The filter drops legacy
+    rows before ``_build_venue_breakdown`` sees them.
+    """
+
+    def test_is_legacy_defi_venue_row_detects_canonical_patterns(self):
+        svc = _make_svc()
+        # Known legacy patterns — chain empty, venue is PROTOCOL[V<N>]-CHAIN
+        assert svc._is_legacy_defi_venue_row("AAVEV3-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("UNISWAPV2-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("UNISWAPV3-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("CURVE-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("LIDO-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("BALANCER-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("COMPOUND-ETHEREUM", None)
+        # NaN chain also counts as empty
+        assert svc._is_legacy_defi_venue_row("AAVEV3-POLYGON", float("nan"))
+
+    def test_is_legacy_defi_venue_row_skips_canonical_rows(self):
+        svc = _make_svc()
+        # Canonical rows always have a non-empty chain → never legacy
+        assert not svc._is_legacy_defi_venue_row("AAVE_V3", "ETHEREUM")
+        assert not svc._is_legacy_defi_venue_row("UNISWAP_V2", "ETHEREUM")
+        assert not svc._is_legacy_defi_venue_row("CURVE", "ETHEREUM")
+        assert not svc._is_legacy_defi_venue_row("LIDO", "ETHEREUM")
+
+    def test_is_legacy_defi_venue_row_skips_cefi_hyphenated_venues(self):
+        svc = _make_svc()
+        # CeFi venues are hyphenated too but protocol root doesn't match
+        # the DeFi whitelist → never legacy
+        assert not svc._is_legacy_defi_venue_row("BINANCE-FUTURES", "")
+        assert not svc._is_legacy_defi_venue_row("OKX-SWAP", "")
+        assert not svc._is_legacy_defi_venue_row("COINBASE-SPOT", "")
+        assert not svc._is_legacy_defi_venue_row("BINANCE-SPOT", "")
+
+    def test_is_legacy_defi_venue_row_skips_non_hyphenated(self):
+        svc = _make_svc()
+        assert not svc._is_legacy_defi_venue_row("AAVE_V3", "")
+        assert not svc._is_legacy_defi_venue_row("BINANCE", "")
+        assert not svc._is_legacy_defi_venue_row("", "")
+        assert not svc._is_legacy_defi_venue_row(None, "")
+
+    def test_defi_category_drops_legacy_rows_before_breakdown(self):
+        """End-to-end: manifest with mixed old+new DeFi rows → breakdown
+        only sees canonical rows."""
+        svc = _make_svc()
+        # Synthetic manifest: 2 canonical rows + 2 legacy alias rows.
+        # Canonical rows should flow to _build_venue_breakdown; legacy
+        # rows (empty chain, protocol-hyphenated venue) should be dropped.
+        mixed_df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-04-17",
+                    "2026-04-17",
+                    "2026-04-17",
+                    "2026-04-17",
+                ],
+                "venue": [
+                    "AAVE_V3",
+                    "UNISWAP_V2",
+                    "AAVEV3-ETHEREUM",
+                    "UNISWAPV2-ETHEREUM",
+                ],
+                "chain": ["ETHEREUM", "ETHEREUM", "", ""],
+                "service_name": ["instruments-service"] * 4,
+                "row_count": [100, 100, 100, 100],
+            }
+        )
+
+        captured_filtered_df: dict[str, pd.DataFrame] = {}
+
+        def _fake_breakdown(filtered_df, *args, **kwargs):
+            captured_filtered_df["df"] = filtered_df.copy()
+            # Pretend 2 found / 2 expected so DEFI completion is 100%
+            return ({"AAVE_V3": {}, "UNISWAP_V2": {}}, 2, 2)
+
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=mixed_df),
+            patch.object(svc, "_build_venue_breakdown", side_effect=_fake_breakdown),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2026-04-17"),
+        ):
+            vm = MagicMock()
+            result = svc._build_manifest_category(
+                service="instruments-service",
+                cat="DEFI",
+                start_date="2026-04-17",
+                end_date="2026-04-17",
+                all_date_strs=["2026-04-17"],
+                total_days=1,
+                venue_mapping=vm,
+            )
+
+        # Breakdown should have received only canonical rows (no legacy aliases).
+        seen = captured_filtered_df["df"]
+        venues_seen = set(seen["venue"].tolist())
+        assert "AAVEV3-ETHEREUM" not in venues_seen
+        assert "UNISWAPV2-ETHEREUM" not in venues_seen
+        assert "AAVE_V3" in venues_seen
+        assert "UNISWAP_V2" in venues_seen
+        # Category-level completion reflects only canonical rows (100%),
+        # not the inflated 2/4 = 50% that legacy rows would have produced.
+        assert result["completion_pct"] == 100.0
+
+    def test_cefi_category_keeps_hyphenated_venues(self):
+        """CeFi venues like BINANCE-FUTURES must NOT be dropped by the DeFi filter."""
+        svc = _make_svc()
+        cefi_df = pd.DataFrame(
+            {
+                "date": ["2026-04-17", "2026-04-17"],
+                "venue": ["BINANCE-FUTURES", "OKX-SWAP"],
+                "chain": ["", ""],
+                "service_name": ["instruments-service", "instruments-service"],
+                "row_count": [100, 100],
+            }
+        )
+
+        captured: dict[str, pd.DataFrame] = {}
+
+        def _fake_breakdown(filtered_df, *args, **kwargs):
+            captured["df"] = filtered_df.copy()
+            return ({"BINANCE-FUTURES": {}, "OKX-SWAP": {}}, 2, 2)
+
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=cefi_df),
+            patch.object(svc, "_build_venue_breakdown", side_effect=_fake_breakdown),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2026-04-17"),
+        ):
+            vm = MagicMock()
+            svc._build_manifest_category(
+                service="instruments-service",
+                cat="CEFI",
+                start_date="2026-04-17",
+                end_date="2026-04-17",
+                all_date_strs=["2026-04-17"],
+                total_days=1,
+                venue_mapping=vm,
+            )
+
+        seen_venues = set(captured["df"]["venue"].tolist())
+        assert "BINANCE-FUTURES" in seen_venues
+        assert "OKX-SWAP" in seen_venues
