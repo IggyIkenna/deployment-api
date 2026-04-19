@@ -1091,3 +1091,203 @@ class TestBuildUnderlyingGrouping:
         result = svc._build_underlying_grouping(df, "2024-01-01", "2024-01-01", vm)
         assert "BTC" in result
         assert sorted(result["BTC"]["instrument_types"]) == ["options", "perpetuals"]
+
+
+class TestBuildManifestCategoryShardsWeightedCompletion:
+    """_build_manifest_category exposes shards-weighted completion_pct.
+
+    Previously ``completion_pct`` was date-based (days with any data /
+    total days in range). That over-states the real coverage when a
+    handful of shards fill a date while most stay empty — Polymarket
+    header was showing 100% on days where 11/94 shards had data.
+
+    The new primary ``completion_pct`` is shards-weighted
+    (``venue_dates_found / venue_dates_expected``), matching the
+    sub-row math the user sees. ``completion_pct_dates`` remains for
+    backwards-compat.
+    """
+
+    def test_shards_weighted_replaces_dates_for_primary(self):
+        svc = _make_svc()
+        # Stub out the heavy dependencies and force a known
+        # venue_found_total / venue_expected_total split so we can
+        # exercise the new percentage math directly.
+        venues = {
+            "POLYMARKET-BTC": {"completion_pct": 100.0},
+            "POLYMARKET-TRUMP": {"completion_pct": 80.0},
+        }
+        with (
+            patch.object(
+                svc,
+                "_read_defi_merged_index",
+                return_value=pd.DataFrame(
+                    {
+                        "date": ["2025-03-14", "2025-03-14"],
+                        "venue": ["POLYMARKET", "POLYMARKET"],
+                        "service_name": ["instruments-service", "instruments-service"],
+                        "row_count": [100, 80],
+                    }
+                ),
+            ),
+            patch.object(
+                svc,
+                "_build_venue_breakdown",
+                return_value=(venues, 17, 18),  # 17 found / 18 expected
+            ),
+            patch.object(
+                svc, "_build_v4_sub_dimensions", return_value={}
+            ),
+            patch.object(
+                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
+            ),
+        ):
+            vm = MagicMock()
+            result = svc._build_manifest_category(
+                service="instruments-service",
+                cat="PREDICTION",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                all_date_strs=["2025-03-14"],
+                total_days=1,
+                venue_mapping=vm,
+            )
+        expected_shards_pct = round(17 / 18 * 100, 2)
+        assert result["completion_pct"] == expected_shards_pct
+        assert result["completion_pct_shards_weighted"] == expected_shards_pct
+        assert result["completion_pct_dates"] == 100.0
+
+    def test_falls_back_to_dates_when_no_shards_expected(self):
+        svc = _make_svc()
+        with (
+            patch.object(
+                svc,
+                "_read_defi_merged_index",
+                return_value=pd.DataFrame(
+                    {
+                        "date": ["2025-03-14"],
+                        "venue": ["POLYMARKET"],
+                        "service_name": ["instruments-service"],
+                        "row_count": [100],
+                    }
+                ),
+            ),
+            patch.object(
+                svc, "_build_venue_breakdown", return_value=({}, 0, 0),
+            ),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(
+                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
+            ),
+        ):
+            vm = MagicMock()
+            result = svc._build_manifest_category(
+                service="instruments-service",
+                cat="PREDICTION",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                all_date_strs=["2025-03-14"],
+                total_days=1,
+                venue_mapping=vm,
+            )
+        # venue_expected_total is 0 → shards-weighted falls back to
+        # the date-based figure (100% — the date had data).
+        assert result["completion_pct"] == 100.0
+        assert result["completion_pct_dates"] == 100.0
+        assert result["completion_pct_shards_weighted"] == 100.0
+
+    def test_empty_index_returns_zero(self):
+        svc = _make_svc()
+        with patch.object(svc, "_read_defi_merged_index", return_value=pd.DataFrame()):
+            vm = MagicMock()
+            result = svc._build_manifest_category(
+                service="instruments-service",
+                cat="PREDICTION",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                all_date_strs=["2025-03-14"],
+                total_days=1,
+                venue_mapping=vm,
+            )
+        assert result["completion_pct"] == 0.0
+
+    def test_shards_weighted_caps_at_100(self):
+        """Even if venue_found exceeds venue_expected (data drift),
+        completion_pct caps at 100."""
+        svc = _make_svc()
+        with (
+            patch.object(
+                svc,
+                "_read_defi_merged_index",
+                return_value=pd.DataFrame(
+                    {
+                        "date": ["2025-03-14"],
+                        "venue": ["POLYMARKET"],
+                        "service_name": ["instruments-service"],
+                        "row_count": [100],
+                    }
+                ),
+            ),
+            patch.object(
+                svc,
+                "_build_venue_breakdown",
+                return_value=({"POLYMARKET-BTC": {"completion_pct": 100.0}}, 110, 100),
+            ),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(
+                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
+            ),
+        ):
+            vm = MagicMock()
+            result = svc._build_manifest_category(
+                service="instruments-service",
+                cat="PREDICTION",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                all_date_strs=["2025-03-14"],
+                total_days=1,
+                venue_mapping=vm,
+            )
+        assert result["completion_pct"] == 100.0
+        assert result["completion_pct_shards_weighted"] == 100.0
+
+    def test_response_carries_both_variants(self):
+        """Both shards-weighted + date-based fields must be exposed for UI compat."""
+        svc = _make_svc()
+        with (
+            patch.object(
+                svc,
+                "_read_defi_merged_index",
+                return_value=pd.DataFrame(
+                    {
+                        "date": ["2025-03-14", "2025-03-15"],
+                        "venue": ["POLYMARKET", "POLYMARKET"],
+                        "service_name": ["instruments-service", "instruments-service"],
+                        "row_count": [100, 100],
+                    }
+                ),
+            ),
+            patch.object(
+                svc,
+                "_build_venue_breakdown",
+                return_value=({"POLYMARKET-BTC": {}}, 9, 10),
+            ),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(
+                _dss_mod, "get_effective_start_date", return_value="2025-03-14"
+            ),
+        ):
+            vm = MagicMock()
+            result = svc._build_manifest_category(
+                service="instruments-service",
+                cat="PREDICTION",
+                start_date="2025-03-14",
+                end_date="2025-03-15",
+                all_date_strs=["2025-03-14", "2025-03-15"],
+                total_days=2,
+                venue_mapping=vm,
+            )
+        assert "completion_pct" in result
+        assert "completion_pct_dates" in result
+        assert "completion_pct_shards_weighted" in result
+        assert result["completion_pct_shards_weighted"] == round(9 / 10 * 100, 2)
+        assert result["completion_pct_dates"] == 100.0

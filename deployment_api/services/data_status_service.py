@@ -2293,13 +2293,32 @@ class DataStatusService:
                 dt_filtered, effective_start, end_date, cat
             )
 
-        # Category-level completion is date-based (was ANY data available on
-        # each date in the clamped range?). Venue-weighted totals remain on
-        # the response for per-venue UI rendering but are NOT used for the
-        # category aggregate — venue-weighted over-counts aliased/placeholder
-        # venue names (e.g. CURVE vs CURVE-ETHEREUM) and drags the category
-        # number well below the true per-shard coverage shown in sub-rows.
-        cat_pct = min(round(cat_found / max(1, cat_total_days) * 100, 2), 100.0)
+        # Category-level completion, two variants exposed for the UI:
+        #
+        #   * ``completion_pct_dates`` — fraction of dates in the clamped
+        #     range that had ANY data. Over-states the real coverage when
+        #     a single venue fills a date but most shards stay empty.
+        #   * ``completion_pct_shards_weighted`` — fraction of expected
+        #     shard-days present (per_bucket.dates_found / per_bucket.dates_expected
+        #     rolled up across every per-bucket breakdown). Matches the
+        #     shard-level math the user sees in the sub-rows
+        #     (e.g. Polymarket header shows 94.4% = what the sub-row
+        #     completion averages to, not 100%).
+        #
+        # ``completion_pct`` — primary metric — is the shards-weighted
+        # value. Where the shards denominator is zero (categories with
+        # no per-bucket breakdown yet) we fall back to the date-based
+        # figure so the number is still meaningful.
+        cat_pct_dates = min(
+            round(cat_found / max(1, cat_total_days) * 100, 2), 100.0
+        )
+        if venue_expected_total > 0:
+            cat_pct_shards = min(
+                round(venue_found_total / venue_expected_total * 100, 2), 100.0
+            )
+        else:
+            cat_pct_shards = cat_pct_dates
+        cat_pct = cat_pct_shards
 
         # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
         sub_dims = self._build_v4_sub_dimensions(
@@ -2322,6 +2341,8 @@ class DataStatusService:
             "dates_expected": cat_total_days,
             "dates_missing": len(cat_missing),
             "completion_pct": cat_pct,
+            "completion_pct_dates": cat_pct_dates,
+            "completion_pct_shards_weighted": cat_pct_shards,
             "venue_weighted": bool(venues_dict),
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,
