@@ -23,6 +23,8 @@ from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import is_in_tradfi_tick_window
 from unified_api_contracts.sports import (
     get_entity_league_coverage,
+    get_expected_leagues_for_source,
+    get_league_fixture_calendar,
     get_sports_entity_start_date,
     get_transfer_windows_for_year,
 )
@@ -54,6 +56,314 @@ COVERAGE_SEMANTICS: dict[str, Literal["dense", "event_driven"]] = {
     "SPORTS": "event_driven",
     "PREDICTION": "event_driven",
 }
+
+
+# Coverage axes supported by SPORTS data-status aggregation. Each data_type
+# maps to exactly one axis via ``SPORTS_DATA_TYPE_META``.
+#
+# - ``per_league_per_fixture_date``: one expected shard per (league, fixture-
+#   date). Numerator/denominator both count distinct (league, date) pairs.
+#   Honest-coverage: expected = sum over expected_leagues of
+#   len(get_league_fixture_calendar(l, start, end)).
+# - ``per_league_periodic``: one expected shard per (league, cadence-date)
+#   inside each league's active season (weekly standings refresh, etc).
+# - ``global_periodic``: one expected shard per cadence-date (daily
+#   reference-list snapshot). No league axis.
+# - ``global_season``: one expected shard per season (venues list, etc).
+SportsAxis = Literal[
+    "per_league_per_fixture_date",
+    "per_league_periodic",
+    "global_periodic",
+    "global_season",
+]
+
+
+# Canonical per-data_type metadata — mirrors
+# ``codex/02-data/sports-data-source-coverage-matrix.md`` (§2).
+#
+# For every SPORTS data_type that lands in the availability manifest:
+#   - ``source``: data_sources key (``api_football``, ``footystats``, …)
+#   - ``classifications``: league classifications the source covers
+#   - ``axis``: coverage axis (see SportsAxis above)
+#   - ``cadence_days``: only for ``per_league_periodic`` / ``global_periodic``
+#     axes — dates are grid-sampled at this cadence inside the window.
+#   - ``unit``: display unit for the response (fixture_dates / cadence_refreshes
+#     / season_snapshots / daily_snapshots).
+#
+# Adding a new SPORTS data_type: update this map AND the codex SSOT in the same
+# commit (see codex-first feedback rule).
+SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
+    # API-Football — 95 leagues (Prediction 33 + Features 22 + Reference 40)
+    "FIXTURES": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "FIXTURE_EVENTS": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "FIXTURE_LINEUPS": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "FIXTURE_STATS": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "PLAYER_STATS": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "INJURIES": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_periodic",
+        "cadence_days": 1,
+        "unit": "daily_snapshots",
+    },
+    "STANDINGS": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "per_league_periodic",
+        "cadence_days": 7,
+        "unit": "cadence_refreshes",
+    },
+    "LEAGUES": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "global_periodic",
+        "cadence_days": 1,
+        "unit": "daily_snapshots",
+    },
+    "TEAMS": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "global_periodic",
+        "cadence_days": 1,
+        "unit": "daily_snapshots",
+    },
+    "VENUES": {
+        "source": "api_football",
+        "classifications": ("Prediction", "Features", "Reference"),
+        "axis": "global_season",
+        "unit": "season_snapshots",
+    },
+    # FootyStats — 46 leagues (Prediction 28 + Features 18; no Reference)
+    "MATCHES": {
+        "source": "footystats",
+        "classifications": ("Prediction", "Features"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "PREDICTIONS": {
+        "source": "footystats",
+        "classifications": ("Prediction", "Features"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    # ODDS merges odds_api live + footystats backfill — use footystats (46)
+    # as denominator since backfill is the dominant source on disk today.
+    # See codex SSOT §4 for the open question on splitting ODDS_LIVE / ODDS_HIST.
+    "ODDS": {
+        "source": "footystats",
+        "classifications": ("Prediction", "Features"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    # Understat — 5 Prediction leagues
+    "XG": {
+        "source": "understat",
+        "classifications": ("Prediction",),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    # Transfermarkt — 55 leagues (Prediction 33 + Features 22)
+    "PLAYER_VALUES": {
+        "source": "transfermarkt",
+        "classifications": ("Prediction", "Features"),
+        "axis": "per_league_periodic",
+        "cadence_days": 7,
+        "unit": "cadence_refreshes",
+    },
+    "TRANSFERMARKT_LEAGUES": {
+        "source": "transfermarkt",
+        "classifications": ("Prediction", "Features"),
+        "axis": "per_league_periodic",
+        "cadence_days": 7,
+        "unit": "cadence_refreshes",
+    },
+    # Soccer-Football-Info (SFI) — 33 Prediction leagues
+    "SFI_LEAGUES": {
+        "source": "soccer_football_info",
+        "classifications": ("Prediction",),
+        "axis": "per_league_periodic",
+        "cadence_days": 7,
+        "unit": "cadence_refreshes",
+    },
+    "SFI_STANDINGS": {
+        "source": "soccer_football_info",
+        "classifications": ("Prediction",),
+        "axis": "per_league_periodic",
+        "cadence_days": 7,
+        "unit": "cadence_refreshes",
+    },
+    "SFI_PROGRESSIVE_STATS": {
+        "source": "soccer_football_info",
+        "classifications": ("Prediction",),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    # Open-Meteo weather — 33 Prediction leagues (scoped to fixture dates)
+    "WEATHER": {
+        "source": "open_meteo",
+        "classifications": ("Prediction",),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+}
+
+
+def _sports_expected_dates_for_league(
+    league_id: str,
+    axis: str,
+    cadence_days: int,
+    start_date: str,
+    end_date: str,
+) -> list[str]:
+    """Expected capture dates for one league on a given axis.
+
+    - ``per_league_per_fixture_date`` → active-season dates via
+      ``get_league_fixture_calendar`` (off-season excluded).
+    - ``per_league_periodic`` → active-season dates sampled every
+      ``cadence_days`` (cadence=1 gives daily active-season; cadence=7
+      gives weekly refreshes).
+    """
+    season_dates = get_league_fixture_calendar(league_id, start_date, end_date)
+    if axis == "per_league_per_fixture_date" or cadence_days <= 1:
+        return season_dates
+    return season_dates[::cadence_days]
+
+
+def _sports_honest_coverage(
+    filtered: pd.DataFrame,
+    entity_name: str,
+    start_date: str,
+    end_date: str,
+) -> dict[str, object] | None:
+    """Return honest-coverage stats for a SPORTS data_type using the SSOT meta.
+
+    Uses ``SPORTS_DATA_TYPE_META`` + UAC ``get_expected_leagues_for_source``
+    + ``get_league_fixture_calendar`` to compute:
+
+      - ``expected_shards`` = len(expected_leagues) * len(expected_dates_per_league)
+        (or len(expected_dates) for global axes).
+      - ``found_shards`` — distinct (league_id, date) pairs with
+        ``capture_status in {captured, empty_confirmed}``. v4 rows without a
+        ``capture_status`` column are treated as ``captured``.
+      - ``missing_shards`` — per-league date-sets missing from the manifest
+        (for UI drill-down).
+
+    Returns ``None`` if the entity isn't in the SSOT map (caller falls back
+    to the legacy date-count model).
+    """
+    meta = SPORTS_DATA_TYPE_META.get(entity_name)
+    if meta is None:
+        return None
+
+    axis = str(meta["axis"])
+    cadence_days = int(meta.get("cadence_days") or 1)
+    source_key = str(meta["source"])
+    classifications = tuple(cast(tuple[str, ...], meta["classifications"]))
+
+    expected_leagues = get_expected_leagues_for_source(
+        source_key, classifications=list(classifications)
+    )
+
+    # ``capture_status in {captured, empty_confirmed}`` = this shard was
+    # attempted and either had data or was legitimately empty. v4 rows
+    # without capture_status are implicit ``captured`` (existence of row = success).
+    if "capture_status" in filtered.columns:
+        ok_mask = (
+            filtered["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
+        )
+    else:
+        ok_mask = pd.Series([True] * len(filtered), index=filtered.index)
+    ent_mask = filtered["data_type"] == entity_name
+    ent_rows = filtered[ent_mask & ok_mask]
+
+    if axis in ("global_periodic", "global_season"):
+        # No league axis — expected = number of cadence-dates in window
+        try:
+            date_range = pd.date_range(start_date, end_date, freq="D")
+        except ValueError:
+            date_range = pd.DatetimeIndex([])
+        if axis == "global_season":
+            expected_dates = 1
+        else:
+            expected_dates = max(1, len(date_range) // max(1, cadence_days))
+        found_dates = len({str(d) for d in ent_rows["date"].unique()}) if not ent_rows.empty else 0
+        return {
+            "axis": axis,
+            "unit": str(meta["unit"]),
+            "source": source_key,
+            "expected_leagues": [],
+            "found_shards": min(found_dates, expected_dates),
+            "expected_shards": expected_dates,
+            "per_league": None,
+        }
+
+    # per_league_per_fixture_date / per_league_periodic
+    per_league: dict[str, dict[str, object]] = {}
+    total_expected = 0
+    total_found = 0
+    if "league_id" in ent_rows.columns:
+        ent_rows_by_league = ent_rows.groupby(ent_rows["league_id"].fillna(""))
+    else:
+        ent_rows_by_league = None
+
+    for league in expected_leagues:
+        lid = league.league_id
+        expected_dates_for_l = _sports_expected_dates_for_league(
+            lid, axis, cadence_days, start_date, end_date
+        )
+        if not expected_dates_for_l:
+            continue
+        expected_set = set(expected_dates_for_l)
+        found_set: set[str] = set()
+        if ent_rows_by_league is not None and lid in ent_rows_by_league.groups:
+            found_set = {str(d) for d in ent_rows_by_league.get_group(lid)["date"].unique()}
+        covered = expected_set & found_set
+        per_league[lid] = {
+            "found_shards": len(covered),
+            "expected_shards": len(expected_set),
+            "missing_shards": len(expected_set - found_set),
+            "completion_pct": round(len(covered) / max(1, len(expected_set)) * 100, 2),
+            "unit": str(meta["unit"]),
+            "missing_dates": sorted(expected_set - found_set)[:50],
+            "found_dates_list": sorted(covered)[:50],
+        }
+        total_expected += len(expected_set)
+        total_found += len(covered)
+
+    return {
+        "axis": axis,
+        "unit": str(meta["unit"]),
+        "source": source_key,
+        "expected_leagues": [lg.league_id for lg in expected_leagues],
+        "found_shards": total_found,
+        "expected_shards": total_expected,
+        "per_league": per_league,
+    }
 
 
 def _distinct_pairs(df: pd.DataFrame, col_a: str, col_b: str) -> int:
@@ -2567,24 +2877,56 @@ class DataStatusService:
         start_date: str,
         end_date: str,
     ) -> dict[str, object]:
-        """Build a fixture-based entry for a single sports entity (data_type).
+        """Build a honest-coverage entry for a single sports data_type.
 
-        For FIXTURES: found = sum of instrument_count across all leagues.
-            Expected = same (FIXTURES is the ground truth).
-        For other entities: found = sum of this entity's instrument_count.
-            Expected = total FIXTURES instrument_count (how many fixtures
-            exist = how many we should have data for).
+        SSOT: ``codex/02-data/sports-data-source-coverage-matrix.md``.
+
+        Preferred path — ``_sports_honest_coverage`` uses
+        ``SPORTS_DATA_TYPE_META`` to resolve the expected league set via UAC
+        ``get_expected_leagues_for_source`` and the expected dates via
+        ``get_league_fixture_calendar``. Numerator/denominator are both
+        shard counts (distinct ``(league, date)`` pairs) — no cross-entity
+        row-count comparison.
+
+        Legacy path (when the entity is not in the SSOT map) falls back to
+        the pre-2026-04-20 fixture-row-count model. Only kicks in for
+        unrecognised data_types; adding a new SPORTS data_type should extend
+        ``SPORTS_DATA_TYPE_META`` in the same commit as the adapter.
         """
+        honest = _sports_honest_coverage(full_filtered, entity_name, start_date, end_date)
+        if honest is not None:
+            expected_shards = int(cast(int, honest["expected_shards"]))
+            found_shards = int(cast(int, honest["found_shards"]))
+            completion = round(found_shards / max(1, expected_shards) * 100, 2)
+            dt_entry: dict[str, object] = {
+                # Canonical honest-coverage fields
+                "found_shards": found_shards,
+                "expected_shards": expected_shards,
+                "missing_shards": max(0, expected_shards - found_shards),
+                "completion_pct": min(completion, 100.0),
+                "unit": str(honest["unit"]),
+                "axis": str(honest["axis"]),
+                "source": str(honest["source"]),
+                "expected_leagues": honest["expected_leagues"],
+                # Legacy aliases — kept for UI/tests that haven't migrated yet.
+                # Will be removed once deployment-ui DataStatusTab reads
+                # ``found_shards`` / ``expected_shards`` directly.
+                "dates_found": found_shards,
+                "dates_expected": expected_shards,
+                "dates_expected_venue": expected_shards,
+                "dates_missing": max(0, expected_shards - found_shards),
+            }
+            per_league = honest["per_league"]
+            if per_league:
+                dt_entry["leagues"] = per_league
+            return dt_entry
+
+        # Legacy fallback for entities not yet in the SSOT map. Retained
+        # unchanged to avoid regressions for adapters we haven't catalogued.
         is_fixtures = entity_name == "FIXTURES"
         has_league = "league_id" in dt_df.columns
-
-        # Entity-level fixture counts
         entity_fixture_count = int(dt_df["instrument_count"].sum()) if not dt_df.empty else 0
-
-        # League-aware expected for entities with partial coverage (e.g. XG = 6 leagues)
         _entity_coverage = get_entity_league_coverage(entity_name)
-
-        # Provider start-date clamping (excludes pre-start fixtures from expected)
         if is_fixtures:
             eff_fixtures_by_league = fixtures_by_league
             eff_total_fixture_count = total_fixture_count
@@ -2592,24 +2934,18 @@ class DataStatusService:
             eff_fixtures_by_league, eff_total_fixture_count = self._clamp_fixtures_to_entity_start(
                 entity_name, full_filtered, fixtures_by_league, total_fixture_count
             )
-
         if is_fixtures:
-            # FIXTURES is the ground truth — expected = found
             dt_found = entity_fixture_count
             dt_expected = entity_fixture_count
         elif _entity_coverage is not None and eff_fixtures_by_league:
-            # Entity covers specific leagues only — expected = fixture count
-            # for just those leagues
             dt_found = entity_fixture_count
             dt_expected = sum(eff_fixtures_by_league.get(lid, 0) for lid in _entity_coverage)
         else:
-            # General entity — expected = total fixture count
             dt_found = entity_fixture_count
             dt_expected = (
                 eff_total_fixture_count if eff_total_fixture_count > 0 else entity_fixture_count
             )
-
-        dt_entry: dict[str, object] = {
+        dt_entry = {
             "dates_found": dt_found,
             "dates_expected": dt_expected,
             "dates_expected_venue": dt_expected,
@@ -2617,8 +2953,6 @@ class DataStatusService:
             "completion_pct": min(round(dt_found / max(1, dt_expected) * 100, 2), 100.0),
             "unit": "fixtures",
         }
-
-        # Per-league breakdown
         if has_league:
             has_league_data = dt_df["league_id"].fillna("").str.len().sum() > 0
             if has_league_data:
@@ -2633,7 +2967,6 @@ class DataStatusService:
                 )
                 if league_breakdown:
                     dt_entry["leagues"] = league_breakdown
-
         return dt_entry
 
     def _build_v4_sub_dimensions(
@@ -2888,6 +3221,14 @@ class DataStatusService:
         # filter and drill-down tooltip can scope to shards with failures
         # without walking the full venues_dict tree on the client.
         failure_rate_by_dimension = _build_failure_rate_by_dimension(venues_dict)
+
+        # Axis discriminator: tells consumers which breakdown key holds the
+        # drilldown. For SPORTS (and any other category where venue is empty
+        # and data_type is the real axis) the drilldown is under
+        # ``data_types``; for CEFI / TRADFI / DEFI / PREDICTION where venues
+        # are real bookmakers / exchanges the drilldown is under ``venues``.
+        # SSOT: codex/02-data/sports-data-source-coverage-matrix.md §3.
+        breakdown_axis = "data_type" if cat.upper() == "SPORTS" else "venue"
         result: dict[str, object] = {
             "category": cat,
             "bucket": bucket,
@@ -2921,7 +3262,15 @@ class DataStatusService:
             "missing_dates": cat_missing,
             "dates_found_list": cat_found_sorted,
             "dates_missing_list": cat_missing,
-            "venues": venues_dict,
+            # Axis-aware breakdown: SPORTS drilldown is by data_type (no real
+            # venues); other categories keep the existing ``venues`` shape.
+            # UI reads ``breakdown_axis`` to pick the right key. ``venues``
+            # stays populated (even if empty) for consumers that haven't
+            # migrated yet — the aggregator only writes data under ONE of
+            # ``venues`` or ``data_types`` depending on axis.
+            "breakdown_axis": breakdown_axis,
+            "venues": {} if breakdown_axis == "data_type" else venues_dict,
+            "data_types": venues_dict if breakdown_axis == "data_type" else {},
             "failure_rate_by_dimension": failure_rate_by_dimension,
             "_venue_found": venue_found_total,
             "_venue_expected": venue_expected_total,
