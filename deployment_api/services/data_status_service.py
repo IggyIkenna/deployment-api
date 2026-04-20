@@ -2160,6 +2160,39 @@ class DataStatusService:
                 remapped[canonical] = entry
             venues_dict = remapped
 
+            # DEFI manifest rows typically carry ``data_type=""`` — the real
+            # data_type is encoded in the sub-dimension bucket name that
+            # ``_read_defi_merged_index`` tags into ``_defi_source``. For the
+            # per-(venue, data_type) honest-coverage filter to land hits,
+            # backfill the data_type column from _defi_source when blank.
+            # Mapping uses hyphenated sub-dim keys -> manifest underscore form
+            # (dex-swaps -> dex_swaps, lending-indices -> lending_indices, ...).
+            # Fix for Phase 6e.1b.
+            if "data_type" in filtered.columns and "_defi_source" in filtered.columns:
+                _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
+                    "dex-swaps": "dex_swaps",
+                    "dex-pools": "dex_pools",
+                    "lending-indices": "lending_indices",
+                    "lst-rates": "lst_rates",
+                    "oracle-prices": "oracle_prices",
+                    "liquidations": "liquidations",
+                    "perp-funding": "perp_funding",
+                    "gas-fees": "gas_fees",
+                    "evm-defi": "",
+                    "solana-defi": "",
+                    "": "",
+                }
+                blank_dt = filtered["data_type"].fillna("").astype(str).str.len() == 0
+                if blank_dt.any() and "_defi_source" in filtered.columns:
+                    inferred = (
+                        filtered["_defi_source"]
+                        .fillna("")
+                        .astype(str)
+                        .map(_DEFI_SOURCE_TO_DATA_TYPE)
+                        .fillna("")
+                    )
+                    filtered.loc[blank_dt, "data_type"] = inferred[blank_dt]
+
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
         # _build_venue_breakdown).
