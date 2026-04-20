@@ -23,6 +23,10 @@ from deployment_api.services.data_status_drilldown import (
     list_instruments_for_shard,
     preview_bundle_symbols,
 )
+from deployment_api.services.data_status_mock import (
+    build_mock_shard_instruments,
+    build_mock_turbo_response,
+)
 
 _cfg = DeploymentApiConfig()
 
@@ -167,17 +171,17 @@ async def get_data_status_manifest(
 ):
     """Get data status from manifest availability indices (fastest path)."""
     if _cfg.is_mock_mode():
-        return {
-            "service": service,
-            "date_range": {"start": start_date, "end": end_date, "days": 0},
-            "mode": "turbo",
-            "sub_dimension": "venue",
-            "overall_completion_pct": 0.0,
-            "overall_dates_found": 0,
-            "overall_dates_expected": 0,
-            "categories": {},
-            "mock": True,
-        }
+        # Phase-C honest-coverage: return a realistic v5-shaped payload so
+        # the UI's Category Breakdown, 4-state heatmap, "Show only
+        # failures" filter, and drill-down retry button all render in
+        # local dev. Without this the mock response was ``categories: {}``
+        # and none of the new surfaces were reachable via Playwright.
+        return build_mock_turbo_response(
+            service=service,
+            start_date=start_date,
+            end_date=end_date,
+            categories=category,
+        )
     try:
         result = await data_status_service.get_manifest_status(
             service=service,
@@ -244,15 +248,19 @@ async def get_data_status_turbo(
 ):
     """Get data status with turbo mode caching (5-minute cache TTL)."""
     if _cfg.is_mock_mode():
-        sources: list[dict[str, object]] = []
-        return {
-            "status": "ok",
-            "service": service,
-            "start_date": start_date,
-            "end_date": end_date,
-            "sources": sources,
-            "mock": True,
-        }
+        # Same v5-shaped mock as /manifest — keeps the Phase-C UI surfaces
+        # (capture_status_counts, failure_rate_by_dimension, attempt vs
+        # capture split) identically reachable whether the UI prefers
+        # /turbo or /manifest. Ignores venue/include_* filters in mock —
+        # the seed data is enough to drive every UI flow.
+        _ = (include_sub_dimensions, include_instrument_types, include_file_counts)
+        _ = (include_dates_list, venue)
+        return build_mock_turbo_response(
+            service=service,
+            start_date=start_date,
+            end_date=end_date,
+            categories=category,
+        )
     try:
         # Use manifest reader directly (faster, no CLI subprocess,
         # returns league breakdowns for sports venues).
@@ -580,6 +588,20 @@ async def get_instruments_for_shard(
     ``total_count`` always reflects the post-search, pre-pagination count
     so the UI can decide whether to show "Load more" / paginator.
     """
+    if _cfg.is_mock_mode():
+        # Phase-C: return three mock instruments (captured / empty /
+        # failed) so the drill-down modal has every capture_status badge
+        # on screen and the Retry button on the attempted_failed row is
+        # exercised against the mock retryFailedShard round-trip.
+        _ = (limit, offset, search)
+        return build_mock_shard_instruments(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            instrument_type=instrument_type,
+            data_type=data_type,
+        )
     try:
         return list_instruments_for_shard(
             service=service,
