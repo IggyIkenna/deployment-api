@@ -2130,18 +2130,46 @@ class DataStatusService:
           - returns the new aggregate ``(venue_found_total, venue_expected_total)``
         """
         expected_venues = _mtds_expected_venues(category, venue_mapping)
-        # Start from the existing dict (preserves instrument_types / chains /
-        # capture_status_counts sub-structures built by _build_venue_breakdown).
+
+        # DEFI legacy-name normalisation (Phase 6e.1). Manifest rows written
+        # before the 2026-04 PROTOCOL-CHAIN migration carry names like
+        # ``AAVE_V3`` / ``UNISWAP_V2`` / ``CURVE`` / ``LIDO``. UAC's
+        # ``all_defi_venues`` uses the canonical ``AAVEV3-ETHEREUM`` form.
+        # Without normalisation the per-venue filter misses every legacy row
+        # and DEFI honest coverage reads 0%.
+        #
+        # Apply ``VenueMapping.normalize_defi_venue`` to the manifest venue
+        # column + to the venues_dict keys. Downstream per-venue matching
+        # then lines up regardless of which form landed on disk. SSOT:
+        # codex/02-data/mtds-data-source-coverage-matrix.md §4.
+        if category.upper() == "DEFI" and not filtered.empty and "venue" in filtered.columns:
+            chain_col = filtered["chain"] if "chain" in filtered.columns else None
+            def _norm(row_idx: int) -> str:
+                raw = str(filtered.iloc[row_idx]["venue"])
+                chain = str(chain_col.iloc[row_idx]) if chain_col is not None else None
+                return venue_mapping.normalize_defi_venue(raw, chain=chain or None)
+            filtered = filtered.copy()
+            filtered["venue"] = [
+                _norm(i) for i in range(len(filtered))
+            ]
+            # Also normalise venues_dict keys — existing entries keyed on
+            # legacy ``AAVE_V3`` get merged into canonical ``AAVEV3-ETHEREUM``.
+            remapped: dict[str, object] = {}
+            for raw_key, entry in venues_dict.items():
+                canonical = venue_mapping.normalize_defi_venue(str(raw_key))
+                remapped[canonical] = entry
+            venues_dict = remapped
+
+        # Start from the (possibly remapped) dict (preserves instrument_types /
+        # chains / capture_status_counts sub-structures built by
+        # _build_venue_breakdown).
         new_venues: dict[str, object] = dict(venues_dict)
         total_found = 0
         total_expected = 0
 
-        # Build the union of (a) venues in the manifest, (b) UAC-declared
-        # venues. UAC-declared venues not in manifest get a zero-row entry.
-        # DEFI legacy venues (``AAVE_V3`` / ``AERODROMEV3-BASE`` etc.) still
-        # survive as entries in ``new_venues`` because we start from
-        # ``venues_dict``; they just won't get honest-coverage overrides
-        # (UAC doesn't declare them). Phase 6d will unify the naming.
+        # Build the union of (a) venues in the manifest (post-normalisation for
+        # DEFI), (b) UAC-declared venues. UAC-declared venues not in manifest
+        # get a zero-row entry surfaced as ``missing_data_types``.
         union_venues = set(new_venues.keys()) | set(expected_venues)
 
         for venue in sorted(union_venues):
