@@ -1641,3 +1641,349 @@ class TestDefiLegacyVenueFilter:
         seen_venues = set(captured["df"]["venue"].tolist())
         assert "BINANCE-FUTURES" in seen_venues
         assert "OKX-SWAP" in seen_venues
+
+
+class TestMTDSHonestCoverage:
+    """MTDS honest-coverage aggregator (Phase 6c).
+
+    SSOT: codex/02-data/mtds-data-source-coverage-matrix.md.
+
+    Covers:
+      (a) CEFI per-venue x per-data_type daily denominator
+      (b) TRADFI tick-window gate excludes trades/tbbo outside windows
+      (c) DEFI per-venue scope (chain axis is a multi-venue Phase 6d follow-up)
+      (d) SPORTS MTDS (bookmakers) is the instruments-service path — not
+          re-asserted here (covered by TestBuildSportsEntityEntry elsewhere)
+      (e) PREDICTION per-venue daily denominator
+      (f) category-level ``expected_venues`` / ``missing_venues`` injection
+    """
+
+    def _mtds_df(self, rows):
+        """Build a minimal availability-index DataFrame with the columns
+        consumed by _build_manifest_category."""
+        cols = [
+            "date",
+            "venue",
+            "data_type",
+            "service_name",
+            "capture_status",
+            "chain",
+            "instrument_type",
+            "league_id",
+            "row_count",
+        ]
+        return pd.DataFrame(rows, columns=cols)
+
+    def test_cefi_per_venue_denominator_honest(self):
+        """CEFI CEFI BINANCE-SPOT has 2 expected dts (book_snapshot_5, trades).
+        2 days window → expected_shards = 2 dts x 2 days = 4 per venue."""
+        svc = _make_svc()
+        # Only BINANCE-SPOT has ``trades`` shipped on 2026-04-17; missing
+        # book_snapshot_5 + 2026-04-18 for both.
+        df = self._mtds_df(
+            [
+                [
+                    "2026-04-17",
+                    "BINANCE-SPOT",
+                    "trades",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                ],
+            ]
+        )
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=df),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2026-04-17"),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+        ):
+            from unified_api_contracts import VenueMapping
+
+            result = svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="CEFI",
+                start_date="2026-04-17",
+                end_date="2026-04-18",
+                all_date_strs=["2026-04-17", "2026-04-18"],
+                total_days=2,
+                venue_mapping=VenueMapping(),
+            )
+        # BINANCE-SPOT: 2 dts x 2 days = 4 expected, 1 found (trades on 04-17)
+        binance = result["venues"]["BINANCE-SPOT"]
+        assert isinstance(binance, dict)
+        assert binance["dates_expected"] == 4
+        assert binance["dates_found"] == 1
+        assert sorted(binance["expected_data_types"]) == ["book_snapshot_5", "trades"]
+        assert "book_snapshot_5" in binance["missing_data_types"]
+        assert result["honest_axis"] == "per_venue_per_data_type_daily"
+        # Category has all 11 expected venues, but only BINANCE-SPOT has data
+        assert "BINANCE-SPOT" not in result["missing_venues"]
+        assert len(result["missing_venues"]) >= 9
+        assert result["expected_venues"]  # non-empty
+
+    def test_tradfi_tick_window_gate(self):
+        """TRADFI ``trades`` / ``tbbo`` are only expected inside tick windows.
+        2024-07-10..2024-07-15 is INSIDE window (2024-07-01..2024-07-31)."""
+        svc = _make_svc()
+        # Provide ohlcv_1m + trades + tbbo for NYSE on 2024-07-10.
+        # 4 trading days x 3 dts should all be expected (all inside window).
+        df = self._mtds_df(
+            [
+                [
+                    "2024-07-10",
+                    "NYSE",
+                    "ohlcv_1m",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    1,
+                ],
+                [
+                    "2024-07-10",
+                    "NYSE",
+                    "trades",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    1,
+                ],
+                [
+                    "2024-07-10",
+                    "NYSE",
+                    "tbbo",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    1,
+                ],
+            ]
+        )
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=df),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2024-07-10"),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+        ):
+            from unified_api_contracts import VenueMapping
+
+            result = svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="TRADFI",
+                start_date="2024-07-10",
+                end_date="2024-07-15",
+                all_date_strs=[
+                    "2024-07-10",
+                    "2024-07-11",
+                    "2024-07-12",
+                    "2024-07-13",
+                    "2024-07-14",
+                    "2024-07-15",
+                ],
+                total_days=6,
+                venue_mapping=VenueMapping(),
+            )
+        # NYSE has 4 trading days (10,11,12,15); 3 dts all in tick window.
+        # Expected: 4 x 3 = 12 shards. Found: 3.
+        nyse = result["venues"]["NYSE"]
+        assert nyse["dates_expected"] == 12
+        assert nyse["dates_found"] == 3
+
+    def test_tradfi_tick_window_gate_outside_window(self):
+        """Outside the tick window, only ohlcv_1m is expected for NYSE —
+        trades/tbbo drop from the denominator."""
+        svc = _make_svc()
+        # 2025-01-06..2025-01-10 is OUTSIDE any tick window. NYSE has 5
+        # trading days. Only ohlcv_1m is expected => 5 x 1 = 5 expected.
+        df = self._mtds_df(
+            [
+                [
+                    "2025-01-06",
+                    "NYSE",
+                    "ohlcv_1m",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    1,
+                ],
+            ]
+        )
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=df),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-01-06"),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+        ):
+            from unified_api_contracts import VenueMapping
+
+            result = svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="TRADFI",
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                all_date_strs=[
+                    "2025-01-06",
+                    "2025-01-07",
+                    "2025-01-08",
+                    "2025-01-09",
+                    "2025-01-10",
+                ],
+                total_days=5,
+                venue_mapping=VenueMapping(),
+            )
+        nyse = result["venues"]["NYSE"]
+        # Outside tick window: trades/tbbo expected = 0 → only ohlcv_1m
+        # counts toward the denominator. 5 trading days x 1 dt = 5.
+        honest_dts = nyse["honest_data_types"]
+        assert honest_dts["trades"]["expected_shards"] == 0
+        assert honest_dts["tbbo"]["expected_shards"] == 0
+        assert honest_dts["ohlcv_1m"]["expected_shards"] == 5
+        assert nyse["dates_expected"] == 5
+        assert nyse["dates_found"] == 1  # one ohlcv_1m shipped
+
+    def test_defi_per_venue_scope(self):
+        """DEFI uses ``all_defi_venues`` (11 PROTOCOL-ETHEREUM entries)."""
+        svc = _make_svc()
+        # AAVEV3-ETHEREUM start = 2023-01-27; 4 dts declared.
+        # Window 2023-01-27..2023-01-28 = 2 days x 4 dts = 8 expected.
+        df = self._mtds_df(
+            [
+                [
+                    "2023-01-27",
+                    "AAVEV3-ETHEREUM",
+                    "lending_indices",
+                    "market-tick-data-service",
+                    "captured",
+                    "ETHEREUM",
+                    "LENDING",
+                    "",
+                    1,
+                ],
+                [
+                    "2023-01-28",
+                    "AAVEV3-ETHEREUM",
+                    "lending_indices",
+                    "market-tick-data-service",
+                    "captured",
+                    "ETHEREUM",
+                    "LENDING",
+                    "",
+                    1,
+                ],
+            ]
+        )
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=df),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2023-01-27"),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+        ):
+            from unified_api_contracts import VenueMapping
+
+            result = svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="DEFI",
+                start_date="2023-01-27",
+                end_date="2023-01-28",
+                all_date_strs=["2023-01-27", "2023-01-28"],
+                total_days=2,
+                venue_mapping=VenueMapping(),
+            )
+        aave = result["venues"]["AAVEV3-ETHEREUM"]
+        # 4 expected dts x 2 days = 8 expected; 2 found (lending_indices only).
+        assert aave["dates_expected"] == 8
+        assert aave["dates_found"] == 2
+        assert "oracle_prices" in aave["missing_data_types"]
+        assert "rewards" in aave["missing_data_types"]
+        assert result["honest_axis"] == "per_venue_per_data_type_per_chain_daily"
+
+    def test_prediction_per_venue_daily(self):
+        """PREDICTION — POLYMARKET + KALSHI, only ``trades`` dt each."""
+        svc = _make_svc()
+        df = self._mtds_df(
+            [
+                [
+                    "2025-03-14",
+                    "POLYMARKET",
+                    "trades",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    1,
+                ],
+            ]
+        )
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=df),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-03-14"),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+        ):
+            from unified_api_contracts import VenueMapping
+
+            result = svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="PREDICTION",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                all_date_strs=["2025-03-14"],
+                total_days=1,
+                venue_mapping=VenueMapping(),
+            )
+        # Two UAC-declared venues (POLYMARKET + KALSHI); only POLYMARKET has
+        # data. KALSHI should surface as missing.
+        assert "KALSHI" in result["expected_venues"]
+        assert "POLYMARKET" in result["expected_venues"]
+        assert "KALSHI" in result["missing_venues"]
+        poly = result["venues"]["POLYMARKET"]
+        assert poly["expected_data_types"] == ["trades"]
+        assert poly["missing_data_types"] == []
+        assert poly["dates_found"] == 1
+
+    def test_category_completion_not_tautology(self):
+        """Before Phase 6c, CEFI header showed 100% when a single venue
+        had a single day. Honest-coverage surfaces the full UAC denominator."""
+        svc = _make_svc()
+        df = self._mtds_df(
+            [
+                [
+                    "2026-04-17",
+                    "BINANCE-SPOT",
+                    "trades",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    1,
+                ],
+            ]
+        )
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=df),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2026-04-17"),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+        ):
+            from unified_api_contracts import VenueMapping
+
+            result = svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="CEFI",
+                start_date="2026-04-17",
+                end_date="2026-04-17",
+                all_date_strs=["2026-04-17"],
+                total_days=1,
+                venue_mapping=VenueMapping(),
+            )
+        # Honest denominator: 11 venues x their respective dts. Should be far
+        # from 100% with a single-row fixture.
+        assert result["completion_pct"] < 10.0
+        assert result["shards_expected"] > 20  # 11 venues x ≥2 dts x 1 day

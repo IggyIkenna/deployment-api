@@ -366,6 +366,259 @@ def _sports_honest_coverage(
     }
 
 
+# ── MTDS honest-coverage meta (Phase 6c) ─────────────────────────────────────
+#
+# SSOT: ``codex/02-data/mtds-data-source-coverage-matrix.md``.
+#
+# For each MTDS category, ``MTDS_CATEGORY_META`` declares:
+#   - ``venue_accessor``: attribute name on ``VenueMapping`` returning the list
+#     of UAC-declared venues for that category (e.g. ``all_cefi_venues``).
+#   - ``axis``: coverage axis for the category (``per_venue_per_data_type_daily``
+#     for CEFI/TRADFI/PREDICTION, ``per_venue_per_data_type_per_chain_daily``
+#     for DEFI, ``per_league_per_bookmaker_per_fixture_date`` for SPORTS).
+#   - ``tradfi_tick_gate``: only True for TRADFI — applies
+#     ``is_in_tradfi_tick_window`` to filter expected dates for tick-only
+#     data_types.
+#   - ``record_empty_expected``: whether adapters in this category should emit
+#     ``capture_status=empty_confirmed`` (informational; not enforced here).
+#   - ``unit``: display unit for the per-category response.
+#
+# SPORTS entry is present for completeness; the MTDS sports branch
+# (bookmaker odds per league x per fixture-date) is a Phase 6d follow-up —
+# the MTDS honest-coverage helper currently returns ``None`` for SPORTS so
+# the existing SPORTS code path (instruments-service ``_sports_honest_coverage``)
+# keeps running. See §5 of the codex SSOT.
+MTDS_CATEGORY_META: dict[str, dict[str, object]] = {
+    "CEFI": {
+        "venue_accessor": "all_cefi_venues",
+        "axis": "per_venue_per_data_type_daily",
+        "tradfi_tick_gate": False,
+        "record_empty_expected": True,
+        "unit": "shard_days",
+    },
+    "TRADFI": {
+        "venue_accessor": "all_databento_venues",
+        "axis": "per_venue_per_data_type_daily",
+        "tradfi_tick_gate": True,
+        "record_empty_expected": True,
+        "unit": "shard_days",
+    },
+    "DEFI": {
+        # DEFI uses the same per-venue x per-data_type x daily axis with an
+        # additional ``chain`` dimension. Today UAC ``all_defi_venues`` only
+        # lists ``PROTOCOL-ETHEREUM``; Arbitrum / Base / Optimism expansion
+        # is Phase 6d follow-up once adapters start writing those rows.
+        "venue_accessor": "all_defi_venues",
+        "axis": "per_venue_per_data_type_per_chain_daily",
+        "tradfi_tick_gate": False,
+        "record_empty_expected": True,
+        "unit": "shard_days",
+    },
+    "PREDICTION": {
+        # PREDICTION venues declare only ``trades`` by design. ``book_snapshot_5``
+        # was intentionally removed 2026-04-19 because neither adapter captures
+        # book snapshots. ``prediction_market_metadata`` lives in the
+        # instrument_availability index, not MTDS's market_tick_data.
+        "venue_accessor": "all_prediction_venues",
+        "axis": "per_venue_per_data_type_daily",
+        "tradfi_tick_gate": False,
+        "record_empty_expected": True,
+        "unit": "shard_days",
+    },
+    "SPORTS": {
+        # MTDS SPORTS = bookmaker odds per league x per fixture-date. The
+        # honest-coverage helper below currently returns ``None`` so the
+        # existing instruments-service SPORTS path handles it. The category
+        # still needs to be in this map so the aggregator knows which UAC
+        # venue list to iterate (there is no ``all_bookmaker_venues`` yet —
+        # Phase 6d adds ``get_expected_bookmakers`` to UAC).
+        "venue_accessor": "",  # bookmakers resolved via sports accessor (Phase 6d)
+        "axis": "per_league_per_bookmaker_per_fixture_date",
+        "tradfi_tick_gate": False,
+        "record_empty_expected": False,  # bookmaker-dark day = attempted_failed
+        "unit": "bookmaker_fixture_dates",
+    },
+}
+
+
+def _is_mtds_honest_coverage_target(service: str, category: str) -> bool:
+    """True iff ``(service, category)`` should run the MTDS honest-coverage
+    override. Excludes SPORTS (bookmaker axis is Phase 6d)."""
+    if service != "market-tick-data-service":
+        return False
+    cat_key = category.upper()
+    return cat_key in MTDS_CATEGORY_META and cat_key != "SPORTS"
+
+
+def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
+    """Return UAC-declared venue list for an MTDS category.
+
+    Reads ``MTDS_CATEGORY_META[cat]['venue_accessor']`` and resolves it on
+    ``VenueMapping``. The PREDICTION accessor (``all_prediction_venues``)
+    does not exist on VenueMapping today — we hardcode the pair
+    ``["POLYMARKET", "KALSHI"]`` from the codex SSOT §1 as a fallback so the
+    aggregator has a deterministic denominator regardless of UAC surface.
+    Falls back to ``[]`` if the accessor is missing or empty — the caller
+    then skips the MTDS honest-coverage path and keeps the legacy
+    observed-only denominator.
+    """
+    meta = MTDS_CATEGORY_META.get(cat.upper())
+    if meta is None:
+        return []
+    accessor = str(meta.get("venue_accessor") or "")
+    if not accessor:
+        return []
+    # Accessor is either a property on VenueMapping (all_cefi_venues etc.)
+    # or one of the missing PREDICTION fallbacks.
+    if accessor == "all_prediction_venues":
+        # No UAC accessor for prediction venues yet — codex SSOT §1 lists
+        # POLYMARKET + KALSHI. Hardcoded fallback mirrors the matrix.
+        return ["KALSHI", "POLYMARKET"]
+    venues = getattr(venue_mapping, accessor, None)
+    if venues is None:
+        return []
+    return list(venues)
+
+
+def _mtds_expected_dates_for_venue_dt(
+    venue_mapping: VenueMapping,
+    venue: str,
+    data_type: str,
+    category: str,
+    window_start: str,
+    window_end: str,
+) -> set[str]:
+    """Compute expected shard dates for an MTDS ``(venue, data_type)`` tuple.
+
+    Mirrors codex SSOT §7 ("Aggregator algorithm v5 honest-coverage — MTDS"):
+
+      effective_start = max(start_date, venue_start, dt_start)
+      if category == "TRADFI":
+          expected = get_expected_trading_dates(venue, effective_start, end)
+          if dt in {"trades", "tbbo"}:
+              expected = [d for d in expected if is_in_tradfi_tick_window(d)]
+      else:
+          expected = daily_grid(effective_start, end)
+
+    Returns a set of ``YYYY-MM-DD`` strings. Empty set if venue_start is
+    after ``window_end`` (pre-launch venue).
+    """
+    venue_start = venue_mapping.get_venue_start_date(venue) or window_start
+    dt_start = get_venue_data_type_start_date(venue, data_type) or venue_start
+    effective_start = max(window_start, venue_start, dt_start)
+    if effective_start > window_end:
+        return set()
+
+    if category.upper() == "TRADFI":
+        expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
+        if data_type in _TRADFI_TICK_ONLY_DATA_TYPES:
+            expected_list = [d for d in expected_list if is_in_tradfi_tick_window(d)]
+        return set(expected_list)
+
+    # CEFI / DEFI / PREDICTION — daily grid, no trading-day calendar
+    expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
+    if expected_list:
+        return set(expected_list)
+    # Fallback to daily range if venue has no trading schedule in UAC
+    return {d.strftime("%Y-%m-%d") for d in pd.date_range(effective_start, window_end, freq="D")}
+
+
+def _mtds_honest_coverage_for_venue(
+    filtered: pd.DataFrame,
+    venue: str,
+    category: str,
+    window_start: str,
+    window_end: str,
+    venue_mapping: VenueMapping,
+) -> dict[str, object]:
+    """Honest-coverage rollup for one ``(category, venue)`` pair.
+
+    For each UAC-declared data_type on this venue, compute:
+      - expected_dates: from ``_mtds_expected_dates_for_venue_dt`` (honest
+        per-(venue, dt) window with TRADFI tick-window gate applied).
+      - found_dates: distinct dates in ``filtered`` where
+        ``(venue, data_type)`` matches AND ``capture_status in
+        {captured, empty_confirmed}`` (v4 rows without capture_status are
+        implicit ``captured``, same convention as ``_sports_honest_coverage``).
+
+    Returns per-dt entries + aggregate totals. ``expected_shards`` /
+    ``found_shards`` count distinct ``(venue, data_type, date)`` triples —
+    the correct denominator for "did we capture this shard on this day?"
+
+    ``expected_data_types`` lists the UAC-declared dt set for this venue;
+    ``missing_data_types`` lists declared dt with zero found shards (surfaces
+    adapter-coverage gaps even when some dt are 100% complete).
+    """
+    expected_dts = list(get_expected_data_types_for_venue(venue))
+    if not expected_dts:
+        return {
+            "expected_shards": 0,
+            "found_shards": 0,
+            "missing_shards": 0,
+            "data_types": {},
+            "expected_data_types": [],
+            "missing_data_types": [],
+        }
+
+    # Pre-filter to this venue once for speed.
+    if "venue" not in filtered.columns or filtered.empty:
+        venue_df = pd.DataFrame(columns=filtered.columns)
+    else:
+        venue_df = filtered[filtered["venue"] == venue]
+
+    if "capture_status" in venue_df.columns:
+        ok_mask = (
+            venue_df["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
+        )
+    else:
+        ok_mask = pd.Series([True] * len(venue_df), index=venue_df.index)
+    venue_df_ok = venue_df[ok_mask] if not venue_df.empty else venue_df
+
+    dt_entries: dict[str, object] = {}
+    total_expected = 0
+    total_found = 0
+    missing_dts: list[str] = []
+
+    for dt in sorted(expected_dts):
+        expected_dates = _mtds_expected_dates_for_venue_dt(
+            venue_mapping, venue, dt, category, window_start, window_end
+        )
+        if "data_type" in venue_df_ok.columns:
+            dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
+            found_dates_set = {str(d) for d in dt_rows["date"].unique()}
+        else:
+            found_dates_set = set()
+        # Only count dates that fall inside the expected window — a row from
+        # before ``effective_start`` should not inflate ``found_shards``.
+        found_in_expected = found_dates_set & expected_dates
+        missing_dates = sorted(expected_dates - found_dates_set)
+        expected_count = len(expected_dates)
+        found_count = len(found_in_expected)
+
+        dt_entries[dt] = {
+            "expected_shards": expected_count,
+            "found_shards": found_count,
+            "missing_shards": max(0, expected_count - found_count),
+            "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+            "missing_dates": missing_dates[:50],
+            "dates_found_list": sorted(found_in_expected)[:50],
+            "unit": "shard_days",
+        }
+        total_expected += expected_count
+        total_found += found_count
+        if found_count == 0 and expected_count > 0:
+            missing_dts.append(dt)
+
+    return {
+        "expected_shards": total_expected,
+        "found_shards": total_found,
+        "missing_shards": max(0, total_expected - total_found),
+        "data_types": dt_entries,
+        "expected_data_types": sorted(expected_dts),
+        "missing_data_types": missing_dts,
+    }
+
+
 def _distinct_pairs(df: pd.DataFrame, col_a: str, col_b: str) -> int:
     """Return count of distinct non-empty (col_a, col_b) pairs. 0 if cols missing."""
     if col_a not in df.columns or col_b not in df.columns:
@@ -1843,6 +2096,119 @@ class DataStatusService:
             venue_expected_total += int(venue_entry["dates_expected"])
         return venues_dict, venue_found_total, venue_expected_total
 
+    def _apply_mtds_honest_coverage(
+        self,
+        venues_dict: dict[str, object],
+        filtered: pd.DataFrame,
+        category: str,
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+    ) -> tuple[dict[str, object], int, int]:
+        """Override per-venue denominator with UAC-driven honest-coverage.
+
+        SSOT: ``codex/02-data/mtds-data-source-coverage-matrix.md`` §7.
+
+        Rebuilds the per-venue ``dates_found`` / ``dates_expected`` /
+        ``completion_pct`` using the UAC ``(venue, data_type, date)`` shard
+        space instead of whatever happened to be in the manifest. Also
+        injects UAC-declared venues that had ZERO manifest rows (would
+        otherwise be invisible — e.g. UPBIT shipped nothing for a quarter).
+
+        Per-venue fields added / overridden:
+          - ``dates_found`` (honest count of (venue, dt, date) tuples)
+          - ``dates_expected`` (UAC-declared denominator)
+          - ``dates_missing``
+          - ``completion_pct`` (shards-weighted)
+          - ``expected_data_types`` (list of UAC-declared dt for this venue)
+          - ``missing_data_types`` (declared dt with zero found shards)
+          - ``honest_data_types`` (dict: dt → per-dt honest-coverage stats,
+            keeps the existing ``data_types`` legacy block untouched)
+
+        At category level:
+          - adds UAC-declared venues missing from manifest (zero-row entries)
+          - returns the new aggregate ``(venue_found_total, venue_expected_total)``
+        """
+        expected_venues = _mtds_expected_venues(category, venue_mapping)
+        # Start from the existing dict (preserves instrument_types / chains /
+        # capture_status_counts sub-structures built by _build_venue_breakdown).
+        new_venues: dict[str, object] = dict(venues_dict)
+        total_found = 0
+        total_expected = 0
+
+        # Build the union of (a) venues in the manifest, (b) UAC-declared
+        # venues. UAC-declared venues not in manifest get a zero-row entry.
+        # DEFI legacy venues (``AAVE_V3`` / ``AERODROMEV3-BASE`` etc.) still
+        # survive as entries in ``new_venues`` because we start from
+        # ``venues_dict``; they just won't get honest-coverage overrides
+        # (UAC doesn't declare them). Phase 6d will unify the naming.
+        union_venues = set(new_venues.keys()) | set(expected_venues)
+
+        for venue in sorted(union_venues):
+            honest = _mtds_honest_coverage_for_venue(
+                filtered, venue, category, start_date, end_date, venue_mapping
+            )
+            expected_shards = int(cast(int, honest["expected_shards"]))
+            found_shards = int(cast(int, honest["found_shards"]))
+            if expected_shards == 0:
+                # Venue not UAC-declared for MTDS (e.g. legacy DeFi names) —
+                # keep the existing entry untouched. Do NOT roll its
+                # observed-only totals into the honest aggregate; the
+                # legacy rollup is preserved under the existing keys, but
+                # we don't let it pollute UAC-declared totals.
+                entry = new_venues.get(venue)
+                if entry is None:
+                    continue
+                if isinstance(entry, dict):
+                    # Sum the legacy per-venue totals so the category
+                    # header still reflects them.
+                    total_found += int(cast(int, entry.get("dates_found", 0)))
+                    total_expected += int(cast(int, entry.get("dates_expected", 0)))
+                continue
+
+            existing_entry = new_venues.get(venue)
+            if isinstance(existing_entry, dict):
+                venue_entry: dict[str, object] = dict(existing_entry)
+            else:
+                # UAC-declared venue with zero manifest rows — materialise a
+                # zero-row placeholder so the UI shows it under
+                # ``missing_venues`` with 0% completion.
+                venue_entry = {
+                    "dates_found": 0,
+                    "dates_expected": 0,
+                    "completion_pct": 0.0,
+                    "venue_start_date": venue_mapping.get_venue_start_date(venue),
+                    "capture_status_counts": {
+                        "captured": 0,
+                        "empty_confirmed": 0,
+                        "attempted_failed": 0,
+                    },
+                    "missing_dates": [],
+                    "dates_found_list": [],
+                    "dates_missing_list": [],
+                }
+
+            # Override top-level found/expected with honest-coverage values.
+            venue_entry["dates_found"] = found_shards
+            venue_entry["dates_expected"] = expected_shards
+            venue_entry["dates_expected_venue"] = expected_shards
+            venue_entry["dates_missing"] = max(0, expected_shards - found_shards)
+            venue_entry["completion_pct"] = min(
+                round(found_shards / max(1, expected_shards) * 100, 2), 100.0
+            )
+            # Honest-coverage annotations — UI surfaces these as a second
+            # tab / tooltip alongside the legacy ``data_types`` block.
+            venue_entry["expected_data_types"] = honest["expected_data_types"]
+            venue_entry["missing_data_types"] = honest["missing_data_types"]
+            venue_entry["honest_data_types"] = honest["data_types"]
+            venue_entry["honest_axis"] = str(MTDS_CATEGORY_META[category.upper()]["axis"])
+
+            new_venues[venue] = venue_entry
+            total_found += found_shards
+            total_expected += expected_shards
+
+        return new_venues, total_found, total_expected
+
     def _resolve_expected_dates(
         self,
         venue: str,
@@ -3146,26 +3512,39 @@ class DataStatusService:
             category=cat,
         )
 
+        # MTDS honest-coverage override (Phase 6c). For CEFI / TRADFI / DEFI /
+        # PREDICTION, recompute per-venue ``dates_found`` / ``dates_expected``
+        # from the UAC-driven ``(venue, data_type, date)`` shard space AND
+        # inject UAC-declared venues that had zero manifest rows. The old
+        # path iterated only venues observed in the manifest, so a venue
+        # missing completely (e.g. UPBIT with no trades shipped) was
+        # invisible. SSOT: codex/02-data/mtds-data-source-coverage-matrix.md.
+        if _is_mtds_honest_coverage_target(service, cat):
+            (
+                venues_dict,
+                venue_found_total,
+                venue_expected_total,
+            ) = self._apply_mtds_honest_coverage(
+                venues_dict,
+                filtered,
+                cat,
+                effective_start,
+                end_date,
+                venue_mapping,
+            )
+
         # When no venues or all are empty (sports instruments pattern), group
         # by data_type.  If there are BOTH empty-venue v4 rows AND old non-empty
         # v3 venue rows, prefer the v4 data_type grouping (it's the canonical view).
-        all_venues_empty = not venues_dict or all(str(k).strip() == "" for k in venues_dict)
-        has_empty_venue_dt_rows = (
-            "data_type" in filtered.columns
-            and "venue" in filtered.columns
-            and (filtered["venue"].str.strip() == "").any()
-            and filtered.loc[filtered["venue"].str.strip() == "", "data_type"].str.len().sum() > 0
+        venues_dict, venue_found_total, venue_expected_total = self._maybe_group_by_data_type(
+            venues_dict,
+            filtered,
+            effective_start,
+            end_date,
+            cat,
+            venue_found_total,
+            venue_expected_total,
         )
-        if (all_venues_empty or has_empty_venue_dt_rows) and "data_type" in filtered.columns:
-            # Use only the empty-venue rows for data_type grouping
-            dt_filtered = (
-                filtered[filtered["venue"].str.strip() == ""]
-                if has_empty_venue_dt_rows and not all_venues_empty
-                else filtered
-            )
-            venues_dict, venue_found_total, venue_expected_total = self._build_data_type_grouping(
-                dt_filtered, effective_start, end_date, cat
-            )
 
         # Category-level completion, two variants exposed for the UI:
         #
@@ -3275,8 +3654,75 @@ class DataStatusService:
             "_venue_found": venue_found_total,
             "_venue_expected": venue_expected_total,
         }
+
+        # MTDS honest-coverage — surface UAC-declared expected/missing venue
+        # sets at the category level so the UI can render "venue X shipped
+        # no data in this window" as a first-class gap. SSOT:
+        # codex/02-data/mtds-data-source-coverage-matrix.md §1.
+        self._annotate_mtds_category(result, service, cat, venues_dict, venue_mapping)
+
         result.update(sub_dims)
         return result
+
+    def _maybe_group_by_data_type(
+        self,
+        venues_dict: dict[str, object],
+        filtered: pd.DataFrame,
+        effective_start: str,
+        end_date: str,
+        cat: str,
+        venue_found_total: int,
+        venue_expected_total: int,
+    ) -> tuple[dict[str, object], int, int]:
+        """Fall back to data_type-keyed grouping for the SPORTS instruments
+        pattern (empty-venue v4 rows). Returns the input unchanged for
+        categories that have real venues.
+        """
+        all_venues_empty = not venues_dict or all(str(k).strip() == "" for k in venues_dict)
+        has_empty_venue_dt_rows = (
+            "data_type" in filtered.columns
+            and "venue" in filtered.columns
+            and (filtered["venue"].str.strip() == "").any()
+            and filtered.loc[filtered["venue"].str.strip() == "", "data_type"].str.len().sum() > 0
+        )
+        if not (all_venues_empty or has_empty_venue_dt_rows):
+            return venues_dict, venue_found_total, venue_expected_total
+        if "data_type" not in filtered.columns:
+            return venues_dict, venue_found_total, venue_expected_total
+        dt_filtered = (
+            filtered[filtered["venue"].str.strip() == ""]
+            if has_empty_venue_dt_rows and not all_venues_empty
+            else filtered
+        )
+        return self._build_data_type_grouping(dt_filtered, effective_start, end_date, cat)
+
+    @staticmethod
+    def _annotate_mtds_category(
+        result: dict[str, object],
+        service: str,
+        cat: str,
+        venues_dict: dict[str, object],
+        venue_mapping: VenueMapping,
+    ) -> None:
+        """Inject MTDS ``expected_venues`` / ``missing_venues`` / ``honest_axis``.
+
+        No-op for non-MTDS services or SPORTS (bookmaker axis is Phase 6d).
+        """
+        if service != "market-tick-data-service":
+            return
+        cat_key = cat.upper()
+        if cat_key not in MTDS_CATEGORY_META or cat_key == "SPORTS":
+            return
+        expected_venues_list = _mtds_expected_venues(cat, venue_mapping)
+        present_venues = {
+            v
+            for v, entry in venues_dict.items()
+            if isinstance(entry, dict) and int(cast(int, entry.get("dates_found", 0))) > 0
+        }
+        missing_venues = sorted(set(expected_venues_list) - present_venues)
+        result["expected_venues"] = expected_venues_list
+        result["missing_venues"] = missing_venues
+        result["honest_axis"] = str(MTDS_CATEGORY_META[cat_key]["axis"])
 
     async def get_last_updated_info(
         self,
