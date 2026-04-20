@@ -24,6 +24,7 @@ from unified_api_contracts import SchemaContract, SchemaContractNotFoundError, l
 from unified_api_contracts.internal.schemas.contracts import (
     VENUE_CONTRACT_OVERRIDES,
 )
+from unified_trading_library import read_availability_index
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -114,6 +115,120 @@ def _cache_put(key: str, value: object) -> None:
 def clear_drilldown_cache() -> None:
     """Reset the TTL cache (used by tests and /turbo/clear)."""
     _cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Manifest capture_status lookup (Phase-C honest-coverage)
+# ---------------------------------------------------------------------------
+
+# Default capture_status for rows absent from the manifest OR legacy pre-v5
+# rows that carry no capture_status column. Matches the UTL legacy-read
+# coercion in ``ManifestWriter.lookup``.
+_DEFAULT_CAPTURE_STATUS = "captured"
+
+
+def _scoped_manifest_rows(bucket: str, venue: str, day: str) -> pd.DataFrame | None:
+    """Return the (date, venue) slice of the manifest or None on any miss.
+
+    Returns ``None`` when the manifest is unreachable, empty, missing the
+    ``date`` filter column, or contains no matching rows. The calling code
+    then falls back to the safe ``captured`` default.
+    """
+    try:
+        df = read_availability_index(bucket)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("capture-status manifest read failed for %s: %s", bucket, exc)
+        return None
+
+    if df.empty or "date" not in df.columns:
+        return None
+
+    mask = df["date"] == day
+    if "venue" in df.columns:
+        mask = mask & (df["venue"] == venue)
+    scoped = df.loc[mask]
+    if scoped.empty or "instrument_id" not in scoped.columns:
+        return None
+
+    # Dedup by instrument_id — keep the latest written_at per key. When the
+    # column is missing (very old parquet) we fall back to last-seen order.
+    if "written_at" in scoped.columns:
+        scoped = scoped.sort_values("written_at").drop_duplicates(
+            subset=["instrument_id"], keep="last"
+        )
+    else:
+        scoped = scoped.drop_duplicates(subset=["instrument_id"], keep="last")
+    return scoped
+
+
+def _build_capture_metadata_lookup(scoped: pd.DataFrame) -> dict[str, dict[str, str]]:
+    """Build an instrument_id -> {capture_status, error_reason, attempted_at}
+    lookup from a deduped manifest slice."""
+    by_iid: dict[str, dict[str, str]] = {}
+    for row in scoped.to_dict(orient="records"):  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        iid = str(row.get("instrument_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        if not iid:
+            continue
+        by_iid[iid] = {
+            "capture_status": str(
+                row.get("capture_status") or _DEFAULT_CAPTURE_STATUS  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            ).lower(),
+            "error_reason": str(row.get("error_reason") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            "attempted_at": str(row.get("attempted_at") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        }
+    return by_iid
+
+
+def _attach_capture_status_to_instruments(
+    instruments: list[dict[str, object]],
+    *,
+    bucket: str,
+    venue: str,
+    day: str,
+) -> None:
+    """Mutate each instrument dict in-place to add manifest capture metadata.
+
+    Reads ``gs://<bucket>/_index/availability_index.parquet``, filters to
+    ``(date == day, venue == venue)``, then joins each instrument to its
+    manifest row by ``instrument_id``. Adds three keys to every instrument:
+    - ``capture_status``:  "captured" | "empty_confirmed" | "attempted_failed"
+    - ``error_reason``:    classified error string (empty for captured/empty)
+    - ``attempted_at``:    ISO-8601 UTC timestamp (empty for legacy rows)
+
+    When multiple shards match a tuple (re-runs, re-tries), the row with the
+    latest ``written_at`` wins — same dedup semantics as UTL
+    ``_merge_dataframes``.
+
+    Failure to read the manifest is non-fatal: every instrument defaults to
+    ``capture_status="captured"`` + empty error/attempted_at so the drill-down
+    stays usable even when the manifest is unreachable.
+    """
+    if not instruments:
+        return
+    scoped = _scoped_manifest_rows(bucket, venue, day)
+    if scoped is None:
+        _apply_default_capture_status(instruments)
+        return
+    by_iid = _build_capture_metadata_lookup(scoped)
+    for inst in instruments:
+        iid = str(inst.get("instrument_id") or "").strip()
+        meta = by_iid.get(iid)
+        if meta is None:
+            inst["capture_status"] = _DEFAULT_CAPTURE_STATUS
+            inst["error_reason"] = ""
+            inst["attempted_at"] = ""
+        else:
+            inst["capture_status"] = meta["capture_status"]
+            inst["error_reason"] = meta["error_reason"]
+            inst["attempted_at"] = meta["attempted_at"]
+
+
+def _apply_default_capture_status(instruments: list[dict[str, object]]) -> None:
+    """Stamp the safe default (captured / no error / no attempted_at) on every row."""
+    for inst in instruments:
+        inst.setdefault("capture_status", _DEFAULT_CAPTURE_STATUS)
+        inst.setdefault("error_reason", "")
+        inst.setdefault("attempted_at", "")
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +665,11 @@ def _list_instruments_full(
         instruments = _expand_per_venue_day_bundle(parquet_files, service, instrument_type)
     else:
         instruments = _expand_per_file(parquet_files)
+
+    # Phase-C honest-coverage: attach capture_status / error_reason /
+    # attempted_at from the manifest availability_index so the drill-down
+    # modal can render status badges + retry tooltips per instrument.
+    _attach_capture_status_to_instruments(instruments, bucket=bucket, venue=venue, day=day)
 
     full: dict[str, object] = {
         "service": service,

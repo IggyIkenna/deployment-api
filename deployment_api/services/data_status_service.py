@@ -89,6 +89,114 @@ def _sports_attempt_count(filtered: pd.DataFrame) -> int:
     return _distinct_values(filtered, "venue")
 
 
+_CAPTURE_STATUS_COL = "capture_status"
+_CAPTURE_STATUS_CAPTURED = "captured"
+_CAPTURE_STATUS_EMPTY = "empty_confirmed"
+_CAPTURE_STATUS_FAILED = "attempted_failed"
+
+
+def _compute_capture_status_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Bucket manifest rows by ``capture_status`` (UTL v5 column).
+
+    Legacy rows (pre-Phase-A parquet, no ``capture_status`` column, or NaN
+    values inside a mixed DataFrame) coerce to ``"captured"`` — matches the
+    legacy-read semantics of ``ManifestWriter.lookup`` in UTL.
+    Returns ``{"captured": N, "empty_confirmed": M, "attempted_failed": K}``.
+    """
+    empty = {
+        _CAPTURE_STATUS_CAPTURED: 0,
+        _CAPTURE_STATUS_EMPTY: 0,
+        _CAPTURE_STATUS_FAILED: 0,
+    }
+    if df.empty:
+        return empty
+    if _CAPTURE_STATUS_COL not in df.columns:
+        return {
+            _CAPTURE_STATUS_CAPTURED: len(df),
+            _CAPTURE_STATUS_EMPTY: 0,
+            _CAPTURE_STATUS_FAILED: 0,
+        }
+    series = df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
+    # Any unrecognised value (defensive) also coerces to captured.
+    return {
+        _CAPTURE_STATUS_CAPTURED: int(
+            (
+                (series == _CAPTURE_STATUS_CAPTURED)
+                | ~series.isin(
+                    [_CAPTURE_STATUS_CAPTURED, _CAPTURE_STATUS_EMPTY, _CAPTURE_STATUS_FAILED]
+                )
+            ).sum()
+        ),
+        _CAPTURE_STATUS_EMPTY: int((series == _CAPTURE_STATUS_EMPTY).sum()),
+        _CAPTURE_STATUS_FAILED: int((series == _CAPTURE_STATUS_FAILED).sum()),
+    }
+
+
+def _derive_capture_status_rates(
+    counts: dict[str, int],
+    total_expected_cells: int,
+) -> dict[str, float | int]:
+    """Turn capture_status counts + expected-cells denominator into rates.
+
+    ``attempt_coverage_pct`` / ``capture_coverage_pct`` are rounded to 2 dp
+    and clamped to 100 so malformed denominators don't produce >100% figures.
+    ``empty_rate`` / ``failure_rate`` are rounded to 4 dp and clamped to
+    ``[0, 1]``.  Returns 0.0 for all rates when ``total_expected_cells`` is
+    0 so callers always get a well-formed dict.
+    """
+    captured = int(counts.get(_CAPTURE_STATUS_CAPTURED, 0))
+    empty = int(counts.get(_CAPTURE_STATUS_EMPTY, 0))
+    failed = int(counts.get(_CAPTURE_STATUS_FAILED, 0))
+    attempted = captured + empty + failed
+    denom = max(1, int(total_expected_cells))
+    attempted_denom = max(1, attempted)
+    return {
+        "captured_count": captured,
+        "empty_confirmed_count": empty,
+        "attempted_failed_count": failed,
+        "attempted_total": attempted,
+        "attempt_coverage_pct": min(round(attempted / denom * 100, 2), 100.0)
+        if total_expected_cells > 0
+        else 0.0,
+        "capture_coverage_pct": min(round(captured / denom * 100, 2), 100.0)
+        if total_expected_cells > 0
+        else 0.0,
+        "empty_rate": max(0.0, min(1.0, round(empty / attempted_denom, 4))),
+        "failure_rate": max(0.0, min(1.0, round(failed / attempted_denom, 4))),
+    }
+
+
+def _build_failure_rate_by_dimension(
+    venues_dict: dict[str, object],
+) -> dict[str, dict[str, float | int]]:
+    """Project the ``venues_dict`` into a {venue: {failure_rate, attempted_failed_count}} map.
+
+    Only includes venues whose ``capture_status_counts.attempted_failed`` is
+    strictly positive, so the UI can bind the "show only failures" filter
+    without walking the full per-venue tree client-side.
+    """
+    out: dict[str, dict[str, float | int]] = {}
+    for venue_name, venue_entry_raw in venues_dict.items():
+        if not isinstance(venue_entry_raw, dict):
+            continue
+        venue_entry = cast(dict[str, object], venue_entry_raw)
+        venue_failure_rate_raw = venue_entry.get("failure_rate", 0.0)
+        venue_failure_rate = (
+            float(venue_failure_rate_raw)
+            if isinstance(venue_failure_rate_raw, (int, float))
+            else 0.0
+        )
+        v_counts_raw = venue_entry.get("capture_status_counts", {})
+        v_counts = cast(dict[str, int], v_counts_raw) if isinstance(v_counts_raw, dict) else {}
+        failed_count = int(v_counts.get("attempted_failed", 0) or 0)
+        if failed_count > 0:
+            out[str(venue_name)] = {
+                "failure_rate": venue_failure_rate,
+                "attempted_failed_count": failed_count,
+            }
+    return out
+
+
 def _compute_attempt_coverage(
     filtered: pd.DataFrame,
     category: str,
@@ -127,6 +235,7 @@ def _build_coverage_metrics(
     filtered: pd.DataFrame,
     category: str,
     capture_coverage_pct: float,
+    total_expected_cells: int = 0,
 ) -> dict[str, object]:
     """Resolve the event-driven vs dense coverage metrics for one category.
 
@@ -139,10 +248,24 @@ def _build_coverage_metrics(
     shards-weighted ratio understates real coverage because the denominator
     assumes every (underlying x day) combo should have trades. We display
     attempt coverage and expose capture + empty-rate for the drill-down.
+
+    Phase-C honest-coverage upgrade: when the manifest exposes a
+    ``capture_status`` column (UTL v5) with any non-``captured`` rows, we
+    also derive ``failure_rate`` + structured ``capture_status_counts`` from
+    the column directly. The proxy path (distinct-underlying count) remains
+    the default for event-driven categories whose adapters haven't been
+    re-run post-Phase-B — that keeps the PREDICTION attempt number honest
+    even before the Phase-B sentinel rows land.
     """
     coverage_semantics = COVERAGE_SEMANTICS.get(category.upper(), "dense")
     attempt_found, attempt_expected = _compute_attempt_coverage(filtered, category)
-    if coverage_semantics == "event_driven" and attempt_expected > 0:
+    capture_counts = _compute_capture_status_counts(filtered)
+    has_phase_b_rows = (
+        capture_counts[_CAPTURE_STATUS_EMPTY] + capture_counts[_CAPTURE_STATUS_FAILED] > 0
+    )
+    capture_rates = _derive_capture_status_rates(capture_counts, total_expected_cells)
+
+    if coverage_semantics == "event_driven" and attempt_expected > 0 and not has_phase_b_rows:
         attempt_coverage_pct = min(round(attempt_found / attempt_expected * 100, 2), 100.0)
         empty_rate_estimate: float | None = None
         if attempt_coverage_pct > 0:
@@ -153,16 +276,33 @@ def _build_coverage_metrics(
                 min(1.0, round(1.0 - (capture_coverage_pct / attempt_coverage_pct), 4)),
             )
         completion_pct = attempt_coverage_pct
+        failure_rate = float(capture_rates["failure_rate"])
+    elif has_phase_b_rows and total_expected_cells > 0:
+        # Phase B sentinel rows are present — prefer capture_status-derived
+        # metrics over the distinct-underlying proxy. ``empty_rate_estimate``
+        # becomes the concrete ``empty_rate`` (fraction of attempts returning
+        # zero rows).
+        attempt_coverage_pct = float(capture_rates["attempt_coverage_pct"])
+        empty_rate_estimate = float(capture_rates["empty_rate"])
+        completion_pct = attempt_coverage_pct
+        failure_rate = float(capture_rates["failure_rate"])
     else:
         attempt_coverage_pct = capture_coverage_pct
         empty_rate_estimate = None
         completion_pct = capture_coverage_pct
+        failure_rate = float(capture_rates["failure_rate"])
     return {
         "coverage_semantics": coverage_semantics,
         "capture_coverage_pct": capture_coverage_pct,
         "attempt_coverage_pct": attempt_coverage_pct,
         "empty_rate_estimate": empty_rate_estimate,
+        "failure_rate": failure_rate,
         "completion_pct": completion_pct,
+        "capture_status_counts": {
+            "captured": capture_counts[_CAPTURE_STATUS_CAPTURED],
+            "empty_confirmed": capture_counts[_CAPTURE_STATUS_EMPTY],
+            "attempted_failed": capture_counts[_CAPTURE_STATUS_FAILED],
+        },
     }
 
 
@@ -1518,6 +1658,14 @@ class DataStatusService:
         v_missing = sorted(v_all_dates - v_dates)
         v_found_sorted = sorted(v_dates)
 
+        # Capture-status rollup for this venue — Phase-C honest-coverage.
+        # ``expected`` is the shards-expected denominator; once Phase B's
+        # sentinel rows land the split (captured / empty_confirmed /
+        # attempted_failed) is meaningful at the venue level so the UI can
+        # drive the 4-state heatmap and the failure-rate drill-down.
+        v_capture_counts = _compute_capture_status_counts(v_df)
+        v_capture_rates = _derive_capture_status_rates(v_capture_counts, expected)
+
         venue_entry: dict[str, object] = {
             "dates_found": found,
             "dates_expected": expected,
@@ -1528,6 +1676,15 @@ class DataStatusService:
             "dates_missing_list": v_missing,
             "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             "venue_start_date": venue_start,
+            "capture_status_counts": {
+                "captured": v_capture_counts[_CAPTURE_STATUS_CAPTURED],
+                "empty_confirmed": v_capture_counts[_CAPTURE_STATUS_EMPTY],
+                "attempted_failed": v_capture_counts[_CAPTURE_STATUS_FAILED],
+            },
+            "attempt_coverage_pct": v_capture_rates["attempt_coverage_pct"],
+            "capture_coverage_pct": v_capture_rates["capture_coverage_pct"],
+            "empty_rate": v_capture_rates["empty_rate"],
+            "failure_rate": v_capture_rates["failure_rate"],
         }
 
         # v4: instrument_type breakdown (spot, perpetuals, equity, pool, etc.)
@@ -2699,11 +2856,18 @@ class DataStatusService:
         else:
             cat_pct_shards = cat_pct_dates
 
-        coverage = _build_coverage_metrics(filtered, cat, cat_pct_shards)
+        coverage = _build_coverage_metrics(
+            filtered,
+            cat,
+            cat_pct_shards,
+            total_expected_cells=venue_expected_total,
+        )
         coverage_semantics = coverage["coverage_semantics"]
         capture_coverage_pct = coverage["capture_coverage_pct"]
         attempt_coverage_pct = coverage["attempt_coverage_pct"]
         empty_rate_estimate = coverage["empty_rate_estimate"]
+        failure_rate = coverage["failure_rate"]
+        capture_status_counts = coverage["capture_status_counts"]
         cat_pct = coverage["completion_pct"]
 
         # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
@@ -2719,6 +2883,11 @@ class DataStatusService:
         cat_found_sorted = sorted(cat_found_dates)
         # Sports uses fixture-based unit; other categories use dates
         unit = "fixtures" if cat.upper() == "SPORTS" and venues_dict else "dates"
+
+        # Per-venue failure_rate map — surfaced so the UI's "show only failures"
+        # filter and drill-down tooltip can scope to shards with failures
+        # without walking the full venues_dict tree on the client.
+        failure_rate_by_dimension = _build_failure_rate_by_dimension(venues_dict)
         result: dict[str, object] = {
             "category": cat,
             "bucket": bucket,
@@ -2742,6 +2911,8 @@ class DataStatusService:
             "capture_coverage_pct": capture_coverage_pct,
             "coverage_semantics": coverage_semantics,
             "empty_rate_estimate": empty_rate_estimate,
+            "failure_rate": failure_rate,
+            "capture_status_counts": capture_status_counts,
             "venue_weighted": bool(venues_dict),
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,
@@ -2751,6 +2922,7 @@ class DataStatusService:
             "dates_found_list": cat_found_sorted,
             "dates_missing_list": cat_missing,
             "venues": venues_dict,
+            "failure_rate_by_dimension": failure_rate_by_dimension,
             "_venue_found": venue_found_total,
             "_venue_expected": venue_expected_total,
         }
