@@ -57,7 +57,9 @@ async def health() -> dict[str, object]:
 
 @router.get("/api/health")
 async def health_check():
-    """Detailed health check. Includes GCS FUSE status for UI display."""
+    """Detailed health check. Includes GCS FUSE status + cloud-mode flags so
+    the UI can render a live-vs-mock indicator chip + banner.
+    """
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
     return {
@@ -65,6 +67,9 @@ async def health_check():
         "version": _api_version,
         "config_dir": None,  # Will be set by main app
         "gcs_fuse": get_gcs_fuse_status(),
+        "cloud_provider": _cloud_cfg.cloud_provider,
+        "mock_mode": _cloud_cfg.is_mock_mode(),
+        "data_freshness": _data_freshness(),
     }
 
 
