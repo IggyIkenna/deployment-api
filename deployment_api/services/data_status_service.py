@@ -362,8 +362,8 @@ def _sports_honest_coverage(
             "missing_shards": len(expected_set - found_set),
             "completion_pct": round(len(covered) / max(1, len(expected_set)) * 100, 2),
             "unit": str(meta["unit"]),
-            "missing_dates": sorted(expected_set - found_set)[:50],
-            "found_dates_list": sorted(covered)[:50],
+            "missing_dates": sorted(expected_set - found_set)[:500],
+            "found_dates_list": sorted(covered)[:500],
         }
         total_expected += len(expected_set)
         total_found += len(covered)
@@ -739,8 +739,8 @@ def _per_instrument_coverage(
             "found_shards": found_count,
             "missing_shards": max(0, expected_count - found_count),
             "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
-            "missing_dates": missing_dates[:50],
-            "dates_found_list": sorted(found_in_expected)[:50],
+            "missing_dates": missing_dates[:500],
+            "dates_found_list": sorted(found_in_expected)[:500],
             "unit": "shard_days_legacy",
             "expected_instruments": list(expected_instruments),
             "missing_instruments": list(expected_instruments),
@@ -778,8 +778,8 @@ def _per_instrument_coverage(
         "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
         # Missing-dates at the dt level collapses across instruments so the
         # drill-down stays backwards-compatible with the venue-level UI panel.
-        "missing_dates": sorted(expected_dates - {rd for _, rd in found_pairs})[:50],
-        "dates_found_list": sorted({rd for _, rd in found_pairs})[:50],
+        "missing_dates": sorted(expected_dates - {rd for _, rd in found_pairs})[:500],
+        "dates_found_list": sorted({rd for _, rd in found_pairs})[:500],
         "unit": "shard_instrument_days",
         "expected_instruments": list(expected_instruments),
         "missing_instruments": missing_instruments,
@@ -905,8 +905,8 @@ def _mtds_honest_coverage_for_venue(
                 "found_shards": found_count,
                 "missing_shards": max(0, expected_count - found_count),
                 "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
-                "missing_dates": missing_dates[:50],
-                "dates_found_list": sorted(found_in_expected)[:50],
+                "missing_dates": missing_dates[:500],
+                "dates_found_list": sorted(found_in_expected)[:500],
                 "unit": "shard_days",
             }
 
@@ -3081,8 +3081,8 @@ class DataStatusService:
                     "dates_found": league_fixture_found,
                     "dates_expected": max(1, league_fixture_expected),
                     "dates_missing": max(0, league_fixture_expected - league_fixture_found),
-                    "missing_dates": missing_dates[:50],
-                    "dates_found_list": found_dates[:50],
+                    "missing_dates": missing_dates[:500],
+                    "dates_found_list": found_dates[:500],
                     "completion_pct": min(
                         round(league_fixture_found / max(1, league_fixture_expected) * 100, 2),
                         100.0,
@@ -3106,8 +3106,8 @@ class DataStatusService:
                     "dates_found": found_count,
                     "dates_expected": max(1, expected_count),
                     "dates_missing": len(missing_dates_list),
-                    "missing_dates": missing_dates_list[:50],
-                    "dates_found_list": sorted(found_dates_set)[:50],
+                    "missing_dates": missing_dates_list[:500],
+                    "dates_found_list": sorted(found_dates_set)[:500],
                     "completion_pct": min(
                         round(found_count / max(1, expected_count) * 100, 2),
                         100.0,

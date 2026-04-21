@@ -1192,8 +1192,12 @@ def build_fixtures_csv_export(
 
     try:
         df = _read_parquet_columns(gs_uri)
-    except (OSError, FileNotFoundError) as exc:
-        raise FileNotFoundError(f"No fixtures parquet for {day}: {gs_uri}") from exc
+    except (OSError, FileNotFoundError):
+        # Adapter never ran for this (day, league) — return empty CSV with a
+        # 0 row count so the caller can surface a "no data" hint to the user
+        # instead of a download failure. The HTTP route sets X-Data-Status
+        # so the UI can still distinguish "empty confirmed" from "never ran".
+        return "", 0, _fixtures_csv_filename(day, league_id)
 
     if "af_league_id" not in df.columns:
         # Empty or malformed day file — return empty CSV rather than erroring.

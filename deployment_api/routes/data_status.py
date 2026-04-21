@@ -810,8 +810,6 @@ async def download_fixtures_csv(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in download_fixtures_csv")
         raise HTTPException(
@@ -821,6 +819,10 @@ async def download_fixtures_csv(
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Row-Count": str(row_count),
+        # "captured": parquet had rows for this league; "empty": parquet
+        # existed but no rows for this league (empty_confirmed); "missing":
+        # parquet didn't exist (adapter never ran for this day).
+        "X-Data-Status": "captured" if row_count > 0 else "empty_or_missing",
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
 
