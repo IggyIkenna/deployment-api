@@ -16,6 +16,8 @@ from deployment_api.services.data_status_drilldown import (
     DEFAULT_INSTRUMENT_LIMIT,
     MAX_INSTRUMENT_LIMIT,
     build_csv_export,
+    build_fixture_breakdown,
+    build_fixture_download,
     build_fixtures_csv_export,
     clear_drilldown_cache,
     compute_bucket_counts,
@@ -825,6 +827,71 @@ async def download_fixtures_csv(
         "X-Data-Status": "captured" if row_count > 0 else "empty_or_missing",
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.get("/fixtures/breakdown")
+async def get_fixture_breakdown(
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    league_id: str = Query(..., description="Canonical league_id (e.g. EPL)"),
+):
+    """Per-fixture coverage breakdown for one (day, league_id).
+
+    Sports is fixture-anchored — this endpoint exposes the fixture leaf one
+    level below the existing per-(league, day) drilldown. For every fixture
+    on the day, returns per-entity capture status so the UI can render
+    green/amber/red badges per fixture and wire per-fixture download links.
+
+    Response shape documented on ``build_fixture_breakdown``.
+    """
+    try:
+        return build_fixture_breakdown(day=day, league_id=league_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Error in get_fixture_breakdown")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/fixtures/download")
+async def download_fixture_payload(
+    fixture_id: str = Query(..., description="Canonical fixture_id"),
+    day: str = Query(..., description="Kickoff day (YYYY-MM-DD) — used to locate parquets"),
+    format: str = Query("csv", description="'csv' or 'json'"),
+):
+    """Stream a per-fixture union download across every fixture-scoped entity.
+
+    Reads the 8 per-day fixture-scoped entity parquets, filters each to
+    ``fixture_id``, and returns either:
+
+    - **CSV**: denormalised — one leading ``entity`` column + each entity's
+      columns concatenated (union-of-columns, missing values blank).
+    - **JSON**: ``{fixture_id, day, coverage: {...}, entities: {...}}`` —
+      each entity value is either a ``{capture_status, rows}`` dict (when
+      captured) or a ``{capture_status}`` sentinel.
+    """
+    try:
+        body_text, row_count, filename, media_type = build_fixture_download(
+            fixture_id=fixture_id,
+            day=day,
+            fmt=format,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Error in download_fixture_payload")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Row-Count": str(row_count),
+    }
+    return Response(content=body_text, media_type=media_type, headers=headers)
 
 
 @router.get("/shard-info")

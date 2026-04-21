@@ -1219,3 +1219,351 @@ def build_fixtures_csv_export(
 
 def _fixtures_csv_filename(day: str, league_id: str) -> str:
     return f"instruments-service_FIXTURES_{league_id}_{day}.csv"
+
+
+# ---------------------------------------------------------------------------
+# Per-fixture drilldown: entity map, breakdown, download
+# ---------------------------------------------------------------------------
+
+# Fixture-scoped entities (STANDINGS is league-level — deliberately excluded).
+# Order determines render sequence in CSV + JSON downloads.
+_FIXTURE_ENTITIES: tuple[tuple[str, str, str], ...] = (
+    # (data_type label, entity path suffix, parquet filename)
+    ("FIXTURES", "entity=fixtures", "fixtures.parquet"),
+    ("FIXTURE_STATS", "entity=fixture_stats", "fixture_stats.parquet"),
+    ("FIXTURE_LINEUPS", "entity=fixture_lineups", "fixture_lineups.parquet"),
+    ("FIXTURE_EVENTS", "entity=fixture_events", "fixture_events.parquet"),
+    ("PLAYER_STATS", "entity=player_stats", "player_stats.parquet"),
+    ("INJURIES", "entity=injuries", "injuries.parquet"),
+    ("XG", "entity=understat_xg", "understat_xg.parquet"),
+    ("WEATHER", "entity=weather", "weather.parquet"),
+)
+
+# Columns we strictly need from the master fixtures parquet for breakdown.
+# Keep the projection narrow so gcsfs read cost stays bounded.
+_FIXTURE_META_COLUMNS: list[str] = [
+    "fixture_id",
+    "af_league_id",
+    "kickoff_utc",
+    "home_team_name",
+    "away_team_name",
+    "status",
+    "venue_id",
+]
+
+
+def _entity_gs_uri(
+    *, day: str, path_suffix: str, filename: str, project_id: str | None = None
+) -> str:
+    pid = project_id or _pid
+    return (
+        f"gs://instruments-store-sports-{pid}/sports_reference/"
+        f"by_date/day={day}/{path_suffix}/{filename}"
+    )
+
+
+def _read_entity_fixture_ids(gs_uri: str) -> tuple[str, set[str]]:
+    """Return ``(capture_status, fixture_ids)`` for one per-day entity parquet.
+
+    ``capture_status`` is one of ``"captured"`` / ``"empty_confirmed"`` /
+    ``"attempted_failed"``. When ``"attempted_failed"`` the returned set is
+    empty; callers should fall through to per-fixture ``"missing"`` /
+    ``"attempted_failed"`` classification.
+    """
+    try:
+        df = _read_parquet_columns(gs_uri, ["fixture_id"])
+    except (OSError, FileNotFoundError):
+        return ("attempted_failed", set())
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("per-fixture entity read failed for %s: %s", gs_uri, exc)
+        return ("attempted_failed", set())
+
+    if "fixture_id" not in df.columns or df.empty:
+        return ("empty_confirmed", set())
+
+    raw_series = df["fixture_id"].dropna()
+    raw_values: object = raw_series.unique().tolist()  # pyright: ignore[reportUnknownMemberType]
+    values_list: list[object] = cast(list[object], raw_values)
+    fixture_ids: set[str] = set()
+    for v in values_list:
+        s = str(v).strip()
+        if s:
+            fixture_ids.add(s)
+    if not fixture_ids:
+        return ("empty_confirmed", set())
+    return ("captured", fixture_ids)
+
+
+def _load_fixture_meta(
+    *,
+    day: str,
+    league_id: str,
+    project_id: str | None = None,
+) -> tuple[list[dict[str, object]], int | None]:
+    """Return ``(fixtures_for_league, af_league_id_or_None)``.
+
+    Each fixture dict has: fixture_id, kickoff_utc, home_team_name,
+    away_team_name, status, venue_id.
+
+    Raises ``FileNotFoundError`` when the day's fixtures parquet is absent;
+    ``ValueError`` when the canonical league_id can't be mapped to an
+    API-Football numeric id.
+    """
+    from unified_api_contracts.sports import get_league
+
+    league = get_league(league_id)
+    if league is None:
+        raise ValueError(f"Unknown league_id: {league_id}")
+    if league.api_football_id is None:
+        raise ValueError(
+            f"League {league_id} has no api_football_id — not sourced from API-Football"
+        )
+    af_id = int(league.api_football_id)
+
+    gs_uri = _entity_gs_uri(
+        day=day,
+        path_suffix="entity=fixtures",
+        filename="fixtures.parquet",
+        project_id=project_id,
+    )
+    df = _read_parquet_columns(gs_uri, _FIXTURE_META_COLUMNS)
+
+    if "af_league_id" not in df.columns or df.empty:
+        return ([], af_id)
+
+    af_series = pd.to_numeric(df["af_league_id"], errors="coerce")
+    filtered = df[af_series == af_id]
+    fixtures: list[dict[str, object]] = []
+    for row in filtered.to_dict(orient="records"):  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        fixture_id = str(row.get("fixture_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        if not fixture_id:
+            continue
+        fixtures.append(
+            {
+                "fixture_id": fixture_id,
+                "kickoff_utc": str(row.get("kickoff_utc") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+                "home_team_name": str(row.get("home_team_name") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+                "away_team_name": str(row.get("away_team_name") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+                "status": str(row.get("status") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+                "venue_id": str(row.get("venue_id") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            }
+        )
+    return (fixtures, af_id)
+
+
+def build_fixture_breakdown(
+    *,
+    day: str,
+    league_id: str,
+    project_id: str | None = None,
+) -> dict[str, object]:
+    """Return per-fixture coverage for one (day, league_id).
+
+    Response shape:
+
+    ``{
+        day, league_id, af_league_id,
+        fixtures_expected: int,
+        fixtures: [
+          {fixture_id, kickoff_utc, home_team_name, away_team_name, status,
+           coverage: {FIXTURES: "captured", FIXTURE_STATS: "missing", ...},
+           coverage_summary: {captured, empty_confirmed, missing, failed}}
+        ]
+    }``
+
+    When the day's master fixtures parquet is absent (adapter never ran for
+    this day), returns ``{"fixtures_expected": 0, "fixtures": [],
+    "status": "no_schedule"}``. Phase-3 semantics: the UI surfaces this as
+    "no schedule recorded" rather than red-missing fixtures.
+    """
+    try:
+        fixtures_meta, af_id = _load_fixture_meta(
+            day=day, league_id=league_id, project_id=project_id
+        )
+    except (OSError, FileNotFoundError):
+        return {
+            "day": day,
+            "league_id": league_id,
+            "af_league_id": None,
+            "fixtures_expected": 0,
+            "fixtures": [],
+            "status": "no_schedule",
+        }
+
+    # Resolve per-entity fixture_id sets ONCE per entity (bounded by 8 reads).
+    entity_status: dict[str, tuple[str, set[str]]] = {}
+    for data_type, path_suffix, filename in _FIXTURE_ENTITIES:
+        gs_uri = _entity_gs_uri(
+            day=day, path_suffix=path_suffix, filename=filename, project_id=project_id
+        )
+        entity_status[data_type] = _read_entity_fixture_ids(gs_uri)
+
+    fixture_rows: list[dict[str, object]] = []
+    for meta in fixtures_meta:
+        fid = str(meta["fixture_id"])
+        coverage: dict[str, str] = {}
+        summary = {"captured": 0, "empty_confirmed": 0, "missing": 0, "failed": 0}
+        for data_type, _suffix, _filename in _FIXTURE_ENTITIES:
+            status, ids = entity_status[data_type]
+            if status == "attempted_failed":
+                coverage[data_type] = "attempted_failed"
+                summary["failed"] += 1
+                continue
+            if status == "empty_confirmed":
+                coverage[data_type] = "empty_confirmed"
+                summary["empty_confirmed"] += 1
+                continue
+            # status == "captured" — per-fixture presence check
+            if fid in ids:
+                coverage[data_type] = "captured"
+                summary["captured"] += 1
+            else:
+                coverage[data_type] = "missing"
+                summary["missing"] += 1
+        row: dict[str, object] = dict(meta)
+        row["coverage"] = coverage
+        row["coverage_summary"] = summary
+        fixture_rows.append(row)
+
+    return {
+        "day": day,
+        "league_id": league_id,
+        "af_league_id": af_id,
+        "fixtures_expected": len(fixture_rows),
+        "fixtures": fixture_rows,
+        "status": "resolved",
+    }
+
+
+def _fixture_download_filename(fixture_id: str, fmt: str) -> str:
+    safe_fmt = "csv" if fmt.lower() == "csv" else "json"
+    return f"instruments-service_FIXTURE_{fixture_id}.{safe_fmt}"
+
+
+def _filter_entity_rows_for_fixture(
+    gs_uri: str, fixture_id: str
+) -> tuple[str, pd.DataFrame | None]:
+    """Read a per-day entity parquet and return ``(capture_status, rows_for_fixture_or_none)``.
+
+    ``rows_for_fixture_or_none`` is ``None`` for ``attempted_failed`` /
+    ``empty_confirmed``, an empty DataFrame for ``missing`` (parquet has rows
+    but none for this fixture), or a populated slice for ``captured``.
+    """
+    try:
+        df = _read_parquet_columns(gs_uri, None)
+    except (OSError, FileNotFoundError):
+        return ("attempted_failed", None)
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("per-fixture download read failed for %s: %s", gs_uri, exc)
+        return ("attempted_failed", None)
+
+    if "fixture_id" not in df.columns or df.empty:
+        return ("empty_confirmed", None)
+
+    fid_series = df["fixture_id"].astype(str)
+    filtered = df[fid_series == fixture_id]
+    if filtered.empty:
+        return ("missing", filtered)
+    return ("captured", filtered)
+
+
+def _resolve_fixture_day(*, fixture_id: str, day: str | None, project_id: str | None = None) -> str:
+    """Return the canonical kickoff day for a fixture_id.
+
+    When ``day`` is supplied it is used as-is (fast path). When omitted the
+    caller has no anchor — we do not scan the entire reference store; we
+    raise ``ValueError`` so the HTTP layer returns 400. This keeps the
+    endpoint cheap and predictable.
+    """
+    if day:
+        return day
+    raise ValueError(
+        "fixture_id alone cannot resolve a day — pass ?day=YYYY-MM-DD "
+        "together with ?fixture_id=... (the UI already knows the day from "
+        "the breakdown response)."
+    )
+
+
+def build_fixture_download(
+    *,
+    fixture_id: str,
+    day: str,
+    fmt: str,
+    project_id: str | None = None,
+) -> tuple[str, int, str, str]:
+    """Return ``(body_text, row_count, filename, media_type)`` for one fixture.
+
+    ``fmt`` is ``"csv"`` or ``"json"``. CSV produces a denormalised shape:
+    one leading column ``entity`` + the entity's own columns; rows from
+    different entities are concatenated with union-of-columns (missing
+    columns = blank cell). JSON produces ``{fixture_id, day, entities: {...},
+    coverage: {...}}`` where each entity value is either a list of records
+    (captured) or a sentinel ``{"capture_status": "..."}`` dict.
+    """
+    fmt_lower = fmt.lower()
+    if fmt_lower not in ("csv", "json"):
+        raise ValueError(f"Unsupported format: {fmt!r} (expected 'csv' or 'json')")
+
+    # Resolve the day (must be supplied today — see _resolve_fixture_day docstring).
+    day_resolved = _resolve_fixture_day(fixture_id=fixture_id, day=day, project_id=project_id)
+
+    per_entity: dict[str, tuple[str, pd.DataFrame | None]] = {}
+    for data_type, path_suffix, filename in _FIXTURE_ENTITIES:
+        gs_uri = _entity_gs_uri(
+            day=day_resolved,
+            path_suffix=path_suffix,
+            filename=filename,
+            project_id=project_id,
+        )
+        per_entity[data_type] = _filter_entity_rows_for_fixture(gs_uri, fixture_id)
+
+    coverage: dict[str, str] = {dt: status for dt, (status, _rows) in per_entity.items()}
+    total_captured_rows = sum(
+        (0 if rows is None else len(rows)) for _status, rows in per_entity.values()
+    )
+
+    if total_captured_rows == 0:
+        # Nothing found for this fixture across any entity — surface a 404
+        # at the HTTP layer.
+        raise FileNotFoundError(
+            f"fixture_id {fixture_id!r} not found in any entity for day {day_resolved}"
+        )
+
+    filename_out = _fixture_download_filename(fixture_id, fmt_lower)
+
+    if fmt_lower == "csv":
+        frames: list[pd.DataFrame] = []
+        for data_type, (status, rows) in per_entity.items():
+            if status != "captured" or rows is None or rows.empty:
+                continue
+            tagged = rows.copy()
+            tagged.insert(0, "entity", data_type)
+            frames.append(tagged)
+        if not frames:
+            # defensive — total_captured_rows above should have caught this
+            raise FileNotFoundError(f"fixture_id {fixture_id!r} resolved no CSV-writable rows")
+        merged = pd.concat(frames, ignore_index=True, sort=False)
+        csv_text = merged.to_csv(index=False)
+        return (csv_text, len(merged), filename_out, "text/csv; charset=utf-8")
+
+    # JSON
+    import json
+
+    entities_payload: dict[str, object] = {}
+    for data_type, (status, rows) in per_entity.items():
+        if status == "captured" and rows is not None and not rows.empty:
+            entities_payload[data_type] = {
+                "capture_status": "captured",
+                "rows": rows.to_dict(orient="records"),  # pyright: ignore[reportUnknownMemberType]
+            }
+        else:
+            entities_payload[data_type] = {"capture_status": status}
+
+    body = {
+        "fixture_id": fixture_id,
+        "day": day_resolved,
+        "coverage": coverage,
+        "entities": entities_payload,
+    }
+    json_text = json.dumps(body, default=str)
+    return (json_text, total_captured_rows, filename_out, "application/json")
