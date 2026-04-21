@@ -2160,38 +2160,58 @@ class DataStatusService:
                 remapped[canonical] = entry
             venues_dict = remapped
 
-            # DEFI manifest rows typically carry ``data_type=""`` — the real
-            # data_type is encoded in the sub-dimension bucket name that
-            # ``_read_defi_merged_index`` tags into ``_defi_source``. For the
-            # per-(venue, data_type) honest-coverage filter to land hits,
-            # backfill the data_type column from _defi_source when blank.
-            # Mapping uses hyphenated sub-dim keys -> manifest underscore form
-            # (dex-swaps -> dex_swaps, lending-indices -> lending_indices, ...).
-            # Fix for Phase 6e.1b.
-            if "data_type" in filtered.columns and "_defi_source" in filtered.columns:
-                _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
-                    "dex-swaps": "dex_swaps",
-                    "dex-pools": "dex_pools",
-                    "lending-indices": "lending_indices",
-                    "lst-rates": "lst_rates",
-                    "oracle-prices": "oracle_prices",
-                    "liquidations": "liquidations",
-                    "perp-funding": "perp_funding",
-                    "gas-fees": "gas_fees",
-                    "evm-defi": "",
-                    "solana-defi": "",
-                    "": "",
-                }
-                blank_dt = filtered["data_type"].fillna("").astype(str).str.len() == 0
-                if blank_dt.any() and "_defi_source" in filtered.columns:
-                    inferred = (
-                        filtered["_defi_source"]
-                        .fillna("")
-                        .astype(str)
-                        .map(_DEFI_SOURCE_TO_DATA_TYPE)
-                        .fillna("")
-                    )
-                    filtered.loc[blank_dt, "data_type"] = inferred[blank_dt]
+            # DEFI data_type canonicalisation. Two cases:
+            # (1) Rows with blank data_type — infer from _defi_source bucket tag.
+            # (2) Rows with hyphenated data_type (``lending-indices``,
+            #     ``dex-swaps``, ...) from sub-dim buckets — map to the
+            #     canonical underscore form UAC declares in
+            #     ``VENUE_DATA_TYPE_CAPABILITIES`` (``lending_indices``,
+            #     ``dex_swaps``). Fixes Phase 6e.1b live-API bug where
+            #     honest-coverage per-(venue, dt) filter never matched because
+            #     the sub-dim bucket rows carry hyphen form while the UAC
+            #     declarations use underscore form.
+            _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
+                "dex-swaps": "dex_swaps",
+                "dex-pools": "dex_pools",
+                "lending-indices": "lending_indices",
+                "lst-rates": "lst_rates",
+                "oracle-prices": "oracle_prices",
+                "perp-funding": "perp_funding",
+                "gas-fees": "gas_fees",
+            }
+            if "data_type" in filtered.columns:
+                # Case (1): infer from _defi_source for blank rows
+                if "_defi_source" in filtered.columns:
+                    _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
+                        "dex-swaps": "dex_swaps",
+                        "dex-pools": "dex_pools",
+                        "lending-indices": "lending_indices",
+                        "lst-rates": "lst_rates",
+                        "oracle-prices": "oracle_prices",
+                        "liquidations": "liquidations",
+                        "perp-funding": "perp_funding",
+                        "gas-fees": "gas_fees",
+                        "evm-defi": "",
+                        "solana-defi": "",
+                        "": "",
+                    }
+                    blank_dt = filtered["data_type"].fillna("").astype(str).str.len() == 0
+                    if blank_dt.any():
+                        inferred = (
+                            filtered["_defi_source"]
+                            .fillna("")
+                            .astype(str)
+                            .map(_DEFI_SOURCE_TO_DATA_TYPE)
+                            .fillna("")
+                        )
+                        filtered.loc[blank_dt, "data_type"] = inferred[blank_dt]
+                # Case (2): map hyphenated DEFI data_types to canonical underscore form
+                filtered["data_type"] = (
+                    filtered["data_type"]
+                    .fillna("")
+                    .astype(str)
+                    .replace(_DEFI_DATA_TYPE_ALIASES)
+                )
 
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
