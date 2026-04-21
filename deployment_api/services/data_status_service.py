@@ -17,7 +17,9 @@ import pandas as pd
 from unified_api_contracts import (
     VenueMapping,
     get_expected_data_types_for_venue,
+    get_expected_instruments_for_venue,
     get_venue_data_type_start_date,
+    is_per_instrument_shard_data_type,
 )
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import is_in_tradfi_tick_window
@@ -38,6 +40,17 @@ logger = logging.getLogger(__name__)
 # TradFi data types that are only expected within tick windows (Databento cost mgmt).
 # Outside tick windows, only ohlcv_1m (and other non-tick types) are expected.
 _TRADFI_TICK_ONLY_DATA_TYPES: frozenset[str] = frozenset({"tbbo", "trades"})
+
+# Phase 8D — MVP cap for the per-(venue, data_type, instrument_id) Tier-3
+# denominator. Mirrors the MTDS orchestrator constant in
+# ``market_tick_data_service/engine/orchestrator.py`` so the aggregator
+# denominator matches the sentinel fan-out the orchestrator writes.
+_DEFAULT_PER_INSTRUMENT_SENTINEL_CAP: int = 50
+
+# Per-instrument dt whose per_instrument drill-down panel is inlined on the
+# response. Above this threshold the aggregator suppresses the dict (kept as
+# totals only) to avoid ballooning the API payload size on big perp boards.
+_PER_INSTRUMENT_BREAKDOWN_MAX_SIZE: int = 20
 
 # Per-category coverage semantics — distinguishes "dense" categories where every
 # underlying is expected to produce data every day (CeFi, TradFi, DeFi) from
@@ -617,6 +630,184 @@ def _mtds_expected_dates_for_venue_dt(
     return {d.strftime("%Y-%m-%d") for d in pd.date_range(effective_start, window_end, freq="D")}
 
 
+def _per_instrument_coverage(
+    venue_df_ok: pd.DataFrame,
+    venue: str,
+    dt: str,
+    expected_dates: set[str],
+    cap: int,
+) -> dict[str, object]:
+    """Phase 8D — compute the per-(instrument_id, date) denominator for a
+    per-instrument shard ``data_type``.
+
+    Extracted into its own helper so the parent
+    :func:`_mtds_honest_coverage_for_venue` stays under ruff C901 and so
+    the Tier-3 branch is trivially unit-testable without re-plumbing the
+    full manifest DataFrame.
+
+    Mirrors the sentinel fan-out landed in MTDS orchestrator commit
+    ``2947dd2``: expected denominator = ``|instruments| x |dates|`` where
+    ``instruments`` comes from :func:`get_expected_instruments_for_venue`
+    (with ``instruments_provider=None`` so UAC falls back to its MVP seed
+    tables). The found set counts distinct ``(instrument_id, date)``
+    tuples in ``venue_df_ok`` whose ``instrument_id`` is non-empty.
+
+    **Legacy-row fallback:** if the manifest has (venue, dt) rows that
+    land with an empty ``instrument_id`` (pre-Phase-8C writes), we degrade
+    to the venue-level per-(venue, dt, date) denominator for that (venue,
+    dt) pair so coverage % doesn't regress on already-shipped backfills.
+    The degraded response is annotated with ``legacy_row_count``.
+
+    Parameters
+    ----------
+    venue_df_ok:
+        Pre-filtered manifest rows for this venue, gated on
+        ``capture_status in {captured, empty_confirmed}``.
+    venue:
+        Canonical MTDS venue key.
+    dt:
+        Per-instrument shard data_type (caller MUST verify via
+        :func:`is_per_instrument_shard_data_type`).
+    expected_dates:
+        Pre-computed expected date set from
+        :func:`_mtds_expected_dates_for_venue_dt`.
+    cap:
+        Hard ceiling on the returned instrument universe size. Passed to
+        UAC; the Phase 8 MVP default is
+        :data:`_DEFAULT_PER_INSTRUMENT_SENTINEL_CAP` (50).
+
+    Returns
+    -------
+    dict[str, object]
+        ``{"expected_shards", "found_shards", "missing_shards",
+        "completion_pct", "missing_dates", "dates_found_list", "unit",
+        "expected_instruments", "missing_instruments", "per_instrument"?,
+        "legacy_row_count"?}``. ``per_instrument`` is only emitted when
+        the instrument universe size is below
+        :data:`_PER_INSTRUMENT_BREAKDOWN_MAX_SIZE` (keeps response bloat
+        bounded on big perp boards).
+    """
+    expected_instruments = get_expected_instruments_for_venue(
+        venue,
+        dt,
+        instruments_provider=None,
+        cap=cap,
+    )
+
+    # Slice to the (venue, dt) rows once.
+    if "data_type" in venue_df_ok.columns and not venue_df_ok.empty:
+        dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
+    else:
+        dt_rows = venue_df_ok.iloc[0:0]
+
+    has_instrument_col = "instrument_id" in dt_rows.columns
+    instrument_series = (
+        dt_rows["instrument_id"].fillna("").astype(str)
+        if has_instrument_col
+        else pd.Series([], dtype=str)
+    )
+    date_series = (
+        dt_rows["date"].astype(str) if "date" in dt_rows.columns else pd.Series([], dtype=str)
+    )
+
+    if has_instrument_col and len(dt_rows) > 0:
+        # Rows that land with empty ``instrument_id`` predate Phase-8C
+        # fan-out. Count them separately so we can fall back to the
+        # venue-level denominator when the (venue, dt) slice is fully
+        # legacy.
+        legacy_mask = instrument_series.str.strip() == ""
+        legacy_row_count = int(legacy_mask.sum())
+        non_legacy_mask = ~legacy_mask
+        non_legacy_instr = instrument_series[non_legacy_mask]
+        non_legacy_dates = date_series[non_legacy_mask]
+    else:
+        legacy_row_count = len(dt_rows)
+        non_legacy_instr = pd.Series([], dtype=str)
+        non_legacy_dates = pd.Series([], dtype=str)
+
+    # Legacy-row fallback: the aggregator hasn't seen any Phase-8C rows
+    # for this (venue, dt) yet -- preserve the prior per-(venue, dt, date)
+    # denominator so historical backfills don't regress in the UI.
+    if legacy_row_count > 0 and len(non_legacy_instr) == 0:
+        found_dates_set = {str(d) for d in date_series.unique() if str(d)}
+        found_in_expected = found_dates_set & expected_dates
+        missing_dates = sorted(expected_dates - found_dates_set)
+        expected_count = len(expected_dates)
+        found_count = len(found_in_expected)
+        return {
+            "expected_shards": expected_count,
+            "found_shards": found_count,
+            "missing_shards": max(0, expected_count - found_count),
+            "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+            "missing_dates": missing_dates[:50],
+            "dates_found_list": sorted(found_in_expected)[:50],
+            "unit": "shard_days_legacy",
+            "expected_instruments": list(expected_instruments),
+            "missing_instruments": list(expected_instruments),
+            "legacy_row_count": legacy_row_count,
+        }
+
+    # Phase 8D Tier-3 denominator.
+    found_pairs: set[tuple[str, str]] = set()
+    if len(non_legacy_instr) > 0:
+        for instrument_id, row_date in zip(
+            non_legacy_instr.tolist(), non_legacy_dates.tolist(), strict=True
+        ):
+            iid = str(instrument_id)
+            rd = str(row_date)
+            # Only count the shard if it falls inside the expected date
+            # window -- same guard as the venue-level path.
+            if iid and rd in expected_dates:
+                found_pairs.add((iid, rd))
+
+    n_instruments = len(expected_instruments)
+    n_dates = len(expected_dates)
+    expected_count = n_instruments * n_dates
+    found_count = len(found_pairs)
+
+    # Which instruments have 0 shards in the window.
+    instruments_with_shards = {iid for iid, _ in found_pairs}
+    missing_instruments = [
+        iid for iid in expected_instruments if iid not in instruments_with_shards
+    ]
+
+    entry: dict[str, object] = {
+        "expected_shards": expected_count,
+        "found_shards": found_count,
+        "missing_shards": max(0, expected_count - found_count),
+        "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+        # Missing-dates at the dt level collapses across instruments so the
+        # drill-down stays backwards-compatible with the venue-level UI panel.
+        "missing_dates": sorted(expected_dates - {rd for _, rd in found_pairs})[:50],
+        "dates_found_list": sorted({rd for _, rd in found_pairs})[:50],
+        "unit": "shard_instrument_days",
+        "expected_instruments": list(expected_instruments),
+        "missing_instruments": missing_instruments,
+    }
+
+    if legacy_row_count > 0:
+        # Some Phase-8C rows + some legacy rows coexist -- keep the Tier-3
+        # denominator (authoritative) but surface the legacy-row count so
+        # the UI can display a migration-in-progress badge.
+        entry["legacy_row_count"] = legacy_row_count
+
+    # Only inline the per-instrument breakdown on venues with a small
+    # universe (<20). BINANCE-FUTURES with 50 perps would double the
+    # response size per (venue, dt) pair otherwise.
+    if n_instruments and n_instruments < _PER_INSTRUMENT_BREAKDOWN_MAX_SIZE:
+        per_instrument: dict[str, dict[str, object]] = {}
+        for iid in expected_instruments:
+            found_for_iid = sum(1 for i, _ in found_pairs if i == iid)
+            per_instrument[iid] = {
+                "found": found_for_iid,
+                "expected": n_dates,
+                "completion_pct": min(round(found_for_iid / max(1, n_dates) * 100, 2), 100.0),
+            }
+        entry["per_instrument"] = per_instrument
+
+    return entry
+
+
 def _mtds_honest_coverage_for_venue(
     filtered: pd.DataFrame,
     venue: str,
@@ -636,8 +827,10 @@ def _mtds_honest_coverage_for_venue(
         implicit ``captured``, same convention as ``_sports_honest_coverage``).
 
     Returns per-dt entries + aggregate totals. ``expected_shards`` /
-    ``found_shards`` count distinct ``(venue, data_type, date)`` triples —
-    the correct denominator for "did we capture this shard on this day?"
+    ``found_shards`` count distinct ``(venue, data_type, date)`` triples
+    for venue-level shard dt, and distinct ``(venue, data_type,
+    instrument_id, date)`` 4-tuples for per-instrument shard dt (Phase 8D
+    Tier-3). :func:`is_per_instrument_shard_data_type` dispatches.
 
     ``expected_data_types`` lists the UAC-declared dt set for this venue;
     ``missing_data_types`` lists declared dt with zero found shards (surfaces
@@ -677,27 +870,46 @@ def _mtds_honest_coverage_for_venue(
         expected_dates = _mtds_expected_dates_for_venue_dt(
             venue_mapping, venue, dt, category, window_start, window_end
         )
-        if "data_type" in venue_df_ok.columns:
-            dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
-            found_dates_set = {str(d) for d in dt_rows["date"].unique()}
-        else:
-            found_dates_set = set()
-        # Only count dates that fall inside the expected window — a row from
-        # before ``effective_start`` should not inflate ``found_shards``.
-        found_in_expected = found_dates_set & expected_dates
-        missing_dates = sorted(expected_dates - found_dates_set)
-        expected_count = len(expected_dates)
-        found_count = len(found_in_expected)
 
-        dt_entries[dt] = {
-            "expected_shards": expected_count,
-            "found_shards": found_count,
-            "missing_shards": max(0, expected_count - found_count),
-            "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
-            "missing_dates": missing_dates[:50],
-            "dates_found_list": sorted(found_in_expected)[:50],
-            "unit": "shard_days",
-        }
+        if is_per_instrument_shard_data_type(dt):
+            # Phase 8D Tier-3 branch — per-(venue, dt, instrument_id,
+            # date) denominator.
+            dt_entry = _per_instrument_coverage(
+                venue_df_ok,
+                venue,
+                dt,
+                expected_dates,
+                _DEFAULT_PER_INSTRUMENT_SENTINEL_CAP,
+            )
+            dt_entries[dt] = dt_entry
+            expected_count = int(cast(int, dt_entry["expected_shards"]))
+            found_count = int(cast(int, dt_entry["found_shards"]))
+        else:
+            # Venue-level dt — preserve the Phase 6d per-(venue, dt, date)
+            # denominator.
+            if "data_type" in venue_df_ok.columns:
+                dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
+                found_dates_set = {str(d) for d in dt_rows["date"].unique()}
+            else:
+                found_dates_set = set()
+            # Only count dates that fall inside the expected window — a
+            # row from before ``effective_start`` should not inflate
+            # ``found_shards``.
+            found_in_expected = found_dates_set & expected_dates
+            missing_dates = sorted(expected_dates - found_dates_set)
+            expected_count = len(expected_dates)
+            found_count = len(found_in_expected)
+
+            dt_entries[dt] = {
+                "expected_shards": expected_count,
+                "found_shards": found_count,
+                "missing_shards": max(0, expected_count - found_count),
+                "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+                "missing_dates": missing_dates[:50],
+                "dates_found_list": sorted(found_in_expected)[:50],
+                "unit": "shard_days",
+            }
+
         total_expected += expected_count
         total_found += found_count
         if found_count == 0 and expected_count > 0:

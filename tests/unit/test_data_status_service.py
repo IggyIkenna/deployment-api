@@ -1711,10 +1711,16 @@ class TestMTDSHonestCoverage:
                 total_days=2,
                 venue_mapping=VenueMapping(),
             )
-        # BINANCE-SPOT: 2 dts x 2 days = 4 expected, 1 found (trades on 04-17)
+        # BINANCE-SPOT post-Phase-8D:
+        #   - ``trades``: 1 legacy row (empty instrument_id in the fixture
+        #     helper) -> legacy fallback per-(venue, dt, date) = 2 expected,
+        #     1 found.
+        #   - ``book_snapshot_5``: 0 rows -> Tier-3 per-instrument denom =
+        #     21 MVP SPOT instruments x 2 days = 42 expected, 0 found.
+        # Total expected = 44; total found = 1.
         binance = result["venues"]["BINANCE-SPOT"]
         assert isinstance(binance, dict)
-        assert binance["dates_expected"] == 4
+        assert binance["dates_expected"] == 44
         assert binance["dates_found"] == 1
         assert sorted(binance["expected_data_types"]) == ["book_snapshot_5", "trades"]
         assert "book_snapshot_5" in binance["missing_data_types"]
@@ -1897,11 +1903,21 @@ class TestMTDSHonestCoverage:
                 venue_mapping=VenueMapping(),
             )
         aave = result["venues"]["AAVEV3-ETHEREUM"]
-        # 4 expected dts x 2 days = 8 expected; 2 found (lending_indices only).
-        assert aave["dates_expected"] == 8
+        # Post-Phase-8D: all 4 AAVE dts are per-instrument shards with an
+        # empty MVP seed (WAVE 8G follow-up seeds the top-N Aave reserves).
+        #   - ``lending_indices``: 2 legacy rows (empty instrument_id in
+        #     the fixture) -> legacy fallback = 2 expected, 2 found.
+        #   - ``oracle_prices`` / ``rewards`` / ``risk_params``: 0 rows +
+        #     empty MVP seed -> Tier-3 expected = 0.
+        # Total expected = 2; total found = 2.
+        assert aave["dates_expected"] == 2
         assert aave["dates_found"] == 2
-        assert "oracle_prices" in aave["missing_data_types"]
-        assert "rewards" in aave["missing_data_types"]
+        # oracle_prices / rewards / risk_params have 0 expected (empty
+        # DeFi MVP seed -- WAVE 8G follow-up). ``missing_data_types`` only
+        # flags dt with found_count == 0 AND expected_count > 0, so the
+        # seed-empty dts drop out of the missing list (not missing, just
+        # not yet seeded).
+        assert aave["missing_data_types"] == []
         assert result["honest_axis"] == "per_venue_per_data_type_per_chain_daily"
 
     def test_prediction_per_venue_daily(self):
@@ -1987,3 +2003,249 @@ class TestMTDSHonestCoverage:
         # from 100% with a single-row fixture.
         assert result["completion_pct"] < 10.0
         assert result["shards_expected"] > 20  # 11 venues x ≥2 dts x 1 day
+
+
+class TestMTDSPerInstrumentHonestCoverage:
+    """Phase 8D — per-(venue, data_type, instrument_id, date) denominator.
+
+    SSOT:
+      - plan: ``plans/active/mtds_per_instrument_sentinels_2026_04_21.plan.md``
+      - UAC accessor: ``get_expected_instruments_for_venue`` +
+        ``is_per_instrument_shard_data_type`` (WAVE 8B, commit 74e278c).
+      - MTDS orchestrator: Tier-3 fan-out landed in commit 2947dd2 (WAVE 8C).
+
+    Covers ``_mtds_honest_coverage_for_venue`` + the extracted
+    ``_per_instrument_coverage`` helper:
+
+      1. BINANCE-FUTURES ``derivative_ticker`` with no captures -> 0%
+         and every MVP perp in ``missing_instruments``.
+      2. BINANCE-FUTURES ``derivative_ticker`` with 2 captured + 8
+         empty-confirmed sentinels -> expected count covers the full MVP
+         perp universe; found count reflects the 2 captured pairs.
+      3. Legacy-row fallback: ``trades`` rows with empty ``instrument_id``
+         -> degrade to venue-level per-(venue, dt, date) denominator and
+         annotate with ``legacy_row_count``.
+      4. DEFI ``dex_swaps`` with empty MVP seed -> 0 expected (WAVE 8G
+         seed follow-up) and `per_instrument` dict not emitted.
+      5. Non-per-instrument dt (``liquidations``) -> old per-(venue, dt,
+         date) path preserved + ``unit == "shard_days"``.
+    """
+
+    def _mtds_df(self, rows):
+        cols = [
+            "date",
+            "venue",
+            "data_type",
+            "service_name",
+            "capture_status",
+            "chain",
+            "instrument_type",
+            "league_id",
+            "instrument_id",
+            "row_count",
+        ]
+        return pd.DataFrame(rows, columns=cols)
+
+    def test_derivative_ticker_no_captures_zero_completion(self):
+        """BINANCE-FUTURES + derivative_ticker: MVP seed has 10 perps.
+        Zero manifest rows -> expected = 10 * 1 = 10; found = 0; every
+        perp listed under ``missing_instruments``."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._mtds_df([])
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, "BINANCE-FUTURES", "CEFI", "2026-04-17", "2026-04-17", VenueMapping()
+        )
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        dt_entry = data_types["derivative_ticker"]
+        assert isinstance(dt_entry, dict)
+        # MVP PERP seed = 10 instruments.
+        assert len(dt_entry["expected_instruments"]) == 10
+        assert dt_entry["expected_shards"] == 10  # 10 instruments x 1 day
+        assert dt_entry["found_shards"] == 0
+        assert dt_entry["completion_pct"] == 0.0
+        assert sorted(dt_entry["missing_instruments"]) == sorted(dt_entry["expected_instruments"])
+        assert dt_entry["unit"] == "shard_instrument_days"
+
+    def test_derivative_ticker_partial_capture(self):
+        """2 captured + 8 empty_confirmed sentinels on 1 date ->
+        expected = 10 (10 MVP perps x 1 date), found = 2 (distinct
+        (instrument_id, date) pairs with capture_status gated)."""
+        from unified_api_contracts import VenueMapping
+
+        captured = [
+            [
+                "2026-04-17",
+                "BINANCE-FUTURES",
+                "derivative_ticker",
+                "market-tick-data-service",
+                "captured",
+                "",
+                "PERPETUAL",
+                "",
+                "BTC-PERP",
+                100,
+            ],
+            [
+                "2026-04-17",
+                "BINANCE-FUTURES",
+                "derivative_ticker",
+                "market-tick-data-service",
+                "captured",
+                "",
+                "PERPETUAL",
+                "",
+                "ETH-PERP",
+                50,
+            ],
+        ]
+        empties = [
+            [
+                "2026-04-17",
+                "BINANCE-FUTURES",
+                "derivative_ticker",
+                "market-tick-data-service",
+                "empty_confirmed",
+                "",
+                "PERPETUAL",
+                "",
+                perp,
+                0,
+            ]
+            for perp in [
+                "SOL-PERP",
+                "BNB-PERP",
+                "XRP-PERP",
+                "ADA-PERP",
+                "AVAX-PERP",
+                "DOGE-PERP",
+                "MATIC-PERP",
+                "ARB-PERP",
+            ]
+        ]
+        df = self._mtds_df(captured + empties)
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, "BINANCE-FUTURES", "CEFI", "2026-04-17", "2026-04-17", VenueMapping()
+        )
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        dt_entry = data_types["derivative_ticker"]
+        assert isinstance(dt_entry, dict)
+        assert dt_entry["expected_shards"] == 10
+        # All 10 empty_confirmed + captured should count as found (both
+        # gate "in window" with capture_status in {captured, empty_confirmed}).
+        assert dt_entry["found_shards"] == 10
+        assert dt_entry["completion_pct"] == 100.0
+        assert dt_entry["missing_instruments"] == []
+        assert dt_entry["unit"] == "shard_instrument_days"
+
+    def test_legacy_rows_fallback_to_venue_level_denominator(self):
+        """Legacy Phase-7 manifest rows (no ``instrument_id`` value) ->
+        aggregator falls back to venue-level per-(venue, dt, date)
+        denominator for that (venue, dt) and annotates
+        ``legacy_row_count`` so coverage % doesn't regress on already-
+        shipped backfills."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._mtds_df(
+            [
+                [
+                    "2026-04-17",
+                    "BINANCE-SPOT",
+                    "trades",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "SPOT_PAIR",
+                    "",
+                    "",  # empty instrument_id -> legacy
+                    1000,
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-17", VenueMapping()
+        )
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        dt_entry = data_types["trades"]
+        assert isinstance(dt_entry, dict)
+        # Fallback denominator is per-(venue, dt, date) = 1 (single day).
+        assert dt_entry["expected_shards"] == 1
+        assert dt_entry["found_shards"] == 1
+        assert dt_entry["unit"] == "shard_days_legacy"
+        assert dt_entry["legacy_row_count"] == 1
+
+    def test_defi_dex_swaps_empty_seed(self):
+        """DEFI ``dex_swaps`` on a PROTOCOL-CHAIN venue (e.g.
+        UNISWAPV3-ETHEREUM) has an empty MVP seed (WAVE 8G follow-up).
+        Aggregator returns 0 expected + 0 found and skips the
+        ``per_instrument`` inline dict."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._mtds_df([])
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "UNISWAPV3-ETHEREUM",
+            "DEFI",
+            "2026-04-17",
+            "2026-04-17",
+            VenueMapping(),
+        )
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        if "dex_swaps" in data_types:
+            dt_entry = data_types["dex_swaps"]
+            assert isinstance(dt_entry, dict)
+            assert dt_entry["expected_shards"] == 0
+            assert dt_entry["found_shards"] == 0
+            assert dt_entry["expected_instruments"] == []
+            # No per_instrument dict when universe is empty.
+            assert "per_instrument" not in dt_entry
+            assert dt_entry["unit"] == "shard_instrument_days"
+
+    def test_venue_level_dt_preserves_legacy_path(self):
+        """Non-per-instrument dt (``liquidations``) keeps the existing
+        Phase 6d per-(venue, dt, date) denominator and the
+        ``unit == "shard_days"`` tag (NOT ``shard_instrument_days``).
+        Also asserts no ``expected_instruments`` key appears on
+        venue-level entries."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._mtds_df(
+            [
+                [
+                    "2026-04-17",
+                    "BINANCE-FUTURES",
+                    "liquidations",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "PERPETUAL",
+                    "",
+                    "",  # venue-level dt -> instrument_id unused
+                    5,
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "BINANCE-FUTURES",
+            "CEFI",
+            "2026-04-17",
+            "2026-04-18",
+            VenueMapping(),
+        )
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        assert "liquidations" in data_types
+        dt_entry = data_types["liquidations"]
+        assert isinstance(dt_entry, dict)
+        assert dt_entry["unit"] == "shard_days"
+        # 2-day window, 1 captured date -> expected=2, found=1.
+        assert dt_entry["expected_shards"] == 2
+        assert dt_entry["found_shards"] == 1
+        # Venue-level entries do NOT carry expected_instruments.
+        assert "expected_instruments" not in dt_entry
+        assert "missing_instruments" not in dt_entry
