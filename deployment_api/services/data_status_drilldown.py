@@ -1145,3 +1145,73 @@ def build_csv_export(
 
 def _csv_filename(service: str, venue: str, day: str, instrument_type: str, data_type: str) -> str:
     return f"{service}_{venue}_{day}_{instrument_type}_{data_type}.csv"
+
+
+def build_fixtures_csv_export(
+    *,
+    day: str,
+    league_id: str,
+    project_id: str | None = None,
+    max_rows: int = MAX_CSV_ROWS,
+) -> tuple[str, int, str]:
+    """Return ``(csv_text, row_count, filename)`` for one (day, league) fixtures slice.
+
+    Sports FIXTURES don't fit the per-instrument ``build_csv_export`` contract
+    — the source parquet is a single daily file at
+    ``gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet``
+    with all leagues in one file, keyed by ``af_league_id`` (API-Football
+    numeric). This helper reads that parquet, maps canonical ``league_id`` →
+    API-Football numeric via UAC, filters, and returns CSV.
+
+    Args:
+        day: ``YYYY-MM-DD``.
+        league_id: Canonical league identifier (e.g. ``EPL``).
+        project_id: GCP project (defaults to deployment-api settings).
+        max_rows: hard cap, raises ``ValueError`` if exceeded (matches
+            ``build_csv_export`` semantics).
+
+    Raises:
+        ValueError: unknown league_id, league has no api_football_id mapping,
+            or row count would exceed ``max_rows``.
+        FileNotFoundError: the day's fixtures parquet doesn't exist on GCS
+            (adapter didn't run that day).
+    """
+    from unified_api_contracts.sports import get_league
+
+    league = get_league(league_id)
+    if league is None:
+        raise ValueError(f"Unknown league_id: {league_id}")
+    if league.api_football_id is None:
+        raise ValueError(
+            f"League {league_id} has no api_football_id — not sourced from API-Football"
+        )
+    af_id = int(league.api_football_id)
+
+    pid = project_id or _pid
+    gs_uri = f"gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet"
+
+    try:
+        df = _read_parquet_columns(gs_uri)
+    except (OSError, FileNotFoundError) as exc:
+        raise FileNotFoundError(f"No fixtures parquet for {day}: {gs_uri}") from exc
+
+    if "af_league_id" not in df.columns:
+        # Empty or malformed day file — return empty CSV rather than erroring.
+        return "", 0, _fixtures_csv_filename(day, league_id)
+
+    # af_league_id column may be object/str/int — coerce at the boundary
+    # via pandas.to_numeric (keeps basedpyright strict-mode happy — the
+    # lambda+apply path surfaces reportUnknownLambdaType for the cell type).
+    af_series = pd.to_numeric(df["af_league_id"], errors="coerce")
+    filtered = df[af_series == af_id]
+    if len(filtered) > max_rows:
+        raise ValueError(
+            f"Fixtures CSV export would include {len(filtered):,} rows (> {max_rows:,}). "
+            "Narrow by date or use a BigQuery external table."
+        )
+    csv_text = filtered.to_csv(index=False)
+    return csv_text, len(filtered), _fixtures_csv_filename(day, league_id)
+
+
+def _fixtures_csv_filename(day: str, league_id: str) -> str:
+    return f"instruments-service_FIXTURES_{league_id}_{day}.csv"

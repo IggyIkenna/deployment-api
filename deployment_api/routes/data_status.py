@@ -16,6 +16,7 @@ from deployment_api.services.data_status_drilldown import (
     DEFAULT_INSTRUMENT_LIMIT,
     MAX_INSTRUMENT_LIMIT,
     build_csv_export,
+    build_fixtures_csv_export,
     clear_drilldown_cache,
     compute_bucket_counts,
     get_schema_for_shard,
@@ -779,6 +780,40 @@ async def download_csv(
         raise HTTPException(status_code=413, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in download_csv")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Row-Count": str(row_count),
+    }
+    return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.get("/download-fixtures-csv")
+async def download_fixtures_csv(
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    league_id: str = Query(..., description="Canonical league_id (e.g. EPL)"),
+):
+    """Stream a CSV of all fixtures for one (day, league) slice.
+
+    Sports FIXTURES are stored as a single per-day parquet at
+    ``sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet``
+    keyed by API-Football numeric league id. This endpoint filters by
+    canonical ``league_id`` via UAC and streams the matching rows as CSV.
+    """
+    try:
+        csv_text, row_count, filename = build_fixtures_csv_export(
+            day=day,
+            league_id=league_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Error in download_fixtures_csv")
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
