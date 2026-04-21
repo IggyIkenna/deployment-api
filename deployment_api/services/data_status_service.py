@@ -450,6 +450,100 @@ def _is_mtds_honest_coverage_target(service: str, category: str) -> bool:
     return cat_key in MTDS_CATEGORY_META and cat_key != "SPORTS"
 
 
+# DEFI data_type canonicalisation maps. Sub-dim buckets write the hyphenated
+# form (``lending-indices``, ``dex-swaps``) but UAC
+# ``VENUE_DATA_TYPE_CAPABILITIES`` declares the underscore form
+# (``lending_indices``, ``dex_swaps``). The honest-coverage per-(venue, dt)
+# filter needs the rows canonicalised before matching. Module-level
+# constants per ruff N806 — they're configuration, not per-call state.
+_DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
+    "dex-swaps": "dex_swaps",
+    "dex-pools": "dex_pools",
+    "lending-indices": "lending_indices",
+    "lst-rates": "lst_rates",
+    "oracle-prices": "oracle_prices",
+    "perp-funding": "perp_funding",
+    "gas-fees": "gas_fees",
+}
+_DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
+    "dex-swaps": "dex_swaps",
+    "dex-pools": "dex_pools",
+    "lending-indices": "lending_indices",
+    "lst-rates": "lst_rates",
+    "oracle-prices": "oracle_prices",
+    "liquidations": "liquidations",
+    "perp-funding": "perp_funding",
+    "gas-fees": "gas_fees",
+    "evm-defi": "",
+    "solana-defi": "",
+    "": "",
+}
+
+
+def _canonicalise_defi_manifest(
+    filtered: pd.DataFrame,
+    venues_dict: dict[str, object],
+    venue_mapping: VenueMapping,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Normalise DEFI legacy venue names + hyphenated data_types in place.
+
+    Phase 6e.1 + 6e.1b lifted DEFI honest-coverage from 0% → 50%:
+    - Manifest rows pre-dating the 2026-04 PROTOCOL-CHAIN migration carry
+      legacy names (``AAVE_V3``, ``UNISWAP_V2``, ``CURVE``, ``LIDO``). UAC
+      ``all_defi_venues`` uses canonical ``AAVEV3-ETHEREUM`` form.
+      ``VenueMapping.normalize_defi_venue(raw, chain=...)`` bridges the gap.
+    - Sub-dim buckets write hyphenated data_types (``lending-indices``,
+      ``dex-swaps``) but UAC ``VENUE_DATA_TYPE_CAPABILITIES`` uses underscore
+      form (``lending_indices``, ``dex_swaps``). Maps at module scope —
+      ``_DEFI_DATA_TYPE_ALIASES`` / ``_DEFI_SOURCE_TO_DATA_TYPE``.
+
+    Extracted from ``_apply_mtds_honest_coverage`` to keep that method under
+    ruff's C901 complexity threshold. SSOT:
+    ``codex/02-data/mtds-data-source-coverage-matrix.md`` §4.
+    """
+    if "venue" not in filtered.columns:
+        return filtered, venues_dict
+
+    chain_col = filtered["chain"] if "chain" in filtered.columns else None
+
+    def _norm(row_idx: int) -> str:
+        raw = str(filtered.iloc[row_idx]["venue"])
+        chain = str(chain_col.iloc[row_idx]) if chain_col is not None else None
+        return venue_mapping.normalize_defi_venue(raw, chain=chain or None)
+
+    filtered = filtered.copy()
+    filtered["venue"] = [_norm(i) for i in range(len(filtered))]
+
+    # Also normalise venues_dict keys — legacy ``AAVE_V3`` entries merge into
+    # canonical ``AAVEV3-ETHEREUM``.
+    remapped: dict[str, object] = {}
+    for raw_key, entry in venues_dict.items():
+        canonical = venue_mapping.normalize_defi_venue(str(raw_key))
+        remapped[canonical] = entry
+    venues_dict = remapped
+
+    if "data_type" not in filtered.columns:
+        return filtered, venues_dict
+
+    # Case (1): infer from _defi_source for blank rows.
+    if "_defi_source" in filtered.columns:
+        blank_dt = filtered["data_type"].fillna("").astype(str).str.len() == 0
+        if blank_dt.any():
+            inferred = (
+                filtered["_defi_source"]
+                .fillna("")
+                .astype(str)
+                .map(_DEFI_SOURCE_TO_DATA_TYPE)
+                .fillna("")
+            )
+            filtered.loc[blank_dt, "data_type"] = inferred[blank_dt]
+    # Case (2): map hyphenated DEFI data_types to canonical underscore form.
+    filtered["data_type"] = (
+        filtered["data_type"].fillna("").astype(str).replace(_DEFI_DATA_TYPE_ALIASES)
+    )
+    return filtered, venues_dict
+
+
 def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
     """Return UAC-declared venue list for an MTDS category.
 
@@ -2131,87 +2225,12 @@ class DataStatusService:
         """
         expected_venues = _mtds_expected_venues(category, venue_mapping)
 
-        # DEFI legacy-name normalisation (Phase 6e.1). Manifest rows written
-        # before the 2026-04 PROTOCOL-CHAIN migration carry names like
-        # ``AAVE_V3`` / ``UNISWAP_V2`` / ``CURVE`` / ``LIDO``. UAC's
-        # ``all_defi_venues`` uses the canonical ``AAVEV3-ETHEREUM`` form.
-        # Without normalisation the per-venue filter misses every legacy row
-        # and DEFI honest coverage reads 0%.
-        #
-        # Apply ``VenueMapping.normalize_defi_venue`` to the manifest venue
-        # column + to the venues_dict keys. Downstream per-venue matching
-        # then lines up regardless of which form landed on disk. SSOT:
-        # codex/02-data/mtds-data-source-coverage-matrix.md §4.
-        if category.upper() == "DEFI" and not filtered.empty and "venue" in filtered.columns:
-            chain_col = filtered["chain"] if "chain" in filtered.columns else None
-            def _norm(row_idx: int) -> str:
-                raw = str(filtered.iloc[row_idx]["venue"])
-                chain = str(chain_col.iloc[row_idx]) if chain_col is not None else None
-                return venue_mapping.normalize_defi_venue(raw, chain=chain or None)
-            filtered = filtered.copy()
-            filtered["venue"] = [
-                _norm(i) for i in range(len(filtered))
-            ]
-            # Also normalise venues_dict keys — existing entries keyed on
-            # legacy ``AAVE_V3`` get merged into canonical ``AAVEV3-ETHEREUM``.
-            remapped: dict[str, object] = {}
-            for raw_key, entry in venues_dict.items():
-                canonical = venue_mapping.normalize_defi_venue(str(raw_key))
-                remapped[canonical] = entry
-            venues_dict = remapped
-
-            # DEFI data_type canonicalisation. Two cases:
-            # (1) Rows with blank data_type — infer from _defi_source bucket tag.
-            # (2) Rows with hyphenated data_type (``lending-indices``,
-            #     ``dex-swaps``, ...) from sub-dim buckets — map to the
-            #     canonical underscore form UAC declares in
-            #     ``VENUE_DATA_TYPE_CAPABILITIES`` (``lending_indices``,
-            #     ``dex_swaps``). Fixes Phase 6e.1b live-API bug where
-            #     honest-coverage per-(venue, dt) filter never matched because
-            #     the sub-dim bucket rows carry hyphen form while the UAC
-            #     declarations use underscore form.
-            _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
-                "dex-swaps": "dex_swaps",
-                "dex-pools": "dex_pools",
-                "lending-indices": "lending_indices",
-                "lst-rates": "lst_rates",
-                "oracle-prices": "oracle_prices",
-                "perp-funding": "perp_funding",
-                "gas-fees": "gas_fees",
-            }
-            if "data_type" in filtered.columns:
-                # Case (1): infer from _defi_source for blank rows
-                if "_defi_source" in filtered.columns:
-                    _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
-                        "dex-swaps": "dex_swaps",
-                        "dex-pools": "dex_pools",
-                        "lending-indices": "lending_indices",
-                        "lst-rates": "lst_rates",
-                        "oracle-prices": "oracle_prices",
-                        "liquidations": "liquidations",
-                        "perp-funding": "perp_funding",
-                        "gas-fees": "gas_fees",
-                        "evm-defi": "",
-                        "solana-defi": "",
-                        "": "",
-                    }
-                    blank_dt = filtered["data_type"].fillna("").astype(str).str.len() == 0
-                    if blank_dt.any():
-                        inferred = (
-                            filtered["_defi_source"]
-                            .fillna("")
-                            .astype(str)
-                            .map(_DEFI_SOURCE_TO_DATA_TYPE)
-                            .fillna("")
-                        )
-                        filtered.loc[blank_dt, "data_type"] = inferred[blank_dt]
-                # Case (2): map hyphenated DEFI data_types to canonical underscore form
-                filtered["data_type"] = (
-                    filtered["data_type"]
-                    .fillna("")
-                    .astype(str)
-                    .replace(_DEFI_DATA_TYPE_ALIASES)
-                )
+        # DEFI legacy-name + data_type canonicalisation (Phase 6e.1 + 6e.1b).
+        # Extracted to helper to keep this method under ruff's C901 threshold.
+        if category.upper() == "DEFI" and not filtered.empty:
+            filtered, venues_dict = _canonicalise_defi_manifest(
+                filtered, venues_dict, venue_mapping
+            )
 
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
