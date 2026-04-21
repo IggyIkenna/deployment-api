@@ -23,6 +23,7 @@ from .sync_service import SyncService
 from .data_analytics_service import DataAnalyticsService
 from .data_query_service import DataQueryService
 from .data_status_service import DataStatusService
+from . import upcoming_fixtures
 
 __all__ = [
     "DataAnalyticsService",
@@ -31,4 +32,5 @@ __all__ = [
     "DeploymentManager",
     "DeploymentStateManager",
     "SyncService",
+    "upcoming_fixtures",
 ]

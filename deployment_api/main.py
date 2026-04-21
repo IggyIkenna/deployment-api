@@ -64,6 +64,7 @@ from .routes import (
     deploy_events_sse,
     deployments,
     epics,
+    fixtures,
     infra_health,
     service_status,
     services,
@@ -133,6 +134,7 @@ _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["E
 _authenticated_router.include_router(
     data_status.router, prefix="/api/data-status", tags=["Data Status"]
 )
+_authenticated_router.include_router(fixtures.router, prefix="/api")
 _authenticated_router.include_router(
     service_status.router, prefix="/api/service-status", tags=["Service Status"]
 )
