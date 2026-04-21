@@ -243,6 +243,19 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "axis": "per_league_per_fixture_date",
         "unit": "fixture_dates",
     },
+    # features-sports-service — per-fixture denormalised join of Transfermarkt
+    # team value, pre-match standings, kickoff-hour weather. Written daily by
+    # features-sports-service Cloud Run job + per-fixture T-1h Tier-3 trigger.
+    # Denominator uses ``api_football`` + Prediction fixture calendar because
+    # FIXTURE_FEATURES can only be computed on dates where upstream FIXTURES
+    # exist; api_football is the gate on the whole join. SSOT:
+    # plans/active/features_sports_pipeline_deployment_2026_04_21.plan.md.
+    "FIXTURE_FEATURES": {
+        "source": "api_football",
+        "classifications": ("Prediction",),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
 }
 
 
