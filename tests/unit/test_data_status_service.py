@@ -1903,21 +1903,23 @@ class TestMTDSHonestCoverage:
                 venue_mapping=VenueMapping(),
             )
         aave = result["venues"]["AAVEV3-ETHEREUM"]
-        # Post-Phase-8D: all 4 AAVE dts are per-instrument shards with an
-        # empty MVP seed (WAVE 8G follow-up seeds the top-N Aave reserves).
-        #   - ``lending_indices``: 2 legacy rows (empty instrument_id in
-        #     the fixture) -> legacy fallback = 2 expected, 2 found.
-        #   - ``oracle_prices`` / ``rewards`` / ``risk_params``: 0 rows +
-        #     empty MVP seed -> Tier-3 expected = 0.
-        # Total expected = 2; total found = 2.
-        assert aave["dates_expected"] == 2
+        # Post-Wave-8G: AAVEV3-ETHEREUM is seeded with 10 top reserves for all
+        # 4 per-instrument dts (USDC, USDT, DAI, WETH, WBTC, ...).
+        #   - ``lending_indices``: 2 legacy rows (empty instrument_id) → legacy
+        #     fallback path → expected = len(expected_dates) = 2, found = 2.
+        #   - ``oracle_prices`` / ``rewards`` / ``risk_params``: 0 rows in
+        #     fixture → Tier-3 denominator = 10 instruments x 2 days = 20
+        #     expected, 0 found each.
+        # Total expected = 2 + 20 + 20 + 20 = 62; total found = 2 (only
+        # lending_indices has rows). ``missing_data_types`` lists the 3 dts
+        # with found_count == 0 and expected_count > 0.
+        assert aave["dates_expected"] == 62
         assert aave["dates_found"] == 2
-        # oracle_prices / rewards / risk_params have 0 expected (empty
-        # DeFi MVP seed -- WAVE 8G follow-up). ``missing_data_types`` only
-        # flags dt with found_count == 0 AND expected_count > 0, so the
-        # seed-empty dts drop out of the missing list (not missing, just
-        # not yet seeded).
-        assert aave["missing_data_types"] == []
+        assert sorted(aave["missing_data_types"]) == [
+            "oracle_prices",
+            "rewards",
+            "risk_params",
+        ]
         assert result["honest_axis"] == "per_venue_per_data_type_per_chain_daily"
 
     def test_prediction_per_venue_daily(self):
@@ -2179,9 +2181,13 @@ class TestMTDSPerInstrumentHonestCoverage:
 
     def test_defi_dex_swaps_empty_seed(self):
         """DEFI ``dex_swaps`` on a PROTOCOL-CHAIN venue (e.g.
-        UNISWAPV3-ETHEREUM) has an empty MVP seed (WAVE 8G follow-up).
-        Aggregator returns 0 expected + 0 found and skips the
-        ``per_instrument`` inline dict."""
+        UNISWAPV3-ETHEREUM) — Wave 8G seeded 20 top-TVL pools. With 0 rows in
+        the fixture, the aggregator returns a Tier-3 denominator of
+        ``n_instruments x n_dates`` with ``found_shards == 0`` and the
+        full ``missing_instruments`` list.
+        Sentinel ``_PER_INSTRUMENT_BREAKDOWN_MAX_SIZE`` is ``< 20``, so a
+        20-instrument universe does NOT emit the inline ``per_instrument``
+        dict (keeps response bloat bounded on big pools boards)."""
         from unified_api_contracts import VenueMapping
 
         df = self._mtds_df([])
@@ -2198,12 +2204,20 @@ class TestMTDSPerInstrumentHonestCoverage:
         if "dex_swaps" in data_types:
             dt_entry = data_types["dex_swaps"]
             assert isinstance(dt_entry, dict)
-            assert dt_entry["expected_shards"] == 0
+            # 20 seeded instruments x 1 day = 20 expected, 0 found.
+            expected_instruments = dt_entry["expected_instruments"]
+            assert isinstance(expected_instruments, list)
+            assert len(expected_instruments) == 20
+            assert dt_entry["expected_shards"] == 20
             assert dt_entry["found_shards"] == 0
-            assert dt_entry["expected_instruments"] == []
-            # No per_instrument dict when universe is empty.
+            # 20 == _PER_INSTRUMENT_BREAKDOWN_MAX_SIZE (not ``<``) → no
+            # per-instrument breakdown to keep payload bounded.
             assert "per_instrument" not in dt_entry
             assert dt_entry["unit"] == "shard_instrument_days"
+            # All 20 instruments missing in the window.
+            missing_instruments = dt_entry["missing_instruments"]
+            assert isinstance(missing_instruments, list)
+            assert len(missing_instruments) == 20
 
     def test_venue_level_dt_preserves_legacy_path(self):
         """Non-per-instrument dt (``liquidations``) keeps the existing
