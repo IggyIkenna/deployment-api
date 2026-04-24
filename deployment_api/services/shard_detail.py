@@ -1,0 +1,1006 @@
+"""Unified shard-detail service for ``GET /api/data-status/shard-detail``.
+
+Derives every piece of a Data-Status shard-detail response (schema,
+GCS metadata, sample rows, branch-specific payload, download URLs) from a
+single ``(service, category, instrument_type, data_type, venue, day, …)``
+coordinate.  The four ``shard_class`` branches (``grouped`` / ``per_symbol``
+/ ``reference`` / ``fixtures``) are classified by
+:func:`_classify_shard` so the UI does not need to encode this routing
+logic itself.
+
+Kept separate from :mod:`data_status_drilldown` to sidestep the dense
+per-fixture / bundle-preview helpers already living there — shard-detail
+only needs footer reads + manifest lookup + first-N-rows + a distinct
+pass for grouped shards.
+
+Shard-level failure isolation applies throughout: every GCS / parquet /
+manifest call catches its own exceptions and returns a ``missing`` /
+``attempted_failed`` capture status rather than raising.  The endpoint
+is a read surface for operators; a blown-up branch should never prevent
+the other branches from rendering.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import cast
+from urllib.parse import urlencode
+
+import pandas as pd
+from unified_api_contracts import (
+    VENUE_CONTRACT_OVERRIDES,
+    SchemaContract,
+    SchemaContractNotFoundError,
+    lookup_contract,
+)
+from unified_trading_library import read_availability_index
+
+from deployment_api.services.data_status_drilldown import (
+    _read_parquet_columns,  # pyright: ignore[reportPrivateUsage]
+    build_bucket_name,
+)
+from deployment_api.settings import gcp_project_id as _pid
+from deployment_api.types.shard_detail import (
+    CaptureStatusLiteral,
+    ShardClassLiteral,
+    ShardCoord,
+    ShardDetailResponse,
+    ShardDownloadUrls,
+    ShardGcsMetadata,
+    ShardPayloadFixtures,
+    ShardPayloadGrouped,
+    ShardPayloadPerSymbol,
+    ShardPayloadReference,
+    ShardSchema,
+    ShardSchemaColumn,
+    VenueDetailResponse,
+)
+from deployment_api.utils.storage_facade import get_object_metadata, list_objects
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Sample-rows cap per response.  Kept low because the response is JSON —
+# larger dumps belong in the CSV / signed-URL download path.
+_SAMPLE_ROW_LIMIT: int = 100
+
+# Signed URL TTL for the parquet download link.
+_SIGNED_URL_TTL_SECONDS: int = 3600
+
+# Data types that are always grouped / bundle-style — one parquet per
+# ``(venue, day)`` holds many symbols (strikes, expiries, pool addresses, …).
+# Classification of these short-circuits to ``grouped`` regardless of
+# instrument_type.
+_GROUPED_DATA_TYPES: frozenset[str] = frozenset(
+    {
+        "options_chain",
+        "futures_chain",
+        "combo_chain",
+        "dex_pools",
+        "dex_swaps",
+        "liquidation_events",
+        "flash_loan_events",
+        "token_transfers",
+        "bridge_events",
+        "mev_events",
+        "governance_events",
+        "position_data",
+        "staking_yields",
+    }
+)
+
+# Per-symbol instrument types — one parquet per instrument per day.
+_PER_SYMBOL_INSTRUMENT_TYPES: frozenset[str] = frozenset(
+    {"PERPETUAL", "SPOT_PAIR", "SPOT", "EQUITY", "FUTURE"}
+)
+
+# Shard-class defaults per service when the (category, instrument_type,
+# data_type) tuple is otherwise ambiguous.  instruments-service always
+# publishes reference data; sports publishes fixtures under instruments
+# bucket but is handled as its own branch.
+_SERVICE_DEFAULT_SHARD_CLASS: dict[str, ShardClassLiteral] = {
+    "instruments-service": "reference",
+    "corporate-actions": "reference",
+}
+
+
+def _classify_shard(
+    *,
+    service: str,
+    category: str,
+    instrument_type: str,
+    data_type: str,
+) -> ShardClassLiteral:
+    """Resolve ``shard_class`` from the shard coordinate.
+
+    Precedence:
+
+    1. ``SPORTS`` category → ``fixtures`` (the sports data pipeline keys
+       everything off the league x day fixtures parquet).
+    2. Service default — instruments-service / corporate-actions publish
+       reference data regardless of instrument_type.
+    3. ``data_type`` in the grouped bundle set (``options_chain``,
+       ``dex_swaps``, …) → ``grouped``.
+    4. ``instrument_type`` uppercase is in the per-symbol set → ``per_symbol``.
+    5. Fallback → ``grouped`` (safer default for unknown shards — the
+       ``instrument_list`` branch can surface an empty list without
+       misrepresenting the data as time-series).
+    """
+    _ = service  # referenced below via _SERVICE_DEFAULT_SHARD_CLASS
+    cat_upper = (category or "").upper()
+    if cat_upper == "SPORTS":
+        return "fixtures"
+
+    svc_default = _SERVICE_DEFAULT_SHARD_CLASS.get((service or "").lower())
+    if svc_default is not None:
+        return svc_default
+
+    dt_lower = (data_type or "").lower()
+    if dt_lower in _GROUPED_DATA_TYPES:
+        return "grouped"
+
+    it_upper = (instrument_type or "").upper()
+    if it_upper in _PER_SYMBOL_INSTRUMENT_TYPES:
+        return "per_symbol"
+
+    return "grouped"
+
+
+# ---------------------------------------------------------------------------
+# Schema lookup (mirrors data_status_drilldown.get_schema_for_shard but
+# surfaces the new ColumnSpec fields — ``required`` and
+# ``provided_by_venues`` — into the response so the UI can split Core vs
+# Venue-specific columns).
+# ---------------------------------------------------------------------------
+
+
+def _column_dict(col: object) -> ShardSchemaColumn:
+    """Build a ShardSchemaColumn from a UAC ColumnSpec instance.
+
+    Uses ``getattr`` against the pydantic model so this compiles even when
+    UAC's ColumnSpec gains additional fields in later versions.
+    """
+    name = str(getattr(col, "name", ""))
+    dtype = str(getattr(col, "dtype", ""))
+    nullable_raw = getattr(col, "nullable", False)
+    nullable = bool(nullable_raw) if isinstance(nullable_raw, bool) else False
+    required_raw = getattr(col, "required", True)
+    required = bool(required_raw) if isinstance(required_raw, bool) else True
+    provided_by_venues_raw: object = getattr(col, "provided_by_venues", None)
+    provided_by_venues: list[str] | None = None
+    if isinstance(provided_by_venues_raw, (frozenset, set, list, tuple)):
+        collected: list[str] = []
+        # Iterate via an explicit object cast — provided_by_venues_raw
+        # carries Unknown element types from UAC's pydantic model.
+        for v in list(cast("list[object]", provided_by_venues_raw)):  # pyright: ignore[reportUnknownArgumentType]
+            collected.append(str(v))
+        provided_by_venues = sorted(collected)
+    description_raw: object = getattr(col, "description", None)
+    description = str(description_raw) if description_raw else ""
+    return ShardSchemaColumn(
+        name=name,
+        dtype=dtype,
+        nullable=nullable,
+        required=required,
+        provided_by_venues=provided_by_venues,
+        description=description,
+    )
+
+
+def _resolve_schema(
+    *, category: str, instrument_type: str, data_type: str, venue: str | None
+) -> ShardSchema:
+    """Resolve a ShardSchema from the UAC contract registry."""
+    cat_norm = (category or "").lower()
+    it_norm = (
+        (instrument_type or "").lower() if (instrument_type or "").isupper() else instrument_type
+    )
+    dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
+    try:
+        contract: SchemaContract = lookup_contract(
+            category=cat_norm,
+            instrument_type=it_norm,
+            data_type=dt_norm,
+            venue=venue,
+        )
+    except SchemaContractNotFoundError:
+        return ShardSchema(
+            registered=False,
+            source="none",
+            symbol_column=None,
+            columns=[],
+            message=(
+                "No contract registered for this shard. "
+                "The UI should fall back to projecting actual parquet columns."
+            ),
+        )
+
+    override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
+    is_override = venue is not None and override_key in VENUE_CONTRACT_OVERRIDES
+
+    columns = [_column_dict(c) for c in contract.columns]
+    if is_override:
+        return ShardSchema(
+            registered=True,
+            source="VENUE_CONTRACT_OVERRIDES",
+            symbol_column=contract.symbol_column,
+            columns=columns,
+            message="",
+        )
+    return ShardSchema(
+        registered=True,
+        source="CONTRACT_REGISTRY",
+        symbol_column=contract.symbol_column,
+        columns=columns,
+        message="",
+    )
+
+
+# ---------------------------------------------------------------------------
+# GCS path resolution + manifest lookup
+# ---------------------------------------------------------------------------
+
+
+def _defi_composite_parts(venue: str | None) -> tuple[str | None, str | None]:
+    """Return ``(protocol, chain)`` for a DeFi composite venue string.
+
+    ``AAVE_V3-ETHEREUM`` → ``("AAVE_V3", "ETHEREUM")``.  ``ETHEREUM`` → ``(None, "ETHEREUM")``.
+    ``None`` → ``(None, None)``.
+    """
+    if not venue:
+        return (None, None)
+    if "-" in venue:
+        head, _, tail = venue.partition("-")
+        return (head or None, tail or None)
+    return (None, venue)
+
+
+def _list_first_parquet(bucket: str, prefix: str) -> str | None:
+    """Return the first ``.parquet`` object name under ``prefix`` or ``None``."""
+    try:
+        objects = list_objects(bucket, prefix, max_results=10)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_objects failed for %s/%s: %s", bucket, prefix, exc)
+        return None
+    for o in objects:
+        name = getattr(o, "name", None)
+        if isinstance(name, str) and name.endswith(".parquet"):
+            return name
+    return None
+
+
+def _mtds_shard_path(
+    *,
+    bucket: str,
+    cat_lower: str,
+    instrument_type: str,
+    data_type: str,
+    venue: str | None,
+    day: str,
+    underlying: str | None,
+    instrument_id: str | None,
+) -> tuple[str, str] | None:
+    """MTDS-family parquet path resolution — isolated for complexity budget."""
+    it_disk = (instrument_type or "").lower()
+    dt_disk = (data_type or "").lower()
+    venue_disk = (venue or "").upper()
+    prefix = (
+        f"raw_tick_data/by_date/day={day}/category={cat_lower}/"
+        f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"
+    )
+    leaf = instrument_id or underlying
+    is_derivative_bundle = dt_disk in _GROUPED_DATA_TYPES and it_disk in {
+        "options_chain",
+        "futures_chain",
+    }
+    if leaf and is_derivative_bundle:
+        return (bucket, f"{prefix}underlying={leaf}/ticks.parquet")
+    if leaf:
+        return (bucket, f"{prefix}{leaf}.parquet")
+    # No leaf: fall back to listing the prefix and returning the first parquet.
+    name = _list_first_parquet(bucket, prefix)
+    if name is None:
+        return None
+    return (bucket, name)
+
+
+def _gcs_path_for_shard(
+    *,
+    service: str,
+    category: str,
+    instrument_type: str,
+    data_type: str,
+    venue: str | None,
+    day: str,
+    underlying: str | None,
+    instrument_id: str | None,
+) -> tuple[str, str] | None:
+    """Best-effort resolution of the primary parquet for a shard.
+
+    Returns ``(bucket, object_path)`` for the file shard-detail should
+    read, or ``None`` when no matching file exists.  The file is a
+    *representative* member of the shard — for grouped data_types it is
+    the one bundle parquet per ``(venue, day)``; for per_symbol shards it
+    is the single symbol parquet.
+    """
+    svc = (service or "").lower()
+    cat_lower = (category or "").lower()
+    day_clean = str(day)
+
+    try:
+        bucket = build_bucket_name(service, category)
+    except ValueError:
+        return None
+
+    # instruments-service / corporate-actions: one parquet per (venue, day)
+    if svc in {"instruments-service", "corporate-actions"}:
+        if cat_lower == "sports":
+            # Sports fixtures live under sports_reference (see
+            # data_status_drilldown._entity_gs_uri).  The shard-detail
+            # endpoint delegates to build_fixture_breakdown for the
+            # fixtures branch so we do not resolve a single parquet here.
+            return None
+        path = f"instrument_availability/by_date/day={day_clean}/venue={venue}/instruments.parquet"
+        return (bucket, path)
+
+    # MTDS family — hive-partitioned by (day, category, venue, instrument_type, data_type).
+    if svc in {"market-tick-data-service", "market-data-processing-service"}:
+        return _mtds_shard_path(
+            bucket=bucket,
+            cat_lower=cat_lower,
+            instrument_type=instrument_type,
+            data_type=data_type,
+            venue=venue,
+            day=day_clean,
+            underlying=underlying,
+            instrument_id=instrument_id,
+        )
+
+    # Default: feature / strategy pipelines not surfaced via this endpoint yet.
+    return None
+
+
+def _manifest_coord_mask(
+    df: pd.DataFrame,
+    *,
+    day: str,
+    venue: str | None,
+    data_type: str,
+    instrument_id: str | None,
+) -> pd.Series:  # pyright: ignore[reportMissingTypeArgument]
+    """Build the boolean pandas mask matching one shard coordinate."""
+    mask = df["date"] == day
+    if venue and "venue" in df.columns:
+        mask = mask & (df["venue"] == venue)
+    if data_type and "data_type" in df.columns:
+        mask = mask & (df["data_type"] == data_type)
+    if instrument_id and "instrument_id" in df.columns:
+        mask = mask & (df["instrument_id"] == instrument_id)
+    return mask
+
+
+def _manifest_row_for_coord(
+    *, bucket: str, venue: str | None, day: str, data_type: str, instrument_id: str | None
+) -> dict[str, str] | None:
+    """Return the manifest row matching the shard coordinate or ``None``.
+
+    The availability manifest (`read_availability_index`) is the
+    authoritative source for ``capture_status`` + ``error_reason`` +
+    ``attempted_at``.  Missing manifest → returns ``None`` so the caller
+    can fall back to a ``missing`` capture status derived from the GCS
+    stat call.
+    """
+    try:
+        df = read_availability_index(bucket)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("manifest read failed for %s: %s", bucket, exc)
+        return None
+
+    if df.empty or "date" not in df.columns:
+        return None
+
+    mask = _manifest_coord_mask(
+        df, day=day, venue=venue, data_type=data_type, instrument_id=instrument_id
+    )
+    scoped = df.loc[mask]
+    if scoped.empty:
+        return None
+
+    if "written_at" in scoped.columns:
+        scoped = scoped.sort_values("written_at").tail(1)
+    row_records = scoped.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    row_list = cast(list[object], row_records)
+    if not row_list:
+        return None
+    raw = row_list[0]
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, str] = {}
+    for k, v in cast(dict[object, object], raw).items():
+        out[str(k)] = "" if v is None else str(v)
+    return out
+
+
+def _gcs_metadata(
+    *,
+    bucket: str | None,
+    object_path: str | None,
+    manifest: dict[str, str] | None,
+    pq_row_count: int | None,
+) -> ShardGcsMetadata:
+    """Build the ``gcs`` block of the shard-detail response."""
+    full_path = f"gs://{bucket}/{object_path}" if bucket and object_path else None
+    size_bytes: int | None = None
+    captured_at: str | None = None
+    if bucket and object_path:
+        try:
+            meta = get_object_metadata(bucket, object_path)
+        except (OSError, RuntimeError) as exc:
+            logger.warning("get_object_metadata failed for %s/%s: %s", bucket, object_path, exc)
+            meta = None
+        if meta:
+            size_raw = meta.get("size")
+            if isinstance(size_raw, int):
+                size_bytes = size_raw
+            updated_raw = meta.get("updated")
+            if updated_raw is not None:
+                captured_at = str(updated_raw)
+
+    status: CaptureStatusLiteral
+    error_reason: str | None = None
+    if manifest is not None:
+        manifest_status = (manifest.get("capture_status") or "").lower()
+        if manifest_status in {"captured", "empty_confirmed", "attempted_failed"}:
+            status = cast(CaptureStatusLiteral, manifest_status)
+        elif size_bytes is not None:
+            status = "captured"
+        else:
+            status = "missing"
+        err = manifest.get("error_reason") or ""
+        error_reason = err or None
+        attempted_at_raw = manifest.get("attempted_at")
+        if not captured_at and attempted_at_raw:
+            captured_at = attempted_at_raw
+    else:
+        status = "captured" if size_bytes is not None else "missing"
+
+    return ShardGcsMetadata(
+        path=full_path,
+        file_size_bytes=size_bytes,
+        row_count=pq_row_count,
+        captured_at=captured_at,
+        capture_status=status,
+        error_reason=error_reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parquet sample + distinct-symbol extraction (read-only, shard-isolated)
+# ---------------------------------------------------------------------------
+
+
+def _read_parquet_footer_row_count(gs_uri: str) -> int | None:
+    """Return ``num_rows`` from the parquet footer, or ``None`` on any error.
+
+    Does not read any row groups — pyarrow's ``ParquetFile.metadata`` walk
+    only fetches the footer (one GCS range request) and is cheap.
+    """
+    import gcsfs
+    import pyarrow.parquet as pq
+
+    if not gs_uri.startswith("gs://"):
+        return None
+    bucket_key = gs_uri[len("gs://") :]
+    try:
+        fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
+        open_fn: object = getattr(fs_any, "open", None)
+        if not callable(open_fn):
+            return None
+        fh_obj: object = open_fn(bucket_key, "rb")
+        try:
+            pf_ctor: object = pq.ParquetFile  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            if not callable(pf_ctor):  # pyright: ignore[reportUnknownArgumentType]
+                return None
+            pf: object = pf_ctor(fh_obj)  # pyright: ignore[reportUnknownVariableType]
+            meta: object = getattr(pf, "metadata", None)
+            if meta is None:
+                return None
+            num_rows: object = getattr(meta, "num_rows", None)
+            if isinstance(num_rows, int):
+                return num_rows
+            return None
+        finally:
+            close: object = getattr(fh_obj, "close", None)
+            if callable(close):
+                close()
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("parquet footer read failed for %s: %s", gs_uri, exc)
+        return None
+
+
+def _sample_rows(
+    *, gs_uri: str, limit: int, schema_columns: list[ShardSchemaColumn]
+) -> list[dict[str, object]]:
+    """Return the first ``limit`` rows of the parquet as a list of dicts.
+
+    Only projects the first 20 declared columns (or all columns when the
+    schema is unknown) to keep the JSON payload small.
+    """
+    project_cols: list[str] | None = (
+        [c.name for c in schema_columns[:20]] if schema_columns else None
+    )
+    try:
+        df: pd.DataFrame = _read_parquet_columns(gs_uri, project_cols)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("sample-rows read failed for %s: %s", gs_uri, exc)
+        return []
+    if df.empty:
+        return []
+    head = df.head(limit)
+    records_raw = head.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    records = cast(list[object], records_raw)
+    out: list[dict[str, object]] = []
+    for r in records:
+        if isinstance(r, dict):
+            typed_r: dict[str, object] = {}
+            for k, v in cast(dict[object, object], r).items():
+                typed_r[str(k)] = v
+            out.append(typed_r)
+    return out
+
+
+def _distinct_symbols(*, gs_uri: str, symbol_column: str | None) -> list[dict[str, str]]:
+    """Return the list of distinct symbol-column values in a bundle parquet."""
+    if not symbol_column:
+        return []
+    try:
+        df: pd.DataFrame = _read_parquet_columns(gs_uri, [symbol_column])
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("distinct-symbols read failed for %s: %s", gs_uri, exc)
+        return []
+    if symbol_column not in df.columns or df.empty:
+        return []
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    raw_values: object = df[symbol_column].dropna().unique().tolist()  # pyright: ignore[reportUnknownMemberType]
+    values_list: list[object] = cast(list[object], raw_values)
+    for v in values_list:
+        key = str(v).strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append({"key": key, "type": symbol_column})
+    out.sort(key=lambda d: d["key"])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Signed URL + CSV-projection link helpers
+# ---------------------------------------------------------------------------
+
+
+def _parquet_signed_url(bucket: str | None, object_path: str | None) -> str | None:
+    """Generate a 1-hour signed download URL for a GCS parquet.
+
+    Returns ``None`` when any step fails (missing creds, mock mode,
+    non-GCS storage).  The UI treats a ``None`` link as "signed URL not
+    available" and falls back to the CSV projection URL.
+    """
+    if not bucket or not object_path:
+        return None
+    try:
+        from google.cloud import storage  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        logger.debug("google-cloud-storage not importable; no signed URL available")
+        return None
+    try:
+        client: object = storage.Client(project=_pid)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        bucket_obj_fn: object = getattr(client, "bucket", None)
+        if not callable(bucket_obj_fn):
+            return None
+        bucket_obj: object = bucket_obj_fn(bucket)
+        blob_fn: object = getattr(bucket_obj, "blob", None)
+        if not callable(blob_fn):
+            return None
+        blob: object = blob_fn(object_path)
+        gen_fn: object = getattr(blob, "generate_signed_url", None)
+        if not callable(gen_fn):
+            return None
+        url_obj: object = gen_fn(expiration=_SIGNED_URL_TTL_SECONDS, method="GET")
+        return str(url_obj) if url_obj else None
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("signed URL generation failed for gs://%s/%s: %s", bucket, object_path, exc)
+        return None
+
+
+def _csv_projection_url(
+    *,
+    service: str,
+    category: str,
+    venue: str | None,
+    day: str,
+    instrument_type: str,
+    data_type: str,
+    instrument_id: str | None,
+) -> str | None:
+    """Return the relative UI-facing URL for the existing CSV download."""
+    if not venue:
+        return None
+    params: dict[str, str] = {
+        "service": service,
+        "category": category,
+        "venue": venue,
+        "day": day,
+        "instrument_type": instrument_type,
+        "data_type": data_type,
+    }
+    if instrument_id:
+        params["instrument_ids"] = instrument_id
+    return f"/api/data-status/download-csv?{urlencode(params)}"
+
+
+# ---------------------------------------------------------------------------
+# Public API: get_shard_detail
+# ---------------------------------------------------------------------------
+
+
+def get_shard_detail(
+    *,
+    service: str,
+    category: str,
+    instrument_type: str,
+    data_type: str,
+    day: str,
+    venue: str | None = None,
+    underlying: str | None = None,
+    instrument_id: str | None = None,
+) -> ShardDetailResponse:
+    """Build the unified shard-detail response for one coordinate.
+
+    The function never raises for data-level failures — missing parquet,
+    unreadable manifest, or unclassified shards all resolve to a
+    ``missing`` capture status with empty payloads so the UI can render
+    the error state.  Programmer errors (unknown service bucket) do
+    raise ``ValueError`` at the boundary.
+    """
+    shard_class = _classify_shard(
+        service=service,
+        category=category,
+        instrument_type=instrument_type,
+        data_type=data_type,
+    )
+
+    schema = _resolve_schema(
+        category=category,
+        instrument_type=instrument_type,
+        data_type=data_type,
+        venue=venue,
+    )
+
+    # Fixtures branch has its own parquet layout (sports_reference) — we
+    # do not hit _gcs_path_for_shard for sports.
+    bucket: str | None = None
+    object_path: str | None = None
+    if shard_class != "fixtures":
+        resolved = _gcs_path_for_shard(
+            service=service,
+            category=category,
+            instrument_type=instrument_type,
+            data_type=data_type,
+            venue=venue,
+            day=day,
+            underlying=underlying,
+            instrument_id=instrument_id,
+        )
+        if resolved is not None:
+            bucket, object_path = resolved
+
+    gs_uri: str | None = f"gs://{bucket}/{object_path}" if bucket and object_path else None
+
+    pq_row_count: int | None = None
+    sample_rows: list[dict[str, object]] = []
+    if gs_uri is not None:
+        pq_row_count = _read_parquet_footer_row_count(gs_uri)
+        sample_rows = _sample_rows(
+            gs_uri=gs_uri, limit=_SAMPLE_ROW_LIMIT, schema_columns=schema.columns
+        )
+
+    # Manifest capture_status lookup — shard-scoped, never fatal.
+    manifest_row: dict[str, str] | None = None
+    if bucket is not None:
+        manifest_row = _manifest_row_for_coord(
+            bucket=bucket,
+            venue=venue,
+            day=day,
+            data_type=data_type,
+            instrument_id=instrument_id,
+        )
+
+    gcs_block = _gcs_metadata(
+        bucket=bucket,
+        object_path=object_path,
+        manifest=manifest_row,
+        pq_row_count=pq_row_count,
+    )
+
+    download_urls = ShardDownloadUrls(
+        parquet_signed_url=_parquet_signed_url(bucket, object_path),
+        csv_projected=_csv_projection_url(
+            service=service,
+            category=category,
+            venue=venue,
+            day=day,
+            instrument_type=instrument_type,
+            data_type=data_type,
+            instrument_id=instrument_id,
+        ),
+    )
+
+    # Branch by shard_class for payload
+    payload_grouped: ShardPayloadGrouped | None = None
+    payload_per_symbol: ShardPayloadPerSymbol | None = None
+    payload_reference: ShardPayloadReference | None = None
+    payload_fixtures: ShardPayloadFixtures | None = None
+
+    if shard_class == "grouped":
+        distinct = (
+            _distinct_symbols(gs_uri=gs_uri, symbol_column=schema.symbol_column)
+            if gs_uri is not None
+            else []
+        )
+        payload_grouped = ShardPayloadGrouped(instrument_list=distinct)
+    elif shard_class == "per_symbol":
+        leaf = instrument_id or underlying or ""
+        instrument_list: list[dict[str, str]] = (
+            [{"key": leaf, "type": schema.symbol_column or "instrument_id"}] if leaf else []
+        )
+        payload_per_symbol = ShardPayloadPerSymbol(instrument_list=instrument_list)
+    elif shard_class == "reference":
+        payload_reference = ShardPayloadReference(
+            instrument_definitions=list(sample_rows) if sample_rows else []
+        )
+    elif shard_class == "fixtures":
+        payload_fixtures = ShardPayloadFixtures(fixtures=list(sample_rows) if sample_rows else [])
+
+    coord = ShardCoord(
+        service=service,
+        category=category,
+        instrument_type=instrument_type,
+        data_type=data_type,
+        day=day,
+        venue=venue,
+        underlying=underlying,
+        instrument_id=instrument_id,
+    )
+
+    return ShardDetailResponse(
+        coord=coord,
+        shard_class=shard_class,
+        schema=schema,  # pyright: ignore[reportCallIssue]
+        gcs=gcs_block,
+        download_urls=download_urls,
+        sample_rows=sample_rows,
+        payload_grouped=payload_grouped,
+        payload_per_symbol=payload_per_symbol,
+        payload_reference=payload_reference,
+        payload_fixtures=payload_fixtures,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API: fetch_venue_detail  (CeFi + DeFi)
+# ---------------------------------------------------------------------------
+
+
+def _instruments_bucket_for_category(category: str) -> str:
+    return f"instruments-store-{category.lower()}-{_pid}"
+
+
+def _read_instruments_day_df(*, bucket: str, venue: str, day: str) -> pd.DataFrame | None:
+    """Read the instruments-service per-(venue, day) parquet, or ``None``.
+
+    Shard-isolated: swallows every IO error and returns ``None``.
+    """
+    gs_uri = (
+        f"gs://{bucket}/instrument_availability/by_date/day={day}/venue={venue}/instruments.parquet"
+    )
+    try:
+        return _read_parquet_columns(gs_uri, None)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("instruments day read failed for %s: %s", gs_uri, exc)
+        return None
+
+
+def _pick_latest_day(bucket: str, venue: str) -> str | None:
+    """Return the latest ``day=YYYY-MM-DD`` directory seen for a venue."""
+    prefix = "instrument_availability/by_date/"
+    try:
+        objects = list_objects(bucket, prefix, max_results=5_000)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_objects latest-day failed for %s/%s: %s", bucket, prefix, exc)
+        return None
+    days: set[str] = set()
+    marker = "day="
+    venue_marker = f"venue={venue}"
+    for o in objects:
+        name = getattr(o, "name", None)
+        if not isinstance(name, str) or venue_marker not in name:
+            continue
+        idx = name.find(marker)
+        if idx < 0:
+            continue
+        tail = name[idx + len(marker) :]
+        days.add(tail.split("/", 1)[0])
+    return sorted(days)[-1] if days else None
+
+
+def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
+    """CeFi branch — mirrors the pre-existing venue-detail shape."""
+    bucket = _instruments_bucket_for_category(category)
+    day = _pick_latest_day(bucket, venue)
+    instruments: list[dict[str, object]] = []
+    if day is not None:
+        df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day)
+        if df is not None and not df.empty:
+            records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            records = cast(list[object], records_raw)
+            for r in records[:500]:
+                if isinstance(r, dict):
+                    typed_r: dict[str, object] = {}
+                    for k, v in cast(dict[object, object], r).items():
+                        typed_r[str(k)] = v
+                    instruments.append(typed_r)
+    return VenueDetailResponse(
+        category=category.upper(),
+        venue=venue,
+        day=day,
+        total_instruments=len(instruments),
+        instruments=instruments,
+    )
+
+
+def _is_pool_row(row: dict[str, object]) -> bool:
+    """Row represents a DeFi pool when it carries pool_address or pool_id."""
+    return bool(row.get("pool_address") or row.get("pool_id"))
+
+
+def _typed_row(raw: object) -> dict[str, object] | None:
+    """Coerce a pandas-records raw row into a strictly typed ``dict[str, object]``."""
+    if not isinstance(raw, dict):
+        return None
+    typed: dict[str, object] = {}
+    for k, v in cast(dict[object, object], raw).items():
+        typed[str(k)] = v
+    return typed
+
+
+def _defi_composite_detail(
+    df: pd.DataFrame, *, venue: str, chain: str, protocol: str, day: str
+) -> VenueDetailResponse:
+    """Build a composite (protocol-chain) DeFi venue-detail response."""
+    if "protocol" in df.columns:
+        df = df[df["protocol"].astype(str).str.upper() == protocol.upper()]
+    pools: list[dict[str, object]] = []
+    tokens: list[dict[str, object]] = []
+    records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    records = cast(list[object], records_raw)
+    for r in records[:1_000]:
+        typed = _typed_row(r)
+        if typed is None:
+            continue
+        (pools if _is_pool_row(typed) else tokens).append(typed)
+    return VenueDetailResponse(
+        category="DEFI",
+        venue=venue,
+        chain=chain,
+        protocol=protocol,
+        total_pools=len(pools),
+        total_tokens=len(tokens),
+        pools=pools,
+        tokens=tokens,
+        day=day,
+    )
+
+
+def _defi_chain_only_detail(
+    df: pd.DataFrame, *, venue: str, chain: str, day: str
+) -> VenueDetailResponse:
+    """Build a chain-only DeFi venue-detail response with per-protocol aggregates."""
+    protocols_agg: dict[str, dict[str, int]] = {}
+    total_pools = 0
+    total_tokens = 0
+    records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    records = cast(list[object], records_raw)
+    for r in records:
+        typed = _typed_row(r)
+        if typed is None:
+            continue
+        proto = str(typed.get("protocol") or "UNKNOWN")
+        stats = protocols_agg.setdefault(proto, {"pool_count": 0, "token_count": 0})
+        if _is_pool_row(typed):
+            stats["pool_count"] += 1
+            total_pools += 1
+        else:
+            stats["token_count"] += 1
+            total_tokens += 1
+    protocols_list: list[dict[str, object]] = [
+        {"name": name_, "pool_count": stats["pool_count"], "token_count": stats["token_count"]}
+        for name_, stats in sorted(protocols_agg.items())
+    ]
+    return VenueDetailResponse(
+        category="DEFI",
+        venue=venue,
+        chain=chain,
+        protocol=None,
+        total_pools=total_pools,
+        total_tokens=total_tokens,
+        protocols=protocols_list,
+        day=day,
+    )
+
+
+def _load_defi_df(
+    bucket: str, *, venue: str, chain: str, protocol: str | None, day: str
+) -> pd.DataFrame | None:
+    """Try the composite file first; fall back to the chain file for composite venues."""
+    df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day)
+    if (df is None or df.empty) and protocol is not None:
+        df = _read_instruments_day_df(bucket=bucket, venue=chain, day=day)
+    return df
+
+
+def _defi_venue_detail(venue: str) -> VenueDetailResponse:
+    """DeFi branch — understands chain-only vs composite protocol-chain.
+
+    Chain only (``ETHEREUM``) → returns the list of protocols observed on
+    that chain plus aggregate pool / token counts.  Composite
+    (``AAVE_V3-ETHEREUM``) → returns the pool + token listing scoped to
+    that protocol on that chain.
+    """
+    protocol, chain = _defi_composite_parts(venue)
+    if chain is None:
+        return VenueDetailResponse(category="DEFI", venue=venue)
+
+    bucket = _instruments_bucket_for_category("defi")
+    day = _pick_latest_day(bucket, venue)
+    if day is None:
+        return VenueDetailResponse(
+            category="DEFI",
+            venue=venue,
+            chain=chain,
+            protocol=protocol,
+            day=None,
+        )
+
+    df = _load_defi_df(bucket, venue=venue, chain=chain, protocol=protocol, day=day)
+    if df is None or df.empty:
+        return VenueDetailResponse(
+            category="DEFI",
+            venue=venue,
+            chain=chain,
+            protocol=protocol,
+            day=day,
+        )
+
+    if protocol is not None:
+        return _defi_composite_detail(df, venue=venue, chain=chain, protocol=protocol, day=day)
+    return _defi_chain_only_detail(df, venue=venue, chain=chain, day=day)
+
+
+def fetch_venue_detail(*, service: str, category: str, venue: str) -> VenueDetailResponse:
+    """Return venue-scoped detail for the Data Status drilldown.
+
+    ``category == "DEFI"`` branches on whether ``venue`` is a bare chain
+    (``ETHEREUM``) or a composite protocol-chain (``AAVE_V3-ETHEREUM``);
+    all other categories use the CeFi branch (latest-day instruments
+    listing for the venue).
+    """
+    _ = service  # Reserved for future per-service routing; keeps the signature
+    # stable for the UI caller today.
+    cat_upper = (category or "").upper()
+    if cat_upper == "DEFI":
+        return _defi_venue_detail(venue)
+    return _cefi_venue_detail(cat_upper.lower() if cat_upper else "cefi", venue)

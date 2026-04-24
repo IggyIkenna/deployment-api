@@ -59,6 +59,11 @@ def _ensure_services_mocked() -> None:
     # it when mock_mode is enabled under test.
     real_mock = importlib.import_module("deployment_api.services.data_status_mock")
 
+    # shard_detail is a read-only drill-down service that depends on
+    # data_status_drilldown (already loaded above) + UAC + storage_facade —
+    # no circular risk; tests monkey-patch module-level attrs directly.
+    real_shard_detail = importlib.import_module("deployment_api.services.shard_detail")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -83,6 +88,10 @@ def _ensure_services_mocked() -> None:
     # Re-register data_status_mock as a real module on the fake package
     sys.modules["deployment_api.services.data_status_mock"] = real_mock
     services_mod.data_status_mock = real_mock
+
+    # Re-register shard_detail as a real module on the fake package
+    sys.modules["deployment_api.services.shard_detail"] = real_shard_detail
+    services_mod.shard_detail = real_shard_detail
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked

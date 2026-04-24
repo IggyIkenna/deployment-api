@@ -17,6 +17,7 @@ from . import (
     infra_health,
     service_status,
     services,
+    shard_detail,
     sports_venues,
     user_management,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "infra_health",
     "service_status",
     "services",
+    "shard_detail",
     "sports_venues",
     "user_management",
 ]

@@ -68,6 +68,7 @@ from .routes import (
     infra_health,
     service_status,
     services,
+    shard_detail,
     sports_venues,
     subscriptions,
     user_management,
@@ -133,6 +134,9 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])
 _authenticated_router.include_router(
     data_status.router, prefix="/api/data-status", tags=["Data Status"]
+)
+_authenticated_router.include_router(
+    shard_detail.router, prefix="/api/data-status", tags=["Data Status"]
 )
 _authenticated_router.include_router(fixtures.router, prefix="/api")
 _authenticated_router.include_router(
