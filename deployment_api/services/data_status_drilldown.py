@@ -1041,6 +1041,48 @@ def _read_parquet_columns(gs_uri: str, columns: list[str] | None = None) -> pd.D
     return df_obj
 
 
+def _parquet_schema_names(gs_uri: str) -> set[str]:
+    """Return the set of top-level column names present in the parquet at ``gs_uri``.
+
+    Used to pick the current column variant when the parquet schema has drifted
+    (e.g. FIXTURES moved from ``fixture_id`` → ``af_fixture_id``; see
+    ``instruments-service`` orchestrator ~L3220 for the prefer-af pattern).
+    """
+    import gcsfs
+    import pyarrow.parquet as pq
+
+    if not gs_uri.startswith("gs://"):
+        raise ValueError(f"Not a gs:// URI: {gs_uri}")
+    bucket_key = gs_uri[len("gs://") :]
+    fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
+    open_fn: object = getattr(fs_any, "open", None)
+    if not callable(open_fn):
+        raise RuntimeError("gcsfs.GCSFileSystem missing open()")
+    fh_obj: object = open_fn(bucket_key, "rb")
+    try:
+        pf_ctor: object = pq.ParquetFile  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        if not callable(pf_ctor):  # pyright: ignore[reportUnknownArgumentType]
+            raise RuntimeError("pyarrow.parquet.ParquetFile is not callable")
+        pf: object = pf_ctor(fh_obj)  # pyright: ignore[reportUnknownVariableType]
+        schema_obj: object = getattr(pf, "schema_arrow", None)
+        names_obj: object = getattr(schema_obj, "names", None) if schema_obj is not None else None
+    finally:
+        close: object = getattr(fh_obj, "close", None)
+        if callable(close):
+            close()
+    if not isinstance(names_obj, list):
+        return set()
+    return {str(n) for n in cast(list[object], names_obj)}
+
+
+def _pick_column(candidates: list[str], available: set[str]) -> str | None:
+    """Return the first ``candidates`` entry that appears in ``available``."""
+    for c in candidates:
+        if c in available:
+            return c
+    return None
+
+
 def _distinct_values_in_parquet(gs_uri: str, column: str) -> list[str]:
     df = _read_parquet_columns(gs_uri, [column])
     if column not in df.columns:
@@ -1239,17 +1281,20 @@ _FIXTURE_ENTITIES: tuple[tuple[str, str, str], ...] = (
     ("WEATHER", "entity=weather", "weather.parquet"),
 )
 
-# Columns we strictly need from the master fixtures parquet for breakdown.
-# Keep the projection narrow so gcsfs read cost stays bounded.
-_FIXTURE_META_COLUMNS: list[str] = [
-    "fixture_id",
-    "af_league_id",
-    "kickoff_utc",
-    "home_team_name",
-    "away_team_name",
-    "status",
-    "venue_id",
-]
+# Logical → candidate column names for the master fixtures parquet.
+# The canonical API-Football schema uses `af_*` prefixes and `timestamp` /
+# `status_short`; older writes may carry the legacy names. We probe the schema
+# and pick whichever variant exists. Output keys in the API response stay
+# canonical (left column) regardless of which variant was on disk.
+_FIXTURE_META_ALIASES: dict[str, list[str]] = {
+    "fixture_id": ["af_fixture_id", "fixture_id"],
+    "af_league_id": ["af_league_id"],
+    "kickoff_utc": ["timestamp", "kickoff_utc"],
+    "home_team_name": ["af_home_name", "home_team_name"],
+    "away_team_name": ["af_away_name", "away_team_name"],
+    "status": ["status_short", "status"],
+    "venue_id": ["venue_id"],
+}
 
 
 def _entity_gs_uri(
@@ -1262,6 +1307,45 @@ def _entity_gs_uri(
     )
 
 
+def _probe_fid_column(gs_uri: str) -> tuple[str, str | None]:
+    """Probe the parquet schema and pick the canonical fixture-id column.
+
+    Returns ``(status, fid_col)`` where ``status`` is one of ``"ok"`` /
+    ``"empty_confirmed"`` / ``"attempted_failed"``. ``fid_col`` is ``None``
+    on any non-``"ok"`` status.
+    """
+    try:
+        schema_names = _parquet_schema_names(gs_uri)
+    except (OSError, FileNotFoundError):
+        return ("attempted_failed", None)
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("per-fixture entity schema probe failed for %s: %s", gs_uri, exc)
+        return ("attempted_failed", None)
+    fid_col = _pick_column(["af_fixture_id", "fixture_id"], schema_names)
+    if fid_col is None:
+        return ("empty_confirmed", None)
+    return ("ok", fid_col)
+
+
+def _extract_fixture_ids_from_series(series: pd.Series) -> set[str]:  # pyright: ignore[reportMissingTypeArgument,reportUnknownParameterType]
+    """Extract string fixture IDs from a pandas Series.
+
+    ``af_fixture_id`` is ``int64`` on disk; pandas may render it with a
+    trailing ``".0"`` when coerced through ``str()`` after dtype promotion.
+    Strip that artifact so IDs round-trip cleanly to GCS paths and CSV.
+    """
+    raw_values: object = series.dropna().unique().tolist()  # pyright: ignore[reportUnknownMemberType]
+    values_list: list[object] = cast(list[object], raw_values)
+    out: set[str] = set()
+    for v in values_list:
+        s = str(v).strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        if s:
+            out.add(s)
+    return out
+
+
 def _read_entity_fixture_ids(gs_uri: str) -> tuple[str, set[str]]:
     """Return ``(capture_status, fixture_ids)`` for one per-day entity parquet.
 
@@ -1269,26 +1353,23 @@ def _read_entity_fixture_ids(gs_uri: str) -> tuple[str, set[str]]:
     ``"attempted_failed"``. When ``"attempted_failed"`` the returned set is
     empty; callers should fall through to per-fixture ``"missing"`` /
     ``"attempted_failed"`` classification.
+
+    Per-entity parquets key rows on ``af_fixture_id`` (canonical, per
+    instruments-service orchestrator); older writes used ``fixture_id``.
     """
+    status, fid_col = _probe_fid_column(gs_uri)
+    if fid_col is None:
+        return (status, set())
     try:
-        df = _read_parquet_columns(gs_uri, ["fixture_id"])
+        df = _read_parquet_columns(gs_uri, [fid_col])
     except (OSError, FileNotFoundError):
         return ("attempted_failed", set())
     except (ValueError, RuntimeError) as exc:
         logger.warning("per-fixture entity read failed for %s: %s", gs_uri, exc)
         return ("attempted_failed", set())
-
-    if "fixture_id" not in df.columns or df.empty:
+    if fid_col not in df.columns or df.empty:
         return ("empty_confirmed", set())
-
-    raw_series = df["fixture_id"].dropna()
-    raw_values: object = raw_series.unique().tolist()  # pyright: ignore[reportUnknownMemberType]
-    values_list: list[object] = cast(list[object], raw_values)
-    fixture_ids: set[str] = set()
-    for v in values_list:
-        s = str(v).strip()
-        if s:
-            fixture_ids.add(s)
+    fixture_ids = _extract_fixture_ids_from_series(df[fid_col])
     if not fixture_ids:
         return ("empty_confirmed", set())
     return ("captured", fixture_ids)
@@ -1326,7 +1407,20 @@ def _load_fixture_meta(
         filename="fixtures.parquet",
         project_id=project_id,
     )
-    df = _read_parquet_columns(gs_uri, _FIXTURE_META_COLUMNS)
+
+    schema_names = _parquet_schema_names(gs_uri)
+    # Resolve each logical field to whichever schema variant is present.
+    resolved: dict[str, str] = {}
+    for canonical, variants in _FIXTURE_META_ALIASES.items():
+        picked = _pick_column(variants, schema_names)
+        if picked is not None:
+            resolved[canonical] = picked
+    proj_cols = list(resolved.values())
+    if not proj_cols:
+        return ([], af_id)
+    df = _read_parquet_columns(gs_uri, proj_cols)
+    # Rename variant → canonical so downstream row access is schema-agnostic.
+    df = df.rename(columns={variant: canonical for canonical, variant in resolved.items()})
 
     if "af_league_id" not in df.columns or df.empty:
         return ([], af_id)
@@ -1335,12 +1429,15 @@ def _load_fixture_meta(
     filtered = df[af_series == af_id]
     fixtures: list[dict[str, object]] = []
     for row in filtered.to_dict(orient="records"):  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-        fixture_id = str(row.get("fixture_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-        if not fixture_id:
+        # af_fixture_id is int64; trim pandas ".0" decimal artifact on str().
+        raw_fid = str(row.get("fixture_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        if raw_fid.endswith(".0"):
+            raw_fid = raw_fid[:-2]
+        if not raw_fid:
             continue
         fixtures.append(
             {
-                "fixture_id": fixture_id,
+                "fixture_id": raw_fid,
                 "kickoff_utc": str(row.get("kickoff_utc") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 "home_team_name": str(row.get("home_team_name") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 "away_team_name": str(row.get("away_team_name") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
@@ -1567,3 +1664,148 @@ def build_fixture_download(
     }
     json_text = json.dumps(body, default=str)
     return (json_text, total_captured_rows, filename_out, "application/json")
+
+
+# ---------------------------------------------------------------------------
+# Instruments shard CSV export (instruments-service / corporate-actions)
+# ---------------------------------------------------------------------------
+
+MAX_SHARD_CSV_ROWS = 50_000
+
+
+def build_instruments_shard_csv_export(
+    *,
+    service: str,
+    category: str,
+    venue: str,
+    date: str,
+    project_id: str | None = None,
+    max_rows: int = MAX_SHARD_CSV_ROWS,
+) -> tuple[str, int, str]:
+    """Return ``(csv_text, row_count, filename)`` for one (venue, date) instruments shard.
+
+    instruments-service writes one parquet per ``(venue, day)`` at
+    ``instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet``.
+    This endpoint reads that file and streams the entire shard as CSV so the
+    operator can inspect what instruments were captured on a given day.
+
+    Only valid for services in ``_PER_VENUE_DAY_BUNDLE_SERVICES``
+    (instruments-service, corporate-actions).
+
+    Raises:
+        ValueError: unsupported service, or row count exceeds ``max_rows``.
+        FileNotFoundError: parquet does not exist (adapter never ran that day).
+    """
+    svc = service.lower()
+    if svc not in _PER_VENUE_DAY_BUNDLE_SERVICES:
+        raise ValueError(
+            f"Service {service!r} does not use per-venue-day-bundle sharding. "
+            f"Supported: {sorted(_PER_VENUE_DAY_BUNDLE_SERVICES)}"
+        )
+
+    bucket = build_bucket_name(service, category, project_id)
+    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"
+
+    try:
+        df = _read_parquet_columns(gs_uri)
+    except (OSError, FileNotFoundError):
+        return "", 0, _shard_csv_filename(service, category, venue, date)
+
+    if len(df) > max_rows:
+        raise ValueError(
+            f"Shard CSV export would include {len(df):,} rows (> {max_rows:,}). "
+            "Use a BigQuery external table over the parquet files instead."
+        )
+
+    csv_text = df.to_csv(index=False)
+    return csv_text, len(df), _shard_csv_filename(service, category, venue, date)
+
+
+def _shard_csv_filename(service: str, category: str, venue: str, date: str) -> str:
+    return f"{service}_{category}_{venue}_{date}.csv"
+
+
+# ---------------------------------------------------------------------------
+# MTDS availability-catalog CSV export (market-tick-data-service)
+# ---------------------------------------------------------------------------
+
+MTDS_SHARD_SERVICES: frozenset[str] = frozenset(
+    {"market-tick-data-service", "market-data-processing-service"}
+)
+
+# Columns to include in the availability catalog CSV (in order).
+# These are the v5 manifest columns that operators care about.
+_MTDS_CATALOG_COLUMNS: list[str] = [
+    "date",
+    "venue",
+    "instrument_type",
+    "data_type",
+    "instrument_id",
+    "capture_status",
+    "error_reason",
+    "attempted_at",
+    "written_at",
+]
+
+
+def build_mtds_shard_csv_export(
+    *,
+    service: str,
+    category: str,
+    venue: str,
+    date: str,
+    project_id: str | None = None,
+) -> tuple[str, int, str]:
+    """Return ``(csv_text, row_count, filename)`` for one (venue, date) MTDS catalog.
+
+    MTDS writes one parquet per symbol under
+    ``raw_tick_data/by_date/day={date}/…/{symbol}.parquet`` — exporting the
+    raw tick data is impractical (millions of rows). Instead this function
+    exports the **availability manifest** slice for ``(venue, date)`` so the
+    operator can see exactly which instruments were captured, their
+    ``capture_status``, and any ``error_reason`` in a single CSV.
+
+    Returns an empty CSV string (row_count=0) when the manifest is unreachable
+    or contains no rows for the requested (venue, date) — callers can inspect
+    ``X-Data-Status: empty_or_missing`` to distinguish.
+
+    Raises:
+        ValueError: unsupported service.
+    """
+    svc = service.lower()
+    if svc not in MTDS_SHARD_SERVICES:
+        raise ValueError(
+            f"Service {service!r} is not an MTDS-family service. "
+            f"Supported: {sorted(MTDS_SHARD_SERVICES)}"
+        )
+
+    bucket = build_bucket_name(service, category, project_id)
+    try:
+        df = read_availability_index(bucket)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("MTDS catalog export: manifest read failed for %s: %s", bucket, exc)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
+
+    if df.empty or "date" not in df.columns:
+        return "", 0, _shard_csv_filename(service, category, venue, date)
+
+    mask = df["date"] == date
+    if "venue" in df.columns:
+        mask = mask & (df["venue"] == venue)
+    scoped = df.loc[mask].copy()
+
+    if scoped.empty:
+        return "", 0, _shard_csv_filename(service, category, venue, date)
+
+    # Keep only the catalog columns that exist; fill missing ones with "".
+    out_cols = [c for c in _MTDS_CATALOG_COLUMNS if c in scoped.columns]
+    scoped = scoped[out_cols]
+
+    sort_cols = [
+        c for c in ("instrument_type", "data_type", "instrument_id") if c in scoped.columns
+    ]
+    if sort_cols:
+        scoped = scoped.sort_values(sort_cols)
+
+    csv_text: str = scoped.to_csv(index=False)  # pyright: ignore[reportUnknownMemberType]
+    return csv_text, len(scoped), _shard_csv_filename(service, category, venue, date)
