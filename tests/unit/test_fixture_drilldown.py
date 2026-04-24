@@ -95,6 +95,27 @@ def _dispatch_uri_reader(
     return _reader
 
 
+def _dispatch_schema_prober(
+    mapping: dict[str, pd.DataFrame | type[OSError]],
+) -> Callable[[str], set[str]]:
+    """Return a side_effect callable for ``_parquet_schema_names``.
+
+    Added 2026-04-24 with the schema-adaptive drilldown refactor
+    (``_probe_fid_column`` + ``_FIXTURE_META_ALIASES``). The probe derives the
+    parquet column names from the mocked DataFrames so tests stay hermetic.
+    """
+
+    def _prober(gs_uri: str) -> set[str]:
+        for key, val in mapping.items():
+            if key in gs_uri:
+                if isinstance(val, type) and issubclass(val, OSError):
+                    raise val(f"Simulated missing parquet: {gs_uri}")
+                return set(val.columns)
+        raise FileNotFoundError(f"Unmapped URI in test: {gs_uri}")
+
+    return _prober
+
+
 # ---------------------------------------------------------------------------
 # build_fixture_breakdown
 # ---------------------------------------------------------------------------
@@ -136,8 +157,13 @@ class TestBuildFixtureBreakdown:
             "entity=weather": _entity_df(all_ids),
         }
 
-        with patch.object(
-            drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+        with (
+            patch.object(
+                drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+            ),
+            patch.object(
+                drilldown, "_parquet_schema_names", side_effect=_dispatch_schema_prober(mapping)
+            ),
         ):
             result = drilldown.build_fixture_breakdown(day=_DAY, league_id=_LEAGUE)
 
@@ -193,8 +219,13 @@ class TestBuildFixtureBreakdown:
             "entity=weather": OSError,
         }
 
-        with patch.object(
-            drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+        with (
+            patch.object(
+                drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+            ),
+            patch.object(
+                drilldown, "_parquet_schema_names", side_effect=_dispatch_schema_prober(mapping)
+            ),
         ):
             result = drilldown.build_fixture_breakdown(day=_DAY, league_id=_LEAGUE)
 
@@ -221,10 +252,17 @@ class TestBuildFixtureBreakdown:
 
     def test_no_schedule_day_returns_empty_expected(self):
         """Phase-3: master fixtures parquet absent → status='no_schedule'."""
-        with patch.object(
-            drilldown,
-            "_read_parquet_columns",
-            side_effect=FileNotFoundError("missing fixtures parquet"),
+        with (
+            patch.object(
+                drilldown,
+                "_read_parquet_columns",
+                side_effect=FileNotFoundError("missing fixtures parquet"),
+            ),
+            patch.object(
+                drilldown,
+                "_parquet_schema_names",
+                side_effect=FileNotFoundError("missing fixtures parquet"),
+            ),
         ):
             result = drilldown.build_fixture_breakdown(day=_DAY, league_id=_LEAGUE)
         assert result["status"] == "no_schedule"
@@ -269,8 +307,13 @@ class TestBuildFixtureBreakdown:
             "entity=understat_xg": _entity_df(["fx-epl"]),
             "entity=weather": _entity_df(["fx-epl"]),
         }
-        with patch.object(
-            drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+        with (
+            patch.object(
+                drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+            ),
+            patch.object(
+                drilldown, "_parquet_schema_names", side_effect=_dispatch_schema_prober(mapping)
+            ),
         ):
             result = drilldown.build_fixture_breakdown(day=_DAY, league_id=_LEAGUE)
 
@@ -299,8 +342,13 @@ class TestBuildFixtureDownload:
             "entity=understat_xg": pd.DataFrame({"fixture_id": ["fx-1"], "xg": [1.2]}),
             "entity=weather": pd.DataFrame({"fixture_id": ["fx-1"], "temp_c": [15.0]}),
         }
-        with patch.object(
-            drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+        with (
+            patch.object(
+                drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+            ),
+            patch.object(
+                drilldown, "_parquet_schema_names", side_effect=_dispatch_schema_prober(mapping)
+            ),
         ):
             body, row_count, filename, media_type = drilldown.build_fixture_download(
                 fixture_id="fx-1", day=_DAY, fmt="csv"
@@ -328,8 +376,13 @@ class TestBuildFixtureDownload:
             "entity=understat_xg": pd.DataFrame({"fixture_id": ["fx-1"], "xg": [0.5]}),
             "entity=weather": OSError,
         }
-        with patch.object(
-            drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+        with (
+            patch.object(
+                drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+            ),
+            patch.object(
+                drilldown, "_parquet_schema_names", side_effect=_dispatch_schema_prober(mapping)
+            ),
         ):
             body, _row_count, filename, media_type = drilldown.build_fixture_download(
                 fixture_id="fx-1", day=_DAY, fmt="json"
@@ -363,8 +416,13 @@ class TestBuildFixtureDownload:
             "entity=understat_xg": OSError,
             "entity=weather": OSError,
         }
-        with patch.object(
-            drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+        with (
+            patch.object(
+                drilldown, "_read_parquet_columns", side_effect=_dispatch_uri_reader(mapping)
+            ),
+            patch.object(
+                drilldown, "_parquet_schema_names", side_effect=_dispatch_schema_prober(mapping)
+            ),
         ):
             with pytest.raises(FileNotFoundError):
                 drilldown.build_fixture_download(fixture_id="fx-1", day=_DAY, fmt="csv")

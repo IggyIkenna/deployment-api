@@ -223,13 +223,10 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "cadence_days": 7,
         "unit": "cadence_refreshes",
     },
-    "SFI_STANDINGS": {
-        "source": "soccer_football_info",
-        "classifications": ("Prediction",),
-        "axis": "per_league_periodic",
-        "cadence_days": 7,
-        "unit": "cadence_refreshes",
-    },
+    # SFI_STANDINGS intentionally absent: SFI has no standings endpoint (provider gap).
+    # Orchestrator hard-codes ``_want_sfi_standings = False``; declaring it here would
+    # create a 0/N-forever row in the manifest UI that no adapter can ever populate.
+    # Removed 2026-04-24 — SSOT plan sports_uac_schema_contracts_registration_2026_04_24.
     "SFI_PROGRESSIVE_STATS": {
         "source": "soccer_football_info",
         "classifications": ("Prediction",),
