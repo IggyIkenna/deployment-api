@@ -256,6 +256,23 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
 }
 
 
+# SPORTS data_types that exist in *historical* manifest rows but are no longer
+# produced by the current orchestrator. The data-type enumeration loop
+# iterates over ``manifest["data_type"].unique()`` to surface what actually
+# got written, so legacy rows leak into the UI even after the writer is
+# disabled. This denylist is consulted in the per-data-type loop to drop them
+# at render time. SSOT plan:
+# ``sports_uac_schema_contracts_registration_2026_04_24``.
+#
+# Current entries:
+# - SFI_STANDINGS: SFI has no standings endpoint (provider gap). Orchestrator
+#   hard-codes ``_want_sfi_standings = False`` (orchestrator.py:4775); only
+#   pre-2026-04-22 manifest rows still exist. Phase-3 cleanup of the SSOT
+#   plan removed it from SPORTS_DATA_TYPE_META; this denylist completes the
+#   removal by hiding legacy rows from the UI.
+SPORTS_PHANTOM_DATA_TYPES: frozenset[str] = frozenset({"SFI_STANDINGS"})
+
+
 def _sports_expected_dates_for_league(
     league_id: str,
     axis: str,
@@ -3491,6 +3508,12 @@ class DataStatusService:
             dt_mask = filtered["data_type"] == dt_val
             dt_df = filtered[dt_mask]
             dt_name = str(dt_val).upper()
+
+            # Drop phantom data_types — historical manifest rows for entities
+            # the current orchestrator no longer produces. See
+            # ``SPORTS_PHANTOM_DATA_TYPES`` for the canonical denylist.
+            if is_sports and dt_name in SPORTS_PHANTOM_DATA_TYPES:
+                continue
 
             if is_sports and "instrument_count" in filtered.columns:
                 dt_entry = self._build_sports_entity_entry(
