@@ -285,6 +285,49 @@ def _normalise_data_type(raw: str) -> str:
     return raw.lower() if raw.isupper() else raw
 
 
+# SPORTS data_type → instrument_type resolver. The UI passes
+# ``instrument_type=""`` for sports (the manifest doesn't carry one), but UAC
+# contract keys require an instrument_type (``("sports", "match", "fixtures")``,
+# ``("sports", "reference", "leagues")``, …). Resolve at the boundary so the
+# UI doesn't need to know UAC's internal partitioning. SSOT plan:
+# ``sports_uac_schema_contracts_registration_2026_04_24``.
+_SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE: dict[str, str] = {
+    # Family A — API-Football reference
+    "leagues": "reference",
+    "teams": "reference",
+    "venues": "reference",
+    "transfermarkt_leagues": "reference",
+    "sfi_leagues": "reference",
+    # league-level snapshot (slightly different shape from match facts)
+    "standings": "league",
+    # Family B — API-Football match fact + Family D progressive + Family E
+    "fixtures": "match",
+    "fixture_events": "match",
+    "fixture_stats": "match",
+    "fixture_lineups": "match",
+    "player_stats": "match",
+    "injuries": "match",
+    "sfi_progressive_stats": "match",
+    "matches": "match",
+    "predictions": "match",
+    "xg": "match",
+    "weather": "match",
+    # Family C — Transfermarkt player values
+    "player_values": "player",
+    # Family E — FSS derivative
+    "fixture_features": "feature",
+    # Existing pre-plan registration: sports/odds/trades
+    "trades": "odds",
+}
+
+
+def _resolve_sports_instrument_type(category: str, instrument_type: str, data_type: str) -> str:
+    """If category=sports and instrument_type is empty, infer from data_type."""
+    if category != "sports" or instrument_type:
+        return instrument_type
+    return _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE.get(data_type, instrument_type)
+
+
 def get_schema_for_shard(
     *,
     category: str,
@@ -305,6 +348,8 @@ def get_schema_for_shard(
     cat_norm = category.lower()
     it_norm = _normalise_instrument_type(instrument_type)
     dt_norm = _normalise_data_type(data_type)
+    # Sports manifest carries no instrument_type axis — resolve from data_type.
+    it_norm = _resolve_sports_instrument_type(cat_norm, it_norm, dt_norm)
     # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(
