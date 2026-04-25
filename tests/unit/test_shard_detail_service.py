@@ -96,6 +96,67 @@ class TestDefiComposite:
         assert svc._defi_composite_parts(None) == (None, None)  # pyright: ignore[reportPrivateUsage]
 
 
+class TestInstrumentTypeAuto:
+    """``_resolve_instrument_type_auto`` + ``_resolve_schema`` AUTO branch.
+
+    Covers the deployment-ui DeFi click flow: the click site only knows
+    ``data_type`` (e.g. ``oracle_prices``) and the composite venue (e.g.
+    ``CHAINLINK-ETHEREUM``); the backend resolves ``instrument_type`` by
+    scanning ``CONTRACT_REGISTRY``.
+    """
+
+    def test_auto_resolves_known_data_type(self) -> None:
+        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI", data_type="dex_pools", venue=None
+        )
+        assert result == "pool"
+
+    def test_auto_resolves_lending_data_type(self) -> None:
+        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI", data_type="liquidation_events", venue=None
+        )
+        assert result == "lending"
+
+    def test_auto_returns_none_for_unknown_data_type(self) -> None:
+        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI", data_type="not_a_real_data_type", venue=None
+        )
+        assert result is None
+
+    def test_resolve_schema_auto_mode_marks_resolution(self) -> None:
+        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI", instrument_type="AUTO", data_type="dex_pools", venue=None
+        )
+        assert schema.registered is True
+        assert schema.instrument_type_resolved_via == "auto"
+        assert schema.instrument_type_resolved == "pool"
+        assert resolved == "pool"
+        # New ColumnSpec fields must be present in the response (set by UAC cf79d54).
+        assert any(col.required is True for col in schema.columns)
+
+    def test_resolve_schema_explicit_mode_unchanged(self) -> None:
+        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI", instrument_type="pool", data_type="dex_pools", venue=None
+        )
+        assert schema.registered is True
+        assert schema.instrument_type_resolved_via == "explicit"
+        assert resolved == "pool"
+
+    def test_resolve_schema_auto_unresolved_returns_none_via(self) -> None:
+        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI",
+            instrument_type="AUTO",
+            data_type="not_a_real_data_type",
+            venue=None,
+        )
+        assert schema.registered is False
+        assert schema.instrument_type_resolved_via == "none"
+        assert schema.instrument_type_resolved is None
+        # The caller's literal value passes through when resolution fails so
+        # the response coord is honest about what was requested.
+        assert resolved == "AUTO"
+
+
 # ---------------------------------------------------------------------------
 # get_shard_detail — grouped branch
 # ---------------------------------------------------------------------------

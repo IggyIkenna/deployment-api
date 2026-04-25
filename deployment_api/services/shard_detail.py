@@ -23,7 +23,7 @@ the other branches from rendering.
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import urlencode
 
 import pandas as pd
@@ -33,6 +33,13 @@ from unified_api_contracts import (
     SchemaContractNotFoundError,
     lookup_contract,
 )
+from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
+
+# UI sentinels passed when the click site doesn't have an instrument_type
+# axis in scope (DeFi protocol drilldown — only data_type and composite
+# venue are known). The resolver scans CONTRACT_REGISTRY for any
+# (category, *, data_type) tuple and returns the first deterministic match.
+_AUTO_SENTINELS: frozenset[str] = frozenset({"AUTO", "UNKNOWN", "AUTO_DETECT_FAIL", ""})
 from unified_trading_library import read_availability_index
 
 from deployment_api.services.data_status_drilldown import (
@@ -191,14 +198,97 @@ def _column_dict(col: object) -> ShardSchemaColumn:
     )
 
 
+def _resolve_instrument_type_auto(
+    *, category: str, data_type: str, venue: str | None
+) -> str | None:
+    """Resolve an ``instrument_type`` for a (category, data_type) pair.
+
+    Used when the UI passes ``instrument_type=AUTO`` (or one of the other
+    sentinels in :data:`_AUTO_SENTINELS`) because the click site only
+    knows the ``data_type`` axis — DeFi protocol drilldowns are the
+    canonical case.
+
+    Resolution order:
+
+    1. **Venue override**: any ``(category, venue.upper(), instrument_type,
+       data_type)`` tuple in ``VENUE_CONTRACT_OVERRIDES`` is consulted
+       first when ``venue`` is supplied — the per-venue schema wins.
+    2. **Base registry**: any ``(category.lower(), instrument_type,
+       data_type.lower())`` tuple in ``CONTRACT_REGISTRY``. Multiple
+       matches are sorted alphabetically and the first one is returned
+       so the resolution is deterministic across processes.
+
+    Returns ``None`` if no contract matches.
+    """
+    cat_norm = (category or "").lower()
+    dt_norm = (data_type or "").lower()
+
+    if venue:
+        venue_norm = venue.upper()
+        venue_matches: list[str] = sorted(
+            it
+            for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES.keys()
+            if c == cat_norm and v == venue_norm and dt == dt_norm
+        )
+        if venue_matches:
+            return venue_matches[0]
+
+    base_matches: list[str] = sorted(
+        it for (c, it, dt) in CONTRACT_REGISTRY.keys() if c == cat_norm and dt == dt_norm
+    )
+    if base_matches:
+        return base_matches[0]
+    return None
+
+
 def _resolve_schema(
     *, category: str, instrument_type: str, data_type: str, venue: str | None
-) -> ShardSchema:
-    """Resolve a ShardSchema from the UAC contract registry."""
+) -> tuple[ShardSchema, str]:
+    """Resolve a ShardSchema from the UAC contract registry.
+
+    Returns ``(schema, resolved_instrument_type)``. The resolved
+    instrument_type echoes the caller value when ``instrument_type`` is
+    explicit; when the caller passes one of :data:`_AUTO_SENTINELS` the
+    registry-derived pick is returned so downstream branches (path
+    resolution, shard classification) operate on the concrete axis.
+    """
     cat_norm = (category or "").lower()
-    it_norm = (
-        (instrument_type or "").lower() if (instrument_type or "").isupper() else instrument_type
-    )
+    is_auto = (instrument_type or "").upper() in _AUTO_SENTINELS
+
+    resolved_via: Literal["explicit", "auto", "none"]
+    it_norm: str
+    if is_auto:
+        auto_pick = _resolve_instrument_type_auto(
+            category=category, data_type=data_type, venue=venue
+        )
+        if auto_pick is None:
+            return (
+                ShardSchema(
+                    registered=False,
+                    source="none",
+                    symbol_column=None,
+                    columns=[],
+                    message=(
+                        f"No SchemaContract found in UAC registry for "
+                        f"category={cat_norm!r} data_type={data_type!r}. "
+                        "Caller passed instrument_type=AUTO and the registry "
+                        "scan returned no matches."
+                    ),
+                    instrument_type_resolved_via="none",
+                    instrument_type_resolved=None,
+                ),
+                instrument_type,
+            )
+        it_norm = auto_pick
+        resolved_via = "auto"
+    else:
+        it_norm = (
+            (instrument_type or "").lower()
+            if (instrument_type or "").isupper()
+            else instrument_type
+        )
+        resolved_via = "explicit"
+
     dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
     try:
         contract: SchemaContract = lookup_contract(
@@ -208,35 +298,40 @@ def _resolve_schema(
             venue=venue,
         )
     except SchemaContractNotFoundError:
-        return ShardSchema(
-            registered=False,
-            source="none",
-            symbol_column=None,
-            columns=[],
-            message=(
-                "No contract registered for this shard. "
-                "The UI should fall back to projecting actual parquet columns."
+        return (
+            ShardSchema(
+                registered=False,
+                source="none",
+                symbol_column=None,
+                columns=[],
+                message=(
+                    "No contract registered for this shard. "
+                    "The UI should fall back to projecting actual parquet columns."
+                ),
+                instrument_type_resolved_via=resolved_via,
+                instrument_type_resolved=it_norm,
             ),
+            it_norm,
         )
 
     override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
     is_override = venue is not None and override_key in VENUE_CONTRACT_OVERRIDES
 
     columns = [_column_dict(c) for c in contract.columns]
-    if is_override:
-        return ShardSchema(
+    source: Literal["CONTRACT_REGISTRY", "VENUE_CONTRACT_OVERRIDES", "none"] = (
+        "VENUE_CONTRACT_OVERRIDES" if is_override else "CONTRACT_REGISTRY"
+    )
+    return (
+        ShardSchema(
             registered=True,
-            source="VENUE_CONTRACT_OVERRIDES",
+            source=source,
             symbol_column=contract.symbol_column,
             columns=columns,
             message="",
-        )
-    return ShardSchema(
-        registered=True,
-        source="CONTRACT_REGISTRY",
-        symbol_column=contract.symbol_column,
-        columns=columns,
-        message="",
+            instrument_type_resolved_via=resolved_via,
+            instrument_type_resolved=it_norm,
+        ),
+        it_norm,
     )
 
 
@@ -666,18 +761,23 @@ def get_shard_detail(
     the error state.  Programmer errors (unknown service bucket) do
     raise ``ValueError`` at the boundary.
     """
-    shard_class = _classify_shard(
-        service=service,
-        category=category,
-        instrument_type=instrument_type,
-        data_type=data_type,
-    )
-
-    schema = _resolve_schema(
+    # Resolve schema first — when the UI passes instrument_type=AUTO the
+    # resolver scans the registry and returns the concrete instrument_type.
+    # Use the resolved value for downstream classification + path lookup
+    # so a single coordinate is consistent across all branches of the
+    # response.
+    schema, resolved_instrument_type = _resolve_schema(
         category=category,
         instrument_type=instrument_type,
         data_type=data_type,
         venue=venue,
+    )
+
+    shard_class = _classify_shard(
+        service=service,
+        category=category,
+        instrument_type=resolved_instrument_type,
+        data_type=data_type,
     )
 
     # Fixtures branch has its own parquet layout (sports_reference) — we
@@ -688,7 +788,7 @@ def get_shard_detail(
         resolved = _gcs_path_for_shard(
             service=service,
             category=category,
-            instrument_type=instrument_type,
+            instrument_type=resolved_instrument_type,
             data_type=data_type,
             venue=venue,
             day=day,

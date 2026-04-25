@@ -58,6 +58,19 @@ class ShardSchema(BaseModel):
     symbol_column: str | None
     columns: list[ShardSchemaColumn] = Field(default_factory=list)
     message: str = ""
+    instrument_type_resolved_via: Literal["explicit", "auto", "none"] = "explicit"
+    """``explicit`` — caller passed a concrete instrument_type and the lookup
+    succeeded against it. ``auto`` — caller passed ``AUTO`` / ``UNKNOWN`` and
+    the backend resolved the instrument_type by scanning the registry for
+    any ``(category, *, data_type)`` tuple. ``none`` — caller passed AUTO
+    but no contract matched the (category, data_type) pair, so the schema
+    is unregistered."""
+
+    instrument_type_resolved: str | None = None
+    """The concrete instrument_type used for the lookup. Echoes the caller
+    value when ``explicit``; populated with the resolver's pick when
+    ``auto`` so the UI can display "resolved as <X>". ``None`` when
+    resolution failed."""
 
 
 class ShardGcsMetadata(BaseModel):
