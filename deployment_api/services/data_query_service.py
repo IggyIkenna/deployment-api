@@ -7,7 +7,7 @@ and instrument availability queries.
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import ClassVar, cast
 
 from unified_api_contracts.internal import MarketCategory
 
@@ -390,50 +390,226 @@ class DataQueryService:
         query_tokens: list[str],
         limit: int,
     ) -> list[dict[str, str]]:
-        """Walk one category bucket, return matching canonical IDs.
+        """Walk one category's canonical-ID corpus, return matches.
 
-        GCS path conventions vary per category (instruments-{category} bucket
-        with ``venue/instrument_type/{symbol}.parquet`` for CeFi/TradFi/DeFi;
-        ``instrument_availability/by_date/...`` for sports/prediction). This
-        method handles both layouts: it lists up to ``_SEARCH_LISTING_CAP``
-        objects, derives ``(canonical_id, venue, instrument_type)`` from the
-        path, and filters by AND-match across ``query_tokens``.
+        Sources of truth differ per category:
+
+        - **SPORTS**: ``_index/availability_index.parquet`` has the canonical
+          ``league_id`` column populated (EPL, BUNDESLIGA, …). One small
+          parquet read; tens of thousands of rows; very fast.
+        - **CEFI / TRADFI / DEFI / PREDICTION**: the index doesn't carry
+          ``instrument_id`` per-row; the canonical ``instrument_key`` lives
+          inside per-venue ``instruments.parquet`` files written daily under
+          ``instrument_availability/by_date/day=.../venue=.../``. We pick the
+          most-recent day with data and scan the per-venue parquets in parallel.
+
+        Both paths cache the loaded canonical-ID corpus in-process for 5
+        minutes so successive search keystrokes don't re-hit GCS.
         """
-        bucket_name = self.build_bucket_name("instruments", category)
+        category = category.lower()
         try:
-            objects: list[ObjectInfo] = list_objects(
-                bucket_name, "", max_results=self._SEARCH_LISTING_CAP
-            )
+            corpus = self._load_search_corpus(category)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning(
-                "search_instruments: failed to list %s — %s: %s",
-                bucket_name,
+                "search_instruments: failed to load %s corpus — %s: %s",
+                category,
                 type(exc).__name__,
                 exc,
             )
             return []
 
         matches: list[dict[str, str]] = []
-        for obj in objects:
-            parsed = self._parse_instrument_object_path(obj.name)
-            if parsed is None:
-                continue
-            canonical_id, venue, instrument_type = parsed
-            cid_lower = canonical_id.lower()
-            # AND-match: every query token must be a substring of canonical_id.
+        for row in corpus:
+            cid_lower = row["canonical_id"].lower()
             if not all(t in cid_lower for t in query_tokens):
                 continue
-            matches.append(
-                {
-                    "canonical_id": canonical_id,
-                    "category": category.upper(),
-                    "venue": venue,
-                    "instrument_type": instrument_type,
-                }
-            )
+            matches.append({**row, "category": category.upper()})
             if len(matches) >= limit:
                 break
         return matches
+
+    # In-process corpus cache: ``{category: (loaded_at_epoch, [{canonical_id,
+    # venue, instrument_type}, ...])}``. 5-minute TTL — searches are interactive
+    # but the canonical-ID corpus changes once daily at most.
+    _CORPUS_TTL_SECONDS: ClassVar[int] = 300
+    _corpus_cache: ClassVar[dict[str, tuple[float, list[dict[str, str]]]]] = {}
+
+    def _load_search_corpus(self, category: str) -> list[dict[str, str]]:
+        """Return the cached canonical-ID corpus for ``category``.
+
+        Cache miss / stale → reload from GCS. The corpus is a list of dicts
+        ``{canonical_id, venue, instrument_type}`` — the search filter applies
+        token-AND substring matching on top.
+        """
+        import time
+
+        now = time.monotonic()
+        cached = self._corpus_cache.get(category)
+        if cached is not None and (now - cached[0]) < self._CORPUS_TTL_SECONDS:
+            return cached[1]
+
+        if category == "sports":
+            corpus = self._load_sports_corpus_from_index()
+        else:
+            corpus = self._load_corpus_from_per_venue_parquets(category)
+
+        self._corpus_cache[category] = (now, corpus)
+        return corpus
+
+    def _load_sports_corpus_from_index(self) -> list[dict[str, str]]:
+        """Read ``instruments-store-sports/_index/availability_index.parquet``.
+
+        Sports' canonical ID is the league_id (EPL, BUNDESLIGA, ...) - the
+        index has it populated for every league x venue x data_type tuple. We
+        deduplicate to ``(league_id, venue, instrument_type)`` for the search
+        return, treating ``league_id`` as the ``canonical_id``.
+        """
+        gs_uri = (
+            f"gs://instruments-store-sports-{self.project_id}/_index/availability_index.parquet"
+        )
+        df = self._read_parquet_columns_safe(gs_uri, ["league_id", "venue", "instrument_type"])
+        if df is None or df.empty:
+            return []
+        # Empty league_id means a row that wasn't sports-canonical — skip.
+        df = df[df["league_id"].astype(str).str.len() > 0]
+        unique = df.drop_duplicates(subset=["league_id", "venue", "instrument_type"])
+        corpus: list[dict[str, str]] = []
+        for _, row in unique.iterrows():
+            corpus.append(
+                {
+                    "canonical_id": str(row["league_id"]),
+                    "venue": str(row["venue"] or ""),
+                    "instrument_type": str(row["instrument_type"] or ""),
+                }
+            )
+        return corpus
+
+    def _load_corpus_from_per_venue_parquets(self, category: str) -> list[dict[str, str]]:
+        """Scan the latest day's per-venue ``instruments.parquet`` files.
+
+        For CeFi / TradFi / DeFi / Prediction the canonical ``instrument_key``
+        lives inside per-venue parquets written under
+        ``instrument_availability/by_date/day=.../venue=.../instruments.parquet``.
+
+        Strategy: list venues for the most recent day with data, read each
+        venue's parquet, extract ``instrument_key`` + ``instrument_type``,
+        return the union. Bounded by ``_SEARCH_LISTING_CAP`` parquet reads.
+        """
+        bucket = f"instruments-store-{category}-{self.project_id}"
+        latest_day = self._latest_available_day(bucket)
+        if latest_day is None:
+            return []
+        per_venue_uris = self._collect_per_venue_uris(bucket, latest_day)
+        corpus: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for venue, uri in per_venue_uris.items():
+            self._extend_corpus_from_venue_parquet(uri, venue, corpus, seen)
+        return corpus
+
+    def _collect_per_venue_uris(self, bucket: str, day: str) -> dict[str, str]:
+        """List the day's blobs and extract one ``instruments.parquet`` per venue."""
+        prefix = f"instrument_availability/by_date/day={day}/"
+        try:
+            objects = list_objects(bucket, prefix, max_results=self._SEARCH_LISTING_CAP)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("search_instruments: list failed for %s/%s — %s", bucket, prefix, exc)
+            return {}
+        per_venue: dict[str, str] = {}
+        for obj in objects:
+            if not obj.name.endswith("/instruments.parquet"):
+                continue
+            venue = ""
+            for p in obj.name.split("/"):
+                if p.startswith("venue="):
+                    venue = p[len("venue=") :]
+                    break
+            if venue:
+                per_venue[venue] = f"gs://{bucket}/{obj.name}"
+        return per_venue
+
+    def _extend_corpus_from_venue_parquet(
+        self,
+        uri: str,
+        venue: str,
+        corpus: list[dict[str, str]],
+        seen: set[tuple[str, str, str]],
+    ) -> None:
+        """Read one venue's instruments.parquet and append unique rows to corpus."""
+        df = self._read_parquet_columns_safe(uri, ["instrument_key", "instrument_type"])
+        if df is None or df.empty:
+            return
+        for _, row in df.iterrows():
+            cid = str(row.get("instrument_key") or "").strip()
+            if not cid:
+                continue
+            it = str(row.get("instrument_type") or "").strip()
+            key = (cid, venue, it)
+            if key in seen:
+                continue
+            seen.add(key)
+            corpus.append({"canonical_id": cid, "venue": venue, "instrument_type": it})
+
+    def _latest_available_day(self, bucket: str) -> str | None:
+        """Find the most-recent ``day=YYYY-MM-DD`` partition in the bucket's
+        ``instrument_availability/by_date/`` index.
+
+        Note: production ``list_prefixes`` has a delimiter-handling bug for
+        direct-GCS (non-FUSE) mode — it iterates over blobs only, missing the
+        common-prefix sentinels GCS returns when ``delimiter="/"`` is set. We
+        work around by walking ``list_objects`` (which sees real blobs only)
+        and extracting the ``day=`` partition labels from their full paths.
+        Bounded by ``_SEARCH_LISTING_CAP`` so a busy bucket doesn't blow up.
+        """
+        try:
+            objects = list_objects(
+                bucket,
+                "instrument_availability/by_date/",
+                max_results=self._SEARCH_LISTING_CAP,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("search_instruments: by_date list failed for %s — %s", bucket, exc)
+            return None
+        days: set[str] = set()
+        for obj in objects:
+            for token in obj.name.split("/"):
+                if token.startswith("day="):
+                    days.add(token[len("day=") :])
+                    break
+        if not days:
+            return None
+        # ISO YYYY-MM-DD sorts lexicographically.
+        return max(days)
+
+    @staticmethod
+    def _read_parquet_columns_safe(gs_uri: str, columns: list[str]):  # pyright: ignore[reportMissingReturnType]
+        """Read ``columns`` from a parquet at ``gs_uri``; return DataFrame or None.
+
+        Uses pyarrow + gcsfs locally. Failures (network, schema mismatch,
+        missing column) return None so the caller can fall back gracefully.
+        """
+        try:
+            import gcsfs  # type: ignore[import-untyped]
+            import pyarrow.parquet as pq  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("search_instruments: pyarrow / gcsfs not installed")
+            return None
+        if not gs_uri.startswith("gs://"):
+            return None
+        bucket_key = gs_uri[len("gs://") :]
+        try:
+            fs = gcsfs.GCSFileSystem()
+            with fs.open(bucket_key, "rb") as fh:
+                pf = pq.ParquetFile(fh)
+                schema_names = set(pf.schema_arrow.names)
+                # Only request columns that actually exist (graceful drift handling).
+                proj = [c for c in columns if c in schema_names]
+                if not proj:
+                    return None
+                table = pf.read(columns=proj)
+                return table.to_pandas()
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("search_instruments: parquet read failed for %s — %s", gs_uri, exc)
+            return None
 
     @staticmethod
     def _extract_canonical_id(path: str) -> tuple[list[str], str] | None:
