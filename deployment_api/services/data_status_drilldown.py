@@ -1582,6 +1582,229 @@ def _fixture_download_filename(fixture_id: str, fmt: str) -> str:
     return f"instruments-service_FIXTURE_{fixture_id}.{safe_fmt}"
 
 
+# ---------------------------------------------------------------------------
+# DeFi per-pool drilldown — institutional equivalent of the sports
+# build_fixture_breakdown for chain-native data.
+# ---------------------------------------------------------------------------
+
+
+# Candidate columns that may carry the canonical pool/asset identifier in DeFi
+# tick parquets. Order = preference: ``instrument_key`` is the canonical UAC
+# format (``UNISWAP_V3-ETHEREUM:POOL:USDC-WETH-500``); ``pool_address`` /
+# ``pool_id`` / ``token`` are venue-specific fallbacks (Uniswap V2/V3/V4 +
+# AAVE / Lido / etc. legacy override columns).
+_DEFI_POOL_ID_CANDIDATE_COLS: tuple[str, ...] = (
+    "instrument_key",
+    "instrument_id",
+    "pool_address",
+    "pool_id",
+    "pair_address",
+    "token",
+    "token_symbol",
+    "symbol",
+)
+
+
+def _defi_tick_bucket(project_id: str | None = None) -> str:
+    pid = project_id or _pid
+    return f"market-data-tick-defi-{pid}"
+
+
+def _venue_chain_partition(venue: str, chain: str) -> str:
+    """Combine venue + chain into the single GCS partition key DeFi uses.
+
+    DeFi parquets are written under ``venue={VENUE}-{CHAIN}/...`` (combined
+    partition); the UI-facing API exposes them as separate ``venue`` + ``chain``
+    parameters so the rest of the data-status surface stays category-uniform.
+    """
+    return f"{venue.upper()}-{chain.upper()}"
+
+
+def _list_pool_entities_for_venue(
+    *, day: str, venue_chain: str, project_id: str | None = None
+) -> list[tuple[str, str, str]]:
+    """Return ``[(instrument_type, data_type, gs_uri), ...]`` for one (day, venue+chain).
+
+    Walks the GCS prefix
+    ``market-data-tick-defi-{pid}/raw_tick_data/by_date/day={day}/category=defi/
+    venue={venue_chain}/`` and surfaces every ``instrument_type=`` /
+    ``data_type=`` partition that has a written parquet. Capped by
+    ``DEFAULT_INSTRUMENT_LIMIT`` to keep the listing bounded.
+    """
+    bucket = _defi_tick_bucket(project_id)
+    prefix = f"raw_tick_data/by_date/day={day}/category=defi/venue={venue_chain}/"
+    try:
+        # Local import to avoid pulling deployment_api.utils.* at module load.
+        from deployment_api.utils.storage_facade import list_objects as _list_objects
+
+        objects = _list_objects(bucket, prefix, max_results=DEFAULT_INSTRUMENT_LIMIT)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("build_pool_breakdown: list failed for %s/%s: %s", bucket, prefix, exc)
+        return []
+
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str, str]] = []
+    for obj in objects:
+        if not obj.name.endswith(".parquet"):
+            continue
+        instrument_type = ""
+        data_type = ""
+        for token in obj.name.split("/"):
+            if token.startswith("instrument_type="):
+                instrument_type = token[len("instrument_type=") :]
+            elif token.startswith("data_type="):
+                data_type = token[len("data_type=") :]
+        if not instrument_type or not data_type:
+            continue
+        key = (instrument_type, data_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        gs_uri = f"gs://{bucket}/{obj.name}"
+        out.append((instrument_type, data_type, gs_uri))
+    return out
+
+
+def _read_pool_ids_from_parquet(gs_uri: str) -> tuple[str, set[str]]:
+    """Return ``(capture_status, pool_ids)`` for one DeFi entity parquet.
+
+    Tries each column in :data:`_DEFI_POOL_ID_CANDIDATE_COLS` in order until it
+    finds one present in the parquet schema. Empty set + ``"empty_confirmed"``
+    when the parquet exists but has no canonical-ID column or no rows;
+    ``"attempted_failed"`` on any read error.
+    """
+    try:
+        schema_names = _parquet_schema_names(gs_uri)
+    except (OSError, FileNotFoundError):
+        return ("attempted_failed", set())
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("pool breakdown schema probe failed for %s: %s", gs_uri, exc)
+        return ("attempted_failed", set())
+
+    pool_id_col = _pick_column(list(_DEFI_POOL_ID_CANDIDATE_COLS), schema_names)
+    if pool_id_col is None:
+        return ("empty_confirmed", set())
+
+    try:
+        df = _read_parquet_columns(gs_uri, [pool_id_col])
+    except (OSError, FileNotFoundError):
+        return ("attempted_failed", set())
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("pool breakdown read failed for %s: %s", gs_uri, exc)
+        return ("attempted_failed", set())
+
+    if pool_id_col not in df.columns or df.empty:
+        return ("empty_confirmed", set())
+
+    raw_values: object = df[pool_id_col].dropna().unique().tolist()  # pyright: ignore[reportUnknownMemberType]
+    values_list: list[object] = cast(list[object], raw_values)
+    pool_ids: set[str] = set()
+    for v in values_list:
+        s = str(v).strip()
+        if s:
+            pool_ids.add(s)
+    if not pool_ids:
+        return ("empty_confirmed", set())
+    return ("captured", pool_ids)
+
+
+def build_pool_breakdown(
+    *,
+    day: str,
+    venue: str,
+    chain: str,
+    project_id: str | None = None,
+) -> dict[str, object]:
+    """Per-pool coverage for one (day, venue, chain) DeFi shard.
+
+    Mirrors :func:`build_fixture_breakdown` but for chain-native protocols.
+    Walks every ``(instrument_type, data_type)`` partition under the
+    ``venue=<VENUE>-<CHAIN>/`` prefix, extracts the canonical pool / asset
+    identifier from each parquet, and builds a per-pool coverage map showing
+    which data_types captured each pool.
+
+    Response shape::
+
+        {
+          "day": str, "venue": str, "chain": str,
+          "venue_chain": "UNISWAP_V3-ETHEREUM",
+          "data_types_expected": ["dex_pool_state", "dex_pool_swaps"],
+          "pools_expected": int,
+          "pools": [
+            {"pool_id": "USDC-WETH-500",
+             "coverage": {"dex_pool_state": "captured", "dex_pool_swaps": "missing"},
+             "coverage_summary": {"captured": 1, "empty_confirmed": 0,
+                                   "missing": 1, "failed": 0}}
+          ],
+          "status": "resolved" | "no_data"
+        }
+
+    ``status="no_data"`` means no parquets exist for the (day, venue, chain) —
+    the UI surfaces this as a "venue not yet captured for this day" state
+    (same semantics as sports' ``"no_schedule"``).
+    """
+    venue_chain = _venue_chain_partition(venue, chain)
+    entities = _list_pool_entities_for_venue(
+        day=day, venue_chain=venue_chain, project_id=project_id
+    )
+    if not entities:
+        return {
+            "day": day,
+            "venue": venue.upper(),
+            "chain": chain.upper(),
+            "venue_chain": venue_chain,
+            "data_types_expected": [],
+            "pools_expected": 0,
+            "pools": [],
+            "status": "no_data",
+        }
+
+    # Read pool_id sets per (instrument_type, data_type); union them to get
+    # the universe of pools captured anywhere on this day.
+    per_entity_status: dict[tuple[str, str], tuple[str, set[str]]] = {}
+    universe: set[str] = set()
+    for instrument_type, data_type, gs_uri in entities:
+        status, pool_ids = _read_pool_ids_from_parquet(gs_uri)
+        per_entity_status[(instrument_type, data_type)] = (status, pool_ids)
+        universe |= pool_ids
+
+    data_types_expected = sorted({dt for _it, dt, _u in entities})
+    pools_rows: list[dict[str, object]] = []
+    for pool_id in sorted(universe):
+        coverage: dict[str, str] = {}
+        summary = {"captured": 0, "empty_confirmed": 0, "missing": 0, "failed": 0}
+        for instrument_type, data_type, _gs_uri in entities:
+            status, pool_ids = per_entity_status[(instrument_type, data_type)]
+            if status == "attempted_failed":
+                state = "failed"
+            elif status == "empty_confirmed":
+                state = "empty_confirmed"
+            elif pool_id in pool_ids:
+                state = "captured"
+            else:
+                state = "missing"
+            coverage[data_type] = state
+            summary[state] += 1
+        pools_rows.append(
+            {
+                "pool_id": pool_id,
+                "coverage": coverage,
+                "coverage_summary": summary,
+            }
+        )
+
+    return {
+        "day": day,
+        "venue": venue.upper(),
+        "chain": chain.upper(),
+        "venue_chain": venue_chain,
+        "data_types_expected": data_types_expected,
+        "pools_expected": len(universe),
+        "pools": pools_rows,
+        "status": "resolved",
+    }
+
+
 def _filter_entity_rows_for_fixture(
     gs_uri: str, fixture_id: str
 ) -> tuple[str, pd.DataFrame | None]:

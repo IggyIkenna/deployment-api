@@ -22,6 +22,7 @@ from deployment_api.services.data_status_drilldown import (
     build_fixtures_csv_export,
     build_instruments_shard_csv_export,
     build_mtds_shard_csv_export,
+    build_pool_breakdown,
     clear_drilldown_cache,
     compute_bucket_counts,
     get_schema_for_shard,
@@ -954,6 +955,33 @@ async def get_fixture_breakdown(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in get_fixture_breakdown")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/pools/breakdown")
+async def get_pool_breakdown(
+    day: str = Query(..., description="Day (YYYY-MM-DD)"),
+    venue: str = Query(..., description="DeFi venue (e.g. UNISWAP_V3, AAVE_V3, LIDO)"),
+    chain: str = Query(..., description="Chain (e.g. ETHEREUM, ARBITRUM, POLYGON, BASE)"),
+):
+    """Per-pool coverage breakdown for one (day, venue, chain) DeFi shard.
+
+    Institutional equivalent of ``/fixtures/breakdown`` for chain-native data.
+    Walks every ``(instrument_type, data_type)`` partition under the
+    ``venue=<VENUE>-<CHAIN>/`` GCS prefix, extracts the canonical pool / asset
+    identifier from each parquet, and returns a per-pool coverage map showing
+    which data_types captured each pool.
+
+    Response shape documented on ``build_pool_breakdown``.
+    """
+    try:
+        return build_pool_breakdown(day=day, venue=venue, chain=chain)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Error in get_pool_breakdown")
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
