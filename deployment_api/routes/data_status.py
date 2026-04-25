@@ -414,6 +414,42 @@ async def get_instruments_list(
         ) from e
 
 
+@router.get("/instruments/search")
+async def search_instruments(
+    query: str = Query(
+        ..., description="Case-insensitive substring; whitespace = AND-match across tokens"
+    ),
+    category: str | None = Query(
+        None,
+        description=(
+            "Single category (cefi/tradfi/defi/sports/prediction). Omit to search all five."
+        ),
+    ),
+    limit: int = Query(50, description="Max matches returned (truncation flag in response)"),
+):
+    """Canonical-symbol search across one or all categories.
+
+    Returns ``{matches: [{canonical_id, category, venue, instrument_type}, ...]}``
+    sorted by canonical_id for deterministic UI rendering. Empty query returns
+    an empty match list (we don't dump the entire registry by default).
+
+    Powers the cross-category instruments search field in the deployment-ui
+    Data Status panel — institutional-grade equivalent of the SPORTS-only
+    league_id search that already exists.
+    """
+    try:
+        return await data_query_service.search_instruments(
+            query=query,
+            category=category,
+            limit=limit,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in search_instruments")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
 @router.get("/instrument-availability")
 async def get_instrument_availability(
     venue: str = Query(..., description="Venue name"),

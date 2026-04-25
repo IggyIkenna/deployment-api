@@ -286,6 +286,216 @@ class DataQueryService:
             logger.error("Error getting instruments list: %s", e)
             return {"error": str(e)}
 
+    # Categories the search walks when no specific category is requested. Order
+    # matters for deterministic test output — keep alphabetical except SPORTS
+    # last (its registry is the largest, most-cached).
+    _SEARCH_CATEGORIES: tuple[str, ...] = ("cefi", "defi", "prediction", "tradfi", "sports")
+
+    # Conservative cap on per-category enumeration — production buckets carry
+    # thousands of instruments, but a search is interactive (user typing) so we
+    # only need a wide-enough net to find good matches. Truncation surfaces in
+    # the response so the UI can warn.
+    _SEARCH_LISTING_CAP: int = 2000
+
+    async def search_instruments(
+        self,
+        query: str,
+        category: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """Case-insensitive substring search for canonical instrument IDs.
+
+        Walks one or all category-specific instruments buckets and returns
+        every (canonical_id, category, venue, instrument_type) tuple whose
+        canonical_id contains ``query`` (case-insensitive). The ``query`` is
+        also tokenised on whitespace — every token must be present in the
+        canonical_id (AND-match) so users can type ``usdc weth 500`` to find
+        a UNISWAP_V3 USDC-WETH-500 pool without knowing the canonical ordering.
+
+        Args:
+            query: Search query (case-insensitive substring; whitespace =
+                AND-match across tokens). Empty query returns ``[]`` — we
+                don't dump the entire registry by default to avoid surprising
+                users with thousands of rows.
+            category: Single category to search. ``None`` (the institutional
+                cross-category default) walks all five canonical categories.
+            limit: Max matches returned. Truncation flag in response.
+
+        Returns:
+            ``{
+                query: str,
+                category: str | None,
+                matches: [
+                    {canonical_id, category, venue, instrument_type}
+                ],
+                total_matches: int,
+                truncated: bool,
+                # Debug — counts per category that the search actually walked,
+                # useful for diagnosing "why am I not getting matches"
+                categories_searched: list[str],
+            }``
+        """
+        query_normalised = (query or "").strip()
+        if not query_normalised:
+            return {
+                "query": "",
+                "category": category,
+                "matches": [],
+                "total_matches": 0,
+                "truncated": False,
+                "categories_searched": [],
+            }
+
+        query_tokens: list[str] = [t.lower() for t in query_normalised.split() if t.strip()]
+
+        # Resolve category list to walk.
+        cats_to_walk: list[str] = [category.lower()] if category else list(self._SEARCH_CATEGORIES)
+
+        all_matches: list[dict[str, str]] = []
+        truncated = False
+        for cat in cats_to_walk:
+            cat_matches = await self._search_in_category(cat, query_tokens, limit)
+            all_matches.extend(cat_matches)
+            if len(all_matches) >= limit:
+                truncated = True
+                all_matches = all_matches[:limit]
+                break
+
+        # Deduplicate on (canonical_id, category, venue, instrument_type) tuple.
+        seen: set[tuple[str, str, str, str]] = set()
+        deduped: list[dict[str, str]] = []
+        for m in all_matches:
+            key = (m["canonical_id"], m["category"], m["venue"], m["instrument_type"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(m)
+
+        # Sort by canonical_id for deterministic ordering — the UI dropdown
+        # benefits from stable ordering across keystrokes (no result-shuffle).
+        deduped.sort(key=lambda m: (m["canonical_id"], m["venue"]))
+
+        return {
+            "query": query_normalised,
+            "category": category,
+            "matches": deduped,
+            "total_matches": len(deduped),
+            "truncated": truncated,
+            "categories_searched": cats_to_walk,
+        }
+
+    async def _search_in_category(
+        self,
+        category: str,
+        query_tokens: list[str],
+        limit: int,
+    ) -> list[dict[str, str]]:
+        """Walk one category bucket, return matching canonical IDs.
+
+        GCS path conventions vary per category (instruments-{category} bucket
+        with ``venue/instrument_type/{symbol}.parquet`` for CeFi/TradFi/DeFi;
+        ``instrument_availability/by_date/...`` for sports/prediction). This
+        method handles both layouts: it lists up to ``_SEARCH_LISTING_CAP``
+        objects, derives ``(canonical_id, venue, instrument_type)`` from the
+        path, and filters by AND-match across ``query_tokens``.
+        """
+        bucket_name = self.build_bucket_name("instruments", category)
+        try:
+            objects: list[ObjectInfo] = list_objects(
+                bucket_name, "", max_results=self._SEARCH_LISTING_CAP
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning(
+                "search_instruments: failed to list %s — %s: %s",
+                bucket_name,
+                type(exc).__name__,
+                exc,
+            )
+            return []
+
+        matches: list[dict[str, str]] = []
+        for obj in objects:
+            parsed = self._parse_instrument_object_path(obj.name)
+            if parsed is None:
+                continue
+            canonical_id, venue, instrument_type = parsed
+            cid_lower = canonical_id.lower()
+            # AND-match: every query token must be a substring of canonical_id.
+            if not all(t in cid_lower for t in query_tokens):
+                continue
+            matches.append(
+                {
+                    "canonical_id": canonical_id,
+                    "category": category.upper(),
+                    "venue": venue,
+                    "instrument_type": instrument_type,
+                }
+            )
+            if len(matches) >= limit:
+                break
+        return matches
+
+    @staticmethod
+    def _extract_canonical_id(path: str) -> tuple[list[str], str] | None:
+        """Return ``(parts, canonical_id)`` for a parquet path; None for sentinels."""
+        parts = path.split("/")
+        if not parts or parts[0].startswith("_"):
+            return None
+        filename = parts[-1]
+        if not filename or "." not in filename:
+            return None
+        canonical_id = filename.rsplit(".", 1)[0]
+        if not canonical_id:
+            return None
+        return parts, canonical_id
+
+    @staticmethod
+    def _parse_partitioned_layout(parts: list[str]) -> tuple[str, str]:
+        """Walk ``key=value`` partition labels in by-date GCS paths.
+
+        Returns ``(venue, instrument_type)`` — ``instrument_type`` falls back
+        to the ``entity=`` partition (sports / prediction availability layout)
+        when no explicit ``instrument_type=`` partition exists.
+        """
+        venue = ""
+        instrument_type = ""
+        for p in parts:
+            if p.startswith("venue="):
+                venue = p[len("venue=") :]
+            elif p.startswith("instrument_type="):
+                instrument_type = p[len("instrument_type=") :]
+            elif p.startswith("entity=") and not instrument_type:
+                instrument_type = p[len("entity=") :]
+        return venue, instrument_type
+
+    @classmethod
+    def _parse_instrument_object_path(cls, path: str) -> tuple[str, str, str] | None:
+        """Parse a GCS object path into ``(canonical_id, venue, instrument_type)``.
+
+        Handles two known layouts:
+
+        - **Per-venue layout** (CeFi/TradFi/DeFi):
+          ``{venue}/{instrument_type_folder}/{canonical_id}.parquet``
+        - **By-date layout** (sports/prediction availability):
+          ``instrument_availability/by_date/day=.../venue=.../{canonical_id}.parquet``
+          and partitioned ``by_date/day=.../entity={entity}/{canonical_id}.parquet``
+
+        Returns ``None`` for paths that don't fit either pattern (sentinel files,
+        ``_index/``, ``_vm_staging/``, etc.).
+        """
+        extracted = cls._extract_canonical_id(path)
+        if extracted is None:
+            return None
+        parts, canonical_id = extracted
+        # Per-venue layout: venue/type/file.parquet (3 parts minimum)
+        if len(parts) >= 3 and not parts[0].startswith("instrument_availability"):
+            return canonical_id, parts[0], parts[1]
+        # By-date layout: walk ``key=value`` partition labels
+        venue, instrument_type = cls._parse_partitioned_layout(parts[:-1])
+        if not venue and not instrument_type:
+            return None
+        return canonical_id, venue, instrument_type
+
     def _venue_to_category(self, venue: str) -> str | None:
         """Map a venue name to its market category (CEFI/TRADFI/DEFI), or None."""
         venue_upper = venue.upper()

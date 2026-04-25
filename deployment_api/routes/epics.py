@@ -5,7 +5,7 @@ Endpoints for asset-class epic readiness aggregation.
 
 SSOT:
   Definitions:  unified-trading-codex/11-project-management/epics/{epic}-epic.yaml
-  Per-repo data: unified-trading-codex/10-audit/repos/{repo}.yaml (asset_class_readiness)
+  Per-repo data: unified-trading-codex/10-audit/repos/{repo}.yaml (asset_group_readiness)
   Schema:        unified-trading-codex/11-project-management/epics/epic-schema.yaml
   Computed by:   unified-trading-pm/scripts/compute-epic-readiness.py
 
@@ -98,14 +98,14 @@ def _br_ordinal(stage: str | None) -> int:
 
 def _get_branch_status(
     repo_data: dict[str, object],
-    asset_class: str,
+    asset_group: str,
 ) -> dict[str, object]:
     """Return branch_status dict for the given asset class (or core fallback)."""
-    acr = repo_data.get("asset_class_readiness")
+    acr = repo_data.get("asset_group_readiness")
     if not isinstance(acr, dict):
         return {}
     acr_dict = cast(dict[str, object], acr)
-    class_data_val: object = acr_dict.get(asset_class) or acr_dict.get("core") or {}
+    class_data_val: object = acr_dict.get(asset_group) or acr_dict.get("core") or {}
     if not isinstance(class_data_val, dict):
         return {}
     class_dict = cast(dict[str, object], class_data_val)
@@ -113,16 +113,16 @@ def _get_branch_status(
     return cast(dict[str, object], branch_status) if isinstance(branch_status, dict) else {}
 
 
-def _get_asset_class_data(
+def _get_asset_group_data(
     repo_data: dict[str, object],
-    asset_class: str,
+    asset_group: str,
 ) -> dict[str, object]:
     """Return asset class block for data availability, feature groups, etc."""
-    acr = repo_data.get("asset_class_readiness")
+    acr = repo_data.get("asset_group_readiness")
     if not isinstance(acr, dict):
         return {}
     acr_dict2 = cast(dict[str, object], acr)
-    result_val: object = acr_dict2.get(asset_class) or acr_dict2.get("core") or {}
+    result_val: object = acr_dict2.get(asset_group) or acr_dict2.get("core") or {}
     return cast(dict[str, object], result_val) if isinstance(result_val, dict) else {}
 
 
@@ -130,7 +130,7 @@ def _is_repo_complete(
     repo_data: dict[str, object],
     min_cr: str,
     min_br: str,
-    asset_class: str,
+    asset_group: str,
 ) -> tuple[bool, str]:
     """Return (complete, reason) for a single required repo."""
     cr_section = repo_data.get("code_readiness")
@@ -152,7 +152,7 @@ def _is_repo_complete(
         if _br_ordinal(str(br_current)) < _br_ordinal(min_br):
             return False, f"BR stage: {br_current} (need {min_br.upper()})"
 
-    branch_status = _get_branch_status(repo_data, asset_class)
+    branch_status = _get_branch_status(repo_data, asset_group)
     main_status = branch_status.get("main")
     main_qm = (
         cast(dict[str, object], main_status).get("quickmerged", False)
@@ -192,7 +192,7 @@ def _compute_epic(
         repo_name = str(req.get("repo", ""))  # noqa: qg-empty-fallback — YAML epic deserialization
         min_cr = str(req.get("min_stage", "cr5"))
         min_br = str(req.get("min_br_stage", "na"))
-        asset_class = str(req.get("asset_class", "core"))
+        asset_group = str(req.get("asset_group", "core"))
 
         repo_data = all_repos.get(repo_name)
         if repo_data is None:
@@ -200,7 +200,7 @@ def _compute_epic(
                 {
                     "repo": repo_name,
                     "arch_tier": req.get("arch_tier"),
-                    "asset_class": asset_class,
+                    "asset_group": asset_group,
                     "blocking_reason": "No per-repo YAML found in 10-audit/repos/",
                     "cr_current": None,
                     "cr_required": min_cr.upper(),
@@ -212,7 +212,7 @@ def _compute_epic(
             )
             continue
 
-        ok, reason = _is_repo_complete(repo_data, min_cr, min_br, asset_class)
+        ok, reason = _is_repo_complete(repo_data, min_cr, min_br, asset_group)
 
         cr_section = repo_data.get("code_readiness")
         cr_current = (
@@ -226,19 +226,19 @@ def _compute_epic(
             if isinstance(br_section, dict)
             else "BR0"
         )
-        branch_status = _get_branch_status(repo_data, asset_class)
+        branch_status = _get_branch_status(repo_data, asset_group)
         main_status = branch_status.get("main")
         main_qm = (
             cast(dict[str, object], main_status).get("quickmerged", False)
             if isinstance(main_status, dict)
             else False
         )
-        ac_data = _get_asset_class_data(repo_data, asset_class)
+        ac_data = _get_asset_group_data(repo_data, asset_group)
 
         repo_entry: dict[str, object] = {
             "repo": repo_name,
             "arch_tier": req.get("arch_tier"),
-            "asset_class": asset_class,
+            "asset_group": asset_group,
             "cr_current": str(cr_current),
             "cr_required": min_cr.upper(),
             "br_current": str(br_current),
@@ -263,7 +263,7 @@ def _compute_epic(
     optional_status = [
         {
             "repo": str(opt.get("repo", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
-            "asset_class": str(opt.get("asset_class", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
+            "asset_group": str(opt.get("asset_group", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
             "note": str(opt.get("note", "")),  # noqa: qg-empty-fallback — YAML epic deserialization
             "yaml_present": str(opt.get("repo", "")) in all_repos,  # noqa: qg-empty-fallback — YAML epic deserialization
         }

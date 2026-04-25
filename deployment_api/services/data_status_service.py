@@ -256,23 +256,6 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
 }
 
 
-# SPORTS data_types that exist in *historical* manifest rows but are no longer
-# produced by the current orchestrator. The data-type enumeration loop
-# iterates over ``manifest["data_type"].unique()`` to surface what actually
-# got written, so legacy rows leak into the UI even after the writer is
-# disabled. This denylist is consulted in the per-data-type loop to drop them
-# at render time. SSOT plan:
-# ``sports_uac_schema_contracts_registration_2026_04_24``.
-#
-# Current entries:
-# - SFI_STANDINGS: SFI has no standings endpoint (provider gap). Orchestrator
-#   hard-codes ``_want_sfi_standings = False`` (orchestrator.py:4775); only
-#   pre-2026-04-22 manifest rows still exist. Phase-3 cleanup of the SSOT
-#   plan removed it from SPORTS_DATA_TYPE_META; this denylist completes the
-#   removal by hiding legacy rows from the UI.
-SPORTS_PHANTOM_DATA_TYPES: frozenset[str] = frozenset({"SFI_STANDINGS"})
-
-
 def _sports_expected_dates_for_league(
     league_id: str,
     axis: str,
@@ -3502,20 +3485,28 @@ class DataStatusService:
         dt_venues: dict[str, object] = {}
         dt_found_total = 0
         dt_expected_total = 0
-        for dt_val in sorted(filtered["data_type"].unique()):
+        # For SPORTS, always include all known data_types from SPORTS_DATA_TYPE_META
+        # so the UI shows 0/N coverage for data types that haven't been captured yet,
+        # rather than silently omitting them. For non-SPORTS, use only what's in the
+        # manifest (iterating over non-SPORTS SSOT maps is not implemented yet).
+        manifest_dt_vals: set[str] = set()
+        if "data_type" in filtered.columns:
+            manifest_dt_vals = {
+                str(v) for v in filtered["data_type"].unique() if v and str(v).strip()
+            }
+        sports_ssot_vals: set[str] = set(SPORTS_DATA_TYPE_META.keys()) if is_sports else set()
+        all_dt_vals: set[str] = manifest_dt_vals | sports_ssot_vals
+        for dt_val in sorted(all_dt_vals):
             if not dt_val or not str(dt_val).strip():
                 continue
-            dt_mask = filtered["data_type"] == dt_val
+            if "data_type" in filtered.columns:
+                dt_mask = filtered["data_type"] == dt_val
+            else:
+                dt_mask = pd.Series([False] * len(filtered), index=filtered.index)
             dt_df = filtered[dt_mask]
             dt_name = str(dt_val).upper()
 
-            # Drop phantom data_types — historical manifest rows for entities
-            # the current orchestrator no longer produces. See
-            # ``SPORTS_PHANTOM_DATA_TYPES`` for the canonical denylist.
-            if is_sports and dt_name in SPORTS_PHANTOM_DATA_TYPES:
-                continue
-
-            if is_sports and "instrument_count" in filtered.columns:
+            if is_sports and dt_name in SPORTS_DATA_TYPE_META:
                 dt_entry = self._build_sports_entity_entry(
                     dt_df,
                     dt_name,
