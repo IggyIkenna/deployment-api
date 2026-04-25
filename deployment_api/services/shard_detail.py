@@ -948,11 +948,9 @@ def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
             records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             records = cast(list[object], records_raw)
             for r in records[:500]:
-                if isinstance(r, dict):
-                    typed_r: dict[str, object] = {}
-                    for k, v in cast(dict[object, object], r).items():
-                        typed_r[str(k)] = v
-                    instruments.append(typed_r)
+                typed = _typed_row(r)
+                if typed is not None:
+                    instruments.append(typed)
     return VenueDetailResponse(
         category=category.upper(),
         venue=venue,
@@ -967,13 +965,76 @@ def _is_pool_row(row: dict[str, object]) -> bool:
     return bool(row.get("pool_address") or row.get("pool_id"))
 
 
+def _json_safe_value(v: object) -> object:
+    """Convert pandas / numpy / Timestamp scalars into JSON-serialisable Python primitives.
+
+    Pydantic-core's JSON serialiser refuses to encode ``numpy.int64``,
+    ``numpy.float64``, ``pandas.Timestamp``, ``pandas.NaT``, and bare ``float('nan')``
+    on ``int``-typed fields (raises ``TypeError: 'float' object cannot be interpreted
+    as an integer``). This helper normalises every value into a primitive that JSON
+    can carry losslessly:
+
+    * ``NaN`` / ``NaT`` / pandas ``NA`` → ``None``
+    * ``numpy.integer`` / ``numpy.floating`` / ``numpy.bool_`` → Python int/float/bool
+    * ``pandas.Timestamp`` / ``datetime.datetime`` → ISO-8601 string
+    * everything else → unchanged
+    """
+    # Late imports to avoid penalising import time on module load.
+    import datetime as _dt
+    import math as _math
+
+    import numpy as _np
+
+    if v is None:
+        return None
+    if isinstance(v, float) and _math.isnan(v):
+        return None
+    if isinstance(v, _np.bool_):
+        return bool(v)
+    if isinstance(v, _np.integer):
+        return int(v)
+    if isinstance(v, _np.floating):
+        f = float(v)
+        return None if _math.isnan(f) else f
+    if isinstance(v, pd.Timestamp):
+        if pd.isna(v):
+            return None
+        return v.isoformat()
+    if isinstance(v, _dt.datetime):
+        return v.isoformat()
+    if isinstance(v, _dt.date):
+        return v.isoformat()
+    if isinstance(v, _np.ndarray):
+        return [_json_safe_value(x) for x in v.tolist()]
+    if isinstance(v, (list, tuple)):
+        return [_json_safe_value(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _json_safe_value(val) for k, val in cast(dict[object, object], v).items()}
+    if isinstance(v, (set, frozenset)):
+        return [_json_safe_value(x) for x in v]
+    if isinstance(v, bytes):
+        return v.decode("utf-8", errors="replace")
+    # Generic pandas NA sentinel — covers Int64 / Float64 / boolean dtypes.
+    try:
+        if pd.isna(v):  # pyright: ignore[reportArgumentType]
+            return None
+    except (TypeError, ValueError):
+        pass
+    # Anything still exotic (custom numpy scalar subclass, decimal.Decimal, etc.)
+    # gets stringified as a last-resort fallback so pydantic-core never sees a
+    # type its JSON serialiser refuses.
+    if isinstance(v, (str, int, float, bool)):
+        return v
+    return str(v)
+
+
 def _typed_row(raw: object) -> dict[str, object] | None:
-    """Coerce a pandas-records raw row into a strictly typed ``dict[str, object]``."""
+    """Coerce a pandas-records raw row into a strictly typed JSON-safe ``dict[str, object]``."""
     if not isinstance(raw, dict):
         return None
     typed: dict[str, object] = {}
     for k, v in cast(dict[object, object], raw).items():
-        typed[str(k)] = v
+        typed[str(k)] = _json_safe_value(v)
     return typed
 
 

@@ -15,10 +15,13 @@ from deployment_api.services import DataAnalyticsService, DataQueryService, Data
 from deployment_api.services.data_status_drilldown import (
     DEFAULT_INSTRUMENT_LIMIT,
     MAX_INSTRUMENT_LIMIT,
+    MTDS_SHARD_SERVICES,
     build_csv_export,
     build_fixture_breakdown,
     build_fixture_download,
     build_fixtures_csv_export,
+    build_instruments_shard_csv_export,
+    build_mtds_shard_csv_export,
     clear_drilldown_cache,
     compute_bucket_counts,
     get_schema_for_shard,
@@ -824,6 +827,72 @@ async def download_fixtures_csv(
         # "captured": parquet had rows for this league; "empty": parquet
         # existed but no rows for this league (empty_confirmed); "missing":
         # parquet didn't exist (adapter never ran for this day).
+        "X-Data-Status": "captured" if row_count > 0 else "empty_or_missing",
+    }
+    return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@router.get("/download-shard-csv")
+async def download_shard_csv(
+    service: str = Query(..., description="Service name (e.g. instruments-service)"),
+    category: str = Query(..., description="Category (CEFI, TRADFI, DEFI)"),
+    venue: str = Query(..., description="Venue name (e.g. BINANCE-SPOT)"),
+    date: str = Query(..., description="Day (YYYY-MM-DD)"),
+):
+    """Stream a CSV for one (service, category, venue, date) shard or catalog.
+
+    Routing:
+    * instruments-service / corporate-actions — reads the per-(venue, day)
+      ``instruments.parquet`` bundle and returns its rows as CSV.
+    * market-tick-data-service / market-data-processing-service — reads the
+      availability manifest catalog filtered to ``(venue, date)`` and returns
+      instrument capture metadata as CSV (tick data itself is too large).
+    """
+    try:
+        svc = service.lower()
+        if svc in MTDS_SHARD_SERVICES:
+            csv_text, row_count, filename = build_mtds_shard_csv_export(
+                service=service,
+                category=category,
+                venue=venue,
+                date=date,
+            )
+        else:
+            csv_text, row_count, filename = build_instruments_shard_csv_export(
+                service=service,
+                category=category,
+                venue=venue,
+                date=date,
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except (OSError, RuntimeError) as e:
+        logger.exception("Error in download_shard_csv")
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+    # Honest 404 instead of a misleading 200 OK with empty body.
+    # ``build_*_shard_csv_export`` returns ("", 0, filename) when the shard
+    # parquet doesn't exist on GCS — the user clicked a date the adapter
+    # never ran. Without this guard the browser saves an empty file and the
+    # operator can't tell the difference between "no rows" and "no shard at
+    # all". The 404 message tells them which path was tried.
+    if row_count == 0 and not csv_text:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No shard parquet found for "
+                f"service={service}, category={category}, venue={venue}, date={date}. "
+                f"The adapter may not have run that day, or the manifest "
+                f"row points at a path that no longer exists. Check the "
+                f"availability manifest in the Data Status tab."
+            ),
+        )
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Row-Count": str(row_count),
         "X-Data-Status": "captured" if row_count > 0 else "empty_or_missing",
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
