@@ -899,51 +899,245 @@ def _instruments_bucket_for_category(category: str) -> str:
     return f"instruments-store-{category.lower()}-{_pid}"
 
 
-def _read_instruments_day_df(*, bucket: str, venue: str, day: str) -> pd.DataFrame | None:
+# Compiled regex for stripping the underscore in DeFi protocol-version
+# tokens, e.g. ``AAVE_V3`` → ``AAVEV3``, ``UNISWAP_V3`` → ``UNISWAPV3``.
+# This handles the convention mismatch between UAC composite venues
+# (``<PROTOCOL>_V<N>-<CHAIN>``) and the actual GCS partition layout
+# (``<PROTOCOL>V<N>-<CHAIN>``) that the instruments-service writers use.
+import re as _re
+
+_DEFI_VERSION_UNDERSCORE_RE = _re.compile(r"_V(\d+)")
+
+
+def _venue_aliases_for_bucket(category: str, venue: str) -> list[str]:
+    """Return the list of venue strings to try when resolving a GCS path.
+
+    The UI / UAC and the instruments-service GCS writer disagree on a few
+    naming conventions. Rather than picking one canonical form, we try the
+    plausible aliases in order and use whichever the bucket actually has.
+
+    Conventions per category:
+
+    * **DEFI**: try the literal venue first, then strip the underscore
+      from version tokens (``AAVE_V3-ETHEREUM`` → ``AAVEV3-ETHEREUM``),
+      and the reverse (``AAVEV3-ETHEREUM`` → ``AAVE_V3-ETHEREUM``).
+    * **SPORTS**: the partition key is ``league=<NAME>`` not ``venue=<NAME>``
+      — handled by ``_partition_key_for_category`` rather than aliasing.
+    * **CEFI / TRADFI / PREDICTION**: venue is canonical — single alias.
+    """
+    aliases: list[str] = [venue]
+    cat_upper = (category or "").upper()
+    if cat_upper == "DEFI":
+        # Strip the underscore in _V<N>: "AAVE_V3-ETHEREUM" → "AAVEV3-ETHEREUM"
+        no_underscore = _DEFI_VERSION_UNDERSCORE_RE.sub(r"V\1", venue)
+        if no_underscore != venue:
+            aliases.append(no_underscore)
+        # And the reverse — if caller passed "AAVEV3-ETHEREUM", try "AAVE_V3-ETHEREUM".
+        # Match an upper-case-letter prefix immediately followed by V<digits>.
+        with_underscore = _re.sub(r"([A-Z])(V\d+)", r"\1_\2", venue)
+        if with_underscore != venue and with_underscore not in aliases:
+            aliases.append(with_underscore)
+    return aliases
+
+
+def _partition_key_for_category(category: str) -> str:
+    """Return the GCS partition key name used by the instruments-service writer.
+
+    SPORTS partitions by ``league=<NAME>``; every other category partitions
+    by ``venue=<NAME>``. The instrument-axis difference reflects that sports
+    fixture metadata is keyed off the league, not off any single data
+    provider.
+    """
+    if (category or "").upper() == "SPORTS":
+        return "league"
+    return "venue"
+
+
+def _read_instruments_day_df(
+    *, bucket: str, venue: str, day: str, category: str = ""
+) -> pd.DataFrame | None:
     """Read the instruments-service per-(venue, day) parquet, or ``None``.
+
+    Tries every venue alias from :func:`_venue_aliases_for_bucket`. Falls
+    back to a nested-partition listing when the leaf doesn't exist —
+    SPORTS uses
+    ``day={day}/league={league}/venue={data_provider}/instruments.parquet``
+    where multiple data providers can publish the same league. We
+    enumerate every ``instruments.parquet`` under the league directory
+    and concat them so the caller sees the union.
 
     Shard-isolated: swallows every IO error and returns ``None``.
     """
-    gs_uri = (
-        f"gs://{bucket}/instrument_availability/by_date/day={day}/venue={venue}/instruments.parquet"
-    )
-    try:
-        return _read_parquet_columns(gs_uri, None)
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("instruments day read failed for %s: %s", gs_uri, exc)
-        return None
+    aliases = _venue_aliases_for_bucket(category, venue)
+    partition_key = _partition_key_for_category(category)
+    last_err: Exception | None = None
+    for alias in aliases:
+        leaf_uri = (
+            f"gs://{bucket}/instrument_availability/by_date/day={day}/"
+            f"{partition_key}={alias}/instruments.parquet"
+        )
+        try:
+            df = _read_parquet_columns(leaf_uri, None)
+            if df is not None and not df.empty:
+                return df
+        except (OSError, ValueError, RuntimeError) as exc:
+            last_err = exc
+
+        # Nested-partition fallback (SPORTS sub-provider layout).
+        nested_prefix = (
+            f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
+        )
+        try:
+            nested_objs = list_objects(bucket, nested_prefix, max_results=200)
+            parquet_paths = [
+                getattr(o, "name", "")
+                for o in nested_objs
+                if isinstance(getattr(o, "name", None), str)
+                and getattr(o, "name", "").endswith("instruments.parquet")
+            ]
+            frames: list[pd.DataFrame] = []
+            for path in parquet_paths:
+                gs_uri = f"gs://{bucket}/{path}"
+                try:
+                    sub_df = _read_parquet_columns(gs_uri, None)
+                    if sub_df is not None and not sub_df.empty:
+                        frames.append(sub_df)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    last_err = exc
+                    continue
+            if frames:
+                return pd.concat(frames, ignore_index=True)
+        except (OSError, RuntimeError) as exc:
+            last_err = exc
+            continue
+    if last_err is not None:
+        logger.warning(
+            "instruments day read failed for bucket=%s aliases=%s day=%s: %s",
+            bucket,
+            aliases,
+            day,
+            last_err,
+        )
+    return None
 
 
-def _pick_latest_day(bucket: str, venue: str) -> str | None:
-    """Return the latest ``day=YYYY-MM-DD`` directory seen for a venue."""
-    prefix = "instrument_availability/by_date/"
+def _list_day_prefixes(bucket: str) -> list[str]:
+    """List the ``day=YYYY-MM-DD`` sub-directories under ``instrument_availability/by_date/``.
+
+    Uses ``google.cloud.storage`` directly with ``delimiter='/'`` so we
+    get the day-level directories without paging through every leaf file.
+    The UCI ``StorageClient`` wrapper strips the ``.prefixes`` attribute
+    that this approach requires, so we go to the raw SDK for this one
+    listing — the bucket name and project are still derived from
+    ``UnifiedCloudConfig`` via ``_pid``.
+    """
+    from google.cloud import storage as _gcs  # noqa: PLC0415  — lazy import: GCS SDK is heavy
+
     try:
-        objects = list_objects(bucket, prefix, max_results=5_000)
+        gcs_client = _gcs.Client(project=_pid)
+        prefix = "instrument_availability/by_date/"
+        it = gcs_client.list_blobs(bucket, prefix=prefix, delimiter="/")
+        list(it)  # consume to populate ``.prefixes``
+        raw_prefixes: object = getattr(it, "prefixes", set())
+        if not isinstance(raw_prefixes, (set, frozenset, list, tuple)):
+            return []
+        days: list[str] = []
+        for p in cast(list[object], list(raw_prefixes)):
+            if not isinstance(p, str):
+                continue
+            sub = p.removeprefix(prefix).rstrip("/")
+            if sub.startswith("day="):
+                days.append(sub.removeprefix("day="))
+        days.sort()
+        return days
     except (OSError, RuntimeError) as exc:
-        logger.warning("list_objects latest-day failed for %s/%s: %s", bucket, prefix, exc)
+        logger.warning("list day prefixes failed for %s: %s", bucket, exc)
+        return []
+
+
+_RECENT_DAYS_PROBE_WINDOW: int = 120
+"""How many days backwards from today to probe directly before falling back
+to the full ``day=*`` prefix listing. 120 days covers the common case
+(latest data is within the last few months) without paying the cost of
+listing every day prefix in buckets that span years × dozens of leagues
+× multiple data providers.
+"""
+
+
+def _pick_latest_day(bucket: str, venue: str, category: str = "") -> str | None:
+    """Return the latest ``day=YYYY-MM-DD`` for which the venue partition exists.
+
+    Strategy:
+
+    1. **Recent-day probe (fast path)**: walk backwards from today over
+       the last :data:`_RECENT_DAYS_PROBE_WINDOW` days. For each candidate
+       day, probe ``day={D}/{partition_key}={alias}/`` directly via
+       ``list_objects(max_results=1)``. Return on first hit. This is the
+       common case (latest data is days-to-weeks old) and avoids the
+       cost of fully enumerating the bucket's day-prefix tree.
+
+    2. **Full-prefix fallback (slow path)**: only when the recent-day
+       probe finds nothing, enumerate every ``day=*`` sub-directory and
+       walk in reverse-chronological order. Useful for rarely-updated
+       venues whose latest day is older than the probe window.
+
+    Handles the DEFI ``AAVE_V3`` vs ``AAVEV3`` alias mismatch and the
+    SPORTS ``league=<NAME>`` partition key via
+    :func:`_venue_aliases_for_bucket` and
+    :func:`_partition_key_for_category`.
+    """
+    import datetime as _dt
+
+    aliases = _venue_aliases_for_bucket(category, venue)
+    partition_key = _partition_key_for_category(category)
+
+    def _probe(day: str) -> bool:
+        for alias in aliases:
+            test_prefix = (
+                f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
+            )
+            try:
+                if list_objects(bucket, test_prefix, max_results=1):
+                    return True
+            except (OSError, RuntimeError) as exc:
+                logger.debug(
+                    "list_objects probe failed for %s/%s: %s", bucket, test_prefix, exc
+                )
+                continue
+        return False
+
+    today = _dt.date.today()
+    # Sports fixture catalogs publish forward-dated entries (scheduled
+    # fixtures up to a month out), so walk forward 30 days first, then
+    # backwards through the probe window.
+    for delta in range(-30, _RECENT_DAYS_PROBE_WINDOW):
+        candidate = (today - _dt.timedelta(days=delta)).isoformat()
+        if _probe(candidate):
+            return candidate
+
+    # Fallback: scan the full prefix tree (may be slow for huge buckets).
+    days = _list_day_prefixes(bucket)
+    if not days:
         return None
-    days: set[str] = set()
-    marker = "day="
-    venue_marker = f"venue={venue}"
-    for o in objects:
-        name = getattr(o, "name", None)
-        if not isinstance(name, str) or venue_marker not in name:
-            continue
-        idx = name.find(marker)
-        if idx < 0:
-            continue
-        tail = name[idx + len(marker) :]
-        days.add(tail.split("/", 1)[0])
-    return sorted(days)[-1] if days else None
+    for day in reversed(days):
+        if _probe(day):
+            return day
+    return None
 
 
 def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
-    """CeFi branch — mirrors the pre-existing venue-detail shape."""
+    """CeFi / TradFi / Sports / Prediction branch — generic venue-detail.
+
+    Despite the name this handles every non-DEFI category. The ``category``
+    is passed through to the bucket-aware helpers so they can apply the
+    DEFI underscore aliasing or the SPORTS ``league=`` partition key when
+    needed.
+    """
     bucket = _instruments_bucket_for_category(category)
-    day = _pick_latest_day(bucket, venue)
+    day = _pick_latest_day(bucket, venue, category=category)
     instruments: list[dict[str, object]] = []
     if day is not None:
-        df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day)
+        df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day, category=category)
         if df is not None and not df.empty:
             records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             records = cast(list[object], records_raw)
@@ -1107,9 +1301,9 @@ def _load_defi_df(
     bucket: str, *, venue: str, chain: str, protocol: str | None, day: str
 ) -> pd.DataFrame | None:
     """Try the composite file first; fall back to the chain file for composite venues."""
-    df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day)
+    df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day, category="DEFI")
     if (df is None or df.empty) and protocol is not None:
-        df = _read_instruments_day_df(bucket=bucket, venue=chain, day=day)
+        df = _read_instruments_day_df(bucket=bucket, venue=chain, day=day, category="DEFI")
     return df
 
 
@@ -1126,7 +1320,7 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
         return VenueDetailResponse(category="DEFI", venue=venue)
 
     bucket = _instruments_bucket_for_category("defi")
-    day = _pick_latest_day(bucket, venue)
+    day = _pick_latest_day(bucket, venue, category="DEFI")
     if day is None:
         return VenueDetailResponse(
             category="DEFI",
