@@ -464,6 +464,113 @@ MTDS_CATEGORY_META: dict[str, dict[str, object]] = {
 }
 
 
+# Canonical per-PREDICTION-data_type metadata — mirrors UAC SchemaContracts
+# registered in ``unified_api_contracts.internal.schemas._sports_prediction_contracts``
+# (commit ``c7642f3`` registered ``book_snapshot`` / ``market_metadata`` / ``fills``
+# alongside the pre-existing ``trades`` contract on the
+# ``(prediction, prediction_market, *)`` triple).
+#
+# All four data_types share the same 6-dim shard
+# (data_source x venue x chain x market_category x underlying x market_type x
+# resolution_period) and pivot on ``condition_id``. UAC ``VENUE_DATA_TYPE_CAPABILITIES``
+# only declares ``trades`` for POLYMARKET / KALSHI today — so the manifest
+# enumeration loop ``_mtds_honest_coverage_for_venue`` would surface only
+# ``trades`` as an expected row, hiding the SSOT gap for the three new
+# contracts. Unioning ``PREDICTION_DATA_TYPE_META.keys()`` into ``expected_dts``
+# for PREDICTION venues makes ``book_snapshot`` / ``market_metadata`` / ``fills``
+# appear as expected rows (with 0 captured, 0% completion) until adapters land.
+#
+# **expected_count_per_day = "indeterminate"** for the three new types: per the
+# Follow-up B prompt + plan SSOT, none of these has a tractable per-(venue,
+# date) cardinality bound today. ``book_snapshot`` cardinality depends on
+# active condition_ids x snapshot frequency; ``market_metadata`` is one row per
+# active market per day (finite but only enumerable post-hoc via Polymarket
+# Gamma API); ``fills`` mirrors ``trades`` open-market dynamics. UI renders the
+# captured count without an arbitrary denominator (mirrors the SFI_PROGRESSIVE_STATS
+# pattern in ``SPORTS_DATA_TYPE_META`` where the per-day count is unbounded
+# and only the per-(league, fixture-date) shard count is tracked). ``trades``
+# keeps the existing per-venue daily denominator from
+# ``_mtds_expected_dates_for_venue_dt``.
+#
+# Adding a new PREDICTION data_type: register the SchemaContract in UAC
+# ``_sports_prediction_contracts``, then add the corresponding entry here in
+# the same commit (codex-first SSOT rule). SSOT for PREDICTION coverage:
+# ``codex/02-data/data-status-and-availability.md`` §6.
+PREDICTION_DATA_TYPE_META: dict[str, dict[str, object]] = {
+    # Polymarket Data API + Kalshi trades stream — enumerated per-condition_id
+    # via the existing per-venue-daily denominator (UAC declares this on the
+    # venue today).
+    "trades": {
+        "schema_contract": "PREDICTION_PREDICTION_MARKET_TRADES",
+        "shard_dim": (
+            "data_source",
+            "venue",
+            "chain",
+            "market_category",
+            "underlying",
+            "market_type",
+            "resolution_period",
+        ),
+        "key": "condition_id",
+        "expected_count_per_day": "per_venue_daily",
+        "unit": "shard_days",
+    },
+    # Polymarket CLOB API (per-condition_id snapshot stream). Cardinality
+    # bound is the active-market count, not enumerable per-day pre-hoc.
+    "book_snapshot": {
+        "schema_contract": "PREDICTION_PREDICTION_MARKET_BOOK_SNAPSHOT",
+        "shard_dim": (
+            "data_source",
+            "venue",
+            "chain",
+            "market_category",
+            "underlying",
+            "market_type",
+            "resolution_period",
+        ),
+        "key": "condition_id",
+        "expected_count_per_day": "indeterminate",
+        "unit": "shard_days",
+    },
+    # Polymarket Gamma API — per-day-per-venue catalogue. Finite but only
+    # enumerable post-hoc; we mark as indeterminate so the UI shows the
+    # captured count without a synthetic denominator.
+    "market_metadata": {
+        "schema_contract": "PREDICTION_PREDICTION_MARKET_METADATA",
+        "shard_dim": (
+            "data_source",
+            "venue",
+            "chain",
+            "market_category",
+            "underlying",
+            "market_type",
+            "resolution_period",
+        ),
+        "key": "condition_id",
+        "expected_count_per_day": "indeterminate",
+        "unit": "shard_days",
+    },
+    # Polymarket Data API fills mirror — same 6-dim shard as trades but
+    # cardinality depends on user-account-level fill events, not enumerable
+    # at venue granularity.
+    "fills": {
+        "schema_contract": "PREDICTION_PREDICTION_MARKET_FILLS",
+        "shard_dim": (
+            "data_source",
+            "venue",
+            "chain",
+            "market_category",
+            "underlying",
+            "market_type",
+            "resolution_period",
+        ),
+        "key": "condition_id",
+        "expected_count_per_day": "indeterminate",
+        "unit": "shard_days",
+    },
+}
+
+
 def _is_mtds_honest_coverage_target(service: str, category: str) -> bool:
     """True iff ``(service, category)`` should run the MTDS honest-coverage
     override. Excludes SPORTS (bookmaker axis is Phase 6d)."""
@@ -845,8 +952,23 @@ def _mtds_honest_coverage_for_venue(
     ``expected_data_types`` lists the UAC-declared dt set for this venue;
     ``missing_data_types`` lists declared dt with zero found shards (surfaces
     adapter-coverage gaps even when some dt are 100% complete).
+
+    PREDICTION asset_group: UAC ``VENUE_DATA_TYPE_CAPABILITIES`` only declares
+    ``trades`` on POLYMARKET / KALSHI today. We extend the expected-dt set
+    with ``PREDICTION_DATA_TYPE_META`` keys (``trades`` / ``book_snapshot`` /
+    ``market_metadata`` / ``fills``) so the three new SchemaContracts
+    registered at UAC ``c7642f3`` surface as expected rows in the manifest
+    panel even before adapters write parquet rows. See
+    ``PREDICTION_DATA_TYPE_META`` docstring for ``expected_count_per_day``
+    semantics.
     """
     expected_dts = list(get_expected_data_types_for_venue(venue))
+    if category.upper() == "PREDICTION":
+        # Union the UAC SchemaContract registry — surface the 3 newly-registered
+        # PREDICTION data_types as expected rows even when adapters haven't
+        # backfilled yet (0/N denominator over the daily grid for the indeterminate
+        # types is the honest "we know we're missing" signal).
+        expected_dts = sorted(set(expected_dts) | set(PREDICTION_DATA_TYPE_META.keys()))
     if not expected_dts:
         return {
             "expected_shards": 0,

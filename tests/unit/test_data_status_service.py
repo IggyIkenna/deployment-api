@@ -1923,7 +1923,15 @@ class TestMTDSHonestCoverage:
         assert result["honest_axis"] == "per_venue_per_data_type_per_chain_daily"
 
     def test_prediction_per_venue_daily(self):
-        """PREDICTION — POLYMARKET + KALSHI, only ``trades`` dt each."""
+        """PREDICTION — POLYMARKET + KALSHI, all 4 SchemaContract dts each.
+
+        After UAC ``c7642f3`` registered ``book_snapshot`` / ``market_metadata`` /
+        ``fills``, the manifest enumeration loop unions
+        ``PREDICTION_DATA_TYPE_META.keys()`` into the UAC-declared dt set so all
+        4 data_types surface as expected rows. ``trades`` remains the only dt
+        with captured rows here; the other three appear with 0 found shards in
+        ``missing_data_types`` to make the SSOT gap visible.
+        """
         svc = _make_svc()
         df = self._mtds_df(
             [
@@ -1962,9 +1970,70 @@ class TestMTDSHonestCoverage:
         assert "POLYMARKET" in result["expected_venues"]
         assert "KALSHI" in result["missing_venues"]
         poly = result["venues"]["POLYMARKET"]
-        assert poly["expected_data_types"] == ["trades"]
-        assert poly["missing_data_types"] == []
+        assert sorted(poly["expected_data_types"]) == sorted(
+            ["trades", "book_snapshot", "market_metadata", "fills"]
+        )
+        # Only ``trades`` has rows in the fixture — the other 3 are missing.
+        assert sorted(poly["missing_data_types"]) == sorted(
+            ["book_snapshot", "market_metadata", "fills"]
+        )
         assert poly["dates_found"] == 1
+
+    @pytest.mark.parametrize(
+        "data_type",
+        ["trades", "book_snapshot", "market_metadata", "fills"],
+    )
+    def test_prediction_meta_dict_enumerates_all_four_data_types(self, data_type):
+        """PREDICTION manifest panel surfaces all 4 SchemaContract data_types.
+
+        After UAC ``c7642f3`` registered ``book_snapshot`` / ``market_metadata`` /
+        ``fills`` SchemaContracts on PREDICTION venues, the manifest panel must
+        enumerate all 4 data_types (was just ``trades``). Verifies the union of
+        ``PREDICTION_DATA_TYPE_META.keys()`` into the UAC-declared dt set in
+        ``_mtds_honest_coverage_for_venue``.
+        """
+        from unified_api_contracts import VenueMapping
+
+        # Empty manifest — every PREDICTION dt should still appear as expected
+        # (with 0 found, 0% completion) so the SSOT gap is visible.
+        df = self._mtds_df([])
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, "POLYMARKET", "PREDICTION", "2026-04-17", "2026-04-17", VenueMapping()
+        )
+
+        expected_data_types = honest["expected_data_types"]
+        assert isinstance(expected_data_types, list)
+        # Each of the 4 SchemaContract data_types must appear as an expected row.
+        assert data_type in expected_data_types, (
+            f"PREDICTION data_type {data_type!r} missing from expected_data_types: "
+            f"{expected_data_types}"
+        )
+
+        # Also verify the per-dt entry exists in the data_types breakdown so the
+        # UI can render the row (even with 0 captured / 0% completion).
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        assert data_type in data_types, (
+            f"PREDICTION data_type {data_type!r} missing from data_types breakdown"
+        )
+
+    def test_prediction_meta_includes_all_four_keys(self):
+        """Sanity: ``PREDICTION_DATA_TYPE_META`` mirrors the 4 UAC SchemaContracts."""
+        keys = set(_dss_mod.PREDICTION_DATA_TYPE_META.keys())
+        assert keys == {"trades", "book_snapshot", "market_metadata", "fills"}
+        # ``book_snapshot`` / ``market_metadata`` / ``fills`` carry the
+        # ``indeterminate`` denominator marker (per Follow-up B prompt §B). The
+        # UI shows captured count without an arbitrary per-day denominator.
+        for dt in ("book_snapshot", "market_metadata", "fills"):
+            assert (
+                _dss_mod.PREDICTION_DATA_TYPE_META[dt]["expected_count_per_day"] == "indeterminate"
+            )
+        # ``trades`` keeps the existing per-venue daily denominator from
+        # ``_mtds_expected_dates_for_venue_dt``.
+        assert (
+            _dss_mod.PREDICTION_DATA_TYPE_META["trades"]["expected_count_per_day"]
+            == "per_venue_daily"
+        )
 
     def test_category_completion_not_tautology(self):
         """Before Phase 6c, CEFI header showed 100% when a single venue
