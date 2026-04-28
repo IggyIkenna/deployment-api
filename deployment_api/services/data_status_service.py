@@ -2138,11 +2138,11 @@ class DataStatusService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
         """Return data status from manifest indices in TurboDataStatusResponse shape."""
         return await asyncio.to_thread(
-            self._get_manifest_status_sync, service, start_date, end_date, categories
+            self._get_manifest_status_sync, service, start_date, end_date, asset_groups
         )
 
     def _get_manifest_status_sync(
@@ -2150,10 +2150,10 @@ class DataStatusService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
-        cat_list = categories or [str(c) for c in MarketCategory]
+        cat_list = asset_groups or [str(c) for c in MarketCategory]
         # Filter to only the categories this service actually targets (Appendix A
         # SSOT).  Rendering CEFI/TRADFI/SPORTS/PREDICTION as 0/0 for a
         # DEFI-only service (e.g. features-onchain-service) is misleading — it
