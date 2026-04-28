@@ -631,6 +631,135 @@ class TestBuildDataTypeBreakdown:
         assert "trades" not in result
 
 
+class TestFourStateClassification:
+    """Phase 1 four-state classifier on _build_data_type_breakdown.
+
+    Verifies that processed data_type rows split into actionable missing
+    vs blocked-on-raw, and that out-of-scope rows are flagged.
+    """
+
+    def setup_method(self):
+        self.svc = DataStatusService(project_id="test-proj")
+
+    def test_processed_dt_missing_is_blocked_when_raw_also_missing(self):
+        """ohlcv_5m on a CeFi venue with no raw `trades` → blocked_on_raw."""
+        df = pd.DataFrame(
+            {
+                "date": [],
+                "venue": [],
+                "data_type": [],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01", "2024-01-02"]
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["ohlcv_5m"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                df,
+                "BINANCE-SPOT",
+                "2024-01-01",
+                "2024-01-02",
+                vm,
+                category="CEFI",
+            )
+        assert result == {}
+
+    def test_processed_dt_with_raw_captured_is_actionable_missing(self):
+        """ohlcv_5m absent but raw trades captured → actionable missing, not blocked."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-02"],
+                "venue": ["BINANCE-SPOT", "BINANCE-SPOT"],
+                "data_type": ["trades", "trades"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01", "2024-01-02"]
+        with (
+            patch.object(
+                _dss_mod,
+                "get_expected_data_types_for_venue",
+                return_value=["trades", "ohlcv_5m"],
+            ),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                df,
+                "BINANCE-SPOT",
+                "2024-01-01",
+                "2024-01-02",
+                vm,
+                category="CEFI",
+            )
+        # ohlcv_5m gets phantom-clamped because it was never observed in this
+        # slice — so it doesn't appear in the result. trades captured 100%.
+        assert "trades" in result
+        assert result["trades"]["dates_found"] == 2
+        assert result["trades"]["dates_blocked_on_raw"] == 0
+        assert result["trades"]["out_of_scope"] is False
+        assert result["trades"]["is_processed_data_type"] is False
+
+    def test_out_of_scope_when_venue_dt_not_in_expected_coverage(self):
+        """NASDAQ trades observed → in_expected_coverage False, out_of_scope True (TradFi)."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["NASDAQ"],
+                "data_type": ["trades"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01"]
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["trades"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                df,
+                "NASDAQ",
+                "2024-01-01",
+                "2024-01-01",
+                vm,
+                category="TRADFI",
+            )
+        # NASDAQ + trades is NOT in EXPECTED_COVERAGE['tradfi'] — operator policy.
+        # `trades` is also not in PROCESSED_REQUIRES_RAW (it's raw), so the
+        # row classifies as out_of_scope=True, in_expected_coverage=False.
+        assert "trades" in result
+        assert result["trades"]["in_expected_coverage"] is False
+        assert result["trades"]["out_of_scope"] is True
+        assert result["trades"]["is_processed_data_type"] is False
+
+    def test_in_scope_venue_dt_is_not_out_of_scope(self):
+        """CME + trades is in EXPECTED_COVERAGE['tradfi'] — not out of scope."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["CME"],
+                "data_type": ["trades"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01"]
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["trades"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                df,
+                "CME",
+                "2024-01-01",
+                "2024-01-01",
+                vm,
+                category="TRADFI",
+            )
+        assert result["trades"]["in_expected_coverage"] is True
+        assert result["trades"]["out_of_scope"] is False
+        assert result["trades"]["dates_blocked_on_raw"] == 0
+
+
 class TestPhantomExpectedClamp:
     """Tests for the 2026-04-19 phantom-expected denominator clamp.
 
