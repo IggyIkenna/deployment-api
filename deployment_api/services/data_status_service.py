@@ -18,8 +18,11 @@ from unified_api_contracts import (
     VenueMapping,
     get_expected_data_types_for_venue,
     get_expected_instruments_for_venue,
+    get_raw_source_data_types,
     get_venue_data_type_start_date,
+    is_expected,
     is_per_instrument_shard_data_type,
+    is_processed_data_type,
 )
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import is_in_tradfi_tick_window
@@ -200,13 +203,17 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "axis": "per_league_per_fixture_date",
         "unit": "fixture_dates",
     },
-    # Transfermarkt — 55 leagues (Prediction 33 + Features 22)
+    # Transfermarkt — 55 leagues (Prediction 33 + Features 22).
+    # PLAYER_VALUES denorms to per-fixture-date for breakdown cohesion: every
+    # fixture-day where a transfermarkt-covered league plays counts as a shard,
+    # since the most-recent weekly snapshot covers that fixture's teams. This
+    # puts PLAYER_VALUES on the same axis as FIXTURE_LINEUPS / FIXTURE_EVENTS
+    # so the per-fixture drilldown view treats it consistently.
     "PLAYER_VALUES": {
         "source": "transfermarkt",
         "classifications": ("Prediction", "Features"),
-        "axis": "per_league_periodic",
-        "cadence_days": 7,
-        "unit": "cadence_refreshes",
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
     },
     "TRANSFERMARKT_LEAGUES": {
         "source": "transfermarkt",
@@ -3106,19 +3113,85 @@ class DataStatusService:
             dt_found = dt_dates & dt_expected
             dt_missing_dates = sorted(dt_expected - dt_found)
 
+            scope_in, dt_is_processed, actionable_missing, blocked_dates = (
+                self._classify_data_type_for_venue(
+                    category=category,
+                    venue=venue,
+                    data_type=dt,
+                    missing_dates=dt_missing_dates,
+                    venue_df=venue_df,
+                )
+            )
+
             pct = round(len(dt_found) / max(1, len(dt_expected)) * 100, 2)
 
             dt_dict[dt] = {
                 "dates_found": len(dt_found),
                 "dates_expected": len(dt_expected),
-                "dates_missing": len(dt_missing_dates),
+                "dates_missing": len(actionable_missing),
+                "dates_blocked_on_raw": len(blocked_dates),
                 "dates_found_list": sorted(dt_found),
-                "missing_dates": dt_missing_dates,
+                "missing_dates": actionable_missing,
+                "blocked_on_raw_dates": blocked_dates,
                 "completion_pct": min(pct, 100.0),
                 "start_date": dt_start,
                 "is_expected": dt in expected_dts,
+                "in_expected_coverage": scope_in,
+                "is_processed_data_type": dt_is_processed,
+                "out_of_scope": not scope_in and not dt_is_processed,
             }
         return dt_dict
+
+    def _classify_data_type_for_venue(
+        self,
+        *,
+        category: str,
+        venue: str,
+        data_type: str,
+        missing_dates: list[str],
+        venue_df: pd.DataFrame,
+    ) -> tuple[bool, bool, list[str], list[str]]:
+        """Apply the four-state classification to a (venue, data_type) row.
+
+        Returns ``(scope_in, is_processed, actionable_missing, blocked_dates)``.
+
+        Four states (Phase 1 of the unified data-status work):
+
+        - ``captured``       — already counted via ``dates_found``; this method
+                               only splits the *missing* set.
+        - ``missing``        — in expected-coverage scope, raw is captured (or
+                               this IS raw), processed shard is absent.
+                               Actionable.
+        - ``blocked_on_raw`` — processed shard absent because the underlying raw
+                               shard is also absent. Fix raw first; not
+                               actionable on this row.
+        - ``out_of_scope``   — ``(asset_group, venue, data_type)`` not in
+                               EXPECTED_COVERAGE. Pure-derived processed types
+                               stay in scope (they inherit from raw). Excluded
+                               from the denominator at the UI layer.
+
+        If the UAC EXPECTED_COVERAGE policy lists this ``(venue, data_type)``
+        explicitly, treat it as venue-native raw for this venue — even if the
+        data_type token appears in PROCESSED_REQUIRES_RAW (e.g. CBOE emits
+        ``ohlcv_15m`` natively while CeFi MDPS derives ``ohlcv_15m`` from
+        trades — same token, different role per venue).
+        """
+        scope_in = is_expected(category, venue, data_type) if category and venue else True
+        dt_is_processed = is_processed_data_type(data_type)
+        apply_precondition = dt_is_processed and not scope_in
+        if not (apply_precondition and missing_dates):
+            return scope_in, dt_is_processed, list(missing_dates), []
+        raw_sources = get_raw_source_data_types(data_type)
+        if not raw_sources:
+            return scope_in, dt_is_processed, list(missing_dates), []
+        raw_captured: set[str] = set()
+        if "data_type" in venue_df.columns and "date" in venue_df.columns:
+            raw_df = venue_df[venue_df["data_type"].isin(raw_sources)]
+            if not raw_df.empty:
+                raw_captured = {str(d) for d in raw_df["date"].unique()}
+        actionable_missing = [d for d in missing_dates if d in raw_captured]
+        blocked_dates = [d for d in missing_dates if d not in raw_captured]
+        return scope_in, dt_is_processed, actionable_missing, blocked_dates
 
     def _build_league_breakdown(
         self,

@@ -1066,7 +1066,7 @@ class TestGetManifestStatus:
             patch.object(_dss_mod, "VenueMapping", return_value=vm),
         ):
             result = await svc.get_manifest_status(
-                "instruments-service", "2024-01-01", "2024-01-01", categories=["CEFI"]
+                "instruments-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
             )
 
         assert result["service"] == "instruments-service"
@@ -1078,7 +1078,7 @@ class TestGetManifestStatus:
     async def test_handles_no_template(self):
         svc = _make_svc()
         result = await svc.get_manifest_status(
-            "unknown-service", "2024-01-01", "2024-01-01", categories=["CEFI"]
+            "unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
         )
         assert result["overall_completion_pct"] == 0.0
 
@@ -1903,20 +1903,24 @@ class TestMTDSHonestCoverage:
                 venue_mapping=VenueMapping(),
             )
         aave = result["venues"]["AAVEV3-ETHEREUM"]
-        # Post-Wave-8G: AAVEV3-ETHEREUM is seeded with 10 top reserves for all
-        # 4 per-instrument dts (USDC, USDT, DAI, WETH, WBTC, ...).
-        #   - ``lending_indices``: 2 legacy rows (empty instrument_id) → legacy
-        #     fallback path → expected = len(expected_dates) = 2, found = 2.
-        #   - ``oracle_prices`` / ``rewards`` / ``risk_params``: 0 rows in
-        #     fixture → Tier-3 denominator = 10 instruments x 2 days = 20
-        #     expected, 0 found each.
-        # Total expected = 2 + 20 + 20 + 20 = 62; total found = 2 (only
-        # lending_indices has rows). ``missing_data_types`` lists the 3 dts
+        # Post-Phase-1 (2026-04-24 DeFi data types completeness): AAVEV3-ETHEREUM
+        # declares 7 dts in VENUE_DATA_TYPE_CAPABILITIES.
+        #   - Per-instrument dts (Tier-3, 10-reserve seed x 2 days = 20):
+        #     ``oracle_prices``, ``rewards``, ``risk_params`` → 20 expected each.
+        #   - Legacy + new venue-level dts (per-(venue, dt, date), 2 days):
+        #     ``lending_indices`` (legacy 2 rows captured),
+        #     ``flash_loan_events``, ``liquidation_events``, ``position_data``
+        #     → 2 expected each.
+        # Total expected = 20*3 + 2*4 = 68; total found = 2 (only
+        # ``lending_indices`` has rows). ``missing_data_types`` lists the 6 dts
         # with found_count == 0 and expected_count > 0.
-        assert aave["dates_expected"] == 62
+        assert aave["dates_expected"] == 68
         assert aave["dates_found"] == 2
         assert sorted(aave["missing_data_types"]) == [
+            "flash_loan_events",
+            "liquidation_events",
             "oracle_prices",
+            "position_data",
             "rewards",
             "risk_params",
         ]
