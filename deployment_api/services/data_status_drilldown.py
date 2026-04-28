@@ -80,13 +80,13 @@ def _is_bundled(instrument_type: str) -> bool:
     return (instrument_type or "").lower() in _BUNDLED_INSTRUMENT_TYPES
 
 
-def build_bucket_name(service: str, category: str, project_id: str | None = None) -> str:
-    """Resolve the GCS bucket for a (service, category) pair."""
+def build_bucket_name(service: str, asset_group: str, project_id: str | None = None) -> str:
+    """Resolve the GCS bucket for a (service, asset group) pair."""
     pid = project_id or _pid
     template = _BUCKET_TEMPLATES.get(service)
     if template is None:
         raise ValueError(f"Unknown service: {service}")
-    return template.format(cat=category.lower(), pid=pid)
+    return template.format(cat=asset_group.lower(), pid=pid)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ def get_schema_for_shard(
     # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(
-            category=cat_norm,
+            asset_group=cat_norm,
             instrument_type=it_norm,
             data_type=dt_norm,
             venue=venue,
@@ -361,7 +361,7 @@ def get_schema_for_shard(
     except SchemaContractNotFoundError:
         return {
             "registered": False,
-            "category": cat_norm,
+            "asset_group": cat_norm,
             "instrument_type": it_norm,
             "data_type": dt_norm,
             "venue": venue,
@@ -383,7 +383,7 @@ def get_schema_for_shard(
 
     return {
         "registered": True,
-        "category": contract.category,
+        "asset_group": contract.asset_group,
         "instrument_type": contract.instrument_type,
         "data_type": contract.data_type,
         "venue": (venue or "").upper() if venue else None,
@@ -472,7 +472,7 @@ def _infer_symbol_column_for_shard(
     """
     try:
         contract = lookup_contract(
-            category=category.lower(),
+            asset_group=category.lower(),
             instrument_type=instrument_type,
             data_type=data_type,
             venue=venue,
@@ -718,7 +718,7 @@ def _list_instruments_full(
 
     full: dict[str, object] = {
         "service": service,
-        "category": category.lower(),
+        "asset_group": category.lower(),
         "venue": venue,
         "day": day,
         "instrument_type": instrument_type,
@@ -792,7 +792,7 @@ def list_instruments_for_shard(
 
     return {
         "service": full.get("service", service),
-        "category": full.get("category", category.lower()),
+        "asset_group": cast(str, full.get("asset_group", category.lower())),
         "venue": full.get("venue", venue),
         "day": full.get("day", day),
         "instrument_type": full.get("instrument_type", instrument_type),
@@ -922,7 +922,7 @@ def get_shard_info(
 
     result: dict[str, object] = {
         "service": service,
-        "category": category.lower(),
+        "asset_group": category.lower(),
         "venue": venue,
         "day": day,
         "data_type": data_type,
@@ -1620,6 +1620,51 @@ def _venue_chain_partition(venue: str, chain: str) -> str:
     return f"{venue.upper()}-{chain.upper()}"
 
 
+def _defi_venue_chain_aliases(venue_chain: str) -> list[str]:
+    """Aliases to try for a DeFi pool-breakdown ``venue={...}/`` GCS prefix.
+
+    GCS layout has two conventions per protocol:
+      1. Combined ``venue={PROTOCOL}-{CHAIN}/`` for single-chain protocols
+         (e.g. EIGENLAYER-ETHEREUM).
+      2. Protocol-only ``venue={PROTOCOL}/`` for multi-chain protocols
+         (e.g. AAVE_V3, UNISWAP_V3 — chain encoded in pool_id row).
+    Also tries underscore variants per UAC↔GCS naming drift (AAVE_V3 vs AAVEV3).
+    """
+    import re as _re
+
+    protocol_only = venue_chain.split("-")[0]
+    out: list[str] = [venue_chain, protocol_only]
+    for candidate in (
+        _re.sub(r"_(V\d+)", r"\1", venue_chain),
+        _re.sub(r"_(V\d+)", r"\1", protocol_only),
+        _re.sub(r"([A-Z])(V\d+)", r"\1_\2", venue_chain),
+    ):
+        if candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def _list_defi_objects_with_aliases(*, bucket: str, day: str, venue_chain: str) -> list[object]:
+    """List objects under the first DeFi venue alias that has any parquets.
+
+    Tries each alias from :func:`_defi_venue_chain_aliases` in order and
+    returns the listing of the first non-empty match (or ``[]`` if every
+    alias is empty / fails to list).
+    """
+    from deployment_api.utils.storage_facade import list_objects as _list_objects
+
+    for alias in _defi_venue_chain_aliases(venue_chain):
+        prefix = f"raw_tick_data/by_date/day={day}/category=defi/venue={alias}/"
+        try:
+            found = _list_objects(bucket, prefix, max_results=DEFAULT_INSTRUMENT_LIMIT)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("build_pool_breakdown: list failed for %s/%s: %s", bucket, prefix, exc)
+            continue
+        if found:
+            return list(found)
+    return []
+
+
 def _list_pool_entities_for_venue(
     *, day: str, venue_chain: str, project_id: str | None = None
 ) -> list[tuple[str, str, str]]:
@@ -1630,16 +1675,15 @@ def _list_pool_entities_for_venue(
     venue={venue_chain}/`` and surfaces every ``instrument_type=`` /
     ``data_type=`` partition that has a written parquet. Capped by
     ``DEFAULT_INSTRUMENT_LIMIT`` to keep the listing bounded.
+
+    DeFi venue+chain aliasing: UI/UAC use ``AAVE_V3-ETHEREUM`` but the GCS
+    writer drops the underscore (``AAVEV3-ETHEREUM``). Tries the literal
+    form first, then the underscore-stripped form (and reverse) — uses
+    whichever the bucket actually has.
     """
     bucket = _defi_tick_bucket(project_id)
-    prefix = f"raw_tick_data/by_date/day={day}/category=defi/venue={venue_chain}/"
-    try:
-        # Local import to avoid pulling deployment_api.utils.* at module load.
-        from deployment_api.utils.storage_facade import list_objects as _list_objects
-
-        objects = _list_objects(bucket, prefix, max_results=DEFAULT_INSTRUMENT_LIMIT)
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("build_pool_breakdown: list failed for %s/%s: %s", bucket, prefix, exc)
+    objects = _list_defi_objects_with_aliases(bucket=bucket, day=day, venue_chain=venue_chain)
+    if not objects:
         return []
 
     seen: set[tuple[str, str]] = set()
@@ -1944,7 +1988,7 @@ MAX_SHARD_CSV_ROWS = 50_000
 def build_instruments_shard_csv_export(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     date: str,
     project_id: str | None = None,
@@ -1971,13 +2015,13 @@ def build_instruments_shard_csv_export(
             f"Supported: {sorted(_PER_VENUE_DAY_BUNDLE_SERVICES)}"
         )
 
-    bucket = build_bucket_name(service, category, project_id)
+    bucket = build_bucket_name(service, asset_group, project_id)
     gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"
 
     try:
         df = _read_parquet_columns(gs_uri)
     except (OSError, FileNotFoundError):
-        return "", 0, _shard_csv_filename(service, category, venue, date)
+        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
 
     if len(df) > max_rows:
         raise ValueError(
@@ -1986,11 +2030,11 @@ def build_instruments_shard_csv_export(
         )
 
     csv_text = df.to_csv(index=False)
-    return csv_text, len(df), _shard_csv_filename(service, category, venue, date)
+    return csv_text, len(df), _shard_csv_filename(service, asset_group, venue, date)
 
 
-def _shard_csv_filename(service: str, category: str, venue: str, date: str) -> str:
-    return f"{service}_{category}_{venue}_{date}.csv"
+def _shard_csv_filename(service: str, asset_group: str, venue: str, date: str) -> str:
+    return f"{service}_{asset_group}_{venue}_{date}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -2019,7 +2063,7 @@ _MTDS_CATALOG_COLUMNS: list[str] = [
 def build_mtds_shard_csv_export(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     date: str,
     project_id: str | None = None,
@@ -2047,15 +2091,15 @@ def build_mtds_shard_csv_export(
             f"Supported: {sorted(MTDS_SHARD_SERVICES)}"
         )
 
-    bucket = build_bucket_name(service, category, project_id)
+    bucket = build_bucket_name(service, asset_group, project_id)
     try:
         df = read_availability_index(bucket)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("MTDS catalog export: manifest read failed for %s: %s", bucket, exc)
-        return "", 0, _shard_csv_filename(service, category, venue, date)
+        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
 
     if df.empty or "date" not in df.columns:
-        return "", 0, _shard_csv_filename(service, category, venue, date)
+        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
 
     mask = df["date"] == date
     if "venue" in df.columns:
@@ -2063,7 +2107,7 @@ def build_mtds_shard_csv_export(
     scoped = df.loc[mask].copy()
 
     if scoped.empty:
-        return "", 0, _shard_csv_filename(service, category, venue, date)
+        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
 
     # Keep only the catalog columns that exist; fill missing ones with "".
     out_cols = [c for c in _MTDS_CATALOG_COLUMNS if c in scoped.columns]
@@ -2076,4 +2120,4 @@ def build_mtds_shard_csv_export(
         scoped = scoped.sort_values(sort_cols)
 
     csv_text: str = scoped.to_csv(index=False)  # pyright: ignore[reportUnknownMemberType]
-    return csv_text, len(scoped), _shard_csv_filename(service, category, venue, date)
+    return csv_text, len(scoped), _shard_csv_filename(service, asset_group, venue, date)
