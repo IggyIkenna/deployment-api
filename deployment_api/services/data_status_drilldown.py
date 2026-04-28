@@ -16,6 +16,7 @@ UI re-expands a venue or day.
 from __future__ import annotations
 
 import logging
+import re as _re
 import time
 from typing import cast
 
@@ -1286,14 +1287,17 @@ def build_fixtures_csv_export(
         # so the UI can still distinguish "empty confirmed" from "never ran".
         return "", 0, _fixtures_csv_filename(day, league_id)
 
-    if "af_league_id" not in df.columns:
+    # Support BOTH the new flat schema (af_league_id column) AND the legacy
+    # nested-struct schema (league = {league_id, logo_url, ...}). Pre-2024
+    # writes used the legacy schema where the api_football_id lives in
+    # league.logo_url as ``/leagues/{N}.png``; the canonical UAC league_id
+    # is stored as e.g. "ENGLAND_PREMIER_LEAGUE" — we extract the AF id
+    # from logo_url since UAC league_id ↔ legacy league.league_id has no
+    # clean derivation.
+    af_series = _extract_af_league_id_series(df)
+    if af_series is None:
         # Empty or malformed day file — return empty CSV rather than erroring.
         return "", 0, _fixtures_csv_filename(day, league_id)
-
-    # af_league_id column may be object/str/int — coerce at the boundary
-    # via pandas.to_numeric (keeps basedpyright strict-mode happy — the
-    # lambda+apply path surfaces reportUnknownLambdaType for the cell type).
-    af_series = pd.to_numeric(df["af_league_id"], errors="coerce")
     filtered = df[af_series == af_id]
     if len(filtered) > max_rows:
         raise ValueError(
@@ -1306,6 +1310,35 @@ def build_fixtures_csv_export(
 
 def _fixtures_csv_filename(day: str, league_id: str) -> str:
     return f"instruments-service_FIXTURES_{league_id}_{day}.csv"
+
+
+_AF_LEAGUE_LOGO_RE = _re.compile(r"/leagues/(\d+)\.png")
+
+
+def _extract_af_league_id_series(df: pd.DataFrame) -> pd.Series | None:
+    """Return a pandas Series of api_football_id per row, or ``None`` if neither schema present.
+
+    Handles two parquet schema variants:
+      - **New** (post-2024): flat ``af_league_id`` int column.
+      - **Legacy** (pre-2024): nested ``league`` struct column where
+        ``league.logo_url`` ends in ``/leagues/{N}.png`` — we parse N as
+        the api_football_id.
+    """
+    if "af_league_id" in df.columns:
+        return pd.to_numeric(df["af_league_id"], errors="coerce")
+    if "league" not in df.columns:
+        return None
+
+    def _from_struct(cell: object) -> int | None:
+        if not isinstance(cell, dict):
+            return None
+        url = cell.get("logo_url")
+        if not isinstance(url, str):
+            return None
+        match = _AF_LEAGUE_LOGO_RE.search(url)
+        return int(match.group(1)) if match else None
+
+    return df["league"].apply(_from_struct)
 
 
 # ---------------------------------------------------------------------------
@@ -1630,7 +1663,6 @@ def _defi_venue_chain_aliases(venue_chain: str) -> list[str]:
          (e.g. AAVE_V3, UNISWAP_V3 — chain encoded in pool_id row).
     Also tries underscore variants per UAC↔GCS naming drift (AAVE_V3 vs AAVEV3).
     """
-    import re as _re
 
     protocol_only = venue_chain.split("-")[0]
     out: list[str] = [venue_chain, protocol_only]
