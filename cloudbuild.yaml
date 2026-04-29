@@ -72,8 +72,16 @@ steps:
       - "-c"
       - |
         set -e
+        # If ./ui already exists in the build context (manual `gcloud builds
+        # submit` after staging), skip the clone — pre-bundled is good.
+        if [ -f ./ui/package.json ]; then
+          echo "ui/ pre-bundled in build context — skipping clone"
+          echo "deployment-ui pre-bundled HEAD: $$(cd ui && git rev-parse --short HEAD 2>/dev/null || echo 'no git metadata')"
+          exit 0
+        fi
+        # Trigger-driven build: clone via the implicit GitHub connection.
         # ${_BRANCH} is the substitution; falls back to BRANCH_NAME (trigger-set)
-        # then live-defi-rollout. Order: substitution first, env-var second.
+        # then live-defi-rollout.
         BRANCH="${_BRANCH:-${BRANCH_NAME:-live-defi-rollout}}"
         echo "Cloning deployment-ui at branch=$$BRANCH (fallback to main)"
         git clone --depth 1 --branch "$$BRANCH" \
