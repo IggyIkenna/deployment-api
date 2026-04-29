@@ -44,17 +44,23 @@ steps:
       ["auth", "configure-docker", "asia-northeast1-docker.pkg.dev", "--quiet"]
     waitFor: ["-"]
 
-  # ── Clone deployment-ui at the requested branch into the build context ─
-  - name: "gcr.io/cloud-builders/git"
-    id: "clone-ui"
+  # ── Verify deployment-ui-src/ is in the build context ─────────────────
+  # The submitter is responsible for staging the deployment-ui working tree
+  # at ./deployment-ui-src/ before invoking gcloud builds submit. Cloning
+  # private GitHub repos from inside Cloud Build requires extra credential
+  # plumbing, so we keep the pull on the operator side.
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "verify-ui-context"
     entrypoint: "bash"
     args:
       - "-c"
       - |
         set -e
-        rm -rf deployment-ui-src
-        git clone --depth 1 --branch ${_UI_BRANCH} ${_UI_REPO} deployment-ui-src
-        echo "deployment-ui SHA: $(git -C deployment-ui-src rev-parse HEAD)"
+        if [ ! -f deployment-ui-src/package.json ]; then
+          echo "FAIL: deployment-ui-src/package.json missing — stage the deployment-ui working tree before submitting." >&2
+          exit 1
+        fi
+        echo "deployment-ui-src/ present (package.json found)"
     waitFor: ["-"]
 
   # ── Build the dashboard image ─────────────────────────────────────────
@@ -71,7 +77,7 @@ steps:
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "."
-    waitFor: ["configure-docker", "clone-ui", "auth-precheck"]
+    waitFor: ["configure-docker", "verify-ui-context", "auth-precheck"]
 
   # ── Push (skip the QG step — we trust the upstream deployment-api QG) ─
   - name: "gcr.io/cloud-builders/docker"
