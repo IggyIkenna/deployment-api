@@ -17,7 +17,6 @@ substitutions:
   _REGISTRY_REPO: "unified-trading-system"
 
 steps:
-steps:
   # ── Auth pre-check: fail fast if SA lacks AR access ─
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
     id: "auth-precheck"
@@ -57,18 +56,46 @@ steps:
           --enable-vulnerability-scanning 2>/dev/null || true
     waitFor: ["-"]
 
+  # ── Pull deployment-ui at the same branch so the Dockerfile Stage 0 can build
+  # the SPA bundle into ./ui/dist. Replaces the unified-trading-deployment-v2
+  # forked-ui pattern. The clone uses BRANCH_NAME (Cloud Build trigger sets it)
+  # falling back to live-defi-rollout for manual `gcloud builds submit` runs.
+  - name: "gcr.io/cloud-builders/git"
+    id: "fetch-ui"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        BRANCH="${BRANCH_NAME:-live-defi-rollout}"
+        echo "Cloning deployment-ui at branch=$$BRANCH (fallback to main)"
+        git clone --depth 1 --branch "$$BRANCH" \
+          https://github.com/IggyIkenna/deployment-ui ./ui \
+          || git clone --depth 1 --branch main \
+          https://github.com/IggyIkenna/deployment-ui ./ui
+        echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
+    waitFor: ["-"]
+
   - name: "gcr.io/cloud-builders/docker"
     id: "build"
     args:
       - "build"
       - "-f"
       - "Dockerfile"
+      - "--build-arg"
+      - "PROJECT_ID=$PROJECT_ID"
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
+      # Also tag as deployment-dashboard so the existing Cloud Run service can roll
+      # the new image without changing service config. Replaces v2 build artifact.
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-dashboard/deployment-dashboard:$SHORT_SHA"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-dashboard/deployment-dashboard:latest"
       - "."
-    waitFor: ["configure-docker", "ensure-repo"]
+    waitFor: ["configure-docker", "ensure-repo", "fetch-ui"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "quality-gates"
@@ -93,6 +120,19 @@ steps:
         "push",
         "--all-tags",
         "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}",
+      ]
+    waitFor: ["quality-gates"]
+
+  # Push the same image to the deployment-dashboard artifact-registry path so
+  # the existing Cloud Run `deployment-dashboard` service can pull it without
+  # changing service config. Replaces the unified-trading-deployment-v2 build.
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-dashboard"
+    args:
+      [
+        "push",
+        "--all-tags",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-dashboard/deployment-dashboard",
       ]
     waitFor: ["quality-gates"]
 
