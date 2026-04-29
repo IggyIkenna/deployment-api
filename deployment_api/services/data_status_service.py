@@ -30,6 +30,9 @@ from unified_api_contracts.registry import (
     is_in_tradfi_tick_window,
 )
 from unified_api_contracts.sports import (
+    clip_dates_to_source_coverage as _clip_dates_to_source_coverage,
+)
+from unified_api_contracts.sports import (
     get_entity_league_coverage,
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
@@ -272,6 +275,7 @@ def _sports_expected_dates_for_league(
     cadence_days: int,
     start_date: str,
     end_date: str,
+    source_key: str = "",
 ) -> list[str]:
     """Expected capture dates for one league on a given axis.
 
@@ -280,14 +284,26 @@ def _sports_expected_dates_for_league(
     - ``per_league_periodic`` → active-season dates sampled every
       ``cadence_days`` (cadence=1 gives daily active-season; cadence=7
       gives weekly refreshes).
+
+    Clips ``start_date`` forward to the source's UAC-declared coverage
+    start (``SOURCE_COVERAGE_START``) so dates before the source launched
+    don't show up as missing shards. Pass ``source_key=""`` to skip the
+    clip (default — preserves legacy callers that don't yet know the
+    source).
     """
+    if source_key:
+        start_date, end_date = _clip_dates_to_source_coverage(source_key, start_date, end_date)
+        # Empty-range signal from the clip helper: end == "" means the entire
+        # query window is before the source's coverage start.
+        if not end_date or end_date < start_date:
+            return []
     season_dates = get_league_fixture_calendar(league_id, start_date, end_date)
     if axis == "per_league_per_fixture_date" or cadence_days <= 1:
         return season_dates
     return season_dates[::cadence_days]
 
 
-def _sports_honest_coverage(
+def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tracked separately
     filtered: pd.DataFrame,
     entity_name: str,
     start_date: str,
@@ -335,11 +351,19 @@ def _sports_honest_coverage(
     ent_rows = filtered[ent_mask & ok_mask]
 
     if axis in ("global_periodic", "global_season"):
-        # No league axis — expected = number of cadence-dates in window
-        try:
-            date_range = pd.date_range(start_date, end_date, freq="D")
-        except ValueError:
+        # No league axis — expected = number of cadence-dates in window,
+        # clipped to the source's UAC-declared coverage start so pre-launch
+        # dates don't show as missing.
+        clipped_start, clipped_end = _clip_dates_to_source_coverage(
+            source_key, start_date, end_date
+        )
+        if not clipped_end or clipped_end < clipped_start:
             date_range = pd.DatetimeIndex([])
+        else:
+            try:
+                date_range = pd.date_range(clipped_start, clipped_end, freq="D")
+            except ValueError:
+                date_range = pd.DatetimeIndex([])
         if axis == "global_season":
             expected_dates = 1
         else:
@@ -367,7 +391,7 @@ def _sports_honest_coverage(
     for league in expected_leagues:
         lid = league.league_id
         expected_dates_for_l = _sports_expected_dates_for_league(
-            lid, axis, cadence_days, start_date, end_date
+            lid, axis, cadence_days, start_date, end_date, source_key=source_key
         )
         if not expected_dates_for_l:
             continue
@@ -604,6 +628,16 @@ _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
     "oracle-prices": "oracle_prices",
     "perp-funding": "perp_funding",
     "gas-fees": "gas_fees",
+    "eigenlayer-rewards": "eigenlayer_rewards",
+    # Phase 2 event-typed handlers (defi_data_types_completeness_2026_04_24)
+    "liquidation-events": "liquidation_events",
+    "flash-loan-events": "flash_loan_events",
+    "staking-yields": "staking_yields",
+    "position-data": "position_data",
+    "token-transfers": "token_transfers",
+    "bridge-events": "bridge_events",
+    "governance-events": "governance_events",
+    "mev-events": "mev_events",
 }
 _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
     "dex-swaps": "dex_swaps",
@@ -614,6 +648,16 @@ _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
     "liquidations": "liquidations",
     "perp-funding": "perp_funding",
     "gas-fees": "gas_fees",
+    "eigenlayer-rewards": "eigenlayer_rewards",
+    # Phase 2 event-typed handlers
+    "liquidation-events": "liquidation_events",
+    "flash-loan-events": "flash_loan_events",
+    "staking-yields": "staking_yields",
+    "position-data": "position_data",
+    "token-transfers": "token_transfers",
+    "bridge-events": "bridge_events",
+    "governance-events": "governance_events",
+    "mev-events": "mev_events",
     "evm-defi": "",
     "solana-defi": "",
     "": "",
@@ -1820,7 +1864,14 @@ class DataStatusService:
         "execution-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
     }
 
-    # Categories whose bucket name doesn't follow the template pattern
+    # Categories whose bucket name doesn't follow the template pattern.
+    # Only Phase-1 DeFi data types live in dedicated per-data-type buckets via
+    # ``get_write_bucket_name(data_type)``. Phase-2 event-typed handlers
+    # (liquidation_events, flash_loan_events, staking_yields, position_data,
+    # token_transfers, bridge_events, governance_events, mev_events) and
+    # eigenlayer_rewards write into the main ``market-data-tick-defi-{pid}``
+    # bucket (via ``get_tick_data_bucket(asset_group="defi")``) so they're
+    # picked up by the default ``_BUCKET_TEMPLATES`` entry — no override needed.
     _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
         ("market-tick-data-service", "gas-fees"): "gas-fees-{pid}",
         ("market-tick-data-service", "evm-defi"): "evm-defi-{pid}",
@@ -1834,7 +1885,9 @@ class DataStatusService:
         ("market-tick-data-service", "perp-funding"): "perp-funding-{pid}",
     }
 
-    # DeFi sub-dimension bucket keys for MTDS — merged into DEFI category
+    # DeFi sub-dimension bucket keys for MTDS — merged into DEFI category.
+    # Limited to Phase-1 sub-buckets; Phase-2 + eigenlayer-rewards already
+    # land in the main DEFI bucket so they appear without enumeration here.
     _MTDS_DEFI_SUB_DIMENSIONS: ClassVar[list[str]] = [
         "gas-fees",
         "evm-defi",
