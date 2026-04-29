@@ -33,12 +33,17 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ripgrep tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --system \
-    && uv pip install --system --no-cache-dir gunicorn[gevent] gevent
-
+# Hatchling needs the package dir + README.md present at install time to
+# build the editable wheel; copy package source BEFORE the install step.
+COPY pyproject.toml uv.lock README.md ./
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./
+
+# uv >= 0.11 removed --system from `uv sync`; mirror deployment-service pattern.
+# UTL base image already has transitive deps + UAC + UTL pre-installed, so
+# --no-deps is sufficient for the editable install.
+RUN uv pip install --system --no-deps -e . \
+    && uv pip install --system --no-cache-dir gunicorn[gevent] gevent
 # Bundled readiness data — populated by cloudbuild before docker build;
 # symlinks locally (resolved by docker build context). No-op if absent.
 COPY codex-data/ ./codex-data/
@@ -64,5 +69,5 @@ FROM api AS api-dev
 USER root
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
-RUN uv sync --frozen --no-dev --system && chown -R appuser:appuser /app
+RUN uv pip install --system --no-deps -e . && chown -R appuser:appuser /app
 USER appuser
