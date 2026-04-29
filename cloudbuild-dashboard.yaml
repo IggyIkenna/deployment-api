@@ -35,11 +35,15 @@ steps:
         echo "Auth pre-check passed"
     waitFor: ["-"]
 
-  # ── Configure Docker auth ─────────────────────────────────────────────
-  - name: "gcr.io/cloud-builders/gcloud"
-    id: "configure-docker"
+  # ── Pre-pull the unified-trading-library base image so the build step's
+  # ── docker daemon has it cached + authed before the multi-stage FROM. ──
+  - name: "gcr.io/cloud-builders/docker"
+    id: "pull-base"
     args:
-      ["auth", "configure-docker", "asia-northeast1-docker.pkg.dev", "--quiet"]
+      [
+        "pull",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest",
+      ]
     waitFor: ["-"]
 
   # ── Verify deployment-ui-src/ is in the build context ─────────────────
@@ -75,7 +79,7 @@ steps:
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "."
-    waitFor: ["configure-docker", "verify-ui-context", "auth-precheck"]
+    waitFor: ["pull-base", "verify-ui-context", "auth-precheck"]
 
   # ── Push (skip the QG step — we trust the upstream deployment-api QG) ─
   - name: "gcr.io/cloud-builders/docker"
