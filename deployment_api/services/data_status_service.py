@@ -25,7 +25,10 @@ from unified_api_contracts import (
     is_processed_data_type,
 )
 from unified_api_contracts.internal import MarketCategory
-from unified_api_contracts.registry import is_in_tradfi_tick_window
+from unified_api_contracts.registry import (
+    get_lst_venue_genesis,
+    is_in_tradfi_tick_window,
+)
 from unified_api_contracts.sports import (
     get_entity_league_coverage,
     get_expected_leagues_for_source,
@@ -736,6 +739,18 @@ def _mtds_expected_dates_for_venue_dt(
     """
     venue_start = venue_mapping.get_venue_start_date(venue) or window_start
     dt_start = get_venue_data_type_start_date(venue, data_type) or venue_start
+
+    # lst_rates: clamp expected-coverage start to the earliest LST token
+    # genesis for this venue. UAC LST_VENUE_TO_TOKENS / get_lst_venue_genesis
+    # is the SSOT for token-launch dates; without this the data-status UI
+    # flags pre-launch days as "missing" even though the handler correctly
+    # short-circuits them on its end. Falls back to dt_start when the venue
+    # is not a known LST protocol (no override).
+    if data_type == "lst_rates":
+        lst_genesis = get_lst_venue_genesis(venue)
+        if lst_genesis is not None:
+            dt_start = max(dt_start, lst_genesis)
+
     effective_start = max(window_start, venue_start, dt_start)
     if effective_start > window_end:
         return set()
