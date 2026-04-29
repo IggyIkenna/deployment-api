@@ -15,6 +15,11 @@
 substitutions:
   _SERVICE_NAME: "deployment-api"
   _REGISTRY_REPO: "unified-trading-system"
+  # Branch name used by fetch-ui to clone deployment-ui at the matching SHA.
+  # Cloud Build triggers populate BRANCH_NAME automatically; manual
+  # `gcloud builds submit` runs need to pass --substitutions=_BRANCH=<name>
+  # (we then map it to BRANCH_NAME in the fetch-ui step).
+  _BRANCH: "live-defi-rollout"
 
 steps:
   # ── Auth pre-check: fail fast if SA lacks AR access ─
@@ -67,7 +72,9 @@ steps:
       - "-c"
       - |
         set -e
-        BRANCH="${BRANCH_NAME:-live-defi-rollout}"
+        # ${_BRANCH} is the substitution; falls back to BRANCH_NAME (trigger-set)
+        # then live-defi-rollout. Order: substitution first, env-var second.
+        BRANCH="${_BRANCH:-${BRANCH_NAME:-live-defi-rollout}}"
         echo "Cloning deployment-ui at branch=$$BRANCH (fallback to main)"
         git clone --depth 1 --branch "$$BRANCH" \
           https://github.com/IggyIkenna/deployment-ui ./ui \
