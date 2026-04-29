@@ -19,8 +19,6 @@
 substitutions:
   _SERVICE_NAME: "deployment-dashboard"
   _REGISTRY_REPO: "deployment-dashboard"
-  _UI_REPO: "https://github.com/IggyIkenna/deployment-ui.git"
-  _UI_BRANCH: "live-defi-rollout"
 
 steps:
   # ── Auth pre-check ────────────────────────────────────────────────────
