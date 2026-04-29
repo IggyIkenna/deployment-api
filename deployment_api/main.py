@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
@@ -230,3 +230,31 @@ async def health_check_with_config() -> dict[str, object]:
         "cloud_provider": _cloud_cfg.cloud_provider,
         "mock_mode": _cloud_cfg.is_mock_mode(),
     }
+
+
+# SPA fallback — registered LAST so all named routes (api, metrics, docs,
+# events relay, /assets mount) win first. Any GET that lands here either
+# resolves to a real file under the UI dist (favicon, manifest.json, etc.)
+# or falls through to index.html so client-side router can handle the path.
+if _ui_dist:
+    _ui_index = _ui_dist / "index.html"
+
+    @app.get("/", include_in_schema=False)
+    async def spa_root() -> FileResponse:
+        return FileResponse(_ui_index)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_catchall(full_path: str) -> FileResponse:
+        # Reserved prefixes that must NOT be intercepted (would mask real 404s).
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("assets/")
+            or full_path.startswith("stream/")
+            or full_path.startswith("infra/")
+            or full_path in {"metrics", "docs", "redoc", "openapi.json"}
+        ):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = _ui_dist / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_ui_index)

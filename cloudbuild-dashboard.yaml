@@ -1,0 +1,95 @@
+# Cloud Build config for the `deployment-dashboard` Cloud Run service.
+#
+# Produces a single image that bundles:
+#   * deployment-api FastAPI server (this repo, HEAD)
+#   * deployment-ui Vite SPA build (sibling repo, branch matched at clone time)
+#
+# The image is pushed to the `deployment-dashboard` Artifact Registry repo so
+# the running Cloud Run revision can be rolled forward via:
+#   gcloud run services update deployment-dashboard \
+#       --region=asia-northeast1 \
+#       --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-dashboard/deployment-dashboard:$SHORT_SHA
+#
+# This config is invoked manually:
+#   gcloud builds submit . \
+#       --config=cloudbuild-dashboard.yaml \
+#       --region=asia-northeast1 \
+#       --substitutions=_UI_BRANCH=live-defi-rollout
+
+substitutions:
+  _SERVICE_NAME: "deployment-dashboard"
+  _REGISTRY_REPO: "deployment-dashboard"
+  _UI_REPO: "https://github.com/IggyIkenna/deployment-ui.git"
+  _UI_BRANCH: "live-defi-rollout"
+
+steps:
+  # ── Auth pre-check ────────────────────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
+    id: "auth-precheck"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        gcloud auth print-access-token >/dev/null
+        gcloud artifacts repositories describe ${_REGISTRY_REPO} \
+            --location=asia-northeast1 --quiet
+        echo "Auth pre-check passed"
+    waitFor: ["-"]
+
+  # ── Configure Docker auth ─────────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "configure-docker"
+    args:
+      ["auth", "configure-docker", "asia-northeast1-docker.pkg.dev", "--quiet"]
+    waitFor: ["-"]
+
+  # ── Clone deployment-ui at the requested branch into the build context ─
+  - name: "gcr.io/cloud-builders/git"
+    id: "clone-ui"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        rm -rf deployment-ui-src
+        git clone --depth 1 --branch ${_UI_BRANCH} ${_UI_REPO} deployment-ui-src
+        echo "deployment-ui SHA: $(git -C deployment-ui-src rev-parse HEAD)"
+    waitFor: ["-"]
+
+  # ── Build the dashboard image ─────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build"
+    args:
+      - "build"
+      - "-f"
+      - "Dockerfile.dashboard"
+      - "--build-arg"
+      - "PROJECT_ID=$PROJECT_ID"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
+      - "."
+    waitFor: ["configure-docker", "clone-ui", "auth-precheck"]
+
+  # ── Push (skip the QG step — we trust the upstream deployment-api QG) ─
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push"
+    args:
+      [
+        "push",
+        "--all-tags",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}",
+      ]
+    waitFor: ["build"]
+
+images:
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+
+timeout: "1200s"

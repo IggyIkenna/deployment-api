@@ -1,0 +1,68 @@
+# Dockerfile for deployment-dashboard (FastAPI + bundled deployment-ui SPA)
+#
+# Variant of the deployment-api image that ALSO bakes the deployment-ui Vite
+# SPA into /app/ui/dist so a single Cloud Run service can serve both the API
+# and the static UI. Mirrors the multi-stage layout used by
+# unified-trading-deployment-v2 but driven from this repo as the SSOT.
+#
+# Build context expectation: deployment-ui repo HEAD is checked out at
+# `./deployment-ui-src/` next to this Dockerfile (cloudbuild-dashboard.yaml
+# clones it before invoking docker build).
+
+ARG PROJECT_ID
+
+# ── Stage 0: build the Vite SPA ───────────────────────────────────────────
+FROM node:20-slim AS ui-builder
+WORKDIR /app/ui
+
+# Copy package manifests first for layer caching.
+COPY deployment-ui-src/package.json deployment-ui-src/package-lock.json ./
+RUN npm ci --prefer-offline --no-audit --no-fund
+
+# Copy the rest of the UI source tree and build production bundle.
+COPY deployment-ui-src/ ./
+RUN npm run build
+
+# ── Stage 1: API base (unified-trading-library) ───────────────────────────
+FROM --platform=linux/amd64 asia-northeast1-docker.pkg.dev/${PROJECT_ID}/unified-trading-library/unified-trading-library:latest AS base
+
+# ── Stage 2: production API + bundled UI ──────────────────────────────────
+FROM base AS api
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --system \
+    && uv pip install --system --no-cache-dir gunicorn[gevent] gevent
+
+COPY deployment_api/ ./deployment_api/
+COPY gunicorn.conf.py ./
+# Bundled readiness data — populated by cloudbuild before docker build;
+# symlinks locally (resolved by docker build context). No-op if absent.
+COPY codex-data/ ./codex-data/
+COPY pm-plans/ ./pm-plans/
+# Operational configs — SSOT is unified-trading-pm/configs/; populated by cloudbuild before docker build
+COPY pm-configs/ ./pm-configs/
+
+# Bake the built UI bundle. get_ui_dist_dir() resolves /app/ui/dist via
+# Path(__file__).parent.parent.parent, so this exact path is load-bearing.
+COPY --from=ui-builder /app/ui/dist /app/ui/dist
+
+RUN id -u appuser >/dev/null 2>&1 || useradd --create-home --uid 1000 --shell /bin/bash appuser
+RUN chown -R appuser:appuser /app
+
+USER appuser
+EXPOSE 8080
+ENV PORT=8080
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["gunicorn", "deployment_api.main:app", "-c", "/app/gunicorn.conf.py"]
+
+# Stage for quality gates (test-in-image)
+FROM api AS api-dev
+USER root
+COPY scripts/ ./scripts/
+COPY tests/ ./tests/
+RUN uv sync --frozen --no-dev --system && chown -R appuser:appuser /app
+USER appuser
