@@ -28,6 +28,7 @@ from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     get_lst_venue_genesis,
     is_in_tradfi_tick_window,
+    venue_has_no_expected_defi_coverage,
 )
 from unified_api_contracts.sports import (
     clip_dates_to_source_coverage as _clip_dates_to_source_coverage,
@@ -783,6 +784,13 @@ def _mtds_expected_dates_for_venue_dt(
     """
     venue_start = venue_mapping.get_venue_start_date(venue) or window_start
     dt_start = get_venue_data_type_start_date(venue, data_type) or venue_start
+
+    # DEFI venues with no expected coverage (deprecated subgraphs / not-yet-onboarded).
+    # UAC EMPTY_OR_DEPRECATED_DEFI_VENUES + DEFI_INSTRUMENTS_NOT_YET_COLLECTED is
+    # the SSOT; without this the data-status UI flags every day for these venues
+    # as "missing" because instruments-service has 0 historical parquets for them.
+    if category.upper() == "DEFI" and venue_has_no_expected_defi_coverage(venue):
+        return set()
 
     # lst_rates: clamp expected-coverage start to the earliest LST token
     # genesis for this venue. UAC LST_VENUE_TO_TOKENS / get_lst_venue_genesis
