@@ -2986,7 +2986,7 @@ class DataStatusService:
 
         # Features services emit per-(timeframe, feature_group) shards. Surface
         # those as drill-down dimensions when the manifest carries them so the
-        # deployment-ui can show coverage per (15s/1m/15m/1h × feature_group).
+        # deployment-ui can show coverage per (15s/1m/15m/1h x feature_group).
         is_features_service = service.startswith("features-")
         if is_features_service:
             tf_breakdown = self._build_timeframe_breakdown(v_df, eff_start, end_date)
@@ -3023,18 +3023,14 @@ class DataStatusService:
         # window). For features services this is the natural "expected" set —
         # if delta-one wrote feature_group=X on day D, that shard is expected.
         slice_dates = {
-            str(d)
-            for d in venue_df["date"].unique()
-            if start_date <= str(d) <= end_date
+            str(d) for d in venue_df["date"].unique() if start_date <= str(d) <= end_date
         }
         total_expected = len(slice_dates)
         result: dict[str, object] = {}
         for value in values:
             sub_df = venue_df[col_series == value]
             sub_dates = {
-                str(d)
-                for d in sub_df["date"].unique()
-                if start_date <= str(d) <= end_date
+                str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date
             }
             found = len(sub_dates)
             missing = sorted(slice_dates - sub_dates)
@@ -3056,9 +3052,7 @@ class DataStatusService:
         end_date: str,
     ) -> dict[str, object]:
         """Per-timeframe coverage for features-* services (15s/1m/15m/1h)."""
-        return self._build_simple_dimension_breakdown(
-            venue_df, "timeframe", start_date, end_date
-        )
+        return self._build_simple_dimension_breakdown(venue_df, "timeframe", start_date, end_date)
 
     def _build_feature_group_breakdown(
         self,

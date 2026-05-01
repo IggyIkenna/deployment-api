@@ -16,6 +16,7 @@ from deployment_api.services.data_status_drilldown import (
     DEFAULT_INSTRUMENT_LIMIT,
     MAX_INSTRUMENT_LIMIT,
     MTDS_SHARD_SERVICES,
+    build_bucket_name,
     build_csv_export,
     build_fixture_breakdown,
     build_fixture_download,
@@ -568,24 +569,37 @@ async def get_multi_service_status(
 
 @router.get("/schema")
 async def get_schema(
-    service: str = Query(..., description="Service name (unused, kept for symmetry)"),
+    service: str = Query(..., description="Service name — used for parquet projection fallback"),
     asset_group: str = Query(..., description="Asset group (cefi/tradfi/defi/sports/prediction)"),
     instrument_type: str = Query(..., description="Instrument type"),
     data_type: str = Query(..., description="Data type"),
     venue: str | None = Query(None, description="Venue for venue-specific overrides"),
+    day: str | None = Query(None, description="Day (YYYY-MM-DD) for parquet projection fallback"),
 ):
     """Return the SchemaContract columns for an (asset_group, instrument_type, data_type)
     tuple, honouring venue-specific overrides (UNISWAP_V2/V3/V4 etc.).
 
-    Falls back gracefully when no contract is registered — returns
-    ``registered: false`` so the UI can fall back to a raw-column projection.
+    When no contract is registered (instruments-service legacy v4 manifests
+    for cefi/tradfi/defi/prediction carry empty instrument_type+data_type
+    axes) and the caller supplies ``service``, ``venue``, ``day``, the
+    response projects the actual parquet column names from a sample shard so
+    the UI's View Schema modal renders something meaningful instead of blank.
     """
+    bucket: str | None = None
+    if service:
+        try:
+            bucket = build_bucket_name(service, asset_group)
+        except ValueError:
+            bucket = None
     try:
         return get_schema_for_shard(
             asset_group=asset_group,
             instrument_type=instrument_type,
             data_type=data_type,
             venue=venue,
+            service=service,
+            bucket=bucket,
+            day=day,
         )
     except (ValueError, RuntimeError) as e:
         logger.exception("Error in get_schema")

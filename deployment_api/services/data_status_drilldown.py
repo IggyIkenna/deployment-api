@@ -345,13 +345,20 @@ def get_schema_for_shard(
     instrument_type: str,
     data_type: str,
     venue: str | None = None,
+    service: str | None = None,
+    bucket: str | None = None,
+    day: str | None = None,
 ) -> dict[str, object]:
     """Return the SchemaContract columns for a shard tuple.
 
-    Falls back gracefully when no contract is registered — returns an empty
-    column list with ``registered: False`` so the UI can render a
-    "no schema registered — running raw projection" affordance instead of
-    raising.
+    For instruments-service shards on the legacy v4 manifest layout
+    (cefi/tradfi/defi/prediction rows have empty ``instrument_type`` and
+    empty ``data_type``), the lookup is retried against the synthesised
+    ``("instrument_catalogue", "instrument_catalogue")`` axis pair which is
+    registered in UAC for every asset_group. The catalogue contract is
+    derived from ``INSTRUMENTS_PARQUET_SCHEMA`` — the same SSOT that
+    instruments-service uses to write the parquet — so the schema returned
+    here matches the bytes on disk.
     """
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
@@ -361,6 +368,15 @@ def get_schema_for_shard(
     dt_norm = _normalise_data_type(data_type)
     # Sports manifest carries no instrument_type axis — resolve from data_type.
     it_norm = _resolve_sports_instrument_type(cat_norm, it_norm, dt_norm)
+
+    # instruments-service legacy v4 rows for cefi/tradfi/defi carry empty
+    # instrument_type and empty data_type. Synthesise the catalogue axes so
+    # the lookup resolves the registered INSTRUMENT_CATALOGUE contract
+    # instead of failing.
+    if (service or "").lower() == "instruments-service" and not it_norm and not dt_norm:
+        it_norm = "instrument_catalogue"
+        dt_norm = "instrument_catalogue"
+
     # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(

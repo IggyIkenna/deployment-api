@@ -109,6 +109,47 @@ class TestGetSchemaForShard:
         assert result["registered"] is True
         assert result["symbol_column"] == "pool_address"
 
+    def test_instruments_service_legacy_v4_resolves_catalogue_contract(self):
+        """instruments-service legacy v4 manifest rows for cefi/tradfi/defi/prediction
+        carry empty instrument_type+data_type. The endpoint synthesises the
+        ``("instrument_catalogue", "instrument_catalogue")`` axis pair so the lookup
+        resolves the registered INSTRUMENT_CATALOGUE contract derived from
+        INSTRUMENTS_PARQUET_SCHEMA."""
+        for asset_group in ("cefi", "tradfi", "defi", "prediction"):
+            result = drilldown.get_schema_for_shard(
+                asset_group=asset_group,
+                instrument_type="",
+                data_type="",
+                venue="DERIBIT" if asset_group == "cefi" else None,
+                service="instruments-service",
+            )
+            assert result["registered"] is True, f"{asset_group} catalogue must resolve"
+            assert result["source"] == "CONTRACT_REGISTRY"
+            assert result["instrument_type"] == "instrument_catalogue"
+            assert result["data_type"] == "instrument_catalogue"
+            assert result["symbol_column"] == "instrument_key"
+            cols = result["columns"]
+            assert isinstance(cols, list) and len(cols) > 50, (
+                f"{asset_group}: catalogue should have full instrument shape (60+ cols)"
+            )
+            names = [c["name"] for c in cols]
+            assert "instrument_key" in names
+            assert "venue" in names
+            assert "instrument_type" in names
+
+    def test_unregistered_non_instruments_service_returns_empty(self):
+        """For services other than instruments-service, empty axes still fall back
+        to the "no schema registered" empty response (existing behaviour)."""
+        result = drilldown.get_schema_for_shard(
+            asset_group="cefi",
+            instrument_type="",
+            data_type="",
+            service="market-tick-data-service",
+        )
+        assert result["registered"] is False
+        assert result["source"] == "none"
+        assert result["columns"] == []
+
 
 # ---------------------------------------------------------------------------
 # Instruments for shard
