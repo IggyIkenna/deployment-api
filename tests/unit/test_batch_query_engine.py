@@ -2,39 +2,41 @@
 Unit tests for batch_query_engine module.
 
 Tests cover:
-- get_expected_dates_for_category
-- query_specific_prefixes_for_category (with mocked dependencies)
-- query_generic_prefixes_for_category (with mocked dependencies)
+- get_expected_dates_for_asset_group
+- query_specific_prefixes_for_asset_group (with mocked dependencies)
+- query_generic_prefixes_for_asset_group (with mocked dependencies)
 """
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from deployment_api.routes.batch_query_engine import (
-    get_expected_dates_for_category,
-    query_generic_prefixes_for_category,
-    query_specific_prefixes_for_category,
+    get_expected_dates_for_asset_group,
+    query_generic_prefixes_for_asset_group,
+    query_specific_prefixes_for_asset_group,
 )
 
 
-class TestGetExpectedDatesForCategory:
-    """Tests for get_expected_dates_for_category."""
+class TestGetExpectedDatesForAssetGroup:
+    """Tests for get_expected_dates_for_asset_group."""
 
     def test_no_start_date_returns_all_dates(self):
         all_dates = {"2026-01-01", "2026-01-02", "2026-01-03"}
         config = {}
-        result = get_expected_dates_for_category(all_dates, config, "instruments-service", "CEFI")
+        result = get_expected_dates_for_asset_group(
+            all_dates, config, "instruments-service", "CEFI"
+        )
         assert result == all_dates
 
-    def test_filters_dates_before_category_start(self):
+    def test_filters_dates_before_asset_group_start(self):
         all_dates = {"2026-01-01", "2026-01-15", "2026-02-01"}
-        config = {"instruments-service": {"CEFI": {"category_start": "2026-01-10"}}}
+        config = {"instruments-service": {"CEFI": {"asset_group_start": "2026-01-10"}}}
 
         with patch(
-            "deployment_api.routes.batch_query_engine.get_category_start_date"
+            "deployment_api.routes.batch_query_engine.get_asset_group_start_date"
         ) as mock_start:
             mock_start.return_value = "2026-01-10"
-            result = get_expected_dates_for_category(
+            result = get_expected_dates_for_asset_group(
                 all_dates, config, "instruments-service", "CEFI"
             )
         assert "2026-01-01" not in result
@@ -44,25 +46,25 @@ class TestGetExpectedDatesForCategory:
     def test_empty_all_dates_returns_empty(self):
         all_dates: set = set()
         with patch(
-            "deployment_api.routes.batch_query_engine.get_category_start_date"
+            "deployment_api.routes.batch_query_engine.get_asset_group_start_date"
         ) as mock_start:
             mock_start.return_value = "2026-01-01"
-            result = get_expected_dates_for_category(all_dates, {}, "svc", "CAT")
+            result = get_expected_dates_for_asset_group(all_dates, {}, "svc", "CAT")
         assert result == set()
 
-    def test_category_start_exactly_equal_to_date_is_included(self):
+    def test_asset_group_start_exactly_equal_to_date_is_included(self):
         all_dates = {"2026-03-01", "2026-03-02"}
         with patch(
-            "deployment_api.routes.batch_query_engine.get_category_start_date"
+            "deployment_api.routes.batch_query_engine.get_asset_group_start_date"
         ) as mock_start:
             mock_start.return_value = "2026-03-01"
-            result = get_expected_dates_for_category(all_dates, {}, "svc", "CAT")
+            result = get_expected_dates_for_asset_group(all_dates, {}, "svc", "CAT")
         assert "2026-03-01" in result
         assert "2026-03-02" in result
 
 
-class TestQuerySpecificPrefixesForCategory:
-    """Tests for query_specific_prefixes_for_category."""
+class TestQuerySpecificPrefixesForAssetGroup:
+    """Tests for query_specific_prefixes_for_asset_group."""
 
     def _make_combo(
         self,
@@ -85,7 +87,7 @@ class TestQuerySpecificPrefixesForCategory:
 
     def test_returns_error_when_no_bucket(self):
         with patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"svc": {}}):
-            result = query_specific_prefixes_for_category(
+            result = query_specific_prefixes_for_asset_group(
                 "svc", "UNKNOWN_CAT", {"2026-01-01"}, None, None, None, "", {}, set()
             )
         assert "error" in result
@@ -104,7 +106,7 @@ class TestQuerySpecificPrefixesForCategory:
                 return_value=mock_pc,
             ),
         ):
-            result = query_specific_prefixes_for_category(
+            result = query_specific_prefixes_for_asset_group(
                 "svc", "CEFI", {"2026-01-01"}, None, None, None, "", {}, set()
             )
         assert result["found_dates"] == set()
@@ -127,7 +129,7 @@ class TestQuerySpecificPrefixesForCategory:
             ),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]),
         ):
-            result = query_specific_prefixes_for_category(
+            result = query_specific_prefixes_for_asset_group(
                 "svc", "CEFI", set(), None, None, None, "", {}, set()
             )
         assert result["found_dates"] == set()
@@ -153,7 +155,7 @@ class TestQuerySpecificPrefixesForCategory:
             ),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[blob]),
         ):
-            result = query_specific_prefixes_for_category(
+            result = query_specific_prefixes_for_asset_group(
                 "svc", "CEFI", {"2026-01-15"}, None, None, None, "", {}, set()
             )
         assert "2026-01-15" in result["found_dates"]
@@ -180,7 +182,7 @@ class TestQuerySpecificPrefixesForCategory:
                 "deployment_api.routes.batch_query_engine.list_objects", return_value=[]
             ) as _mock_list,
         ):
-            _result = query_specific_prefixes_for_category(
+            _result = query_specific_prefixes_for_asset_group(
                 "svc", "CEFI", {"2026-01-01"}, None, None, None, "", {}, set()
             )
         # Date 2026-01-01 is before combo start_date 2026-02-01, so it's skipped
@@ -206,7 +208,7 @@ class TestQuerySpecificPrefixesForCategory:
                 "deployment_api.routes.batch_query_engine.list_objects", return_value=[]
             ) as mock_list,
         ):
-            _result = query_specific_prefixes_for_category(
+            _result = query_specific_prefixes_for_asset_group(
                 "svc", "CEFI", {"2026-01-01"}, None, None, None, "", {}, set()
             )
         # Combo is tick_window_only but we're outside tick window — skipped
@@ -233,18 +235,18 @@ class TestQuerySpecificPrefixesForCategory:
             ),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[blob]),
         ):
-            result = query_specific_prefixes_for_category(
+            result = query_specific_prefixes_for_asset_group(
                 "svc", "CEFI", {"2026-01-15"}, None, None, None, "", {}, set()
             )
         assert "1m" in result["timeframe_data"]
 
 
-class TestQueryGenericPrefixesForCategory:
-    """Tests for query_generic_prefixes_for_category."""
+class TestQueryGenericPrefixesForAssetGroup:
+    """Tests for query_generic_prefixes_for_asset_group."""
 
     def test_returns_error_when_no_bucket(self):
         with patch("deployment_api.routes.batch_query_engine.BUCKET_MAPPING", {"svc": {}}):
-            result = query_generic_prefixes_for_category(
+            result = query_generic_prefixes_for_asset_group(
                 "svc", "UNKNOWN_CAT", {"2026-01-01"}, None, ""
             )
         assert "error" in result
@@ -263,7 +265,7 @@ class TestQueryGenericPrefixesForCategory:
                 return_value=mock_pc,
             ),
         ):
-            result = query_generic_prefixes_for_category("svc", "CEFI", {"2026-01-01"}, None, "")
+            result = query_generic_prefixes_for_asset_group("svc", "CEFI", {"2026-01-01"}, None, "")
         assert result["found_dates"] == set()
         assert result["venue_data"] == {}
 
@@ -284,7 +286,7 @@ class TestQueryGenericPrefixesForCategory:
             ),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[blob]),
         ):
-            result = query_generic_prefixes_for_category(
+            result = query_generic_prefixes_for_asset_group(
                 "instruments-service", "CEFI", {"2026-01-15"}, None, ""
             )
         assert "2026-01-15" in result["found_dates"]
@@ -310,7 +312,7 @@ class TestQueryGenericPrefixesForCategory:
             ),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[blob]),
         ):
-            result = query_generic_prefixes_for_category(
+            result = query_generic_prefixes_for_asset_group(
                 "features-delta-one", "CEFI", {"2026-01-15"}, None, ""
             )
         assert "feature_group_a" in result["sub_dimension_data"]
@@ -330,5 +332,5 @@ class TestQueryGenericPrefixesForCategory:
             ),
             patch("deployment_api.routes.batch_query_engine.list_objects", return_value=[]),
         ):
-            result = query_generic_prefixes_for_category("svc", "CEFI", {"2026-01-15"}, None, "")
+            result = query_generic_prefixes_for_asset_group("svc", "CEFI", {"2026-01-15"}, None, "")
         assert "2026-01-15" not in result["found_dates"]

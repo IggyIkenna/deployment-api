@@ -25,7 +25,7 @@ from unified_api_contracts.internal import MarketCategory
 # without pulling in the full venue registry. Order matters: the first
 # venue in each list gets a non-zero failure_rate in the seed so the
 # "Show only failures" filter and retry button have something to bite on.
-_MOCK_VENUES_BY_CATEGORY: dict[str, list[str]] = {
+_MOCK_VENUES_BY_ASSET_GROUP: dict[str, list[str]] = {
     "CEFI": ["BINANCE-SPOT", "OKX-SPOT", "COINBASE-SPOT"],
     "TRADFI": ["DATABENTO-DBEQ", "DATABENTO-GLBX"],
     "DEFI": ["UNISWAP_V3", "AAVE_V3"],
@@ -101,7 +101,7 @@ def _mock_category_entry(
     # Spread the counts across the category's venues. The first venue
     # soaks the failures so the "Show only failures" toggle has a clear
     # hit.
-    venues = _MOCK_VENUES_BY_CATEGORY.get(category, [])
+    venues = _MOCK_VENUES_BY_ASSET_GROUP.get(category, [])
     per_venue_expected = max(1, dates_expected // max(1, len(venues)))
     venues_dict: dict[str, object] = {}
     remaining_failed = failed_total
@@ -132,7 +132,7 @@ def _mock_category_entry(
     completion_pct = attempt_pct if semantics == "event_driven" else capture_pct
 
     return {
-        "category": category,
+        "asset_group": category,
         "bucket": f"mock-bucket-{category.lower()}",
         "prefixes_queried": 0,
         "dates_found": captured_total,
@@ -170,7 +170,7 @@ def build_mock_turbo_response(
     service: str,
     start_date: str,
     end_date: str,
-    categories: list[str] | None = None,
+    asset_groups: list[str] | None = None,
 ) -> dict[str, object]:
     """Return a turbo-shaped response with realistic v5 capture_status
     data across every relevant category.
@@ -201,8 +201,8 @@ def build_mock_turbo_response(
     allowed = service_restrictions.get(service)
     all_cats = [str(c) for c in MarketCategory]
     cat_list = [c for c in all_cats if (not allowed or c in allowed)]
-    if categories:
-        wanted = {c.upper() for c in categories}
+    if asset_groups:
+        wanted = {c.upper() for c in asset_groups}
         cat_list = [c for c in cat_list if c in wanted]
 
     # Deterministic per-category seed
@@ -276,7 +276,7 @@ def build_mock_turbo_response(
         "overall_shards_expected": total_expected,
         "total_missing": max(0, total_expected - total_captured),
         "migration_in_progress": False,
-        "categories": result_categories,
+        "asset_groups": result_categories,
         "mock": True,
     }
 

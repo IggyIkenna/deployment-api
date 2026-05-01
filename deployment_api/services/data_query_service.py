@@ -37,9 +37,9 @@ class DataQueryService:
         """Initialize data query service."""
         self.project_id = project_id or _pid
 
-    def build_bucket_name(self, prefix: str, category: str) -> str:
-        """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""
-        return f"{prefix}-{category.lower()}-{self.project_id}"
+    def build_bucket_name(self, prefix: str, asset_group: str) -> str:
+        """Build a GCS bucket name: {prefix}-{asset_group_lower}-{project_id}."""
+        return f"{prefix}-{asset_group.lower()}-{self.project_id}"
 
     async def list_files_in_path(
         self,
@@ -128,34 +128,34 @@ class DataQueryService:
             service: Service name to get venues for
 
         Returns:
-            Dictionary containing available venues by category
+            Dictionary with ``service`` and ``asset_groups`` map (per-group venue lists).
         """
         # Service to bucket mappings
         _all_cats = [cat.value.lower() for cat in MarketCategory]
         service_mappings = {
             "market-tick-data-handler": {
                 "prefix": "market-data",
-                "categories": _all_cats,
+                "asset_groups": _all_cats,
             },
             "market-data-processing-service": {
                 "prefix": "processed-market-data",
-                "categories": _all_cats,
+                "asset_groups": _all_cats,
             },
             "instruments-service": {
                 "prefix": "instruments",
-                "categories": _all_cats,
+                "asset_groups": _all_cats,
             },
             "features-equity-service": {
                 "prefix": "features-equity",
-                "categories": ["tradfi"],
+                "asset_groups": ["tradfi"],
             },
             "features-derivatives-service": {
                 "prefix": "features-derivatives",
-                "categories": ["cefi"],
+                "asset_groups": ["cefi"],
             },
             "features-defi-service": {
                 "prefix": "features-defi",
-                "categories": ["defi"],
+                "asset_groups": ["defi"],
             },
         }
 
@@ -163,17 +163,15 @@ class DataQueryService:
         if not mapping:
             return {"error": f"Unknown service: {service}"}
 
-        categories_result: dict[str, dict[str, object]] = {}
+        by_asset_group: dict[str, dict[str, object]] = {}
         venue_filters: dict[str, object] = {
             "service": service,
-            "categories": categories_result,
+            "asset_groups": by_asset_group,
         }
 
-        for category in cast(list[str], mapping.get("categories") or []):
+        for ag in cast(list[str], mapping.get("asset_groups") or []):
             try:
-                bucket_name = self.build_bucket_name(
-                    cast(str, mapping.get("prefix") or ""), category
-                )
+                bucket_name = self.build_bucket_name(cast(str, mapping.get("prefix") or ""), ag)
                 venues: list[str] = []
 
                 # List prefixes to find venue directories
@@ -193,14 +191,14 @@ class DataQueryService:
                         if venue_name and venue_name not in venues:
                             venues.append(venue_name)
 
-                categories_result[category] = {
+                by_asset_group[ag] = {
                     "venues": sorted(venues),
                     "count": len(venues),
                 }
 
             except (OSError, ValueError, RuntimeError) as e:
-                logger.debug("Error getting venues for %s: %s", category, e)
-                categories_result[category] = {
+                logger.debug("Error getting venues for %s: %s", ag, e)
+                by_asset_group[ag] = {
                     "error": str(e),
                     "venues": [],
                     "count": 0,
@@ -210,16 +208,16 @@ class DataQueryService:
 
     async def get_instruments_list(
         self,
-        category: str,
+        asset_group: str,
         venue: str | None = None,
         instrument_type: str | None = None,
         limit: int = 100,
     ) -> dict[str, object]:
         """
-        Get list of instruments for a category.
+        Get list of instruments for an asset group.
 
         Args:
-            category: Category (cefi, tradfi, defi)
+            asset_group: Asset group (cefi, tradfi, defi)
             venue: Optional venue filter
             instrument_type: Optional instrument type filter
             limit: Maximum number of instruments to return
@@ -229,7 +227,7 @@ class DataQueryService:
         """
         try:
             # Map to instruments bucket
-            bucket_name = self.build_bucket_name("instruments", category)
+            bucket_name = self.build_bucket_name("instruments", asset_group)
 
             # Build path based on filters
             path = ""
@@ -272,7 +270,7 @@ class DataQueryService:
                             break
 
             instruments_result: dict[str, object] = {
-                "category": category,
+                "asset_group": asset_group,
                 "venue": venue,
                 "instrument_type": instrument_type,
                 "instruments": sorted(instruments),
@@ -300,7 +298,7 @@ class DataQueryService:
     async def search_instruments(
         self,
         query: str,
-        category: str | None = None,
+        asset_group: str | None = None,
         limit: int = 50,
     ) -> dict[str, object]:
         """Case-insensitive substring search for canonical instrument IDs.
@@ -317,39 +315,41 @@ class DataQueryService:
                 AND-match across tokens). Empty query returns ``[]`` — we
                 don't dump the entire registry by default to avoid surprising
                 users with thousands of rows.
-            category: Single category to search. ``None`` (the institutional
-                cross-category default) walks all five canonical categories.
+            asset_group: Single asset group to search. ``None`` (the institutional
+                cross-asset-group default) walks all five canonical groups.
             limit: Max matches returned. Truncation flag in response.
 
         Returns:
             ``{
                 query: str,
-                category: str | None,
+                asset_group: str | None,
                 matches: [
-                    {canonical_id, category, venue, instrument_type}
+                    {canonical_id, asset_group, venue, instrument_type}
                 ],
                 total_matches: int,
                 truncated: bool,
-                # Debug — counts per category that the search actually walked,
+                # Debug — counts per asset group that the search actually walked,
                 # useful for diagnosing "why am I not getting matches"
-                categories_searched: list[str],
+                asset_groups_searched: list[str],
             }``
         """
         query_normalised = (query or "").strip()
         if not query_normalised:
             return {
                 "query": "",
-                "category": category,
+                "asset_group": asset_group,
                 "matches": [],
                 "total_matches": 0,
                 "truncated": False,
-                "categories_searched": [],
+                "asset_groups_searched": [],
             }
 
         query_tokens: list[str] = [t.lower() for t in query_normalised.split() if t.strip()]
 
         # Resolve category list to walk.
-        cats_to_walk: list[str] = [category.lower()] if category else list(self._SEARCH_CATEGORIES)
+        cats_to_walk: list[str] = (
+            [asset_group.lower()] if asset_group else list(self._SEARCH_CATEGORIES)
+        )
 
         all_matches: list[dict[str, str]] = []
         truncated = False
@@ -365,7 +365,7 @@ class DataQueryService:
         seen: set[tuple[str, str, str, str]] = set()
         deduped: list[dict[str, str]] = []
         for m in all_matches:
-            key = (m["canonical_id"], m["category"], m["venue"], m["instrument_type"])
+            key = (m["canonical_id"], m["asset_group"], m["venue"], m["instrument_type"])
             if key in seen:
                 continue
             seen.add(key)
@@ -377,11 +377,11 @@ class DataQueryService:
 
         return {
             "query": query_normalised,
-            "category": category,
+            "asset_group": asset_group,
             "matches": deduped,
             "total_matches": len(deduped),
             "truncated": truncated,
-            "categories_searched": cats_to_walk,
+            "asset_groups_searched": cats_to_walk,
         }
 
     async def _search_in_category(
@@ -423,7 +423,7 @@ class DataQueryService:
             cid_lower = row["canonical_id"].lower()
             if not all(t in cid_lower for t in query_tokens):
                 continue
-            matches.append({**row, "category": category.upper()})
+            matches.append({**row, "asset_group": category.upper()})
             if len(matches) >= limit:
                 break
         return matches
@@ -741,11 +741,11 @@ class DataQueryService:
         Returns dictionary containing availability analysis.
         """
         try:
-            category = self._venue_to_category(venue)
-            if not category:
-                return {"error": f"Could not determine category for venue: {venue}"}
+            asset_group = self._venue_to_category(venue)
+            if not asset_group:
+                return {"error": f"Could not determine asset group for venue: {venue}"}
 
-            bucket_name = self.build_bucket_name("market-data", category.lower())
+            bucket_name = self.build_bucket_name("market-data", asset_group.lower())
 
             try:
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
@@ -763,7 +763,7 @@ class DataQueryService:
             effective_start = max(start_dt, avail_from) if avail_from else start_dt
             effective_end = min(end_dt, avail_to) if avail_to else end_dt
 
-            data_types = [data_type] if data_type else self._default_data_types(category)
+            data_types = [data_type] if data_type else self._default_data_types(asset_group)
 
             daily_availability = self._check_daily_availability(
                 bucket_name,

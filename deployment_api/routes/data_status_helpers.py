@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Helper: build bucket name from prefix, category, and project ID
 def _bucket(prefix: str, category: str) -> str:
-    """Build a GCS bucket name: {prefix}-{category_lower}-{project_id}."""
+    """Build a GCS bucket name: {prefix}-{asset_group_lower}-{project_id}."""
     return f"{prefix}-{category.lower()}-{_pid}"
 
 
@@ -24,7 +24,7 @@ async def _run_data_status_cli(
     service: str,
     start_date: str,
     end_date: str,
-    categories: list[str] | None = None,
+    asset_groups: list[str] | None = None,
     venues: list[str] | None = None,
     show_missing: bool = False,
     check_venues: bool = False,
@@ -44,7 +44,7 @@ async def _run_data_status_cli(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=categories,
+            asset_groups=asset_groups,
             venues=venues,
             show_missing=show_missing,
             check_venues=check_venues,

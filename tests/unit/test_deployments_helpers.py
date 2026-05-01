@@ -207,7 +207,7 @@ class TestExtractShardSignature:
         assert "instruments-service" in sig
 
     def test_signature_with_category(self):
-        args = ["--start-date", "2024-01-01", "--category", "CEFI"]
+        args = ["--start-date", "2024-01-01", "--asset-group", "CEFI"]
         sig = _extract_shard_signature("instruments-service", args)
         assert sig is not None
         assert "cat:CEFI" in sig

@@ -36,6 +36,27 @@ def _shard_dims(shard: object) -> dict[str, object]:
     return cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
 
 
+def _asset_group_from_shard_dims(dims_dict: dict[str, object]) -> str:
+    """Shard dimension for market group: ``asset_group`` or legacy ``category``."""
+    ag = dims_dict.get("asset_group")
+    if isinstance(ag, str) and ag:
+        return ag
+    c = dims_dict.get("category")
+    return c if isinstance(c, str) else ""
+
+
+def _turbo_asset_groups_block(turbo_result: dict[str, object]) -> dict[str, object]:
+    """Per-asset-group map from a turbo / manifest data-status payload.
+
+    Prefers ``asset_groups``; falls back to legacy ``categories`` (e.g. old cache).
+    """
+    ag = turbo_result.get("asset_groups")
+    if isinstance(ag, dict) and ag:
+        return cast(dict[str, object], ag)
+    leg = turbo_result.get("categories")
+    return cast(dict[str, object], leg) if isinstance(leg, dict) else {}
+
+
 logger = logging.getLogger(__name__)
 
 # Infrastructure failure categories
@@ -255,9 +276,8 @@ def build_blob_timestamp_map(
     """
     result: dict[str, dict[str, dict[str, object]]] = {}
 
-    categories_raw: object = turbo_result.get("categories") or {}
-    categories = cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
-    for cat_name, cat_data in categories.items():
+    ag_block = _turbo_asset_groups_block(turbo_result)
+    for cat_name, cat_data in ag_block.items():
         if not isinstance(cat_data, dict):
             continue
         cat_data_typed = cast(dict[str, object], cat_data)
@@ -344,7 +364,7 @@ def resolve_shard_blob_data(
             continue
         dims_raw: object = getattr(shard, "dimensions", None) or {}
         dims_dict = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
-        cat = cast(str, dims_dict.get("category") or "")
+        cat = _asset_group_from_shard_dims(dims_dict)
         venue_val = cast(str, dims_dict.get("venue") or "")
         start_date, _ = _extract_date_range(dims_dict.get("date"))
         if not cat or not start_date:
@@ -419,9 +439,8 @@ def build_existing_dates_sets(
     existing_cat_dates: dict[str, set[str]] = {}
     existing_venue_dates: dict[str, dict[str, set[str]]] = {}
 
-    categories_raw: object = turbo_result.get("categories") or {}
-    categories = cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
-    for cat_name, cat_data_raw in categories.items():
+    ag_block = _turbo_asset_groups_block(turbo_result)
+    for cat_name, cat_data_raw in ag_block.items():
         if not isinstance(cat_data_raw, dict):
             continue
         cat_data = cast(dict[str, object], cat_data_raw)
@@ -568,19 +587,22 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
     return unique_zones
 
 
-def categories_from_state(state: object) -> list[str] | None:
-    """Extract unique categories from deployment state shards."""
+def asset_groups_from_state(state: object) -> list[str] | None:
+    """Extract unique asset-group shard dimensions from deployment state.
+
+    Reads ``asset_group`` when present, else ``category`` (legacy persisted state).
+    """
     if not state or not _get_shards(state):
         return None
 
-    categories: set[str] = set()
+    ags: set[str] = set()
     for shard in _get_shards(state):
         dims = _shard_dims(shard)
-        cat_raw: object = dims.get("category")
-        if cat_raw and isinstance(cat_raw, str):
-            categories.add(cat_raw)
+        ag_raw: object = dims.get("asset_group") or dims.get("category")
+        if ag_raw and isinstance(ag_raw, str):
+            ags.add(ag_raw)
 
-    return sorted(categories) if categories else None
+    return sorted(ags) if ags else None
 
 
 def get_state_date_range(state: object) -> tuple[str | None, str | None]:

@@ -28,7 +28,7 @@ class _DeployRequestProtocol(Protocol):
     log_level: str
     region: str | None
     vm_zone: str | None
-    category: str | None
+    asset_group: object | None
     date_granularity: str | None
 
 
@@ -47,9 +47,9 @@ async def _compute_and_cache_verification(
     from .deployment_caching import set_verification_cache
     from .log_analysis import analyze_deployment_logs
     from .shard_management import (
+        asset_groups_from_state,
         build_blob_timestamp_map,
         build_existing_dates_sets,
-        categories_from_state,
         classify_all_shards,
         compute_classification_counts,
         compute_completed_breakdown,
@@ -81,7 +81,7 @@ async def _compute_and_cache_verification(
             ),
             start_date=start_date,
             end_date=end_date,
-            category=categories_from_state(cast(object, state)),
+            asset_groups=asset_groups_from_state(cast(object, state)),
             venue=None,
             folder=None,
             data_type=None,
@@ -179,9 +179,9 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         for category_data in service_dates.values():
             if isinstance(category_data, dict):
                 cat_data = cast(dict[str, object], category_data)
-                category_start = cast(str | None, cat_data.get("category_start"))
-                if category_start and (earliest is None or category_start < earliest):
-                    earliest = category_start
+                asset_group_start = cast(str | None, cat_data.get("asset_group_start"))
+                if asset_group_start and (earliest is None or asset_group_start < earliest):
+                    earliest = asset_group_start
 
         return earliest or _yesterday()
 
@@ -319,11 +319,13 @@ def validate_shard_configuration(
 
     # Validate required dimensions are available
     required_dims: set[str] = set()
-    if "category" in sharding_dims and not deploy_request.category:
-        # Check if service has default categories
+    if (
+        "asset_group" in sharding_dims or "category" in sharding_dims
+    ) and not deploy_request.asset_group:
+        # Check if service has default categories (SSOT key name unchanged in YAML)
         default_categories = service_config.get("default_categories")
         if not default_categories:
-            required_dims.add("category")
+            required_dims.add("asset_group")
 
     if required_dims:
         errors.append(f"Missing required dimensions: {', '.join(required_dims)}")

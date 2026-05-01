@@ -338,7 +338,7 @@ class TestBuildBlobTimestampMap:
     def test_extracts_venue_date_timestamps(self):
         now = datetime.now(UTC)
         turbo = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2026-01-01": now}}}
             }
         }
@@ -348,17 +348,17 @@ class TestBuildBlobTimestampMap:
         assert result["CEFI"]["BINANCE"]["2026-01-01"] == now
 
     def test_skips_non_dict_categories(self):
-        turbo = {"categories": {"CEFI": "not_a_dict"}}
+        turbo = {"asset_groups": {"CEFI": "not_a_dict"}}
         result = _build_blob_timestamp_map(turbo)
         assert result == {}
 
     def test_skips_categories_without_timestamp_key(self):
-        turbo = {"categories": {"CEFI": {"found_dates": {"2026-01-01"}}}}
+        turbo = {"asset_groups": {"CEFI": {"found_dates": {"2026-01-01"}}}}
         result = _build_blob_timestamp_map(turbo)
         assert result == {}
 
     def test_none_categories(self):
-        turbo = {"categories": None}
+        turbo = {"asset_groups": None}
         result = _build_blob_timestamp_map(turbo)
         assert result == {}
 
@@ -375,20 +375,20 @@ class TestBuildExistingDatesSets:
         assert venue_dates == {}
 
     def test_dates_found_list_path(self):
-        turbo = {"categories": {"CEFI": {"dates_found_list": ["2026-01-01", "2026-01-02"]}}}
+        turbo = {"asset_groups": {"CEFI": {"dates_found_list": ["2026-01-01", "2026-01-02"]}}}
         cat_dates, _venue_dates = _build_existing_dates_sets(turbo)
         assert "CEFI" in cat_dates
         assert "2026-01-01" in cat_dates["CEFI"]
 
     def test_dates_set_fast_path(self):
         date_set = {"2026-01-01", "2026-01-15"}
-        turbo = {"categories": {"CEFI": {"_dates_set": date_set}}}
+        turbo = {"asset_groups": {"CEFI": {"_dates_set": date_set}}}
         cat_dates, _venue_dates = _build_existing_dates_sets(turbo)
         assert cat_dates["CEFI"] == date_set
 
     def test_venue_map_path(self):
         turbo = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "venues": {
                         "BINANCE": {"dates_found_list": ["2026-01-01"]},
@@ -403,13 +403,13 @@ class TestBuildExistingDatesSets:
         assert "BINANCE" in venue_dates["CEFI"]
 
     def test_error_category_skipped(self):
-        turbo = {"categories": {"CEFI": {"error": "bucket missing"}}}
+        turbo = {"asset_groups": {"CEFI": {"error": "bucket missing"}}}
         cat_dates, _venue_dates = _build_existing_dates_sets(turbo)
         assert "CEFI" not in cat_dates
 
     def test_non_dict_venue_data_skipped(self):
         turbo = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "venues": {
                         "BINANCE": "not_a_dict",

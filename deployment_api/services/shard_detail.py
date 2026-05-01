@@ -2,7 +2,7 @@
 
 Derives every piece of a Data-Status shard-detail response (schema,
 GCS metadata, sample rows, branch-specific payload, download URLs) from a
-single ``(service, category, instrument_type, data_type, venue, day, …)``
+single ``(service, asset_group, instrument_type, data_type, venue, day, …)``
 coordinate.  The four ``shard_class`` branches (``grouped`` / ``per_symbol``
 / ``reference`` / ``fixtures``) are classified by
 :func:`_classify_shard` so the UI does not need to encode this routing
@@ -38,7 +38,7 @@ from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
 # UI sentinels passed when the click site doesn't have an instrument_type
 # axis in scope (DeFi protocol drilldown — only data_type and composite
 # venue are known). The resolver scans CONTRACT_REGISTRY for any
-# (category, *, data_type) tuple and returns the first deterministic match.
+# (asset_group, *, data_type) tuple and returns the first deterministic match.
 _AUTO_SENTINELS: frozenset[str] = frozenset({"AUTO", "UNKNOWN", "AUTO_DETECT_FAIL", ""})
 from unified_trading_library import read_availability_index
 
@@ -292,7 +292,7 @@ def _resolve_schema(
     dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
     try:
         contract: SchemaContract = lookup_contract(
-            category=cat_norm,
+            asset_group=cat_norm,
             instrument_type=it_norm,
             data_type=dt_norm,
             venue=venue,
@@ -726,7 +726,7 @@ def _csv_projection_url(
         return None
     params: dict[str, str] = {
         "service": service,
-        "category": category,
+        "asset_group": category,
         "venue": venue,
         "day": day,
         "instrument_type": instrument_type,
@@ -745,7 +745,7 @@ def _csv_projection_url(
 def get_shard_detail(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     instrument_type: str,
     data_type: str,
     day: str,
@@ -767,7 +767,7 @@ def get_shard_detail(
     # so a single coordinate is consistent across all branches of the
     # response.
     schema, resolved_instrument_type = _resolve_schema(
-        category=category,
+        category=asset_group,
         instrument_type=instrument_type,
         data_type=data_type,
         venue=venue,
@@ -775,7 +775,7 @@ def get_shard_detail(
 
     shard_class = _classify_shard(
         service=service,
-        category=category,
+        category=asset_group,
         instrument_type=resolved_instrument_type,
         data_type=data_type,
     )
@@ -787,7 +787,7 @@ def get_shard_detail(
     if shard_class != "fixtures":
         resolved = _gcs_path_for_shard(
             service=service,
-            category=category,
+            category=asset_group,
             instrument_type=resolved_instrument_type,
             data_type=data_type,
             venue=venue,
@@ -830,7 +830,7 @@ def get_shard_detail(
         parquet_signed_url=_parquet_signed_url(bucket, object_path),
         csv_projected=_csv_projection_url(
             service=service,
-            category=category,
+            category=asset_group,
             venue=venue,
             day=day,
             instrument_type=instrument_type,
@@ -867,7 +867,7 @@ def get_shard_detail(
 
     coord = ShardCoord(
         service=service,
-        category=category,
+        asset_group=asset_group,
         instrument_type=instrument_type,
         data_type=data_type,
         day=day,
@@ -984,9 +984,7 @@ def _read_instruments_day_df(
             last_err = exc
 
         # Nested-partition fallback (SPORTS sub-provider layout).
-        nested_prefix = (
-            f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
-        )
+        nested_prefix = f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
         try:
             nested_objs = list_objects(bucket, nested_prefix, max_results=200)
             parquet_paths = [
@@ -1031,7 +1029,7 @@ def _list_day_prefixes(bucket: str) -> list[str]:
     listing — the bucket name and project are still derived from
     ``UnifiedCloudConfig`` via ``_pid``.
     """
-    from google.cloud import storage as _gcs  # noqa: PLC0415  — lazy import: GCS SDK is heavy
+    from google.cloud import storage as _gcs
 
     try:
         gcs_client = _gcs.Client(project=_pid)
@@ -1093,16 +1091,12 @@ def _pick_latest_day(bucket: str, venue: str, category: str = "") -> str | None:
 
     def _probe(day: str) -> bool:
         for alias in aliases:
-            test_prefix = (
-                f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
-            )
+            test_prefix = f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
             try:
                 if list_objects(bucket, test_prefix, max_results=1):
                     return True
             except (OSError, RuntimeError) as exc:
-                logger.debug(
-                    "list_objects probe failed for %s/%s: %s", bucket, test_prefix, exc
-                )
+                logger.debug("list_objects probe failed for %s/%s: %s", bucket, test_prefix, exc)
                 continue
         return False
 
@@ -1146,7 +1140,7 @@ def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
                 if typed is not None:
                     instruments.append(typed)
     return VenueDetailResponse(
-        category=category.upper(),
+        asset_group=category.upper(),
         venue=venue,
         day=day,
         total_instruments=len(instruments),
@@ -1248,7 +1242,7 @@ def _defi_composite_detail(
             continue
         (pools if _is_pool_row(typed) else tokens).append(typed)
     return VenueDetailResponse(
-        category="DEFI",
+        asset_group="DEFI",
         venue=venue,
         chain=chain,
         protocol=protocol,
@@ -1286,7 +1280,7 @@ def _defi_chain_only_detail(
         for name_, stats in sorted(protocols_agg.items())
     ]
     return VenueDetailResponse(
-        category="DEFI",
+        asset_group="DEFI",
         venue=venue,
         chain=chain,
         protocol=None,
@@ -1317,13 +1311,13 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     """
     protocol, chain = _defi_composite_parts(venue)
     if chain is None:
-        return VenueDetailResponse(category="DEFI", venue=venue)
+        return VenueDetailResponse(asset_group="DEFI", venue=venue)
 
     bucket = _instruments_bucket_for_category("defi")
     day = _pick_latest_day(bucket, venue, category="DEFI")
     if day is None:
         return VenueDetailResponse(
-            category="DEFI",
+            asset_group="DEFI",
             venue=venue,
             chain=chain,
             protocol=protocol,
@@ -1333,7 +1327,7 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     df = _load_defi_df(bucket, venue=venue, chain=chain, protocol=protocol, day=day)
     if df is None or df.empty:
         return VenueDetailResponse(
-            category="DEFI",
+            asset_group="DEFI",
             venue=venue,
             chain=chain,
             protocol=protocol,
@@ -1345,17 +1339,17 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     return _defi_chain_only_detail(df, venue=venue, chain=chain, day=day)
 
 
-def fetch_venue_detail(*, service: str, category: str, venue: str) -> VenueDetailResponse:
+def fetch_venue_detail(*, service: str, asset_group: str, venue: str) -> VenueDetailResponse:
     """Return venue-scoped detail for the Data Status drilldown.
 
-    ``category == "DEFI"`` branches on whether ``venue`` is a bare chain
+    ``asset_group == "DEFI"`` branches on whether ``venue`` is a bare chain
     (``ETHEREUM``) or a composite protocol-chain (``AAVE_V3-ETHEREUM``);
-    all other categories use the CeFi branch (latest-day instruments
+    all other asset groups use the CeFi branch (latest-day instruments
     listing for the venue).
     """
     _ = service  # Reserved for future per-service routing; keeps the signature
     # stable for the UI caller today.
-    cat_upper = (category or "").upper()
+    cat_upper = (asset_group or "").upper()
     if cat_upper == "DEFI":
         return _defi_venue_detail(venue)
     return _cefi_venue_detail(cat_upper.lower() if cat_upper else "cefi", venue)

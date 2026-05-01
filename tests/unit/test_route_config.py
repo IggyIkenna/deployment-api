@@ -2,7 +2,7 @@
 Unit tests for routes/config.py module.
 
 Tests get_config_loader, get_region_config, validate_region, get_venues,
-get_venues_by_category, get_expected_start_dates, get_service_start_dates,
+get_venues_by_asset_group, get_expected_start_dates, get_service_start_dates,
 get_dependencies, and get_service_dependencies route handlers.
 """
 
@@ -147,7 +147,7 @@ class TestGetVenues:
         mock_request = _make_request()
         with patch.object(_cfg_routes, "get_config_loader", return_value=mock_loader):
             result = asyncio.run(_cfg_routes.get_venues(mock_request))
-        assert result == {"categories": {}}
+        assert result == {"asset_groups": {}}
 
     def test_raises_500_on_oserror(self):
         mock_loader = MagicMock()
@@ -162,12 +162,12 @@ class TestGetVenues:
 
 
 # ---------------------------------------------------------------------------
-# TestGetVenuesByCategory
+# TestGetVenuesByAssetGroup
 # ---------------------------------------------------------------------------
 
 
-class TestGetVenuesByCategory:
-    """Tests for get_venues_by_category endpoint."""
+class TestGetVenuesByAssetGroup:
+    """Tests for get_venues_by_asset_group endpoint."""
 
     def test_returns_category_data(self):
         mock_loader = MagicMock()
@@ -178,8 +178,8 @@ class TestGetVenuesByCategory:
         }
         mock_request = _make_request()
         with patch.object(_cfg_routes, "get_config_loader", return_value=mock_loader):
-            result = asyncio.run(_cfg_routes.get_venues_by_category("cefi", mock_request))
-        assert result["category"] == "CEFI"
+            result = asyncio.run(_cfg_routes.get_venues_by_asset_group("cefi", mock_request))
+        assert result["asset_group"] == "CEFI"
         assert "BINANCE" in result["venues"]
 
     def test_raises_404_for_unknown_category(self):
@@ -190,7 +190,7 @@ class TestGetVenuesByCategory:
             patch.object(_cfg_routes, "get_config_loader", return_value=mock_loader),
             pytest.raises(HTTPException) as exc,
         ):
-            asyncio.run(_cfg_routes.get_venues_by_category("unknown", mock_request))
+            asyncio.run(_cfg_routes.get_venues_by_asset_group("unknown", mock_request))
         assert exc.value.status_code == 404
 
     def test_raises_500_on_oserror(self):
@@ -201,7 +201,7 @@ class TestGetVenuesByCategory:
             patch.object(_cfg_routes, "get_config_loader", return_value=mock_loader),
             pytest.raises(HTTPException) as exc,
         ):
-            asyncio.run(_cfg_routes.get_venues_by_category("CEFI", mock_request))
+            asyncio.run(_cfg_routes.get_venues_by_asset_group("CEFI", mock_request))
         assert exc.value.status_code == 500
 
 

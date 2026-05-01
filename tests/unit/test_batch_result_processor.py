@@ -9,7 +9,7 @@ from deployment_api.routes.batch_result_processor import (
     build_final_response,
     calculate_overall_file_counts,
     calculate_venue_weighted_totals,
-    update_category_completion_percentages,
+    update_asset_group_completion_percentages,
 )
 
 
@@ -148,7 +148,7 @@ class TestCalculateVenueWeightedTotals:
 
 
 class TestUpdateCategoryCompletionPercentages:
-    """Tests for update_category_completion_percentages."""
+    """Tests for update_asset_group_completion_percentages."""
 
     def test_updates_completion_pct(self):
         results = {
@@ -163,19 +163,19 @@ class TestUpdateCategoryCompletionPercentages:
                 "venue_summary": {"expected_but_missing": []},
             }
         }
-        update_category_completion_percentages(results, set(), {}, "instruments-service")
+        update_asset_group_completion_percentages(results, set(), {}, "instruments-service")
         assert results["CEFI"]["completion_pct"] == 75.0
         assert results["CEFI"]["venue_weighted"] is True
 
     def test_skips_error_categories(self):
         results = {"CEFI": {"error": "Failed"}}
         # Should not raise
-        update_category_completion_percentages(results, set(), {}, "svc")
+        update_asset_group_completion_percentages(results, set(), {}, "svc")
         assert "completion_pct" not in results["CEFI"]
 
     def test_skips_when_no_venues(self):
         results = {"CEFI": {"venues": {}, "completion_pct": 50.0}}
-        update_category_completion_percentages(results, set(), {}, "svc")
+        update_asset_group_completion_percentages(results, set(), {}, "svc")
         # No venues means no update
         assert results["CEFI"]["completion_pct"] == 50.0
 
@@ -192,7 +192,7 @@ class TestUpdateCategoryCompletionPercentages:
                 "venue_summary": {"expected_but_missing": []},
             }
         }
-        update_category_completion_percentages(results, set(), {}, "svc")
+        update_asset_group_completion_percentages(results, set(), {}, "svc")
         assert results["CEFI"]["completion_pct"] == 100.0
 
     def test_skips_bonus_venues_in_completion(self):
@@ -213,7 +213,7 @@ class TestUpdateCategoryCompletionPercentages:
                 "venue_summary": {"expected_but_missing": []},
             }
         }
-        update_category_completion_percentages(results, set(), {}, "svc")
+        update_asset_group_completion_percentages(results, set(), {}, "svc")
         # Should be 100% based only on expected venue
         assert results["CEFI"]["completion_pct"] == 100.0
 
@@ -233,8 +233,8 @@ class TestBuildFinalResponse:
             "all_dates": {f"2024-01-{d:02d}" for d in range(1, 32)},
             "total_venue_expected": 31,
             "total_venue_found": 28,
-            "total_expected_category": 31,
-            "total_found_category": 28,
+            "total_expected_asset_group": 31,
+            "total_found_asset_group": 28,
             "expected_missing": 3,
             "unexpected_missing": 0,
             "results": {"CEFI": {"completion_pct": 90.3}},
@@ -248,18 +248,18 @@ class TestBuildFinalResponse:
         assert resp["service"] == "instruments-service"
         assert "date_range" in resp
         assert "overall_completion_pct" in resp
-        assert "categories" in resp
+        assert "asset_groups" in resp
 
     def test_completion_pct_venue_weighted(self):
         resp = self._base_call(total_venue_expected=100, total_venue_found=90)
         assert resp["overall_completion_pct"] == 90.0
 
-    def test_completion_pct_falls_back_to_category(self):
+    def test_completion_pct_falls_back_to_asset_group(self):
         resp = self._base_call(
             total_venue_expected=0,
             total_venue_found=0,
-            total_expected_category=100,
-            total_found_category=80,
+            total_expected_asset_group=100,
+            total_found_asset_group=80,
         )
         assert resp["overall_completion_pct"] == 80.0
 
@@ -267,8 +267,8 @@ class TestBuildFinalResponse:
         resp = self._base_call(
             total_venue_expected=0,
             total_venue_found=0,
-            total_expected_category=0,
-            total_found_category=0,
+            total_expected_asset_group=0,
+            total_found_asset_group=0,
         )
         assert resp["overall_completion_pct"] == 0.0
 

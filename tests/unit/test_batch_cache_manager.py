@@ -19,7 +19,7 @@ class TestCheckCacheForResult:
             "service": "instruments-service",
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
-            "category": None,
+            "asset_group": None,
             "venue": None,
             "folder": None,
             "data_type": None,
@@ -59,7 +59,7 @@ class TestCheckCacheForResult:
         long_dates = [f"2024-01-{d:02d}" for d in range(1, 56)]
         data = {
             "service": "instruments-service",
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "dates_found_list": long_dates,
                     "dates_missing_list": [],
@@ -93,7 +93,7 @@ class TestStoreResultInCache:
             "service": "instruments-service",
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
-            "category": None,
+            "asset_group": None,
             "venue": None,
             "folder": None,
             "data_type": None,
@@ -136,7 +136,7 @@ class TestStoreResultInCache:
         long_dates = [f"2024-01-{d:02d}" for d in range(1, 56)]
         response = {
             "service": "instruments-service",
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "dates_found_list": long_dates,
                     "dates_missing_list": [],
@@ -147,4 +147,4 @@ class TestStoreResultInCache:
         result = store_result_in_cache(response, **self._base_kwargs(full_dates_list=False))
         # Should return the response (potentially truncated)
         assert result is not None
-        assert "categories" in result
+        assert "asset_groups" in result

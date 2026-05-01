@@ -216,7 +216,7 @@ async def get_data_status(
     service: str,
     start_date: str,
     end_date: str,
-    categories: list[str] | None = None,
+    asset_groups: list[str] | None = None,
     venues: list[str] | None = None,
     show_missing: bool = False,
     check_venues: bool = False,
@@ -237,7 +237,7 @@ async def get_data_status(
         service: Service name to check
         start_date: ISO-format start date
         end_date: ISO-format end date
-        categories: Optional list of categories to filter
+        asset_groups: Optional list of asset groups to filter
         venues: Optional list of venues to filter
         show_missing: Include missing data in results
         check_venues: Check venue coverage
@@ -263,8 +263,8 @@ async def get_data_status(
         "check_feature_groups": check_feature_groups,
         "check_timeframes": check_timeframes,
     }
-    if categories:
-        params["categories"] = categories
+    if asset_groups:
+        params["asset_groups"] = asset_groups
     if venues:
         params["venues"] = venues
 

@@ -335,7 +335,8 @@ class GCSCache:
                     content_type="application/json",
                 )
                 logger.debug("Saved cache to GCS")
-        except (OSError, ValueError, RuntimeError) as e:
+        except Exception as e:
+            # Facade and upload_bytes can raise provider-specific errors (e.g. google.api_core.Forbidden)
             logger.warning("Failed to save cache to GCS: %s", e)
 
     async def get(self, key: str) -> object | None:
@@ -606,9 +607,9 @@ def deployment_list_key(service: str | None = None, limit: int = 20) -> str:
     return f"deployments:{service or 'all'}:limit-{limit}"
 
 
-def data_status_key(service: str, start_date: str, end_date: str, categories: str = "") -> str:
+def data_status_key(service: str, start_date: str, end_date: str, asset_groups: str = "") -> str:
     """Cache key for data status."""
-    return f"data-status:{service}:{start_date}:{end_date}:{categories}"
+    return f"data-status:{service}:{start_date}:{end_date}:{asset_groups}"
 
 
 def service_status_key(service: str) -> str:

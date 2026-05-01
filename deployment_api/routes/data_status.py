@@ -53,7 +53,7 @@ async def get_data_status(
     service: str = Query(..., description="Service name"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
     venue: list[str] | None = Query(None, description="Filter by venue"),
     show_missing: bool = Query(False, description="Include list of missing dates"),
     check_venues: bool = Query(False, description="Check venue coverage inside parquet files"),
@@ -66,7 +66,7 @@ async def get_data_status(
     """
     Get data completion status for a service across a date range.
 
-    Returns completion percentages broken down by category and venue,
+    Returns completion percentages broken down by asset group and venue,
     with optional list of missing dates.
     """
     if _cfg.is_mock_mode():
@@ -84,7 +84,7 @@ async def get_data_status(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=category,
+            asset_groups=asset_group,
             venues=venue,
             show_missing=show_missing,
             check_venues=check_venues,
@@ -114,7 +114,7 @@ async def calculate_missing_shards(
     service: str = Query(..., description="Service name"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
     venue: list[str] | None = Query(None, description="Filter by venue"),
     mode: str = Query("batch", description="Data path mode: 'batch' or 'live'"),
 ):
@@ -124,7 +124,7 @@ async def calculate_missing_shards(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=category,
+            asset_groups=asset_group,
             venues=venue,
             mode=mode,
         )
@@ -146,13 +146,13 @@ async def calculate_missing_shards(
 @router.get("/last-updated")
 async def get_last_updated(
     service: str = Query(..., description="Service name"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
 ):
     """Get last updated information for a service."""
     try:
         result = await data_status_service.get_last_updated_info(
             service=service,
-            categories=category,
+            asset_groups=asset_group,
         )
 
         if "error" in result:
@@ -174,7 +174,7 @@ async def get_data_status_manifest(
     service: str = Query(..., description="Service name"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
 ):
     """Get data status from manifest availability indices (fastest path)."""
     if _cfg.is_mock_mode():
@@ -187,14 +187,14 @@ async def get_data_status_manifest(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=category,
+            asset_groups=asset_group,
         )
     try:
         result = await data_status_service.get_manifest_status(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=category,
+            asset_groups=asset_group,
         )
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
@@ -211,23 +211,25 @@ async def get_data_status_manifest(
 @router.get("/coverage-summary")
 async def get_coverage_summary(
     service: str = Query("instruments-service", description="Service name"),
-    categories: str | None = Query(None, description="Comma-separated categories"),
+    asset_groups: str | None = Query(
+        None, description="Comma-separated asset groups (e.g. CEFI,DEFI)"
+    ),
 ):
     """Get coverage summary with shard counts and latest-day instrument totals."""
     if _cfg.is_mock_mode():
         return {
             "service": service,
-            "categories": {},
+            "asset_groups": {},
             "totals": {
                 "shards": 0,
                 "instrument_rows": 0,
-                "dates_across_categories": 0,
+                "dates_across_asset_groups": 0,
                 "latest_day_instruments": 0,
             },
             "mock": True,
         }
     try:
-        cat_list = categories.split(",") if categories else None
+        cat_list = asset_groups.split(",") if asset_groups else None
         result = await data_status_service.get_coverage_summary(
             service=service,
             categories=cat_list,
@@ -246,7 +248,7 @@ async def get_data_status_turbo(
     service: str = Query(..., description="Service name"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
     venue: list[str] | None = Query(None, description="Filter by venue"),
     include_sub_dimensions: bool = Query(False, description="Include sub-dimension breakdown"),
     include_instrument_types: bool = Query(False, description="Include instrument type breakdown"),
@@ -266,7 +268,7 @@ async def get_data_status_turbo(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=category,
+            asset_groups=asset_group,
         )
     try:
         # Use manifest reader directly (faster, no CLI subprocess,
@@ -275,14 +277,14 @@ async def get_data_status_turbo(
             service: str,
             start_date: str,
             end_date: str,
-            categories: list[str] | None = None,
+            asset_groups: list[str] | None = None,
             **_kw: object,
         ) -> dict[str, object]:
             return await data_status_service.get_manifest_status(
                 service=service,
                 start_date=start_date,
                 end_date=end_date,
-                categories=categories,
+                asset_groups=asset_groups,
             )
 
         result = await data_analytics_service.get_data_status_turbo(
@@ -290,7 +292,7 @@ async def get_data_status_turbo(
             start_date=start_date,
             end_date=end_date,
             from_data_status_service=_manifest_source,
-            categories=category,
+            asset_groups=asset_group,
             venues=venue,
         )
 
@@ -387,15 +389,15 @@ async def list_files_in_path(
 
 @router.get("/instruments")
 async def get_instruments_list(
-    category: str = Query(..., description="Category (cefi, tradfi, defi)"),
+    asset_group: str = Query(..., description="Asset group (cefi, tradfi, defi)"),
     venue: str | None = Query(None, description="Filter by venue"),
     instrument_type: str | None = Query(None, description="Filter by instrument type"),
     limit: int = Query(100, description="Maximum number of instruments"),
 ):
-    """Get list of instruments for a category."""
+    """Get list of instruments for an asset group."""
     try:
         result = await data_query_service.get_instruments_list(
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             instrument_type=instrument_type,
             limit=limit,
@@ -420,28 +422,28 @@ async def search_instruments(
     query: str = Query(
         ..., description="Case-insensitive substring; whitespace = AND-match across tokens"
     ),
-    category: str | None = Query(
+    asset_group: str | None = Query(
         None,
         description=(
-            "Single category (cefi/tradfi/defi/sports/prediction). Omit to search all five."
+            "Single asset group (cefi/tradfi/defi/sports/prediction). Omit to search all five."
         ),
     ),
     limit: int = Query(50, description="Max matches returned (truncation flag in response)"),
 ):
     """Canonical-symbol search across one or all categories.
 
-    Returns ``{matches: [{canonical_id, category, venue, instrument_type}, ...]}``
+    Returns ``{matches: [{canonical_id, asset_group, venue, instrument_type}, ...]}``
     sorted by canonical_id for deterministic UI rendering. Empty query returns
     an empty match list (we don't dump the entire registry by default).
 
-    Powers the cross-category instruments search field in the deployment-ui
+    Powers the cross-asset-group instruments search field in the deployment-ui
     Data Status panel — institutional-grade equivalent of the SPORTS-only
     league_id search that already exists.
     """
     try:
         return await data_query_service.search_instruments(
             query=query,
-            category=category,
+            asset_group=asset_group,
             limit=limit,
         )
     except (OSError, ValueError, RuntimeError) as e:
@@ -494,7 +496,7 @@ async def analyze_data_patterns(
     service: str = Query(..., description="Service name"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
 ):
     """Analyze data patterns and trends for a service."""
     try:
@@ -503,7 +505,7 @@ async def analyze_data_patterns(
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=category,
+            asset_groups=asset_group,
             show_missing=True,
         )
 
@@ -535,7 +537,7 @@ async def get_multi_service_status(
     services: list[str] = Query(..., description="List of service names"),
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
+    asset_group: list[str] | None = Query(None, description="Filter by asset group"),
 ):
     """Get aggregated data status across multiple services."""
     try:
@@ -544,7 +546,7 @@ async def get_multi_service_status(
             start_date=start_date,
             end_date=end_date,
             from_data_status_service=data_status_service.run_data_status_cli,
-            categories=category,
+            asset_groups=asset_group,
         )
 
         return result
@@ -567,12 +569,12 @@ async def get_multi_service_status(
 @router.get("/schema")
 async def get_schema(
     service: str = Query(..., description="Service name (unused, kept for symmetry)"),
-    category: str = Query(..., description="Category (cefi/tradfi/defi/sports/prediction)"),
+    asset_group: str = Query(..., description="Asset group (cefi/tradfi/defi/sports/prediction)"),
     instrument_type: str = Query(..., description="Instrument type"),
     data_type: str = Query(..., description="Data type"),
     venue: str | None = Query(None, description="Venue for venue-specific overrides"),
 ):
-    """Return the SchemaContract columns for a (category, instrument_type, data_type)
+    """Return the SchemaContract columns for an (asset_group, instrument_type, data_type)
     tuple, honouring venue-specific overrides (UNISWAP_V2/V3/V4 etc.).
 
     Falls back gracefully when no contract is registered — returns
@@ -580,7 +582,7 @@ async def get_schema(
     """
     try:
         return get_schema_for_shard(
-            category=category,
+            asset_group=asset_group,
             instrument_type=instrument_type,
             data_type=data_type,
             venue=venue,
@@ -595,7 +597,7 @@ async def get_schema(
 @router.get("/instruments-for-shard")
 async def get_instruments_for_shard(
     service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category"),
+    asset_group: str = Query(..., description="Asset group"),
     venue: str = Query(..., description="Venue"),
     day: str = Query(..., description="Day (YYYY-MM-DD)"),
     instrument_type: str = Query(..., description="Instrument type"),
@@ -639,7 +641,7 @@ async def get_instruments_for_shard(
         _ = (limit, offset, search)
         return build_mock_shard_instruments(
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             day=day,
             instrument_type=instrument_type,
@@ -648,7 +650,7 @@ async def get_instruments_for_shard(
     try:
         return list_instruments_for_shard(
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             day=day,
             instrument_type=instrument_type,
@@ -667,7 +669,7 @@ async def get_instruments_for_shard(
 @router.get("/bundle-preview")
 async def get_bundle_preview(
     service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category"),
+    asset_group: str = Query(..., description="Asset group"),
     venue: str = Query(..., description="Venue"),
     day: str = Query(..., description="Day (YYYY-MM-DD)"),
     instrument_type: str = Query(..., description="Instrument type"),
@@ -684,7 +686,7 @@ async def get_bundle_preview(
     try:
         return preview_bundle_symbols(
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             day=day,
             instrument_type=instrument_type,
@@ -701,7 +703,7 @@ async def get_bundle_preview(
 @router.get("/bucket-counts")
 async def get_bucket_counts(
     service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category"),
+    asset_group: str = Query(..., description="Asset group"),
     venue: str = Query(..., description="Venue"),
     day: str | None = Query(
         None,
@@ -735,7 +737,7 @@ async def get_bucket_counts(
         resolved_data_type = data_type or _default_data_type_for_service(service)
         result = compute_bucket_counts(
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             day=resolved_day,
             data_type=resolved_data_type,
@@ -793,7 +795,7 @@ def _default_data_type_for_service(service: str) -> str:
 @router.get("/download-csv")
 async def download_csv(
     service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category"),
+    asset_group: str = Query(..., description="Asset group"),
     venue: str = Query(..., description="Venue"),
     day: str = Query(..., description="Day (YYYY-MM-DD)"),
     instrument_type: str = Query(..., description="Instrument type"),
@@ -810,7 +812,7 @@ async def download_csv(
     try:
         csv_text, row_count, filename = build_csv_export(
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             day=day,
             instrument_type=instrument_type,
@@ -872,11 +874,11 @@ async def download_fixtures_csv(
 @router.get("/download-shard-csv")
 async def download_shard_csv(
     service: str = Query(..., description="Service name (e.g. instruments-service)"),
-    category: str = Query(..., description="Category (CEFI, TRADFI, DEFI)"),
+    asset_group: str = Query(..., description="Asset group (CEFI, TRADFI, DEFI)"),
     venue: str = Query(..., description="Venue name (e.g. BINANCE-SPOT)"),
     date: str = Query(..., description="Day (YYYY-MM-DD)"),
 ):
-    """Stream a CSV for one (service, category, venue, date) shard or catalog.
+    """Stream a CSV for one (service, asset group, venue, date) shard or catalog.
 
     Routing:
     * instruments-service / corporate-actions — reads the per-(venue, day)
@@ -890,14 +892,14 @@ async def download_shard_csv(
         if svc in MTDS_SHARD_SERVICES:
             csv_text, row_count, filename = build_mtds_shard_csv_export(
                 service=service,
-                category=category,
+                asset_group=asset_group,
                 venue=venue,
                 date=date,
             )
         else:
             csv_text, row_count, filename = build_instruments_shard_csv_export(
                 service=service,
-                category=category,
+                asset_group=asset_group,
                 venue=venue,
                 date=date,
             )
@@ -920,7 +922,7 @@ async def download_shard_csv(
             status_code=404,
             detail=(
                 f"No shard parquet found for "
-                f"service={service}, category={category}, venue={venue}, date={date}. "
+                f"service={service}, asset_group={asset_group}, venue={venue}, date={date}. "
                 f"The adapter may not have run that day, or the manifest "
                 f"row points at a path that no longer exists. Check the "
                 f"availability manifest in the Data Status tab."
@@ -1030,7 +1032,7 @@ async def download_fixture_payload(
 @router.get("/shard-info")
 async def get_shard_info_endpoint(
     service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category"),
+    asset_group: str = Query(..., description="Asset group"),
     venue: str = Query(..., description="Venue"),
     day: str = Query(..., description="Day (YYYY-MM-DD)"),
     data_type: str = Query(..., description="Data type"),
@@ -1048,7 +1050,7 @@ async def get_shard_info_endpoint(
     try:
         return get_shard_info(
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
             day=day,
             data_type=data_type,

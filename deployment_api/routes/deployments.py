@@ -32,7 +32,13 @@ _cfg = DeploymentApiConfig()
 
 # Pydantic models for request/response
 class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
-    """Request body for creating a deployment."""
+    """Request body for creating a deployment.
+
+    The trading venue axis filter is ``asset_group`` (JSON).
+    :attr:`filters` emits the ``"asset_group"`` key for deployment-service ``extra_filters``
+    (aligned with sharding dimension ``name: asset_group``). GCS path templates may still
+    use a ``category=`` path segment literal; that is layout, not this field name.
+    """
 
     service: str = Field(..., description="Service name to deploy")
     compute: str = Field("cloud_run", description="Compute mode: cloud_run or vm")
@@ -62,15 +68,18 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     max_workers: int | None = Field(None, description="Max workers per job")
 
     # Filter parameters
-    category: str | None = Field(None, description="Category filter")
+    asset_group: str | list[str] | None = Field(
+        default=None,
+        description="Asset group filter (e.g. CEFI, DEFI)",
+    )
     venue: str | None = Field(None, description="Venue filter")
     feature_group: str | None = Field(None, description="Feature group filter")
     data_type: str | None = Field(None, description="Data type filter")
 
-    # Exclude dates: mapping of category -> list of date strings to skip
+    # Exclude dates: mapping of asset group -> list of date strings to skip
     # Used by "Deploy Missing" to exclude dates that already have complete data
     exclude_dates: dict[str, list[str]] | None = Field(
-        None, description="Dates to exclude per category"
+        None, description="Dates to exclude per asset group"
     )
 
     # Logging configuration
@@ -96,12 +105,12 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     )
 
     @property
-    def filters(self) -> dict[str, str]:
-        """Extract filter parameters."""
+    def filters(self) -> dict[str, object]:
+        """Extract filter parameters for shard extra_filters."""
         return {
             k: v
             for k, v in {
-                "category": self.category,
+                "asset_group": self.asset_group,
                 "venue": self.venue,
                 "feature_group": self.feature_group,
                 "data_type": self.data_type,
@@ -159,12 +168,12 @@ class BulkDeleteRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 
 class DeployMissingRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
-    """Request to detect and deploy missing data shards."""
+    """Request to detect and deploy missing data shards (JSON field ``asset_group``)."""
 
     service: str = Field(..., description="Service name")
     start_date: str = Field(..., description="Start date (YYYY-MM-DD)")
     end_date: str = Field(..., description="End date (YYYY-MM-DD)")
-    category: str | None = Field(None, description="Category filter")
+    asset_group: str | None = Field(None, description="Asset group filter (e.g. CEFI, DEFI)")
     venue: str | None = Field(None, description="Venue filter")
     region: str | None = Field(None, description="GCP region")
     force: bool = Field(False, description="Force redeploy even if data exists")
@@ -186,8 +195,17 @@ async def list_deployments(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     status: str | None = Query(None, description="Filter by status"),
     service: str | None = Query(None, description="Filter by service"),
+    asset_group: str | None = Query(
+        None, description="Filter by trading axis (CEFI, DEFI, SPORTS, …)"
+    ),
+    category: str | None = Query(
+        None,
+        description="Deprecated — use asset_group",
+        include_in_schema=False,
+    ),
 ) -> dict[str, object]:
     """List deployments with optional filtering and pagination."""
+    ag_filter = asset_group or category
     if _cfg.is_mock_mode():
         from deployment_api.mock_state import get_store
 
@@ -196,6 +214,17 @@ async def list_deployments(
             items = [d for d in items if d.get("status") == status]
         if service:
             items = [d for d in items if d.get("service") == service]
+        if ag_filter:
+            want = str(ag_filter).strip().upper()
+            from deployment_api.utils.trading_axis import trading_axis_from_deployment_state
+
+            def _matches(d: object) -> bool:
+                if not isinstance(d, dict):
+                    return False
+                got = trading_axis_from_deployment_state(cast(dict[str, object], d))
+                return bool(got and got == want)
+
+            items = [d for d in items if _matches(d)]
         page = items[offset : offset + limit]
         return {"deployments": page, "total": len(items), "limit": limit, "offset": offset}
     try:
@@ -204,6 +233,7 @@ async def list_deployments(
             offset=offset,
             status_filter=status,
             service_filter=service,
+            asset_group=ag_filter,
         )
         return result
     except ValueError as e:
@@ -385,7 +415,7 @@ async def _submit_missing_deployment(
         current += timedelta(days=1)
 
     complete_dates = [d for d in all_dates if d not in missing_by_date]
-    exclude_key = req.category or "all"
+    exclude_key = req.asset_group or "all"
     exclude_dates: dict[str, list[str]] = {exclude_key: complete_dates}
 
     deploy_request = DeployRequest(
@@ -398,7 +428,7 @@ async def _submit_missing_deployment(
         exclude_dates=exclude_dates,
         region=req.region,
         tag=req.tag,
-        category=req.category,
+        asset_group=req.asset_group,
         venue=req.venue,
         date_granularity=req.date_granularity,
         log_level=req.log_level,
@@ -462,12 +492,12 @@ async def deploy_missing_shards(
                     req.end_date: 1,
                 },
                 "missing_by_venue": {"binance": 2, "okx": 1},
-                "missing_by_category": {"cefi": 3},
+                "missing_by_asset_group": {"cefi": 3},
                 "summary": {
                     "total_days_checked": 7,
                     "days_with_missing": 2,
                     "venues_with_missing": 2,
-                    "categories_with_missing": 1,
+                    "asset_groups_with_missing": 1,
                     "completion_rate": 0.85,
                 },
             },
@@ -482,14 +512,14 @@ async def deploy_missing_shards(
         }
     try:
         # Step 1: Calculate missing shards
-        categories = [req.category] if req.category else None
+        asset_groups = [req.asset_group] if req.asset_group else None
         venues = [req.venue] if req.venue else None
 
         missing_analysis = await data_status_service.calculate_missing_shards(
             service=req.service,
             start_date=req.start_date,
             end_date=req.end_date,
-            categories=categories,
+            asset_groups=asset_groups,
             venues=venues,
             mode=req.mode,
         )

@@ -10,6 +10,10 @@ from pydantic import BaseModel, Field
 from deployment_api.routes.deployments_helpers import (
     deployment_config as _deployment_config,
 )
+from deployment_api.routes.shard_management import (
+    _asset_group_from_shard_dims,
+    _turbo_asset_groups_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -270,11 +274,8 @@ def _build_blob_timestamp_map(
     """
     result: dict[str, dict[str, dict[str, object]]] = {}
 
-    categories_raw = turbo_result.get("categories")
-    categories: dict[str, object] = (
-        cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
-    )
-    for cat_name, cat_data in categories.items():
+    ag_block = _turbo_asset_groups_block(turbo_result)
+    for cat_name, cat_data in ag_block.items():
         if not isinstance(cat_data, dict):
             continue
         cat_dict = cast(dict[str, object], cat_data)
@@ -353,7 +354,7 @@ def _resolve_shard_blob_data(
         sid: str = sid_raw
         dims_raw: object = getattr(shard, "dimensions", None) or {}
         dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
-        cat: str = str(dims.get("category")) if isinstance(dims.get("category"), str) else ""
+        cat: str = _asset_group_from_shard_dims(dims)
         venue_val: str = str(dims.get("venue")) if isinstance(dims.get("venue"), str) else ""
         start_date, _ = _extract_date_range(dims.get("date"))
         if not cat or not start_date:
@@ -429,11 +430,8 @@ def _build_existing_dates_sets(
     existing_cat_dates: dict[str, set[str]] = {}
     existing_venue_dates: dict[str, dict[str, set[str]]] = {}
 
-    categories_raw = turbo_result.get("categories")
-    categories: dict[str, object] = (
-        cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
-    )
-    for cat_name_raw, cat_data_raw in categories.items():
+    ag_block = _turbo_asset_groups_block(turbo_result)
+    for cat_name_raw, cat_data_raw in ag_block.items():
         cat_name = str(cat_name_raw)
         if not isinstance(cat_data_raw, dict):
             continue
@@ -566,17 +564,17 @@ def _compute_completed_breakdown(
     }
 
 
-def _categories_from_state(state: object) -> list[str] | None:
-    cats: set[str] = set()
+def _asset_groups_from_state(state: object) -> list[str] | None:
+    ags: set[str] = set()
     for s in cast(list[object], getattr(state, "shards", []) or []):
         if _status_str(getattr(s, "status", "")) != "succeeded":
             continue
         dims_raw: object = getattr(s, "dimensions", None) or {}
         dims = cast(dict[str, object], dims_raw) if isinstance(dims_raw, dict) else {}
-        cat_raw: object = dims.get("category")
-        if cat_raw and isinstance(cat_raw, str):
-            cats.add(cat_raw)
-    return sorted(cats) or None
+        ag_raw: object = dims.get("asset_group") or dims.get("category")
+        if ag_raw and isinstance(ag_raw, str):
+            ags.add(ag_raw)
+    return sorted(ags) or None
 
 
 # Default cloud settings from deployment config
@@ -622,7 +620,7 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     )
     start_date: str | None = Field(
         None,
-        description="Start date (YYYY-MM-DD). Optional - defaults to earliest category_start "
+        description="Start date (YYYY-MM-DD). Optional - defaults to earliest asset_group_start "
         "from expected_start_dates.yaml for the service.",
     )
     end_date: str | None = Field(
@@ -630,7 +628,10 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
         description="End date (YYYY-MM-DD). Optional for 'none' date granularity services - "
         "defaults to yesterday if not provided.",
     )
-    category: list[str] | None = Field(None, description="Categories to deploy")
+    asset_group: list[str] | None = Field(
+        default=None,
+        description="Asset groups to deploy (e.g. CEFI, DEFI)",
+    )
     venue: list[str] | None = Field(None, description="Venues to deploy")
     folder: list[str] | None = Field(
         None,

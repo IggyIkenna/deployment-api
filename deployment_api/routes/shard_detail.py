@@ -31,8 +31,9 @@ async def get_shard_detail_route(
     service: str = Query(
         ..., description="Service name (market-tick-data-service, instruments-service, …)"
     ),
-    category: str = Query(
-        ..., description="Category (CEFI / TRADFI / DEFI / SPORTS / PREDICTION / INSTRUMENTS)"
+    asset_group: str = Query(
+        ...,
+        description="Asset group (CEFI / TRADFI / DEFI / SPORTS / PREDICTION / INSTRUMENTS)",
     ),
     instrument_type: str = Query(..., description="Instrument type"),
     data_type: str = Query(..., description="Data type"),
@@ -53,7 +54,7 @@ async def get_shard_detail_route(
         return await run_in_threadpool(
             get_shard_detail,
             service=service,
-            category=category,
+            asset_group=asset_group,
             instrument_type=instrument_type,
             data_type=data_type,
             day=day.isoformat(),
@@ -64,7 +65,7 @@ async def get_shard_detail_route(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (OSError, RuntimeError):
-        logger.exception("shard-detail failed for %s/%s/%s", service, category, venue)
+        logger.exception("shard-detail failed for %s/%s/%s", service, asset_group, venue)
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from None
@@ -73,7 +74,9 @@ async def get_shard_detail_route(
 @router.get("/venue-detail", response_model=VenueDetailResponse)
 async def get_venue_detail_route(
     service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category (DEFI branches on chain vs composite venue)"),
+    asset_group: str = Query(
+        ..., description="Asset group (DEFI branches on chain vs composite venue)"
+    ),
     venue: str = Query(
         ..., description="Venue — CeFi venue, DeFi chain, or composite PROTOCOL-CHAIN"
     ),
@@ -83,13 +86,13 @@ async def get_venue_detail_route(
         return await run_in_threadpool(
             fetch_venue_detail,
             service=service,
-            category=category,
+            asset_group=asset_group,
             venue=venue,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (OSError, RuntimeError):
-        logger.exception("venue-detail failed for %s/%s/%s", service, category, venue)
+        logger.exception("venue-detail failed for %s/%s/%s", service, asset_group, venue)
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from None

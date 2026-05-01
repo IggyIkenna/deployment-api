@@ -3,7 +3,7 @@ Path Combinatorics - Generate all valid GCS path prefixes for efficient parallel
 
 This module loads the venue_data_types.yaml configuration and generates all possible
 valid GCS path prefixes based on the combinatorics of:
-  - Category (CEFI, TRADFI, DEFI)
+  - Asset group (CEFI, TRADFI, DEFI)
   - Venue
   - Folder (spot, perpetuals, futures_chain, options_chain, equities, etf, pool, lst, etc.)
   - Data type (trades, book_snapshot_5, derivative_ticker, liquidations, ohlcv_1m, etc.)
@@ -19,8 +19,8 @@ Usage:
     # Get all valid prefixes for CEFI, filtered by venue
     prefixes = pc.get_prefixes_for_date(
         service="market-tick-data-handler",
-        date="2024-01-15",
-        category="CEFI",
+        date_str="2024-01-15",
+        asset_group="CEFI",
         venues=["BINANCE-FUTURES"],
     )
 
@@ -96,9 +96,9 @@ SHARDING_CONFIG_SERVICES = [
 
 @dataclass
 class CombinatoricEntry:
-    """A single valid combinatoric (category, venue, folder, data_type, optional timeframe)."""
+    """A single valid combinatoric (asset_group, venue, folder, data_type, optional timeframe)."""
 
-    category: str
+    asset_group: str
     venue: str
     folder: str
     data_type: str
@@ -107,7 +107,7 @@ class CombinatoricEntry:
     tick_window_only: bool = False  # True if this data_type is only expected in tick windows
 
     def __hash__(self):
-        return hash((self.category, self.venue, self.folder, self.data_type, self.timeframe))
+        return hash((self.asset_group, self.venue, self.folder, self.data_type, self.timeframe))
 
     def to_gcs_prefix(self, date_str: str, base_prefix: str = "raw_tick_data/by_date") -> str:
         """Generate GCS prefix for this combinatoric and date.
@@ -170,7 +170,7 @@ class PathCombinatorics:
         TRADFI_TICK_DATA_WINDOWS to avoid duplicating this cost-management config
         across repos.
         """
-        from unified_api_contracts.registry.market_data_categories import (  # noqa: qg-inside-import
+        from unified_api_contracts.registry.market_data_categories import (
             TRADFI_TICK_DATA_WINDOWS,
         )
 
@@ -184,7 +184,7 @@ class PathCombinatorics:
 
     def is_in_tick_window(self, date_str: str) -> bool:
         """Check if a date falls within any tick data window."""
-        from unified_api_contracts.registry.market_data_categories import (  # noqa: qg-inside-import
+        from unified_api_contracts.registry.market_data_categories import (
             is_in_tradfi_tick_window,
         )
 
@@ -257,8 +257,8 @@ class PathCombinatorics:
         self.combinatorics = []
         skipped_venues: list[str] = []
 
-        for category in ["CEFI", "TRADFI", "DEFI"]:  # CORRECT-LOCAL
-            cat_config: dict[str, object] = self.config.get(category) or {}
+        for asset_group in ["CEFI", "TRADFI", "DEFI"]:  # CORRECT-LOCAL
+            cat_config: dict[str, object] = self.config.get(asset_group) or {}
             venues_val = cat_config.get("venues")
             venues: dict[str, object] = (
                 cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
@@ -301,7 +301,7 @@ class PathCombinatorics:
                     for data_type in final_data_types:
                         self.combinatorics.append(
                             CombinatoricEntry(
-                                category=category,
+                                asset_group=asset_group,
                                 venue=venue,
                                 folder=folder,
                                 data_type=data_type,
@@ -368,7 +368,7 @@ class PathCombinatorics:
     def get_service_prefixes_for_date(
         self,
         service: str,
-        category: str,
+        asset_group: str,
         date_str: str,
         venue_filter: list[str] | None = None,
     ) -> list[tuple[str, str | None]]:
@@ -380,7 +380,7 @@ class PathCombinatorics:
 
         Args:
             service: Service name
-            category: Category (CEFI, TRADFI, DEFI)
+            asset_group: Asset group (CEFI, TRADFI, DEFI)
             date_str: Date in YYYY-MM-DD format
             venue_filter: Optional venue filter (for instruments-service)
 
@@ -395,14 +395,15 @@ class PathCombinatorics:
 
         dims = self.service_dimensions.get(service, {})
 
-        # Validate category is supported by this service
-        valid_cats = dims.get("category")
-        if valid_cats and category.upper() not in [c.upper() for c in valid_cats]:
+        # Validate asset group is supported by this service (YAML may use either key;
+        # keep both so sharding config migrations do not break prefix generation / GCS checks).
+        valid_cats = dims.get("asset_group") or dims.get("category")
+        if valid_cats and asset_group.upper() not in [c.upper() for c in valid_cats]:
             return []
 
         if service == "instruments-service":
             # Use venues from venue_data_types.yaml (same config used for tick data)
-            venues = self.get_all_venues_for_category(category)
+            venues = self.get_all_venues_for_asset_group(asset_group)
             if venue_filter:
                 venue_set = {v.upper() for v in venue_filter}
                 venues = venues & venue_set
@@ -445,21 +446,21 @@ class PathCombinatorics:
 
         return []
 
-    def has_service_combinatorics(self, service: str, category: str) -> bool:
-        """Check if a service has combinatorics available for a given category.
+    def has_service_combinatorics(self, service: str, asset_group: str) -> bool:
+        """Check if a service has combinatorics available for a given asset group.
 
         Returns True if the service can use targeted prefix queries instead of
-        directory listing for the given category.
+        directory listing for the given asset group.
         """
         if service in ("market-tick-data-handler", "market-data-processing-service"):
-            return len(self.get_combinatorics(category=category, service=service)) > 0
+            return len(self.get_combinatorics(asset_group=asset_group, service=service)) > 0
 
         # For generic services, check if prefixes would be generated
-        return len(self.get_service_prefixes_for_date(service, category, "2024-01-01")) > 0
+        return len(self.get_service_prefixes_for_date(service, asset_group, "2024-01-01")) > 0
 
     def get_combinatorics(
         self,
-        category: str | None = None,
+        asset_group: str | None = None,
         venues: list[str] | None = None,
         folders: list[str] | None = None,
         data_types: list[str] | None = None,
@@ -470,7 +471,7 @@ class PathCombinatorics:
         Get filtered combinatorics based on criteria.
 
         Args:
-            category: Filter by category (CEFI, TRADFI, DEFI)
+            asset_group: Filter by asset group (CEFI, TRADFI, DEFI)
             venues: Filter by venue names
             folders: Filter by folder names
             data_types: Filter by data type names
@@ -483,7 +484,7 @@ class PathCombinatorics:
         # For market-data-processing-service, generate timeframe-expanded combinatorics on-the-fly
         if service == "market-data-processing-service":
             results = self._get_processing_combinatorics(
-                category=category,
+                asset_group=asset_group,
                 venues=venues,
                 folders=folders,
                 data_types=data_types,
@@ -493,8 +494,8 @@ class PathCombinatorics:
             # For other services, use base combinatorics (no timeframe)
             results = self.combinatorics
 
-            if category:
-                results = [c for c in results if c.category == category.upper()]
+            if asset_group:
+                results = [c for c in results if c.asset_group == asset_group.upper()]
 
             if venues:
                 venue_set = {v.upper() for v in venues}
@@ -512,7 +513,7 @@ class PathCombinatorics:
 
     def _get_processing_combinatorics(
         self,
-        category: str | None = None,
+        asset_group: str | None = None,
         venues: list[str] | None = None,
         folders: list[str] | None = None,
         data_types: list[str] | None = None,
@@ -527,8 +528,8 @@ class PathCombinatorics:
         # Start with base combinatorics
         base = self.combinatorics
 
-        if category:
-            base = [c for c in base if c.category == category.upper()]
+        if asset_group:
+            base = [c for c in base if c.asset_group == asset_group.upper()]
 
         if venues:
             venue_set = {v.upper() for v in venues}
@@ -553,7 +554,7 @@ class PathCombinatorics:
             for tf in target_timeframes:
                 results.append(
                     CombinatoricEntry(
-                        category=combo.category,
+                        asset_group=combo.asset_group,
                         venue=combo.venue,
                         folder=combo.folder,
                         data_type=combo.data_type,
@@ -569,7 +570,7 @@ class PathCombinatorics:
         self,
         service: str,
         date_str: str,
-        category: str | None = None,
+        asset_group: str | None = None,
         venues: list[str] | None = None,
         folders: list[str] | None = None,
         data_types: list[str] | None = None,
@@ -581,7 +582,7 @@ class PathCombinatorics:
         Args:
             service: Service name (for determining base prefix)
             date_str: Date in YYYY-MM-DD format
-            category: Optional category filter
+            asset_group: Optional asset group filter
             venues: Optional venue filters
             folders: Optional folder filters
             data_types: Optional data type filters
@@ -595,7 +596,7 @@ class PathCombinatorics:
 
         # Get filtered combinatorics (pass service for timeframe expansion)
         combos = self.get_combinatorics(
-            category=category,
+            asset_group=asset_group,
             venues=venues,
             folders=folders,
             data_types=data_types,
@@ -625,10 +626,10 @@ class PathCombinatorics:
         prefixes: list[str] = [c.to_gcs_prefix(date_str, base_prefix) for c in valid_combos]
 
         logger.debug(
-            "Generated %s prefixes for date=%s, category=%s, venues=%s, service=%s",
+            "Generated %s prefixes for date=%s, asset_group=%s, venues=%s, service=%s",
             len(prefixes),
             date_str,
-            category,
+            asset_group,
             venues,
             service,
         )
@@ -648,28 +649,28 @@ class PathCombinatorics:
         else:
             return "raw_tick_data/by_date"
 
-    def get_all_venues_for_category(self, category: str) -> set[str]:
-        """Get all configured venues for a category."""
-        cat_config: dict[str, object] = self.config.get(category.upper()) or {}
+    def get_all_venues_for_asset_group(self, asset_group: str) -> set[str]:
+        """Get all configured venues for an asset group."""
+        cat_config: dict[str, object] = self.config.get(asset_group.upper()) or {}
         venues_val = cat_config.get("venues")
         if not isinstance(venues_val, dict):
             return set()
         venues: dict[str, object] = cast(dict[str, object], venues_val)
         return {str(k) for k in venues}
 
-    def get_all_folders_for_category(self, category: str) -> set[str]:
-        """Get all possible folders for a category."""
+    def get_all_folders_for_asset_group(self, asset_group: str) -> set[str]:
+        """Get all possible folders for an asset group."""
         folders: set[str] = set()
         for c in self.combinatorics:
-            if c.category == category.upper():
+            if c.asset_group == asset_group.upper():
                 folders.add(c.folder)
         return folders
 
-    def get_all_data_types_for_category(self, category: str) -> set[str]:
-        """Get all possible data types for a category."""
+    def get_all_data_types_for_asset_group(self, asset_group: str) -> set[str]:
+        """Get all possible data types for an asset group."""
         data_types: set[str] = set()
         for c in self.combinatorics:
-            if c.category == category.upper():
+            if c.asset_group == asset_group.upper():
                 data_types.add(c.data_type)
         return data_types
 
@@ -747,7 +748,7 @@ class PathCombinatorics:
     def get_instruments_service_prefixes(
         self,
         date_str: str,
-        category: str | None = None,
+        asset_group: str | None = None,
         venues: list[str] | None = None,
     ) -> list[str]:
         """
@@ -757,18 +758,20 @@ class PathCombinatorics:
 
         Args:
             date_str: Date in YYYY-MM-DD format
-            category: Optional category filter
+            asset_group: Optional asset group filter
             venues: Optional venue filters
 
         Returns:
             List of GCS prefix strings
         """
-        # Get all venues for the category(ies)
+        # Get all venues for the asset group(s)
         target_venues: set[str] = set()
-        categories = [category.upper()] if category else ["CEFI", "TRADFI", "DEFI"]  # CORRECT-LOCAL
+        # CORRECT-LOCAL: when no filter, include default main asset groups
+        default_main_groups = ["CEFI", "TRADFI", "DEFI"]
+        asset_groups = [asset_group.upper()] if asset_group else default_main_groups
 
-        for cat in categories:
-            cat_venues: set[str] = self.get_all_venues_for_category(cat)
+        for ag in asset_groups:
+            cat_venues: set[str] = self.get_all_venues_for_asset_group(ag)
             if venues:
                 # Filter to requested venues
                 venue_set = {v.upper() for v in venues}

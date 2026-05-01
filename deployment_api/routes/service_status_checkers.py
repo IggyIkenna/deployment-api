@@ -190,8 +190,8 @@ SERVICE_OUTPUT_BUCKETS = {  # CORRECT-LOCAL
 }
 
 
-class CategoryTimestampDict(TypedDict, total=False):
-    """Timestamp info for a single category bucket."""
+class AssetGroupTimestampDict(TypedDict, total=False):
+    """Timestamp info for a single asset group bucket."""
 
     timestamp: str | None
     file: str
@@ -202,7 +202,7 @@ class CategoryTimestampDict(TypedDict, total=False):
 class DataTimestampResultDict(TypedDict, total=False):
     """Result from get_latest_data_timestamp."""
 
-    by_category: dict[str, CategoryTimestampDict]
+    by_asset_group: dict[str, AssetGroupTimestampDict]
     latest: str | None
     error: str
 
@@ -243,8 +243,8 @@ class CodePushInfoDict(TypedDict, total=False):
     error: str
 
 
-def _get_category_blob_timestamp(bucket_name: str, category: str) -> CategoryTimestampDict:
-    """Fetch and return the latest blob timestamp for a single GCS bucket/category."""
+def _get_asset_group_blob_timestamp(bucket_name: str, asset_group: str) -> AssetGroupTimestampDict:
+    """Fetch and return the latest blob timestamp for a single GCS bucket/asset group."""
     blobs = list_objects(bucket_name, prefix="", max_results=10)
     if not blobs:
         return {}
@@ -262,23 +262,23 @@ def _get_category_blob_timestamp(bucket_name: str, category: str) -> CategoryTim
 
 
 def _get_service_timestamps_sync(service: str) -> DataTimestampResultDict:
-    """Synchronously fetch latest GCS blob timestamps for all categories of a service."""
+    """Synchronously fetch latest GCS blob timestamps for all asset groups of a service."""
     try:
         buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
-        results: dict[str, CategoryTimestampDict] = {}
-        for category, bucket_name in buckets.items():
+        results: dict[str, AssetGroupTimestampDict] = {}
+        for asset_group, bucket_name in buckets.items():
             try:
-                results[category] = _get_category_blob_timestamp(bucket_name, category)
+                results[asset_group] = _get_asset_group_blob_timestamp(bucket_name, asset_group)
             except (OSError, ValueError, RuntimeError) as e:
-                logger.warning("Error checking %s bucket %s: %s", category, bucket_name, e)
-                results[category] = {"error": str(e)}
+                logger.warning("Error checking %s bucket %s: %s", asset_group, bucket_name, e)
+                results[asset_group] = {"error": str(e)}
         valid_timestamps = [
             datetime.fromisoformat(cast(str, r.get("timestamp")))
             for r in results.values()
             if r.get("timestamp")
         ]
         return {
-            "by_category": results,
+            "by_asset_group": results,
             "latest": (max(valid_timestamps).isoformat() if valid_timestamps else None),
         }
     except (OSError, ValueError, RuntimeError) as e:
@@ -292,7 +292,7 @@ async def get_latest_data_timestamp(
     """
     Get the most recent data file timestamp from GCS for a service.
 
-    Returns dict with category-level timestamps.
+    Returns dict with asset-group-level timestamps.
     OPTIMIZED: Uses 2-minute cache (data timestamps don't change frequently).
     """
     start = time.time()

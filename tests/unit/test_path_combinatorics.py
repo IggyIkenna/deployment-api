@@ -21,7 +21,7 @@ class TestCombinatoricEntry:
 
     def test_to_gcs_prefix_basic(self):
         entry = CombinatoricEntry(
-            category="CEFI",
+            asset_group="CEFI",
             venue="BINANCE-FUTURES",
             folder="perpetuals",
             data_type="trades",
@@ -34,7 +34,7 @@ class TestCombinatoricEntry:
 
     def test_to_gcs_prefix_with_timeframe(self):
         entry = CombinatoricEntry(
-            category="CEFI",
+            asset_group="CEFI",
             venue="BINANCE",
             folder="spot",
             data_type="trades",
@@ -98,21 +98,21 @@ class TestPathCombinatoricsWithMinimalConfig:
         pc = self._make_pc(self._minimal_config())
         assert len(pc.combinatorics) > 0
 
-    def test_all_combinatorics_have_correct_category(self):
+    def test_all_combinatorics_have_correct_asset_group(self):
         pc = self._make_pc(self._minimal_config())
         for c in pc.combinatorics:
-            assert c.category == "CEFI"
+            assert c.asset_group == "CEFI"
 
-    def test_get_combinatorics_filter_by_category(self):
+    def test_get_combinatorics_filter_by_asset_group(self):
         config = {
             "CEFI": {"venues": {"BINANCE": {"folders": ["spot"], "data_types": ["trades"]}}},
             "TRADFI": {"venues": {"NYSE": {"folders": ["equities"], "data_types": ["trades"]}}},
         }
         pc = self._make_pc(config)
-        cefi = pc.get_combinatorics(category="CEFI")
-        tradfi = pc.get_combinatorics(category="TRADFI")
-        assert all(c.category == "CEFI" for c in cefi)
-        assert all(c.category == "TRADFI" for c in tradfi)
+        cefi = pc.get_combinatorics(asset_group="CEFI")
+        tradfi = pc.get_combinatorics(asset_group="TRADFI")
+        assert all(c.asset_group == "CEFI" for c in cefi)
+        assert all(c.asset_group == "TRADFI" for c in tradfi)
 
     def test_get_combinatorics_filter_by_data_type(self):
         pc = self._make_pc(self._minimal_config())
@@ -137,20 +137,20 @@ class TestPathCombinatoricsWithMinimalConfig:
         spot_only = pc.get_combinatorics(folders=["spot"])
         assert all(c.folder == "spot" for c in spot_only)
 
-    def test_get_all_venues_for_category(self):
+    def test_get_all_venues_for_asset_group(self):
         pc = self._make_pc(self._minimal_config())
-        venues = pc.get_all_venues_for_category("CEFI")
+        venues = pc.get_all_venues_for_asset_group("CEFI")
         assert "BINANCE" in venues
 
-    def test_get_all_folders_for_category(self):
+    def test_get_all_folders_for_asset_group(self):
         pc = self._make_pc(self._minimal_config())
-        folders = pc.get_all_folders_for_category("CEFI")
+        folders = pc.get_all_folders_for_asset_group("CEFI")
         assert "spot" in folders
         assert "perpetuals" in folders
 
-    def test_get_all_data_types_for_category(self):
+    def test_get_all_data_types_for_asset_group(self):
         pc = self._make_pc(self._minimal_config())
-        data_types = pc.get_all_data_types_for_category("CEFI")
+        data_types = pc.get_all_data_types_for_asset_group("CEFI")
         assert "trades" in data_types
 
     def test_skips_venue_with_empty_accessible_types(self):
@@ -458,10 +458,10 @@ class TestGetServicePrefixesForDate:
         # Only BINANCE prefixes
         assert all("BINANCE" in r[0] for r in result)
 
-    def test_unknown_category_returns_empty(self):
+    def test_unknown_asset_group_returns_empty(self):
         pc = self._make_pc_with_venues()
         # Service dimensions limit to valid categories
-        # Instruments service will try to get_all_venues_for_category("UNKNOWN")
+        # Instruments service will try to get_all_venues_for_asset_group("UNKNOWN")
         result = pc.get_service_prefixes_for_date("instruments-service", "UNKNOWN", "2024-01-15")
         assert result == []
 
@@ -505,19 +505,25 @@ class TestGetPrefixesForDate:
 
     def test_returns_list_of_strings(self):
         pc = self._make_pc_with_cefi()
-        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="CEFI")
+        result = pc.get_prefixes_for_date(
+            "market-tick-data-handler", "2024-01-15", asset_group="CEFI"
+        )
         assert isinstance(result, list)
         assert all(isinstance(p, str) for p in result)
 
-    def test_with_category_filter(self):
+    def test_with_asset_group_filter(self):
         pc = self._make_pc_with_cefi()
-        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="CEFI")
+        result = pc.get_prefixes_for_date(
+            "market-tick-data-handler", "2024-01-15", asset_group="CEFI"
+        )
         assert len(result) > 0
         assert all("BINANCE" in p for p in result)
 
     def test_with_no_matching_combos(self):
         pc = self._make_pc_with_cefi()
-        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="DEFI")
+        result = pc.get_prefixes_for_date(
+            "market-tick-data-handler", "2024-01-15", asset_group="DEFI"
+        )
         assert result == []
 
     def test_start_date_filter(self):
@@ -526,7 +532,9 @@ class TestGetPrefixesForDate:
         for c in pc.combinatorics:
             c.start_date = "2025-01-01"
         # Date before start should yield no results
-        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-06-01", category="CEFI")
+        result = pc.get_prefixes_for_date(
+            "market-tick-data-handler", "2024-06-01", asset_group="CEFI"
+        )
         assert result == []
 
     def test_tick_window_only_skipped_outside_window(self):
@@ -535,5 +543,7 @@ class TestGetPrefixesForDate:
         for c in pc.combinatorics:
             c.tick_window_only = True
         # No tick windows configured → outside tick window
-        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", category="CEFI")
+        result = pc.get_prefixes_for_date(
+            "market-tick-data-handler", "2024-01-15", asset_group="CEFI"
+        )
         assert result == []

@@ -40,7 +40,7 @@ class VmDeploymentEntryModel(BaseModel):  # CORRECT-LOCAL: FastAPI API contract 
 
     deployment_id: str
     vm_name: str
-    category: str
+    asset_group: str
     task: str
     mode: str
     start_date: str
@@ -75,7 +75,7 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
     defaults: dict[str, object] = {
         "deployment_id": "dep-mock-1",
         "vm_name": "canonical-migration-cefi-20260418-042359",
-        "category": "CEFI",
+        "asset_group": "CEFI",
         "task": "canonical-migration",
         "mode": "dry",
         "start_date": "2024-06-01",

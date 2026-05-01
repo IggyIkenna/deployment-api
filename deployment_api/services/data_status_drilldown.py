@@ -322,16 +322,26 @@ _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE: dict[str, str] = {
 }
 
 
+_AUTO_SENTINELS: frozenset[str] = frozenset({"auto", "unknown", "auto_detect_fail", ""})
+
+
 def _resolve_sports_instrument_type(category: str, instrument_type: str, data_type: str) -> str:
-    """If category=sports and instrument_type is empty, infer from data_type."""
-    if category != "sports" or instrument_type:
+    """If category=sports and instrument_type is empty/AUTO, infer from data_type.
+
+    The UI passes ``"AUTO"`` (uppercase sentinel) at SPORTS click sites — the
+    SPORTS manifest has no instrument_type axis, so we resolve it from
+    ``data_type`` via :data:`_SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE`.
+    """
+    if category != "sports":
+        return instrument_type
+    if instrument_type and instrument_type.lower() not in _AUTO_SENTINELS:
         return instrument_type
     return _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE.get(data_type, instrument_type)
 
 
 def get_schema_for_shard(
     *,
-    category: str,
+    asset_group: str,
     instrument_type: str,
     data_type: str,
     venue: str | None = None,
@@ -346,7 +356,7 @@ def get_schema_for_shard(
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
     # from the manifest; UAC keys those as ``pool`` / ``dex_pool_state``.
-    cat_norm = category.lower()
+    cat_norm = asset_group.lower()
     it_norm = _normalise_instrument_type(instrument_type)
     dt_norm = _normalise_data_type(data_type)
     # Sports manifest carries no instrument_type axis — resolve from data_type.
@@ -1862,10 +1872,18 @@ def _filter_entity_rows_for_fixture(
         logger.warning("per-fixture download read failed for %s: %s", gs_uri, exc)
         return ("attempted_failed", None)
 
-    if "fixture_id" not in df.columns or df.empty:
+    # Support both new flat schema (``af_fixture_id``) and legacy
+    # (``fixture_id``); migrated parquets use ``af_fixture_id`` as the
+    # canonical join key.
+    fid_col = (
+        "af_fixture_id"
+        if "af_fixture_id" in df.columns
+        else ("fixture_id" if "fixture_id" in df.columns else None)
+    )
+    if fid_col is None or df.empty:
         return ("empty_confirmed", None)
 
-    fid_series = df["fixture_id"].astype(str)
+    fid_series = df[fid_col].astype(str).str.split(".").str[0]  # strip float ".0" suffix
     filtered = df[fid_series == fixture_id]
     if filtered.empty:
         return ("missing", filtered)

@@ -133,18 +133,18 @@ class TestGetVenueFilters:
         with patch.object(_dqs_mod, "list_prefixes", return_value=["BINANCE/", "OKX/"]):
             result = await svc.get_venue_filters("instruments-service")
         assert "service" in result
-        assert "categories" in result
-        # Should have cefi, tradfi, defi categories
-        assert "cefi" in result["categories"]
+        assert "asset_groups" in result
+        # Should have cefi, tradfi, defi asset groups
+        assert "cefi" in result["asset_groups"]
 
     @pytest.mark.asyncio
     async def test_exception_handled_per_category(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "list_prefixes", side_effect=OSError("bucket missing")):
             result = await svc.get_venue_filters("instruments-service")
-        # Should still return a dict, each category gets an error key
-        assert "categories" in result
-        for cat_data in result["categories"].values():
+        # Should still return a dict, each asset group gets an error key
+        assert "asset_groups" in result
+        for cat_data in result["asset_groups"].values():
             assert "error" in cat_data
 
 
@@ -164,7 +164,7 @@ class TestGetInstrumentsList:
         ]
         with patch.object(_dqs_mod, "list_objects", return_value=blobs):
             result = await svc.get_instruments_list("cefi")
-        assert result["category"] == "cefi"
+        assert result["asset_group"] == "cefi"
         assert "BTC-USDT" in result["instruments"] or len(result["instruments"]) >= 0
 
     @pytest.mark.asyncio
@@ -416,7 +416,7 @@ class TestSearchInstruments:
         result = await svc.search_instruments(query="", limit=10)
         assert result["matches"] == []
         assert result["total_matches"] == 0
-        assert result["categories_searched"] == []
+        assert result["asset_groups_searched"] == []
 
     @pytest.mark.asyncio
     async def test_whitespace_only_query_returns_empty_matches(self):
@@ -449,10 +449,10 @@ class TestSearchInstruments:
             },
         )
         svc = DataQueryService(project_id="p")
-        result = await svc.search_instruments(query="btc", category="cefi", limit=10)
+        result = await svc.search_instruments(query="btc", asset_group="cefi", limit=10)
         assert result["total_matches"] == 2
         assert {m["venue"] for m in result["matches"]} == {"BINANCE-FUTURES", "BYBIT"}
-        assert result["categories_searched"] == ["cefi"]
+        assert result["asset_groups_searched"] == ["cefi"]
 
     @pytest.mark.asyncio
     async def test_case_insensitive_match(self, monkeypatch):
@@ -469,10 +469,10 @@ class TestSearchInstruments:
             },
         )
         svc = DataQueryService(project_id="p")
-        assert (await svc.search_instruments(query="btc-usdt", category="cefi"))[
+        assert (await svc.search_instruments(query="btc-usdt", asset_group="cefi"))[
             "total_matches"
         ] == 1
-        assert (await svc.search_instruments(query="BTC-USDT", category="cefi"))[
+        assert (await svc.search_instruments(query="BTC-USDT", asset_group="cefi"))[
             "total_matches"
         ] == 1
 
@@ -501,7 +501,7 @@ class TestSearchInstruments:
             },
         )
         svc = DataQueryService(project_id="p")
-        result = await svc.search_instruments(query="usdc weth", category="defi")
+        result = await svc.search_instruments(query="usdc weth", asset_group="defi")
         assert result["total_matches"] == 1
         assert "USDC-WETH-500" in result["matches"][0]["canonical_id"]
 
@@ -532,7 +532,7 @@ class TestSearchInstruments:
         svc = DataQueryService(project_id="p")
         result = await svc.search_instruments(query="btc", limit=10)
         assert result["total_matches"] == 2
-        assert {m["category"] for m in result["matches"]} == {"CEFI", "DEFI"}
+        assert {m["asset_group"] for m in result["matches"]} == {"CEFI", "DEFI"}
 
     @pytest.mark.asyncio
     async def test_sports_search_uses_league_id(self, monkeypatch):
@@ -554,7 +554,7 @@ class TestSearchInstruments:
             },
         )
         svc = DataQueryService(project_id="p")
-        result = await svc.search_instruments(query="bunde", category="sports")
+        result = await svc.search_instruments(query="bunde", asset_group="sports")
         assert result["total_matches"] == 1
         assert result["matches"][0]["canonical_id"] == "BUNDESLIGA"
 
@@ -570,7 +570,7 @@ class TestSearchInstruments:
         ]
         self._patch(monkeypatch, {"cefi": corpus})
         svc = DataQueryService(project_id="p")
-        result = await svc.search_instruments(query="btc", category="cefi", limit=3)
+        result = await svc.search_instruments(query="btc", asset_group="cefi", limit=3)
         assert result["total_matches"] == 3
         assert result["truncated"] is True
 
@@ -593,4 +593,4 @@ class TestSearchInstruments:
         svc = DataQueryService(project_id="p")
         result = await svc.search_instruments(query="usdc", limit=10)
         assert result["total_matches"] == 1
-        assert result["matches"][0]["category"] == "DEFI"
+        assert result["matches"][0]["asset_group"] == "DEFI"

@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 # ``shard_class`` drives UI rendering of the payload branch.  The mapping
-# from ``(service, category, instrument_type, data_type)`` to one of these
+# from ``(service, asset_group, instrument_type, data_type)`` to one of these
 # four values is owned by
 # ``deployment_api.services.shard_detail._classify_shard``.
 ShardClassLiteral = Literal["grouped", "per_symbol", "reference", "fixtures"]
@@ -26,7 +26,7 @@ class ShardCoord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     service: str
-    category: str
+    asset_group: str
     instrument_type: str
     data_type: str
     day: str
@@ -62,8 +62,8 @@ class ShardSchema(BaseModel):
     """``explicit`` — caller passed a concrete instrument_type and the lookup
     succeeded against it. ``auto`` — caller passed ``AUTO`` / ``UNKNOWN`` and
     the backend resolved the instrument_type by scanning the registry for
-    any ``(category, *, data_type)`` tuple. ``none`` — caller passed AUTO
-    but no contract matched the (category, data_type) pair, so the schema
+    any ``(asset_group, *, data_type)`` tuple. ``none`` — caller passed AUTO
+    but no contract matched the (asset_group, data_type) pair, so the schema
     is unregistered."""
 
     instrument_type_resolved: str | None = None
@@ -155,13 +155,13 @@ class VenueDetailResponse(BaseModel):
 
     DeFi responses may carry either chain-level aggregates (``protocols``,
     ``total_pools``, ``total_tokens``) or composite protocol-chain pool
-    listings (``pools``, ``tokens``).  ``category`` is always echoed so the
+    listings (``pools``, ``tokens``).  ``asset_group`` is always echoed so the
     UI can render the correct view without inferring from the venue string.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    category: str
+    asset_group: str
     venue: str
     chain: str | None = None
     protocol: str | None = None

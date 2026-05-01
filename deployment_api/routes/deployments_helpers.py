@@ -295,7 +295,7 @@ def _extract_shard_signature(service: str, shard_args: list[str]) -> str | None:
             signature_parts.append(f"start:{shard_args[i + 1]}")
         elif arg == "--end-date" and i + 1 < len(shard_args):
             signature_parts.append(f"end:{shard_args[i + 1]}")
-        elif arg == "--category" and i + 1 < len(shard_args):
+        elif arg == "--asset-group" and i + 1 < len(shard_args):
             signature_parts.append(f"cat:{shard_args[i + 1]}")
         elif arg == "--venue" and i + 1 < len(shard_args):
             signature_parts.append(f"venue:{shard_args[i + 1]}")

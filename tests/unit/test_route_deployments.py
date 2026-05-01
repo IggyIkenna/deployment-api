@@ -728,10 +728,10 @@ class TestDeployRequestFilters:
     def test_filters_excludes_none_values(self):
         from deployment_api.routes.deployments import DeployRequest
 
-        req = DeployRequest(service="svc", category="CEFI")
+        req = DeployRequest(service="svc", asset_group="CEFI")
         filters = req.filters
-        assert "category" in filters
-        assert filters["category"] == "CEFI"
+        assert "asset_group" in filters
+        assert filters["asset_group"] == "CEFI"
         assert "venue" not in filters
 
     def test_filters_empty_when_all_none(self):

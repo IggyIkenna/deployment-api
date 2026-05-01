@@ -60,21 +60,21 @@ def _find_latest_ts_for_bucket(bucket_name: str) -> "datetime | None":
 
 
 def _get_timestamps_sync(service: str) -> dict[str, object]:
-    """Scan all buckets for a service and return latest timestamps by category."""
+    """Scan all buckets for a service and return latest timestamps by asset group."""
     try:
         buckets = SERVICE_OUTPUT_BUCKETS.get(service, {})
         if not buckets:
             empty_cat: dict[str, object] = {}
-            return {"latest": None, "by_category": empty_cat}
+            return {"latest": None, "by_asset_group": empty_cat}
 
         results: dict[str, dict[str, object]] = {}
-        for category, bucket_name in buckets.items():
+        for asset_group, bucket_name in buckets.items():
             try:
                 ts = _find_latest_ts_for_bucket(bucket_name)
-                results[category] = {"timestamp": ts.isoformat() if ts else None}
+                results[asset_group] = {"timestamp": ts.isoformat() if ts else None}
             except (OSError, ValueError, RuntimeError) as e:
-                logger.warning("Error checking %s/%s: %s", category, bucket_name, e)
-                results[category] = {"error": str(e)[:50]}
+                logger.warning("Error checking %s/%s: %s", asset_group, bucket_name, e)
+                results[asset_group] = {"error": str(e)[:50]}
 
         valid_timestamps: list[datetime] = []
         for _r in results.values():
@@ -83,7 +83,7 @@ def _get_timestamps_sync(service: str) -> dict[str, object]:
                 valid_timestamps.append(datetime.fromisoformat(_ts))
 
         return {
-            "by_category": results,
+            "by_asset_group": results,
             "latest": (max(valid_timestamps).isoformat() if valid_timestamps else None),
         }
     except (OSError, ValueError, RuntimeError) as e:

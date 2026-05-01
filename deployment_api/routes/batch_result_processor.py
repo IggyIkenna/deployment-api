@@ -204,19 +204,19 @@ def calculate_venue_weighted_totals(
     return total_venue_expected, total_venue_found, expected_missing, unexpected_missing
 
 
-def update_category_completion_percentages(
+def update_asset_group_completion_percentages(
     results: dict[str, object],
     all_dates: set[str],
     expected_start_dates_config: Mapping[str, object],
     service: str,
     upstream_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> None:
-    """Update category-level completion percentages to be venue-weighted.
+    """Update asset-group-level completion percentages to be venue-weighted.
 
     This ensures "100%" only shows when ALL expected venues have ALL dates.
 
     Args:
-        results: Category results dictionary (modified in place)
+        results: Per-asset-group results dictionary (modified in place)
         all_dates: Set of all dates in the range
         expected_start_dates_config: Expected start dates configuration
         service: Service name
@@ -288,8 +288,8 @@ def build_final_response(
     all_dates: set[str],
     total_venue_expected: int,
     total_venue_found: int,
-    total_expected_category: int,
-    total_found_category: int,
+    total_expected_asset_group: int,
+    total_found_asset_group: int,
     expected_missing: int,
     unexpected_missing: int,
     results: dict[str, object],
@@ -303,18 +303,20 @@ def build_final_response(
     Returns:
         Complete response dictionary
     """
-    # Calculate overall percentage - use venue-weighted if available, else category-level
+    # Calculate overall percentage - use venue-weighted if available, else asset-group-level
     # This handles services without venue breakdown (e.g., market-data-processing-service)
     if total_venue_expected > 0:
         overall_pct = total_venue_found / total_venue_expected * 100
         # total_missing = expected_missing (only counts dates >= venue start)
         total_missing = expected_missing
     else:
-        # No venue data - fall back to category-level calculation
+        # No venue data - fall back to asset-group-level calculation
         overall_pct = (
-            (total_found_category / total_expected_category * 100) if total_expected_category else 0
+            (total_found_asset_group / total_expected_asset_group * 100)
+            if total_expected_asset_group
+            else 0
         )
-        total_missing = total_expected_category - total_found_category
+        total_missing = total_expected_asset_group - total_found_asset_group
 
     response: dict[str, object] = {
         "service": service,
@@ -326,13 +328,13 @@ def build_final_response(
         "overall_completion_pct": round(overall_pct, 1),
         "overall_dates_found": total_venue_found,
         "overall_dates_expected": total_venue_expected,
-        # Category-level totals for reference (not venue-weighted)
-        "overall_dates_found_category": total_found_category,
-        "overall_dates_expected_category": total_expected_category,
+        # Asset-group-level totals for reference (not venue-weighted)
+        "overall_dates_found_asset_group": total_found_asset_group,
+        "overall_dates_expected_asset_group": total_expected_asset_group,
         "total_missing": total_missing,
         "unexpected_missing": unexpected_missing,
         "expected_missing": expected_missing,
-        "categories": results,
+        "asset_groups": results,
     }
 
     # Add overall file counts if available

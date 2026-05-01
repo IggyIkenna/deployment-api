@@ -40,6 +40,9 @@ from unified_api_contracts.sports import (
     get_sports_entity_start_date,
     get_transfer_windows_for_year,
 )
+from unified_api_contracts.sports import (
+    is_in_known_gap as _is_in_known_gap,
+)
 from unified_trading_library import read_availability_index
 
 from deployment_api.settings import gcp_project_id as _pid
@@ -211,16 +214,18 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "unit": "fixture_dates",
     },
     # Transfermarkt — 55 leagues (Prediction 33 + Features 22).
-    # PLAYER_VALUES denorms to per-fixture-date for breakdown cohesion: every
-    # fixture-day where a transfermarkt-covered league plays counts as a shard,
-    # since the most-recent weekly snapshot covers that fixture's teams. This
-    # puts PLAYER_VALUES on the same axis as FIXTURE_LINEUPS / FIXTURE_EVENTS
-    # so the per-fixture drilldown view treats it consistently.
+    # PLAYER_VALUES is a weekly periodic snapshot from transfermarkt, not a
+    # per-fixture-date feed. The 2026-04-29 reconciliation deleted 167k phantom
+    # denorm-to-fixture-date rows (per user pushback: "placeholder parquets
+    # only for genuinely-empty external API responses, not to fudge bad data
+    # quality"), so the axis now matches TRANSFERMARKT_LEAGUES — same source,
+    # same weekly cadence.
     "PLAYER_VALUES": {
         "source": "transfermarkt",
         "classifications": ("Prediction", "Features"),
-        "axis": "per_league_per_fixture_date",
-        "unit": "fixture_dates",
+        "axis": "per_league_periodic",
+        "cadence_days": 7,
+        "unit": "cadence_refreshes",
     },
     "TRANSFERMARKT_LEAGUES": {
         "source": "transfermarkt",
@@ -277,6 +282,7 @@ def _sports_expected_dates_for_league(
     start_date: str,
     end_date: str,
     source_key: str = "",
+    data_type: str = "",
 ) -> list[str]:
     """Expected capture dates for one league on a given axis.
 
@@ -287,21 +293,30 @@ def _sports_expected_dates_for_league(
       gives weekly refreshes).
 
     Clips ``start_date`` forward to the source's UAC-declared coverage
-    start (``SOURCE_COVERAGE_START``) so dates before the source launched
-    don't show up as missing shards. Pass ``source_key=""`` to skip the
-    clip (default — preserves legacy callers that don't yet know the
-    source).
+    start. When ``data_type`` is supplied, applies the per-(source,
+    data_type) override from ``DATA_TYPE_COVERAGE_START`` (e.g.
+    SFI_PROGRESSIVE_STATS starts 2020-01-01 even though the SFI source
+    starts 2019-01-01). Then drops any date that falls inside a registered
+    known-coverage-gap window (``KNOWN_COVERAGE_GAPS``) — useful for
+    documented provider outages.
+
+    Pass empty strings to skip clipping/gap-filtering (preserves legacy
+    callers that don't yet know the source/data_type).
     """
     if source_key:
-        start_date, end_date = _clip_dates_to_source_coverage(source_key, start_date, end_date)
-        # Empty-range signal from the clip helper: end == "" means the entire
-        # query window is before the source's coverage start.
+        start_date, end_date = _clip_dates_to_source_coverage(
+            source_key, start_date, end_date, data_type=data_type or None
+        )
         if not end_date or end_date < start_date:
             return []
     season_dates = get_league_fixture_calendar(league_id, start_date, end_date)
     if axis == "per_league_per_fixture_date" or cadence_days <= 1:
-        return season_dates
-    return season_dates[::cadence_days]
+        result = season_dates
+    else:
+        result = season_dates[::cadence_days]
+    if source_key and data_type:
+        result = [d for d in result if not _is_in_known_gap(source_key, data_type, d)]
+    return result
 
 
 def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tracked separately
@@ -356,7 +371,7 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
         # clipped to the source's UAC-declared coverage start so pre-launch
         # dates don't show as missing.
         clipped_start, clipped_end = _clip_dates_to_source_coverage(
-            source_key, start_date, end_date
+            source_key, start_date, end_date, data_type=entity_name
         )
         if not clipped_end or clipped_end < clipped_start:
             date_range = pd.DatetimeIndex([])
@@ -381,6 +396,12 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
         }
 
     # per_league_per_fixture_date / per_league_periodic
+    # Single SSOT: per-league subpartition only. Legacy bare-path date-aggregate
+    # captures were migrated to per-league via
+    # ``instruments-service/scripts/migrate_bare_to_per_league.py`` +
+    # ``reconcile_manifest_from_per_league_parquets.py`` (2026-05-01) and the
+    # orchestrator now writes per-league exclusively for league-axis data
+    # types. No bare-path fallback in coverage accounting.
     per_league: dict[str, dict[str, object]] = {}
     total_expected = 0
     total_found = 0
@@ -392,7 +413,13 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
     for league in expected_leagues:
         lid = league.league_id
         expected_dates_for_l = _sports_expected_dates_for_league(
-            lid, axis, cadence_days, start_date, end_date, source_key=source_key
+            lid,
+            axis,
+            cadence_days,
+            start_date,
+            end_date,
+            source_key=source_key,
+            data_type=entity_name,
         )
         if not expected_dates_for_l:
             continue
@@ -2207,7 +2234,7 @@ class DataStatusService:
 
         return {
             "service": service,
-            "categories": result_categories,
+            "asset_groups": result_categories,
             "totals": {
                 "shards": total_shards,
                 "instrument_rows": total_instrument_rows,
@@ -2315,7 +2342,7 @@ class DataStatusService:
             "overall_shards_found": overall_shards_found,
             "overall_shards_expected": overall_shards_expected,
             "migration_in_progress": migration_in_progress,
-            "categories": result_categories,
+            "asset_groups": result_categories,
         }
 
     def _has_active_migration_vm(self, service: str) -> bool:
@@ -3765,8 +3792,15 @@ class DataStatusService:
             manifest_dt_vals = {
                 str(v) for v in filtered["data_type"].unique() if v and str(v).strip()
             }
+        # SPORTS: SSOT is canonical. Drop manifest data_types not in
+        # SPORTS_DATA_TYPE_META — they're residual rows from removed entities
+        # (e.g. SFI_STANDINGS, intentionally absent: SFI has no standings
+        # endpoint) that would otherwise render as a row with empty
+        # source/axis/unit and a misleading completion %. For non-SPORTS,
+        # iterating over SSOT maps is not implemented yet — fall back to
+        # whatever the manifest contains.
         sports_ssot_vals: set[str] = set(SPORTS_DATA_TYPE_META.keys()) if is_sports else set()
-        all_dt_vals: set[str] = manifest_dt_vals | sports_ssot_vals
+        all_dt_vals: set[str] = sports_ssot_vals if is_sports else manifest_dt_vals
         for dt_val in sorted(all_dt_vals):
             if not dt_val or not str(dt_val).strip():
                 continue
@@ -4367,7 +4401,7 @@ class DataStatusService:
         categories_info: dict[str, object] = {}
         last_updated_info: dict[str, object] = {
             "service": service,
-            "categories": categories_info,
+            "asset_groups": categories_info,
             "overall_last_updated": None,
         }
 

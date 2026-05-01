@@ -186,7 +186,7 @@ class TestGetShardDetailGrouped:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                category="CEFI",
+                asset_group="CEFI",
                 instrument_type="options_chain",
                 data_type="options_chain",
                 day="2026-04-18",
@@ -211,7 +211,7 @@ class TestGetShardDetailGrouped:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                category="CEFI",
+                asset_group="CEFI",
                 instrument_type="options_chain",
                 data_type="options_chain",
                 day="2026-04-18",
@@ -243,7 +243,7 @@ class TestGetShardDetailPerSymbol:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                category="CEFI",
+                asset_group="CEFI",
                 instrument_type="PERPETUAL",
                 data_type="trades",
                 day="2026-04-18",
@@ -281,7 +281,7 @@ class TestGetShardDetailReference:
         ):
             resp = svc.get_shard_detail(
                 service="instruments-service",
-                category="CEFI",
+                asset_group="CEFI",
                 instrument_type="OPTION",
                 data_type="instruments",
                 day="2026-04-18",
@@ -310,7 +310,7 @@ class TestGetShardDetailFixtures:
         ):
             resp = svc.get_shard_detail(
                 service="instruments-service",
-                category="SPORTS",
+                asset_group="SPORTS",
                 instrument_type="FIXTURE",
                 data_type="fixtures",
                 day="2026-04-12",
@@ -342,7 +342,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="DEFI",
+                asset_group="DEFI",
                 venue="ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -365,7 +365,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="DEFI",
+                asset_group="DEFI",
                 venue="AAVE_V3-ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -381,7 +381,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="DEFI",
+                asset_group="DEFI",
                 venue="ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -411,10 +411,10 @@ class TestFetchVenueDetailCefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="CEFI",
+                asset_group="CEFI",
                 venue="BINANCE",
             )
-        assert resp.category == "CEFI"
+        assert resp.asset_group == "CEFI"
         assert resp.venue == "BINANCE"
         assert resp.total_instruments == 2
         assert len(resp.instruments) == 2

@@ -11,7 +11,7 @@ Design decisions:
 - 3-minute TTL balances freshness vs performance (deployments take 3-4+ minutes anyway)
 - In-memory only - no cross-machine sharing, clears on restart
 - Thread-safe with locks
-- Cache key includes: service, start_date, end_date, category, include_sub_dimensions, etc.
+- Cache key includes: service, start_date, end_date, asset_group, include_sub_dimensions, etc.
   So different date ranges = different cache entries = fresh scans
 """
 
@@ -41,7 +41,7 @@ def _make_cache_key(
     service: str,
     start_date: str,
     end_date: str,
-    category: list[str] | None,
+    asset_group: list[str] | None,
     venue: list[str] | None = None,
     folder: list[str] | None = None,
     data_type: list[str] | None = None,
@@ -74,7 +74,7 @@ def _make_cache_key(
         "service": service,
         "start_date": start_date,
         "end_date": end_date,
-        "category": sorted(category) if category else None,
+        "asset_group": sorted(asset_group) if asset_group else None,
         "venue": sorted(venue) if venue else None,
         "folder": sorted(folder) if folder else None,
         "data_type": sorted(data_type) if data_type else None,
@@ -94,7 +94,7 @@ def get_cached_result(
     service: str,
     start_date: str,
     end_date: str,
-    category: list[str] | None,
+    asset_group: list[str] | None,
     venue: list[str] | None = None,
     folder: list[str] | None = None,
     data_type: list[str] | None = None,
@@ -115,7 +115,7 @@ def get_cached_result(
         service,
         start_date,
         end_date,
-        category,
+        asset_group,
         venue,
         folder,
         data_type,
@@ -164,7 +164,7 @@ def set_cached_result(
     service: str,
     start_date: str,
     end_date: str,
-    category: list[str] | None,
+    asset_group: list[str] | None,
     venue: list[str] | None = None,
     folder: list[str] | None = None,
     data_type: list[str] | None = None,
@@ -187,7 +187,7 @@ def set_cached_result(
         service,
         start_date,
         end_date,
-        category,
+        asset_group,
         venue,
         folder,
         data_type,
@@ -259,8 +259,8 @@ def _truncate_venue_dates(venue_data: dict[str, object], max_items: int, half: i
             _truncate_found_missing(cast(dict[str, object], dt_data_raw), max_items, half)
 
 
-def _truncate_category_dates(cat_data: dict[str, object], max_items: int, half: int) -> None:
-    """Truncate dates lists in a category dict including nested venues."""
+def _truncate_asset_group_dates(cat_data: dict[str, object], max_items: int, half: int) -> None:
+    """Truncate dates lists in an asset group dict including nested venues."""
     _truncate_found_missing(cat_data, max_items, half)
     venues_raw: object = cat_data.get("venues") or {}
     venues_map = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
@@ -277,15 +277,15 @@ def truncate_dates_list(result: dict[str, object], max_items: int = 50) -> dict[
     - If len <= max_items: keep as-is
     - If len > max_items: keep first 25 and last 25, mark as truncated
 
-    This is applied recursively to categories and venues.
+    This is applied recursively to asset groups and venues.
     """
     truncated = copy.deepcopy(result)
     half = max_items // 2
-    cats_raw: object = truncated.get("categories") or {}
+    cats_raw: object = truncated.get("asset_groups") or {}
     cats_map = cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
     for _cat_name, cat_data_raw in cats_map.items():
         if isinstance(cat_data_raw, dict):
-            _truncate_category_dates(cast(dict[str, object], cat_data_raw), max_items, half)
+            _truncate_asset_group_dates(cast(dict[str, object], cat_data_raw), max_items, half)
     return truncated
 
 

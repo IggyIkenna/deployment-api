@@ -92,13 +92,13 @@ class TestRequestSizeGuard:
         max_estimated_checks = 35_000
         start_date = "2020-01-01"
         end_date = "2026-02-08"
-        categories = ["CEFI", "TRADFI", "DEFI"]
+        asset_groups = ["CEFI", "TRADFI", "DEFI"]
         num_venues_per_category = 20  # Mock: enough venues to trigger guard
 
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
         days = (end_dt - start_dt).days + 1
-        total_venues = num_venues_per_category * len(categories)
+        total_venues = num_venues_per_category * len(asset_groups)
         estimated = days * total_venues
 
         # Verify the guard WOULD trigger
@@ -108,9 +108,9 @@ class TestRequestSizeGuard:
 
         # Verify the error detail message would be correct
         guard_detail = (
-            f"Request too large: {days} days x {total_venues} venues x {len(categories)} categories "
+            f"Request too large: {days} days x {total_venues} venues x {len(asset_groups)} asset groups "
             f"= ~{estimated:,} GCS checks (limit {max_estimated_checks:,}). "
-            "Narrow the date range (e.g. last 6-12 months), select specific categories, or add venue filter."
+            "Narrow the date range (e.g. last 6-12 months), select specific asset groups, or add venue filter."
         )
         assert "Request too large" in guard_detail
         assert "Narrow the date range" in guard_detail
@@ -218,16 +218,16 @@ class TestInstrumentTypeExtraction:
                 service="market-tick-data-handler",
                 start_date="2024-01-01",
                 end_date="2024-01-02",
-                category=["CEFI"],
+                asset_groups=["CEFI"],
                 include_sub_dimensions=True,
                 include_instrument_types=False,  # instrument_types extraction uses separate code path
             )
         )
 
         # Verify structure
-        assert "categories" in result
-        assert "CEFI" in result["categories"]
-        cefi = result["categories"]["CEFI"]
+        assert "asset_groups" in result
+        assert "CEFI" in result["asset_groups"]
+        cefi = result["asset_groups"]["CEFI"]
 
         # Should have data_types breakdown (sub-dimension for market-tick-data-handler)
         assert "data_types" in cefi
@@ -1001,7 +1001,7 @@ class TestMetricConsistency:
         response_complete = {
             "overall_completion_pct": 100.0,
             "total_missing": 0,
-            "categories": {
+            "asset_groups": {
                 "CEFI": {"dates_missing": 0},
                 "TRADFI": {"dates_missing": 0},
             },
@@ -1014,14 +1014,14 @@ class TestMetricConsistency:
         response_partial = {
             "overall_completion_pct": 97.4,
             "total_missing": 19,
-            "categories": {
+            "asset_groups": {
                 "CEFI": {"dates_missing": 0},  # Category level shows 0!
                 "TRADFI": {"dates_missing": 0},  # Category level shows 0!
             },
         }
         # Category-level dates_missing can be 0 while venue-weighted total_missing > 0
         # This is why we use total_missing (venue-weighted) for consistency
-        sum(cat["dates_missing"] for cat in response_partial["categories"].values())
+        sum(cat["dates_missing"] for cat in response_partial["asset_groups"].values())
         # Category sum might be 0 while overall is not complete
         # This is the bug we fixed: use total_missing, not category sum
         assert response_partial["total_missing"] > 0
@@ -1055,28 +1055,28 @@ class TestMetricConsistency:
 
 
 class TestTotalMissingFallback:
-    """Tests for total_missing fallback to category-level when no venues found.
+    """Tests for total_missing fallback to asset-group-level when no venues found.
 
     Bug fixed: When no venues are found (e.g., services without venue breakdown),
     total_missing was 0 even though dates_missing showed missing data.
     This caused "All expected data present" to show incorrectly with 0% completion.
     """
 
-    def test_no_venues_uses_category_level_missing(self):
-        """Test that total_missing uses category-level when no venue data exists.
+    def test_no_venues_uses_asset_group_level_missing(self):
+        """Test that total_missing uses asset-group-level when no venue data exists.
 
         This tests the logic:
         - If total_venue_expected > 0: use venue-weighted missing
-        - Else: use category-level missing (fallback)
+        - Else: use asset-group-level missing (fallback)
         """
 
         # Simulate the calculation from data_status.py
         def calculate_total_missing(results, total_venue_expected, total_venue_found):
             """Replicate the fixed logic from data_status.py."""
-            total_expected_category = sum(
+            total_expected_asset_group = sum(
                 r.get("dates_expected", 0) for r in results.values() if "error" not in r
             )
-            total_found_category = sum(
+            total_found_asset_group = sum(
                 r.get("dates_found", 0) for r in results.values() if "error" not in r
             )
 
@@ -1084,8 +1084,8 @@ class TestTotalMissingFallback:
                 # Use venue-weighted
                 return total_venue_expected - total_venue_found
             else:
-                # Fallback to category-level
-                return total_expected_category - total_found_category
+                # Fallback to asset-group-level
+                return total_expected_asset_group - total_found_asset_group
 
         # Case 1: Service with venue data (instruments-service)
         results_with_venues = {"CEFI": {"dates_expected": 30, "dates_found": 30}}
@@ -1095,7 +1095,7 @@ class TestTotalMissingFallback:
         # Case 2: Service without venue data (e.g., market-data-processing DEFI)
         results_no_venues = {"DEFI": {"dates_expected": 3, "dates_found": 0}}
         total_missing = calculate_total_missing(results_no_venues, 0, 0)
-        assert total_missing == 3  # Falls back to category level
+        assert total_missing == 3  # Falls back to asset-group level
 
     def test_zero_total_missing_requires_zero_category_missing(self):
         """Test that total_missing=0 implies all category dates_missing are 0.
@@ -1253,7 +1253,7 @@ class TestDatesFoundListIncluded:
         """Test that turbo endpoint has filterable parameters.
 
         Note: include_dates_list is planned but not yet in the endpoint signature.
-        This test validates the existing filter parameters (category, venue).
+        This test validates the existing filter parameters (asset_group, venue).
         """
         import inspect
 
@@ -1261,7 +1261,7 @@ class TestDatesFoundListIncluded:
 
         sig = inspect.signature(get_data_status_turbo)
         params = list(sig.parameters.keys())
-        assert "category" in params
+        assert "asset_group" in params
         assert "venue" in params
 
     def test_dates_found_list_format(self):
@@ -1284,11 +1284,13 @@ class TestDatesFoundListIncluded:
         """Test that dates_found_list is empty when no data exists."""
         # When a category has no data, dates_found_list should be []
         sample_response = {
-            "categories": {"DEFI": {"dates_found": 0, "dates_expected": 3, "dates_found_list": []}}
+            "asset_groups": {
+                "DEFI": {"dates_found": 0, "dates_expected": 3, "dates_found_list": []}
+            }
         }
 
-        assert sample_response["categories"]["DEFI"]["dates_found_list"] == []
-        assert sample_response["categories"]["DEFI"]["dates_found"] == 0
+        assert sample_response["asset_groups"]["DEFI"]["dates_found_list"] == []
+        assert sample_response["asset_groups"]["DEFI"]["dates_found"] == 0
 
 
 class TestDefiVenueExtraction:
@@ -1862,7 +1864,7 @@ class TestServiceCategoryScope:
             start_date="2025-01-01",
             end_date="2025-01-02",
         )
-        assert set(result["categories"].keys()) == {"DEFI"}
+        assert set(result["asset_groups"].keys()) == {"DEFI"}
 
     def test_features_sports_returns_only_sports(self):
         """features-sports-service should only return SPORTS."""
@@ -1874,7 +1876,7 @@ class TestServiceCategoryScope:
             start_date="2025-01-01",
             end_date="2025-01-02",
         )
-        assert set(result["categories"].keys()) == {"SPORTS"}
+        assert set(result["asset_groups"].keys()) == {"SPORTS"}
 
     def test_features_commodity_returns_only_tradfi(self):
         """features-commodity-service should only return TRADFI."""
@@ -1886,7 +1888,7 @@ class TestServiceCategoryScope:
             start_date="2025-01-01",
             end_date="2025-01-02",
         )
-        assert set(result["categories"].keys()) == {"TRADFI"}
+        assert set(result["asset_groups"].keys()) == {"TRADFI"}
 
     def test_mdps_returns_only_cefi_tradfi_defi(self):
         """market-data-processing-service should not render SPORTS/PREDICTION."""
@@ -1898,7 +1900,7 @@ class TestServiceCategoryScope:
             start_date="2025-01-01",
             end_date="2025-01-02",
         )
-        assert set(result["categories"].keys()) == {"CEFI", "TRADFI", "DEFI"}
+        assert set(result["asset_groups"].keys()) == {"CEFI", "TRADFI", "DEFI"}
 
     def test_instruments_service_returns_all_five(self):
         """instruments-service has no restriction — must emit all 5 categories."""
@@ -1910,7 +1912,7 @@ class TestServiceCategoryScope:
             start_date="2025-01-01",
             end_date="2025-01-02",
         )
-        assert set(result["categories"].keys()) == {
+        assert set(result["asset_groups"].keys()) == {
             "CEFI",
             "TRADFI",
             "DEFI",
@@ -1955,7 +1957,7 @@ class TestCoverageSemantics:
         assert attempt_expected == 99
         assert COVERAGE_SEMANTICS["PREDICTION"] == "event_driven"
 
-        # Simulate the header calc in _build_manifest_category
+        # Simulate the header calc in _build_manifest_asset_group
         capture_pct = round(8191 / 35049 * 100, 2)  # = 23.37
         attempt_pct = round(attempt_found / attempt_expected * 100, 2)
         empty_rate = round(1.0 - (capture_pct / attempt_pct), 4)
