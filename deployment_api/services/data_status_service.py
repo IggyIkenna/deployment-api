@@ -2984,7 +2984,92 @@ class DataStatusService:
             if league_breakdown:
                 venue_entry["leagues"] = league_breakdown
 
+        # Features services emit per-(timeframe, feature_group) shards. Surface
+        # those as drill-down dimensions when the manifest carries them so the
+        # deployment-ui can show coverage per (15s/1m/15m/1h × feature_group).
+        is_features_service = service.startswith("features-")
+        if is_features_service:
+            tf_breakdown = self._build_timeframe_breakdown(v_df, eff_start, end_date)
+            if tf_breakdown:
+                venue_entry["timeframes"] = tf_breakdown
+            fg_breakdown = self._build_feature_group_breakdown(v_df, eff_start, end_date)
+            if fg_breakdown:
+                venue_entry["feature_groups"] = fg_breakdown
+
         return venue_entry
+
+    @staticmethod
+    def _build_simple_dimension_breakdown(
+        venue_df: pd.DataFrame,
+        column: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Generic per-dimension breakdown for features-* services.
+
+        Counts unique (date, value) pairs for ``column`` and returns
+        per-value dates_found / dates_expected (= unique observed dates in
+        the slice) / completion_pct. No phantom-clamp / UAC-expected logic
+        because features services are downstream and inherit upstream
+        coverage; the surfaced ``completion_pct`` reflects produced-vs-seen.
+        """
+        if column not in venue_df.columns:
+            return {}
+        col_series = venue_df[column].astype(str)
+        values = sorted(v for v in col_series.unique() if v and v.strip() and v != "nan")
+        if not values:
+            return {}
+        # Universe of dates observed in this slice (clamped to the requested
+        # window). For features services this is the natural "expected" set —
+        # if delta-one wrote feature_group=X on day D, that shard is expected.
+        slice_dates = {
+            str(d)
+            for d in venue_df["date"].unique()
+            if start_date <= str(d) <= end_date
+        }
+        total_expected = len(slice_dates)
+        result: dict[str, object] = {}
+        for value in values:
+            sub_df = venue_df[col_series == value]
+            sub_dates = {
+                str(d)
+                for d in sub_df["date"].unique()
+                if start_date <= str(d) <= end_date
+            }
+            found = len(sub_dates)
+            missing = sorted(slice_dates - sub_dates)
+            pct = round(found / max(1, total_expected) * 100, 2)
+            result[value] = {
+                "dates_found": found,
+                "dates_expected": total_expected,
+                "dates_missing": len(missing),
+                "dates_found_list": sorted(sub_dates),
+                "missing_dates": missing,
+                "completion_pct": min(pct, 100.0),
+            }
+        return result
+
+    def _build_timeframe_breakdown(
+        self,
+        venue_df: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Per-timeframe coverage for features-* services (15s/1m/15m/1h)."""
+        return self._build_simple_dimension_breakdown(
+            venue_df, "timeframe", start_date, end_date
+        )
+
+    def _build_feature_group_breakdown(
+        self,
+        venue_df: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        """Per-feature_group coverage for features-* services."""
+        return self._build_simple_dimension_breakdown(
+            venue_df, "feature_group", start_date, end_date
+        )
 
     def _build_instrument_type_breakdown(
         self,
