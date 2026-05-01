@@ -89,7 +89,7 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
         "rows_out": 11_987,
         "rows_error": 13,
         "events_emitted": 42,
-        "log_uri": "gs://deployment-scripts-central-element-323112/vm-logs/canonical-migration-cefi-20260418-042359/run.log",
+        "log_uri": "gs://deployment-scripts-${GCP_PROJECT_ID}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",
     }
     defaults.update(kwargs)
     return VmDeploymentEntryModel(**cast(dict[str, object], defaults))

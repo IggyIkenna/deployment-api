@@ -13,6 +13,7 @@ from typing import cast
 
 import yaml
 from unified_api_contracts.internal import MarketCategory
+from unified_trading_library import build_bucket
 
 from deployment_api.settings import gcp_project_id as _pid
 
@@ -24,10 +25,12 @@ LIVE_PATH_PREFIX = "live/"
 
 # Build per-category bucket dicts from MarketCategory enum — SSOT in UAC.
 _instruments_buckets = {
-    cat.value: f"instruments-store-{cat.value.lower()}-{_pid}" for cat in MarketCategory
+    cat.value: build_bucket("instruments", project_id=_pid, asset_group=cat.value.lower())
+    for cat in MarketCategory
 }
 _tick_buckets = {
-    cat.value: f"market-data-tick-{cat.value.lower()}-{_pid}" for cat in MarketCategory
+    cat.value: build_bucket("raw_tick_data", project_id=_pid, asset_group=cat.value.lower())
+    for cat in MarketCategory
 }
 
 # Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL

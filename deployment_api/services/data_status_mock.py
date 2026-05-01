@@ -297,7 +297,7 @@ def build_mock_shard_instruments(
     instruments: list[dict[str, object]] = [
         {
             "instrument_id": f"{venue}-CAPTURED-1",
-            "file_uri": f"gs://mock/{venue}/{day}/CAPTURED-1.parquet",
+            "file_uri": f"gs://mock/{venue}/{day}/CAPTURED-1.parquet",  # noqa: gs-uri — mock fixture URI
             "size_bytes": 1024,
             "capture_status": "captured",
             "error_reason": "",
@@ -305,7 +305,7 @@ def build_mock_shard_instruments(
         },
         {
             "instrument_id": f"{venue}-EMPTY-1",
-            "file_uri": f"gs://mock/{venue}/{day}/EMPTY-1.parquet",
+            "file_uri": f"gs://mock/{venue}/{day}/EMPTY-1.parquet",  # noqa: gs-uri — mock fixture URI
             "size_bytes": 0,
             "capture_status": "empty_confirmed",
             "error_reason": "",
@@ -313,7 +313,7 @@ def build_mock_shard_instruments(
         },
         {
             "instrument_id": f"{venue}-FAILED-1",
-            "file_uri": f"gs://mock/{venue}/{day}/FAILED-1.parquet",
+            "file_uri": f"gs://mock/{venue}/{day}/FAILED-1.parquet",  # noqa: gs-uri — mock fixture URI
             "size_bytes": 0,
             "capture_status": "attempted_failed",
             "error_reason": "RATE_LIMIT_HIT",

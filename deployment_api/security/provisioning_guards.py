@@ -7,7 +7,7 @@ Org owners (comma list in `ORG_OWNER_EMAILS`) may grant `admin` / `super_admin`.
 from __future__ import annotations
 
 from fastapi import HTTPException
-from unified_api_contracts.internal.schemas.rbac import UserRole
+from unified_api_contracts.internal import UserRole
 
 ROLE_RANK: dict[UserRole, int] = {
     UserRole.VIEWER: 0,

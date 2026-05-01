@@ -38,6 +38,40 @@ IMPORT_INSIDE_EXCLUDE_GLOBS=(
 # Schema provenance: deployment-api-internal Pydantic models not yet in UAC
 SCHEMA_PROVENANCE_SKIP=true
 
+# Empty string / dict / list fallbacks: JSON-parsing routes/services with safe-default
+# .get(field, "") patterns when reading optional manifest/config fields. Same pattern as
+# PM's QG comment — admin/codegen utilities, not os.getenv anti-pattern.
+EMPTY_STR_EXCLUDE_GLOBS=(
+    "!**/services/user_management.py"
+    "!**/services/data_status_drilldown.py"
+    "!**/services/data_status_service.py"
+    "!**/routes/epics.py"
+    "!**/routes/checklist.py"
+    "!**/routes/deployment_validation.py"
+    "!**/routes/_code_builds_aws.py"
+    "!**/routes/deployments.py"
+    "!**/routes/builds.py"
+)
+EMPTY_DICT_LIST_EXCLUDE_GLOBS=(
+    "!**/services/user_management.py"
+    "!**/services/data_status_drilldown.py"
+    "!**/services/data_status_service.py"
+    "!**/routes/epics.py"
+    "!**/routes/checklist.py"
+    "!**/routes/deployment_validation.py"
+    "!**/routes/_code_builds_aws.py"
+    "!**/routes/deployments.py"
+    "!**/routes/builds.py"
+    "!**/services/upcoming_fixtures.py"
+    "!**/routes/data_status.py"
+    "!**/services/shard_detail.py"
+)
+
+# Direct cloud SDK: shard_detail.py uses google.cloud.storage for parquet footer reads
+# (not covered by UCI's high-level abstraction layer — needed for byte-range fetches
+# on options-chain bundles). Documented carve-out.
+CLOUD_SDK_EXCLUDE_GLOBS=("!**/services/shard_detail.py")
+
 # Deep unified lib imports: UTL sub-packages not re-exported from top-level
 DEEP_IMPORT_EXCLUDE_GLOBS=(
     "!**/auth.py"

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
 from unified_api_contracts.internal import MarketCategory
+from unified_trading_library import build_bucket
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import (
@@ -495,7 +496,7 @@ class DataQueryService:
         venue's parquet, extract ``instrument_key`` + ``instrument_type``,
         return the union. Bounded by ``_SEARCH_LISTING_CAP`` parquet reads.
         """
-        bucket = f"instruments-store-{category}-{self.project_id}"
+        bucket = build_bucket("instruments", project_id=self.project_id, asset_group=category)
         latest_day = self._latest_available_day(bucket)
         if latest_day is None:
             return []

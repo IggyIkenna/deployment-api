@@ -38,7 +38,7 @@ from unified_api_contracts import (
     lookup_contract,
 )
 from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
-from unified_trading_library import read_availability_index
+from unified_trading_library import build_bucket, read_availability_index
 
 from deployment_api.services.data_status_drilldown import (
     _read_parquet_columns,  # pyright: ignore[reportPrivateUsage]
@@ -907,7 +907,7 @@ def get_shard_detail(
 
 
 def _instruments_bucket_for_category(category: str) -> str:
-    return f"instruments-store-{category.lower()}-{_pid}"
+    return build_bucket("instruments", project_id=_pid, asset_group=category.lower())
 
 
 # Compiled regex for stripping the underscore in DeFi protocol-version

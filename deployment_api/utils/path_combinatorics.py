@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import cast
 
 import yaml
+from unified_api_contracts.internal import MarketCategory
 
 logger = logging.getLogger(__name__)
 
@@ -767,7 +768,11 @@ class PathCombinatorics:
         # Get all venues for the asset group(s)
         target_venues: set[str] = set()
         # CORRECT-LOCAL: when no filter, include default main asset groups
-        default_main_groups = ["CEFI", "TRADFI", "DEFI"]
+        default_main_groups = [
+            MarketCategory.CEFI.value,
+            MarketCategory.TRADFI.value,
+            MarketCategory.DEFI.value,
+        ]
         asset_groups = [asset_group.upper()] if asset_group else default_main_groups
 
         for ag in asset_groups:

@@ -23,7 +23,7 @@ _SPORTS_BUCKET_TEMPLATE = "instruments-store-sports-{pid}"
 _MAX_DAYS = 31
 
 
-class UpcomingFixture(TypedDict):
+class UpcomingFixture(TypedDict):  # CORRECT-LOCAL — API response shape, no cross-service consumer
     """One fixture row for the upcoming fixtures API.
 
     Serialized directly as JSON by FastAPI. ``kickoff_utc`` is an ISO-8601
