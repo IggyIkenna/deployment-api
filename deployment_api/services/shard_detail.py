@@ -390,7 +390,17 @@ def _mtds_shard_path(
     underlying: str | None,
     instrument_id: str | None,
 ) -> tuple[str, str] | None:
-    """MTDS-family parquet path resolution — isolated for complexity budget."""
+    """MTDS-family parquet path resolution — isolated for complexity budget.
+
+    Builds a ``category={ag}/`` prefix; ``list_objects`` (via the dual-vocab
+    helper in ``storage_facade.list_objects``) transparently fans out to
+    both ``category=`` (legacy on-disk) and ``asset_group=`` (canonical
+    new writes).  Per CLAUDE.md SSOT the two coexist on disk without a
+    re-keying migration.  When ``leaf`` is supplied (full path known) we
+    list the venue+data_type level prefix and pick the parquet matching
+    the leaf — this makes the hot path correct under either vocabulary
+    rather than blindly returning a path that may not exist on disk.
+    """
     it_disk = (instrument_type or "").lower()
     dt_disk = (data_type or "").lower()
     venue_disk = (venue or "").upper()
@@ -404,10 +414,22 @@ def _mtds_shard_path(
         "futures_chain",
     }
     if leaf and is_derivative_bundle:
-        return (bucket, f"{prefix}underlying={leaf}/ticks.parquet")
+        # underlying= bundle: leaf is the underlying; pick the existing
+        # path under either hive vocabulary.
+        target_suffix = f"underlying={leaf}/ticks.parquet"
+        for o in list_objects(bucket, prefix, max_results=200):
+            n = getattr(o, "name", "")
+            if isinstance(n, str) and n.endswith(target_suffix):
+                return (bucket, n)
+        return None
     if leaf:
-        return (bucket, f"{prefix}{leaf}.parquet")
-    # No leaf: fall back to listing the prefix and returning the first parquet.
+        target_suffix = f"/{leaf}.parquet"
+        for o in list_objects(bucket, prefix, max_results=200):
+            n = getattr(o, "name", "")
+            if isinstance(n, str) and n.endswith(target_suffix):
+                return (bucket, n)
+        return None
+    # No leaf: list the prefix and return the first parquet.
     name = _list_first_parquet(bucket, prefix)
     if name is None:
         return None

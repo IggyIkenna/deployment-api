@@ -10,6 +10,7 @@ Local dev uses DEPLOYMENT_ENV=development and always goes through GCS API.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,13 @@ from pathlib import Path
 from deployment_api.settings import DEPLOYMENT_ENV, STATE_BUCKET
 
 logger = logging.getLogger(__name__)
+
+# Asset-group hive vocabulary regex.  Per workspace SSOT (CLAUDE.md):
+# ``asset_group=`` is canonical for new MTDS writes; ``category=`` is the
+# legacy on-disk form preserved without a re-keying migration.  Drill-down
+# probes must list under BOTH variants and merge so historical + new shards
+# are both visible in the deployment UI.
+_HIVE_VOCAB_RE = re.compile(r"(?:category|asset_group)=(cefi|defi|tradfi|sports|prediction)/")
 
 
 def get_gcs_fuse_status() -> dict[str, object]:
@@ -83,7 +91,45 @@ def list_objects(
     List objects at prefix. Uses FUSE when production + mounted, else GCS API.
 
     Returns list of ObjectInfo with name (full path), updated, size.
+
+    When the prefix contains a hive segment of the form
+    ``(category|asset_group)={cefi|defi|tradfi|sports|prediction}/`` the
+    listing transparently fans out to both vocabularies (canonical
+    ``asset_group=`` AND legacy ``category=``) and merges results.  Per
+    workspace SSOT (CLAUDE.md): ``asset_group=`` is canonical for new
+    MTDS writes; ``category=`` is the legacy on-disk form preserved
+    without re-keying.  Callers don't need to know which form the data
+    actually lives under.
     """
+    m = _HIVE_VOCAB_RE.search(prefix)
+    if m:
+        ag = m.group(1)
+        canonical_prefix = _HIVE_VOCAB_RE.sub(f"asset_group={ag}/", prefix, count=1)
+        legacy_prefix = _HIVE_VOCAB_RE.sub(f"category={ag}/", prefix, count=1)
+        if canonical_prefix == legacy_prefix:
+            return _list_one(bucket_name, canonical_prefix, max_results, delimiter)
+        out_canonical = _list_one(bucket_name, canonical_prefix, max_results, delimiter)
+        out_legacy = _list_one(bucket_name, legacy_prefix, max_results, delimiter)
+        if not out_canonical:
+            return out_legacy
+        if not out_legacy:
+            return out_canonical
+        seen: set[str] = set()
+        merged: list[ObjectInfo] = []
+        for obj in (*out_canonical, *out_legacy):
+            if obj.name not in seen:
+                seen.add(obj.name)
+                merged.append(obj)
+        return merged
+    return _list_one(bucket_name, prefix, max_results, delimiter)
+
+
+def _list_one(
+    bucket_name: str,
+    prefix: str,
+    max_results: int | None,
+    delimiter: str | None,
+) -> list[ObjectInfo]:
     if _use_gcs_fuse() and _is_bucket_mounted(bucket_name):
         return _list_objects_fuse(bucket_name, prefix, max_results, delimiter)
     return _list_objects_api(bucket_name, prefix, max_results, delimiter)
