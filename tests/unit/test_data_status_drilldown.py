@@ -34,7 +34,7 @@ def _clear_cache():
 class TestGetSchemaForShard:
     def test_registered_contract_returns_columns(self):
         result = drilldown.get_schema_for_shard(
-            category="cefi",
+            asset_group="cefi",
             instrument_type="perpetual",
             data_type="trades",
         )
@@ -50,7 +50,7 @@ class TestGetSchemaForShard:
 
     def test_unregistered_shard_falls_back_gracefully(self):
         result = drilldown.get_schema_for_shard(
-            category="cefi",
+            asset_group="cefi",
             instrument_type="unknown_type",
             data_type="unknown_dt",
         )
@@ -61,7 +61,7 @@ class TestGetSchemaForShard:
     def test_venue_override_source_flagged(self):
         # Aave V3 lending indices has a venue-specific contract override.
         result = drilldown.get_schema_for_shard(
-            category="defi",
+            asset_group="defi",
             instrument_type="lending",
             data_type="lending_indices",
             venue="AAVE_V3",
@@ -77,7 +77,7 @@ class TestGetSchemaForShard:
         normalises both to the canonical form so the Uniswap V3
         ``pool_address`` override resolves."""
         result = drilldown.get_schema_for_shard(
-            category="DEFI",
+            asset_group="DEFI",
             instrument_type="POOL",
             data_type="POOL_DEFINITION",
             venue="UNISWAP_V3",
@@ -89,7 +89,7 @@ class TestGetSchemaForShard:
 
     def test_uppercase_uniswap_v4_resolves_pool_id(self):
         result = drilldown.get_schema_for_shard(
-            category="DEFI",
+            asset_group="DEFI",
             instrument_type="POOL",
             data_type="POOL_DEFINITION",
             venue="UNISWAP_V4",
@@ -101,7 +101,7 @@ class TestGetSchemaForShard:
     def test_uppercase_data_type_alias_resolves(self):
         # POOL_SNAPSHOT is a UI-level alias for dex_pool_state.
         result = drilldown.get_schema_for_shard(
-            category="DEFI",
+            asset_group="DEFI",
             instrument_type="POOL",
             data_type="POOL_SNAPSHOT",
             venue="CURVE",
@@ -135,7 +135,7 @@ class TestListInstrumentsForShard:
         with patch.object(drilldown, "list_objects", return_value=objects):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="BINANCE",
                 day="2025-04-01",
                 instrument_type="perpetual",
@@ -160,7 +160,7 @@ class TestListInstrumentsForShard:
         with patch.object(drilldown, "list_objects", return_value=objects):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="DERIBIT",
                 day="2025-04-01",
                 instrument_type="options_chain",
@@ -190,7 +190,7 @@ class TestListInstrumentsForShard:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -231,7 +231,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -251,7 +251,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -271,7 +271,7 @@ class TestSearchAndPagination:
         ):
             page1 = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -281,7 +281,7 @@ class TestSearchAndPagination:
             )
             page2 = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -291,7 +291,7 @@ class TestSearchAndPagination:
             )
             page3 = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -320,7 +320,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -342,7 +342,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -366,7 +366,7 @@ class TestSearchAndPagination:
         with patch.object(drilldown, "list_objects", return_value=objects):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="DERIBIT",
                 day="2025-04-01",
                 instrument_type="options_chain",
@@ -386,7 +386,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -403,7 +403,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -421,7 +421,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -458,7 +458,7 @@ class TestSearchAndPagination:
         ):
             result = drilldown.list_instruments_for_shard(
                 service="instruments-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="BINANCE",
                 day="2025-04-01",
                 instrument_type="perpetual",
@@ -505,7 +505,7 @@ class TestPreviewBundleSymbols:
         ):
             result = drilldown.preview_bundle_symbols(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="DERIBIT",
                 day="2025-04-01",
                 instrument_type="options_chain",
@@ -521,7 +521,7 @@ class TestPreviewBundleSymbols:
     def test_non_bundled_returns_explanatory_message(self):
         result = drilldown.preview_bundle_symbols(
             service="market-tick-data-service",
-            category="cefi",
+            asset_group="cefi",
             venue="BINANCE",
             day="2025-04-01",
             instrument_type="perpetual",
@@ -547,7 +547,7 @@ class TestGetShardInfo:
         with patch.object(drilldown, "list_objects", return_value=objects):
             result = drilldown.get_shard_info(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="DERIBIT",
                 day="2025-04-01",
                 data_type="trades",
@@ -570,7 +570,7 @@ class TestGetShardInfo:
         with patch.object(drilldown, "list_objects", return_value=objects):
             result = drilldown.get_shard_info(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 data_type="trades",
@@ -582,7 +582,7 @@ class TestGetShardInfo:
         with patch.object(drilldown, "list_objects", return_value=[]):
             result = drilldown.get_shard_info(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="BINANCE",
                 day="2025-04-01",
                 data_type="trades",
@@ -635,7 +635,7 @@ class TestComputeBucketCounts:
         ):
             result = drilldown.compute_bucket_counts(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 data_type="trades",
@@ -656,7 +656,7 @@ class TestComputeBucketCounts:
         with patch.object(drilldown, "list_objects", return_value=objects):
             result = drilldown.compute_bucket_counts(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="BINANCE",
                 day="2025-04-01",
                 data_type="trades",
@@ -695,7 +695,7 @@ class TestBuildCsvExport:
         ):
             csv_text, rows, fname = drilldown.build_csv_export(
                 service="market-tick-data-service",
-                category="cefi",
+                asset_group="cefi",
                 venue="BINANCE",
                 day="2025-04-01",
                 instrument_type="perpetual",
@@ -731,7 +731,7 @@ class TestBuildCsvExport:
         ):
             csv_text, rows, _fname = drilldown.build_csv_export(
                 service="market-tick-data-service",
-                category="prediction",
+                asset_group="prediction",
                 venue="POLYMARKET",
                 day="2025-04-01",
                 instrument_type="OTHER",
@@ -756,7 +756,7 @@ class TestBuildCsvExport:
             with pytest.raises(ValueError, match="BigQuery"):
                 drilldown.build_csv_export(
                     service="market-tick-data-service",
-                    category="cefi",
+                    asset_group="cefi",
                     venue="BINANCE",
                     day="2025-04-01",
                     instrument_type="perpetual",

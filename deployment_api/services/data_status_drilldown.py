@@ -325,14 +325,14 @@ _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE: dict[str, str] = {
 _AUTO_SENTINELS: frozenset[str] = frozenset({"auto", "unknown", "auto_detect_fail", ""})
 
 
-def _resolve_sports_instrument_type(category: str, instrument_type: str, data_type: str) -> str:
+def _resolve_sports_instrument_type(asset_group: str, instrument_type: str, data_type: str) -> str:
     """If category=sports and instrument_type is empty/AUTO, infer from data_type.
 
     The UI passes ``"AUTO"`` (uppercase sentinel) at SPORTS click sites — the
     SPORTS manifest has no instrument_type axis, so we resolve it from
     ``data_type`` via :data:`_SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE`.
     """
-    if category != "sports":
+    if asset_group != "sports":
         return instrument_type
     if instrument_type and instrument_type.lower() not in _AUTO_SENTINELS:
         return instrument_type
@@ -427,7 +427,7 @@ _SERVICE_BUNDLE_SYMBOL_COLUMN: dict[str, str] = {
 
 
 def _shard_prefix(
-    service: str, category: str, venue: str, day: str, instrument_type: str, data_type: str
+    service: str, asset_group: str, venue: str, day: str, instrument_type: str, data_type: str
 ) -> str:
     """Build the GCS prefix for a shard, routed by service.
 
@@ -450,7 +450,7 @@ def _shard_prefix(
     """
     svc = service.lower()
     if svc in _PER_VENUE_DAY_BUNDLE_SERVICES:
-        if category.lower() == "sports":
+        if asset_group.lower() == "sports":
             # Sports groups by league inside the per-day listing; the UI
             # passes the league label through ``instrument_type`` because
             # that is the axis the manifest uses upstream. A dedicated
@@ -461,19 +461,19 @@ def _shard_prefix(
 
     if svc in {"market-tick-data-service", "market-data-processing-service"}:
         return (
-            f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+            f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
             f"venue={venue}/instrument_type={instrument_type.lower()}/"
             f"data_type={data_type.lower()}/"
         )
 
     return (
-        f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+        f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
         f"venue={venue}/instrument_type={instrument_type}/data_type={data_type}/"
     )
 
 
 def _infer_symbol_column_for_shard(
-    category: str, instrument_type: str, data_type: str, venue: str
+    asset_group: str, instrument_type: str, data_type: str, venue: str
 ) -> str:
     """Best-effort symbol column when no contract is registered.
 
@@ -483,7 +483,7 @@ def _infer_symbol_column_for_shard(
     """
     try:
         contract = lookup_contract(
-            asset_group=category.lower(),
+            asset_group=asset_group.lower(),
             instrument_type=instrument_type,
             data_type=data_type,
             venue=venue,
@@ -535,7 +535,7 @@ def _bundling_mode(venue: str, instrument_type: str, service: str = "") -> str:
 
 def _expand_per_condition_id(
     parquet_files: list[dict[str, object]],
-    category: str,
+    asset_group: str,
     instrument_type: str,
     data_type: str,
     venue: str,
@@ -543,7 +543,7 @@ def _expand_per_condition_id(
     if not parquet_files:
         return []
     pf = parquet_files[0]
-    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
     try:
         distinct_ids = _distinct_values_in_parquet(str(pf["file_uri"]), symbol_col)
     except (OSError, ValueError, RuntimeError) as exc:
@@ -690,7 +690,7 @@ def _apply_search_and_pagination(
 def _list_instruments_full(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -703,19 +703,19 @@ def _list_instruments_full(
     in the shard) and by ``list_instruments_for_shard`` which then applies
     search + pagination on top.
     """
-    cache_key = f"instruments:{service}:{category}:{venue}:{day}:{instrument_type}:{data_type}"
+    cache_key = f"instruments:{service}:{asset_group}:{venue}:{day}:{instrument_type}:{data_type}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cast_dict(cached)
 
-    bucket = build_bucket_name(service, category, project_id)
-    prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type)
+    bucket = build_bucket_name(service, asset_group, project_id)
+    prefix = _shard_prefix(service, asset_group, venue, day, instrument_type, data_type)
     parquet_files = _collect_parquet_files(bucket, prefix)
     bundling = _bundling_mode(venue, instrument_type, service)
 
     if bundling == "per_condition_id":
         instruments = _expand_per_condition_id(
-            parquet_files, category, instrument_type, data_type, venue
+            parquet_files, asset_group, instrument_type, data_type, venue
         )
     elif bundling == "per_venue_day_bundle":
         instruments = _expand_per_venue_day_bundle(parquet_files, service, instrument_type)
@@ -729,7 +729,7 @@ def _list_instruments_full(
 
     full: dict[str, object] = {
         "service": service,
-        "asset_group": category.lower(),
+        "asset_group": asset_group.lower(),
         "venue": venue,
         "day": day,
         "instrument_type": instrument_type,
@@ -746,7 +746,7 @@ def _list_instruments_full(
 def list_instruments_for_shard(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -778,7 +778,7 @@ def list_instruments_for_shard(
 
     full = _list_instruments_full(
         service=service,
-        category=category,
+        asset_group=asset_group,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -803,7 +803,7 @@ def list_instruments_for_shard(
 
     return {
         "service": full.get("service", service),
-        "asset_group": cast(str, full.get("asset_group", category.lower())),
+        "asset_group": cast(str, full.get("asset_group", asset_group.lower())),
         "venue": full.get("venue", venue),
         "day": full.get("day", day),
         "instrument_type": full.get("instrument_type", instrument_type),
@@ -823,7 +823,7 @@ def list_instruments_for_shard(
 def preview_bundle_symbols(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -848,7 +848,7 @@ def preview_bundle_symbols(
 
     listing = _list_instruments_full(
         service=service,
-        category=category,
+        asset_group=asset_group,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -868,7 +868,7 @@ def preview_bundle_symbols(
         return {"bundling": bundling, "symbols": [], "message": "Bundle not found."}
     first = cast_dict(cast(dict[str, object], first_obj))
     uri = str(first.get("file_uri", ""))
-    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
     try:
         symbols = _distinct_values_in_parquet(uri, symbol_col)[:limit]
     except (OSError, ValueError, RuntimeError) as exc:
@@ -887,7 +887,7 @@ def preview_bundle_symbols(
 def get_shard_info(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     data_type: str,
@@ -904,13 +904,13 @@ def get_shard_info(
     (venues with a named + OTHER split usually want named as the default)
     or ``OTHER`` / the single type otherwise.
     """
-    cache_key = f"shard_info:{service}:{category}:{venue}:{day}:{data_type}"
+    cache_key = f"shard_info:{service}:{asset_group}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         return cast_dict(cast(dict[str, object], cached))
 
-    bucket = build_bucket_name(service, category, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
+    bucket = build_bucket_name(service, asset_group, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/venue={venue}/"
     instrument_types = sorted(_collect_instrument_types(bucket, venue_prefix))
 
     types_out: list[dict[str, str]] = []
@@ -933,7 +933,7 @@ def get_shard_info(
 
     result: dict[str, object] = {
         "service": service,
-        "asset_group": category.lower(),
+        "asset_group": asset_group.lower(),
         "venue": venue,
         "day": day,
         "data_type": data_type,
@@ -959,7 +959,7 @@ def cast_dict(obj: object) -> dict[str, object]:
 def compute_bucket_counts(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     data_type: str,
@@ -976,7 +976,7 @@ def compute_bucket_counts(
     This performs one GCS list per venue/day and, if OTHER exists, one
     parquet read. Results cache 5 min.
     """
-    cache_key = f"bucket_counts:{service}:{category}:{venue}:{day}:{data_type}"
+    cache_key = f"bucket_counts:{service}:{asset_group}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         cached_typed: dict[str, int] = {}
@@ -986,15 +986,15 @@ def compute_bucket_counts(
             cached_typed[key_str] = val_int
         return cached_typed
 
-    bucket = build_bucket_name(service, category, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
+    bucket = build_bucket_name(service, asset_group, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/venue={venue}/"
     instrument_types = _collect_instrument_types(bucket, venue_prefix)
     named = sum(1 for it in instrument_types if it.upper() != "OTHER")
 
     other_count = 0
     if any(it.upper() == "OTHER" for it in instrument_types):
         other_count = _count_distinct_in_other_bucket(
-            bucket, venue_prefix, category, venue, data_type
+            bucket, venue_prefix, asset_group, venue, data_type
         )
 
     result = {"named_market_count": named, "other_market_count": other_count}
@@ -1026,10 +1026,10 @@ def _collect_instrument_types(bucket: str, venue_prefix: str) -> set[str]:
 
 
 def _count_distinct_in_other_bucket(
-    bucket: str, venue_prefix: str, category: str, venue: str, data_type: str
+    bucket: str, venue_prefix: str, asset_group: str, venue: str, data_type: str
 ) -> int:
     """Read the first OTHER-bucket parquet and return the distinct-symbol count."""
-    symbol_col = _infer_symbol_column_for_shard(category, "OTHER", data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(asset_group, "OTHER", data_type, venue)
     other_prefix = f"{venue_prefix}instrument_type=OTHER/data_type={data_type}/"
     try:
         other_objects = list_objects(bucket, other_prefix, max_results=10)
@@ -1159,7 +1159,7 @@ def _distinct_values_in_parquet(gs_uri: str, column: str) -> list[str]:
 def build_csv_export(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1184,7 +1184,7 @@ def build_csv_export(
     # page — users select IDs that may live on any page.
     listing = _list_instruments_full(
         service=service,
-        category=category,
+        asset_group=asset_group,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1208,7 +1208,7 @@ def build_csv_export(
     if bundling == "per_condition_id" and all_instruments:
         # Single bundle parquet, filter by symbol column.
         pf_uri = str(all_instruments[0]["file_uri"])
-        symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
+        symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
         df = _read_parquet_columns(pf_uri)  # full parquet
         if selected and symbol_col in df.columns:
             df = df[df[symbol_col].astype(str).isin(selected)]

@@ -33,54 +33,61 @@ def _scan_cli_for_axis(cli_text: str) -> str | None:
     return None
 
 
-def trading_axis_from_deployment_state(data: dict[str, object]) -> str | None:
-    """Best-effort asset group (CEFI, DEFI, …) from persisted ``state.json``-shaped data."""
+def _scan_mapping_for_axis(d: dict[str, object]) -> str | None:
+    """Return CEFI/DEFI/… from any ``asset_group``/``category`` key on ``d``."""
     for key in ("asset_group", "category"):
-        v = data.get(key)
+        v = d.get(key)
         if isinstance(v, str) and v.strip():
             return _norm_ag(v)
         if isinstance(v, list) and v and isinstance(v[0], str) and v[0].strip():
             return _norm_ag(v[0])
+    return None
 
-    cfg = data.get("config")
-    if isinstance(cfg, dict):
-        c = cast(dict[str, object], cfg)
-        for key in ("asset_group", "category"):
-            cv = c.get(key)
-            if isinstance(cv, str) and cv.strip():
-                return _norm_ag(cv)
-            if isinstance(cv, list) and cv and isinstance(cv[0], str) and cv[0].strip():
-                return _norm_ag(cv[0])
 
-    raw_shards = data.get("shards")
-    if isinstance(raw_shards, list) and raw_shards:
-        s0 = raw_shards[0]
-        if isinstance(s0, dict):
-            dims = cast(dict[str, object], s0).get("dimensions")
-            ag = trading_axis_value_from_shard_dimensions(dims)
-            if ag:
-                return ag
+def _scan_shards_for_axis(raw_shards: object) -> str | None:
+    if not isinstance(raw_shards, list) or not raw_shards:
+        return None
+    s0 = raw_shards[0]
+    if not isinstance(s0, dict):
+        return None
+    dims = cast(dict[str, object], s0).get("dimensions")
+    return trading_axis_value_from_shard_dimensions(dims)
 
-    cli_cmd = data.get("cli_command")
-    if isinstance(cli_cmd, str) and cli_cmd.strip():
-        from_cli = _scan_cli_for_axis(cli_cmd)
-        if from_cli:
-            return from_cli
 
-    cli_args = data.get("cli_args")
+def _scan_cli_args_for_axis(cli_args: object) -> str | None:
     if isinstance(cli_args, str) and cli_args.strip():
-        from_cli = _scan_cli_for_axis(cli_args)
-        if from_cli:
-            return from_cli
+        return _scan_cli_for_axis(cli_args)
     if isinstance(cli_args, list) and cli_args:
-        # Join argv-ish tokens and scan
         try:
             joined = " ".join(str(x) for x in cli_args)
         except (TypeError, ValueError, RuntimeError):
-            joined = ""
+            return None
         if joined.strip():
-            from_cli = _scan_cli_for_axis(joined)
-            if from_cli:
-                return from_cli
-
+            return _scan_cli_for_axis(joined)
     return None
+
+
+def trading_axis_from_deployment_state(data: dict[str, object]) -> str | None:
+    """Best-effort asset group (CEFI, DEFI, …) from persisted ``state.json``-shaped data."""
+    if (ag := _scan_mapping_for_axis(data)) is not None:
+        return ag
+
+    cfg = data.get("config")
+    if (
+        isinstance(cfg, dict)
+        and (ag := _scan_mapping_for_axis(cast(dict[str, object], cfg))) is not None
+    ):
+        return ag
+
+    if (ag := _scan_shards_for_axis(data.get("shards"))) is not None:
+        return ag
+
+    cli_cmd = data.get("cli_command")
+    if (
+        isinstance(cli_cmd, str)
+        and cli_cmd.strip()
+        and (ag := _scan_cli_for_axis(cli_cmd)) is not None
+    ):
+        return ag
+
+    return _scan_cli_args_for_axis(data.get("cli_args"))

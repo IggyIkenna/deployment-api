@@ -78,7 +78,7 @@ class TestDrilldownCaptureStatus:
 
         result = dsd.list_instruments_for_shard(
             service="market-tick-data-service",
-            category="cefi",
+            asset_group="cefi",
             venue="BINANCE-SWAP",
             day="2025-06-01",
             instrument_type="perpetuals",
@@ -120,7 +120,7 @@ class TestDrilldownCaptureStatus:
 
         result = dsd.list_instruments_for_shard(
             service="market-tick-data-service",
-            category="cefi",
+            asset_group="cefi",
             venue="BINANCE-SWAP",
             day="2025-06-01",
             instrument_type="perpetuals",
@@ -170,7 +170,7 @@ class TestDrilldownCaptureStatus:
 
         result = dsd.list_instruments_for_shard(
             service="market-tick-data-service",
-            category="cefi",
+            asset_group="cefi",
             venue="BINANCE-SWAP",
             day="2025-06-01",
             instrument_type="perpetuals",
@@ -195,7 +195,7 @@ class TestDrilldownCaptureStatus:
 
         result = dsd.list_instruments_for_shard(
             service="market-tick-data-service",
-            category="cefi",
+            asset_group="cefi",
             venue="BINANCE-SWAP",
             day="2025-06-01",
             instrument_type="perpetuals",
@@ -226,7 +226,7 @@ class TestDrilldownCaptureStatus:
 
         result = dsd.list_instruments_for_shard(
             service="market-tick-data-service",
-            category="cefi",
+            asset_group="cefi",
             venue="BINANCE-SWAP",
             day="2025-06-01",
             instrument_type="perpetuals",

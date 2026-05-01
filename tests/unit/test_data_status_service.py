@@ -124,7 +124,7 @@ class TestRunDataStatusCli:
     @pytest.mark.asyncio
     async def test_returns_json_on_success(self):
         svc = _make_svc()
-        expected = {"completion": 85.0, "categories": {}}
+        expected = {"completion": 85.0, "asset_groups": {}}
         proc = _mock_process(stdout=json.dumps(expected).encode())
 
         with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
@@ -460,7 +460,7 @@ class TestGetLastUpdatedInfo:
 
         assert "service" in result
         assert result["service"] == "market-tick-data-handler"
-        assert "categories" in result
+        assert "asset_groups" in result
 
     @pytest.mark.asyncio
     async def test_returns_empty_category_when_no_objects(self):
@@ -471,7 +471,7 @@ class TestGetLastUpdatedInfo:
                 "market-tick-data-handler", categories=["cefi"]
             )
 
-        assert result["categories"]["cefi"]["status"] == "empty"
+        assert result["asset_groups"]["cefi"]["status"] == "empty"
 
     @pytest.mark.asyncio
     async def test_handles_list_objects_error(self):
@@ -480,7 +480,7 @@ class TestGetLastUpdatedInfo:
         with patch.object(_dss_mod, "list_objects", side_effect=OSError("bucket not found")):
             result = await svc.get_last_updated_info("instruments-service", categories=["cefi"])
 
-        assert result["categories"]["cefi"]["status"] == "error"
+        assert result["asset_groups"]["cefi"]["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_uses_default_categories_when_none_given(self):
@@ -490,9 +490,9 @@ class TestGetLastUpdatedInfo:
             result = await svc.get_last_updated_info("instruments-service")
 
         # Should have checked cefi, tradfi, defi
-        assert "cefi" in result["categories"]
-        assert "tradfi" in result["categories"]
-        assert "defi" in result["categories"]
+        assert "cefi" in result["asset_groups"]
+        assert "tradfi" in result["asset_groups"]
+        assert "defi" in result["asset_groups"]
 
 
 class TestValidateDataCompleteness:
@@ -554,7 +554,7 @@ class TestValidateDataCompleteness:
     @pytest.mark.asyncio
     async def test_handles_no_dates_in_result(self):
         svc = _make_svc()
-        cli_result = {"categories": {}}
+        cli_result = {"asset_groups": {}}
         with patch.object(svc, "run_data_status_cli", new=AsyncMock(return_value=cli_result)):
             result = await svc.validate_data_completeness("svc-a", "2024-01-01")
 
@@ -1120,7 +1120,7 @@ class TestGetCoverageSummary:
             result = await svc.get_coverage_summary("instruments-service", categories=["CEFI"])
 
         assert result["service"] == "instruments-service"
-        assert "categories" in result
+        assert "asset_groups" in result
         assert "totals" in result
         assert result["totals"]["shards"] == 2
 
@@ -1166,7 +1166,7 @@ class TestGetCoverageSummary:
         with patch.object(_dss_mod, "_read_index_cached", return_value=index):
             result = await svc.get_coverage_summary("instruments-service", categories=["DEFI"])
 
-        cat = result["categories"]["DEFI"]
+        cat = result["asset_groups"]["DEFI"]
         # Only the canonical AAVE_V3 row should survive.
         assert cat["unique_venues"] == 1
         assert "AAVEV3-ETHEREUM" not in cat["latest_day_instruments"]
@@ -1201,7 +1201,7 @@ class TestGetManifestStatus:
         assert result["service"] == "instruments-service"
         assert result["mode"] == "turbo"
         assert "overall_completion_pct" in result
-        assert "categories" in result
+        assert "asset_groups" in result
 
     @pytest.mark.asyncio
     async def test_handles_no_template(self):

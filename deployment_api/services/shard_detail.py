@@ -22,10 +22,14 @@ the other branches from rendering.
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
+import math as _math
+import re as _re
 from typing import Literal, cast
 from urllib.parse import urlencode
 
+import numpy as _np
 import pandas as pd
 from unified_api_contracts import (
     VENUE_CONTRACT_OVERRIDES,
@@ -34,12 +38,6 @@ from unified_api_contracts import (
     lookup_contract,
 )
 from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
-
-# UI sentinels passed when the click site doesn't have an instrument_type
-# axis in scope (DeFi protocol drilldown — only data_type and composite
-# venue are known). The resolver scans CONTRACT_REGISTRY for any
-# (asset_group, *, data_type) tuple and returns the first deterministic match.
-_AUTO_SENTINELS: frozenset[str] = frozenset({"AUTO", "UNKNOWN", "AUTO_DETECT_FAIL", ""})
 from unified_trading_library import read_availability_index
 
 from deployment_api.services.data_status_drilldown import (
@@ -63,6 +61,19 @@ from deployment_api.types.shard_detail import (
     VenueDetailResponse,
 )
 from deployment_api.utils.storage_facade import get_object_metadata, list_objects
+
+
+class _Sentinel:
+    """Marker class: unique singleton for "this branch did not match"."""
+
+
+_SENTINEL = _Sentinel()
+
+# UI sentinels passed when the click site doesn't have an instrument_type
+# axis in scope (DeFi protocol drilldown — only data_type and composite
+# venue are known). The resolver scans CONTRACT_REGISTRY for any
+# (asset_group, *, data_type) tuple and returns the first deterministic match.
+_AUTO_SENTINELS: frozenset[str] = frozenset({"AUTO", "UNKNOWN", "AUTO_DETECT_FAIL", ""})
 
 logger = logging.getLogger(__name__)
 
@@ -227,14 +238,14 @@ def _resolve_instrument_type_auto(
         venue_norm = venue.upper()
         venue_matches: list[str] = sorted(
             it
-            for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES.keys()
+            for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES
             if c == cat_norm and v == venue_norm and dt == dt_norm
         )
         if venue_matches:
             return venue_matches[0]
 
     base_matches: list[str] = sorted(
-        it for (c, it, dt) in CONTRACT_REGISTRY.keys() if c == cat_norm and dt == dt_norm
+        it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm
     )
     if base_matches:
         return base_matches[0]
@@ -904,8 +915,6 @@ def _instruments_bucket_for_category(category: str) -> str:
 # This handles the convention mismatch between UAC composite venues
 # (``<PROTOCOL>_V<N>-<CHAIN>``) and the actual GCS partition layout
 # (``<PROTOCOL>V<N>-<CHAIN>``) that the instruments-service writers use.
-import re as _re
-
 _DEFI_VERSION_UNDERSCORE_RE = _re.compile(r"_V(\d+)")
 
 
@@ -1057,8 +1066,8 @@ _RECENT_DAYS_PROBE_WINDOW: int = 120
 """How many days backwards from today to probe directly before falling back
 to the full ``day=*`` prefix listing. 120 days covers the common case
 (latest data is within the last few months) without paying the cost of
-listing every day prefix in buckets that span years × dozens of leagues
-× multiple data providers.
+listing every day prefix in buckets that span years x dozens of leagues
+x multiple data providers.
 """
 
 
@@ -1153,28 +1162,8 @@ def _is_pool_row(row: dict[str, object]) -> bool:
     return bool(row.get("pool_address") or row.get("pool_id"))
 
 
-def _json_safe_value(v: object) -> object:
-    """Convert pandas / numpy / Timestamp scalars into JSON-serialisable Python primitives.
-
-    Pydantic-core's JSON serialiser refuses to encode ``numpy.int64``,
-    ``numpy.float64``, ``pandas.Timestamp``, ``pandas.NaT``, and bare ``float('nan')``
-    on ``int``-typed fields (raises ``TypeError: 'float' object cannot be interpreted
-    as an integer``). This helper normalises every value into a primitive that JSON
-    can carry losslessly:
-
-    * ``NaN`` / ``NaT`` / pandas ``NA`` → ``None``
-    * ``numpy.integer`` / ``numpy.floating`` / ``numpy.bool_`` → Python int/float/bool
-    * ``pandas.Timestamp`` / ``datetime.datetime`` → ISO-8601 string
-    * everything else → unchanged
-    """
-    # Late imports to avoid penalising import time on module load.
-    import datetime as _dt
-    import math as _math
-
-    import numpy as _np
-
-    if v is None:
-        return None
+def _json_safe_numeric(v: object) -> object | _Sentinel:
+    """Coerce numpy/python numerics. Returns _SENTINEL when v is not numeric-shaped."""
     if isinstance(v, float) and _math.isnan(v):
         return None
     if isinstance(v, _np.bool_):
@@ -1184,14 +1173,20 @@ def _json_safe_value(v: object) -> object:
     if isinstance(v, _np.floating):
         f = float(v)
         return None if _math.isnan(f) else f
+    return _SENTINEL
+
+
+def _json_safe_temporal(v: object) -> object | _Sentinel:
+    """Coerce pandas/datetime values to ISO-8601. Returns _SENTINEL when not temporal."""
     if isinstance(v, pd.Timestamp):
-        if pd.isna(v):
-            return None
+        return None if pd.isna(v) else v.isoformat()
+    if isinstance(v, (_dt.datetime, _dt.date)):
         return v.isoformat()
-    if isinstance(v, _dt.datetime):
-        return v.isoformat()
-    if isinstance(v, _dt.date):
-        return v.isoformat()
+    return _SENTINEL
+
+
+def _json_safe_container(v: object) -> object | _Sentinel:
+    """Recursively convert containers. Returns _SENTINEL when v is not a container."""
     if isinstance(v, _np.ndarray):
         return [_json_safe_value(x) for x in v.tolist()]
     if isinstance(v, (list, tuple)):
@@ -1200,6 +1195,29 @@ def _json_safe_value(v: object) -> object:
         return {str(k): _json_safe_value(val) for k, val in cast(dict[object, object], v).items()}
     if isinstance(v, (set, frozenset)):
         return [_json_safe_value(x) for x in v]
+    return _SENTINEL
+
+
+def _json_safe_value(v: object) -> object:
+    """Convert pandas / numpy / Timestamp scalars into JSON-serialisable Python primitives.
+
+    Pydantic-core's JSON serialiser refuses to encode ``numpy.int64``,
+    ``numpy.float64``, ``pandas.Timestamp``, ``pandas.NaT``, and bare ``float('nan')``
+    on ``int``-typed fields (raises ``TypeError: 'float' object cannot be interpreted
+    as an integer``). This helper normalises every value into a primitive that JSON
+    can carry losslessly.
+    """
+    if v is None:
+        return None
+    numeric = _json_safe_numeric(v)
+    if numeric is not _SENTINEL:
+        return numeric
+    temporal = _json_safe_temporal(v)
+    if temporal is not _SENTINEL:
+        return temporal
+    container = _json_safe_container(v)
+    if container is not _SENTINEL:
+        return container
     if isinstance(v, bytes):
         return v.decode("utf-8", errors="replace")
     # Generic pandas NA sentinel — covers Int64 / Float64 / boolean dtypes.

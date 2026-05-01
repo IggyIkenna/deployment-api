@@ -336,7 +336,8 @@ class GCSCache:
                 )
                 logger.debug("Saved cache to GCS")
         except Exception as e:
-            # Facade and upload_bytes can raise provider-specific errors (e.g. google.api_core.Forbidden)
+            # Facade and upload_bytes can raise provider-specific errors
+            # (e.g. google.api_core.Forbidden).
             logger.warning("Failed to save cache to GCS: %s", e)
 
     async def get(self, key: str) -> object | None:

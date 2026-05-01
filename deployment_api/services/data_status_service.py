@@ -259,14 +259,40 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "axis": "per_league_per_fixture_date",
         "unit": "fixture_dates",
     },
-    # features-sports-service — per-fixture denormalised join of Transfermarkt
-    # team value, pre-match standings, kickoff-hour weather. Written daily by
-    # features-sports-service Cloud Run job + per-fixture T-1h Tier-3 trigger.
-    # Denominator uses ``api_football`` + Prediction fixture calendar because
-    # FIXTURE_FEATURES can only be computed on dates where upstream FIXTURES
-    # exist; api_football is the gate on the whole join. SSOT:
-    # plans/active/features_sports_pipeline_deployment_2026_04_21.plan.md.
+}
+
+
+# features-sports-service data types — derived (not raw source).
+# These are computed by features-sports-service from instruments-service
+# outputs (FIXTURES + EVENTS/LINEUPS/STATS/PLAYER_STATS/INJURIES/WEATHER/
+# STANDINGS/TM_LEAGUES/PLAYER_VALUES/ODDS/PREDICTIONS/XG/SFI_PROGRESSIVE_STATS)
+# and surface in the data-status UI under the ``features-sports-service``
+# service tab — NOT under instruments-service SPORTS, because they're a
+# different production stage of the pipeline. See SSOT:
+# plans/active/features_sports_pipeline_deployment_2026_04_21.plan.md.
+#
+# Denominator: ``api_football`` per-fixture calendar (FSS can only compute
+# features on dates where upstream FIXTURES exist; api_football is the
+# gating dependency for the whole denormalisation join).
+FEATURES_SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
     "FIXTURE_FEATURES": {
+        "source": "api_football",
+        "classifications": ("Prediction",),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "ODDS_FEATURES": {
+        # Per-fixture odds-derived features (movement, vig, market signals).
+        # Gated on footystats fixture-day calendar — every fixture with
+        # footystats odds becomes one ODDS_FEATURES row.
+        "source": "footystats",
+        "classifications": ("Prediction", "Features"),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
+    "DERIVED_FEATURES": {
+        # Cross-source per-fixture aggregations (form, momentum, h2h).
+        # Gated on api_football fixture calendar (same gate as FIXTURE_FEATURES).
         "source": "api_football",
         "classifications": ("Prediction",),
         "axis": "per_league_per_fixture_date",
@@ -341,7 +367,7 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
     Returns ``None`` if the entity isn't in the SSOT map (caller falls back
     to the legacy date-count model).
     """
-    meta = SPORTS_DATA_TYPE_META.get(entity_name)
+    meta = SPORTS_DATA_TYPE_META.get(entity_name) or FEATURES_SPORTS_DATA_TYPE_META.get(entity_name)
     if meta is None:
         return None
 
@@ -3745,6 +3771,7 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         cat: str,
+        service: str = "instruments-service",
     ) -> tuple[dict[str, object], int, int]:
         """Group manifest data by data_type when venues are empty.
 
@@ -3799,7 +3826,15 @@ class DataStatusService:
         # source/axis/unit and a misleading completion %. For non-SPORTS,
         # iterating over SSOT maps is not implemented yet — fall back to
         # whatever the manifest contains.
-        sports_ssot_vals: set[str] = set(SPORTS_DATA_TYPE_META.keys()) if is_sports else set()
+        # Dispatch on service: features-sports-service has its own SSOT meta
+        # (FIXTURE_FEATURES, future ODDS_FEATURES/DERIVED_FEATURES) — those
+        # are derived products, not raw source data, so they live under the
+        # FSS service tab rather than instruments-service SPORTS.
+        is_fss = service == "features-sports-service"
+        active_meta: dict[str, dict[str, object]] = (
+            FEATURES_SPORTS_DATA_TYPE_META if is_fss else SPORTS_DATA_TYPE_META
+        )
+        sports_ssot_vals: set[str] = set(active_meta.keys()) if is_sports else set()
         all_dt_vals: set[str] = sports_ssot_vals if is_sports else manifest_dt_vals
         for dt_val in sorted(all_dt_vals):
             if not dt_val or not str(dt_val).strip():
@@ -3811,7 +3846,7 @@ class DataStatusService:
             dt_df = filtered[dt_mask]
             dt_name = str(dt_val).upper()
 
-            if is_sports and dt_name in SPORTS_DATA_TYPE_META:
+            if is_sports and dt_name in active_meta:
                 dt_entry = self._build_sports_entity_entry(
                     dt_df,
                     dt_name,
@@ -4185,6 +4220,7 @@ class DataStatusService:
             cat,
             venue_found_total,
             venue_expected_total,
+            service,
         )
 
         # Category-level completion, two variants exposed for the UI:
@@ -4314,6 +4350,7 @@ class DataStatusService:
         cat: str,
         venue_found_total: int,
         venue_expected_total: int,
+        service: str = "instruments-service",
     ) -> tuple[dict[str, object], int, int]:
         """Fall back to data_type-keyed grouping for the SPORTS instruments
         pattern (empty-venue v4 rows). Returns the input unchanged for
@@ -4335,7 +4372,7 @@ class DataStatusService:
             if has_empty_venue_dt_rows and not all_venues_empty
             else filtered
         )
-        return self._build_data_type_grouping(dt_filtered, effective_start, end_date, cat)
+        return self._build_data_type_grouping(dt_filtered, effective_start, end_date, cat, service)
 
     @staticmethod
     def _annotate_mtds_category(
