@@ -1669,7 +1669,7 @@ class DataStatusService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None,
+        asset_groups: list[str] | None,
         venues: list[str] | None,
         show_missing: bool,
         check_venues: bool,
@@ -1695,8 +1695,11 @@ class DataStatusService:
             "--mode",
             mode,
         ]
-        for cat in categories or []:
-            cmd.extend(["-c", cat])
+        for ag in asset_groups or []:
+            # The deployment-service CLI still accepts ``-c`` for the
+            # asset_group filter (legacy short flag preserved during the
+            # asset_group canonical-vocabulary rollout per CLAUDE.md SSOT).
+            cmd.extend(["-c", ag])
         for venue in venues or []:
             cmd.extend(["-v", venue])
         if show_missing:
@@ -1718,7 +1721,7 @@ class DataStatusService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
         show_missing: bool = False,
         check_venues: bool = False,
@@ -1736,7 +1739,7 @@ class DataStatusService:
             service,
             start_date,
             end_date,
-            categories,
+            asset_groups,
             venues,
             show_missing,
             check_venues,
@@ -2018,7 +2021,7 @@ class DataStatusService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
         mode: str = "batch",
     ) -> dict[str, object]:
@@ -2033,7 +2036,7 @@ class DataStatusService:
             service,
             start_date,
             end_date,
-            categories,
+            asset_groups,
             venues,
         )
 
@@ -2042,12 +2045,12 @@ class DataStatusService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous implementation of missing shard calculation."""
         try:
-            cat_list = categories or [str(c) for c in MarketCategory]
+            cat_list = asset_groups or [str(c) for c in MarketCategory]
             missing_by_date: dict[str, int] = {}
             missing_by_category: dict[str, int] = {}
             total_missing = 0
@@ -2165,22 +2168,22 @@ class DataStatusService:
     async def get_coverage_summary(
         self,
         service: str = "instruments-service",
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
-        """Return shard counts and latest-day instrument totals per category.
+        """Return shard counts and latest-day instrument totals per asset_group.
 
         Reads availability indices directly (same as calculate_missing_shards)
         and aggregates into the shape the deployment-ui expects.
         """
-        return await asyncio.to_thread(self._get_coverage_summary_sync, service, categories)
+        return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups)
 
     def _get_coverage_summary_sync(
         self,
         service: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous coverage summary implementation."""
-        cat_list = categories or [str(c) for c in MarketCategory]
+        cat_list = asset_groups or [str(c) for c in MarketCategory]
         result_categories: dict[str, object] = {}
         total_shards = 0
         total_instrument_rows = 0
@@ -4484,14 +4487,14 @@ class DataStatusService:
     async def get_last_updated_info(
         self,
         service: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
         """
         Get last updated information for a service.
 
         Args:
             service: Service name to check
-            categories: Optional list of categories to filter
+            asset_groups: Optional list of asset_groups to filter
 
         Returns:
             Dictionary containing last updated information
@@ -4510,18 +4513,18 @@ class DataStatusService:
         if not prefix:
             return {"error": f"Unknown service: {service}"}
 
-        # Default categories if none specified
-        if not categories:
-            categories = [cat.value.lower() for cat in MarketCategory]
+        # Default asset_groups if none specified
+        if not asset_groups:
+            asset_groups = [cat.value.lower() for cat in MarketCategory]
 
-        categories_info: dict[str, object] = {}
+        asset_groups_info: dict[str, object] = {}
         last_updated_info: dict[str, object] = {
             "service": service,
-            "asset_groups": categories_info,
+            "asset_groups": asset_groups_info,
             "overall_last_updated": None,
         }
 
-        for category in categories:
+        for category in asset_groups:
             try:
                 bucket_name = self.build_bucket_name(prefix, category)
 
@@ -4533,20 +4536,20 @@ class DataStatusService:
                     # Get the most recently created object
                     # This is a simplified approach - in production you might want
                     # to check specific paths or use bucket metadata
-                    categories_info[category] = {
+                    asset_groups_info[category] = {
                         "status": "active",
                         "object_count": len(objects),
                         "sample_paths": objects[:5],  # First 5 as examples
                     }
                 else:
-                    categories_info[category] = {
+                    asset_groups_info[category] = {
                         "status": "empty",
                         "object_count": 0,
                     }
 
             except (OSError, ValueError, RuntimeError) as e:
                 logger.debug("Error checking category %s: %s", category, e)
-                categories_info[category] = {
+                asset_groups_info[category] = {
                     "status": "error",
                     "error": str(e),
                 }
@@ -4557,7 +4560,7 @@ class DataStatusService:
         self,
         service: str,
         date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
     ) -> dict[str, object]:
         """
@@ -4566,7 +4569,7 @@ class DataStatusService:
         Args:
             service: Service name to validate
             date: Date in YYYY-MM-DD format
-            categories: Optional list of categories to check
+            asset_groups: Optional list of asset_groups to check
             venues: Optional list of venues to check
 
         Returns:
@@ -4577,7 +4580,7 @@ class DataStatusService:
             service=service,
             start_date=date,
             end_date=date,
-            categories=categories,
+            asset_groups=asset_groups,
             venues=venues,
             show_missing=True,
         )

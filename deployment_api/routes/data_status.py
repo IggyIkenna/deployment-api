@@ -230,10 +230,10 @@ async def get_coverage_summary(
             "mock": True,
         }
     try:
-        cat_list = asset_groups.split(",") if asset_groups else None
+        ag_list = asset_groups.split(",") if asset_groups else None
         result = await data_status_service.get_coverage_summary(
             service=service,
-            categories=cat_list,
+            asset_groups=ag_list,
         )
         return result
     except (OSError, ValueError, RuntimeError) as e:
