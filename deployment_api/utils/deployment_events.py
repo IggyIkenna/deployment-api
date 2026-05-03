@@ -79,10 +79,16 @@ async def drain_sync_queue():
             if _q is None:
                 await asyncio.sleep(1.0)
                 continue
+            # ``wait_for(.., timeout=1.0)`` lets the loop check periodically
+            # whether the queue has been re-bound (e.g. after a fresh
+            # ``get_event_loop`` in tests) without blocking forever.
+            # ``TimeoutError`` here is the normal idle path — there's just
+            # no item yet — NOT an error worth logging at WARNING. Pre-fix
+            # this emitted ~1 warning/sec and flooded the deployment-api
+            # log even when the API was completely idle.
             try:
                 deployment_id = await asyncio.wait_for(_q.get(), timeout=1.0)
-            except TimeoutError as e:
-                logger.warning("Skipping item during notify deployment updated sync: %s", e)
+            except TimeoutError:
                 continue
             await _broadcast(deployment_id)
             try:
