@@ -305,9 +305,22 @@ def validate_shard_configuration(
         errors.append("Service configuration not found")
         return {"error": "config_missing", "details": errors}
 
-    # Validate sharding dimensions
-    sharding_dims = cast(list[object], service_config.get("sharding_dimensions") or [])
-    if not sharding_dims:
+    # Validate sharding dimensions. The YAML SSOT uses ``dimensions:`` (list of
+    # ``{name, type, ...}`` dicts); the legacy synthetic key ``sharding_dimensions``
+    # (a flat list of names) is still accepted for unit-test fixtures.
+    raw_dims: object = (
+        service_config.get("dimensions") or service_config.get("sharding_dimensions") or []
+    )
+    dim_names: list[str] = []
+    if isinstance(raw_dims, list):
+        for entry in cast(list[object], raw_dims):
+            if isinstance(entry, dict):
+                name = cast(dict[str, object], entry).get("name")
+                if isinstance(name, str):
+                    dim_names.append(name)
+            elif isinstance(entry, str):
+                dim_names.append(entry)
+    if not dim_names:
         errors.append("Service has no sharding dimensions configured")
 
     # Validate date granularity
@@ -320,7 +333,7 @@ def validate_shard_configuration(
     # Validate required dimensions are available
     required_dims: set[str] = set()
     if (
-        "asset_group" in sharding_dims or "category" in sharding_dims
+        "asset_group" in dim_names or "category" in dim_names
     ) and not deploy_request.asset_group:
         # Check if service has default categories (SSOT key name unchanged in YAML)
         default_categories = service_config.get("default_categories")

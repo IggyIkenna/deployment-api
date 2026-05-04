@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
 
 # Import service modules for business logic
+from deployment_api.app_config import get_config_dir
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services import DataStatusService
 from deployment_api.services.deployment_manager import DeploymentManager
@@ -310,7 +311,8 @@ async def quota_info(deploy_request: DeployRequest, request: Request) -> dict[st
     """Get quota requirements and recommendations for a deployment."""
     try:
         result = await deployment_manager.calculate_quota_requirements(
-            deploy_request, config_dir=deploy_request.cloud_config_path or "configs"
+            deploy_request,
+            config_dir=deploy_request.cloud_config_path or str(get_config_dir()),
         )
         return result
     except ValueError as e:
@@ -374,7 +376,7 @@ async def create_deployment(
 
         result = await deployment_manager.create_deployment(
             deploy_request,
-            config_dir=deploy_request.cloud_config_path or "configs",
+            config_dir=deploy_request.cloud_config_path or str(get_config_dir()),
             background_task_func=background_task_runner,
         )
 
@@ -452,7 +454,7 @@ async def _submit_missing_deployment(
 
     result = await deployment_manager.create_deployment(
         deploy_request,
-        config_dir=deploy_request.cloud_config_path or "configs",
+        config_dir=deploy_request.cloud_config_path or str(get_config_dir()),
         background_task_func=background_task_runner,
     )
 
