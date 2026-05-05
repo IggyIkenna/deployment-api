@@ -325,11 +325,25 @@ async def get_turbo_cache_stats():
 
 @router.post("/turbo/clear")
 async def clear_turbo_cache():
-    """Clear the turbo mode cache."""
+    """Clear ALL data-status caches.
+
+    Four cache layers exist; UI staleness occurs when any are skipped:
+      1. data_analytics_service._turbo_cache — turbo response cache
+      2. data_status_service._INDEX_CACHE — manifest parquet cache (5-min TTL)
+      3. data_status_drilldown._cache — per-(date, venue, data_type) drilldown cache (5-min TTL)
+      4. DataStatusService._REF_DATA_CACHE — upstream-expected-dates cache (5-min TTL, class-level)
+
+    Reference incident 2026-05-05: PREDICTION fanout completed and canonical
+    showed 100% by date, but /turbo kept returning stale 89.05% because layers
+    3 and 4 were not cleared. clear_drilldown_cache was imported at module top
+    but never invoked from this endpoint.
+    """
     try:
         from deployment_api.services.data_status_service import clear_index_cache
 
         clear_index_cache()
+        clear_drilldown_cache()
+        DataStatusService._REF_DATA_CACHE.clear()
         return await data_analytics_service.clear_cache()
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in clear_turbo_cache")
