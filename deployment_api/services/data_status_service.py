@@ -224,14 +224,23 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "source": "transfermarkt",
         "classifications": ("Prediction", "Features"),
         "axis": "per_league_periodic",
-        "cadence_days": 7,
+        # PLAYER_VALUES is trigger-based, not weekly: the orchestrator only
+        # fetches at season-start + transfer-window-open + transfer-window-
+        # close + mid-season (~4 capture dates per league per year, see
+        # ``get_leagues_needing_refresh``). cadence_days=90 (quarterly)
+        # matches the actual capture cadence — pre-2026-05-05 the ``7``
+        # weekly setting capped UI coverage at ~10% even with full data.
+        "cadence_days": 90,
         "unit": "cadence_refreshes",
     },
     "TRANSFERMARKT_LEAGUES": {
         "source": "transfermarkt",
         "classifications": ("Prediction", "Features"),
         "axis": "per_league_periodic",
-        "cadence_days": 7,
+        # TRANSFERMARKT_LEAGUES is the same trigger calendar as PLAYER_VALUES
+        # — written when the league list is fetched (which is the same
+        # trigger event). Use the same quarterly cadence.
+        "cadence_days": 90,
         "unit": "cadence_refreshes",
     },
     # Soccer-Football-Info (SFI) — 33 Prediction leagues
