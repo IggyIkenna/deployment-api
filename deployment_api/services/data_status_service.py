@@ -233,35 +233,14 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "cadence_days": 90,
         "unit": "cadence_refreshes",
     },
-    "TRANSFERMARKT_LEAGUES": {
-        "source": "transfermarkt",
-        "classifications": ("Prediction", "Features"),
-        "axis": "per_league_periodic",
-        # TRANSFERMARKT_LEAGUES is the same trigger calendar as PLAYER_VALUES
-        # — written when the league list is fetched (which is the same
-        # trigger event). Use the same quarterly cadence.
-        "cadence_days": 90,
-        "unit": "cadence_refreshes",
-    },
-    # Soccer-Football-Info (SFI) — 33 Prediction leagues. SFI_LEAGUES is the
-    # static league catalog from /leagues — same answer every day. Quarterly
-    # cadence matches the actual refresh model (one snapshot is enough; we
-    # poll periodically just to catch new/removed leagues). Pre-2026-05-05
-    # the cadence_days=7 weekly model capped UI at ~25% even though we'd
-    # captured the catalog every quarter — the real coverage gap is the
-    # quarters where no orchestrator trigger fired, not weekly-snapshot
-    # frequency.
-    "SFI_LEAGUES": {
-        "source": "soccer_football_info",
-        "classifications": ("Prediction",),
-        "axis": "per_league_periodic",
-        "cadence_days": 90,
-        "unit": "cadence_refreshes",
-    },
-    # SFI_STANDINGS intentionally absent: SFI has no standings endpoint (provider gap).
-    # Orchestrator hard-codes ``_want_sfi_standings = False``; declaring it here would
-    # create a 0/N-forever row in the manifest UI that no adapter can ever populate.
-    # Removed 2026-04-24 — SSOT plan sports_uac_schema_contracts_registration_2026_04_24.
+    # TRANSFERMARKT_LEAGUES + SFI_LEAGUES retired 2026-05-05 — both were
+    # static provider-catalog mappings (provider_id -> canonical_name + country)
+    # that don't change day-to-day. Mappings now live in UAC
+    # (TRANSFERMARKT_IDS / SOCCER_FOOTBALL_INFO_IDS) as versioned config
+    # rather than as captured GCS data. Orchestrator still calls
+    # adapter.get_leagues() at runtime for prediction-tier filtering, but
+    # the result isn't written to GCS or manifest.
+    # SFI_STANDINGS also retired 2026-04-24 — SFI has no standings endpoint.
     "SFI_PROGRESSIVE_STATS": {
         "source": "soccer_football_info",
         "classifications": ("Prediction",),
