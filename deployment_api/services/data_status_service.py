@@ -243,12 +243,19 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "cadence_days": 90,
         "unit": "cadence_refreshes",
     },
-    # Soccer-Football-Info (SFI) — 33 Prediction leagues
+    # Soccer-Football-Info (SFI) — 33 Prediction leagues. SFI_LEAGUES is the
+    # static league catalog from /leagues — same answer every day. Quarterly
+    # cadence matches the actual refresh model (one snapshot is enough; we
+    # poll periodically just to catch new/removed leagues). Pre-2026-05-05
+    # the cadence_days=7 weekly model capped UI at ~25% even though we'd
+    # captured the catalog every quarter — the real coverage gap is the
+    # quarters where no orchestrator trigger fired, not weekly-snapshot
+    # frequency.
     "SFI_LEAGUES": {
         "source": "soccer_football_info",
         "classifications": ("Prediction",),
         "axis": "per_league_periodic",
-        "cadence_days": 7,
+        "cadence_days": 90,
         "unit": "cadence_refreshes",
     },
     # SFI_STANDINGS intentionally absent: SFI has no standings endpoint (provider gap).
