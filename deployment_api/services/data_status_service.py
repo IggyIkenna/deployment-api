@@ -436,6 +436,22 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
     else:
         ent_rows_by_league = None
 
+    # Bucket-based week match for periodic cadences (2026-05-05 fix):
+    # The orchestrator writes manifest rows for every active-season fixture
+    # date (e.g. ~190 days/year for EPL), but ``_sports_expected_dates_for_league``
+    # subsamples to ``[::cadence_days]`` (every 7th element = ~27/year for
+    # cadence=7). A direct ``expected_set & found_set`` intersection then
+    # only counted manifest rows that happened to land on those exact 27
+    # subsampled positions — capping TM_LEAGUES at ~50%, SFI_LEAGUES at ~14%,
+    # PLAYER_VALUES at ~5% no matter how complete the manifest was.
+    #
+    # Fix: for periodic cadences (cadence_days > 1), bucket each expected
+    # date into a window of ``cadence_days`` and credit a bucket as covered
+    # if the manifest has ANY row for that league within the window. For
+    # per_league_per_fixture_date (cadence_days <= 1) the original exact-
+    # match semantics still apply.
+    use_bucket_match = axis == "per_league_periodic" and cadence_days > 1
+
     for league in expected_leagues:
         lid = league.league_id
         expected_dates_for_l = _sports_expected_dates_for_league(
@@ -453,18 +469,50 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
         found_set: set[str] = set()
         if ent_rows_by_league is not None and lid in ent_rows_by_league.groups:
             found_set = {str(d) for d in ent_rows_by_league.get_group(lid)["date"].unique()}
-        covered = expected_set & found_set
-        per_league[lid] = {
-            "found_shards": len(covered),
-            "expected_shards": len(expected_set),
-            "missing_shards": len(expected_set - found_set),
-            "completion_pct": round(len(covered) / max(1, len(expected_set)) * 100, 2),
-            "unit": str(meta["unit"]),
-            "missing_dates": sorted(expected_set - found_set)[:500],
-            "found_dates_list": sorted(covered)[:500],
-        }
-        total_expected += len(expected_set)
-        total_found += len(covered)
+
+        if use_bucket_match:
+            # Each expected date anchors a bucket of [d, d+cadence_days). A
+            # bucket is "covered" if any manifest date falls inside it.
+            sorted_expected = sorted(expected_set)
+            sorted_found = sorted(found_set)
+            covered_buckets: set[str] = set()
+            missing_buckets: set[str] = set()
+            f_idx = 0
+            for anchor in sorted_expected:
+                # Bucket window: [anchor, next_anchor) — last bucket gets cadence_days width.
+                bucket_end = pd.Timestamp(anchor) + pd.Timedelta(days=cadence_days)
+                hit = False
+                while f_idx < len(sorted_found) and sorted_found[f_idx] < anchor:
+                    f_idx += 1
+                probe = f_idx
+                while probe < len(sorted_found) and pd.Timestamp(sorted_found[probe]) < bucket_end:
+                    hit = True
+                    probe += 1
+                (covered_buckets if hit else missing_buckets).add(anchor)
+            per_league[lid] = {
+                "found_shards": len(covered_buckets),
+                "expected_shards": len(expected_set),
+                "missing_shards": len(missing_buckets),
+                "completion_pct": round(len(covered_buckets) / max(1, len(expected_set)) * 100, 2),
+                "unit": str(meta["unit"]),
+                "missing_dates": sorted(missing_buckets)[:500],
+                "found_dates_list": sorted(covered_buckets)[:500],
+            }
+            total_expected += len(expected_set)
+            total_found += len(covered_buckets)
+        else:
+            covered = expected_set & found_set
+            per_league[lid] = {
+                "found_shards": len(covered),
+                "expected_shards": len(expected_set),
+                "missing_shards": len(expected_set - found_set),
+                "completion_pct": round(len(covered) / max(1, len(expected_set)) * 100, 2),
+                "unit": str(meta["unit"]),
+                "missing_dates": sorted(expected_set - found_set)[:500],
+                "found_dates_list": sorted(covered)[:500],
+            }
+            total_expected += len(expected_set)
+            total_found += len(covered)
 
     return {
         "axis": axis,
