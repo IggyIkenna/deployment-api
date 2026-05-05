@@ -1932,11 +1932,21 @@ class TestMTDSHonestCoverage:
         assert nyse["dates_found"] == 3
 
     def test_tradfi_tick_window_gate_outside_window(self):
-        """Outside the tick window, only ohlcv_1m is expected for NYSE —
-        trades/tbbo drop from the denominator."""
+        """Outside the tick window, ``tbbo`` drops from the denominator
+        (legacy global tick-window clip via _TRADFI_TICK_ONLY_DATA_TYPES).
+
+        2026-05-05 narrowing: ``trades`` is now expected year-round across
+        all TradFi venues (we capture ≥99% of trading days; clipping to
+        the 60-day reference window was understating reality and inflating
+        coverage_pct). Per-(venue, data_type) overrides for TBBO live in
+        UAC ``VENUE_DATA_TYPE_COVERAGE_WINDOWS`` for the venues we've
+        scoped (currently CME). NYSE tbbo still uses the legacy global
+        clip → expected=0 outside the window.
+        """
         svc = _make_svc()
         # 2025-01-06..2025-01-10 is OUTSIDE any tick window. NYSE has 5
-        # trading days. Only ohlcv_1m is expected => 5 x 1 = 5 expected.
+        # trading days. Expected: trades=5 (year-round), tbbo=0 (clipped
+        # to tick window), ohlcv_1m=5 (year-round).
         df = self._mtds_df(
             [
                 [
@@ -1975,14 +1985,18 @@ class TestMTDSHonestCoverage:
                 venue_mapping=VenueMapping(),
             )
         nyse = result["venues"]["NYSE"]
-        # Outside tick window: trades/tbbo expected = 0 → only ohlcv_1m
-        # counts toward the denominator. 5 trading days x 1 dt = 5.
         honest_dts = nyse["honest_data_types"]
-        assert honest_dts["trades"]["expected_shards"] == 0
+        # ``trades`` is year-round + per-instrument shard → 5 days x 21
+        # MVP NYSE-listed SP500 instruments = 105 expected.
+        assert honest_dts["trades"]["expected_shards"] == 105
+        # ``tbbo`` clipped via legacy global tick-window gate → 0 outside window
         assert honest_dts["tbbo"]["expected_shards"] == 0
+        # ``ohlcv_1m`` year-round + venue-level shard → 5 days x 1 = 5.
         assert honest_dts["ohlcv_1m"]["expected_shards"] == 5
-        assert nyse["dates_expected"] == 5
-        assert nyse["dates_found"] == 1  # one ohlcv_1m shipped
+        # Sum across data_types: trades (105 per-instrument shards) +
+        # ohlcv_1m (5 venue-level shards) = 110. tbbo (0) doesn't contribute.
+        assert nyse["dates_expected"] == 110
+        assert nyse["dates_found"] == 1
 
     def test_defi_per_venue_scope(self):
         """DEFI uses ``all_defi_venues`` (11 PROTOCOL-ETHEREUM entries)."""

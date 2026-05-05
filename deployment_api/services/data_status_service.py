@@ -26,6 +26,7 @@ from unified_api_contracts import (
 )
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
+    get_coverage_windows,
     get_lst_venue_genesis,
     is_in_tradfi_tick_window,
     venue_has_no_expected_defi_coverage,
@@ -52,7 +53,18 @@ logger = logging.getLogger(__name__)
 
 # TradFi data types that are only expected within tick windows (Databento cost mgmt).
 # Outside tick windows, only ohlcv_1m (and other non-tick types) are expected.
-_TRADFI_TICK_ONLY_DATA_TYPES: frozenset[str] = frozenset({"tbbo", "trades"})
+#
+# **2026-05-05 narrowed:** ``trades`` REMOVED — we capture trades year-round
+# on every CME futures parent symbol and IBIT/ETHA NASDAQ ETFs (≥99% of
+# trading days), so clipping the trades denominator to the global
+# TRADFI_TICK_DATA_WINDOWS (May 2023 + Jul 2024) was understating reality
+# and inflating coverage_pct by silently dropping 1500+ days from the
+# expected denominator.
+#
+# ``tbbo`` retained — kept here for the legacy global-clip path; the new
+# per-(venue, data_type) registry below (UAC ``VENUE_DATA_TYPE_COVERAGE_WINDOWS``)
+# is the preferred mechanism and overrides this set when present.
+_TRADFI_TICK_ONLY_DATA_TYPES: frozenset[str] = frozenset({"tbbo"})
 
 # Phase 8D — MVP cap for the per-(venue, data_type, instrument_id) Tier-3
 # denominator. Mirrors the MTDS orchestrator constant in
@@ -905,7 +917,21 @@ def _mtds_expected_dates_for_venue_dt(
 
     if category.upper() == "TRADFI":
         expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
-        if data_type in _TRADFI_TICK_ONLY_DATA_TYPES:
+        # Per-(venue, data_type) coverage windows — UAC SSOT
+        # ``VENUE_DATA_TYPE_COVERAGE_WINDOWS``. When set (e.g. CME tbbo
+        # restricted to May 2023 + Jun 2024 reference months), clip the
+        # expected denominator to the union of those windows. Empty list
+        # = no clip (default — every trading day in scope).
+        per_venue_windows = get_coverage_windows(venue, data_type)
+        if per_venue_windows:
+            expected_list = [
+                d for d in expected_list if any(s <= d <= e for s, e in per_venue_windows)
+            ]
+        elif data_type in _TRADFI_TICK_ONLY_DATA_TYPES:
+            # Legacy global tick-window clip — only applies when no
+            # per-(venue, data_type) override is registered. Eventually
+            # this branch can retire once every tick-only data_type has
+            # a per-venue entry.
             expected_list = [d for d in expected_list if is_in_tradfi_tick_window(d)]
         return set(expected_list)
 
