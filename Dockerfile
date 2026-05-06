@@ -25,6 +25,12 @@ COPY ui/package*.json ./
 RUN npm ci --prefer-offline 2>/dev/null || npm ci
 
 COPY ui/ ./
+# Tier-3 shared deploy: bake auth-skip into the SPA so the new Cloud Run
+# origin doesn't need to be whitelisted in the workspace's Google OAuth
+# client (would otherwise error 401: invalid_client). Vite envs are
+# build-time only — must be set BEFORE ``npm run build``.
+ENV VITE_SKIP_AUTH=true \
+    VITE_MOCK_API=false
 RUN npm run build
 
 # ── Stage 1: Python API base ────────────────────────────────────────────
@@ -66,7 +72,20 @@ RUN uv pip install --system --no-cache-dir \
       'pygments>=2.20.0,<3.0.0' \
       'requests>=2.33.0,<3.0.0' \
       'gunicorn[gevent]' \
-      'gevent'
+      'gevent' \
+      'pyyaml>=6.0.1,<7.0.0' \
+      'botocore>=1.34.0,<2.0.0' \
+      'google-cloud-run<1.0.0,>=0.15.0' \
+      'google-cloud-compute>=1.45.0,<2.0.0' \
+      'flask>=3.0.0,<4.0.0' \
+      'functions-framework>=3.8.0,<4.0.0'
+
+# Install deployment-service from the pre-bundled sibling source. The
+# tier-3 deploy script rsyncs ../deployment-service/ into ./_deployment-service/
+# before submitting the build (Cloud Build context can't reach sibling repos).
+COPY _deployment-service/ /tmp/deployment-service/
+RUN uv pip install --system --no-cache-dir --no-deps /tmp/deployment-service \
+    && rm -rf /tmp/deployment-service
 
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./
