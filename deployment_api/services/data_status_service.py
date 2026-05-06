@@ -4980,7 +4980,15 @@ class DataStatusService:
         # When no venues or all are empty (sports instruments pattern), group
         # by data_type.  If there are BOTH empty-venue v4 rows AND old non-empty
         # v3 venue rows, prefer the v4 data_type grouping (it's the canonical view).
-        venues_dict, venue_found_total, venue_expected_total = self._maybe_group_by_data_type(
+        # ``regrouped_to_data_type`` flips ``breakdown_axis`` below so MDPS rows
+        # (CEFI/DEFI with venue="" + real data_types) render as data_types in the
+        # UI instead of being mislabelled as venues.
+        (
+            venues_dict,
+            venue_found_total,
+            venue_expected_total,
+            regrouped_to_data_type,
+        ) = self._maybe_group_by_data_type(
             venues_dict,
             filtered,
             effective_start,
@@ -5047,12 +5055,17 @@ class DataStatusService:
         failure_rate_by_dimension = _build_failure_rate_by_dimension(venues_dict)
 
         # Axis discriminator: tells consumers which breakdown key holds the
-        # drilldown. For SPORTS (and any other category where venue is empty
-        # and data_type is the real axis) the drilldown is under
-        # ``data_types``; for CEFI / TRADFI / DEFI / PREDICTION where venues
-        # are real bookmakers / exchanges the drilldown is under ``venues``.
+        # drilldown. For SPORTS the venue column is structurally empty so the
+        # drilldown is always under ``data_types``. For other categories the
+        # discriminator follows whatever ``_maybe_group_by_data_type`` actually
+        # did: if it regrouped (MDPS CEFI/DEFI rows have empty venue + real
+        # data_types) we flip to ``data_type`` so the UI doesn't render
+        # data_type strings as venues. Otherwise the venue grouping is real
+        # (CEFI/TRADFI/DEFI/PREDICTION on instruments-service / MTDS).
         # SSOT: codex/02-data/sports-data-source-coverage-matrix.md §3.
-        breakdown_axis = "data_type" if cat.upper() == "SPORTS" else "venue"
+        breakdown_axis = (
+            "data_type" if cat.upper() == "SPORTS" or regrouped_to_data_type else "venue"
+        )
         result: dict[str, object] = {
             "category": cat,
             "bucket": bucket,
@@ -5119,10 +5132,21 @@ class DataStatusService:
         venue_found_total: int,
         venue_expected_total: int,
         service: str = "instruments-service",
-    ) -> tuple[dict[str, object], int, int]:
+    ) -> tuple[dict[str, object], int, int, bool]:
         """Fall back to data_type-keyed grouping for the SPORTS instruments
         pattern (empty-venue v4 rows). Returns the input unchanged for
         categories that have real venues.
+
+        Returns a 4-tuple: ``(grouping_dict, found_total, expected_total,
+        switched_to_data_type)``. ``switched_to_data_type=True`` means the
+        returned dict is keyed by data_type (not venue) and the caller MUST
+        flip ``breakdown_axis`` to ``"data_type"`` so the UI renders the
+        result under ``data_types`` instead of ``venues``. Reference incident
+        2026-05-06: MDPS UI showed data_type strings ("book_snapshot_5",
+        "ohlcv_15m", ...) labelled as venues because the discriminator was
+        hardcoded to ``cat == "SPORTS"`` — MDPS hits this fallback for CEFI,
+        DEFI, etc. but the axis stayed "venue" so drilldowns / schema links /
+        deploy-missing all sent garbage downstream.
         """
         all_venues_empty = not venues_dict or all(str(k).strip() == "" for k in venues_dict)
         has_empty_venue_dt_rows = (
@@ -5132,15 +5156,18 @@ class DataStatusService:
             and filtered.loc[filtered["venue"].str.strip() == "", "data_type"].str.len().sum() > 0
         )
         if not (all_venues_empty or has_empty_venue_dt_rows):
-            return venues_dict, venue_found_total, venue_expected_total
+            return venues_dict, venue_found_total, venue_expected_total, False
         if "data_type" not in filtered.columns:
-            return venues_dict, venue_found_total, venue_expected_total
+            return venues_dict, venue_found_total, venue_expected_total, False
         dt_filtered = (
             filtered[filtered["venue"].str.strip() == ""]
             if has_empty_venue_dt_rows and not all_venues_empty
             else filtered
         )
-        return self._build_data_type_grouping(dt_filtered, effective_start, end_date, cat, service)
+        new_dict, found_total, expected_total = self._build_data_type_grouping(
+            dt_filtered, effective_start, end_date, cat, service
+        )
+        return new_dict, found_total, expected_total, True
 
     @staticmethod
     def _annotate_mtds_category(
