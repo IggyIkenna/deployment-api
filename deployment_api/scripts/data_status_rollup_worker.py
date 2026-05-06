@@ -140,6 +140,16 @@ def _write_rollup_to_gcs(
 
 def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     """Compute and upload one rollup per service. Returns process exit code."""
+    # Disable the ProcessPool fork-parallelism inside _get_manifest_status_sync.
+    # The worker invokes ``asyncio.run(get_manifest_status())`` per service,
+    # which schedules the sync compute on a thread pool. Forking from a
+    # multi-threaded process is unsafe (Python emits a DeprecationWarning;
+    # in practice we observed silent deadlock / SIGABRT on services like
+    # market-tick-data-service). The worker doesn't need per-request parallelism
+    # anyway — it runs once every 5 min and processes services sequentially.
+    import deployment_api.services.data_status_service as _dss_mod  # noqa: PLC0415
+
+    _dss_mod._PROCESS_POOL_DISABLED = True
     # Production observability per CLAUDE.md "no fire-and-forget" rule —
     # write structured lifecycle events to ``gs://{pid}-events/...`` where
     # ``unified-events-interface`` UI ingests them. Schema:
