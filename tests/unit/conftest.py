@@ -64,6 +64,13 @@ def _ensure_services_mocked() -> None:
     # no circular risk; tests monkey-patch module-level attrs directly.
     real_shard_detail = importlib.import_module("deployment_api.services.shard_detail")
 
+    # coverage_drift is a pure pandas/UAC consumer (Phase 8.B). Load BEFORE
+    # the services-package stub replacement so its real implementation is
+    # available to tests.
+    real_coverage_drift = importlib.import_module(
+        "deployment_api.services.coverage_drift"
+    )
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -92,6 +99,11 @@ def _ensure_services_mocked() -> None:
     # Re-register shard_detail as a real module on the fake package
     sys.modules["deployment_api.services.shard_detail"] = real_shard_detail
     services_mod.shard_detail = real_shard_detail
+
+    # Re-register coverage_drift (already imported above before the stub
+    # replacement) as a real module on the fake services package (Phase 8.B).
+    sys.modules["deployment_api.services.coverage_drift"] = real_coverage_drift
+    services_mod.coverage_drift = real_coverage_drift
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
