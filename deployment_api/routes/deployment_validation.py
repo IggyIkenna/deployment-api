@@ -332,9 +332,7 @@ def validate_shard_configuration(
 
     # Validate required dimensions are available
     required_dims: set[str] = set()
-    if (
-        "asset_group" in dim_names or "category" in dim_names
-    ) and not deploy_request.asset_group:
+    if ("asset_group" in dim_names or "category" in dim_names) and not deploy_request.asset_group:
         # Check if service has default categories (SSOT key name unchanged in YAML)
         default_categories = service_config.get("default_categories")
         if not default_categories:
