@@ -29,6 +29,7 @@ from deployment_api.services.data_status_drilldown import (
     get_schema_for_shard,
     get_shard_info,
     list_instruments_for_shard,
+    lookup_capture_status_for_shard,
     preview_bundle_symbols,
 )
 from deployment_api.services.data_status_mock import (
@@ -46,6 +47,185 @@ router = APIRouter()
 data_status_service = DataStatusService()
 data_query_service = DataQueryService()
 data_analytics_service = DataAnalyticsService()
+
+
+# ---------------------------------------------------------------------------
+# Capture-status download response branching (multi-axis drilldown).
+#
+# Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md Phase 3.
+# The download endpoints below check the manifest's capture_status BEFORE
+# attempting to read the parquet. The branch dictates HTTP status + body
+# shape so the operator can tell:
+#
+#   captured + parquet OK   → 200 + CSV body                    (today)
+#   empty_confirmed         → 200 + header-only CSV explaining the
+#                             honest empty (source returned 0 rows).
+#                             X-Capture-Status: empty_confirmed.
+#   attempted_failed        → 200 + header-only CSV with the error
+#                             reason. X-Capture-Status: attempted_failed.
+#   captured + 0 byte read  → 502 + body explaining the path drift.
+#                             X-Capture-Status: path_drift.
+#                             Real bug class — manifest claims captured
+#                             but the downloader can't find the parquet.
+#   never_attempted         → 404 + body. X-Capture-Status: never_attempted.
+# ---------------------------------------------------------------------------
+
+
+def _empty_confirmed_csv_body(
+    *,
+    service: str,
+    asset_group: str,
+    day: str,
+    error_reason: str,
+    attempted_at: str,
+) -> str:
+    """Header-only CSV for empty_confirmed shards.
+
+    Operators landing on this from the download button need to know
+    immediately that the empty body is HONEST (source returned no
+    rows), not a bug. We emit a CSV with one informative comment row
+    so opening the file in any tool surfaces the message. The
+    X-Capture-Status header carries the machine-readable signal.
+    """
+    return (
+        "# CAPTURE_STATUS: empty_confirmed\n"
+        f"# service: {service}\n"
+        f"# asset_group: {asset_group}\n"
+        f"# day: {day}\n"
+        f"# attempted_at: {attempted_at}\n"
+        f"# error_reason: {error_reason or '(none — source returned 0 rows)'}\n"
+        "# This is an HONEST empty: the adapter ran successfully and the\n"
+        "# upstream source returned zero rows for this shard. NaN downstream\n"
+        "# is fine — tree-based ML and rank-based allocators handle missing\n"
+        "# data natively. The denominator-clip rules in CLAUDE.md (sports\n"
+        "# SOURCE_COVERAGE_START / VIX 15m layering / etc.) live here.\n"
+    )
+
+
+def _attempted_failed_csv_body(
+    *,
+    service: str,
+    asset_group: str,
+    day: str,
+    error_reason: str,
+    attempted_at: str,
+) -> str:
+    """Header-only CSV for attempted_failed shards."""
+    return (
+        "# CAPTURE_STATUS: attempted_failed\n"
+        f"# service: {service}\n"
+        f"# asset_group: {asset_group}\n"
+        f"# day: {day}\n"
+        f"# attempted_at: {attempted_at}\n"
+        f"# error_reason: {error_reason or '(unclassified)'}\n"
+        "# The adapter ran and raised. error_reason carries the classified\n"
+        "# failure category. Re-run the orchestrator for this shard from the\n"
+        "# Data Status tab; the manifest will flip back to captured on retry\n"
+        "# success.\n"
+    )
+
+
+def _capture_status_response(
+    *,
+    service: str,
+    asset_group: str,
+    day: str,
+    capture_meta: dict[str, str],
+    filename_stem: str,
+) -> Response | None:
+    """Return a Response when the capture_status branches off the happy path.
+
+    Returns None when status == ``captured`` so the caller falls through
+    to its normal parquet-read code path. For every other status,
+    returns the appropriate Response with X-Capture-Status header set.
+
+    This is a pure response builder — does NOT touch the parquet.
+    """
+    status = capture_meta.get("status", "captured")
+    error_reason = capture_meta.get("error_reason", "")
+    attempted_at = capture_meta.get("attempted_at", "")
+
+    if status == "captured":
+        return None
+
+    headers = {"X-Capture-Status": status}
+
+    if status == "never_attempted":
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No manifest row for service={service}, asset_group={asset_group}, "
+                f"day={day} — the adapter never ran for this shard. Trigger a "
+                f"backfill from the Data Status tab."
+            ),
+            headers=headers,
+        )
+
+    if status == "empty_confirmed":
+        body = _empty_confirmed_csv_body(
+            service=service,
+            asset_group=asset_group,
+            day=day,
+            error_reason=error_reason,
+            attempted_at=attempted_at,
+        )
+        headers["Content-Disposition"] = (
+            f'attachment; filename="{filename_stem}.empty_confirmed.csv"'
+        )
+        headers["X-Row-Count"] = "0"
+        return Response(content=body, media_type="text/csv; charset=utf-8", headers=headers)
+
+    if status == "attempted_failed":
+        body = _attempted_failed_csv_body(
+            service=service,
+            asset_group=asset_group,
+            day=day,
+            error_reason=error_reason,
+            attempted_at=attempted_at,
+        )
+        headers["Content-Disposition"] = (
+            f'attachment; filename="{filename_stem}.attempted_failed.csv"'
+        )
+        headers["X-Row-Count"] = "0"
+        return Response(content=body, media_type="text/csv; charset=utf-8", headers=headers)
+
+    # Unknown status — treat as never_attempted but signal the surprise.
+    raise HTTPException(
+        status_code=500,
+        detail=f"Unknown capture_status {status!r} from manifest",
+        headers=headers,
+    )
+
+
+def _path_drift_response(
+    *,
+    service: str,
+    asset_group: str,
+    day: str,
+    expected_path_hint: str,
+) -> HTTPException:
+    """Build the 502 response for the captured-but-0-rows path-drift case.
+
+    Caller raises this when ``capture_status=captured`` per the manifest
+    but the downloader's parquet probe returned 0 rows. Distinct from
+    a 404 (manifest had nothing) and from a 200-empty (honest empty);
+    the 502 deliberately signals "we believed we had data but the
+    downloader can't deliver it" — operator-actionable bug.
+    """
+    return HTTPException(
+        status_code=502,
+        detail=(
+            f"Manifest says captured for service={service}, "
+            f"asset_group={asset_group}, day={day}, but the downloader read 0 "
+            f"rows from {expected_path_hint or 'the expected path'}. Likely "
+            f"writer/downloader path-template drift, chain-bundle / "
+            f"instrument_type / hive-vocab axis drift, or a per-league / "
+            f"per-job_id sub-partition the downloader doesn't walk into. Run "
+            f"the phantom audit (see codex/02-data/availability-manifest-and-"
+            f"data-status.md § Phantom audit — re-runnable recipe)."
+        ),
+        headers={"X-Capture-Status": "path_drift"},
+    )
 
 
 @router.get("")
@@ -641,15 +821,32 @@ async def get_schema(
     data_type: str = Query(..., description="Data type"),
     venue: str | None = Query(None, description="Venue for venue-specific overrides"),
     day: str | None = Query(None, description="Day (YYYY-MM-DD) for parquet projection fallback"),
+    chain: str | None = Query(None, description="DeFi chain (ETHEREUM, ARBITRUM, ...)"),
+    instrument_id: str | None = Query(None, description="Per-instrument leaf shard"),
+    league_id: str | None = Query(None, description="Sports league_id (per-league leaf)"),
+    fixture_id: str | None = Query(None, description="Sports fixture_id (per-fixture leaf)"),
+    canonical_question_group: str | None = Query(
+        None, description="Prediction canonical_question_group (per-group leaf)"
+    ),
+    job_id: str | None = Query(None, description="ML / strategy / execution experiment-run id"),
+    model_family: str | None = Query(None, description="ML model_family"),
+    training_period: str | None = Query(None, description="ML training_period"),
+    strategy_id: str | None = Query(None, description="strategy-service strategy_id"),
+    instruction_type: str | None = Query(None, description="execution-service instruction_type"),
+    feature_group: str | None = Query(None, description="features-* feature_group"),
+    timeframe: str | None = Query(None, description="features-* / multi-timeframe timeframe"),
 ):
-    """Return the SchemaContract columns for an (asset_group, instrument_type, data_type)
-    tuple, honouring venue-specific overrides (UNISWAP_V2/V3/V4 etc.).
+    """Return the leaf-shard SchemaContract columns for the requested axis tuple.
 
-    When no contract is registered (instruments-service legacy v4 manifests
-    for cefi/tradfi/defi/prediction carry empty instrument_type+data_type
-    axes) and the caller supplies ``service``, ``venue``, ``day``, the
-    response projects the actual parquet column names from a sample shard so
-    the UI's View Schema modal renders something meaningful instead of blank.
+    Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md Phase 3.
+    All v7 multi-axis params are optional — populated ones narrow the
+    parquet-projection probe to the deepest shard the operator clicked
+    on. Each leaf parquet has its own column shape (CeFi spot
+    per-instrument vs DeFi options-chain bundle vs sports per-league
+    fixture parquet differ); the response is ALWAYS at the deepest level
+    the kwargs identify, never aggregated. Resolution order documented
+    on ``get_schema_for_shard`` (registry → catalogue synthesis →
+    parquet projection → honest absence).
     """
     bucket: str | None = None
     if service:
@@ -666,6 +863,18 @@ async def get_schema(
             service=service,
             bucket=bucket,
             day=day,
+            chain=chain,
+            instrument_id=instrument_id,
+            league_id=league_id,
+            fixture_id=fixture_id,
+            canonical_question_group=canonical_question_group,
+            job_id=job_id,
+            model_family=model_family,
+            training_period=training_period,
+            strategy_id=strategy_id,
+            instruction_type=instruction_type,
+            feature_group=feature_group,
+            timeframe=timeframe,
         )
     except (ValueError, RuntimeError) as e:
         logger.exception("Error in get_schema")
@@ -881,13 +1090,44 @@ async def download_csv(
     instrument_type: str = Query(..., description="Instrument type"),
     data_type: str = Query(..., description="Data type"),
     instrument_ids: str = Query("", description="Comma-separated instrument IDs (empty = all)"),
+    chain: str | None = Query(None, description="DeFi chain leaf-axis filter"),
+    league_id: str | None = Query(None, description="Sports league_id leaf-axis filter"),
+    job_id: str | None = Query(
+        None, description="ML / strategy / execution job_id leaf-axis filter"
+    ),
 ):
     """Stream a CSV of the selected instruments for one shard.
+
+    Reads the manifest's capture_status for the requested axis tuple
+    FIRST and branches before touching the parquet — see
+    ``_capture_status_response`` for the full empty_confirmed /
+    attempted_failed / never_attempted / path_drift behaviour.
 
     Empty ``instrument_ids`` means "download the full shard". The server
     caps output at 500k rows — larger requests get a 413 advising
     BigQuery external tables.
     """
+    capture_meta = lookup_capture_status_for_shard(
+        service=service,
+        asset_group=asset_group,
+        day=day,
+        venue=venue,
+        instrument_type=instrument_type,
+        data_type=data_type,
+        chain=chain,
+        league_id=league_id,
+        job_id=job_id,
+    )
+    branched = _capture_status_response(
+        service=service,
+        asset_group=asset_group,
+        day=day,
+        capture_meta=capture_meta,
+        filename_stem=f"{service}_{asset_group}_{venue}_{day}",
+    )
+    if branched is not None:
+        return branched
+
     ids = [s.strip() for s in instrument_ids.split(",") if s.strip()] if instrument_ids else []
     try:
         csv_text, row_count, filename = build_csv_export(
@@ -908,9 +1148,19 @@ async def download_csv(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
 
+    if row_count == 0:
+        # Manifest said captured, parquet read returned 0 rows → path drift.
+        raise _path_drift_response(
+            service=service,
+            asset_group=asset_group,
+            day=day,
+            expected_path_hint=filename,
+        )
+
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Row-Count": str(row_count),
+        "X-Capture-Status": "captured",
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
 
@@ -926,7 +1176,30 @@ async def download_fixtures_csv(
     ``sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet``
     keyed by API-Football numeric league id. This endpoint filters by
     canonical ``league_id`` via UAC and streams the matching rows as CSV.
+
+    Reads the manifest capture_status for this (instruments-service,
+    sports, day, league_id) FIRST and branches — empty_confirmed leagues
+    (paused window per UAC ``KNOWN_COVERAGE_GAPS`` or pre-source-launch
+    per ``SOURCE_COVERAGE_START``) return a header-only CSV explaining
+    the honest empty rather than a confusing zero-row download.
     """
+    capture_meta = lookup_capture_status_for_shard(
+        service="instruments-service",
+        asset_group="sports",
+        day=day,
+        data_type="fixtures",
+        league_id=league_id,
+    )
+    branched = _capture_status_response(
+        service="instruments-service",
+        asset_group="sports",
+        day=day,
+        capture_meta=capture_meta,
+        filename_stem=f"fixtures_{league_id}_{day}",
+    )
+    if branched is not None:
+        return branched
+
     try:
         csv_text, row_count, filename = build_fixtures_csv_export(
             day=day,
@@ -940,13 +1213,21 @@ async def download_fixtures_csv(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
 
+    if row_count == 0:
+        # Manifest claimed captured for this (day, league_id) but the
+        # parquet probe returned 0 rows. Distinct from the honest-empty
+        # branch above — file as path drift so the operator notices.
+        raise _path_drift_response(
+            service="instruments-service",
+            asset_group="sports",
+            day=day,
+            expected_path_hint=filename,
+        )
+
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Row-Count": str(row_count),
-        # "captured": parquet had rows for this league; "empty": parquet
-        # existed but no rows for this league (empty_confirmed); "missing":
-        # parquet didn't exist (adapter never ran for this day).
-        "X-Data-Status": "captured" if row_count > 0 else "empty_or_missing",
+        "X-Capture-Status": "captured",
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
 
@@ -957,16 +1238,47 @@ async def download_shard_csv(
     asset_group: str = Query(..., description="Asset group (CEFI, TRADFI, DEFI)"),
     venue: str = Query(..., description="Venue name (e.g. BINANCE-SPOT)"),
     date: str = Query(..., description="Day (YYYY-MM-DD)"),
+    chain: str | None = Query(None, description="DeFi chain leaf-axis filter"),
+    league_id: str | None = Query(None, description="Sports league_id leaf-axis filter"),
+    job_id: str | None = Query(
+        None, description="ML / strategy / execution job_id leaf-axis filter"
+    ),
 ):
     """Stream a CSV for one (service, asset group, venue, date) shard or catalog.
 
-    Routing:
+    Reads the manifest's capture_status FIRST and branches before
+    touching the parquet — empty_confirmed and attempted_failed return
+    200 with header-only bodies explaining the status; never_attempted
+    returns 404; captured-but-zero-rows returns 502 (path drift) so the
+    operator distinguishes "honest empty" from "downloader broken".
+    See ``_capture_status_response`` for the full contract.
+
+    Routing for the captured happy path:
     * instruments-service / corporate-actions — reads the per-(venue, day)
       ``instruments.parquet`` bundle and returns its rows as CSV.
     * market-tick-data-service / market-data-processing-service — reads the
       availability manifest catalog filtered to ``(venue, date)`` and returns
       instrument capture metadata as CSV (tick data itself is too large).
     """
+    capture_meta = lookup_capture_status_for_shard(
+        service=service,
+        asset_group=asset_group,
+        day=date,
+        venue=venue,
+        chain=chain,
+        league_id=league_id,
+        job_id=job_id,
+    )
+    branched = _capture_status_response(
+        service=service,
+        asset_group=asset_group,
+        day=date,
+        capture_meta=capture_meta,
+        filename_stem=f"{service}_{asset_group}_{venue}_{date}",
+    )
+    if branched is not None:
+        return branched
+
     try:
         svc = service.lower()
         if svc in MTDS_SHARD_SERVICES:
@@ -991,28 +1303,22 @@ async def download_shard_csv(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
 
-    # Honest 404 instead of a misleading 200 OK with empty body.
-    # ``build_*_shard_csv_export`` returns ("", 0, filename) when the shard
-    # parquet doesn't exist on GCS — the user clicked a date the adapter
-    # never ran. Without this guard the browser saves an empty file and the
-    # operator can't tell the difference between "no rows" and "no shard at
-    # all". The 404 message tells them which path was tried.
+    # Manifest said captured but parquet read returned 0 rows → path drift.
+    # Distinct from the honest empty / never_attempted branches handled
+    # above — the operator needs to know we believed we had data and
+    # couldn't deliver it.
     if row_count == 0 and not csv_text:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No shard parquet found for "
-                f"service={service}, asset_group={asset_group}, venue={venue}, date={date}. "
-                f"The adapter may not have run that day, or the manifest "
-                f"row points at a path that no longer exists. Check the "
-                f"availability manifest in the Data Status tab."
-            ),
+        raise _path_drift_response(
+            service=service,
+            asset_group=asset_group,
+            day=date,
+            expected_path_hint=filename,
         )
 
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Row-Count": str(row_count),
-        "X-Data-Status": "captured" if row_count > 0 else "empty_or_missing",
+        "X-Capture-Status": "captured",
     }
     return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
 

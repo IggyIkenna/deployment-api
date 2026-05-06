@@ -232,6 +232,154 @@ def _apply_default_capture_status(instruments: list[dict[str, object]]) -> None:
         inst.setdefault("attempted_at", "")
 
 
+# Capture-status branches surfaced by the multi-axis drilldown / download
+# endpoints. The download UX in deployment-ui DataStatusDrilldown branches
+# on the ``X-Capture-Status`` response header into the matching empty-state
+# panel:
+#
+# - ``captured`` — manifest claims rows; parquet read returned >0 rows;
+#   today's happy path (HTTP 200 + CSV body).
+# - ``empty_confirmed`` — adapter ran and the source legitimately returned
+#   zero rows (paused league day, pre-source-launch, dormant prediction
+#   market). HTTP 200 + header-only body explaining the honest empty.
+# - ``attempted_failed`` — adapter ran and raised; ``error_reason``
+#   carries the classified failure. HTTP 200 + header-only body.
+# - ``never_attempted`` — manifest has no row at all for the requested
+#   axis-tuple; the adapter never ran. HTTP 404.
+# - ``path_drift`` — manifest says ``captured`` but the downloader probed
+#   the parquet path and got 0 rows. Real bug class: writer/downloader
+#   path-template drift, chain-bundle / instrument_type / hive-vocab
+#   axis drift, or a per-league/per-job_id sub-partition the downloader
+#   doesn't walk into. HTTP 502 — the operator needs to know the data
+#   the manifest claims is in fact unreachable.
+_CAPTURE_STATUS_HEADER = "X-Capture-Status"
+
+_AXIS_KWARGS: tuple[str, ...] = (
+    "venue",
+    "instrument_type",
+    "data_type",
+    "instrument_id",
+    "chain",
+    "league_id",
+    "fixture_id",
+    "canonical_question_group",
+    "job_id",
+    "model_family",
+    "training_period",
+    "strategy_id",
+    "instruction_type",
+    "feature_group",
+    "timeframe",
+)
+
+
+def lookup_capture_status_for_shard(
+    *,
+    service: str,
+    asset_group: str,
+    day: str,
+    **axes: str | None,
+) -> dict[str, str]:
+    """Look up the manifest ``capture_status`` for an axis-tuple shard.
+
+    Reads the (service, asset_group) availability index, filters to the
+    requested ``day`` AND every populated axis kwarg, and returns the
+    most recently written row's capture metadata. When no row matches,
+    returns ``{"status": "never_attempted", ...}`` so the caller can
+    branch — the adapter never ran for this shard, distinct from
+    "ran and got nothing".
+
+    Args:
+        service: Service name (e.g. ``instruments-service``,
+            ``market-tick-data-service``, ``ml-training-service``).
+        asset_group: Asset group bucket key (cefi/tradfi/defi/sports/
+            prediction/shared).
+        day: ISO date (``YYYY-MM-DD``) to filter on.
+        **axes: Any of the v7 shard axes (venue, chain, league_id,
+            fixture_id, canonical_question_group, job_id,
+            model_family, training_period, strategy_id,
+            instruction_type, feature_group, timeframe, instrument_id,
+            instrument_type, data_type). Each axis kwarg is applied as
+            an equality filter when the manifest carries that column;
+            missing columns are silently skipped (no narrowing) so the
+            lookup degrades gracefully against partially-migrated
+            v4/v5/v6 manifests.
+
+    Returns:
+        Dict with keys ``status`` (one of ``captured``,
+        ``empty_confirmed``, ``attempted_failed``, ``never_attempted``),
+        ``error_reason`` (classified error string or ``""``),
+        ``attempted_at`` (ISO-8601 UTC timestamp or ``""``),
+        ``written_at`` (manifest-write time or ``""``).
+
+    Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md
+    Phase 3 (drilldown polish — distinguish empty_confirmed from
+    path-drift zero bytes in the download UX).
+    """
+    try:
+        bucket = build_bucket_name(service, asset_group)
+    except ValueError:
+        return {
+            "status": "never_attempted",
+            "error_reason": "",
+            "attempted_at": "",
+            "written_at": "",
+        }
+    try:
+        index = read_availability_index(bucket)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "lookup_capture_status_for_shard manifest read failed for %s: %s", bucket, exc
+        )
+        return {
+            "status": "never_attempted",
+            "error_reason": "",
+            "attempted_at": "",
+            "written_at": "",
+        }
+    if index.empty or "date" not in index.columns:
+        return {
+            "status": "never_attempted",
+            "error_reason": "",
+            "attempted_at": "",
+            "written_at": "",
+        }
+    mask = index["date"].astype(str) == day
+    if "service_name" in index.columns:
+        mask = mask & (index["service_name"].astype(str) == service)
+    for col in _AXIS_KWARGS:
+        val = axes.get(col)
+        if not val or col not in index.columns:
+            continue
+        normalised = val.upper() if col in ("venue", "chain", "instruction_type") else val
+        mask = mask & (index[col].fillna("").astype(str) == normalised)
+    matched = index.loc[mask]
+    if matched.empty:
+        return {
+            "status": "never_attempted",
+            "error_reason": "",
+            "attempted_at": "",
+            "written_at": "",
+        }
+    if "written_at" in matched.columns:
+        matched = matched.sort_values("written_at", ascending=False)
+    row = matched.iloc[0]
+    raw_status = row.get("capture_status") if "capture_status" in matched.columns else None
+    status = (
+        str(raw_status).lower()
+        if raw_status is not None and not pd.isna(raw_status) and str(raw_status)
+        else _DEFAULT_CAPTURE_STATUS
+    )
+    if status not in ("captured", "empty_confirmed", "attempted_failed"):
+        status = _DEFAULT_CAPTURE_STATUS
+    return {
+        "status": status,
+        "error_reason": str(row.get("error_reason") or ""),
+        "attempted_at": str(row.get("attempted_at") or ""),
+        "written_at": str(row.get("written_at") or ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Schema lookup
 # ---------------------------------------------------------------------------
@@ -348,17 +496,50 @@ def get_schema_for_shard(
     service: str | None = None,
     bucket: str | None = None,
     day: str | None = None,
+    chain: str | None = None,
+    instrument_id: str | None = None,
+    league_id: str | None = None,
+    fixture_id: str | None = None,
+    canonical_question_group: str | None = None,
+    job_id: str | None = None,
+    model_family: str | None = None,
+    training_period: str | None = None,
+    strategy_id: str | None = None,
+    instruction_type: str | None = None,
+    feature_group: str | None = None,
+    timeframe: str | None = None,
 ) -> dict[str, object]:
-    """Return the SchemaContract columns for a shard tuple.
+    """Return the SchemaContract columns for a shard tuple — leaf-shard granularity.
 
-    For instruments-service shards on the legacy v4 manifest layout
-    (cefi/tradfi/defi/prediction rows have empty ``instrument_type`` and
-    empty ``data_type``), the lookup is retried against the synthesised
-    ``("instrument_catalogue", "instrument_catalogue")`` axis pair which is
-    registered in UAC for every asset_group. The catalogue contract is
-    derived from ``INSTRUMENTS_PARQUET_SCHEMA`` — the same SSOT that
-    instruments-service uses to write the parquet — so the schema returned
-    here matches the bytes on disk.
+    Phase 3 of data_status_multi_axis_shard_propagation_2026_05_06.plan.md
+    — schema view ALWAYS at the deepest shard level. Each leaf parquet has
+    its own column shape (CeFi spot per-instrument vs DeFi options-chain
+    bundle vs sports per-league fixture parquet differ in column shape),
+    so the v7 multi-axis kwargs are threaded through to the parquet
+    projection fallback.
+
+    Resolution order:
+
+    1. UAC contract registry — ``lookup_contract(asset_group,
+       instrument_type, data_type, venue)``. Honours
+       ``VENUE_CONTRACT_OVERRIDES``. Cleanest path.
+    2. Legacy v4 instruments-service catalogue synthesis: empty
+       instrument_type+data_type collapses to the
+       ``("instrument_catalogue", "instrument_catalogue")`` contract.
+    3. Parquet-projection fallback: when the registry has no entry
+       AND we have ``service`` + ``bucket`` + ``day`` + enough axis
+       kwargs to identify a leaf parquet, probe the actual parquet
+       on GCS via :func:`_parquet_schema_names` and return the real
+       column names. Distinguishes from #1 via ``source =
+       "PARQUET_PROJECTION"`` so the UI can flag it as inferred,
+       not contract-backed.
+    4. Honest absence — return ``registered: False`` with an empty
+       ``columns`` list and a non-confusing message. UI should
+       render "no schema yet" rather than blank or fake columns.
+
+    The honest-absence branch (#4) is correct for shards where the
+    writer hasn't shipped yet — we explicitly DO NOT make up columns
+    that aren't on disk and aren't in the registry.
     """
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
@@ -377,7 +558,8 @@ def get_schema_for_shard(
         it_norm = "instrument_catalogue"
         dt_norm = "instrument_catalogue"
 
-    # Venue override takes priority, else base registry, else fallback.
+    # Step 1+2: Venue override takes priority, else base registry.
+    contract: SchemaContract | None
     try:
         contract = lookup_contract(
             asset_group=cat_norm,
@@ -386,39 +568,280 @@ def get_schema_for_shard(
             venue=venue,
         )
     except SchemaContractNotFoundError:
+        contract = None
+
+    if contract is not None:
+        source = "CONTRACT_REGISTRY"
+        if venue is not None:
+            override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
+            if override_key in VENUE_CONTRACT_OVERRIDES:
+                source = "VENUE_CONTRACT_OVERRIDES"
+        return {
+            "registered": True,
+            "asset_group": contract.asset_group,
+            "instrument_type": contract.instrument_type,
+            "data_type": contract.data_type,
+            "venue": (venue or "").upper() if venue else None,
+            "symbol_column": contract.symbol_column,
+            "source": source,
+            "columns": _column_dicts(contract),
+            "required_row_count_min": contract.required_row_count_min,
+        }
+
+    # Step 3: Parquet-projection fallback. Build the leaf-shard kwargs
+    # dict from the multi-axis params + try every plausible parquet path
+    # for this (service, asset_group). When one resolves, project its
+    # column names from the parquet schema and return them as the
+    # leaf-shard schema. SHARD_AXIS_MATRIX-driven so per-asset-group
+    # path layouts are honoured (DEFI chain= partition, sports
+    # league= partition, ML model_family= / training_period= /
+    # job_id=, etc.).
+    axes: dict[str, str | None] = {
+        "venue": venue,
+        "instrument_type": instrument_type,
+        "data_type": data_type,
+        "instrument_id": instrument_id,
+        "chain": chain,
+        "league_id": league_id,
+        "fixture_id": fixture_id,
+        "canonical_question_group": canonical_question_group,
+        "job_id": job_id,
+        "model_family": model_family,
+        "training_period": training_period,
+        "strategy_id": strategy_id,
+        "instruction_type": instruction_type,
+        "feature_group": feature_group,
+        "timeframe": timeframe,
+    }
+    projected = _project_leaf_parquet_columns(
+        service=service,
+        asset_group=cat_norm,
+        bucket=bucket,
+        day=day,
+        axes=axes,
+    )
+    if projected is not None:
+        cols, gs_uri = projected
         return {
             "registered": False,
             "asset_group": cat_norm,
             "instrument_type": it_norm,
             "data_type": dt_norm,
-            "venue": venue,
+            "venue": (venue or "").upper() if venue else None,
             "symbol_column": None,
-            "source": "none",
-            "columns": [],
-            "message": (
-                "No contract registered for this shard. "
-                "The UI should fall back to projecting actual parquet columns."
-            ),
+            "source": "PARQUET_PROJECTION",
+            "columns": [
+                {"name": c, "dtype": "", "nullable": True, "description": ""} for c in cols
+            ],
+            "projected_from": gs_uri,
         }
 
-    # Figure out whether we resolved via override or base registry.
-    source = "CONTRACT_REGISTRY"
-    if venue is not None:
-        override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
-        if override_key in VENUE_CONTRACT_OVERRIDES:
-            source = "VENUE_CONTRACT_OVERRIDES"
-
+    # Step 4: Honest absence.
     return {
-        "registered": True,
-        "asset_group": contract.asset_group,
-        "instrument_type": contract.instrument_type,
-        "data_type": contract.data_type,
-        "venue": (venue or "").upper() if venue else None,
-        "symbol_column": contract.symbol_column,
-        "source": source,
-        "columns": _column_dicts(contract),
-        "required_row_count_min": contract.required_row_count_min,
+        "registered": False,
+        "asset_group": cat_norm,
+        "instrument_type": it_norm,
+        "data_type": dt_norm,
+        "venue": venue,
+        "symbol_column": None,
+        "source": "none",
+        "columns": [],
+        "message": (
+            "No contract registered for this leaf shard AND no parquet "
+            "found on disk to project columns from. Either the writer "
+            "hasn't shipped yet (Phase 1 of the multi-axis-shard plan) "
+            "or the path-template the projection probes doesn't match "
+            "the on-disk layout — file the latter as a path-drift bug."
+        ),
     }
+
+
+def _project_leaf_parquet_columns(
+    *,
+    service: str | None,
+    asset_group: str,
+    bucket: str | None,
+    day: str | None,
+    axes: dict[str, str | None],
+) -> tuple[list[str], str] | None:
+    """Probe the actual parquet for a leaf shard and return its column names.
+
+    Returns ``(columns, gs_uri)`` on success, ``None`` when no candidate
+    parquet exists. The candidate paths depend on (service, asset_group);
+    sports uses UAC ``candidate_parquet_paths`` (per-league subpartition
+    first, then bare path), instruments-service uses the per-(venue, day)
+    bundle, MTDS / MDPS / features-* probe the per-instrument or
+    per-feature_group leaf, and ML / strategy / execution probe the
+    per-job_id partition.
+
+    Failure to resolve is non-fatal — caller falls through to the honest
+    ``registered: False`` response.
+    """
+    if not (service and bucket and day):
+        return None
+    try:
+        candidates = _build_leaf_parquet_candidates(
+            service=service, asset_group=asset_group, day=day, axes=axes, bucket=bucket
+        )
+    except (ValueError, RuntimeError) as exc:
+        logger.debug("leaf parquet candidate build failed: %s", exc)
+        return None
+    for gs_uri in candidates:
+        # Directory prefix candidates need a list-first probe to find the
+        # actual parquet file under the prefix.
+        if gs_uri.endswith("/"):
+            resolved = _first_parquet_under_prefix(gs_uri)
+            if resolved is None:
+                continue
+            gs_uri = resolved
+        try:
+            names = _parquet_schema_names(gs_uri)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if names:
+            # Stable order: alphabetic with the obvious anchors first.
+            anchors = [
+                c for c in ("date", "timestamp", "available_at", "instrument_id") if c in names
+            ]
+            rest = sorted(n for n in names if n not in anchors)
+            return ([*anchors, *rest], gs_uri)
+    return None
+
+
+def _first_parquet_under_prefix(gs_prefix: str) -> str | None:
+    """List ``gs_prefix`` and return the first .parquet URI, or None.
+
+    Used by the schema projection fallback when the candidate path is a
+    hive-partition directory rather than a fully-qualified parquet file.
+    Limits the listing to 10 results — we only need one parquet to
+    project the schema.
+    """
+    if not gs_prefix.startswith("gs://"):
+        return None
+    rest = gs_prefix[len("gs://") :]
+    bucket, _, prefix = rest.partition("/")
+    if not bucket:
+        return None
+    try:
+        blobs = list_objects(bucket_name=bucket, prefix=prefix, max_results=10)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for blob in blobs:
+        name = getattr(blob, "name", None)
+        if isinstance(name, str) and name.endswith(".parquet"):
+            return f"gs://{bucket}/{name}"
+    return None
+
+
+def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-service path-template routing across 15 services)
+    *,
+    service: str,
+    asset_group: str,
+    day: str,
+    axes: dict[str, str | None],
+    bucket: str,
+) -> list[str]:
+    """Return the ordered list of GCS URIs to probe for the leaf parquet.
+
+    Per-service routing matches the writers' actual on-disk layouts.
+    First-hit-wins on the projection — caller iterates the list.
+    """
+    svc = service.lower()
+    candidates: list[str] = []
+
+    # Sports uses the UAC SSOT.
+    if asset_group == "sports":
+        from unified_api_contracts.sports import (
+            candidate_parquet_uris,
+        )
+
+        league = axes.get("league_id") or ""
+        data_type_value = (axes.get("data_type") or "").lower()
+        if data_type_value:
+            try:
+                uri_list = candidate_parquet_uris(
+                    data_type=data_type_value, day=day, league_id=league or None
+                )
+                for uri in uri_list:  # pyright: ignore[reportUnknownVariableType]
+                    if isinstance(uri, str):
+                        candidates.append(uri)
+            except (KeyError, ValueError) as exc:
+                logger.debug("sports candidate_parquet_uris miss: %s", exc)
+        return candidates
+
+    # instruments-service / corporate-actions: per-(venue, day) bundle.
+    venue = axes.get("venue") or ""
+    if svc in ("instruments-service", "corporate-actions") and venue:
+        candidates.append(
+            f"gs://{bucket}/by_date/day={day}/venue={venue.upper()}/instruments.parquet"
+        )
+        return candidates
+
+    # MTDS / MDPS / features-*: per-instrument (or bundle root for
+    # options_chain / futures_chain) leaf parquet. We don't enumerate
+    # every (chain, instrument_type, data_type) hive partition because
+    # the right path depends on the writer's version; instead we
+    # construct the most common variants and let the projection
+    # short-circuit on first hit.
+    instrument_type = (axes.get("instrument_type") or "").lower()
+    data_type_value = (axes.get("data_type") or "").lower()
+    instrument_id = axes.get("instrument_id") or ""
+    chain = (axes.get("chain") or "").upper()
+    feature_group = (axes.get("feature_group") or "").lower()
+    timeframe = (axes.get("timeframe") or "").lower()
+
+    if data_type_value and venue:
+        prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"
+        venue_partition = f"venue={venue.upper()}"
+        if chain:
+            venue_partition = f"venue={venue.upper()}-{chain}"
+        if instrument_type:
+            partitions = (
+                f"asset_group={asset_group}/{venue_partition}/instrument_type={instrument_type}"
+                f"/data_type={data_type_value}"
+            )
+            if instrument_id:
+                candidates.append(
+                    f"{prefix_root}/{partitions}/instrument_id={instrument_id}/{instrument_id}.parquet"
+                )
+                candidates.append(f"{prefix_root}/{partitions}/{instrument_id}.parquet")
+            candidates.append(f"{prefix_root}/{partitions}/")
+
+    # features-* layout: feature_group + timeframe partitions.
+    if feature_group:
+        partitions = f"by_date/day={day}/feature_group={feature_group}"
+        if timeframe:
+            partitions += f"/timeframe={timeframe}"
+        if venue:
+            partitions += f"/venue={venue.upper()}"
+        if instrument_id:
+            candidates.append(f"gs://{bucket}/{partitions}/{instrument_id}.parquet")
+        candidates.append(f"gs://{bucket}/{partitions}/")
+
+    # ML / strategy / execution: experiment-keyed partitions. The
+    # writers may not yet emit job_id= (Phase 1B work) so we probe
+    # both with and without.
+    model_family = axes.get("model_family") or ""
+    training_period = axes.get("training_period") or ""
+    job_id = axes.get("job_id") or ""
+    strategy_id = axes.get("strategy_id") or ""
+    instruction_type = (axes.get("instruction_type") or "").upper()
+    if svc in ("ml-training-service", "ml-inference-service") and model_family:
+        base = f"gs://{bucket}/by_date/day={day}/model_family={model_family}"
+        if training_period:
+            base += f"/training_period={training_period}"
+        if job_id:
+            candidates.append(f"{base}/job_id={job_id}/")
+        candidates.append(f"{base}/")
+    if svc in ("strategy-service", "execution-service") and strategy_id:
+        base = f"gs://{bucket}/by_date/day={day}/strategy_id={strategy_id}"
+        if instruction_type:
+            base += f"/instruction_type={instruction_type}"
+        if job_id:
+            candidates.append(f"{base}/job_id={job_id}/")
+        candidates.append(f"{base}/")
+
+    return candidates
 
 
 # ---------------------------------------------------------------------------
