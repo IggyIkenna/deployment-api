@@ -1869,14 +1869,21 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         from unified_trading_library.cloud_interface import get_storage_client
 
         client = get_storage_client(project_id=_pid)
-        bucket = client.bucket(_rollup_bucket())  # pyright: ignore[reportAttributeAccessIssue]
-        blob = bucket.blob(f"{service}/full.json.gz")
-        if not blob.exists():
+        bucket_name = _rollup_bucket()
+        blob_path = f"{service}/full.json.gz"
+        # Unified cloud_interface flat API (NOT raw google-cloud-storage Blob):
+        #   blob_exists(bucket, blob_path) -> bool
+        #   get_blob_metadata(bucket, blob_path) -> BlobMetadata | None
+        #   download_bytes(bucket, blob_path) -> bytes
+        if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
             return None
-        blob.reload()
-        # Cloud Storage Blob.updated is a datetime; convert to age-in-seconds.
-        if blob.updated is not None:
-            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(blob.updated)).total_seconds()
+        meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
+        # on backend). Treat missing/parse-errors as "fresh enough" to read.
+        if meta is not None and getattr(meta, "updated", None) is not None:
+            age_sec = (
+                pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)
+            ).total_seconds()
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
                     "rollup for %s is stale (%.0fs > %ds threshold) — falling through to on-demand",
@@ -1885,13 +1892,18 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
                     _ROLLUP_STALENESS_SEC,
                 )
                 return None
-        raw = blob.download_as_bytes()
-        # Blob has content_encoding=gzip, but download_as_bytes returns the
-        # raw bytes (GCS doesn't auto-decompress for SDK reads when the blob
-        # was uploaded with content_encoding=gzip). Decompress explicitly.
+        raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        # Worker uploaded with content_encoding=gzip. The unified
+        # download_bytes returns raw bytes (no auto-decompress); we
+        # decompress explicitly. The first two bytes (0x1f 0x8b) are the
+        # gzip magic — defensive sniff lets us handle a future change to
+        # auto-decompressing transports without churning this code.
         import gzip
 
-        payload_bytes = gzip.decompress(raw)
+        if raw[:2] == b"\x1f\x8b":
+            payload_bytes = gzip.decompress(raw)
+        else:
+            payload_bytes = raw
         payload = json.loads(payload_bytes.decode("utf-8"))
         if not isinstance(payload, dict):
             logger.warning("rollup for %s is not a dict — ignoring", service)
