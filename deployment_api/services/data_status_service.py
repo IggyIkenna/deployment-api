@@ -2700,13 +2700,25 @@ class DataStatusService:
         venues_dict: dict[str, object] = {}
         venue_found_total = 0
         venue_expected_total = 0
+        is_instruments_service = service == "instruments-service"
         for v in sorted(all_venues):
             v_mask = filtered["venue"] == v
             v_df = filtered[v_mask]
             v_dates_all = {str(d) for d in v_df["date"].unique()}
-            vs = venue_mapping.get_venue_start_date(v)
-            if not vs and ":" in v:
-                vs = venue_mapping.get_venue_start_date(v.split(":")[0])
+            # For instruments-service, prefer the per-venue instrument-discovery
+            # start (UAC SSOT, added 2026-05-06 in unified-api-contracts@89db18f)
+            # so HYPERLIQUID returns 2023-11-01 (when instruments first existed)
+            # instead of 2023-04-15 (when book_snapshot_5 archive starts). Other
+            # services keep using venue_start_date as before.
+            vs: str | None = None
+            if is_instruments_service:
+                vs = venue_mapping.get_instrument_discovery_start(v)
+                if not vs and ":" in v:
+                    vs = venue_mapping.get_instrument_discovery_start(v.split(":")[0])
+            if not vs:
+                vs = venue_mapping.get_venue_start_date(v)
+                if not vs and ":" in v:
+                    vs = venue_mapping.get_venue_start_date(v.split(":")[0])
             if not vs and v_dates_all:
                 vs = min(v_dates_all)
             eff_start = max(start_date, vs) if vs else start_date
