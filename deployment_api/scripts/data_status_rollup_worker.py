@@ -130,7 +130,7 @@ def _write_rollup_to_gcs(
 
 def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     """Compute and upload one rollup per service. Returns process exit code."""
-    setup_events(service_name="data-status-rollup-worker")
+    setup_events(service_name="data-status-rollup-worker", mode="live")
     log_event("STARTED", details={"project_id": project_id, "bucket": bucket, "services": services})
 
     end_date = _today_iso()
