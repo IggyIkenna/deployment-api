@@ -176,7 +176,7 @@ class TestRunDataStatusCli:
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
             await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", categories=["CEFI", "DEFI"]
+                "svc-a", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "DEFI"]
             )
 
         assert "-c" in captured["args"]
@@ -412,7 +412,7 @@ class TestCalculateMissingShards:
                 "instruments-service",
                 "2024-01-01",
                 "2024-01-31",
-                categories=["CEFI"],
+                asset_groups=["CEFI"],
             )
 
         assert calls == ["CEFI"]
@@ -468,7 +468,7 @@ class TestGetLastUpdatedInfo:
 
         with patch.object(_dss_mod, "list_objects", return_value=[]):
             result = await svc.get_last_updated_info(
-                "market-tick-data-handler", categories=["cefi"]
+                "market-tick-data-handler", asset_groups=["cefi"]
             )
 
         assert result["asset_groups"]["cefi"]["status"] == "empty"
@@ -478,7 +478,7 @@ class TestGetLastUpdatedInfo:
         svc = _make_svc()
 
         with patch.object(_dss_mod, "list_objects", side_effect=OSError("bucket not found")):
-            result = await svc.get_last_updated_info("instruments-service", categories=["cefi"])
+            result = await svc.get_last_updated_info("instruments-service", asset_groups=["cefi"])
 
         assert result["asset_groups"]["cefi"]["status"] == "error"
 
@@ -1117,7 +1117,7 @@ class TestGetCoverageSummary:
             }
         )
         with patch.object(_dss_mod, "_read_index_cached", return_value=index):
-            result = await svc.get_coverage_summary("instruments-service", categories=["CEFI"])
+            result = await svc.get_coverage_summary("instruments-service", asset_groups=["CEFI"])
 
         assert result["service"] == "instruments-service"
         assert "asset_groups" in result
@@ -1128,7 +1128,7 @@ class TestGetCoverageSummary:
     async def test_handles_empty_index(self):
         svc = _make_svc()
         with patch.object(_dss_mod, "_read_index_cached", return_value=pd.DataFrame()):
-            result = await svc.get_coverage_summary("instruments-service", categories=["CEFI"])
+            result = await svc.get_coverage_summary("instruments-service", asset_groups=["CEFI"])
 
         assert result["totals"]["shards"] == 0
 
@@ -1136,7 +1136,7 @@ class TestGetCoverageSummary:
     async def test_handles_read_error(self):
         svc = _make_svc()
         with patch.object(_dss_mod, "_read_index_cached", side_effect=OSError("no bucket")):
-            result = await svc.get_coverage_summary("instruments-service", categories=["CEFI"])
+            result = await svc.get_coverage_summary("instruments-service", asset_groups=["CEFI"])
 
         assert result["totals"]["shards"] == 0
 
@@ -1164,7 +1164,7 @@ class TestGetCoverageSummary:
             }
         )
         with patch.object(_dss_mod, "_read_index_cached", return_value=index):
-            result = await svc.get_coverage_summary("instruments-service", categories=["DEFI"])
+            result = await svc.get_coverage_summary("instruments-service", asset_groups=["DEFI"])
 
         cat = result["asset_groups"]["DEFI"]
         # Only the canonical AAVE_V3 row should survive.
@@ -1189,10 +1189,15 @@ class TestGetManifestStatus:
         )
         vm = MagicMock()
         vm.get_venue_start_date.return_value = "2020-01-01"
+        # Added 2026-05-06: _resolve_venue_start prefers
+        # get_instrument_discovery_start for instruments-service. Mock it
+        # to return None so the helper falls through to get_venue_start_date.
+        vm.get_instrument_discovery_start.return_value = None
         vm.get_expected_trading_dates.return_value = ["2024-01-01"]
         with (
             patch.object(_dss_mod, "_read_index_cached", return_value=index),
             patch.object(_dss_mod, "VenueMapping", return_value=vm),
+            patch.object(_dss_mod, "_read_rollup_if_fresh", return_value=None),
         ):
             result = await svc.get_manifest_status(
                 "instruments-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
