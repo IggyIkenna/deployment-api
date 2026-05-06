@@ -37,8 +37,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends ripgrep tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --system \
-    && uv pip install --system --no-cache-dir gunicorn[gevent] gevent
+# UTL base image already has unified-trading-library + unified-api-contracts +
+# unified-cloud-interface preinstalled. deployment-api just adds its web /
+# auth / cache extras. We install them explicitly rather than via
+# ``uv pip install .`` because pyproject.toml's ``[tool.uv.sources]`` block
+# points at sibling repos (``../unified-trading-library`` etc.) that don't
+# exist in the Cloud Build context. The previous ``uv sync --frozen --no-dev
+# --system`` variant has been broken since 2026-04-29 (``--system`` is not a
+# valid ``uv sync`` flag — it belongs to ``uv pip install`` / ``uv pip sync``)
+# and is what's been keeping the auto-CI red.
+RUN uv pip install --system --no-cache-dir \
+      'fastapi<1.0.0,>=0.115.0' \
+      'uvicorn[standard]>=0.27.0,<1.0.0' \
+      'gunicorn>=22.0.0,<23.0.0' \
+      'pydantic>=2.12.5,<3.0.0' \
+      'sse-starlette<2.0.0,>=1.6.1' \
+      'google-auth>=2.40.0,<3.0.0' \
+      'prometheus-client>=0.20.0,<1.0.0' \
+      'httpx>=0.28.1,<1.0.0' \
+      'PyGithub>=2.0.0,<3.0.0' \
+      'aiohttp>=3.13.4,<4.0.0' \
+      'jsonpickle>=3.0.0,<4.0.0' \
+      'cachetools>=5.0.0,<6.0.0' \
+      'redis>=5.0.0,<6.0.0' \
+      'anthropic<1.0.0,>=0.49.0' \
+      'pyjwt>=2.12.0,<3.0.0' \
+      'cryptography>=46.0.7' \
+      'pygments>=2.20.0,<3.0.0' \
+      'requests>=2.33.0,<3.0.0' \
+      'gunicorn[gevent]' \
+      'gevent'
 
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./
@@ -65,5 +93,18 @@ FROM api AS api-dev
 USER root
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
-RUN uv sync --frozen --no-dev --system && chown -R appuser:appuser /app
+# Install QG/test extras (deps for the dev/test stage, not production).
+RUN uv pip install --system --no-cache-dir \
+      'pytest>=9.0.3,<10.0.0' \
+      'pytest-cov>=7.0.0,<8.0.0' \
+      'pytest-socket>=0.7.0,<1.0.0' \
+      'pytest-asyncio>=0.25.0,<2.0.0' \
+      'pytest-mock>=3.15.0,<4.0.0' \
+      'pytest-timeout>=2.4.0,<3.0.0' \
+      'pytest-xdist>=3.6.0,<4.0.0' \
+      'ruff==0.15.0' \
+      'basedpyright==1.38.2' \
+      'pip-audit>=2.7.0,<3.0.0' \
+      'bandit>=1.7.0,<2.0.0' \
+    && chown -R appuser:appuser /app
 USER appuser

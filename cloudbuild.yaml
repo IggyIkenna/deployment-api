@@ -91,6 +91,23 @@ steps:
         echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
     waitFor: ["-"]
 
+  # ── Pull UTL base image into the Cloud Build docker daemon cache so the
+  # ``FROM .../unified-trading-library:latest`` line in the Dockerfile resolves
+  # against a locally-cached image (no in-build registry round-trip / auth).
+  # The ``configure-docker`` step set up the credential helper for
+  # asia-northeast1-docker.pkg.dev, which this step inherits via the shared
+  # /builder/home volume. Required since 2026-05-06 — deployment-api Dockerfile
+  # was migrated to FROM UTL but the cloudbuild.yaml still carried the legacy
+  # "API variant: NO pull-base-image" comment, which is now stale.
+  - name: "gcr.io/cloud-builders/docker"
+    id: "pull-base-image"
+    args:
+      [
+        "pull",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest",
+      ]
+    waitFor: ["configure-docker"]
+
   - name: "gcr.io/cloud-builders/docker"
     id: "build"
     args:
@@ -110,7 +127,7 @@ steps:
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-dashboard/deployment-dashboard:latest"
       - "."
-    waitFor: ["configure-docker", "ensure-repo", "fetch-ui"]
+    waitFor: ["configure-docker", "ensure-repo", "fetch-ui", "pull-base-image"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "quality-gates"
