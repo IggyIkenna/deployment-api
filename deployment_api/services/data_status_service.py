@@ -2738,7 +2738,9 @@ class DataStatusService:
         "perp-funding",
     ]
 
-    def _read_defi_merged_index(self, service: str, cat: str) -> pd.DataFrame:
+    def _read_defi_merged_index(  # noqa: C901 — multi-bucket merge + DeFi-venue whitelist filter
+        self, service: str, cat: str
+    ) -> pd.DataFrame:
         """Read availability index, merging sub-dimension buckets for MTDS DEFI.
 
         For market-tick-data-service + DEFI category, reads the main DEFI bucket
@@ -2747,6 +2749,15 @@ class DataStatusService:
 
         Each row is tagged with ``_defi_source`` so the category builder can
         produce a per-sub-dimension breakdown.
+
+        Phase 3 (data-status multi-axis drilldown) — after concatenation,
+        filters merged rows to only those whose ``(venue, chain)`` pair is
+        a canonical DeFi protocol per the UAC ``ALL_DEFI_VENUES``
+        registry. Without this filter, sub-dimension buckets like
+        ``oracle-prices-{pid}`` and ``perp-funding-{pid}`` (which carry
+        oracle-price and perp-funding rows for CeFi venues that DEFI
+        feeds reference, e.g. COINBASE-SPOT-as-oracle-source) silently
+        leaked into the DEFI cell-grid as if they were DeFi protocols.
         """
         template = self._BUCKET_TEMPLATES.get(service)
         if not template:
@@ -2787,7 +2798,75 @@ class DataStatusService:
 
         if not frames:
             return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True)
+        merged = pd.concat(frames, ignore_index=True)
+
+        # DeFi-venue whitelist filter — only applies to the MTDS-DEFI merge
+        # path. Drops rows whose ``(venue, chain)`` pair is NOT in the UAC
+        # canonical DeFi venue registry. Catches the COINBASE-SPOT-under-
+        # ETHEREUM leak from oracle-prices / perp-funding sub-buckets that
+        # legitimately carry CeFi venues but shouldn't appear in the DEFI
+        # cell-grid.
+        if service == "market-tick-data-service" and cat.lower() == "defi" and not merged.empty:
+            merged = self._filter_to_canonical_defi_venues(merged)
+        return merged
+
+    @classmethod
+    def _allowed_defi_venue_chain_pairs(cls) -> frozenset[tuple[str, str]]:
+        """Return the canonical ``(venue_upper, chain_upper)`` set for DeFi.
+
+        Sourced from UAC ``ALL_DEFI_VENUES`` (canonical hyphenated form
+        ``PROTOCOL-CHAIN``) AND ``LEGACY_DEFI_VENUE_ALIASES`` (raw
+        underscore forms like ``AAVE_V3`` that pre-2026-04 manifests
+        carry). Adding both shapes means the filter accepts canonical
+        rows AND legacy-underscore rows that haven't yet been migrated.
+        """
+        from unified_api_contracts.registry.defi_venues import (
+            ALL_DEFI_VENUES,
+            LEGACY_DEFI_VENUE_ALIASES,
+        )
+
+        pairs: set[tuple[str, str]] = set()
+        for entry in ALL_DEFI_VENUES:
+            if "-" not in entry:
+                continue
+            protocol, chain = entry.rsplit("-", 1)
+            pairs.add((protocol.upper(), chain.upper()))
+        # Legacy: every entry in LEGACY_DEFI_VENUE_ALIASES maps an old
+        # underscore form to its canonical no-underscore form. Accept the
+        # legacy key alongside its canonical pair so unmigrated rows still
+        # pass the whitelist.
+        for legacy, canonical in LEGACY_DEFI_VENUE_ALIASES.items():
+            if "-" not in canonical:
+                continue
+            _, chain = canonical.rsplit("-", 1)
+            pairs.add((legacy.upper(), chain.upper()))
+        return frozenset(pairs)
+
+    def _filter_to_canonical_defi_venues(self, index: pd.DataFrame) -> pd.DataFrame:
+        """Keep rows whose ``(venue, chain)`` is a canonical DeFi pair.
+
+        Rows missing one or both axes are kept (defensive — better to
+        let the downstream legacy-row filter clean them than to drop
+        valid rows that just predate the chain split).
+        """
+        if "venue" not in index.columns or "chain" not in index.columns:
+            return index
+        allowed = self._allowed_defi_venue_chain_pairs()
+        venues = index["venue"].fillna("").astype(str).str.upper()
+        chains = index["chain"].fillna("").astype(str).str.upper()
+        # Keep rows with empty venue OR empty chain — those are caught by
+        # the downstream ``_filter_legacy_defi_rows`` pass; we don't want
+        # to drop them here without context.
+        empty_axis = (venues == "") | (chains == "")
+        in_whitelist = pd.Series(
+            [(v, c) in allowed for v, c in zip(venues.tolist(), chains.tolist(), strict=True)],
+            index=index.index,
+        )
+        keep = empty_axis | in_whitelist
+        dropped = int((~keep).sum())
+        if dropped > 0:
+            logger.debug("DEFI venue whitelist dropped %d non-DeFi rows from merged index", dropped)
+        return index.loc[keep].copy()
 
     async def calculate_missing_shards(
         self,
