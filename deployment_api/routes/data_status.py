@@ -339,9 +339,13 @@ async def clear_turbo_cache():
     but never invoked from this endpoint.
     """
     try:
-        from deployment_api.services.data_status_service import clear_index_cache
+        from deployment_api.services.data_status_service import (
+            clear_index_cache,
+            clear_rollup_cache,
+        )
 
         clear_index_cache()
+        clear_rollup_cache()
         clear_drilldown_cache()
         DataStatusService._REF_DATA_CACHE.clear()
         return await data_analytics_service.clear_cache()

@@ -8,10 +8,12 @@ missing shards calculation, and status aggregation.
 import asyncio
 import json
 import logging
+import multiprocessing
 import re
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from typing import ClassVar, Literal, cast
 
@@ -869,6 +871,51 @@ def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
     return list(venues)
 
 
+# ProcessPool toggle. Hardcoded False — set to True here only as a temporary
+# rollback if a deployment hits subtle pickling / fork issues. Workspace rule
+# bans os.environ access in service source (use UnifiedCloudConfig for any
+# real runtime toggles).
+_PROCESS_POOL_DISABLED = False
+
+
+def _build_category_in_subprocess(
+    service: str,
+    cat: str,
+    start_date: str,
+    end_date: str,
+    all_date_strs: list[str],
+    total_days: int,
+) -> dict[str, object]:
+    """ProcessPool worker — build one category's manifest entry in a forked child.
+
+    Each call runs in a child process forked from the parent gunicorn worker
+    just before the request fans out. Fork start-method means the child
+    inherits everything the parent had loaded — most importantly the
+    module-level ``_INDEX_CACHE`` dict, so the child does NOT re-read the
+    manifest from GCS. Copy-on-write semantics keep memory cheap until the
+    child mutates a shared page.
+
+    Returns the per-category result dict that the parent's serial path
+    would have produced. Internal counters (``_venue_found`` /
+    ``_venue_expected``) are kept on the dict for the parent to drain into
+    the overall totals.
+    """
+    # Construct a fresh DataStatusService inside the child. Cheap — it's
+    # just lookup-table init; no GCS, no network. Avoids pickling the
+    # parent's instance through the Pipe.
+    dss = DataStatusService()
+    venue_mapping = VenueMapping()
+    return dss._build_manifest_category(
+        service,
+        cat,
+        start_date,
+        end_date,
+        all_date_strs,
+        total_days,
+        venue_mapping,
+    )
+
+
 # Process-shared VenueMapping for the lru_cache'd expected-dates helper.
 # UAC venue/calendar/coverage data is process-immutable (read once on import),
 # so a single shared instance is safe and avoids per-request VenueMapping
@@ -1577,6 +1624,259 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
     idx = read_availability_index(bucket)
     _INDEX_CACHE[bucket] = (now, idx)
     return idx
+
+
+# ── Offline rollup fast-path (plan: data_status_offline_rollup_2026_05_06) ──
+#
+# Cloud Run Job ``uts-prod-data-status-rollup`` writes
+# ``gs://{pid}-data-status-rollups/{service}/full.json.gz`` every 5 min via
+# ``*/5 * * * *`` Cloud Scheduler. We read it here, in-process-cache for
+# 60s (refresh window inside one warm Cloud Run instance), and slice to the
+# user's date window. Falls through to the on-demand compute when the rollup
+# is missing or older than ``_ROLLUP_STALENESS_SEC``.
+
+_ROLLUP_BUCKET_TEMPLATE: str = "{pid}-data-status-rollups"
+_ROLLUP_STALENESS_SEC: int = 1800  # 30 min — cron fires every 5; 30 covers 6 missed cycles
+_ROLLUP_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
+_ROLLUP_CACHE_TTL_SEC: int = 60  # in-process re-read TTL
+
+
+def _rollup_bucket() -> str:
+    return _ROLLUP_BUCKET_TEMPLATE.format(pid=_pid)
+
+
+def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
+    """Read ``gs://{pid}-data-status-rollups/{service}/full.json.gz``.
+
+    Returns the deserialised payload if the blob exists AND is younger than
+    ``_ROLLUP_STALENESS_SEC``. Returns ``None`` otherwise — caller then falls
+    through to the on-demand compute path.
+
+    Two cache layers:
+      * **In-process** (60s TTL): avoids re-fetching the same rollup every
+        request from the same Cloud Run instance.
+      * **GCS staleness check** (30 min TTL): protects against serving a
+        rollup older than 6 cron cycles when the worker is broken.
+    """
+    cached = _ROLLUP_CACHE.get(service)
+    now = time.monotonic()
+    if cached is not None and (now - cached[0]) < _ROLLUP_CACHE_TTL_SEC:
+        return cached[1]
+
+    try:
+        from unified_trading_library.cloud_interface import get_storage_client
+
+        client = get_storage_client(project_id=_pid)
+        bucket = client.bucket(_rollup_bucket())  # pyright: ignore[reportAttributeAccessIssue]
+        blob = bucket.blob(f"{service}/full.json.gz")
+        if not blob.exists():
+            return None
+        blob.reload()
+        # Cloud Storage Blob.updated is a datetime; convert to age-in-seconds.
+        if blob.updated is not None:
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(blob.updated)).total_seconds()
+            if age_sec > _ROLLUP_STALENESS_SEC:
+                logger.info(
+                    "rollup for %s is stale (%.0fs > %ds threshold) — falling through to on-demand",
+                    service,
+                    age_sec,
+                    _ROLLUP_STALENESS_SEC,
+                )
+                return None
+        raw = blob.download_as_bytes()
+        # Blob has content_encoding=gzip, but download_as_bytes returns the
+        # raw bytes (GCS doesn't auto-decompress for SDK reads when the blob
+        # was uploaded with content_encoding=gzip). Decompress explicitly.
+        import gzip
+
+        payload_bytes = gzip.decompress(raw)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        if not isinstance(payload, dict):
+            logger.warning("rollup for %s is not a dict — ignoring", service)
+            return None
+        _ROLLUP_CACHE[service] = (now, payload)
+        return payload
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        logger.info("rollup read failed for %s (%s) — falling through to on-demand", service, exc)
+        return None
+
+
+def _filter_dates_in_window(dates: list[str] | None, start_date: str, end_date: str) -> list[str]:
+    if not dates:
+        return []
+    return [d for d in dates if start_date <= d <= end_date]
+
+
+def _slice_rollup_to_window(
+    rollup: dict[str, object],
+    start_date: str,
+    end_date: str,
+    asset_groups_filter: list[str] | None,
+) -> dict[str, object]:
+    """Return a windowed subset of a full-range rollup.
+
+    The rollup payload was computed with ``start_date="2018-01-01",
+    end_date=today``. The slicer:
+      1. Drops asset_groups not in the user's filter (if any).
+      2. For each asset_group → venue → data_type, filters
+         ``missing_dates``, ``dates_found_list``, and per-instrument date
+         lists to the requested window.
+      3. Recomputes per-(asset_group, venue, data_type) counts.
+      4. Recomputes the overall totals.
+
+    Behaviour parity with the on-demand path: same response shape, same
+    ``mode="turbo"``, same percentages — only the date arrays + counts shrink
+    to the requested window.
+    """
+    overall_found = 0
+    overall_expected = 0
+    overall_shards_found = 0
+    overall_shards_expected = 0
+
+    asset_groups = rollup.get("asset_groups")
+    if not isinstance(asset_groups, dict):
+        # Malformed rollup — surface loud rather than slice garbage.
+        raise RuntimeError(
+            f"rollup payload missing 'asset_groups' dict (got {type(asset_groups).__name__})"
+        )
+
+    sliced_asset_groups: dict[str, object] = {}
+    filter_set = {ag.upper() for ag in asset_groups_filter} if asset_groups_filter else None
+    for cat, cat_payload in asset_groups.items():
+        if filter_set is not None and cat.upper() not in filter_set:
+            continue
+        if not isinstance(cat_payload, dict):
+            sliced_asset_groups[cat] = cat_payload  # pass-through unknown shapes
+            continue
+        sliced_cat = _slice_asset_group(cat_payload, start_date, end_date)
+        sliced_asset_groups[cat] = sliced_cat
+        overall_found += int(cast(int, sliced_cat.get("dates_found", 0)))
+        overall_expected += int(cast(int, sliced_cat.get("dates_expected", 0)))
+        overall_shards_found += int(cast(int, sliced_cat.get("_venue_found_sliced", 0)))
+        overall_shards_expected += int(cast(int, sliced_cat.get("_venue_expected_sliced", 0)))
+        sliced_cat.pop("_venue_found_sliced", None)
+        sliced_cat.pop("_venue_expected_sliced", None)
+
+    overall_pct_dates = (
+        min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
+        if overall_expected > 0
+        else 0.0
+    )
+    overall_pct_shards = (
+        min(round(overall_shards_found / overall_shards_expected * 100, 2), 100.0)
+        if overall_shards_expected > 0
+        else overall_pct_dates
+    )
+
+    total_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days + 1
+
+    return {
+        "service": rollup.get("service"),
+        "date_range": {"start": start_date, "end": end_date, "days": total_days},
+        "mode": "turbo",
+        "sub_dimension": rollup.get("sub_dimension", "venue"),
+        "overall_completion_pct": overall_pct_shards,
+        "overall_completion_pct_dates": overall_pct_dates,
+        "overall_completion_pct_shards_weighted": overall_pct_shards,
+        "overall_dates_found": overall_found,
+        "overall_dates_expected": overall_expected,
+        "overall_shards_found": overall_shards_found,
+        "overall_shards_expected": overall_shards_expected,
+        "migration_in_progress": rollup.get("migration_in_progress", False),
+        "asset_groups": sliced_asset_groups,
+        "served_from": "rollup",
+    }
+
+
+def _slice_asset_group(
+    cat_payload: dict[str, object], start_date: str, end_date: str
+) -> dict[str, object]:
+    """Slice one asset_group's payload to the date window. See _slice_rollup_to_window."""
+    sliced: dict[str, object] = dict(cat_payload)
+    venue_found_total = 0
+    venue_expected_total = 0
+    cat_found_dates: set[str] = set()
+
+    venues_in = cat_payload.get("venues")
+    if isinstance(venues_in, dict):
+        sliced_venues: dict[str, object] = {}
+        for venue, venue_payload in venues_in.items():
+            if not isinstance(venue_payload, dict):
+                sliced_venues[venue] = venue_payload
+                continue
+            sv = _slice_venue(venue_payload, start_date, end_date)
+            sliced_venues[venue] = sv
+            venue_found_total += int(cast(int, sv.get("dates_found", 0)))
+            venue_expected_total += int(cast(int, sv.get("dates_expected", 0)))
+            for d in sv.get("dates_found_list", []) or []:
+                cat_found_dates.add(str(d))
+        sliced["venues"] = sliced_venues
+
+    cat_total_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days + 1
+    cat_found = len(cat_found_dates)
+    cat_pct_dates = min(round(cat_found / max(1, cat_total_days) * 100, 2), 100.0)
+    cat_pct_shards = (
+        min(round(venue_found_total / venue_expected_total * 100, 2), 100.0)
+        if venue_expected_total > 0
+        else cat_pct_dates
+    )
+
+    sliced["dates_found"] = cat_found
+    sliced["dates_expected"] = cat_total_days
+    sliced["dates_missing"] = max(0, cat_total_days - cat_found)
+    sliced["completion_pct"] = cat_pct_shards
+    sliced["completion_pct_dates"] = cat_pct_dates
+    # Internal counters drained by the parent — popped before returning to the user.
+    sliced["_venue_found_sliced"] = venue_found_total
+    sliced["_venue_expected_sliced"] = venue_expected_total
+    return sliced
+
+
+def _slice_venue(
+    venue_payload: dict[str, object], start_date: str, end_date: str
+) -> dict[str, object]:
+    """Slice one venue's payload to the date window. Recursive into per-data_type if present."""
+    sliced: dict[str, object] = dict(venue_payload)
+
+    found = _filter_dates_in_window(
+        cast(list[str] | None, venue_payload.get("dates_found_list")), start_date, end_date
+    )
+    missing = _filter_dates_in_window(
+        cast(list[str] | None, venue_payload.get("missing_dates")), start_date, end_date
+    )
+    expected_dates_full = cast(list[str] | None, venue_payload.get("dates_expected_list")) or (
+        found + missing
+    )
+    expected = _filter_dates_in_window(expected_dates_full, start_date, end_date)
+
+    sliced["dates_found_list"] = found
+    sliced["missing_dates"] = missing
+    sliced["dates_found"] = len(found)
+    sliced["dates_expected"] = len(expected) if expected else (len(found) + len(missing))
+    sliced["dates_missing"] = sliced["dates_expected"] - sliced["dates_found"]
+    if isinstance(sliced["dates_expected"], int) and sliced["dates_expected"] > 0:
+        sliced["completion_pct"] = min(
+            round(sliced["dates_found"] / sliced["dates_expected"] * 100, 2), 100.0
+        )
+    else:
+        sliced["completion_pct"] = 0.0
+
+    # Per-data_type breakdown (MTDS honest-coverage shape).
+    honest_dts = venue_payload.get("honest_data_types")
+    if isinstance(honest_dts, dict):
+        sliced["honest_data_types"] = {
+            dt: _slice_venue(dt_payload, start_date, end_date)
+            if isinstance(dt_payload, dict)
+            else dt_payload
+            for dt, dt_payload in honest_dts.items()
+        }
+
+    return sliced
+
+
+def clear_rollup_cache() -> None:
+    """Flush the in-process rollup cache. Wired into ``/turbo/clear``."""
+    _ROLLUP_CACHE.clear()
 
 
 def clear_index_cache() -> None:
@@ -2388,7 +2688,24 @@ class DataStatusService:
         end_date: str,
         asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
-        """Return data status from manifest indices in TurboDataStatusResponse shape."""
+        """Return data status from manifest indices in TurboDataStatusResponse shape.
+
+        **Two paths**:
+
+        1. **Rollup fast-path** — if a fresh (< 30 min old) rollup blob
+           exists at ``gs://{pid}-data-status-rollups/{service}/full.json.gz``,
+           read it and slice to the requested window in-memory. Sub-500ms.
+        2. **On-demand fall-through** — original honest-coverage compute.
+           Used on cold deploys (first 5 min before first cron fires) and
+           if the rollup is stale or absent.
+
+        The rollup is computed offline by ``data_status_rollup_worker``
+        (Cloud Run Job + ``*/5 * * * *`` Scheduler cron). See plan:
+        ``data_status_offline_rollup_2026_05_06.plan.md``.
+        """
+        rollup = await asyncio.to_thread(_read_rollup_if_fresh, service)
+        if rollup is not None:
+            return _slice_rollup_to_window(rollup, start_date, end_date, asset_groups)
         return await asyncio.to_thread(
             self._get_manifest_status_sync, service, start_date, end_date, asset_groups
         )
@@ -2421,29 +2738,62 @@ class DataStatusService:
         overall_shards_found = 0
         overall_shards_expected = 0
 
-        for cat in cat_list:
-            cat_result = self._build_manifest_category(
-                service,
-                cat,
-                start_date,
-                end_date,
-                all_date_strs,
-                total_days,
-                venue_mapping,
-            )
-            result_categories[cat] = cat_result
-            # Use per-category date counts (already clamped to the configured
-            # category_start) for the overall aggregation. Venue-weighted totals
-            # are still returned on each category for sub-row rendering but are
-            # not summed into the overall percentage because aliased venues
-            # (e.g. CURVE vs CURVE-ETHEREUM) would double-count.
-            overall_found += int(cat_result.get("dates_found", 0))
-            overall_expected += int(cat_result.get("dates_expected", 0))
-            overall_shards_found += int(cat_result.get("_venue_found", 0))
-            overall_shards_expected += int(cat_result.get("_venue_expected", 0))
-            # Remove internal counters from output
-            del cat_result["_venue_found"]
-            del cat_result["_venue_expected"]
+        # Parallelise per-category builds across processes. Each category is
+        # independent (own filter slice, own honest-coverage compute, writes to
+        # its own ``result_categories[cat]`` slot), so we map them onto a fork
+        # ProcessPool. Fork start-method is critical: children inherit the
+        # parent's loaded ``_INDEX_CACHE`` (the ~30 MB manifest DataFrames per
+        # bucket) via copy-on-write, so we don't pay the pickle/transfer cost
+        # of sending those over a Pipe. Only the small picklable args per task
+        # cross the boundary. Single-category requests stay serial — the fork
+        # + pickle overhead would dwarf the work.
+        #
+        # Why not threads: the honest-coverage inner loops are GIL-bound
+        # Python (set comprehensions, Counter, dict mutations); a previous
+        # ThreadPoolExecutor attempt gave zero speedup and OOM'd at 8 GiB.
+        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED:
+            for cat in cat_list:
+                cat_result = self._build_manifest_category(
+                    service,
+                    cat,
+                    start_date,
+                    end_date,
+                    all_date_strs,
+                    total_days,
+                    venue_mapping,
+                )
+                result_categories[cat] = cat_result
+                overall_found += int(cat_result.get("dates_found", 0))
+                overall_expected += int(cat_result.get("dates_expected", 0))
+                overall_shards_found += int(cat_result.get("_venue_found", 0))
+                overall_shards_expected += int(cat_result.get("_venue_expected", 0))
+                del cat_result["_venue_found"]
+                del cat_result["_venue_expected"]
+        else:
+            ctx = multiprocessing.get_context("fork")
+            with ProcessPoolExecutor(max_workers=min(len(cat_list), 5), mp_context=ctx) as pool:
+                futures = {
+                    pool.submit(
+                        _build_category_in_subprocess,
+                        service,
+                        cat,
+                        start_date,
+                        end_date,
+                        all_date_strs,
+                        total_days,
+                    ): cat
+                    for cat in cat_list
+                }
+                for future in futures:
+                    cat = futures[future]
+                    cat_result = future.result()
+                    result_categories[cat] = cat_result
+                    overall_found += int(cat_result.get("dates_found", 0))
+                    overall_expected += int(cat_result.get("dates_expected", 0))
+                    overall_shards_found += int(cat_result.get("_venue_found", 0))
+                    overall_shards_expected += int(cat_result.get("_venue_expected", 0))
+                    del cat_result["_venue_found"]
+                    del cat_result["_venue_expected"]
 
         overall_pct_dates = min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
         overall_pct_shards = (
