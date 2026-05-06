@@ -39,11 +39,14 @@ from unified_api_contracts.sports import (
     clip_dates_to_source_coverage as _clip_dates_to_source_coverage,
 )
 from unified_api_contracts.sports import (
+    FEATURE_UPSTREAM_REQUIREMENTS,
+    UpstreamReq,
     get_entity_league_coverage,
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
     get_sports_entity_start_date,
     get_transfer_windows_for_year,
+    in_coverage,
 )
 from unified_api_contracts.sports import (
     is_in_known_gap as _is_in_known_gap,
@@ -310,6 +313,111 @@ FEATURES_SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "unit": "fixture_dates",
     },
 }
+
+
+def _features_sports_expected_dates_for_calculator(
+    calc_name: str,
+    league_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[str]:
+    """Per-feature-group expected dates for one (calculator, league).
+
+    Phase 3 honest-coverage: a calculator runs for date D × league L iff every
+    *required* upstream is in-coverage on (D, L). The expected denominator
+    for the calculator is the intersection of expected-date sets across its
+    required upstreams (UAC ``FEATURE_UPSTREAM_REQUIREMENTS``).
+
+    For ``derived``-source upstreams (Stage D dependencies on other
+    calculators' outputs) we recurse — the dependent calculator's coverage
+    propagates. To prevent runaway recursion on a malformed catalogue the
+    walker carries a visited set; a cycle aborts to a "no expected dates"
+    answer (caller treats as zero, surfaces in the data-status as a config
+    bug).
+
+    Returns the sorted list of dates in [start_date, end_date] where this
+    calculator is expected to have a manifest row for ``league_id``.
+    Empty if the calculator is unknown OR every date is out of every
+    required upstream's coverage (NaN-by-design throughout).
+    """
+
+    def _walk(
+        name: str,
+        visited: frozenset[str],
+    ) -> list[str] | None:
+        if name in visited:
+            # Cycle in the derived-DAG; bail to "unknown" rather than infinite-loop.
+            return None
+        next_visited = visited | {name}
+        reqs = FEATURE_UPSTREAM_REQUIREMENTS.get(name) or FEATURE_UPSTREAM_REQUIREMENTS.get(
+            f"{name}_calculator", []
+        )
+        if not reqs:
+            return None
+        required_reqs = [r for r in reqs if r.required]
+        if not required_reqs:
+            # Calculator with only optional upstreams — fall back to the
+            # league's full fixture calendar.
+            return get_league_fixture_calendar(league_id, start_date, end_date)
+        intersection: set[str] | None = None
+        for req in required_reqs:
+            dates = _expected_dates_for_upstream(req, league_id, start_date, end_date, _walk, next_visited)
+            if dates is None:
+                # Required upstream has no dates we can model; skip silently —
+                # the data-status reads from the manifest anyway, and over-
+                # counting expected here is worse than under-counting.
+                continue
+            date_set = set(dates)
+            intersection = date_set if intersection is None else intersection & date_set
+        if intersection is None:
+            return []
+        return sorted(intersection)
+
+    out = _walk(calc_name, frozenset())
+    return out or []
+
+
+def _expected_dates_for_upstream(
+    req: UpstreamReq,
+    league_id: str,
+    start_date: str,
+    end_date: str,
+    walk: object,
+    visited: frozenset[str],
+) -> list[str] | None:
+    """Expected dates for a single ``UpstreamReq`` of a feature calculator.
+
+    ``derived`` upstreams recurse via ``walk``. Raw upstreams use
+    ``in_coverage`` (date floor + known-gap + league filter) over the
+    league's fixture calendar.
+    """
+    if req.source == "derived":
+        # walk(req.data_type, visited) — req.data_type carries the upstream
+        # calculator's name when source="derived".
+        return walk(req.data_type, visited)  # type: ignore[operator,no-any-return]
+
+    if not in_coverage(req.source, req.data_type, league_id, end_date):
+        # League may be out of coverage for this entity (e.g. understat XG
+        # for MLS) — but in_coverage's league-check is league_id-only, not
+        # date-dependent. Single check at end_date is sufficient.
+        if not in_coverage(req.source, req.data_type, league_id, start_date):
+            return []
+
+    # Date-floor clip + known-gap filter via the existing helper. Reuse the
+    # league fixture calendar as the candidate set — features only run on
+    # fixture days.
+    clipped_start, clipped_end = _clip_dates_to_source_coverage(
+        req.source, start_date, end_date, data_type=req.data_type or None
+    )
+    if not clipped_end or clipped_end < clipped_start:
+        return []
+    candidate = get_league_fixture_calendar(league_id, clipped_start, clipped_end)
+    return [
+        d
+        for d in candidate
+        if not _is_in_known_gap(req.source, req.data_type, d)
+        and in_coverage(req.source, req.data_type, league_id, d)
+    ]
 
 
 def _sports_expected_dates_for_league(
