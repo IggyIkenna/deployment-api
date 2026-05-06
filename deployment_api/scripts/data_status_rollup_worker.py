@@ -87,8 +87,13 @@ def _today_iso() -> str:
 
 
 def _rollup_blob_path(service: str) -> str:
-    """Canonical GCS object path for a service's rollup blob."""
+    """Canonical GCS object path for a service's manifest rollup blob."""
     return f"{service}/full.json.gz"
+
+
+def _coverage_blob_path(service: str) -> str:
+    """Canonical GCS object path for a service's coverage-summary rollup blob."""
+    return f"{service}/coverage.json.gz"
 
 
 def _build_one_service_rollup(
@@ -112,22 +117,35 @@ def _build_one_service_rollup(
     )
 
 
-def _write_rollup_to_gcs(
-    storage_client: object, bucket: str, service: str, payload: dict[str, Any]
-) -> dict[str, int]:
-    """Gzip + upload the JSON payload via the unified cloud-interface API.
+def _build_one_service_coverage(dss: DataStatusService, service: str) -> dict[str, Any]:
+    """Synchronously call :meth:`DataStatusService.get_coverage_summary`.
 
-    Uses ``upload_bytes(bucket, blob_path, data, content_type, metadata)``
-    on the storage client (UTL ``cloud_interface``). The wrapper hides the
-    raw google-cloud-storage Blob.upload_from_string() — production code
-    must go through this abstract layer per workspace SDK rules.
+    Coverage-summary doesn't take a date window — it's a service-wide
+    snapshot of shard counts, latest-day instrument totals, and per-
+    asset_group rollups. We cache it alongside the per-service manifest
+    rollup so the deployment-ui's two paired requests both hit the
+    fast-path. UI was firing both /manifest and /coverage-summary in
+    parallel; only the former had a rollup, so /coverage-summary's
+    on-demand 15s read was the user-visible bottleneck on the data-
+    status panel.
     """
+    return asyncio.run(dss.get_coverage_summary(service=service, asset_groups=None))
+
+
+def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
+    """Gzip-compress a JSON-serialisable dict. Returns (compressed_bytes, raw_size)."""
     raw = json.dumps(payload, default=str).encode("utf-8")
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6) as gz:
         gz.write(raw)
-    compressed = buf.getvalue()
+    return buf.getvalue(), len(raw)
 
+
+def _write_rollup_to_gcs(
+    storage_client: object, bucket: str, service: str, payload: dict[str, Any]
+) -> dict[str, int]:
+    """Gzip + upload the manifest rollup via the unified cloud-interface API."""
+    compressed, raw_size = _gzip_payload(payload)
     storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
         bucket=bucket,
         blob_path=_rollup_blob_path(service),
@@ -135,7 +153,22 @@ def _write_rollup_to_gcs(
         content_type="application/json",
         metadata={"content-encoding": "gzip"},
     )
-    return {"size_compressed": len(compressed), "size_uncompressed": len(raw)}
+    return {"size_compressed": len(compressed), "size_uncompressed": raw_size}
+
+
+def _write_coverage_to_gcs(
+    storage_client: object, bucket: str, service: str, payload: dict[str, Any]
+) -> dict[str, int]:
+    """Gzip + upload the coverage-summary blob (paired with manifest rollup)."""
+    compressed, raw_size = _gzip_payload(payload)
+    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
+        bucket=bucket,
+        blob_path=_coverage_blob_path(service),
+        data=compressed,
+        content_type="application/json",
+        metadata={"content-encoding": "gzip"},
+    )
+    return {"size_compressed": len(compressed), "size_uncompressed": raw_size}
 
 
 def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
@@ -177,6 +210,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     failures: list[tuple[str, str]] = []
     for service in services:
         t0 = time.monotonic()
+        # Manifest rollup
         try:
             payload = _build_one_service_rollup(dss, service, end_date)
             metrics = _write_rollup_to_gcs(storage_client, bucket, service, payload)
@@ -185,22 +219,65 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
                 "SERVICE_PROCESSED",
                 details={
                     "service": service,
+                    "kind": "manifest",
                     "elapsed_s": round(elapsed, 1),
                     "size_compressed": metrics["size_compressed"],
                     "size_uncompressed": metrics["size_uncompressed"],
                     "asset_groups_n": len(payload.get("asset_groups", {})),
                 },
             )
+            # Free the manifest payload before computing coverage — the MTDS
+            # manifest is ~150 MB peak in Python heap, and coverage compute
+            # builds its own large intermediates. Letting the GC reclaim
+            # between the two halves keeps each service under the 16 GiB
+            # Cloud Run memory ceiling.
+            del payload, metrics
             successes += 1
         except (RuntimeError, ValueError, OSError) as e:
             elapsed = time.monotonic() - t0
-            failures.append((service, str(e)))
+            failures.append((service, f"manifest: {e}"))
             log_event(
                 "SERVICE_FAILED",
                 severity="ERROR",
-                details={"service": service, "elapsed_s": round(elapsed, 1), "error": str(e)},
+                details={
+                    "service": service,
+                    "kind": "manifest",
+                    "elapsed_s": round(elapsed, 1),
+                    "error": str(e),
+                },
             )
-            logger.exception("rollup failed for service=%s", service)
+            logger.exception("manifest rollup failed for service=%s", service)
+
+        # Coverage-summary rollup — paired with manifest. The deployment-ui
+        # data-status panel fires both /manifest and /coverage-summary in
+        # parallel; before this rollup landed coverage-summary was a 15s
+        # on-demand GCS scan. Now it's a sub-second GCS-blob read.
+        t1 = time.monotonic()
+        try:
+            cov_payload = _build_one_service_coverage(dss, service)
+            cov_metrics = _write_coverage_to_gcs(storage_client, bucket, service, cov_payload)
+            log_event(
+                "SERVICE_PROCESSED",
+                details={
+                    "service": service,
+                    "kind": "coverage",
+                    "elapsed_s": round(time.monotonic() - t1, 1),
+                    "size_compressed": cov_metrics["size_compressed"],
+                },
+            )
+        except (RuntimeError, ValueError, OSError) as e:
+            failures.append((service, f"coverage: {e}"))
+            log_event(
+                "SERVICE_FAILED",
+                severity="ERROR",
+                details={
+                    "service": service,
+                    "kind": "coverage",
+                    "elapsed_s": round(time.monotonic() - t1, 1),
+                    "error": str(e),
+                },
+            )
+            logger.exception("coverage rollup failed for service=%s", service)
 
     log_event(
         "STOPPED" if not failures else "FAILED",

@@ -2088,6 +2088,99 @@ def _slice_venue(
     return sliced
 
 
+def _read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
+    """Read ``gs://{pid}-data-status-rollups/{service}/coverage.json.gz``.
+
+    Companion to :func:`_read_rollup_if_fresh` for the
+    ``/api/data-status/coverage-summary`` endpoint. Same staleness threshold,
+    same in-process cache, just a different blob path.
+    """
+    cache_key = f"coverage:{service}"
+    cached = _ROLLUP_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and (now - cached[0]) < _ROLLUP_CACHE_TTL_SEC:
+        return cached[1]
+
+    try:
+        from unified_trading_library.cloud_interface import get_storage_client
+
+        client = get_storage_client(project_id=_pid)
+        bucket_name = _rollup_bucket()
+        blob_path = f"{service}/coverage.json.gz"
+        if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
+            return None
+        meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        if meta is not None and getattr(meta, "updated", None) is not None:
+            age_sec = (
+                pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)
+            ).total_seconds()
+            if age_sec > _ROLLUP_STALENESS_SEC:
+                logger.info(
+                    "coverage rollup for %s is stale (%.0fs > %ds threshold) — falling through",
+                    service,
+                    age_sec,
+                    _ROLLUP_STALENESS_SEC,
+                )
+                return None
+        raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        import gzip
+
+        if raw[:2] == b"\x1f\x8b":
+            payload_bytes = gzip.decompress(raw)
+        else:
+            payload_bytes = raw
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        if not isinstance(payload, dict):
+            logger.warning("coverage rollup for %s is not a dict — ignoring", service)
+            return None
+        _ROLLUP_CACHE[cache_key] = (now, payload)
+        return payload
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        logger.info(
+            "coverage rollup read failed for %s (%s) — falling through to on-demand",
+            service,
+            exc,
+        )
+        return None
+
+
+def _filter_coverage_to_asset_groups(
+    rollup: dict[str, object], asset_groups_filter: list[str] | None
+) -> dict[str, object]:
+    """Filter a coverage-summary rollup to the requested asset_groups.
+
+    Coverage-summary has no date axis — the rollup IS the answer for any
+    request. We just trim ``asset_groups`` to the user's filter and
+    recompute ``totals`` from the survivors.
+    """
+    if not asset_groups_filter:
+        return {**rollup, "served_from": "rollup"}
+
+    filter_set = {ag.upper() for ag in asset_groups_filter}
+    asset_groups = rollup.get("asset_groups", {})
+    if not isinstance(asset_groups, dict):
+        return {**rollup, "served_from": "rollup"}
+
+    filtered: dict[str, object] = {
+        cat: payload for cat, payload in asset_groups.items() if cat.upper() in filter_set
+    }
+    totals_keys = ("shards", "instrument_rows", "dates_across_asset_groups", "latest_day_instruments")
+    totals: dict[str, int] = {k: 0 for k in totals_keys}
+    for cat_payload in filtered.values():
+        if isinstance(cat_payload, dict):
+            for k in totals_keys:
+                v = cat_payload.get(k, 0)
+                if isinstance(v, (int, float)):
+                    totals[k] += int(v)
+
+    return {
+        **rollup,
+        "asset_groups": filtered,
+        "totals": totals,
+        "served_from": "rollup",
+    }
+
+
 def clear_rollup_cache() -> None:
     """Flush the in-process rollup cache. Wired into ``/turbo/clear``."""
     _ROLLUP_CACHE.clear()
@@ -2795,9 +2888,20 @@ class DataStatusService:
     ) -> dict[str, object]:
         """Return shard counts and latest-day instrument totals per asset_group.
 
-        Reads availability indices directly (same as calculate_missing_shards)
-        and aggregates into the shape the deployment-ui expects.
+        Two paths (mirrors :meth:`get_manifest_status`):
+
+        1. **Rollup fast-path** — if a fresh coverage rollup blob exists at
+           ``gs://{pid}-data-status-rollups/{service}/coverage.json.gz`` the
+           response is read from there + filtered to the requested asset_groups
+           in-memory. Sub-second.
+        2. **On-demand fall-through** — original synchronous compute that
+           iterates the availability indices.
+
+        See plan: ``data_status_offline_rollup_2026_05_06.plan.md``.
         """
+        rollup = await asyncio.to_thread(_read_coverage_rollup_if_fresh, service)
+        if rollup is not None:
+            return _filter_coverage_to_asset_groups(rollup, asset_groups)
         return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups)
 
     def _get_coverage_summary_sync(
