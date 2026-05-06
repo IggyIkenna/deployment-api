@@ -5462,6 +5462,24 @@ class DataStatusService:
                 )
                 filtered = filtered.loc[[not m for m in legacy_mask]].copy()
 
+        # 2026-05-06 DEFI-panel audit fix: canonicalise legacy
+        # ``venue=AAVE_V3 chain=ETHEREUM`` rows to ``venue=AAVEV3-ETHEREUM`` at
+        # the manifest read-point, BEFORE downstream helpers
+        # (``_build_venue_breakdown`` / ``_build_chain_breakdown`` /
+        # ``_build_underlying_grouping``) read distinct venue names. Without
+        # this, the v4 sub-dimension chain breakdown surfaced raw legacy
+        # forms in the UI (UNISWAP_V3 / AAVE_V3 / CURVE / MAKER / LIDO / ...)
+        # while the MTDS honest-coverage path enumerated UAC canonical
+        # forms (UNISWAPV3-ETHEREUM / AAVEV3-ETHEREUM) — same protocol
+        # appeared as TWO entries in the panel, with the legacy entry
+        # showing no chevron because honest-coverage attributed all
+        # captures to the canonical key. ``_canonicalise_defi_manifest``
+        # (extracted helper) does both venue normalisation +
+        # data_type alias normalisation; running it once here covers
+        # every downstream consumer in this category build.
+        if cat.lower() == "defi" and not filtered.empty:
+            filtered, _venues_dict_unused = _canonicalise_defi_manifest(filtered, {}, venue_mapping)
+
         cat_found_dates = (
             {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
         )
