@@ -37,7 +37,6 @@ CLI:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import datetime as _dt
 import gzip
 import io
@@ -99,37 +98,37 @@ def _coverage_blob_path(service: str) -> str:
 def _build_one_service_rollup(
     dss: DataStatusService, service: str, end_date: str
 ) -> dict[str, Any]:
-    """Synchronously call :meth:`DataStatusService.get_manifest_status`
-    for the full range and return the dict.
+    """Compute the full-range manifest rollup for one service.
+
+    Bypasses the rollup-cache fast-path in
+    :meth:`DataStatusService.get_manifest_status` — we are the writer of
+    that cache, not its consumer; reading our own previous blob and re-
+    writing it would freeze the rollup at the first written content
+    forever. Always force-compute by calling the sync impl directly.
 
     Raises whatever the underlying call raises — caller decides whether
     to record_failed or record_captured (per CLAUDE.md "honest absence
     vs fake placeholders" — a partial / errored rollup is worse than no
     rollup, since the slicer would silently slice garbage).
     """
-    return asyncio.run(
-        dss.get_manifest_status(
-            service=service,
-            start_date=_ROLLUP_START_DATE,
-            end_date=end_date,
-            asset_groups=None,  # all asset_groups — endpoint filters at slice time
-        )
+    return dss._get_manifest_status_sync(
+        service=service,
+        start_date=_ROLLUP_START_DATE,
+        end_date=end_date,
+        asset_groups=None,
     )
 
 
 def _build_one_service_coverage(dss: DataStatusService, service: str) -> dict[str, Any]:
-    """Synchronously call :meth:`DataStatusService.get_coverage_summary`.
+    """Compute the full coverage-summary for one service.
 
-    Coverage-summary doesn't take a date window — it's a service-wide
-    snapshot of shard counts, latest-day instrument totals, and per-
-    asset_group rollups. We cache it alongside the per-service manifest
-    rollup so the deployment-ui's two paired requests both hit the
-    fast-path. UI was firing both /manifest and /coverage-summary in
-    parallel; only the former had a rollup, so /coverage-summary's
-    on-demand 15s read was the user-visible bottleneck on the data-
-    status panel.
+    Bypasses the rollup-cache fast-path for the same reason as
+    :func:`_build_one_service_rollup` — the worker is the cache producer,
+    not consumer. ``get_coverage_summary`` would otherwise read the
+    existing blob (its own previous output, fresh by construction) and
+    return it unchanged, freezing the rollup at the first written shape.
     """
-    return asyncio.run(dss.get_coverage_summary(service=service, asset_groups=None))
+    return dss._get_coverage_summary_sync(service=service, asset_groups=None)
 
 
 def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
@@ -180,14 +179,17 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     # in practice we observed silent deadlock / SIGABRT on services like
     # market-tick-data-service). The worker doesn't need per-request parallelism
     # anyway — it runs once every 5 min and processes services sequentially.
-    import deployment_api.services.data_status_service as _dss_mod  # noqa: PLC0415
+    import deployment_api.services.data_status_service as _dss_mod
 
     _dss_mod._PROCESS_POOL_DISABLED = True
     # Production observability per CLAUDE.md "no fire-and-forget" rule —
     # write structured lifecycle events to ``gs://{pid}-events/...`` where
     # ``unified-events-interface`` UI ingests them. Schema:
     # ``events/{service}/{YYYY-MM-DD}/{instance}/hour={H}/*.jsonl``.
-    try:
+    import contextlib
+
+    # RuntimeError = already initialised by an outer bootstrap — acceptable.
+    with contextlib.suppress(RuntimeError):
         setup_events(
             service_name="data-status-rollup-worker",
             mode="batch",
@@ -197,9 +199,6 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
                 service_name="data-status-rollup-worker",
             ),
         )
-    except RuntimeError:
-        # Already initialised by an outer bootstrap — acceptable.
-        pass
     log_event("STARTED", details={"project_id": project_id, "bucket": bucket, "services": services})
 
     end_date = _today_iso()
