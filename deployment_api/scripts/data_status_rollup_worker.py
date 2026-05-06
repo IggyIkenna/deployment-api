@@ -48,7 +48,8 @@ import time
 from typing import Any
 
 from unified_trading_library.cloud_interface import get_storage_client
-from unified_trading_library.events import MockEventSink, log_event, setup_events
+from unified_trading_library.event_sink import GcsEventSink
+from unified_trading_library.events import log_event, setup_events
 
 from deployment_api.services.data_status_service import DataStatusService
 
@@ -114,28 +115,45 @@ def _build_one_service_rollup(
 def _write_rollup_to_gcs(
     storage_client: object, bucket: str, service: str, payload: dict[str, Any]
 ) -> dict[str, int]:
-    """Gzip + upload the JSON payload. Returns size metrics for logging."""
+    """Gzip + upload the JSON payload via the unified cloud-interface API.
+
+    Uses ``upload_bytes(bucket, blob_path, data, content_type, metadata)``
+    on the storage client (UTL ``cloud_interface``). The wrapper hides the
+    raw google-cloud-storage Blob.upload_from_string() — production code
+    must go through this abstract layer per workspace SDK rules.
+    """
+    raw = json.dumps(payload, default=str).encode("utf-8")
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6) as gz:
-        gz.write(json.dumps(payload, default=str).encode("utf-8"))
+        gz.write(raw)
     compressed = buf.getvalue()
 
-    bucket_obj = storage_client.bucket(bucket)  # pyright: ignore[reportAttributeAccessIssue]
-    blob = bucket_obj.blob(_rollup_blob_path(service))
-    blob.content_encoding = "gzip"  # so HTTP downloads can decompress on the fly
-    blob.cache_control = "no-cache, max-age=0"
-    blob.upload_from_string(compressed, content_type="application/json")
-    return {"size_compressed": len(compressed), "size_uncompressed": buf.tell()}
+    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
+        bucket=bucket,
+        blob_path=_rollup_blob_path(service),
+        data=compressed,
+        content_type="application/json",
+        metadata={"content-encoding": "gzip"},
+    )
+    return {"size_compressed": len(compressed), "size_uncompressed": len(raw)}
 
 
 def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     """Compute and upload one rollup per service. Returns process exit code."""
-    # Mirrors manifest_consolidator's pattern: events here are diagnostic-only
-    # (no consumer reads them); MockEventSink keeps the no-op-but-initialised
-    # behaviour log_event() requires. Switch to GcsEventSink if dashboards
-    # ever need to ingest rollup-worker events.
+    # Production observability per CLAUDE.md "no fire-and-forget" rule —
+    # write structured lifecycle events to ``gs://{pid}-events/...`` where
+    # ``unified-events-interface`` UI ingests them. Schema:
+    # ``events/{service}/{YYYY-MM-DD}/{instance}/hour={H}/*.jsonl``.
     try:
-        setup_events(service_name="data-status-rollup-worker", mode="batch", sink=MockEventSink())
+        setup_events(
+            service_name="data-status-rollup-worker",
+            mode="batch",
+            sink=GcsEventSink(
+                project_id=project_id,
+                bucket=f"{project_id}-events",
+                service_name="data-status-rollup-worker",
+            ),
+        )
     except RuntimeError:
         # Already initialised by an outer bootstrap — acceptable.
         pass
