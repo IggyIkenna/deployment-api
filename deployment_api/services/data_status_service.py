@@ -36,9 +36,6 @@ from unified_api_contracts.registry import (
     venue_has_no_expected_defi_coverage,
 )
 from unified_api_contracts.sports import (
-    clip_dates_to_source_coverage as _clip_dates_to_source_coverage,
-)
-from unified_api_contracts.sports import (
     FEATURE_UPSTREAM_REQUIREMENTS,
     UpstreamReq,
     get_entity_league_coverage,
@@ -47,6 +44,9 @@ from unified_api_contracts.sports import (
     get_sports_entity_start_date,
     get_transfer_windows_for_year,
     in_coverage,
+)
+from unified_api_contracts.sports import (
+    clip_dates_to_source_coverage as _clip_dates_to_source_coverage,
 )
 from unified_api_contracts.sports import (
     is_in_known_gap as _is_in_known_gap,
@@ -353,7 +353,7 @@ def _features_sports_expected_dates_for_calculator(
 ) -> list[str]:
     """Per-feature-group expected dates for one (calculator, league).
 
-    Phase 3 honest-coverage: a calculator runs for date D × league L iff every
+    Phase 3 honest-coverage: a calculator runs for date D x league L iff every
     *required* upstream is in-coverage on (D, L). The expected denominator
     for the calculator is the intersection of expected-date sets across its
     required upstreams (UAC ``FEATURE_UPSTREAM_REQUIREMENTS``).
@@ -391,7 +391,9 @@ def _features_sports_expected_dates_for_calculator(
             return get_league_fixture_calendar(league_id, start_date, end_date)
         intersection: set[str] | None = None
         for req in required_reqs:
-            dates = _expected_dates_for_upstream(req, league_id, start_date, end_date, _walk, next_visited)
+            dates = _expected_dates_for_upstream(
+                req, league_id, start_date, end_date, _walk, next_visited
+            )
             if dates is None:
                 # Required upstream has no dates we can model; skip silently —
                 # the data-status reads from the manifest anyway, and over-
@@ -426,12 +428,13 @@ def _expected_dates_for_upstream(
         # calculator's name when source="derived".
         return walk(req.data_type, visited)  # type: ignore[operator,no-any-return]
 
-    if not in_coverage(req.source, req.data_type, league_id, end_date):
-        # League may be out of coverage for this entity (e.g. understat XG
-        # for MLS) — but in_coverage's league-check is league_id-only, not
-        # date-dependent. Single check at end_date is sufficient.
-        if not in_coverage(req.source, req.data_type, league_id, start_date):
-            return []
+    # League may be out of coverage for this entity (e.g. understat XG
+    # for MLS) — but in_coverage's league-check is league_id-only, not
+    # date-dependent. Single check at end_date is sufficient.
+    if not in_coverage(req.source, req.data_type, league_id, end_date) and not in_coverage(
+        req.source, req.data_type, league_id, start_date
+    ):
+        return []
 
     # Date-floor clip + known-gap filter via the existing helper. Reuse the
     # league fixture calendar as the candidate set — features only run on
@@ -578,10 +581,7 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
                 continue
             expected_set_pf = set(expected_dates_pf)
             found_set_pf: set[str] = set()
-            if (
-                ent_rows_by_league_pf is not None
-                and lid in ent_rows_by_league_pf.groups
-            ):
+            if ent_rows_by_league_pf is not None and lid in ent_rows_by_league_pf.groups:
                 found_set_pf = {
                     str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()
                 }
@@ -1840,7 +1840,15 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 _ROLLUP_BUCKET_TEMPLATE: str = "{pid}-data-status-rollups"
 _ROLLUP_STALENESS_SEC: int = 1800  # 30 min — cron fires every 5; 30 covers 6 missed cycles
 _ROLLUP_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
-_ROLLUP_CACHE_TTL_SEC: int = 60  # in-process re-read TTL
+_ROLLUP_CACHE_TTL_SEC: int = 1800  # in-process re-read TTL — match the GCS-staleness window above.
+# Rationale: the rollup worker (Cloud Run Job) fires every 5 min, so any rollup
+# we hold in-process is at most 5 min behind canonical. A 60s TTL was the
+# initial conservative pick, but it forces a fresh transpacific 9-19 MB GCS
+# round-trip every time the UI is idle for >60s — which is the common case
+# (the user clicks Data Status, reads, comes back ~minutes later). Bumping to
+# 1800s means a warm UI session never re-downloads the rollup; correctness is
+# unchanged because data_status_service still falls through to on-demand if the
+# blob mtime is older than _ROLLUP_STALENESS_SEC.
 
 
 def _rollup_bucket() -> str:
@@ -1881,9 +1889,7 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
         # on backend). Treat missing/parse-errors as "fresh enough" to read.
         if meta is not None and getattr(meta, "updated", None) is not None:
-            age_sec = (
-                pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)
-            ).total_seconds()
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
                     "rollup for %s is stale (%.0fs > %ds threshold) — falling through to on-demand",
@@ -1900,10 +1906,7 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         # auto-decompressing transports without churning this code.
         import gzip
 
-        if raw[:2] == b"\x1f\x8b":
-            payload_bytes = gzip.decompress(raw)
-        else:
-            payload_bytes = raw
+        payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
         payload = json.loads(payload_bytes.decode("utf-8"))
         if not isinstance(payload, dict):
             logger.warning("rollup for %s is not a dict — ignoring", service)
@@ -2111,9 +2114,7 @@ def _read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         if meta is not None and getattr(meta, "updated", None) is not None:
-            age_sec = (
-                pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)
-            ).total_seconds()
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
                     "coverage rollup for %s is stale (%.0fs > %ds threshold) — falling through",
@@ -2125,10 +2126,7 @@ def _read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
         raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         import gzip
 
-        if raw[:2] == b"\x1f\x8b":
-            payload_bytes = gzip.decompress(raw)
-        else:
-            payload_bytes = raw
+        payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
         payload = json.loads(payload_bytes.decode("utf-8"))
         if not isinstance(payload, dict):
             logger.warning("coverage rollup for %s is not a dict — ignoring", service)
@@ -2164,8 +2162,13 @@ def _filter_coverage_to_asset_groups(
     filtered: dict[str, object] = {
         cat: payload for cat, payload in asset_groups.items() if cat.upper() in filter_set
     }
-    totals_keys = ("shards", "instrument_rows", "dates_across_asset_groups", "latest_day_instruments")
-    totals: dict[str, int] = {k: 0 for k in totals_keys}
+    totals_keys = (
+        "shards",
+        "instrument_rows",
+        "dates_across_asset_groups",
+        "latest_day_instruments",
+    )
+    totals: dict[str, int] = dict.fromkeys(totals_keys, 0)
     for cat_payload in filtered.values():
         if isinstance(cat_payload, dict):
             for k in totals_keys:
@@ -2617,11 +2620,22 @@ class DataStatusService:
         "features-calendar-service": "features-calendar-{pid}",
         "features-multi-timeframe-service": "features-multi-timeframe-{cat}-{pid}",
         "features-cross-instrument-service": "features-cross-instrument-{cat}-{pid}",
-        "features-commodity-service": "features-commodity-{pid}",
-        "ml-training-service": "ml-models-store-{pid}",
-        "ml-inference-service": "ml-predictions-{pid}",
-        "strategy-service": "strategy-store-{pid}",
-        "execution-service": "execution-store-{pid}",
+        "features-commodity-service": "features-commodity-{cat}-{pid}",
+        # Experiment-based services use a different shape than the
+        # pricing→features→strategy ladder. Their data is keyed by
+        # experiment/run identifiers (model_family, training_period,
+        # strategy_id, client_id, instruction_type) rather than the daily
+        # asset_group x venue x date shard. Buckets:
+        #   ml-training: artifacts (model checkpoints, training metrics)
+        #   ml-inference: no current bucket — predictions are streamed, not
+        #     pooled into a manifest yet (greenfield observability).
+        #   strategy: per-asset-group stores + a central cross-asset bucket.
+        #   execution: per-asset-group stores (no central; per-asset is the
+        #     atomic write unit because fills are venue-scoped).
+        "ml-training-service": "ml-training-artifacts-{pid}",
+        "ml-inference-service": "ml-inference-results-{pid}",
+        "strategy-service": "strategy-store-{cat}-{pid}",
+        "execution-service": "execution-store-{cat}-{pid}",
     }
 
     # Per-service category scope (SSOT: deployment-ui-playwright-audit-checklist
@@ -2636,12 +2650,51 @@ class DataStatusService:
         "features-delta-one-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-volatility-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-multi-timeframe-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
-        "features-cross-instrument-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-cross-instrument-service": frozenset({"CEFI", "TRADFI", "DEFI", "PREDICTION"}),
         "features-onchain-service": frozenset({"DEFI"}),
         "features-sports-service": frozenset({"SPORTS"}),
         "features-commodity-service": frozenset({"TRADFI"}),
+        # features-calendar is intentionally NOT restricted: it serves all
+        # asset_groups via a single shared bucket (``features-calendar-{pid}``),
+        # surfaced under the ``SHARED`` pseudo-asset_group below rather than
+        # duplicating identical numbers across every CEFI/TRADFI/DEFI/...
         "strategy-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "execution-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+    }
+
+    # Services whose data is cross-asset by design (single shared bucket, no
+    # per-asset-group sharding). The coverage-summary surfaces these under a
+    # single ``SHARED`` pseudo-asset_group instead of duplicating the same
+    # totals under every CEFI/TRADFI/DEFI/SPORTS/PREDICTION key. This matches
+    # the user-facing taxonomy: calendar events are consumed by every
+    # asset_group's strategies, so attributing them to one is misleading.
+    _SHARED_BUCKET_SERVICES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "features-calendar-service",
+            # ML training artefacts pool across all asset groups under one
+            # ``ml-training-artifacts-{pid}`` bucket — model checkpoints,
+            # training metrics, hyperparam sweeps. Experiment-based, not
+            # asset-group-based.
+            "ml-training-service",
+            # ML inference results — greenfield observability target. Currently
+            # streamed (no manifest) but the bucket name reservation is here
+            # so when batch-inference replays start writing to a manifest the
+            # endpoint surfaces them.
+            "ml-inference-service",
+        }
+    )
+
+    # Per-service display axis for the ``latest_day_instruments`` breakdown.
+    # The pricing→features pipeline uses ``venue`` (or ``data_type`` for sports;
+    # see SPORTS axis swap in `_get_coverage_summary_sync`); experiment-based
+    # services use the manifest column that identifies the experiment unit.
+    # Falls through to the default (venue/data_type) if the named column is
+    # missing or empty across all rows.
+    _SERVICE_GROUP_AXIS_OVERRIDE: ClassVar[dict[str, str]] = {
+        "ml-training-service": "model_family",
+        "ml-inference-service": "model_family",
+        "strategy-service": "strategy_id",
+        "execution-service": "instruction_type",
     }
 
     # Categories whose bucket name doesn't follow the template pattern.
@@ -2904,13 +2957,163 @@ class DataStatusService:
             return _filter_coverage_to_asset_groups(rollup, asset_groups)
         return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups)
 
+    def _resolve_coverage_cat_list(self, service: str, asset_groups: list[str] | None) -> list[str]:
+        """Pick which asset_groups to iterate for this service's coverage summary.
+
+        Cross-asset shared services collapse to a single ``SHARED`` pseudo-key.
+        Otherwise apply the per-service restriction map so domain-bound services
+        (features-onchain DEFI-only, features-sports SPORTS-only, etc.) don't
+        report the same single-bucket numbers under every asset_group key.
+        """
+        cat_list = asset_groups or [str(c) for c in MarketCategory]
+        if service in self._SHARED_BUCKET_SERVICES:
+            return ["SHARED"]
+        restriction = self._SERVICE_CATEGORY_RESTRICTIONS.get(service)
+        if restriction is not None:
+            cat_list = [c for c in cat_list if c in restriction]
+        return cat_list
+
+    def _select_coverage_group_axis(self, service: str, cat: str, index: pd.DataFrame) -> str:
+        """Per-(service, cat) display axis for ``latest_day_instruments``.
+
+        Experiment-based services override to model_family / strategy_id /
+        instruction_type. Sports manifest has no venue axis -> data_type.
+        Everything else defaults to venue.
+        """
+        override = self._SERVICE_GROUP_AXIS_OVERRIDE.get(service)
+        if override and override in index.columns:
+            return override
+        if cat.lower() == "sports":
+            return "data_type"
+        return "venue"
+
+    def _filter_to_iso_dates(self, index: pd.DataFrame) -> pd.DataFrame:
+        """Drop sports ``date='all'`` sentinels + prediction future-dated rows.
+
+        Sports reference rows write ``date='all'`` for non-day-bound entities;
+        prediction long-dated markets stamp resolution-time as ``date``. Both
+        leak into ``max(date)`` and surface as bogus ``latest_day`` values.
+        Restrict to ISO ``YYYY-MM-DD`` strings <= today.
+        """
+        from datetime import date as _today_date
+
+        if "date" not in index.columns:
+            return index
+        today_iso = _today_date.today().isoformat()
+        is_iso = index["date"].astype(str).str.match(r"^\d{4}-\d{2}-\d{2}$").fillna(False)
+        is_not_future = index["date"].astype(str) <= today_iso
+        return index[is_iso & is_not_future]
+
+    def _build_latest_day_breakdown(
+        self,
+        date_index: pd.DataFrame,
+        latest_day: str | None,
+        group_axis: str,
+    ) -> tuple[dict[str, int], int]:
+        """Sum instrument_count per group_axis on the latest day.
+
+        Returns (per-axis-value totals, latest_day total). Falls back to
+        row-count if the manifest has no ``instrument_count`` column.
+        """
+        if not latest_day or "date" not in date_index.columns:
+            return {}, 0
+        latest = date_index[date_index["date"] == latest_day]
+        if "instrument_count" in latest.columns:
+            total = int(latest["instrument_count"].fillna(0).sum())
+            if group_axis not in latest.columns:
+                return {}, total
+            grouped = latest.groupby(group_axis)["instrument_count"].sum()
+            counts = {str(v): int(c) for v, c in grouped.items() if c > 0 and str(v).strip()}
+            return counts, total
+        # No instrument_count column -> fall back to row-count.
+        total = len(latest)
+        if group_axis not in latest.columns:
+            return {}, total
+        counts = {}
+        for v in latest[group_axis].unique():
+            if not str(v).strip():
+                continue
+            counts[str(v)] = int((latest[group_axis] == v).sum())
+        return counts, total
+
+    def _filter_legacy_defi_rows(self, index: pd.DataFrame, cat: str) -> pd.DataFrame:
+        """Drop pre-canonicalisation DeFi venue-alias rows.
+
+        Rows like ``venue='AAVEV3-ETHEREUM' chain=''`` predate the venue/chain
+        split; same filter the per-shard rollup already applies.
+        """
+        if cat.lower() != "defi" or "venue" not in index.columns or index.empty:
+            return index
+        chain_series = (
+            index["chain"]
+            if "chain" in index.columns
+            else pd.Series([""] * len(index), index=index.index)
+        )
+        legacy_mask = [
+            self._is_legacy_defi_venue_row(v, c)
+            for v, c in zip(index["venue"].tolist(), chain_series.tolist(), strict=True)
+        ]
+        if not any(legacy_mask):
+            return index
+        dropped = int(sum(legacy_mask))
+        logger.debug(
+            "coverage-summary: filtered %d legacy DeFi venue-alias rows from %s",
+            dropped,
+            cat,
+        )
+        return index.loc[[not m for m in legacy_mask]].copy()
+
+    def _build_coverage_for_cat(self, service: str, cat: str) -> dict[str, object] | None:
+        """Build one asset_group's coverage entry. Returns None if empty."""
+        index = self._read_defi_merged_index(service, cat)
+        if index.empty:
+            return None
+        if "venue" in index.columns:
+            index = index.copy()
+            index["venue"] = index["venue"].replace(self._VENUE_ALIASES)
+        index = self._filter_legacy_defi_rows(index, cat)
+        shards = len(index)
+        date_index = self._filter_to_iso_dates(index)
+        unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []
+        group_axis = self._select_coverage_group_axis(service, cat, index)
+        unique_groups_list = (
+            sorted(str(v) for v in index[group_axis].unique() if str(v).strip())
+            if group_axis in index.columns
+            else []
+        )
+        date_range: dict[str, str] | None = None
+        if unique_dates:
+            date_range = {"start": str(unique_dates[0]), "end": str(unique_dates[-1])}
+        latest_day: str | None = str(unique_dates[-1]) if unique_dates else None
+        latest_day_instruments, latest_day_total = self._build_latest_day_breakdown(
+            date_index, latest_day, group_axis
+        )
+        total_instruments = (
+            int(index["instrument_count"].fillna(0).sum())
+            if "instrument_count" in index.columns
+            else shards
+        )
+        return {
+            "total_shards": shards,
+            "total_instrument_rows": shards,
+            "total_instruments": total_instruments,
+            "unique_dates": len(unique_dates),
+            "unique_venues": len(unique_groups_list),
+            "group_axis": group_axis,
+            "date_range": date_range,
+            "latest_day": latest_day,
+            "latest_day_instruments": latest_day_instruments,
+            "latest_day_total": latest_day_total,
+            "_unique_dates_set": [str(d) for d in unique_dates],
+        }
+
     def _get_coverage_summary_sync(
         self,
         service: str,
         asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous coverage summary implementation."""
-        cat_list = asset_groups or [str(c) for c in MarketCategory]
+        cat_list = self._resolve_coverage_cat_list(service, asset_groups)
         result_categories: dict[str, object] = {}
         total_shards = 0
         total_instrument_rows = 0
@@ -2918,75 +3121,20 @@ class DataStatusService:
         total_latest_day_instruments = 0
 
         for cat in cat_list:
-            index = self._read_defi_merged_index(service, cat)
-            if index.empty:
+            entry = self._build_coverage_for_cat(service, cat)
+            if entry is None:
                 continue
-
-            # Fold bare venue aliases
-            if "venue" in index.columns:
-                index = index.copy()
-                index["venue"] = index["venue"].replace(self._VENUE_ALIASES)
-
-            # Drop pre-canonicalisation DeFi venue-alias rows (e.g.
-            # ``venue='AAVEV3-ETHEREUM' chain=''``) so they don't leak into
-            # the Instrument Coverage Summary widget. Same filter used by
-            # ``_build_manifest_category`` for the per-shard rollup.
-            # DEFI-scoped only; CeFi hyphenated venues (BINANCE-FUTURES,
-            # OKX-SWAP) live under category='cefi' and are untouched.
-            if cat.lower() == "defi" and "venue" in index.columns and not index.empty:
-                chain_series = (
-                    index["chain"]
-                    if "chain" in index.columns
-                    else pd.Series([""] * len(index), index=index.index)
-                )
-                legacy_mask = [
-                    self._is_legacy_defi_venue_row(v, c)
-                    for v, c in zip(index["venue"].tolist(), chain_series.tolist(), strict=True)
-                ]
-                if any(legacy_mask):
-                    dropped = int(sum(legacy_mask))
-                    logger.debug(
-                        "coverage-summary: filtered %d legacy DeFi venue-alias rows from %s",
-                        dropped,
-                        cat,
-                    )
-                    index = index.loc[[not m for m in legacy_mask]].copy()
-
-            shards = len(index)
-            unique_dates = sorted(index["date"].unique()) if "date" in index.columns else []
-            unique_venues_list = sorted(index["venue"].unique()) if "venue" in index.columns else []
-            date_range: dict[str, str] | None = None
-            if unique_dates:
-                date_range = {"start": str(unique_dates[0]), "end": str(unique_dates[-1])}
-
-            # Latest day instrument counts
-            latest_day: str | None = str(unique_dates[-1]) if unique_dates else None
-            latest_day_instruments: dict[str, int] = {}
-            latest_day_total = 0
-            if latest_day and "date" in index.columns:
-                latest = index[index["date"] == latest_day]
-                latest_day_total = len(latest)
-                if "venue" in latest.columns:
-                    for v in latest["venue"].unique():
-                        latest_day_instruments[str(v)] = int((latest["venue"] == v).sum())
-
-            instrument_rows = shards  # each row in the index is an instrument-date shard
-
-            result_categories[cat] = {
-                "total_shards": shards,
-                "total_instrument_rows": instrument_rows,
-                "unique_dates": len(unique_dates),
-                "unique_venues": len(unique_venues_list),
-                "date_range": date_range,
-                "latest_day": latest_day,
-                "latest_day_instruments": latest_day_instruments,
-                "latest_day_total": latest_day_total,
-            }
-
-            total_shards += shards
-            total_instrument_rows += instrument_rows
-            all_dates.update(str(d) for d in unique_dates)
-            total_latest_day_instruments += latest_day_total
+            unique_dates_list = entry.pop("_unique_dates_set", [])
+            if isinstance(unique_dates_list, list):
+                all_dates.update(unique_dates_list)
+            shards_int = entry["total_shards"]
+            ld_total_int = entry["latest_day_total"]
+            assert isinstance(shards_int, int)
+            assert isinstance(ld_total_int, int)
+            result_categories[cat] = entry
+            total_shards += shards_int
+            total_instrument_rows += shards_int
+            total_latest_day_instruments += ld_total_int
 
         return {
             "service": service,
