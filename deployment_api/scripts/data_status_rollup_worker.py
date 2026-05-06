@@ -48,7 +48,7 @@ import time
 from typing import Any
 
 from unified_trading_library.cloud_interface import get_storage_client
-from unified_trading_library.events import log_event, setup_events
+from unified_trading_library.events import MockEventSink, log_event, setup_events
 
 from deployment_api.services.data_status_service import DataStatusService
 
@@ -130,7 +130,15 @@ def _write_rollup_to_gcs(
 
 def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     """Compute and upload one rollup per service. Returns process exit code."""
-    setup_events(service_name="data-status-rollup-worker", mode="live")
+    # Mirrors manifest_consolidator's pattern: events here are diagnostic-only
+    # (no consumer reads them); MockEventSink keeps the no-op-but-initialised
+    # behaviour log_event() requires. Switch to GcsEventSink if dashboards
+    # ever need to ingest rollup-worker events.
+    try:
+        setup_events(service_name="data-status-rollup-worker", mode="batch", sink=MockEventSink())
+    except RuntimeError:
+        # Already initialised by an outer bootstrap — acceptable.
+        pass
     log_event("STARTED", details={"project_id": project_id, "bucket": bucket, "services": services})
 
     end_date = _today_iso()
