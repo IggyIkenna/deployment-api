@@ -11,6 +11,8 @@ import logging
 import re
 import sys
 import time
+from collections import Counter
+from functools import lru_cache
 from typing import ClassVar, Literal, cast
 
 import pandas as pd
@@ -867,6 +869,71 @@ def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
     return list(venues)
 
 
+# Process-shared VenueMapping for the lru_cache'd expected-dates helper.
+# UAC venue/calendar/coverage data is process-immutable (read once on import),
+# so a single shared instance is safe and avoids per-request VenueMapping
+# instantiation cost when fanning out across ~30-50 venues x ~8 data_types.
+_SHARED_VENUE_MAPPING: VenueMapping | None = None
+
+
+def _shared_venue_mapping() -> VenueMapping:
+    global _SHARED_VENUE_MAPPING
+    if _SHARED_VENUE_MAPPING is None:
+        _SHARED_VENUE_MAPPING = VenueMapping()
+    return _SHARED_VENUE_MAPPING
+
+
+@lru_cache(maxsize=8192)
+def _mtds_expected_dates_cached(
+    venue: str,
+    data_type: str,
+    category: str,
+    window_start: str,
+    window_end: str,
+) -> frozenset[str]:
+    """Process-level cache for :func:`_mtds_expected_dates_for_venue_dt`.
+
+    The expected-dates set is a pure function of UAC config (venue start
+    dates, trading calendars, coverage windows, LST genesis dates) —
+    process-immutable. Caching it avoids rebuilding the same trading-day
+    calendar 8x per venue (once per data_type) on every data-status
+    request. Cleared on ``/turbo/clear`` for defensive freshness.
+    """
+    venue_mapping = _shared_venue_mapping()
+    venue_start = venue_mapping.get_venue_start_date(venue) or window_start
+    dt_start = get_venue_data_type_start_date(venue, data_type) or venue_start
+
+    if category.upper() == "DEFI" and venue_has_no_expected_defi_coverage(venue):
+        return frozenset()
+
+    if data_type == "lst_rates":
+        lst_genesis = get_lst_venue_genesis(venue)
+        if lst_genesis is not None:
+            dt_start = max(dt_start, lst_genesis)
+
+    effective_start = max(window_start, venue_start, dt_start)
+    if effective_start > window_end:
+        return frozenset()
+
+    if category.upper() == "TRADFI":
+        expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
+        per_venue_windows = get_coverage_windows(venue, data_type)
+        if per_venue_windows:
+            expected_list = [
+                d for d in expected_list if any(s <= d <= e for s, e in per_venue_windows)
+            ]
+        elif data_type in _TRADFI_TICK_ONLY_DATA_TYPES:
+            expected_list = [d for d in expected_list if is_in_tradfi_tick_window(d)]
+        return frozenset(expected_list)
+
+    expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
+    if expected_list:
+        return frozenset(expected_list)
+    return frozenset(
+        d.strftime("%Y-%m-%d") for d in pd.date_range(effective_start, window_end, freq="D")
+    )
+
+
 def _mtds_expected_dates_for_venue_dt(
     venue_mapping: VenueMapping,
     venue: str,
@@ -889,58 +956,13 @@ def _mtds_expected_dates_for_venue_dt(
 
     Returns a set of ``YYYY-MM-DD`` strings. Empty set if venue_start is
     after ``window_end`` (pre-launch venue).
+
+    Delegates to :func:`_mtds_expected_dates_cached` — UAC config is
+    process-immutable so caching by (venue, data_type, category, window) is
+    safe; the ``venue_mapping`` arg is preserved for signature compatibility
+    with existing callers and tests.
     """
-    venue_start = venue_mapping.get_venue_start_date(venue) or window_start
-    dt_start = get_venue_data_type_start_date(venue, data_type) or venue_start
-
-    # DEFI venues with no expected coverage (deprecated subgraphs / not-yet-onboarded).
-    # UAC EMPTY_OR_DEPRECATED_DEFI_VENUES + DEFI_INSTRUMENTS_NOT_YET_COLLECTED is
-    # the SSOT; without this the data-status UI flags every day for these venues
-    # as "missing" because instruments-service has 0 historical parquets for them.
-    if category.upper() == "DEFI" and venue_has_no_expected_defi_coverage(venue):
-        return set()
-
-    # lst_rates: clamp expected-coverage start to the earliest LST token
-    # genesis for this venue. UAC LST_VENUE_TO_TOKENS / get_lst_venue_genesis
-    # is the SSOT for token-launch dates; without this the data-status UI
-    # flags pre-launch days as "missing" even though the handler correctly
-    # short-circuits them on its end. Falls back to dt_start when the venue
-    # is not a known LST protocol (no override).
-    if data_type == "lst_rates":
-        lst_genesis = get_lst_venue_genesis(venue)
-        if lst_genesis is not None:
-            dt_start = max(dt_start, lst_genesis)
-
-    effective_start = max(window_start, venue_start, dt_start)
-    if effective_start > window_end:
-        return set()
-
-    if category.upper() == "TRADFI":
-        expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
-        # Per-(venue, data_type) coverage windows — UAC SSOT
-        # ``VENUE_DATA_TYPE_COVERAGE_WINDOWS``. When set (e.g. CME tbbo
-        # restricted to May 2023 + Jun 2024 reference months), clip the
-        # expected denominator to the union of those windows. Empty list
-        # = no clip (default — every trading day in scope).
-        per_venue_windows = get_coverage_windows(venue, data_type)
-        if per_venue_windows:
-            expected_list = [
-                d for d in expected_list if any(s <= d <= e for s, e in per_venue_windows)
-            ]
-        elif data_type in _TRADFI_TICK_ONLY_DATA_TYPES:
-            # Legacy global tick-window clip — only applies when no
-            # per-(venue, data_type) override is registered. Eventually
-            # this branch can retire once every tick-only data_type has
-            # a per-venue entry.
-            expected_list = [d for d in expected_list if is_in_tradfi_tick_window(d)]
-        return set(expected_list)
-
-    # CEFI / DEFI / PREDICTION — daily grid, no trading-day calendar
-    expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
-    if expected_list:
-        return set(expected_list)
-    # Fallback to daily range if venue has no trading schedule in UAC
-    return {d.strftime("%Y-%m-%d") for d in pd.date_range(effective_start, window_end, freq="D")}
+    return set(_mtds_expected_dates_cached(venue, data_type, category, window_start, window_end))
 
 
 def _per_instrument_coverage(
@@ -1061,25 +1083,33 @@ def _per_instrument_coverage(
         }
 
     # Phase 8D Tier-3 denominator.
-    found_pairs: set[tuple[str, str]] = set()
+    # Vectorised: build the (instrument_id, date) pair set with pandas mask
+    # operations rather than a Python ``for/zip`` loop. For BINANCE-FUTURES
+    # at 50 perps x ~3000 dates the prior loop iterated 150k times per
+    # (venue, dt) pair; the masked path is dominated by the C-level isin().
+    found_dates_in_window: set[str] = set()
+    found_iid_dates_zipped: list[tuple[str, str]] = []
     if len(non_legacy_instr) > 0:
-        for instrument_id, row_date in zip(
-            non_legacy_instr.tolist(), non_legacy_dates.tolist(), strict=True
-        ):
-            iid = str(instrument_id)
-            rd = str(row_date)
-            # Only count the shard if it falls inside the expected date
-            # window -- same guard as the venue-level path.
-            if iid and rd in expected_dates:
-                found_pairs.add((iid, rd))
+        iid_str = non_legacy_instr.astype(str).str.strip()
+        rd_str = non_legacy_dates.astype(str)
+        mask = (iid_str.str.len() > 0) & rd_str.isin(expected_dates)
+        if bool(mask.any()):
+            iid_kept = iid_str[mask].tolist()
+            rd_kept = rd_str[mask].tolist()
+            found_iid_dates_zipped = list(zip(iid_kept, rd_kept, strict=True))
+            found_dates_in_window = set(rd_kept)
+    found_pairs: set[tuple[str, str]] = set(found_iid_dates_zipped)
 
     n_instruments = len(expected_instruments)
     n_dates = len(expected_dates)
     expected_count = n_instruments * n_dates
     found_count = len(found_pairs)
 
-    # Which instruments have 0 shards in the window.
-    instruments_with_shards = {iid for iid, _ in found_pairs}
+    # Counter does both the per-instrument count AND gives us
+    # ``instruments_with_shards`` as ``.keys()`` in one pass — replaces the
+    # prior O(|instruments|*|pairs|) ``sum(1 for ...)`` loop below.
+    iid_counts = Counter(iid for iid, _ in found_pairs)
+    instruments_with_shards = set(iid_counts)
     missing_instruments = [
         iid for iid in expected_instruments if iid not in instruments_with_shards
     ]
@@ -1091,8 +1121,8 @@ def _per_instrument_coverage(
         "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
         # Missing-dates at the dt level collapses across instruments so the
         # drill-down stays backwards-compatible with the venue-level UI panel.
-        "missing_dates": sorted(expected_dates - {rd for _, rd in found_pairs})[:500],
-        "dates_found_list": sorted({rd for _, rd in found_pairs})[:500],
+        "missing_dates": sorted(expected_dates - found_dates_in_window)[:500],
+        "dates_found_list": sorted(found_dates_in_window)[:500],
         "unit": "shard_instrument_days",
         "expected_instruments": list(expected_instruments),
         "missing_instruments": missing_instruments,
@@ -1108,14 +1138,16 @@ def _per_instrument_coverage(
     # universe (<20). BINANCE-FUTURES with 50 perps would double the
     # response size per (venue, dt) pair otherwise.
     if n_instruments and n_instruments < _PER_INSTRUMENT_BREAKDOWN_MAX_SIZE:
-        per_instrument: dict[str, dict[str, object]] = {}
-        for iid in expected_instruments:
-            found_for_iid = sum(1 for i, _ in found_pairs if i == iid)
-            per_instrument[iid] = {
-                "found": found_for_iid,
+        per_instrument: dict[str, dict[str, object]] = {
+            iid: {
+                "found": iid_counts.get(iid, 0),
                 "expected": n_dates,
-                "completion_pct": min(round(found_for_iid / max(1, n_dates) * 100, 2), 100.0),
+                "completion_pct": min(
+                    round(iid_counts.get(iid, 0) / max(1, n_dates) * 100, 2), 100.0
+                ),
             }
+            for iid in expected_instruments
+        }
         entry["per_instrument"] = per_instrument
 
     return entry
@@ -1548,9 +1580,17 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 
 
 def clear_index_cache() -> None:
-    """Clear the availability index cache."""
+    """Clear the availability index cache.
+
+    Also clears the process-level :func:`_mtds_expected_dates_cached`
+    LRU. That cache is keyed only on UAC config (process-immutable in
+    steady state) and so cannot serve stale manifest data, but
+    ``/turbo/clear`` is a "make sure nothing is cached" knob — so we
+    flush it too to keep the endpoint's contract honest.
+    """
     _INDEX_CACHE.clear()
     _EXPECTED_START_DATES_CACHE["value"] = None
+    _mtds_expected_dates_cached.cache_clear()
 
 
 # ── expected_start_dates.yaml cached loader ────────────────────────────────
@@ -2646,6 +2686,32 @@ class DataStatusService:
         }
     )
 
+    @staticmethod
+    def _resolve_venue_start(
+        venue: str,
+        venue_mapping: VenueMapping,
+        is_instruments_service: bool,
+    ) -> str | None:
+        """Resolve the per-venue start date for the breakdown denominator.
+
+        For instruments-service, prefer the per-venue instrument-discovery
+        start (UAC SSOT, added 2026-05-06 in unified-api-contracts@89db18f)
+        so HYPERLIQUID returns 2023-11-01 (when instruments first existed)
+        instead of 2023-04-15 (when book_snapshot_5 archive starts). Other
+        services keep using venue_start_date as before. Falls back through
+        the ``venue:variant`` split for both lookups.
+        """
+        if is_instruments_service:
+            vs = venue_mapping.get_instrument_discovery_start(venue)
+            if not vs and ":" in venue:
+                vs = venue_mapping.get_instrument_discovery_start(venue.split(":")[0])
+            if vs:
+                return vs
+        vs = venue_mapping.get_venue_start_date(venue)
+        if not vs and ":" in venue:
+            vs = venue_mapping.get_venue_start_date(venue.split(":")[0])
+        return vs
+
     def _build_venue_breakdown(
         self,
         filtered: pd.DataFrame,
@@ -2705,20 +2771,7 @@ class DataStatusService:
             v_mask = filtered["venue"] == v
             v_df = filtered[v_mask]
             v_dates_all = {str(d) for d in v_df["date"].unique()}
-            # For instruments-service, prefer the per-venue instrument-discovery
-            # start (UAC SSOT, added 2026-05-06 in unified-api-contracts@89db18f)
-            # so HYPERLIQUID returns 2023-11-01 (when instruments first existed)
-            # instead of 2023-04-15 (when book_snapshot_5 archive starts). Other
-            # services keep using venue_start_date as before.
-            vs: str | None = None
-            if is_instruments_service:
-                vs = venue_mapping.get_instrument_discovery_start(v)
-                if not vs and ":" in v:
-                    vs = venue_mapping.get_instrument_discovery_start(v.split(":")[0])
-            if not vs:
-                vs = venue_mapping.get_venue_start_date(v)
-                if not vs and ":" in v:
-                    vs = venue_mapping.get_venue_start_date(v.split(":")[0])
+            vs = self._resolve_venue_start(v, venue_mapping, is_instruments_service)
             if not vs and v_dates_all:
                 vs = min(v_dates_all)
             eff_start = max(start_date, vs) if vs else start_date
