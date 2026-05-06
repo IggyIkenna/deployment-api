@@ -332,3 +332,53 @@ async def get_service_dependencies(service_name: str, request: Request):
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
+
+
+@router.get("/shard-axis-matrix")
+async def get_shard_axis_matrix(
+    service: str | None = Query(None, description="Optional: filter to one service"),
+):
+    """Return the per-(service, asset_group) shard / display / primary axis SSOT.
+
+    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.plan.md`` Phase 2.
+
+    SSOT lives in
+    ``unified_api_contracts.registry.data_status_axis_matrix``. The
+    deployment-ui DataStatusTab reads this endpoint to drive the per-service
+    axis selector (DEFI → chain dropdown, sports → league_id dropdown,
+    strategy/execution → job_id picker, ml → model_family + training_period,
+    multi-timeframe → timeframe dropdown).
+
+    Empty axis tuples for ``(service, asset_group)`` pairs the service does
+    NOT cover (e.g. ``features-onchain-service`` only ships ``defi``)
+    deliberately surface as missing keys in the response — the UI shows
+    "asset_group not in scope" rather than rendering an empty panel.
+
+    Optional ``service`` query filters the matrix to one service for
+    smaller payloads.
+    """
+    # Lazy import keeps the route importable in mock mode where UAC
+    # may not be installed (Tier 0 emulator-only setup).
+    from unified_api_contracts.registry.data_status_axis_matrix import (
+        BREAKDOWN_AXES,
+        DISPLAY_AXES,
+        PRIMARY_AXIS,
+        SHARD_AXIS_MATRIX,
+    )
+
+    target = service if isinstance(service, str) and service else None
+
+    def _filter(items: dict[tuple[str, str], object]) -> dict[str, dict[str, object]]:
+        out: dict[str, dict[str, object]] = {}
+        for (svc, asset_group), value in items.items():
+            if target is not None and svc != target:
+                continue
+            out.setdefault(svc, {})[asset_group] = value
+        return out
+
+    return {
+        "shard_axes": _filter(SHARD_AXIS_MATRIX),
+        "display_axes": _filter(DISPLAY_AXES),
+        "primary_axis": _filter(PRIMARY_AXIS),
+        "breakdown_axes": _filter(BREAKDOWN_AXES),
+    }

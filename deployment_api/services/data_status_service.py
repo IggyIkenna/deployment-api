@@ -35,6 +35,10 @@ from unified_api_contracts.registry import (
     is_in_tradfi_tick_window,
     venue_has_no_expected_defi_coverage,
 )
+from unified_api_contracts.registry.data_status_axis_matrix import (
+    get_breakdown_axes,
+    get_primary_axis,
+)
 from unified_api_contracts.sports import (
     FEATURE_UPSTREAM_REQUIREMENTS,
     UpstreamReq,
@@ -2974,18 +2978,118 @@ class DataStatusService:
         return cat_list
 
     def _select_coverage_group_axis(self, service: str, cat: str, index: pd.DataFrame) -> str:
-        """Per-(service, cat) display axis for ``latest_day_instruments``.
+        """Per-(service, cat) primary display axis for ``latest_day_instruments``.
 
-        Experiment-based services override to model_family / strategy_id /
-        instruction_type. Sports manifest has no venue axis -> data_type.
-        Everything else defaults to venue.
+        SSOT: ``unified_api_contracts.registry.data_status_axis_matrix.PRIMARY_AXIS``.
+        Each (service, asset_group) declares its primary axis (the cell-grid
+        main dimension). Falls back to ``data_type`` for sports / ``venue``
+        for the pricing pipeline default when the SSOT has no entry.
+        Cross-asset shared services (calendar / ml-training / ml-inference)
+        register under the ``shared`` pseudo-asset-group.
         """
-        override = self._SERVICE_GROUP_AXIS_OVERRIDE.get(service)
-        if override and override in index.columns:
-            return override
-        if cat.lower() == "sports":
+        cat_lower = cat.lower()
+        # Cross-asset shared services keep their primary axis even when the
+        # caller iterates with cat="SHARED".
+        primary = get_primary_axis(service, cat_lower)
+        if primary and primary in index.columns:
+            return primary
+        if cat_lower == "sports":
             return "data_type"
         return "venue"
+
+    @staticmethod
+    def _pack_row_filters(
+        *,
+        league_id: str | None,
+        fixture_id: str | None,
+        canonical_question_group: str | None,
+        job_id: str | None,
+        chain: str | None,
+    ) -> dict[str, str]:
+        """Drop falsy values + uppercase chain — single SSOT for filter packing."""
+        filters: dict[str, str] = {}
+        if league_id:
+            filters["league_id"] = league_id
+        if fixture_id:
+            filters["fixture_id"] = fixture_id
+        if canonical_question_group:
+            filters["canonical_question_group"] = canonical_question_group
+        if job_id:
+            filters["job_id"] = job_id
+        if chain:
+            filters["chain"] = chain.upper()
+        return filters
+
+    @staticmethod
+    def _apply_row_filters(filtered: pd.DataFrame, row_filters: dict[str, str]) -> pd.DataFrame:
+        """Apply secondary-axis filters to a per-category manifest slice.
+
+        Filters that target a column the manifest doesn't carry yet narrow
+        to zero rows — correct: the writer hasn't populated the column, so
+        no shards match. UI then renders an empty grid with "no shards
+        captured for this filter yet" instead of mis-classifying as missing.
+        """
+        if filtered.empty:
+            return filtered
+        for col, value in row_filters.items():
+            if col not in filtered.columns:
+                return filtered.iloc[0:0].copy()
+            filtered = filtered.loc[filtered[col].fillna("").astype(str) == value].copy()
+            if filtered.empty:
+                return filtered
+        return filtered
+
+    def _build_breakdowns(
+        self,
+        service: str,
+        cat: str,
+        index: pd.DataFrame,
+        primary_axis: str,
+    ) -> dict[str, dict[str, int]]:
+        """Build ``breakdowns: dict[axis, dict[value, count]]`` for the panel.
+
+        The deployment-ui ``BreakdownsAccordion`` renders one section per
+        axis returned here. Axes come from the UAC SSOT (shard + display
+        minus primary, preserving the SHARD-then-DISPLAY ordering).
+
+        Empty axes are still emitted (with ``{}``) when the UAC SSOT
+        declares them — UI shape leads, backend writers follow. The
+        ``BreakdownsAccordion`` renders a "no data yet" placeholder for
+        empty axes rather than hiding them, so the operator can see the
+        expected shape even before Phase 1 writers populate the column.
+        ``__legacy__`` surfaces older rows that have an empty value (e.g.
+        pre-Phase-1B ML/strategy/execution writes that didn't yet stamp
+        ``job_id``).
+        """
+        cat_lower = cat.lower()
+        axes = get_breakdown_axes(service, cat_lower)
+        if not axes:
+            return {}
+        has_count = "instrument_count" in index.columns
+        breakdowns: dict[str, dict[str, int]] = {}
+        for axis in axes:
+            if axis == primary_axis:
+                continue
+            if axis not in index.columns:
+                breakdowns[axis] = {}
+                continue
+            values = index[axis].fillna("").astype(str)
+            if has_count:
+                grouped = (
+                    index.assign(_axis=values).groupby("_axis")["instrument_count"].sum(min_count=1)
+                )
+                axis_counts = {
+                    (str(k) if str(k).strip() else "__legacy__"): int(v)
+                    for k, v in grouped.items()
+                    if v and v > 0
+                }
+            else:
+                axis_counts = {}
+                for v in values.unique():
+                    key = v if v.strip() else "__legacy__"
+                    axis_counts[str(key)] = int((values == v).sum())
+            breakdowns[axis] = axis_counts
+        return breakdowns
 
     def _filter_to_iso_dates(self, index: pd.DataFrame) -> pd.DataFrame:
         """Drop sports ``date='all'`` sentinels + prediction future-dated rows.
@@ -3093,6 +3197,11 @@ class DataStatusService:
             if "instrument_count" in index.columns
             else shards
         )
+        # Per-(service, asset_group) multi-axis breakdowns for the UI
+        # ``BreakdownsAccordion``. Empty/absent columns surface as ``{}`` so
+        # the UI renders the axis selector with an "expected, no data yet"
+        # placeholder rather than hiding the dropdown.
+        breakdowns = self._build_breakdowns(service, cat, date_index, group_axis)
         return {
             "total_shards": shards,
             "total_instrument_rows": shards,
@@ -3104,6 +3213,7 @@ class DataStatusService:
             "latest_day": latest_day,
             "latest_day_instruments": latest_day_instruments,
             "latest_day_total": latest_day_total,
+            "breakdowns": breakdowns,
             "_unique_dates_set": [str(d) for d in unique_dates],
         }
 
@@ -3153,6 +3263,13 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         asset_groups: list[str] | None = None,
+        *,
+        secondary_axis: str | None = None,
+        league_id: str | None = None,
+        fixture_id: str | None = None,
+        canonical_question_group: str | None = None,
+        job_id: str | None = None,
+        chain: str | None = None,
     ) -> dict[str, object]:
         """Return data status from manifest indices in TurboDataStatusResponse shape.
 
@@ -3161,6 +3278,10 @@ class DataStatusService:
         1. **Rollup fast-path** — if a fresh (< 30 min old) rollup blob
            exists at ``gs://{pid}-data-status-rollups/{service}/full.json.gz``,
            read it and slice to the requested window in-memory. Sub-500ms.
+           Skipped when any filter param (``league_id`` / ``fixture_id`` /
+           ``canonical_question_group`` / ``job_id`` / ``chain``) is set
+           — the rollup is filter-free; falling through to the on-demand
+           path is the only way to honour the filter.
         2. **On-demand fall-through** — original honest-coverage compute.
            Used on cold deploys (first 5 min before first cron fires) and
            if the rollup is stale or absent.
@@ -3169,11 +3290,29 @@ class DataStatusService:
         (Cloud Run Job + ``*/5 * * * *`` Scheduler cron). See plan:
         ``data_status_offline_rollup_2026_05_06.plan.md``.
         """
-        rollup = await asyncio.to_thread(_read_rollup_if_fresh, service)
-        if rollup is not None:
-            return _slice_rollup_to_window(rollup, start_date, end_date, asset_groups)
+        any_row_filter = any(
+            f is not None and f != ""
+            for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
+        )
+        if not any_row_filter:
+            rollup = await asyncio.to_thread(_read_rollup_if_fresh, service)
+            if rollup is not None:
+                response = _slice_rollup_to_window(rollup, start_date, end_date, asset_groups)
+                if secondary_axis:
+                    response["secondary_axis"] = secondary_axis
+                return response
         return await asyncio.to_thread(
-            self._get_manifest_status_sync, service, start_date, end_date, asset_groups
+            self._get_manifest_status_sync,
+            service,
+            start_date,
+            end_date,
+            asset_groups,
+            secondary_axis,
+            league_id,
+            fixture_id,
+            canonical_question_group,
+            job_id,
+            chain,
         )
 
     def _get_manifest_status_sync(
@@ -3182,6 +3321,12 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         asset_groups: list[str] | None = None,
+        secondary_axis: str | None = None,
+        league_id: str | None = None,
+        fixture_id: str | None = None,
+        canonical_question_group: str | None = None,
+        job_id: str | None = None,
+        chain: str | None = None,
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = asset_groups or [str(c) for c in MarketCategory]
@@ -3217,7 +3362,19 @@ class DataStatusService:
         # Why not threads: the honest-coverage inner loops are GIL-bound
         # Python (set comprehensions, Counter, dict mutations); a previous
         # ThreadPoolExecutor attempt gave zero speedup and OOM'd at 8 GiB.
-        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED:
+        # Pack secondary-axis filter params into a dict the per-category
+        # builder can apply after the date mask but before the cell-grid
+        # compute. Empty/None values are dropped so a no-filter request
+        # behaves identically to the previous code path.
+        row_filters = self._pack_row_filters(
+            league_id=league_id,
+            fixture_id=fixture_id,
+            canonical_question_group=canonical_question_group,
+            job_id=job_id,
+            chain=chain,
+        )
+
+        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED or row_filters:
             for cat in cat_list:
                 cat_result = self._build_manifest_category(
                     service,
@@ -3227,6 +3384,7 @@ class DataStatusService:
                     all_date_strs,
                     total_days,
                     venue_mapping,
+                    row_filters=row_filters,
                 )
                 result_categories[cat] = cat_result
                 overall_found += int(cat_result.get("dates_found", 0))
@@ -3283,7 +3441,7 @@ class DataStatusService:
             and self._has_active_migration_vm(service)
         )
 
-        return {
+        response: dict[str, object] = {
             "service": service,
             "date_range": {"start": start_date, "end": end_date, "days": total_days},
             "mode": "turbo",
@@ -3298,6 +3456,14 @@ class DataStatusService:
             "migration_in_progress": migration_in_progress,
             "asset_groups": result_categories,
         }
+        # Echo secondary_axis + active filters back so the UI can confirm
+        # which slice it received. No-filter requests omit these keys
+        # (backward-compat with existing /manifest consumers).
+        if secondary_axis:
+            response["secondary_axis"] = secondary_axis
+        if row_filters:
+            response["filters"] = dict(row_filters)
+        return response
 
     def _has_active_migration_vm(self, service: str) -> bool:
         """Best-effort check whether a migration/backfill VM is running.
@@ -5115,7 +5281,7 @@ class DataStatusService:
 
         return extras
 
-    def _build_manifest_category(
+    def _build_manifest_category(  # noqa: C901 — branchy by nature (per-cat+per-shard expansion)
         self,
         service: str,
         cat: str,
@@ -5124,8 +5290,18 @@ class DataStatusService:
         all_date_strs: list[str],
         total_days: int,
         venue_mapping: VenueMapping,
+        row_filters: dict[str, str] | None = None,
     ) -> dict[str, object]:
-        """Build a single category entry for manifest status."""
+        """Build a single category entry for manifest status.
+
+        ``row_filters`` is an optional ``{column: value}`` map applied to
+        the manifest rows after the date-range mask (and venue alias
+        canonicalisation) but before the cell-grid compute. Used by the
+        ``secondary_axis`` query parameter on ``/api/data-status/manifest``
+        so the UI can drill into a single ``league_id`` /
+        ``canonical_question_group`` / ``job_id`` / ``chain`` /
+        ``fixture_id`` slice. Empty/None == no filter.
+        """
         template = self._BUCKET_TEMPLATES.get(service)
         empty: dict[str, object] = {
             "category": cat,
@@ -5172,6 +5348,11 @@ class DataStatusService:
         if "service_name" in index.columns:
             mask = mask & (index["service_name"] == service)
         filtered = index.loc[mask].copy()
+
+        # Apply per-row filter params from the /manifest secondary-axis
+        # query (see ``_apply_row_filters`` for semantics).
+        if row_filters:
+            filtered = self._apply_row_filters(filtered, row_filters)
 
         # Fold bare venue aliases (e.g. "OKX" → "OKX-SPOT", "COINBASE" → "COINBASE-SPOT")
         if "venue" in filtered.columns and not filtered.empty:

@@ -176,26 +176,74 @@ async def get_data_status_manifest(
     start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
     asset_group: list[str] | None = Query(None, description="Filter by asset group"),
+    secondary_axis: str | None = Query(
+        None,
+        description=(
+            "Secondary axis the UI wants to slice the cell grid by "
+            "(e.g. 'chain', 'league_id', 'job_id'). Echoed back in the "
+            "response so the UI knows which slice it got."
+        ),
+    ),
+    league_id: str | None = Query(
+        None,
+        description="Filter sports manifest rows to one canonical league_id (e.g. 'EPL').",
+    ),
+    fixture_id: str | None = Query(
+        None,
+        description="Filter sports manifest rows to one fixture_id (display-axis drill-down).",
+    ),
+    canonical_question_group: str | None = Query(
+        None,
+        description=(
+            "Filter prediction manifest rows to one canonical_question_group "
+            "(e.g. 'BTC_UP_DOWN_HOURLY')."
+        ),
+    ),
+    job_id: str | None = Query(
+        None,
+        description=(
+            "Filter ML / strategy / execution manifest rows to one experiment-run "
+            "job_id (typically 'RUN_TS-experiment_name')."
+        ),
+    ),
+    chain: str | None = Query(
+        None,
+        description="Filter DeFi manifest rows to one chain (e.g. 'ETHEREUM', 'ARBITRUM').",
+    ),
 ):
-    """Get data status from manifest availability indices (fastest path)."""
+    """Get data status from manifest availability indices (fastest path).
+
+    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.plan.md`` Phase 2.
+    Optional ``secondary_axis`` + filter params let the UI drill into a single
+    league / canonical_question_group / job_id / chain / fixture_id slice.
+    """
     if _cfg.is_mock_mode():
         # Phase-C honest-coverage: return a realistic v5-shaped payload so
         # the UI's Category Breakdown, 4-state heatmap, "Show only
         # failures" filter, and drill-down retry button all render in
         # local dev. Without this the mock response was ``categories: {}``
         # and none of the new surfaces were reachable via Playwright.
-        return build_mock_turbo_response(
+        response = build_mock_turbo_response(
             service=service,
             start_date=start_date,
             end_date=end_date,
             asset_groups=asset_group,
         )
+        if secondary_axis:
+            response["secondary_axis"] = secondary_axis
+        return response
     try:
         result = await data_status_service.get_manifest_status(
             service=service,
             start_date=start_date,
             end_date=end_date,
             asset_groups=asset_group,
+            secondary_axis=secondary_axis,
+            league_id=league_id,
+            fixture_id=fixture_id,
+            canonical_question_group=canonical_question_group,
+            job_id=job_id,
+            chain=chain,
         )
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
