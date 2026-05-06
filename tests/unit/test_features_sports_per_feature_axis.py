@@ -112,6 +112,55 @@ class TestDerivedCalculator:
         assert result == ["2024-04-13", "2024-04-20"]
 
 
+class TestSportsHonestCoveragePerFeatureBranch:
+    """Phase 3.E1: ``_sports_honest_coverage`` routes per-calculator
+    feature_group entries to the new per_feature axis branch and surfaces
+    expected/found counts using FEATURE_UPSTREAM_REQUIREMENTS."""
+
+    def test_unknown_calc_returns_none(self) -> None:
+        """Unknown entity name → no meta match → caller falls back to legacy
+        date-count model."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _sports_honest_coverage
+
+        result = _sports_honest_coverage(
+            filtered=pd.DataFrame(),
+            entity_name="not_a_calculator",
+            start_date="2024-04-01",
+            end_date="2024-04-30",
+        )
+        assert result is None
+
+    def test_team_form_routes_to_per_feature_axis(self) -> None:
+        """team_form is in FEATURES_SPORTS_PER_CALC_META → routed to the new
+        axis branch. Returns shape with axis='per_feature_per_league_per_fixture_date'."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _sports_honest_coverage
+
+        # Empty manifest → expected_shards from the helper, found_shards = 0
+        result = _sports_honest_coverage(
+            filtered=pd.DataFrame(
+                columns=["data_type", "feature_group", "league_id", "date", "capture_status"]
+            ),
+            entity_name="team_form",
+            start_date="2024-04-01",
+            end_date="2024-04-30",
+        )
+        assert result is not None
+        assert result["axis"] == "per_feature_per_league_per_fixture_date"
+        assert result["unit"] == "fixture_dates"
+        # api_football is the primary required upstream's source
+        assert result["source"] == "api_football"
+        # found_shards = 0 because empty manifest
+        assert result["found_shards"] == 0
+        # expected_shards > 0 because EPL+other leagues have fixtures in 2024-04
+        # (don't pin exact number — depends on real LEAGUE_REGISTRY which can
+        # change. Just verify the axis branch ran).
+        assert isinstance(result["expected_shards"], int)
+
+
 class TestSfiProgressiveOverride:
     def test_pre_2020_clipped_by_data_type_override(self) -> None:
         """SFI_PROGRESSIVE_STATS has DATA_TYPE_COVERAGE_START override

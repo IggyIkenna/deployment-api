@@ -118,6 +118,7 @@ COVERAGE_SEMANTICS: dict[str, Literal["dense", "event_driven"]] = {
 SportsAxis = Literal[
     "per_league_per_fixture_date",
     "per_league_periodic",
+    "per_feature_per_league_per_fixture_date",
     "global_periodic",
     "global_season",
 ]
@@ -315,6 +316,35 @@ FEATURES_SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
 }
 
 
+# Per-calculator feature-group metadata (Phase 3.E1). Each calculator that
+# writes manifest rows under feature_group=<calc> gets a per_feature axis
+# entry so the data-status UI can surface honest per-calculator coverage
+# rows instead of collapsing all 34 calculators into a single
+# DERIVED_FEATURES rollup.
+#
+# For each calculator: ``source`` is the primary required upstream's source
+# (used by `_sports_honest_coverage` for the legacy clip path; the per_feature
+# axis branch reads the full FEATURE_UPSTREAM_REQUIREMENTS list to compute
+# the proper intersection denominator). ``classifications`` defaults to
+# Prediction since features are computed for prediction leagues.
+#
+# Phase 3 honest-coverage: expected = intersection of every required
+# upstream's per-league fixture calendar (clipped to source coverage windows).
+# See ``_features_sports_expected_dates_for_calculator``.
+FEATURES_SPORTS_PER_CALC_META: dict[str, dict[str, object]] = {
+    calc_name: {
+        "source": next(
+            (r.source for r in reqs if r.required and r.source != "derived"),
+            "derived",
+        ),
+        "classifications": ("Prediction",),
+        "axis": "per_feature_per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    }
+    for calc_name, reqs in FEATURE_UPSTREAM_REQUIREMENTS.items()
+}
+
+
 def _features_sports_expected_dates_for_calculator(
     calc_name: str,
     league_id: str,
@@ -486,7 +516,11 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
     Returns ``None`` if the entity isn't in the SSOT map (caller falls back
     to the legacy date-count model).
     """
-    meta = SPORTS_DATA_TYPE_META.get(entity_name) or FEATURES_SPORTS_DATA_TYPE_META.get(entity_name)
+    meta = (
+        SPORTS_DATA_TYPE_META.get(entity_name)
+        or FEATURES_SPORTS_DATA_TYPE_META.get(entity_name)
+        or FEATURES_SPORTS_PER_CALC_META.get(entity_name)
+    )
     if meta is None:
         return None
 
@@ -508,8 +542,68 @@ def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tr
         )
     else:
         ok_mask = pd.Series([True] * len(filtered), index=filtered.index)
-    ent_mask = filtered["data_type"] == entity_name
+    if axis == "per_feature_per_league_per_fixture_date":
+        # features-sports-service writes manifest rows keyed by
+        # feature_group=<calc_name> (NOT by data_type). Match accordingly.
+        if "feature_group" in filtered.columns:
+            ent_mask = filtered["feature_group"] == entity_name
+        else:
+            ent_mask = pd.Series([False] * len(filtered), index=filtered.index)
+    else:
+        ent_mask = filtered["data_type"] == entity_name
     ent_rows = filtered[ent_mask & ok_mask]
+
+    if axis == "per_feature_per_league_per_fixture_date":
+        # Phase 3 honest-coverage per-calculator axis. For each league in the
+        # expected set, expected dates = intersection of every required
+        # upstream's per-league fixture calendar (clipped + known-gap-filtered).
+        # ``_features_sports_expected_dates_for_calculator`` walks
+        # FEATURE_UPSTREAM_REQUIREMENTS and recurses through derived deps.
+        per_league_pf: dict[str, dict[str, object]] = {}
+        total_expected_pf = 0
+        total_found_pf = 0
+        if "league_id" in ent_rows.columns:
+            ent_rows_by_league_pf = ent_rows.groupby(ent_rows["league_id"].fillna(""))
+        else:
+            ent_rows_by_league_pf = None
+        for league in expected_leagues:
+            lid = league.league_id
+            expected_dates_pf = _features_sports_expected_dates_for_calculator(
+                calc_name=entity_name,
+                league_id=lid,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if not expected_dates_pf:
+                continue
+            expected_set_pf = set(expected_dates_pf)
+            found_set_pf: set[str] = set()
+            if (
+                ent_rows_by_league_pf is not None
+                and lid in ent_rows_by_league_pf.groups
+            ):
+                found_set_pf = {
+                    str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()
+                }
+            covered_pf = expected_set_pf & found_set_pf
+            missing_pf = sorted(expected_set_pf - found_set_pf)
+            per_league_pf[lid] = {
+                "expected_dates": len(expected_set_pf),
+                "found_dates": len(covered_pf),
+                "missing_dates": missing_pf[:50],
+                "missing_count": len(missing_pf),
+            }
+            total_expected_pf += len(expected_set_pf)
+            total_found_pf += len(covered_pf)
+        return {
+            "axis": axis,
+            "unit": str(meta["unit"]),
+            "source": source_key,
+            "expected_leagues": [lg.league_id for lg in expected_leagues],
+            "found_shards": total_found_pf,
+            "expected_shards": total_expected_pf,
+            "per_league": per_league_pf,
+        }
 
     if axis in ("global_periodic", "global_season"):
         # No league axis — expected = number of cadence-dates in window,
