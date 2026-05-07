@@ -307,7 +307,7 @@ def get_hierarchical_drilldown(
             "total_top_axis_children": int}``.
 
         ``total_top_axis_children`` is the unfiltered child count at the
-        head axis — UI uses it to render "showing N–M of T" + load-more.
+        head axis - UI uses it to render "showing N-M of T" + load-more.
 
     Raises:
         ValueError: If the bucket cannot be resolved or the manifest read

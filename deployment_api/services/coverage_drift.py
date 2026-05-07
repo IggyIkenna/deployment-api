@@ -104,12 +104,7 @@ def detect_drift(
 
     events: list[DriftEvent] = []
     for key, prev_pct in prev_cov.items():
-        if key not in cur_cov:
-            # Pair disappeared — could mean manifest rows for this (calc,
-            # league) all got purged. Treat as drop to 0%.
-            cur_pct = 0.0
-        else:
-            cur_pct = cur_cov[key]
+        cur_pct = cur_cov.get(key, 0.0)
         drop = prev_pct - cur_pct
         if drop >= threshold_pct:
             calc, lid = key

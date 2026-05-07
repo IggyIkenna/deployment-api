@@ -5,6 +5,7 @@ Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07`` Phase 1.
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest.mock import patch
 
 import pandas as pd
@@ -252,7 +253,7 @@ class TestPaginationAndBundledRootVirtualisation:
     # MTDS CeFi shard axes after Phase 6 reorder: (venue, data_type,
     # instrument_type, instrument_id). To put ``instrument_id`` at the
     # head of the returned tree, filter through every prior axis.
-    _PERP_PREFIX_FILTERS: dict[str, str] = {
+    _PERP_PREFIX_FILTERS: ClassVar[dict[str, str]] = {
         "venue": "BINANCE-FUTURES",
         "data_type": "trades",
         "instrument_type": "PERPETUAL",
@@ -260,7 +261,7 @@ class TestPaginationAndBundledRootVirtualisation:
 
     def test_total_top_axis_children_reports_full_count(self) -> None:
         """``total_top_axis_children`` is the unfiltered child count at the
-        head axis — UI uses it to render "showing N–M of T"."""
+        head axis - UI uses it to render "showing N-M of T"."""
         df = self._per_instrument_perp_manifest(n_instruments=750)
         with self._patch_manifest(df):
             result = get_hierarchical_drilldown(
@@ -500,9 +501,7 @@ class TestReadAvailabilityIndexCallContract:
         assert len(captured) >= 1
         bucket = captured[0]
         # MTDS CeFi bucket = "market-data-tick-cefi-{pid}"
-        assert bucket.startswith("market-data-tick-cefi-"), (
-            f"unexpected bucket {bucket!r}"
-        )
+        assert bucket.startswith("market-data-tick-cefi-"), f"unexpected bucket {bucket!r}"
 
 
 class TestRowKeyShapeAtEachDepth:
@@ -589,12 +588,10 @@ class TestRowKeyShapeAtEachDepth:
         assert leaves, "expected at least one leaf"
 
         # Find a date/day leaf.
-        date_leaves = [l for l in leaves if l["axis"] in ("date", "day")]
+        date_leaves = [leaf for leaf in leaves if leaf["axis"] in ("date", "day")]
         assert date_leaves, "expected at least one date-axis leaf"
         rk = date_leaves[0]["row_key"]
         # The full shard-atom requirement that the UI render-gate checks.
         assert rk.get("venue"), f"leaf row_key missing venue: {rk}"
         assert rk.get("data_type"), f"leaf row_key missing data_type: {rk}"
-        assert rk.get("day") or rk.get("date"), (
-            f"leaf row_key missing day/date: {rk}"
-        )
+        assert rk.get("day") or rk.get("date"), f"leaf row_key missing day/date: {rk}"
