@@ -77,9 +77,15 @@ def test_each_registered_reason_routes_to_correct_bucket() -> None:
             "error_reason": "EXPECTED_PRE_SOURCE_COVERAGE_START",
         },
         {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PRE_GENESIS_CHAIN"},
+        {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PRE_VENUE_LAUNCH"},
         {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_INSTRUMENT_NOT_LISTED"},
         {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_INSTRUMENT_DELISTED"},
         {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PARTIAL_HALF_DAY"},
+        {
+            "capture_status": "empty_confirmed",
+            "error_reason": "EXPECTED_REFDATA_CADENCE_CHANGE",
+        },
+        {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_DEPRECATED_DATA_TYPE"},
         {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO"},
     ]
     out = _compute_empty_reason_counts(_df(rows))
@@ -88,9 +94,12 @@ def test_each_registered_reason_routes_to_correct_bucket() -> None:
     assert out["EXPECTED_PAUSED_LEAGUE"] == 1
     assert out["EXPECTED_PRE_SOURCE_COVERAGE_START"] == 1
     assert out["EXPECTED_PRE_GENESIS_CHAIN"] == 1
+    assert out["EXPECTED_PRE_VENUE_LAUNCH"] == 1
     assert out["EXPECTED_INSTRUMENT_NOT_LISTED"] == 1
     assert out["EXPECTED_INSTRUMENT_DELISTED"] == 1
     assert out["EXPECTED_PARTIAL_HALF_DAY"] == 1
+    assert out["EXPECTED_REFDATA_CADENCE_CHANGE"] == 1
+    assert out["EXPECTED_DEPRECATED_DATA_TYPE"] == 1
     assert out["SOURCE_RETURNED_ZERO"] == 1
     assert out["empty_unclassified"] == 0
 
