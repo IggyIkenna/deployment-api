@@ -2115,14 +2115,41 @@ def _defi_venue_chain_aliases(venue_chain: str) -> list[str]:
 def _list_defi_objects_with_aliases(*, bucket: str, day: str, venue_chain: str) -> list[object]:
     """List objects under the first DeFi venue alias that has any parquets.
 
-    Tries each alias from :func:`_defi_venue_chain_aliases` in order and
-    returns the listing of the first non-empty match (or ``[]`` if every
-    alias is empty / fails to list).
+    Tries each alias from :func:`_defi_venue_chain_aliases` x 2 hive-key
+    candidates x 2 venue-partition shapes:
+
+      - Hive key: ``asset_group=defi/`` (canonical, post-2026-04 writes)
+        first; ``category=defi/`` (legacy) as fallback per workspace rule
+        "asset_group= is canonical for new writes; readers must try
+        canonical first then fall back to legacy".
+      - Venue partition: ``venue={protocol}-{chain}/`` (combined, used by
+        single-chain protocols like EIGENLAYER-ETHEREUM) AND
+        ``venue={protocol}/chain={CHAIN}/`` (separated, the actual on-disk
+        layout for multi-chain protocols like AAVE_V3 / UNISWAP_V3).
+
+    First non-empty match wins.
     """
     from deployment_api.utils.storage_facade import list_objects as _list_objects
 
+    # Pull the chain part once; multi-chain protocols partition it
+    # separately on disk while single-chain protocols leave it combined.
+    chain_part = ""
+    if "-" in venue_chain:
+        _, _, chain_part = venue_chain.rpartition("-")
+    candidates: list[str] = []
     for alias in _defi_venue_chain_aliases(venue_chain):
-        prefix = f"raw_tick_data/by_date/day={day}/category=defi/venue={alias}/"
+        protocol_only = alias.split("-")[0]
+        for hive_key in ("asset_group", "category"):
+            # Combined-partition layout (single-chain protocols)
+            candidates.append(f"raw_tick_data/by_date/day={day}/{hive_key}=defi/venue={alias}/")
+            # Separated-partition layout (multi-chain protocols) — only
+            # makes sense when we have a chain part to put under chain=.
+            if chain_part:
+                candidates.append(
+                    f"raw_tick_data/by_date/day={day}/{hive_key}=defi/"
+                    f"venue={protocol_only}/chain={chain_part}/"
+                )
+    for prefix in candidates:
         try:
             found = _list_objects(bucket, prefix, max_results=DEFAULT_INSTRUMENT_LIMIT)
         except (OSError, ValueError, RuntimeError) as exc:
