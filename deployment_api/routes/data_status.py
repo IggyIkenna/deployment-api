@@ -36,14 +36,16 @@ from deployment_api.services.data_status_hierarchical import (
     get_hierarchical_drilldown,
     list_supported_pairs,
 )
-from deployment_api.services.deploy_missing import (
-    DeployMissingError,
-    build_deploy_missing_preview,
-    list_supported_services as deploy_missing_supported_services,
-)
 from deployment_api.services.data_status_mock import (
     build_mock_shard_instruments,
     build_mock_turbo_response,
+)
+from deployment_api.services.deploy_missing import (
+    DeployMissingError,
+    build_deploy_missing_preview,
+)
+from deployment_api.services.deploy_missing import (
+    list_supported_services as deploy_missing_supported_services,
 )
 
 _cfg = DeploymentApiConfig()
@@ -572,18 +574,18 @@ async def post_deploy_missing_preview(
     service = str(request.get("service", ""))
     asset_group = str(request.get("asset_group", ""))
     raw_row_key = request.get("row_key", {})
+    mode = str(request.get("mode", "preview"))
     if not isinstance(raw_row_key, dict):
         raise HTTPException(status_code=400, detail="row_key must be an object")
     row_key: dict[str, str] = {str(k): str(v) for k, v in raw_row_key.items()}
     if not service or not asset_group:
-        raise HTTPException(
-            status_code=400, detail="service and asset_group are required"
-        )
+        raise HTTPException(status_code=400, detail="service and asset_group are required")
     try:
         preview = build_deploy_missing_preview(
             service=service,
             asset_group=asset_group,
             row_key=row_key,
+            mode=mode,
         )
     except DeployMissingError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

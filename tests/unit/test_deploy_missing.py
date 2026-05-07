@@ -27,10 +27,7 @@ class TestBuildDeployMissingPreview:
                 "day": "2024-03-04",
             },
         )
-        assert (
-            preview.shard_key
-            == "cefi|BINANCE-FUTURES|trades|PERPETUAL|btcusdt|2024-03-04"
-        )
+        assert preview.shard_key == "cefi|BINANCE-FUTURES|trades|PERPETUAL|btcusdt|2024-03-04"
         # The launcher script + --shard-key combine into the operator-runnable command.
         assert "launch-mtds-backfill-vm.sh" in preview.command
         assert "--shard-key=" in preview.command
@@ -50,10 +47,7 @@ class TestBuildDeployMissingPreview:
                 "day": "2024-01-15",
             },
         )
-        assert (
-            preview.shard_key
-            == "tradfi|CME|options_chain|options_chain|ES.OPT|2024-01-15"
-        )
+        assert preview.shard_key == "tradfi|CME|options_chain|options_chain|ES.OPT|2024-01-15"
         # Bundled-data_type note explains the 5th field is a cluster root.
         assert any("Bundled" in n and "ROOT" in n for n in preview.notes)
 
@@ -72,10 +66,7 @@ class TestBuildDeployMissingPreview:
                 "day": "2024-03-04",
             },
         )
-        assert (
-            preview.shard_key
-            == "defi|AAVEV3-ARBITRUM|lending_indices||USDC|2024-03-04"
-        )
+        assert preview.shard_key == "defi|AAVEV3-ARBITRUM|lending_indices||USDC|2024-03-04"
 
     def test_date_alias_accepted_for_day(self) -> None:
         preview = build_deploy_missing_preview(
@@ -141,3 +132,71 @@ class TestListSupportedServices:
     def test_returns_sorted_list(self) -> None:
         services = list_supported_services()
         assert services == sorted(services)
+
+
+# ---------------------------------------------------------------------------
+# Mode = tarball-from-local — pairs the launcher with a refresh step that
+# bundles the operator's local working tree before the VM launches.
+# ---------------------------------------------------------------------------
+
+
+class TestTarballFromLocalMode:
+    def test_default_mode_is_preview(self) -> None:
+        preview = build_deploy_missing_preview(
+            service="market-tick-data-service",
+            asset_group="cefi",
+            row_key={"venue": "BYBIT", "data_type": "trades", "day": "2024-03-04"},
+        )
+        assert preview.mode == "preview"
+        assert preview.warnings == []
+
+    def test_tarball_mode_chains_refresh_then_launcher(self) -> None:
+        preview = build_deploy_missing_preview(
+            service="market-tick-data-service",
+            asset_group="cefi",
+            row_key={
+                "venue": "BINANCE-FUTURES",
+                "data_type": "trades",
+                "instrument_type": "PERPETUAL",
+                "instrument_id": "btcusdt",
+                "day": "2024-03-04",
+            },
+            mode="tarball-from-local",
+        )
+        assert preview.mode == "tarball-from-local"
+        # Combined command: refresh + launcher chained via && so a
+        # tarball-build failure aborts before the VM launches.
+        assert "create-code-tarballs.sh --all" in preview.command
+        assert " && " in preview.command
+        assert "launch-mtds-backfill-vm.sh" in preview.command
+
+    def test_tarball_mode_emits_local_only_warning(self) -> None:
+        preview = build_deploy_missing_preview(
+            service="market-tick-data-service",
+            asset_group="cefi",
+            row_key={"venue": "BYBIT", "data_type": "trades", "day": "2024-03-04"},
+            mode="tarball-from-local",
+        )
+        assert any("LOCAL-ONLY" in w for w in preview.warnings)
+        assert any("UNCOMMITTED" in w for w in preview.warnings)
+
+    def test_preview_mode_does_not_emit_warnings(self) -> None:
+        preview = build_deploy_missing_preview(
+            service="market-tick-data-service",
+            asset_group="cefi",
+            row_key={"venue": "BYBIT", "data_type": "trades", "day": "2024-03-04"},
+            mode="preview",
+        )
+        assert preview.warnings == []
+        # The preview-mode notes still mention the tarball-from-local
+        # alternative so operators can discover the mode.
+        assert any("tarball-from-local" in n for n in preview.notes)
+
+    def test_unknown_mode_raises(self) -> None:
+        with pytest.raises(DeployMissingError, match="Unsupported deploy-missing mode"):
+            build_deploy_missing_preview(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                row_key={"venue": "BYBIT", "data_type": "trades", "day": "2024-03-04"},
+                mode="auto-launch",  # not in SUPPORTED_LAUNCH_MODES yet.
+            )

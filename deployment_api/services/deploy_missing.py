@@ -29,25 +29,46 @@ from __future__ import annotations
 
 import logging
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 logger = logging.getLogger(__name__)
 
 
+# Supported launch modes for the Deploy-Missing flow.
+# * ``preview`` — return the surgical bash invocation the operator copies
+#   + runs from their authenticated terminal. The VM boots from the
+#   tarball that's currently in
+#   ``gs://deployment-scripts-${PID}/code/`` (refreshed via
+#   ``deployment-service/scripts/vm/create-code-tarballs.sh`` by the
+#   operator). Same security boundary as today's manual backfills; safe
+#   to run from staging / prod.
+# * ``tarball-from-local`` — pair the launcher invocation with a
+#   ``create-code-tarballs.sh --all`` step that copies the OPERATOR'S
+#   LOCAL working tree into the GCS tarball bucket BEFORE the VM
+#   launches. Lets a developer test a code change end-to-end without
+#   pushing + waiting for CI. **Only works from the operator's local
+#   workstation** (the script reads the local repo paths via the
+#   workspace manifest); never works from the deployment-api Cloud Run
+#   container. The UI must surface a strong warning so operators don't
+#   confuse this with the prod path.
+SUPPORTED_LAUNCH_MODES: frozenset[str] = frozenset({"preview", "tarball-from-local"})
+
+
 # Service slug -> launch-script name in
 # ``deployment-service/scripts/vm/``. Operators copy + run the produced
 # command from a workstation that has gcloud + the workspace cloned.
+_VM_SCRIPT_DIR = "deployment-service/scripts/vm"
 _SERVICE_LAUNCHER_SCRIPTS: dict[str, str] = {
-    "market-tick-data-service": "deployment-service/scripts/vm/launch-mtds-backfill-vm.sh",
-    "market-data-processing-service": "deployment-service/scripts/vm/launch-mdps-backfill-vm.sh",
-    "instruments-service": "deployment-service/scripts/vm/launch-instruments-backfill-vm.sh",
-    "features-onchain-service": "deployment-service/scripts/vm/launch-features-onchain-backfill-vm.sh",
-    "features-delta-one-service": "deployment-service/scripts/vm/launch-features-backfill-vm.sh",
-    "features-volatility-service": "deployment-service/scripts/vm/launch-features-backfill-vm.sh",
-    "features-cross-instrument-service": "deployment-service/scripts/vm/launch-features-backfill-vm.sh",
-    "features-sports-service": "deployment-service/scripts/vm/launch-features-backfill-vm.sh",
-    "features-calendar-service": "deployment-service/scripts/vm/launch-features-backfill-vm.sh",
+    "market-tick-data-service": f"{_VM_SCRIPT_DIR}/launch-mtds-backfill-vm.sh",
+    "market-data-processing-service": f"{_VM_SCRIPT_DIR}/launch-mdps-backfill-vm.sh",
+    "instruments-service": f"{_VM_SCRIPT_DIR}/launch-instruments-backfill-vm.sh",
+    "features-onchain-service": f"{_VM_SCRIPT_DIR}/launch-features-onchain-backfill-vm.sh",
+    "features-delta-one-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
+    "features-volatility-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
+    "features-cross-instrument-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
+    "features-sports-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
+    "features-calendar-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
 }
 
 
@@ -69,8 +90,10 @@ class DeployMissingPreview:
     widget.
 
     ``shard_key`` is the canonical 6-field pipe-delimited form the MTDS
-    CLI accepts; ``command`` is the full bash invocation including the
-    launcher script + ``--shard-key`` flag the operator should run.
+    CLI accepts; ``command`` is the full bash invocation the operator
+    should run; ``mode`` records which launch path (preview / tarball-
+    from-local) the command targets so the UI can render the right
+    warning copy.
     """
 
     service: str
@@ -80,6 +103,8 @@ class DeployMissingPreview:
     launcher_script: str
     command: str
     notes: list[str]
+    mode: str = "preview"
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -90,6 +115,8 @@ class DeployMissingPreview:
             "launcher_script": self.launcher_script,
             "command": self.command,
             "notes": list(self.notes),
+            "mode": self.mode,
+            "warnings": list(self.warnings),
         }
 
 
@@ -120,6 +147,7 @@ def build_deploy_missing_preview(
     service: str,
     asset_group: str,
     row_key: dict[str, str],
+    mode: str = "preview",
 ) -> DeployMissingPreview:
     """Assemble the surgical re-run command for ONE leaf shard.
 
@@ -131,12 +159,25 @@ def build_deploy_missing_preview(
             to populate the canonical 6-field pipe form -- typically
             ``venue``, ``data_type``, ``instrument_type`` (optional),
             ``instrument_id`` or ``root``, and ``day`` or ``date``.
+        mode: ``"preview"`` (default) returns the launcher invocation
+            against whatever tarball is currently in
+            ``gs://deployment-scripts-${PID}/code/``;
+            ``"tarball-from-local"`` prepends a ``create-code-tarballs.sh
+            --all`` call so the VM boots the OPERATOR'S LOCAL working
+            tree (only works from the operator's workstation; useless
+            from the deployment-api Cloud Run pod). Caller surfaces the
+            mode-appropriate warning to the operator.
 
     Raises:
         DeployMissingError: if the service has no registered launcher
-            script or the row_key lacks fields required to build a
-            valid shard key.
+            script, the row_key lacks required fields, or ``mode`` is
+            not in ``SUPPORTED_LAUNCH_MODES``.
     """
+    if mode not in SUPPORTED_LAUNCH_MODES:
+        raise DeployMissingError(
+            f"Unsupported deploy-missing mode {mode!r}. Supported: {sorted(SUPPORTED_LAUNCH_MODES)}"
+        )
+
     launcher = _SERVICE_LAUNCHER_SCRIPTS.get(service)
     if launcher is None:
         raise DeployMissingError(
@@ -147,8 +188,7 @@ def build_deploy_missing_preview(
 
     if not row_key.get("venue") or not row_key.get("data_type"):
         raise DeployMissingError(
-            "row_key must include at least 'venue' and 'data_type'; "
-            f"got {row_key!r}"
+            f"row_key must include at least 'venue' and 'data_type'; got {row_key!r}"
         )
 
     day = row_key.get("day") or row_key.get("date")
@@ -157,13 +197,16 @@ def build_deploy_missing_preview(
 
     shard_key = _build_shard_key(asset_group, row_key)
 
-    # Build the full bash invocation the operator copies + runs. Quote
-    # the shard-key value because pipe is a shell metacharacter; use
-    # shlex.quote for paranoia-grade escaping.
+    # Build the bash invocation. Quote the shard-key value because pipe
+    # is a shell metacharacter; use shlex.quote for paranoia-grade
+    # escaping. In tarball-from-local mode, prepend a refresh step so
+    # the VM boots the operator's current local working tree rather
+    # than the latest CI-pushed tarball.
     quoted_shard_key = shlex.quote(shard_key)
-    command = f"bash {launcher} --shard-key={quoted_shard_key}"
+    launcher_invocation = f"bash {launcher} --shard-key={quoted_shard_key}"
 
     notes: list[str] = []
+    warnings_out: list[str] = []
     data_type = row_key.get("data_type", "").lower()
     if data_type in _BUNDLED_DATA_TYPES:
         notes.append(
@@ -175,12 +218,48 @@ def build_deploy_missing_preview(
             "Per-instrument data_type: the 5th field is the specific instrument_id. "
             "MTDS will re-run only this instrument's parquet for that day."
         )
-    notes.append(
-        "Tarball refresh: if you changed code on this branch since the last "
-        "VM launch, run "
-        "``bash deployment-service/scripts/vm/create-code-tarballs.sh --all`` "
-        "first so the new VM picks up your edits."
-    )
+
+    if mode == "tarball-from-local":
+        # Tarball-from-local: the operator's local working tree gets
+        # bundled + uploaded to GCS BEFORE the VM launches, so the VM
+        # boots whatever code is checked out on the workstation
+        # (uncommitted changes, branch toggles, hot-fixes). The combo
+        # command chains the refresh + the launcher with ``&&`` so a
+        # tarball-build failure aborts before launching the VM.
+        command = (
+            f"bash deployment-service/scripts/vm/create-code-tarballs.sh --all "
+            f"&& {launcher_invocation}"
+        )
+        warnings_out.append(
+            "LOCAL-ONLY: this mode copies code from your LOCAL working tree "
+            "into the GCS tarball bucket. It only works when run from your "
+            "own workstation -- it does NOT work from the deployment-api "
+            "Cloud Run pod, CI runners, or any other server. Do not paste "
+            "this command into a shared / remote shell."
+        )
+        warnings_out.append(
+            "UNCOMMITTED CHANGES: the tarball captures whatever's on disk, "
+            "including uncommitted edits. The launched VM will run that "
+            "tree. Commit + push your changes first if you want the run "
+            "to be reproducible."
+        )
+        notes.append(
+            "Tarball refresh is paired with the launcher via ``&&`` so a "
+            "tarball-build failure aborts before any VM launches."
+        )
+    else:
+        # Preview mode: the VM boots from whatever tarball is currently
+        # in GCS. Operators must remember to refresh manually if they
+        # changed code recently.
+        command = launcher_invocation
+        notes.append(
+            "Tarball refresh: if you changed code on this branch since the last "
+            "VM launch, run "
+            "``bash deployment-service/scripts/vm/create-code-tarballs.sh --all`` "
+            "first so the new VM picks up your edits. Or pick the "
+            "``tarball-from-local`` mode in the UI to chain that step automatically."
+        )
+
     notes.append(
         "Per-VM shard isolation: the launcher script sets "
         "``MANIFEST_PER_VM_SHARDS=true`` + ``VM_NAME=<unique-tag>`` "
@@ -189,9 +268,10 @@ def build_deploy_missing_preview(
     )
 
     logger.info(
-        "deploy-missing preview built service=%s asset_group=%s shard_key=%s",
+        "deploy-missing preview built service=%s asset_group=%s mode=%s shard_key=%s",
         service,
         asset_group,
+        mode,
         shard_key,
     )
     return DeployMissingPreview(
@@ -202,6 +282,8 @@ def build_deploy_missing_preview(
         launcher_script=launcher,
         command=command,
         notes=notes,
+        mode=mode,
+        warnings=warnings_out,
     )
 
 
