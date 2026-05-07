@@ -67,9 +67,13 @@ def _ensure_services_mocked() -> None:
     # coverage_drift is a pure pandas/UAC consumer (Phase 8.B). Load BEFORE
     # the services-package stub replacement so its real implementation is
     # available to tests.
-    real_coverage_drift = importlib.import_module(
-        "deployment_api.services.coverage_drift"
-    )
+    real_coverage_drift = importlib.import_module("deployment_api.services.coverage_drift")
+
+    # data_status_hierarchical is a pure UAC + UTL + drilldown-facade
+    # consumer (drilldown plan Phase 1). Load BEFORE the stub replacement
+    # so the new /api/data-status/drilldown route's tests can patch the
+    # ``read_availability_index`` attribute on the real module.
+    real_hierarchical = importlib.import_module("deployment_api.services.data_status_hierarchical")
 
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
@@ -104,6 +108,11 @@ def _ensure_services_mocked() -> None:
     # replacement) as a real module on the fake services package (Phase 8.B).
     sys.modules["deployment_api.services.coverage_drift"] = real_coverage_drift
     services_mod.coverage_drift = real_coverage_drift
+
+    # Re-register data_status_hierarchical as a real module (drilldown
+    # plan Phase 1).
+    sys.modules["deployment_api.services.data_status_hierarchical"] = real_hierarchical
+    services_mod.data_status_hierarchical = real_hierarchical
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked

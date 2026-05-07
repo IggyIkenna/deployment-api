@@ -32,6 +32,10 @@ from deployment_api.services.data_status_drilldown import (
     lookup_capture_status_for_shard,
     preview_bundle_symbols,
 )
+from deployment_api.services.data_status_hierarchical import (
+    get_hierarchical_drilldown,
+    list_supported_pairs,
+)
 from deployment_api.services.data_status_mock import (
     build_mock_shard_instruments,
     build_mock_turbo_response,
@@ -469,6 +473,86 @@ async def get_coverage_summary(
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
+
+
+@router.get("/drilldown/{service}/{asset_group}")
+async def get_data_status_drilldown(
+    service: str,
+    asset_group: str,
+    start_date: str = Query(..., description="ISO YYYY-MM-DD window lower bound"),
+    end_date: str = Query(..., description="ISO YYYY-MM-DD window upper bound"),
+    chain: str | None = Query(None, description="DEFI chain filter"),
+    venue: str | None = Query(None, description="Venue filter"),
+    data_type: str | None = Query(None, description="Data type filter"),
+    instrument_type: str | None = Query(None, description="Instrument type filter"),
+    instrument_id: str | None = Query(None, description="Instrument id filter"),
+    league_id: str | None = Query(None, description="Sports league id filter"),
+    feature_group: str | None = Query(None, description="Features feature_group filter"),
+    timeframe: str | None = Query(None, description="Timeframe filter"),
+    canonical_question_group: str | None = Query(
+        None, description="Prediction canonical_question_group filter"
+    ),
+    expand_to_depth: int = Query(2, ge=0, le=10, description="Levels to materialise eagerly"),
+):
+    """Hierarchical shard-atom drill-down per the codex per-asset_group matrix.
+
+    Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07`` Phase 1.
+    Replaces the flat ``venue -> instrument_type -> day`` panel with a tree
+    shaped per ``unified_api_contracts.registry.data_status_axis_matrix``.
+    Lazy-load via filter query params: each progressively-deeper request
+    returns only the matched subtree.
+    """
+    if _cfg.is_mock_mode():
+        return {
+            "service": service,
+            "asset_group": asset_group,
+            "axes": [],
+            "tree": [],
+            "totals": {
+                "captured": 0,
+                "empty_confirmed": 0,
+                "attempted_failed": 0,
+                "total": 0,
+                "completion_pct": 0.0,
+            },
+            "filtered_by": {},
+            "mock": True,
+        }
+    raw_filters: dict[str, str | None] = {
+        "chain": chain,
+        "venue": venue,
+        "data_type": data_type,
+        "instrument_type": instrument_type,
+        "instrument_id": instrument_id,
+        "league_id": league_id,
+        "feature_group": feature_group,
+        "timeframe": timeframe,
+        "canonical_question_group": canonical_question_group,
+    }
+    filters: dict[str, str] = {k: v for k, v in raw_filters.items() if v is not None}
+    try:
+        return get_hierarchical_drilldown(
+            service=service,
+            asset_group=asset_group,
+            window_start=start_date,
+            window_end=end_date,
+            filters=filters,
+            expand_to_depth=expand_to_depth,
+        )
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)
+        raise HTTPException(status_code=500, detail=f"hierarchical drilldown failed: {e!s}") from e
+
+
+@router.get("/drilldown-pairs")
+async def get_drilldown_supported_pairs():
+    """List all ``(service, asset_group)`` pairs the drill-down endpoint supports.
+
+    UI consumers introspect this to decide which services render the
+    hierarchical drill-down vs the legacy flat panel during the Phase 2
+    migration.
+    """
+    return {"pairs": list_supported_pairs()}
 
 
 @router.get("/turbo")
