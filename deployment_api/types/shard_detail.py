@@ -150,6 +150,85 @@ class ShardDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     payload_fixtures: ShardPayloadFixtures | None = None
 
 
+class LeafParquetColumnStat(BaseModel):  # CORRECT-LOCAL — API response shape
+    """Per-column live stats for one leaf parquet (writegate Phase 4.A.3)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    dtype: str
+    non_null_count: int
+    null_count: int
+    nan_ratio: float
+    """``null_count / row_count`` clamped to [0.0, 1.0]; 0.0 when row_count is 0."""
+
+
+class LeafAvailableAtEnvelope(BaseModel):  # CORRECT-LOCAL — API response shape
+    """Envelope of the ``available_at`` column for one leaf parquet (Phase 4.A.3).
+
+    Populated when the parquet has an ``available_at`` column (UAC contract
+    requires it on every shard's parquet — see workspace CLAUDE.md
+    "available_at is per-row, write-time, equal to live-pipeline-arrival").
+    Absent envelope means the column is missing from the parquet, which is
+    a writegate Phase 1A.future ``MissingAvailableAt`` failure mode.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    present: bool
+    min_iso: str | None = None
+    max_iso: str | None = None
+    null_count: int = 0
+
+
+class LeafParquetStats(BaseModel):  # CORRECT-LOCAL — API response shape
+    """Live per-leaf-parquet stats response (writegate Phase 4.A.3).
+
+    Distinct from the existing ``/data-status/schema`` endpoint, which
+    returns the DECLARED ``SchemaContract`` columns from UAC. This
+    response carries the ACTUAL parquet stats: row count, per-column
+    non_null + NaN ratio, and the ``available_at`` envelope. Used by the
+    deployment-ui schema-view modal (Phase 4.B.3) to surface real shard
+    health alongside the contract.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    coord: ShardCoord
+    gs_uri: str | None
+    """Resolved gs:// URI for the leaf parquet, or ``None`` when no path
+    matches the coordinates (e.g. fixtures branch — sports/fixtures live
+    under sports_reference/, separate resolver)."""
+
+    available: bool
+    """True when the parquet exists on GCS AND was readable. False on
+    missing path / corrupt parquet / read error — caller renders the
+    error_reason field for diagnosis."""
+
+    error_reason: str | None = None
+    """Populated when ``available`` is False — exception class + message
+    (size-bounded). ``None`` on success."""
+
+    row_count: int = 0
+    column_count: int = 0
+    columns: list[LeafParquetColumnStat] = Field(default_factory=list)
+    available_at: LeafAvailableAtEnvelope = Field(
+        default_factory=lambda: LeafAvailableAtEnvelope(present=False)
+    )
+
+    file_size_bytes: int | None = None
+    """Size of the parquet on GCS (footer call); useful sanity check
+    alongside row_count + column_count."""
+
+    truncated: bool = False
+    """True when the parquet exceeds the safety row limit and stats were
+    computed on the prefix slice. The UI should render a "stats from
+    first N rows" hint when truncated is True."""
+
+    truncated_at_rows: int | None = None
+    """Row prefix used when ``truncated`` is True (e.g. 500_000)."""
+
+
 class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     """Response envelope for ``fetch_venue_detail`` (CeFi + DeFi branches).
 

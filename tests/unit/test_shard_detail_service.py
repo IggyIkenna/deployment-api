@@ -430,3 +430,193 @@ class TestFetchVenueDetailCefi:
         assert resp.venue == "BINANCE"
         assert resp.total_instruments == 2
         assert len(resp.instruments) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_leaf_parquet_stats (writegate Phase 4.A.3)
+# ---------------------------------------------------------------------------
+
+
+class TestGetLeafParquetStats:
+    def test_unresolved_path_returns_unavailable_with_error_reason(self) -> None:
+        # Service whose name doesn't bind to any path resolver — the helper
+        # returns ``available=False`` rather than raising so the UI can
+        # render the diagnostic state.
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="unknown-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is False
+        assert resp.gs_uri is None
+        assert resp.error_reason is not None
+        assert "path_unresolved" in resp.error_reason
+        assert resp.row_count == 0
+        assert resp.columns == []
+
+    def test_parquet_read_failure_returns_unavailable(self) -> None:
+        # Path resolves but pyarrow read raises — helper still returns a
+        # response with the error_reason populated, never re-raises.
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=1234),
+            patch.object(
+                svc,
+                "_read_parquet_columns",
+                side_effect=RuntimeError("simulated parquet corruption"),
+            ),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is False
+        assert resp.gs_uri == "gs://bucket-x/path/parquet"
+        assert resp.error_reason is not None
+        assert "RuntimeError" in resp.error_reason
+        assert "simulated parquet corruption" in resp.error_reason
+        assert resp.file_size_bytes == 1234
+
+    def test_successful_read_computes_per_column_stats(self) -> None:
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-04-18T00:00:00Z"] * 4, utc=True),
+                "price": [1.0, 2.0, None, 4.0],  # 1 null
+                "size": [10, 20, 30, 40],  # 0 nulls
+                "available_at": pd.to_datetime(
+                    [
+                        "2026-04-18T00:00:01Z",
+                        "2026-04-18T00:00:02Z",
+                        None,
+                        "2026-04-18T00:00:04Z",
+                    ],
+                    utc=True,
+                ),
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=42),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.row_count == 4
+        assert resp.column_count == 4
+        assert resp.file_size_bytes == 42
+        assert resp.truncated is False
+
+        by_name = {c.name: c for c in resp.columns}
+        assert by_name["price"].non_null_count == 3
+        assert by_name["price"].null_count == 1
+        assert by_name["price"].nan_ratio == 0.25
+        assert by_name["size"].non_null_count == 4
+        assert by_name["size"].null_count == 0
+        assert by_name["size"].nan_ratio == 0.0
+        # available_at envelope present + min/max + null_count derived
+        assert resp.available_at.present is True
+        assert resp.available_at.null_count == 1
+        assert resp.available_at.min_iso is not None
+        assert resp.available_at.max_iso is not None
+        assert "2026-04-18" in resp.available_at.min_iso
+
+    def test_missing_available_at_column_marked_present_false(self) -> None:
+        # Writegate Phase 1A.future MissingAvailableAt failure mode.
+        df = pd.DataFrame({"price": [1.0, 2.0]})
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.available_at.present is False
+        assert resp.available_at.min_iso is None
+        assert resp.available_at.max_iso is None
+
+    def test_truncates_oversize_parquets(self) -> None:
+        # Spec the helper bounds compute time at _LEAF_STATS_ROW_LIMIT.
+        # Patch the limit down to a tractable number for the unit test,
+        # then verify the truncated flag + truncated_at_rows are set.
+        n_rows = 12
+        df = pd.DataFrame({"price": list(range(n_rows)), "available_at": [None] * n_rows})
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=99),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+            patch.object(svc, "_LEAF_STATS_ROW_LIMIT", 5),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.truncated is True
+        assert resp.truncated_at_rows == 5
+        assert resp.row_count == 5
+
+    def test_zero_row_parquet_handled_cleanly(self) -> None:
+        df = pd.DataFrame({"price": [], "available_at": []})
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=0),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.row_count == 0
+        assert resp.column_count == 2
+        # Every column has nan_ratio == 0.0 when row_count is 0.
+        for c in resp.columns:
+            assert c.nan_ratio == 0.0
+            assert c.non_null_count == 0
+            assert c.null_count == 0
+
+    def test_coord_echoed_in_response(self) -> None:
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="instruments-service",
+                asset_group="SPORTS",
+                instrument_type="FIXTURE",
+                data_type="fixtures",
+                day="2026-04-18",
+                venue=None,
+                instrument_id="abc-123",
+            )
+        assert resp.coord.service == "instruments-service"
+        assert resp.coord.asset_group == "SPORTS"
+        assert resp.coord.day == "2026-04-18"
+        assert resp.coord.instrument_id == "abc-123"

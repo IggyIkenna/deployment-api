@@ -52,6 +52,9 @@ from deployment_api.services.data_status_drilldown import (
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.types.shard_detail import (
     CaptureStatusLiteral,
+    LeafAvailableAtEnvelope,
+    LeafParquetColumnStat,
+    LeafParquetStats,
     ShardClassLiteral,
     ShardCoord,
     ShardDetailResponse,
@@ -1446,3 +1449,209 @@ def fetch_venue_detail(*, service: str, asset_group: str, venue: str) -> VenueDe
     if cat_upper == "DEFI":
         return _defi_venue_detail(venue)
     return _cefi_venue_detail(cat_upper.lower() if cat_upper else "cefi", venue)
+
+
+# ---------------------------------------------------------------------------
+# Public API: get_leaf_parquet_stats (writegate Phase 4.A.3)
+# ---------------------------------------------------------------------------
+#
+# Distinct from `get_schema_for_shard` (declared SchemaContract) and
+# `get_shard_detail` (full unified drilldown). This helper computes LIVE
+# parquet stats — row count, per-column non-null + NaN ratio, and the
+# `available_at` envelope — for the deployment-ui schema-view modal
+# (Phase 4.B.3). Path resolution mirrors `get_shard_detail`'s
+# `_gcs_path_for_shard` so the same coordinate tuple lights both views
+# off the same parquet.
+#
+# Safety bound: parquet sizes at the per-day per-shard layer are well
+# below `_LEAF_STATS_ROW_LIMIT` (500k) for every (asset_group, data_type)
+# pair we currently support; the limit exists to bound worst-case
+# read time for a corrupt-large parquet rather than as a normal-traffic
+# truncation. When the limit fires the response sets `truncated=True` so
+# the UI can render a "stats from first N rows" hint.
+
+_LEAF_STATS_ROW_LIMIT = 500_000
+
+
+def _safe_iso_or_none(ts: object) -> str | None:
+    """Coerce a pandas Timestamp / datetime / NaT to ISO8601 or None."""
+    if ts is None:
+        return None
+    try:
+        if pd.isna(ts):  # pyright: ignore[reportUnknownArgumentType]
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        # pandas Timestamps + python datetimes both expose isoformat().
+        iso = getattr(ts, "isoformat", None)
+        if callable(iso):
+            return str(iso())
+        return str(ts)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compute_available_at_envelope(df: pd.DataFrame) -> LeafAvailableAtEnvelope:
+    """Derive the ``available_at`` envelope from a leaf parquet DataFrame.
+
+    Returns ``present=False`` when the column is absent (writegate
+    Phase 1A.future ``MissingAvailableAt`` failure mode). When present,
+    populates min / max ISO8601 timestamps + null count.
+    """
+    if "available_at" not in df.columns:
+        return LeafAvailableAtEnvelope(present=False)
+    col = df["available_at"]
+    null_count = int(col.isna().sum())
+    non_null = col.dropna()
+    if non_null.empty:
+        return LeafAvailableAtEnvelope(present=True, null_count=null_count)
+    try:
+        # Coerce to pandas Timestamp where possible — silent passthrough
+        # for already-datetime columns, NaN-fill for unparsable scalars.
+        coerced = pd.to_datetime(non_null, errors="coerce", utc=True)
+        if coerced.notna().any():
+            return LeafAvailableAtEnvelope(
+                present=True,
+                min_iso=_safe_iso_or_none(coerced.min()),
+                max_iso=_safe_iso_or_none(coerced.max()),
+                null_count=null_count + int(coerced.isna().sum()),
+            )
+    except (ValueError, TypeError):
+        pass
+    # Fallback: lexicographic min/max on the string repr (already an ISO
+    # string in our pipeline, so this is a safety net only).
+    try:
+        as_str = non_null.astype(str)
+        return LeafAvailableAtEnvelope(
+            present=True,
+            min_iso=str(as_str.min()),
+            max_iso=str(as_str.max()),
+            null_count=null_count,
+        )
+    except (ValueError, TypeError):
+        return LeafAvailableAtEnvelope(present=True, null_count=null_count)
+
+
+def _compute_column_stats(df: pd.DataFrame) -> list[LeafParquetColumnStat]:
+    """Compute per-column non-null / null / NaN-ratio for a leaf parquet."""
+    out: list[LeafParquetColumnStat] = []
+    row_count = len(df)
+    for name in df.columns:
+        col = df[name]
+        non_null = int(col.notna().sum())
+        null = max(0, row_count - non_null)
+        ratio = (null / row_count) if row_count > 0 else 0.0
+        if ratio < 0.0:
+            ratio = 0.0
+        elif ratio > 1.0:
+            ratio = 1.0
+        out.append(
+            LeafParquetColumnStat(
+                name=str(name),
+                dtype=str(col.dtype),
+                non_null_count=non_null,
+                null_count=null,
+                nan_ratio=round(float(ratio), 4),
+            )
+        )
+    return out
+
+
+def _file_size_via_metadata(bucket: str | None, object_path: str | None) -> int | None:
+    if not bucket or not object_path:
+        return None
+    try:
+        meta = get_object_metadata(bucket, object_path)
+    except (OSError, RuntimeError):
+        return None
+    if meta is None:
+        return None
+    size = meta.get("size")
+    return size if isinstance(size, int) else None
+
+
+def get_leaf_parquet_stats(
+    *,
+    service: str,
+    asset_group: str,
+    instrument_type: str,
+    data_type: str,
+    day: str,
+    venue: str | None = None,
+    underlying: str | None = None,
+    instrument_id: str | None = None,
+) -> LeafParquetStats:
+    """Compute live per-leaf-parquet stats for one shard coordinate.
+
+    Mirrors the resolution shape of :func:`get_shard_detail` /
+    :func:`get_schema_for_shard` so a single coordinate tuple lights all
+    three views off the same parquet. Never raises for data-level
+    failures — missing path / parquet read error / corrupt file all
+    resolve to ``available=False`` with an ``error_reason`` so the UI can
+    render the error state without a 500.
+    """
+    coord = ShardCoord(
+        service=service,
+        asset_group=asset_group,
+        instrument_type=instrument_type,
+        data_type=data_type,
+        day=day,
+        venue=venue,
+        underlying=underlying,
+        instrument_id=instrument_id,
+    )
+    resolved = _gcs_path_for_shard(
+        service=service,
+        category=asset_group,
+        instrument_type=instrument_type,
+        data_type=data_type,
+        venue=venue,
+        day=day,
+        underlying=underlying,
+        instrument_id=instrument_id,
+    )
+    if resolved is None:
+        return LeafParquetStats(
+            coord=coord,
+            gs_uri=None,
+            available=False,
+            error_reason="path_unresolved: no parquet matches this coordinate",
+        )
+    bucket, object_path = resolved
+    gs_uri = f"gs://{bucket}/{object_path}"
+    file_size = _file_size_via_metadata(bucket, object_path)
+
+    try:
+        df = _read_parquet_columns(gs_uri)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return LeafParquetStats(
+            coord=coord,
+            gs_uri=gs_uri,
+            available=False,
+            error_reason=f"{type(exc).__name__}: {exc}"[:500],
+            file_size_bytes=file_size,
+        )
+
+    truncated = False
+    truncated_at: int | None = None
+    if len(df) > _LEAF_STATS_ROW_LIMIT:
+        truncated = True
+        truncated_at = _LEAF_STATS_ROW_LIMIT
+        df = df.head(_LEAF_STATS_ROW_LIMIT)
+
+    columns = _compute_column_stats(df)
+    available_at_envelope = _compute_available_at_envelope(df)
+
+    return LeafParquetStats(
+        coord=coord,
+        gs_uri=gs_uri,
+        available=True,
+        row_count=len(df),
+        column_count=len(columns),
+        columns=columns,
+        available_at=available_at_envelope,
+        file_size_bytes=file_size,
+        truncated=truncated,
+        truncated_at_rows=truncated_at,
+    )
