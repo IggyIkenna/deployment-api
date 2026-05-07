@@ -1142,7 +1142,26 @@ def _mtds_expected_dates_cached(
         if lst_genesis is not None:
             dt_start = max(dt_start, lst_genesis)
 
-    effective_start = max(window_start, venue_start, dt_start)
+    # P1-C: per-chain pre-launch clipping for DEFI venues. Canonical DEFI
+    # venues are PROTOCOL-CHAIN (e.g. ``AAVEV3-ARBITRUM``); extract the
+    # chain suffix and clip ``effective_start`` to the chain's mainnet
+    # genesis. Without this, panels for ARBITRUM (2021-08-31), BASE
+    # (2023-08-09), LINEA (2023-07-11), etc. inherit ETHEREUM-era dates
+    # in their "expected" denominator and render thousands of phantom-
+    # missing days. Only applies when the venue parses cleanly as
+    # PROTOCOL-CHAIN AND the chain is in the SSOT — unknown chains fall
+    # through unchanged so a freshly-added chain doesn't break the panel
+    # before its genesis date is declared.
+    chain_genesis = ""
+    if category.upper() == "DEFI" and "-" in venue:
+        _protocol, chain_suffix = venue.rsplit("-", 1)
+        from unified_api_contracts.registry.chain_env import (
+            get_chain_genesis_date,
+        )
+
+        chain_genesis = get_chain_genesis_date(chain_suffix) or ""
+
+    effective_start = max(window_start, venue_start, dt_start, chain_genesis)
     if effective_start > window_end:
         return frozenset()
 
