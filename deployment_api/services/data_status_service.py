@@ -1142,24 +1142,32 @@ def _mtds_expected_dates_cached(
         if lst_genesis is not None:
             dt_start = max(dt_start, lst_genesis)
 
-    # P1-C: per-chain pre-launch clipping for DEFI venues. Canonical DEFI
-    # venues are PROTOCOL-CHAIN (e.g. ``AAVEV3-ARBITRUM``); extract the
-    # chain suffix and clip ``effective_start`` to the chain's mainnet
-    # genesis. Without this, panels for ARBITRUM (2021-08-31), BASE
-    # (2023-08-09), LINEA (2023-07-11), etc. inherit ETHEREUM-era dates
-    # in their "expected" denominator and render thousands of phantom-
-    # missing days. Only applies when the venue parses cleanly as
-    # PROTOCOL-CHAIN AND the chain is in the SSOT — unknown chains fall
-    # through unchanged so a freshly-added chain doesn't break the panel
-    # before its genesis date is declared.
+    # P1-C: per-chain + per-protocol pre-launch clipping for DEFI venues.
+    # Canonical DEFI venues are ``PROTOCOL-CHAIN`` (e.g. ``AAVEV3-ARBITRUM``);
+    # extract both halves and clip ``effective_start`` to whichever launch
+    # date is later — the chain genesis (e.g. ARBITRUM 2021-08-31) OR the
+    # protocol-on-chain deploy date (e.g. AAVEV3 on Arbitrum 2022-03-16).
+    # Without the protocol-launch clip, AAVEV3-ARBITRUM expected dates
+    # stretch back to ARBITRUM genesis and the leaf-shard denominator
+    # inflates with ~6 months of always-empty days, producing the
+    # "ARBITRUM 32/54" misleading panel headline (2026-05-07 incident).
+    # Only applies when the venue parses cleanly as PROTOCOL-CHAIN AND
+    # the chain is in the SSOT — unknown chains/protocols fall through
+    # unchanged so a freshly-added pair doesn't break the panel before
+    # its launch date is declared.
     chain_genesis = ""
     if category.upper() == "DEFI" and "-" in venue:
         _protocol, chain_suffix = venue.rsplit("-", 1)
         from unified_api_contracts.registry.chain_env import (
             get_chain_genesis_date,
+            get_protocol_launch_date,
         )
 
         chain_genesis = get_chain_genesis_date(chain_suffix) or ""
+        protocol_launch = get_protocol_launch_date(chain_suffix, _protocol) or ""
+        # max() of two ISO YYYY-MM-DD strings is the lexicographically-later
+        # date, which is also the chronologically-later date for ISO format.
+        chain_genesis = max(chain_genesis, protocol_launch)
 
     effective_start = max(window_start, venue_start, dt_start, chain_genesis)
     if effective_start > window_end:
@@ -4824,6 +4832,68 @@ class DataStatusService:
 
         return sub_dim_dict
 
+    def _venue_expected_dates_for_chain(
+        self,
+        chain_df: pd.DataFrame,
+        chain_venues: list[str],
+        start_date: str,
+        end_date: str,
+        venue_mapping: VenueMapping,
+    ) -> dict[str, set[str]]:
+        """Per-venue expected-dates lookup used by the chain breakdown.
+
+        Extracted from ``_build_chain_breakdown`` to keep that method
+        under the C901 complexity ceiling. Each venue's expected window
+        is clipped to ``max(start_date, venue_start, inferred_min)``;
+        when the venue mapping has no expected-trading-dates entry, the
+        fallback is the calendar range.
+        """
+        venue_expected_dates: dict[str, set[str]] = {}
+        for v in chain_venues:
+            vs = venue_mapping.get_venue_start_date(v)
+            if not vs:
+                v_mask = chain_df["venue"] == v
+                v_dates = {str(d) for d in chain_df.loc[v_mask, "date"].unique()}
+                vs = min(v_dates) if v_dates else start_date
+            eff_start = max(start_date, vs) if vs else start_date
+            v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
+            if not v_expected:
+                v_expected = {
+                    d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
+                }
+            venue_expected_dates[v] = v_expected
+        return venue_expected_dates
+
+    @staticmethod
+    def _shards_expected_for_chain(
+        chain_df: pd.DataFrame,
+        chain_venues: list[str],
+        venue_expected_dates: dict[str, set[str]],
+    ) -> int:
+        """Sum ``expected_dates * distinct_leaves`` over the chain's venues.
+
+        Leaf axis is ``(data_type, instrument_id)`` when the manifest
+        carries an ``instrument_id`` column, otherwise just ``data_type``
+        (per-protocol bundled shards like ``gas_fees`` / ``lending_indices``
+        whose instrument fan-out lives at the row level, not a separate
+        column). Empty leaf set falls back to one bundled instrument so
+        single-protocol chains don't drop to a zero denominator.
+        """
+        inst_col = "instrument_id" if "instrument_id" in chain_df.columns else None
+        shards_expected = 0
+        for v in chain_venues:
+            v_dates_count = len(venue_expected_dates.get(v, set()))
+            if v_dates_count == 0:
+                continue
+            v_mask = chain_df["venue"] == v
+            if inst_col is not None:
+                leaf_keys = chain_df.loc[v_mask, ["data_type", inst_col]].drop_duplicates()
+            else:
+                leaf_keys = chain_df.loc[v_mask, ["data_type"]].drop_duplicates()
+            leaf_count = max(1, len(leaf_keys))
+            shards_expected += v_dates_count * leaf_count
+        return shards_expected
+
     def _build_chain_breakdown(
         self,
         filtered: pd.DataFrame,
@@ -4833,7 +4903,19 @@ class DataStatusService:
     ) -> dict[str, object]:
         """Build per-chain breakdown for DeFi data (v4 chain column).
 
-        Groups venues by chain, producing a hierarchy: chain → {venues, completion_pct, dates}.
+        Groups venues by chain, producing a hierarchy:
+        chain -> {venues, completion_pct, dates_found, dates_expected,
+        shards_found, shards_expected}.
+
+        The headline ratio used by the UI is now ``shards_found /
+        shards_expected`` per the codex DeFi shard atom
+        ``(asset_group=defi, chain, venue/protocol, data_type,
+        instrument_id_or_protocol_id, day)``. The pre-2026-05-07
+        date-only math (which collapsed the within-day fan-out across
+        protocols x data_types x instruments and produced misleading
+        "ARBITRUM 32/54" rollups when the real shard universe was ~25k)
+        is preserved as ``dates_found`` / ``dates_expected`` for
+        backward-compat -- UI consumers should switch to the new fields.
         """
         if "chain" not in filtered.columns:
             return {}
@@ -4844,41 +4926,50 @@ class DataStatusService:
 
         chain_dict: dict[str, object] = {}
 
+        # ``capture_status`` is v5+; older manifests omit it. When
+        # present, only ``captured`` rows count toward the numerator.
+        has_capture_status = "capture_status" in filtered.columns
+
         for chain in chains:
             chain_mask = filtered["chain"] == chain
             chain_df = filtered[chain_mask]
             chain_dates = {str(d) for d in chain_df["date"].unique()}
             chain_venues = sorted(chain_df["venue"].unique()) if not chain_df.empty else []
 
-            # Expected = union of per-venue expected dates (respects venue start dates)
+            venue_expected_dates = self._venue_expected_dates_for_chain(
+                chain_df, chain_venues, start_date, end_date, venue_mapping
+            )
             chain_expected_dates: set[str] = set()
-            for v in chain_venues:
-                vs = venue_mapping.get_venue_start_date(v)
-                if not vs:
-                    # Infer start from data
-                    v_mask = chain_df["venue"] == v
-                    v_dates = {str(d) for d in chain_df.loc[v_mask, "date"].unique()}
-                    vs = min(v_dates) if v_dates else start_date
-                eff_start = max(start_date, vs) if vs else start_date
-                v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
-                if not v_expected:
-                    # Fallback: all dates from venue start
-                    v_expected = {
-                        d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
-                    }
+            for v_expected in venue_expected_dates.values():
                 chain_expected_dates |= v_expected
 
-            expected = len(chain_expected_dates) if chain_expected_dates else 1
-            found = (
+            dates_expected = len(chain_expected_dates) if chain_expected_dates else 1
+            dates_found = (
                 len(chain_dates & chain_expected_dates)
                 if chain_expected_dates
                 else len(chain_dates)
             )
 
+            if has_capture_status:
+                captured_chain_df = chain_df[chain_df["capture_status"] == "captured"]
+            else:
+                captured_chain_df = chain_df
+            shards_found = len(captured_chain_df)
+
+            shards_expected = self._shards_expected_for_chain(
+                chain_df, chain_venues, venue_expected_dates
+            )
+            if shards_expected == 0:
+                shards_expected = max(1, shards_found)
+
             chain_dict[chain] = {
-                "dates_found": found,
-                "dates_expected": expected,
-                "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
+                "shards_found": shards_found,
+                "shards_expected": shards_expected,
+                "completion_pct": min(
+                    round(shards_found / max(1, shards_expected) * 100, 2), 100.0
+                ),
+                "dates_found": dates_found,
+                "dates_expected": dates_expected,
                 "venues": chain_venues,
                 "venue_count": len(chain_venues),
             }

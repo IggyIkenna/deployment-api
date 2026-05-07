@@ -623,7 +623,7 @@ class TestBuildDataTypeBreakdown:
         assert "unexpected_type" in result
         assert result["unexpected_type"]["is_expected"] is False
         # Phantom-expected clamp (2026-04-19): UAC declared "trades" but it
-        # was never observed in this slice → dropped to avoid cartesian
+        # was never observed in this slice -> dropped to avoid cartesian
         # inflation when this function is called from a narrowed sub-slice
         # (e.g. per-instrument_type / per-underlying). The top-level
         # "missing data_type" signal still surfaces via the venue-level
@@ -642,7 +642,7 @@ class TestFourStateClassification:
         self.svc = DataStatusService(project_id="test-proj")
 
     def test_processed_dt_missing_is_blocked_when_raw_also_missing(self):
-        """ohlcv_5m on a CeFi venue with no raw `trades` → blocked_on_raw."""
+        """ohlcv_5m on a CeFi venue with no raw `trades` -> blocked_on_raw."""
         df = pd.DataFrame(
             {
                 "date": [],
@@ -667,7 +667,7 @@ class TestFourStateClassification:
         assert result == {}
 
     def test_processed_dt_with_raw_captured_is_actionable_missing(self):
-        """ohlcv_5m absent but raw trades captured → actionable missing, not blocked."""
+        """ohlcv_5m absent but raw trades captured -> actionable missing, not blocked."""
         df = pd.DataFrame(
             {
                 "date": ["2024-01-01", "2024-01-02"],
@@ -694,7 +694,7 @@ class TestFourStateClassification:
                 category="CEFI",
             )
         # ohlcv_5m gets phantom-clamped because it was never observed in this
-        # slice — so it doesn't appear in the result. trades captured 100%.
+        # slice -- so it doesn't appear in the result. trades captured 100%.
         assert "trades" in result
         assert result["trades"]["dates_found"] == 2
         assert result["trades"]["dates_blocked_on_raw"] == 0
@@ -702,7 +702,7 @@ class TestFourStateClassification:
         assert result["trades"]["is_processed_data_type"] is False
 
     def test_out_of_scope_when_venue_dt_not_in_expected_coverage(self):
-        """NASDAQ trades observed → in_expected_coverage False, out_of_scope True (TradFi)."""
+        """NASDAQ trades observed -> in_expected_coverage False, out_of_scope True (TradFi)."""
         df = pd.DataFrame(
             {
                 "date": ["2024-01-01"],
@@ -724,7 +724,7 @@ class TestFourStateClassification:
                 vm,
                 category="TRADFI",
             )
-        # NASDAQ + trades is NOT in EXPECTED_COVERAGE['tradfi'] — operator policy.
+        # NASDAQ + trades is NOT in EXPECTED_COVERAGE['tradfi'] -- operator policy.
         # `trades` is also not in PROCESSED_REQUIRES_RAW (it's raw), so the
         # row classifies as out_of_scope=True, in_expected_coverage=False.
         assert "trades" in result
@@ -733,7 +733,7 @@ class TestFourStateClassification:
         assert result["trades"]["is_processed_data_type"] is False
 
     def test_in_scope_venue_dt_is_not_out_of_scope(self):
-        """CME + trades is in EXPECTED_COVERAGE['tradfi'] — not out of scope."""
+        """CME + trades is in EXPECTED_COVERAGE['tradfi'] -- not out of scope."""
         df = pd.DataFrame(
             {
                 "date": ["2024-01-01"],
@@ -769,9 +769,9 @@ class TestPhantomExpectedClamp:
     1. data_type x (venue, instrument_type, underlying) - UAC-declared dts
        that never materialise for the sub-slice were counted as phantom
        missing.
-    2. instrument_type launch date — new instrument_types inherited the
+    2. instrument_type launch date -- new instrument_types inherited the
        venue's full calendar even if they launched mid-history.
-    3. underlying launch date — same, for underlyings under an
+    3. underlying launch date -- same, for underlyings under an
        instrument_type (e.g. DERIBIT SOL options post-2024).
     """
 
@@ -779,7 +779,7 @@ class TestPhantomExpectedClamp:
         self.svc = DataStatusService(project_id="test-proj")
 
     def test_data_type_breakdown_drops_unobserved_uac_phantoms(self):
-        """UAC declares 4 dts; only 1 observed → expected = 1, not 4."""
+        """UAC declares 4 dts; only 1 observed -> expected = 1, not 4."""
         df = pd.DataFrame(
             {
                 "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
@@ -804,7 +804,7 @@ class TestPhantomExpectedClamp:
                 )
 
         # Only ODDS (observed) shows up. arbitrage_opportunity, odds_movement,
-        # odds_snapshot are UAC-declared but never observed → phantom → dropped.
+        # odds_snapshot are UAC-declared but never observed -> phantom -> dropped.
         assert set(result.keys()) == {"ODDS"}
         assert result["ODDS"]["dates_found"] == 3
         assert result["ODDS"]["dates_expected"] == 3
@@ -834,9 +834,9 @@ class TestPhantomExpectedClamp:
             service="market-tick-data-service",
         )
 
-        # HYPE's effective start = 2024-06-01 (first observed) → only 1 day
+        # HYPE's effective start = 2024-06-01 (first observed) -> only 1 day
         # expected (2024-06-01 itself). BTC's effective start stays at the
-        # user-supplied 2024-01-01 → full window to 2024-06-01.
+        # user-supplied 2024-01-01 -> full window to 2024-06-01.
         btc_expected = int(result["BTC"]["dates_expected"])
         hype_expected = int(result["HYPE"]["dates_expected"])
         assert hype_expected == 1, f"HYPE should be clamped to 1 day, got {hype_expected}"
@@ -870,8 +870,8 @@ class TestPhantomExpectedClamp:
             category="CEFI",
         )
 
-        # SOL's effective start = 2024-06-01 → 1 day expected.
-        # BTC stays at user-supplied 2022-01-01 → full window.
+        # SOL's effective start = 2024-06-01 -> 1 day expected.
+        # BTC stays at user-supplied 2022-01-01 -> full window.
         btc_expected = int(result["BTC"]["dates_expected"])
         sol_expected = int(result["SOL"]["dates_expected"])
         assert sol_expected == 1, f"SOL should be clamped to 1 day, got {sol_expected}"
@@ -890,7 +890,7 @@ class TestPhantomExpectedClamp:
         )
         vm = MagicMock()
         # Returning the whole year would be phantom; but with the observed-min
-        # fallback we clamp to 2024-06-01 → end.
+        # fallback we clamp to 2024-06-01 -> end.
         vm.get_expected_trading_dates.side_effect = lambda venue, start, end: (
             pd.date_range(start, end, freq="D").strftime("%Y-%m-%d").tolist()
         )
@@ -1142,7 +1142,7 @@ class TestGetCoverageSummary:
 
     @pytest.mark.asyncio
     async def test_drops_legacy_defi_venue_aliases(self):
-        """Regression from audit 2026-04-19 §2.A.1b — legacy pre-canonicalisation
+        """Regression from audit 2026-04-19 §2.A.1b -- legacy pre-canonicalisation
         DeFi alias rows like ``venue='AAVEV3-ETHEREUM' chain=''`` were leaking into
         the Instrument Coverage Summary widget despite the per-shard rollup fix in
         22f0024/959bdab. Both paths now apply the same legacy-alias filter so the
@@ -1420,7 +1420,7 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
 
     Previously ``completion_pct`` was date-based (days with any data /
     total days in range). That over-states the real coverage when a
-    handful of shards fill a date while most stay empty — Polymarket
+    handful of shards fill a date while most stay empty -- Polymarket
     header was showing 100% on days where 11/94 shards had data.
 
     The new primary ``completion_pct`` is shards-weighted
@@ -1507,8 +1507,8 @@ class TestBuildManifestCategoryShardsWeightedCompletion:
                 total_days=1,
                 venue_mapping=vm,
             )
-        # venue_expected_total is 0 → shards-weighted falls back to
-        # the date-based figure (100% — the date had data).
+        # venue_expected_total is 0 -> shards-weighted falls back to
+        # the date-based figure (100% -- the date had data).
         assert result["completion_pct"] == 100.0
         assert result["completion_pct_dates"] == 100.0
         assert result["completion_pct_shards_weighted"] == 100.0
@@ -1622,7 +1622,7 @@ class TestDefiLegacyVenueFilter:
 
     def test_is_legacy_defi_venue_row_detects_canonical_patterns(self):
         svc = _make_svc()
-        # Known legacy patterns — chain empty, venue is PROTOCOL[V<N>]-CHAIN
+        # Known legacy patterns -- chain empty, venue is PROTOCOL[V<N>]-CHAIN
         assert svc._is_legacy_defi_venue_row("AAVEV3-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("UNISWAPV2-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("UNISWAPV3-ETHEREUM", "")
@@ -1652,7 +1652,7 @@ class TestDefiLegacyVenueFilter:
 
     def test_is_legacy_defi_venue_row_skips_canonical_rows(self):
         svc = _make_svc()
-        # Canonical rows always have a non-empty chain → never legacy
+        # Canonical rows always have a non-empty chain -> never legacy
         assert not svc._is_legacy_defi_venue_row("AAVE_V3", "ETHEREUM")
         assert not svc._is_legacy_defi_venue_row("UNISWAP_V2", "ETHEREUM")
         assert not svc._is_legacy_defi_venue_row("CURVE", "ETHEREUM")
@@ -1661,7 +1661,7 @@ class TestDefiLegacyVenueFilter:
     def test_is_legacy_defi_venue_row_skips_cefi_hyphenated_venues(self):
         svc = _make_svc()
         # CeFi venues are hyphenated too but protocol root doesn't match
-        # the DeFi whitelist → never legacy
+        # the DeFi whitelist -> never legacy
         assert not svc._is_legacy_defi_venue_row("BINANCE-FUTURES", "")
         assert not svc._is_legacy_defi_venue_row("OKX-SWAP", "")
         assert not svc._is_legacy_defi_venue_row("COINBASE-SPOT", "")
@@ -1675,7 +1675,7 @@ class TestDefiLegacyVenueFilter:
         assert not svc._is_legacy_defi_venue_row(None, "")
 
     def test_defi_category_drops_legacy_rows_before_breakdown(self):
-        """End-to-end: manifest with mixed old+new DeFi rows → breakdown
+        """End-to-end: manifest with mixed old+new DeFi rows -> breakdown
         only sees canonical rows."""
         svc = _make_svc()
         # Synthetic manifest: 2 canonical rows + 2 legacy alias rows.
@@ -1786,7 +1786,7 @@ class TestMTDSHonestCoverage:
       (a) CEFI per-venue x per-data_type daily denominator
       (b) TRADFI tick-window gate excludes trades/tbbo outside windows
       (c) DEFI per-venue scope (chain axis is a multi-venue Phase 6d follow-up)
-      (d) SPORTS MTDS (bookmakers) is the instruments-service path — not
+      (d) SPORTS MTDS (bookmakers) is the instruments-service path -- not
           re-asserted here (covered by TestBuildSportsEntityEntry elsewhere)
       (e) PREDICTION per-venue daily denominator
       (f) category-level ``expected_venues`` / ``missing_venues`` injection
@@ -1810,7 +1810,7 @@ class TestMTDSHonestCoverage:
 
     def test_cefi_per_venue_denominator_honest(self):
         """CEFI CEFI BINANCE-SPOT has 2 expected dts (book_snapshot_5, trades).
-        2 days window → expected_shards = 2 dts x 2 days = 4 per venue."""
+        2 days window -> expected_shards = 2 dts x 2 days = 4 per venue."""
         svc = _make_svc()
         # Only BINANCE-SPOT has ``trades`` shipped on 2026-04-17; missing
         # book_snapshot_5 + 2026-04-18 for both.
@@ -1946,7 +1946,7 @@ class TestMTDSHonestCoverage:
         coverage_pct). Per-(venue, data_type) overrides for TBBO live in
         UAC ``VENUE_DATA_TYPE_COVERAGE_WINDOWS`` for the venues we've
         scoped (currently CME). NYSE tbbo still uses the legacy global
-        clip → expected=0 outside the window.
+        clip -> expected=0 outside the window.
         """
         svc = _make_svc()
         # 2025-01-06..2025-01-10 is OUTSIDE any tick window. NYSE has 5
@@ -1991,12 +1991,12 @@ class TestMTDSHonestCoverage:
             )
         nyse = result["venues"]["NYSE"]
         honest_dts = nyse["honest_data_types"]
-        # ``trades`` is year-round + per-instrument shard → 5 days x 21
+        # ``trades`` is year-round + per-instrument shard -> 5 days x 21
         # MVP NYSE-listed SP500 instruments = 105 expected.
         assert honest_dts["trades"]["expected_shards"] == 105
-        # ``tbbo`` clipped via legacy global tick-window gate → 0 outside window
+        # ``tbbo`` clipped via legacy global tick-window gate -> 0 outside window
         assert honest_dts["tbbo"]["expected_shards"] == 0
-        # ``ohlcv_1m`` year-round + venue-level shard → 5 days x 1 = 5.
+        # ``ohlcv_1m`` year-round + venue-level shard -> 5 days x 1 = 5.
         assert honest_dts["ohlcv_1m"]["expected_shards"] == 5
         # Sum across data_types: trades (105 per-instrument shards) +
         # ohlcv_1m (5 venue-level shards) = 110. tbbo (0) doesn't contribute.
@@ -2054,11 +2054,11 @@ class TestMTDSHonestCoverage:
         # Post-Phase-1 (2026-04-24 DeFi data types completeness): AAVEV3-ETHEREUM
         # declares 7 dts in VENUE_DATA_TYPE_CAPABILITIES.
         #   - Per-instrument dts (Tier-3, 10-reserve seed x 2 days = 20):
-        #     ``oracle_prices``, ``rewards``, ``risk_params`` → 20 expected each.
+        #     ``oracle_prices``, ``rewards``, ``risk_params`` -> 20 expected each.
         #   - Legacy + new venue-level dts (per-(venue, dt, date), 2 days):
         #     ``lending_indices`` (legacy 2 rows captured),
         #     ``flash_loan_events``, ``liquidation_events``, ``position_data``
-        #     → 2 expected each.
+        #     -> 2 expected each.
         # Total expected = 20*3 + 2*4 = 68; total found = 2 (only
         # ``lending_indices`` has rows). ``missing_data_types`` lists the 6 dts
         # with found_count == 0 and expected_count > 0.
@@ -2075,7 +2075,7 @@ class TestMTDSHonestCoverage:
         assert result["honest_axis"] == "per_venue_per_data_type_per_chain_daily"
 
     def test_prediction_per_venue_daily(self):
-        """PREDICTION — POLYMARKET + KALSHI, all 4 SchemaContract dts each.
+        """PREDICTION -- POLYMARKET + KALSHI, all 4 SchemaContract dts each.
 
         After UAC ``c7642f3`` registered ``book_snapshot`` / ``market_metadata`` /
         ``fills``, the manifest enumeration loop unions
@@ -2125,7 +2125,7 @@ class TestMTDSHonestCoverage:
         assert sorted(poly["expected_data_types"]) == sorted(
             ["trades", "book_snapshot", "market_metadata", "fills"]
         )
-        # Only ``trades`` has rows in the fixture — the other 3 are missing.
+        # Only ``trades`` has rows in the fixture -- the other 3 are missing.
         assert sorted(poly["missing_data_types"]) == sorted(
             ["book_snapshot", "market_metadata", "fills"]
         )
@@ -2146,7 +2146,7 @@ class TestMTDSHonestCoverage:
         """
         from unified_api_contracts import VenueMapping
 
-        # Empty manifest — every PREDICTION dt should still appear as expected
+        # Empty manifest -- every PREDICTION dt should still appear as expected
         # (with 0 found, 0% completion) so the SSOT gap is visible.
         df = self._mtds_df([])
         honest = _dss_mod._mtds_honest_coverage_for_venue(
@@ -2229,7 +2229,7 @@ class TestMTDSHonestCoverage:
 
 
 class TestMTDSPerInstrumentHonestCoverage:
-    """Phase 8D — per-(venue, data_type, instrument_id, date) denominator.
+    """Phase 8D -- per-(venue, data_type, instrument_id, date) denominator.
 
     SSOT:
       - plan: ``plans/active/mtds_per_instrument_sentinels_2026_04_21.plan.md``
@@ -2402,7 +2402,7 @@ class TestMTDSPerInstrumentHonestCoverage:
 
     def test_defi_dex_swaps_empty_seed(self):
         """DEFI ``dex_swaps`` on a PROTOCOL-CHAIN venue (e.g.
-        UNISWAPV3-ETHEREUM) — Wave 8G seeded 20 top-TVL pools. With 0 rows in
+        UNISWAPV3-ETHEREUM) -- Wave 8G seeded 20 top-TVL pools. With 0 rows in
         the fixture, the aggregator returns a Tier-3 denominator of
         ``n_instruments x n_dates`` with ``found_shards == 0`` and the
         full ``missing_instruments`` list.
@@ -2431,7 +2431,7 @@ class TestMTDSPerInstrumentHonestCoverage:
             assert len(expected_instruments) == 20
             assert dt_entry["expected_shards"] == 20
             assert dt_entry["found_shards"] == 0
-            # 20 == _PER_INSTRUMENT_BREAKDOWN_MAX_SIZE (not ``<``) → no
+            # 20 == _PER_INSTRUMENT_BREAKDOWN_MAX_SIZE (not ``<``) -> no
             # per-instrument breakdown to keep payload bounded.
             assert "per_instrument" not in dt_entry
             assert dt_entry["unit"] == "shard_instrument_days"
@@ -2484,3 +2484,176 @@ class TestMTDSPerInstrumentHonestCoverage:
         # Venue-level entries do NOT carry expected_instruments.
         assert "expected_instruments" not in dt_entry
         assert "missing_instruments" not in dt_entry
+
+
+class TestBuildChainBreakdownShardMath:
+    """Tests for the rewritten ``_build_chain_breakdown`` shard-count math
+    (2026-05-07 chain-row math fix -- see plan
+    ``data_status_drilldown_shard_atom_alignment_2026_05_07``).
+
+    The old date-only math collapsed the within-day (protocol x data_type
+    x instrument) fan-out and produced misleading ``ARBITRUM 32/54``
+    rollups; the new math respects the codex DeFi shard atom
+    ``(asset_group=defi, chain, venue/protocol, data_type,
+    instrument_id_or_protocol_id, day)``.
+    """
+
+    def _vm(self) -> MagicMock:
+        vm = MagicMock()
+        vm.get_venue_start_date.return_value = "2024-01-01"
+
+        # Every chain x venue gets the same 5-day expected window for
+        # determinism. Real ``get_expected_trading_dates`` clips by
+        # venue calendar / chain genesis / protocol launch -- those
+        # composition tests live in the UAC-level tests.
+        def _expected_dates(_venue: str, start: str, _end: str) -> list[str]:
+            del _venue
+            base = pd.Timestamp(start)
+            return [(base + pd.Timedelta(days=i)).strftime("%Y-%m-%d") for i in range(5)]
+
+        vm.get_expected_trading_dates.side_effect = _expected_dates
+        return vm
+
+    def _make_chain_df(self, rows: list[dict[str, object]]) -> pd.DataFrame:
+        # All chain-breakdown callers pass these columns; v5+ also
+        # ``capture_status``. Fill ``capture_status="captured"`` if
+        # absent so tests don't accidentally null-out the numerator.
+        df = pd.DataFrame(rows)
+        if "capture_status" not in df.columns:
+            df["capture_status"] = "captured"
+        return df
+
+    def test_emits_shards_found_and_shards_expected(self):
+        """The new headline fields appear in the payload alongside the
+        backward-compat dates_* fields."""
+        svc = _make_svc()
+        df = self._make_chain_df(
+            [
+                {
+                    "chain": "ARBITRUM",
+                    "venue": "AAVEV3-ARBITRUM",
+                    "data_type": "lending_indices",
+                    "instrument_id": "USDC",
+                    "date": "2024-01-01",
+                },
+            ]
+        )
+        result = svc._build_chain_breakdown(df, "2024-01-01", "2024-01-05", self._vm())
+        assert "ARBITRUM" in result
+        entry = result["ARBITRUM"]
+        assert isinstance(entry, dict)
+        assert "shards_found" in entry
+        assert "shards_expected" in entry
+        # Backward-compat fields preserved for UI consumers that haven't
+        # yet switched to the new fields.
+        assert "dates_found" in entry
+        assert "dates_expected" in entry
+
+    def test_shards_expected_exceeds_dates_expected_for_multi_dt_chain(self):
+        """The whole point of the rewrite: when a chain has multiple
+        data_types per venue, ``shards_expected`` ≫ ``dates_expected``.
+        For the 2026-05-07 ARBITRUM screenshot, the old math reported
+        ``32/54 dates``; the new math reports thousands of shards."""
+        svc = _make_svc()
+        # 1 venue (AAVEV3-ARBITRUM) x 3 data_types x 2 instruments
+        # captured across 5 expected dates -> expected = 5 x 6 = 30 shards
+        # vs dates_expected = 5.
+        rows: list[dict[str, object]] = []
+        for dt_name in ("lending_indices", "borrow_indices", "supply_apy"):
+            for inst in ("USDC", "WETH"):
+                rows.append(
+                    {
+                        "chain": "ARBITRUM",
+                        "venue": "AAVEV3-ARBITRUM",
+                        "data_type": dt_name,
+                        "instrument_id": inst,
+                        "date": "2024-01-01",
+                    }
+                )
+        df = self._make_chain_df(rows)
+        result = svc._build_chain_breakdown(df, "2024-01-01", "2024-01-05", self._vm())
+        entry = result["ARBITRUM"]
+        assert isinstance(entry, dict)
+        # 5 expected dates x 6 distinct (data_type, instrument_id) leaves = 30.
+        assert entry["shards_expected"] == 30
+        # 6 captured rows (all on 2024-01-01).
+        assert entry["shards_found"] == 6
+        # Old dates-only math would have reported 1/5 -> 20% completion.
+        assert entry["dates_expected"] == 5
+        assert entry["dates_found"] == 1
+
+    def test_capture_status_filter_excludes_empty_confirmed(self):
+        """Numerator counts only ``captured`` rows when capture_status
+        is present. ``empty_confirmed`` / ``attempted_failed`` rows
+        are honest gaps, not real shards."""
+        svc = _make_svc()
+        df = self._make_chain_df(
+            [
+                {
+                    "chain": "BASE",
+                    "venue": "AAVEV3-BASE",
+                    "data_type": "lending_indices",
+                    "instrument_id": "USDC",
+                    "date": "2024-01-01",
+                    "capture_status": "captured",
+                },
+                {
+                    "chain": "BASE",
+                    "venue": "AAVEV3-BASE",
+                    "data_type": "lending_indices",
+                    "instrument_id": "USDC",
+                    "date": "2024-01-02",
+                    "capture_status": "empty_confirmed",
+                },
+                {
+                    "chain": "BASE",
+                    "venue": "AAVEV3-BASE",
+                    "data_type": "lending_indices",
+                    "instrument_id": "USDC",
+                    "date": "2024-01-03",
+                    "capture_status": "attempted_failed",
+                },
+            ]
+        )
+        result = svc._build_chain_breakdown(df, "2024-01-01", "2024-01-05", self._vm())
+        entry = result["BASE"]
+        assert isinstance(entry, dict)
+        # Only the one ``captured`` row counts toward shards_found.
+        assert entry["shards_found"] == 1
+        # 5 expected dates x 1 leaf (lending_indices, USDC) = 5.
+        assert entry["shards_expected"] == 5
+
+    def test_completion_pct_uses_shard_math_not_date_math(self):
+        """The headline ``completion_pct`` derives from shards_found /
+        shards_expected, not the legacy dates_found / dates_expected.
+        Verify with a chain where the two ratios diverge."""
+        svc = _make_svc()
+        # 5 expected dates; 2 dates have captures across 4 leaves each;
+        # 3 dates fully missing. dates: 2/5=40%; shards: 8/20=40%.
+        # Make the divergence by adding a non-captured row on a "missing" date.
+        rows: list[dict[str, object]] = []
+        for dt_name in ("lending_indices", "borrow_indices"):
+            for inst in ("USDC", "WETH"):
+                for d in ("2024-01-01", "2024-01-02"):
+                    rows.append(
+                        {
+                            "chain": "BASE",
+                            "venue": "AAVEV3-BASE",
+                            "data_type": dt_name,
+                            "instrument_id": inst,
+                            "date": d,
+                            "capture_status": "captured",
+                        }
+                    )
+        df = self._make_chain_df(rows)
+        result = svc._build_chain_breakdown(df, "2024-01-01", "2024-01-05", self._vm())
+        entry = result["BASE"]
+        assert isinstance(entry, dict)
+        # 5 dates x 4 leaves = 20 expected; 8 captured.
+        assert entry["shards_expected"] == 20
+        assert entry["shards_found"] == 8
+        # 8/20 = 40%.
+        assert entry["completion_pct"] == 40.0
+        # Date math: 2 found / 5 expected.
+        assert entry["dates_found"] == 2
+        assert entry["dates_expected"] == 5
