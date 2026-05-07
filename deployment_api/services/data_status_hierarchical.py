@@ -51,18 +51,30 @@ logger = logging.getLogger(__name__)
 # Defaults
 # ---------------------------------------------------------------------------
 
-# Cap any one node's children list so the UI doesn't try to render 5000
-# instruments at once. The UI is expected to paginate; the cap is an
-# emergency brake for buggy callers that don't.
-_MAX_CHILDREN_PER_NODE: int = 500
+# Defensive cap on any one node's children list. Pagination via the
+# ``child_offset`` / ``child_limit`` params is the primary mechanism for
+# venues with thousands of instruments (BINANCE-FUTURES PERPETUAL,
+# DERIBIT options chains); this cap is an emergency bound.
+# Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md
+# § Phase 6 (operator finding 2026-05-07: per-instrument drilldown was
+# silently truncated at the prior 500 default).
+_MAX_CHILDREN_PER_NODE: int = 10_000
+
+# Default per-page child count when the caller passes a non-null
+# ``child_limit``. Operators can override via query params.
+_DEFAULT_CHILD_PAGE_SIZE: int = 200
 
 # Manifest columns we always project into the tree, even when not part of
 # the SHARD_AXIS_MATRIX axes for the requested service. ``date`` is implicit
 # on every row; ``capture_status`` / ``error_reason`` drive the leaf badges.
+# ``underlying`` is required for the bundled-data_type root virtualisation
+# (options_chain / futures_chain populate ``underlying`` and leave
+# ``instrument_id`` empty per the manifest writer).
 _REQUIRED_COLUMNS: tuple[str, ...] = (
     "date",
     "capture_status",
     "error_reason",
+    "underlying",
 )
 
 
@@ -259,8 +271,11 @@ def get_hierarchical_drilldown(
     axes = _resolve_axis_order(service, asset_group)
 
     bucket = build_bucket_name(service, asset_group, project_id=project_id)
+    # ``read_availability_index`` takes the BUCKET NAME (no scheme), NOT
+    # a ``gs://...`` URI — passing the URI silently returns an empty df.
+    # Same call shape as ``data_status_service.py``'s preflight skip path.
     manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"
-    df = read_availability_index(manifest_uri)
+    df = read_availability_index(bucket)
     if df is None or len(df) == 0:
         return {
             "axes": list(axes),
