@@ -197,6 +197,9 @@ def create_app() -> FastAPI:
         # Keep 5174 allowed for execution-service visualizer UI by default.
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        # deployment-ui canonical port (ui-api-mapping.json + vite.config.ts strictPort:true).
+        "http://localhost:5183",
+        "http://127.0.0.1:5183",
         f"http://localhost:{_api_port}",
         "http://localhost:8080",
     ]

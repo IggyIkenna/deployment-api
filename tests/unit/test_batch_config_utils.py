@@ -9,11 +9,11 @@ from deployment_api.routes.batch_config_utils import (
     BUCKET_MAPPING,
     SERVICE_CONFIG,
     generate_date_range_and_year_months,
-    get_category_start_date,
+    get_asset_group_start_date,
     get_data_type_start_date,
     get_expected_dates_for_venue,
     get_expected_instrument_types_for_venue,
-    get_expected_venues_for_category,
+    get_expected_venues_for_asset_group,
     get_venue_start_date,
     is_data_type_available_for_venue,
     is_venue_expected,
@@ -65,29 +65,29 @@ class TestGenerateDateRangeAndYearMonths:
         assert dates == expected
 
 
-class TestGetExpectedVenuesForCategory:
-    """Tests for get_expected_venues_for_category."""
+class TestGetExpectedVenuesForAssetGroup:
+    """Tests for get_expected_venues_for_asset_group."""
 
     def test_cefi_category(self):
         venue_config = {
             "CEFI": {"venues": {"BINANCE": {}, "COINBASE": {}}},
             "TRADFI": {"venues": {"NYSE": {}}},
         }
-        result = get_expected_venues_for_category(venue_config, "CEFI")
+        result = get_expected_venues_for_asset_group(venue_config, "CEFI")
         assert result == {"BINANCE", "COINBASE"}
 
     def test_missing_category_returns_empty_set(self):
         venue_config = {"CEFI": {"venues": {"BINANCE": {}}}}
-        result = get_expected_venues_for_category(venue_config, "DEFI")
+        result = get_expected_venues_for_asset_group(venue_config, "DEFI")
         assert result == set()
 
     def test_category_with_no_venues(self):
         venue_config = {"CEFI": {"venues": {}}}
-        result = get_expected_venues_for_category(venue_config, "CEFI")
+        result = get_expected_venues_for_asset_group(venue_config, "CEFI")
         assert result == set()
 
     def test_empty_config(self):
-        result = get_expected_venues_for_category({}, "CEFI")
+        result = get_expected_venues_for_asset_group({}, "CEFI")
         assert result == set()
 
 
@@ -100,7 +100,7 @@ class TestIsVenueExpected:
 
     def test_venue_not_expected(self):
         venue_config = {"CEFI": {"venues": {"BINANCE": {}}}}
-        assert is_venue_expected(venue_config, "CEFI", "KRAKEN") is False
+        assert is_venue_expected(venue_config, "CEFI", "NOT_CONFIGURED_VENUE") is False
 
     def test_unknown_category(self):
         venue_config = {"CEFI": {"venues": {"BINANCE": {}}}}
@@ -123,7 +123,7 @@ class TestGetExpectedDataTypesForVenue:
         from deployment_api.routes.batch_config_utils import get_expected_data_types_for_venue
 
         venue_config = {"CEFI": {"venues": {"BINANCE": {"data_types": ["trades"]}}}}
-        result = get_expected_data_types_for_venue(venue_config, "CEFI", "KRAKEN")
+        result = get_expected_data_types_for_venue(venue_config, "CEFI", "NOT_CONFIGURED_VENUE")
         assert result == []
 
 
@@ -152,7 +152,7 @@ class TestGetDataTypeStartDate:
                 "CEFI": {
                     "data_type_start_dates": {"BINANCE": {"book_snapshot_5": "2023-06-01"}},
                     "venues": {"BINANCE": "2023-01-01"},
-                    "category_start": "2023-01-01",
+                    "asset_group_start": "2023-01-01",
                 }
             }
         }
@@ -167,7 +167,7 @@ class TestGetDataTypeStartDate:
                 "CEFI": {
                     "data_type_start_dates": {},
                     "venues": {"BINANCE": "2023-01-01"},
-                    "category_start": "2022-01-01",
+                    "asset_group_start": "2022-01-01",
                 }
             }
         }
@@ -176,12 +176,12 @@ class TestGetDataTypeStartDate:
         )
         assert result == "2023-01-01"
 
-    def test_falls_back_to_category_start(self):
+    def test_falls_back_to_asset_group_start(self):
         config = {
             "market-tick-data-handler": {
                 "CEFI": {
                     "venues": {},
-                    "category_start": "2022-01-01",
+                    "asset_group_start": "2022-01-01",
                 }
             }
         }
@@ -234,21 +234,21 @@ class TestIsDataTypeAvailableForVenue:
         )
 
 
-class TestGetCategoryStartDate:
-    """Tests for get_category_start_date."""
+class TestGetAssetGroupStartDate:
+    """Tests for get_asset_group_start_date."""
 
-    def test_returns_category_start(self):
-        config = {"svc": {"CEFI": {"category_start": "2023-01-01"}}}
-        result = get_category_start_date(config, "svc", "CEFI")
+    def test_returns_asset_group_start(self):
+        config = {"svc": {"CEFI": {"asset_group_start": "2023-01-01"}}}
+        result = get_asset_group_start_date(config, "svc", "CEFI")
         assert result == "2023-01-01"
 
     def test_missing_category_returns_none(self):
         config = {"svc": {}}
-        result = get_category_start_date(config, "svc", "CEFI")
+        result = get_asset_group_start_date(config, "svc", "CEFI")
         assert result is None
 
     def test_missing_service_returns_none(self):
-        result = get_category_start_date({}, "svc", "CEFI")
+        result = get_asset_group_start_date({}, "svc", "CEFI")
         assert result is None
 
 
@@ -260,23 +260,23 @@ class TestGetVenueStartDate:
             "svc": {
                 "CEFI": {
                     "venues": {"BINANCE": "2023-03-01"},
-                    "category_start": "2023-01-01",
+                    "asset_group_start": "2023-01-01",
                 }
             }
         }
         result = get_venue_start_date(config, "svc", "CEFI", "BINANCE")
         assert result == "2023-03-01"
 
-    def test_falls_back_to_category_start(self):
+    def test_falls_back_to_asset_group_start(self):
         config = {
             "svc": {
                 "CEFI": {
                     "venues": {},
-                    "category_start": "2023-01-01",
+                    "asset_group_start": "2023-01-01",
                 }
             }
         }
-        result = get_venue_start_date(config, "svc", "CEFI", "KRAKEN")
+        result = get_venue_start_date(config, "svc", "CEFI", "NOT_CONFIGURED_VENUE")
         assert result == "2023-01-01"
 
     def test_missing_config_returns_none(self):
@@ -290,7 +290,9 @@ class TestGetExpectedDatesForVenue:
     def test_filters_to_venue_start_date(self):
         all_dates = {"2024-01-01", "2024-01-15", "2024-02-01"}
         config = {
-            "svc": {"CEFI": {"venues": {"BINANCE": "2024-01-15"}, "category_start": "2024-01-01"}}
+            "svc": {
+                "CEFI": {"venues": {"BINANCE": "2024-01-15"}, "asset_group_start": "2024-01-01"}
+            }
         }
         result = get_expected_dates_for_venue(all_dates, config, "svc", "CEFI", "BINANCE")
         assert "2024-01-01" not in result

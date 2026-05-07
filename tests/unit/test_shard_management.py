@@ -366,7 +366,9 @@ class TestBuildExistingDatesSets:
     def test_extracts_dates_found_list(self):
         from deployment_api.routes.shard_management import build_existing_dates_sets
 
-        turbo_result = {"categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
+        turbo_result = {
+            "asset_groups": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}
+        }
         cat_dates, _venue_dates = build_existing_dates_sets(turbo_result)
         assert "CEFI" in cat_dates
         assert "2024-01-01" in cat_dates["CEFI"]
@@ -375,7 +377,7 @@ class TestBuildExistingDatesSets:
         from deployment_api.routes.shard_management import build_existing_dates_sets
 
         turbo_result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "venues": {
                         "BINANCE": {"dates_found_list": ["2024-01-01"]},
@@ -393,14 +395,14 @@ class TestBuildExistingDatesSets:
         from deployment_api.routes.shard_management import build_existing_dates_sets
 
         dates_set = {"2024-01-01", "2024-01-15"}
-        turbo_result = {"categories": {"CEFI": {"_dates_set": dates_set}}}
+        turbo_result = {"asset_groups": {"CEFI": {"_dates_set": dates_set}}}
         cat_dates, _ = build_existing_dates_sets(turbo_result)
         assert cat_dates["CEFI"] == dates_set
 
     def test_skips_error_categories(self):
         from deployment_api.routes.shard_management import build_existing_dates_sets
 
-        turbo_result = {"categories": {"CEFI": {"error": "Failed to load data"}}}
+        turbo_result = {"asset_groups": {"CEFI": {"error": "Failed to load data"}}}
         cat_dates, _ = build_existing_dates_sets(turbo_result)
         assert "CEFI" not in cat_dates
 
@@ -417,7 +419,7 @@ class TestBuildBlobTimestampMap:
 
     def test_extracts_timestamps_from_turbo_result(self):
         turbo_result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "_venue_date_blob_timestamps": {
                         "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
@@ -435,7 +437,7 @@ class TestBuildBlobTimestampMap:
 
     def test_skips_categories_without_timestamps(self):
         turbo_result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {"completion_pct": 90.0},  # No timestamp map
             }
         }
@@ -444,7 +446,7 @@ class TestBuildBlobTimestampMap:
 
     def test_skips_non_dict_categories(self):
         turbo_result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": "error",  # Not a dict
             }
         }
@@ -524,21 +526,21 @@ class TestGetAllZonesForVmLookup:
         assert zones == []
 
 
-class TestCategoriesFromStateInShard:
-    """Tests for categories_from_state in shard_management."""
+class TestAssetGroupsFromStateInShard:
+    """Tests for asset_groups_from_state in shard_management."""
 
     def test_extracts_categories_from_all_shards(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import categories_from_state
+        from deployment_api.routes.shard_management import asset_groups_from_state
 
         shards = [
-            SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),
+            SimpleNamespace(status="succeeded", dimensions={"asset_group": "CEFI"}),
             SimpleNamespace(status="failed", dimensions={"category": "TRADFI"}),
             SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),  # duplicate
         ]
         state = SimpleNamespace(shards=shards)
-        result = categories_from_state(state)
+        result = asset_groups_from_state(state)
         assert result is not None
         assert "CEFI" in result
         assert "TRADFI" in result
@@ -547,16 +549,16 @@ class TestCategoriesFromStateInShard:
     def test_returns_none_for_no_categories(self):
         from types import SimpleNamespace
 
-        from deployment_api.routes.shard_management import categories_from_state
+        from deployment_api.routes.shard_management import asset_groups_from_state
 
         state = SimpleNamespace(shards=[SimpleNamespace(status="pending", dimensions={})])
-        result = categories_from_state(state)
+        result = asset_groups_from_state(state)
         assert result is None
 
     def test_returns_none_for_empty_state(self):
-        from deployment_api.routes.shard_management import categories_from_state
+        from deployment_api.routes.shard_management import asset_groups_from_state
 
-        assert categories_from_state(None) is None
+        assert asset_groups_from_state(None) is None
 
 
 class TestGetStateDateRangeInShard:

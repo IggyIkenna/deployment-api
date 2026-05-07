@@ -455,20 +455,25 @@ class EventProcessor:
             state_bucket=self.state_bucket,
             state_prefix=f"deployments.{self.deployment_env}",
         )
-        backend: object = orch.get_backend(  # type: ignore[union-attr, arg-type, return-value]  # dynamic object
-            "vm",
-            job_name=job_name,
-            zone=config.get("zone"),
+        _get_backend_fn: object = getattr(orch, "get_backend", None)
+        backend: object = (
+            _get_backend_fn(
+                "vm",
+                job_name=job_name,
+                zone=config.get("zone"),
+            )
+            if callable(_get_backend_fn)
+            else None
         )
 
-        _backend = cast(object, backend)
-        if not _backend or not hasattr(_backend, "cancel_job_fire_and_forget"):
+        if not backend or not hasattr(backend, "cancel_job_fire_and_forget"):
             return 0
 
+        _cancel_fn = backend.cancel_job_fire_and_forget
         max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
         with _Tpe(max_workers=max_parallel) as pool:
             for job_id, zone, _shard_id, _st in orphan_tuples:
-                pool.submit(backend.cancel_job_fire_and_forget, job_id, zone)  # type: ignore[union-attr, arg-type]  # dynamic backend
+                pool.submit(_cancel_fn, job_id, zone)
                 pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
 
         logger.info("[EVENT_PROCESSOR] Fired %s orphan VM deletes", len(orphan_tuples))

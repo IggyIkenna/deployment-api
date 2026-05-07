@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import cast
 
 import yaml
+from unified_api_contracts.internal import MarketCategory
+from unified_trading_library import build_bucket
 
 from deployment_api.settings import gcp_project_id as _pid
 
@@ -21,46 +23,44 @@ logger = logging.getLogger(__name__)
 # See codex 04-architecture/batch-live-symmetry.md and deployment-topology-diagrams.md.
 LIVE_PATH_PREFIX = "live/"
 
-# Service -> bucket mapping (uses storage facade)
-BUCKET_MAPPING = {
-    "instruments-service": {
-        "CEFI": f"instruments-store-cefi-{_pid}",
-        "DEFI": f"instruments-store-defi-{_pid}",
-        "TRADFI": f"instruments-store-tradfi-{_pid}",
+# Build per-category bucket dicts from MarketCategory enum — SSOT in UAC.
+_instruments_buckets = {
+    cat.value: build_bucket("instruments", project_id=_pid, asset_group=cat.value.lower())
+    for cat in MarketCategory
+}
+_tick_buckets = {
+    cat.value: build_bucket("raw_tick_data", project_id=_pid, asset_group=cat.value.lower())
+    for cat in MarketCategory
+}
+
+# Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL
+BUCKET_MAPPING = {  # CORRECT-LOCAL
+    "instruments-service": _instruments_buckets,
+    "market-tick-data-handler": _tick_buckets,
+    # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
+    "market-data-processing-service": _tick_buckets,
+    "features-delta-one-service": {  # CORRECT-LOCAL
+        "CEFI": f"features-delta-one-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"features-delta-one-defi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": f"features-delta-one-tradfi-{_pid}",  # CORRECT-LOCAL
     },
-    "market-tick-data-handler": {
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
-    },
-    "market-data-processing-service": {
-        # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
-    },
-    "features-delta-one-service": {
-        "CEFI": f"features-delta-one-cefi-{_pid}",
-        "DEFI": f"features-delta-one-defi-{_pid}",
-        "TRADFI": f"features-delta-one-tradfi-{_pid}",
-    },
-    "features-calendar-service": {
+    "features-calendar-service": {  # CORRECT-LOCAL
         # Calendar features are UNIVERSAL - use single bucket (CEFI)
         # Temporal patterns, economic events, macro indicators don't vary by category
-        "CEFI": f"features-calendar-cefi-{_pid}",
+        "CEFI": f"features-calendar-cefi-{_pid}",  # CORRECT-LOCAL
     },
-    "features-onchain-service": {
-        "CEFI": f"features-onchain-cefi-{_pid}",
-        "DEFI": f"features-onchain-defi-{_pid}",
+    "features-onchain-service": {  # CORRECT-LOCAL
+        "CEFI": f"features-onchain-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"features-onchain-defi-{_pid}",  # CORRECT-LOCAL
     },
-    "features-volatility-service": {
-        "CEFI": f"features-volatility-cefi-{_pid}",
-        "DEFI": f"features-volatility-defi-{_pid}",
-        "TRADFI": f"features-volatility-tradfi-{_pid}",
+    "features-volatility-service": {  # CORRECT-LOCAL
+        "CEFI": f"features-volatility-cefi-{_pid}",  # CORRECT-LOCAL
+        "DEFI": f"features-volatility-defi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": f"features-volatility-tradfi-{_pid}",  # CORRECT-LOCAL
     },
-    "corporate-actions": {
+    "corporate-actions": {  # CORRECT-LOCAL
         # Corporate actions are TRADFI-only (uses instruments-store bucket)
-        "TRADFI": f"instruments-store-tradfi-{_pid}",
+        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
     },
 }
 
@@ -161,37 +161,39 @@ def load_venue_data_types() -> dict[str, dict[str, object]]:
     return cast(dict[str, dict[str, object]], raw)
 
 
-def _get_cat_config(venue_config: Mapping[str, object], category: str) -> dict[str, object]:
-    """Get category config dict safely."""
-    cat_val = venue_config.get(category)
-    return cast(dict[str, object], cat_val) if isinstance(cat_val, dict) else {}
+def _get_asset_group_section(parent: Mapping[str, object], asset_group: str) -> dict[str, object]:
+    """Return the nested config dict for an asset group (e.g. CEFI/DEFI/TRADFI), or {}."""
+    child = parent.get(asset_group)
+    return cast(dict[str, object], child) if isinstance(child, dict) else {}
 
 
-def _get_venues_dict(cat_config: Mapping[str, object]) -> dict[str, object]:
-    """Get venues dict from a category config safely."""
-    venues_val = cat_config.get("venues")
+def _get_venues_dict(asset_group_config: Mapping[str, object]) -> dict[str, object]:
+    """Get venues dict from an asset group config safely."""
+    venues_val = asset_group_config.get("venues")
     return cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
 
 
-def get_expected_venues_for_category(venue_config: Mapping[str, object], category: str) -> set[str]:
-    """Get the set of expected venues for a category from venue_data_types.yaml."""
-    cat_config = _get_cat_config(venue_config, category)
-    venues = _get_venues_dict(cat_config)
+def get_expected_venues_for_asset_group(
+    venue_config: Mapping[str, object], asset_group: str
+) -> set[str]:
+    """Get the set of expected venues for an asset group from venue_data_types.yaml."""
+    ag_config = _get_asset_group_section(venue_config, asset_group)
+    venues = _get_venues_dict(ag_config)
     return {str(k) for k in venues}
 
 
-def is_venue_expected(venue_config: Mapping[str, object], category: str, venue: str) -> bool:
-    """Check if a venue is expected for a category."""
-    expected_venues = get_expected_venues_for_category(venue_config, category)
+def is_venue_expected(venue_config: Mapping[str, object], asset_group: str, venue: str) -> bool:
+    """Check if a venue is expected for an asset group."""
+    expected_venues = get_expected_venues_for_asset_group(venue_config, asset_group)
     return venue in expected_venues
 
 
 def get_expected_data_types_for_venue(
-    venue_config: Mapping[str, object], category: str, venue: str
+    venue_config: Mapping[str, object], asset_group: str, venue: str
 ) -> list[str]:
     """Get expected data_types for a specific venue from venue_data_types.yaml."""
-    cat_config = _get_cat_config(venue_config, category)
-    venues = _get_venues_dict(cat_config)
+    ag_config = _get_asset_group_section(venue_config, asset_group)
+    venues = _get_venues_dict(ag_config)
     venue_val = venues.get(venue)
     venue_cfg: dict[str, object] = (
         cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
@@ -201,11 +203,11 @@ def get_expected_data_types_for_venue(
 
 
 def get_expected_instrument_types_for_venue(
-    venue_config: Mapping[str, object], category: str, venue: str
+    venue_config: Mapping[str, object], asset_group: str, venue: str
 ) -> list[str]:
     """Get expected instrument_types for a specific venue from venue_data_types.yaml."""
-    cat_config = _get_cat_config(venue_config, category)
-    venues = _get_venues_dict(cat_config)
+    ag_config = _get_asset_group_section(venue_config, asset_group)
+    venues = _get_venues_dict(ag_config)
     venue_val = venues.get(venue)
     venue_cfg: dict[str, object] = (
         cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
@@ -222,16 +224,10 @@ def _get_service_config(
     return cast(dict[str, object], svc_val) if isinstance(svc_val, dict) else {}
 
 
-def _get_category_config(service_config: Mapping[str, object], category: str) -> dict[str, object]:
-    """Get category config dict safely from service config."""
-    cat_val = service_config.get(category)
-    return cast(dict[str, object], cat_val) if isinstance(cat_val, dict) else {}
-
-
 def get_data_type_start_date(
     expected_dates_config: Mapping[str, object],
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     data_type: str,
 ) -> str | None:
@@ -242,12 +238,12 @@ def get_data_type_start_date(
     Returns None if the data_type is not available for this venue.
     """
     service_config = _get_service_config(expected_dates_config, service)
-    category_config = _get_category_config(service_config, category)
-    if not category_config:
+    asset_group_config = _get_asset_group_section(service_config, asset_group)
+    if not asset_group_config:
         return None
 
     # Check for data_type-specific start dates
-    dt_start_val = category_config.get("data_type_start_dates")
+    dt_start_val = asset_group_config.get("data_type_start_dates")
     dt_start_dates: dict[str, object] = (
         cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
     )
@@ -261,7 +257,7 @@ def get_data_type_start_date(
         return str(dt_val) if isinstance(dt_val, str) else None
 
     # Fall back to venue start date
-    venues_val = category_config.get("venues")
+    venues_val = asset_group_config.get("venues")
     venues: dict[str, object] = (
         cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
     )
@@ -269,14 +265,14 @@ def get_data_type_start_date(
         v_val = venues[venue]
         return str(v_val) if isinstance(v_val, str) else None
 
-    cat_start_val = category_config.get("category_start")
-    return str(cat_start_val) if isinstance(cat_start_val, str) else None
+    ag_start_val = asset_group_config.get("asset_group_start")
+    return str(ag_start_val) if isinstance(ag_start_val, str) else None
 
 
 def is_data_type_available_for_venue(
     expected_dates_config: Mapping[str, object],
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     data_type: str,
 ) -> bool:
@@ -285,9 +281,9 @@ def is_data_type_available_for_venue(
     Returns False if the data_type has a null start date (explicitly unavailable).
     """
     service_config = _get_service_config(expected_dates_config, service)
-    category_config = _get_category_config(service_config, category)
-    if category_config:
-        dt_start_val = category_config.get("data_type_start_dates")
+    asset_group_config = _get_asset_group_section(service_config, asset_group)
+    if asset_group_config:
+        dt_start_val = asset_group_config.get("data_type_start_dates")
         dt_start_dates: dict[str, object] = (
             cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
         )
@@ -302,32 +298,32 @@ def is_data_type_available_for_venue(
     return True
 
 
-def get_category_start_date(
-    expected_dates_config: Mapping[str, object], service: str, category: str
+def get_asset_group_start_date(
+    expected_dates_config: Mapping[str, object], service: str, asset_group: str
 ) -> str | None:
-    """Get the expected start date for a service/category."""
+    """Get the expected start date for a service and asset group."""
     service_config = _get_service_config(expected_dates_config, service)
-    category_config = _get_category_config(service_config, category)
-    if not category_config:
+    asset_group_config = _get_asset_group_section(service_config, asset_group)
+    if not asset_group_config:
         return None
-    cat_start_val = category_config.get("category_start")
-    return str(cat_start_val) if isinstance(cat_start_val, str) else None
+    ag_start_val = asset_group_config.get("asset_group_start")
+    return str(ag_start_val) if isinstance(ag_start_val, str) else None
 
 
 def get_venue_start_date(
-    expected_dates_config: Mapping[str, object], service: str, category: str, venue: str
+    expected_dates_config: Mapping[str, object], service: str, asset_group: str, venue: str
 ) -> str | None:
-    """Get venue-specific start date, falling back to category start.
+    """Get venue-specific start date, falling back to asset group start.
 
     Looks up venue-level start dates from expected_start_dates.yaml.
     This allows accurate completion % calculation per venue.
     """
     service_config = _get_service_config(expected_dates_config, service)
-    category_config = _get_category_config(service_config, category)
-    if not category_config:
+    asset_group_config = _get_asset_group_section(service_config, asset_group)
+    if not asset_group_config:
         return None
 
-    venues_val = category_config.get("venues")
+    venues_val = asset_group_config.get("venues")
     venues: dict[str, object] = (
         cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
     )
@@ -335,15 +331,15 @@ def get_venue_start_date(
         v_val = venues[venue]
         return str(v_val) if isinstance(v_val, str) else None
 
-    cat_start_val = category_config.get("category_start")
-    return str(cat_start_val) if isinstance(cat_start_val, str) else None
+    ag_start_val = asset_group_config.get("asset_group_start")
+    return str(ag_start_val) if isinstance(ag_start_val, str) else None
 
 
 def get_expected_dates_for_venue(
     all_dates: set[str],
     expected_dates_config: Mapping[str, object],
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     upstream_avail_dates: dict[str, dict[str, set[str]]] | None = None,
 ) -> set[str]:
@@ -358,17 +354,17 @@ def get_expected_dates_for_venue(
     """
     # For market-data-processing-service, use upstream availability as baseline
     if service == "market-data-processing-service" and upstream_avail_dates is not None:
-        cat_upstream = upstream_avail_dates.get(category, {})
-        # Try venue-specific dates first, fall back to category-level
+        cat_upstream = upstream_avail_dates.get(asset_group, {})
+        # Try venue-specific dates first, fall back to asset-group-level
         venue_upstream = cat_upstream.get(venue, cat_upstream.get("__category__", set()))
         if venue_upstream:
             # Expected = upstream dates that are in our date range
             return venue_upstream & all_dates
 
     # Default: use venue start date
-    venue_start = get_venue_start_date(expected_dates_config, service, category, venue)
+    venue_start = get_venue_start_date(expected_dates_config, service, asset_group, venue)
     if not venue_start:
-        # No venue or category start date configured, use all dates
+        # No venue or asset group start date configured, use all dates
         return all_dates
     # Filter to dates >= venue_start
     return {d for d in all_dates if d >= venue_start}

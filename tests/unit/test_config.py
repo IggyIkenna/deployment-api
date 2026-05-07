@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 def test_unified_cloud_config_is_used() -> None:
     """Service uses UnifiedCloudConfig, not os.environ, for configuration."""
-    with patch("unified_config_interface.UnifiedCloudConfig") as mock_cls:
+    with patch("unified_trading_library.config_interface.UnifiedCloudConfig") as mock_cls:
         mock_instance = MagicMock()
         mock_instance.environment = "test"
         mock_cls.return_value = mock_instance
@@ -18,7 +18,7 @@ def test_unified_cloud_config_is_used() -> None:
 
 def test_config_environment_field_exists() -> None:
     """UnifiedCloudConfig exposes an environment field."""
-    with patch("unified_config_interface.UnifiedCloudConfig") as mock_cls:
+    with patch("unified_trading_library.config_interface.UnifiedCloudConfig") as mock_cls:
         mock_instance = MagicMock()
         mock_instance.environment = "production"
         mock_cls.return_value = mock_instance

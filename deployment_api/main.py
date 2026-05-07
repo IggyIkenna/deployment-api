@@ -7,20 +7,22 @@ Includes background task for auto-syncing running deployment statuses.
 """
 
 import logging
+import uuid
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Depends, FastAPI
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from unified_events_interface import setup_events
+from pydantic import BaseModel, Field
 from unified_trading_library import (
     PubSubEventSink,
     RequestAuditMiddleware,
     make_events_relay_router,
     setup_tracing,
 )
+from unified_trading_library.events import setup_events
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
@@ -52,19 +54,25 @@ from deployment_api.utils.service_utils import get_ui_dist_dir
 from .routes import (
     builds,
     capabilities,
+    chaos_injections,
     checklist,
     cloud_builds,
     commentary,
     config,
     config_management,
     data_status,
+    deploy_events_sse,
     deployments,
     epics,
+    fixtures,
     infra_health,
     service_status,
     services,
+    shard_detail,
     sports_venues,
+    subscriptions,
     user_management,
+    vm_deployments,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +96,33 @@ app.add_middleware(PrometheusMiddleware, service_name="deployment-api")  # pyrig
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(RequestAuditMiddleware)
 
+
+# --- Standard error handler ---
+@app.exception_handler(HTTPException)
+async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
+    request_id: str = getattr(request.state, "request_id", str(uuid.uuid4()))
+    raw_detail: str | dict[str, str] = (
+        exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    )
+    message = (
+        raw_detail.get("message", str(exc.detail))
+        if isinstance(raw_detail, dict)
+        else str(raw_detail)
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": f"HTTP_{exc.status_code}",
+                "message": message,
+                "details": raw_detail if isinstance(raw_detail, dict) else None,
+            },
+            "request_id": request_id,
+        },
+    )
+
+
 # --- Authenticated API routes (require API key) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
@@ -101,12 +136,22 @@ _authenticated_router.include_router(
     data_status.router, prefix="/api/data-status", tags=["Data Status"]
 )
 _authenticated_router.include_router(
+    shard_detail.router, prefix="/api/data-status", tags=["Data Status"]
+)
+_authenticated_router.include_router(fixtures.router, prefix="/api")
+_authenticated_router.include_router(
     service_status.router, prefix="/api/service-status", tags=["Service Status"]
 )
 _authenticated_router.include_router(
     capabilities.router, prefix="/api/capabilities", tags=["Capabilities"]
 )
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds
+_authenticated_router.include_router(
+    subscriptions.router, prefix="/api", tags=["Client Subscriptions"]
+)
+_authenticated_router.include_router(
+    chaos_injections.router, prefix="/api", tags=["Chaos Injection"]
+)
 _authenticated_router.include_router(
     builds.router
 )  # /api/builds/{service} + /api/deployments/{service}/deploy
@@ -116,18 +161,46 @@ _authenticated_router.include_router(sports_venues.router)
 _authenticated_router.include_router(
     user_management.router, prefix="/api/user-management", tags=["User Management"]
 )
+_authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=["VM Deployments"])
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---
 app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 app.include_router(make_events_relay_router())
+app.include_router(deploy_events_sse.router)  # GET /stream/deploy-events (SSE)
 
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics() -> Response:
     """Prometheus metrics endpoint."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+class PipelineTriggerRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Request body for triggering a data pipeline."""
+
+    date: str = Field(..., description="Date to process (YYYY-MM-DD)")
+    venue: str = Field(..., description="Venue identifier")
+    instrument: str | None = Field(None, description="Instrument filter")
+
+
+@app.post("/pipeline/trigger", include_in_schema=False)
+async def pipeline_trigger(request: PipelineTriggerRequest) -> dict[str, object]:
+    """Trigger a data pipeline run for a given date and venue.
+
+    In mock mode, returns a synthetic pipeline_id without triggering real work.
+    In production mode, delegates to the deployment manager.
+    """
+    if _cfg.is_mock_mode():
+        return {
+            "pipeline_id": "mock-pipeline-001",
+            "status": "triggered",
+            "date": request.date,
+            "venue": request.venue,
+        }
+    # Production path: not yet implemented
+    raise HTTPException(status_code=501, detail="Pipeline trigger not yet implemented")
 
 
 # Mount static files if UI dist exists (production mode)
@@ -142,7 +215,7 @@ if _ui_dist:
 @app.get("/api/health")
 async def health_check_with_config() -> dict[str, object]:
     """Detailed health check. Includes GCS FUSE status for UI display."""
-    from unified_config_interface import UnifiedCloudConfig
+    from unified_trading_library.config_interface import UnifiedCloudConfig
 
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
@@ -155,5 +228,33 @@ async def health_check_with_config() -> dict[str, object]:
         ),
         "gcs_fuse": get_gcs_fuse_status(),
         "cloud_provider": _cloud_cfg.cloud_provider,
-        "mock_mode": _cloud_cfg.cloud_mock_mode,
+        "mock_mode": _cloud_cfg.is_mock_mode(),
     }
+
+
+# SPA fallback — registered LAST so all named routes (api, metrics, docs,
+# events relay, /assets mount) win first. Any GET that lands here either
+# resolves to a real file under the UI dist (favicon, manifest.json, etc.)
+# or falls through to index.html so client-side router can handle the path.
+if _ui_dist:
+    _ui_index = _ui_dist / "index.html"
+
+    @app.get("/", include_in_schema=False)
+    async def spa_root() -> FileResponse:
+        return FileResponse(_ui_index)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_catchall(full_path: str) -> FileResponse:
+        # Reserved prefixes that must NOT be intercepted (would mask real 404s).
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("assets/")
+            or full_path.startswith("stream/")
+            or full_path.startswith("infra/")
+            or full_path in {"metrics", "docs", "redoc", "openapi.json"}
+        ):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = _ui_dist / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_ui_index)

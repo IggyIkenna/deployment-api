@@ -32,6 +32,7 @@ class DeploymentStateManager:
         offset: int = 0,
         status_filter: str | None = None,
         service_filter: str | None = None,
+        asset_group: str | None = None,
     ) -> dict[str, object]:
         """
         List deployments with optional filtering.
@@ -41,6 +42,7 @@ class DeploymentStateManager:
             offset: Offset for pagination
             status_filter: Filter by deployment status
             service_filter: Filter by service name
+            asset_group: Filter by trading-axis value (CEFI, DEFI, …)
 
         Returns:
             Dict containing deployment list and metadata
@@ -51,6 +53,7 @@ class DeploymentStateManager:
             service=service_filter,
             deployment_env=getattr(_settings, "DEPLOYMENT_ENV", "development"),
             limit=limit + offset,
+            asset_group=asset_group,
         )
 
         # Apply status filter (service filter already applied inside _gcs_list_deployments)

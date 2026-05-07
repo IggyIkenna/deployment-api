@@ -113,8 +113,8 @@ class TestCacheKeyFunctions:
         assert "2024-01-01" in key
         assert "2024-01-31" in key
 
-    def test_data_status_key_with_categories(self):
-        key = data_status_key("svc", "2024-01-01", "2024-01-31", categories="CEFI,TRADFI")
+    def test_data_status_key_with_asset_groups(self):
+        key = data_status_key("svc", "2024-01-01", "2024-01-31", asset_groups="CEFI,TRADFI")
         assert "CEFI,TRADFI" in key
 
     def test_service_status_key(self):

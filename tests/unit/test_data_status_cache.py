@@ -148,7 +148,7 @@ class TestTruncateDatesList:
 
     def test_short_list_not_truncated(self):
         result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "dates_found_list": ["2024-01-01", "2024-01-02"],
                     "venues": {},
@@ -156,14 +156,14 @@ class TestTruncateDatesList:
             }
         }
         truncated = truncate_dates_list(result)
-        cefi = truncated["categories"]["CEFI"]
+        cefi = truncated["asset_groups"]["CEFI"]
         assert "dates_found_truncated" not in cefi
         assert len(cefi["dates_found_list"]) == 2
 
     def test_long_list_gets_truncated(self):
         long_dates = [f"2024-{m:02d}-{d:02d}" for m in range(1, 6) for d in range(1, 12)]
         result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "dates_found_list": long_dates,
                     "venues": {},
@@ -171,22 +171,22 @@ class TestTruncateDatesList:
             }
         }
         truncated = truncate_dates_list(result, max_items=10)
-        cefi = truncated["categories"]["CEFI"]
+        cefi = truncated["asset_groups"]["CEFI"]
         assert cefi.get("dates_found_truncated") is True
         assert len(cefi["dates_found_list"]) == 5  # half of 10
         assert "dates_found_list_tail" in cefi
 
     def test_original_not_modified(self):
         long_dates = list(range(60))
-        result = {"categories": {"CEFI": {"dates_found_list": long_dates, "venues": {}}}}
+        result = {"asset_groups": {"CEFI": {"dates_found_list": long_dates, "venues": {}}}}
         truncate_dates_list(result)
         # Original unchanged
-        assert len(result["categories"]["CEFI"]["dates_found_list"]) == 60
+        assert len(result["asset_groups"]["CEFI"]["dates_found_list"]) == 60
 
     def test_venue_level_dates_truncated(self):
         long_dates = [f"2024-01-{d:02d}" for d in range(1, 56)]
         result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "venues": {
                         "BINANCE": {
@@ -200,13 +200,13 @@ class TestTruncateDatesList:
             }
         }
         truncated = truncate_dates_list(result, max_items=10)
-        venue = truncated["categories"]["CEFI"]["venues"]["BINANCE"]
+        venue = truncated["asset_groups"]["CEFI"]["venues"]["BINANCE"]
         assert venue.get("dates_found_truncated") is True
 
     def test_missing_dates_list_truncated(self):
         long_dates = [f"2024-01-{d:02d}" for d in range(1, 56)]
         result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "dates_missing_list": long_dates,
                     "venues": {},
@@ -214,13 +214,13 @@ class TestTruncateDatesList:
             }
         }
         truncated = truncate_dates_list(result, max_items=10)
-        cefi = truncated["categories"]["CEFI"]
+        cefi = truncated["asset_groups"]["CEFI"]
         assert cefi.get("dates_missing_truncated") is True
 
     def test_data_type_level_truncated(self):
         long_dates = [f"2024-01-{d:02d}" for d in range(1, 56)]
         result = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "dates_found_list": [],
                     "dates_missing_list": [],
@@ -235,7 +235,7 @@ class TestTruncateDatesList:
             }
         }
         truncated = truncate_dates_list(result, max_items=10)
-        dt = truncated["categories"]["CEFI"]["venues"]["BINANCE"]["data_types"]["trades"]
+        dt = truncated["asset_groups"]["CEFI"]["venues"]["BINANCE"]["data_types"]["trades"]
         assert dt.get("dates_found_truncated") is True
 
 

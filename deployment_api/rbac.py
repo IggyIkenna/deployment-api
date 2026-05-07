@@ -20,12 +20,12 @@ import logging
 from collections.abc import Callable, Coroutine
 
 from fastapi import HTTPException, Request
-from unified_events_interface import log_event
-from unified_internal_contracts.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,
     UserRole,
     has_role_permission,
 )
+from unified_trading_library.events import log_event
 
 from deployment_api.auth import DISABLE_AUTH
 from deployment_api.services.user_management import UserManagementService

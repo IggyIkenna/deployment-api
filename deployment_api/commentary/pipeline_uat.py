@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING, cast
 import anthropic
 from anthropic.types import TextBlock
 from pydantic import BaseModel
-from unified_cloud_interface import get_data_sink, get_storage_client
-from unified_events_interface import log_event
+from unified_trading_library.cloud_interface import get_data_sink, get_storage_client
+from unified_trading_library.events import log_event
 
 if TYPE_CHECKING:
     from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -167,7 +167,8 @@ async def _assemble_context(
     # Instruments coverage
     try:
         raw_bytes = storage.download_bytes(
-            f"instruments-store-{project_id}", "instruments/latest/manifest.json"
+            f"instruments-store-{project_id}",  # CORRECT-LOCAL
+            "instruments/latest/manifest.json",
         )
         manifest = cast(dict[str, object], json.loads(raw_bytes))
         context["instruments_count"] = manifest.get("count")
@@ -179,7 +180,10 @@ async def _assemble_context(
 
     # Feature pipeline health
     try:
-        raw_bytes = storage.download_bytes(f"features-store-{project_id}", "health/latest.json")
+        raw_bytes = storage.download_bytes(
+            f"features-store-{project_id}",  # CORRECT-LOCAL
+            "health/latest.json",
+        )
         health = cast(dict[str, object], json.loads(raw_bytes))
         context["feature_row_count"] = health.get("row_count")
         context["feature_null_rate"] = health.get("null_rate")
@@ -190,7 +194,10 @@ async def _assemble_context(
 
     # ML training metrics
     try:
-        raw_bytes = storage.download_bytes(f"ml-store-{project_id}", "training/latest/metrics.json")
+        raw_bytes = storage.download_bytes(
+            f"ml-store-{project_id}",  # CORRECT-LOCAL
+            "training/latest/metrics.json",
+        )
         metrics = cast(dict[str, object], json.loads(raw_bytes))
         context["ml_loss"] = metrics.get("loss")
         context["ml_val_loss"] = metrics.get("val_loss")

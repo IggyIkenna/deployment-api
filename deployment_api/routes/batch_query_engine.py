@@ -16,7 +16,7 @@ from deployment_api.utils.storage_facade import list_objects
 
 from .batch_config_utils import (
     BUCKET_MAPPING,
-    get_category_start_date,
+    get_asset_group_start_date,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,9 +91,9 @@ def _build_prefixes_by_date(
     return prefixes_by_date
 
 
-def query_specific_prefixes_for_category(
+def query_specific_prefixes_for_asset_group(
     service: str,
-    cat: str,
+    asset_group: str,
     dates_to_check: set[str],
     venue: list[str] | None,
     folder: list[str] | None,
@@ -109,16 +109,21 @@ def query_specific_prefixes_for_category(
     This is MUCH faster than hierarchical scanning when we know the exact
     combinatorics of (data_type, folder, venue) that are valid.
 
+    GCS object key layout (hive segments, etc.) is produced by
+    ``CombinatoricEntry.to_gcs_prefix`` and related templates; it does not
+    change when this parameter is renamed. ``asset_group`` only selects
+    bucket and which combinatorics apply (e.g. CEFI / DEFI).
+
     Returns:
         Dict with found_dates, venue_data, sub_dimension_data, etc.
     """
-    bucket_name = BUCKET_MAPPING[service].get(cat)
+    bucket_name = BUCKET_MAPPING[service].get(asset_group)
     if not bucket_name:
-        return {"error": f"No bucket for category {cat}"}
+        return {"error": f"No bucket for asset group {asset_group}"}
 
     path_combinatorics = get_path_combinatorics()
     combos = path_combinatorics.get_combinatorics(
-        category=cat,
+        asset_group=asset_group,
         venues=venue,
         folders=folder,
         data_types=data_type,
@@ -126,7 +131,7 @@ def query_specific_prefixes_for_category(
     )
 
     if not combos:
-        logger.warning("[TURBO] No valid combinatorics for %s with venue=%s", cat, venue)
+        logger.warning("[TURBO] No valid combinatorics for %s with venue=%s", asset_group, venue)
         return {
             "found_dates": set(),
             "venue_data": {},
@@ -154,7 +159,7 @@ def query_specific_prefixes_for_category(
     logger.info(
         "[TURBO] Querying %s specific prefixes for %s (%s dates, %s combos per date)",
         total_queries,
-        cat,
+        asset_group,
         len(prefixes_by_date),
         len(combos),
     )
@@ -276,9 +281,9 @@ def _accumulate_generic_result(
             venue_date_blob_timestamps.setdefault(venue_key, {})[date_str] = blob_updated
 
 
-def query_generic_prefixes_for_category(
+def query_generic_prefixes_for_asset_group(
     service: str,
-    cat: str,
+    asset_group: str,
     dates_to_check: set[str],
     venue: list[str] | None,
     path_prefix: str,
@@ -288,20 +293,23 @@ def query_generic_prefixes_for_category(
 
     Supports all services by loading dimensions from their sharding configs.
     Queries exact known paths with list_blobs for O(1) existence checks.
+    Prefix strings come from ``PathCombinatorics.get_service_prefixes_for_date`` /
+    ``SERVICE_PATH_TEMPLATES``; they are not derived from the Python
+    parameter name (only from ``service`` and ``asset_group`` values).
 
     Returns:
         Dict with found_dates, venue_data, sub_dimension_data, etc.
     """
-    bucket_name = BUCKET_MAPPING[service].get(cat)
+    bucket_name = BUCKET_MAPPING[service].get(asset_group)
     if not bucket_name:
-        return {"error": f"No bucket for category {cat}"}
+        return {"error": f"No bucket for asset group {asset_group}"}
 
     path_combinatorics = get_path_combinatorics()
     all_entries: list[tuple[str, str, str | None]] = []
     for date_str in dates_to_check:
         entries = path_combinatorics.get_service_prefixes_for_date(
             service=service,
-            category=cat,
+            asset_group=asset_group,
             date_str=date_str,
             venue_filter=venue,
         )
@@ -309,7 +317,7 @@ def query_generic_prefixes_for_category(
             all_entries.append((date_str, prefix, sub_dim_value))
 
     if not all_entries:
-        logger.warning("[TURBO] No combinatoric prefixes for %s/%s", cat, service)
+        logger.warning("[TURBO] No combinatoric prefixes for %s/%s", asset_group, service)
         return {
             "found_dates": set(),
             "venue_data": {},
@@ -330,7 +338,7 @@ def query_generic_prefixes_for_category(
     logger.info(
         "[TURBO] Querying %s generic combinatoric prefixes for %s/%s (%s dates)",
         len(all_entries),
-        cat,
+        asset_group,
         service,
         len(dates_to_check),
     )
@@ -362,7 +370,7 @@ def query_generic_prefixes_for_category(
         "[TURBO] Generic combinatorics found data in %s dates, %s sub-dimensions for %s/%s",
         len(found_dates),
         len(sub_dimension_data),
-        cat,
+        asset_group,
         service,
     )
 
@@ -379,15 +387,15 @@ def query_generic_prefixes_for_category(
     }
 
 
-def get_expected_dates_for_category(
+def get_expected_dates_for_asset_group(
     all_dates: set[str],
     expected_start_dates_config: Mapping[str, object],
     service: str,
-    cat: str,
+    asset_group: str,
 ) -> set[str]:
-    """Get expected dates for a category, respecting category_start from config."""
-    cat_start = get_category_start_date(expected_start_dates_config, service, cat)
-    if not cat_start:
+    """Get expected dates for an asset group, respecting asset_group_start from config."""
+    ag_start = get_asset_group_start_date(expected_start_dates_config, service, asset_group)
+    if not ag_start:
         return all_dates  # No start date configured, use all dates
-    # Filter to dates >= category_start
-    return {d for d in all_dates if d >= cat_start}
+    # Filter to dates >= asset_group_start
+    return {d for d in all_dates if d >= ag_start}

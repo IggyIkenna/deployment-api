@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import aiohttp
+import aiohttp.resolver
 import google.auth
 import google.auth.transport.requests
 
@@ -55,13 +56,15 @@ def _parse_image_url(image_url: str) -> dict[str, str] | None:
 def _get_auth_token() -> str | None:
     """Get OAuth2 token for Artifact Registry API."""
     try:
-        credentials, _ = google.auth.default(  # type: ignore[misc]  # google-auth stubs incomplete
+        creds_result: tuple[object, object] = google.auth.default(  # pyright: ignore[reportUnknownMemberType]  # google-auth stubs
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
+        credentials: object = creds_result[0]
         # Refresh credentials if needed
         request = google.auth.transport.requests.Request()
-        credentials.refresh(request)  # type: ignore[union-attr]  # google-auth stubs incomplete
-        return credentials.token  # type: ignore[union-attr]  # google-auth stubs incomplete
+        if hasattr(credentials, "refresh"):
+            credentials.refresh(request)
+        return str(getattr(credentials, "token", "")) if hasattr(credentials, "token") else None
     except (OSError, ValueError, RuntimeError) as e:
         logger.error("Failed to get auth token: %s", e)
         return None
@@ -117,7 +120,8 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
 
     try:
         timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        connector = aiohttp.TCPConnector(resolver=aiohttp.resolver.ThreadedResolver())
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             # Get manifest (this returns the digest in Docker-Content-Digest header)
             async with session.get(manifest_url, headers=headers) as response:
                 if response.status != 200:

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
-from unified_config_interface import UnifiedCloudConfig
+from unified_trading_library.config_interface import UnifiedCloudConfig
 
 from deployment_api import __version__ as _api_version
 from deployment_api.utils.service_utils import get_ui_dist_dir
@@ -50,14 +50,16 @@ async def health() -> dict[str, object]:
         "status": "ok",
         "service": "deployment-api",
         "cloud_provider": _cloud_cfg.cloud_provider,
-        "mock_mode": _cloud_cfg.cloud_mock_mode,
+        "mock_mode": _cloud_cfg.is_mock_mode(),
         "data_freshness": _data_freshness(),
     }
 
 
 @router.get("/api/health")
 async def health_check():
-    """Detailed health check. Includes GCS FUSE status for UI display."""
+    """Detailed health check. Includes GCS FUSE status + cloud-mode flags so
+    the UI can render a live-vs-mock indicator chip + banner.
+    """
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
     return {
@@ -65,7 +67,16 @@ async def health_check():
         "version": _api_version,
         "config_dir": None,  # Will be set by main app
         "gcs_fuse": get_gcs_fuse_status(),
+        "cloud_provider": _cloud_cfg.cloud_provider,
+        "mock_mode": _cloud_cfg.is_mock_mode(),
+        "data_freshness": _data_freshness(),
     }
+
+
+@router.get("/version")
+async def version() -> dict[str, str]:
+    """Return service version information."""
+    return {"version": _api_version, "service": "deployment-api"}
 
 
 @router.get("/readiness")
@@ -148,6 +159,16 @@ async def clear_cache():
 
             turbo_cleared = clear_turbo_cache()
             total_cleared += turbo_cleared
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.warning("Unexpected error during operation: %s", e, exc_info=True)
+            pass
+
+        # Clear the availability index cache (GCS index reads)
+        try:
+            from .services.data_status_service import clear_index_cache
+
+            clear_index_cache()
+            total_cleared += 1
         except (OSError, ValueError, RuntimeError) as e:
             logger.warning("Unexpected error during operation: %s", e, exc_info=True)
             pass

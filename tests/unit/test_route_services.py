@@ -39,6 +39,22 @@ sys.modules["deployment_api.routes.services"] = _svc_routes
 _spec.loader.exec_module(_svc_routes)  # type: ignore[union-attr]
 
 
+# Suppress cloud_mock_mode deprecation warnings from fixture save/restore
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+
+
+@pytest.fixture(autouse=True)
+def _disable_mock_mode():
+    """Force live code path so patches on config_loader take effect."""
+    original_data_mode = _svc_routes._cfg.data_mode
+    original_cloud_mock = _svc_routes._cfg.cloud_mock_mode
+    _svc_routes._cfg.data_mode = "real"
+    _svc_routes._cfg.cloud_mock_mode = False
+    yield
+    _svc_routes._cfg.data_mode = original_data_mode
+    _svc_routes._cfg.cloud_mock_mode = original_cloud_mock
+
+
 def _make_request(config_dir=None):
     mock_request = MagicMock()
     mock_request.app.state.config_dir = config_dir or Path("/fake/configs")

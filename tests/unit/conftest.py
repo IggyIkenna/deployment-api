@@ -49,6 +49,36 @@ def _ensure_services_mocked() -> None:
 
     real_um = importlib.import_module("deployment_api.services.user_management")
 
+    # Load data_status_drilldown as a REAL module BEFORE the services package is
+    # replaced below. Its tests patch functions inside it directly, and the
+    # module has no circular-import risk (only depends on UAC + storage facade).
+    real_drilldown = importlib.import_module("deployment_api.services.data_status_drilldown")
+
+    # data_status_mock is a pure-function seed module with no circular import
+    # risk. Load it as a real module so routes/data_status.py can import from
+    # it when mock_mode is enabled under test.
+    real_mock = importlib.import_module("deployment_api.services.data_status_mock")
+
+    # shard_detail is a read-only drill-down service that depends on
+    # data_status_drilldown (already loaded above) + UAC + storage_facade —
+    # no circular risk; tests monkey-patch module-level attrs directly.
+    real_shard_detail = importlib.import_module("deployment_api.services.shard_detail")
+
+    # coverage_drift is a pure pandas/UAC consumer (Phase 8.B). Load BEFORE
+    # the services-package stub replacement so its real implementation is
+    # available to tests.
+    real_coverage_drift = importlib.import_module("deployment_api.services.coverage_drift")
+
+    # data_status_hierarchical is a pure UAC + UTL + drilldown-facade
+    # consumer (drilldown plan Phase 1). Load BEFORE the stub replacement
+    # so the new /api/data-status/drilldown route's tests can patch the
+    # ``read_availability_index`` attribute on the real module.
+    real_hierarchical = importlib.import_module("deployment_api.services.data_status_hierarchical")
+
+    # deploy_missing is a pure-function module (drilldown plan Phase 3).
+    # Loaded for the same reason as data_status_hierarchical above.
+    real_deploy_missing = importlib.import_module("deployment_api.services.deploy_missing")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -65,6 +95,32 @@ def _ensure_services_mocked() -> None:
     # Re-register user_management as a real module on the fake services package
     sys.modules["deployment_api.services.user_management"] = real_um
     services_mod.user_management = real_um
+
+    # Re-register data_status_drilldown as a real module on the fake package
+    sys.modules["deployment_api.services.data_status_drilldown"] = real_drilldown
+    services_mod.data_status_drilldown = real_drilldown
+
+    # Re-register data_status_mock as a real module on the fake package
+    sys.modules["deployment_api.services.data_status_mock"] = real_mock
+    services_mod.data_status_mock = real_mock
+
+    # Re-register shard_detail as a real module on the fake package
+    sys.modules["deployment_api.services.shard_detail"] = real_shard_detail
+    services_mod.shard_detail = real_shard_detail
+
+    # Re-register coverage_drift (already imported above before the stub
+    # replacement) as a real module on the fake services package (Phase 8.B).
+    sys.modules["deployment_api.services.coverage_drift"] = real_coverage_drift
+    services_mod.coverage_drift = real_coverage_drift
+
+    # Re-register data_status_hierarchical as a real module (drilldown
+    # plan Phase 1).
+    sys.modules["deployment_api.services.data_status_hierarchical"] = real_hierarchical
+    services_mod.data_status_hierarchical = real_hierarchical
+
+    # Re-register deploy_missing as a real module (drilldown plan Phase 3).
+    sys.modules["deployment_api.services.deploy_missing"] = real_deploy_missing
+    services_mod.deploy_missing = real_deploy_missing
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
@@ -233,7 +289,7 @@ def _ensure_external_packages_mocked() -> None:
         _mock_config_instance.broker_max_wait_seconds = 30
         # Misc
         _mock_config_instance.workspace_root = "/tmp/test-workspace"
-        _mock_config_instance.cloud_mock_mode = False
+        _mock_config_instance.is_mock_mode.return_value = False
         _mock_config_instance.enforce_single_region = False
         _mock_config_instance.disable_auth = False
         _mock_config_instance.api_key = "test-api-key"

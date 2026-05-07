@@ -78,10 +78,10 @@ async def validate_region(
 @router.get("/venues")
 async def get_venues(request: Request):
     """
-    Get all venues organized by category.
+    Get all venues organized by asset group.
 
     Returns:
-        Venues grouped by category (CEFI, TRADFI, DEFI) with their data types.
+        Venues grouped by asset group (CEFI, TRADFI, DEFI, …) with their data types.
     """
 
     def _load_venues_sync():
@@ -90,6 +90,12 @@ async def get_venues(request: Request):
 
     try:
         venues_config = await asyncio.to_thread(_load_venues_sync)
+        if isinstance(venues_config, dict):
+            out = dict(venues_config)
+            # YAML on disk may still use ``categories``; public API is ``asset_groups``.
+            if "categories" in out and "asset_groups" not in out:
+                out["asset_groups"] = out.pop("categories")
+            return out
         return venues_config
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues config")
@@ -98,50 +104,50 @@ async def get_venues(request: Request):
         ) from e
 
 
-@router.get("/venues/{category}")
-async def get_venues_by_category(category: str, request: Request):
+@router.get("/venues/{asset_group}")
+async def get_venues_by_asset_group(asset_group: str, request: Request):
     """
-    Get venues for a specific category.
+    Get venues for a specific asset group.
 
     Args:
-        category: Category name (CEFI, TRADFI, DEFI)
+        asset_group: Asset group (CEFI, TRADFI, DEFI, …)
 
     Returns:
-        List of venues and their data types for the category.
+        List of venues and their data types for the asset group.
     """
 
-    def _load_category_sync() -> dict[str, object] | None:
+    def _load_asset_group_sync() -> dict[str, object] | None:
         from typing import cast
 
         loader = get_config_loader(request)
         venues_config = loader.load_venues_config()
-        categories_raw: object = venues_config.get("categories") or {}
-        categories = (
-            cast(dict[str, object], categories_raw) if isinstance(categories_raw, dict) else {}
+        groups_raw: object = (
+            venues_config.get("asset_groups") or venues_config.get("categories") or {}
         )
+        groups = cast(dict[str, object], groups_raw) if isinstance(groups_raw, dict) else {}
 
-        # Case-insensitive lookup
-        for cat_name, cat_data_raw in categories.items():
-            if cat_name.upper() == category.upper():
-                cat_data = (
-                    cast(dict[str, object], cat_data_raw) if isinstance(cat_data_raw, dict) else {}
+        # Case-insensitive lookup; YAML may use ``categories`` or ``asset_groups``.
+        for ag_name, ag_data_raw in groups.items():
+            if ag_name.upper() == asset_group.upper():
+                ag_data = (
+                    cast(dict[str, object], ag_data_raw) if isinstance(ag_data_raw, dict) else {}
                 )
                 return {
-                    "category": cat_name,
-                    "venues": cat_data.get("venues") or [],
-                    "data_types": cat_data.get("data_types") or [],
+                    "asset_group": ag_name,
+                    "venues": ag_data.get("venues") or [],
+                    "data_types": ag_data.get("data_types") or [],
                 }
         return None
 
     try:
-        result = await asyncio.to_thread(_load_category_sync)
+        result = await asyncio.to_thread(_load_asset_group_sync)
         if result is None:
-            raise HTTPException(status_code=404, detail=f"Category '{category}' not found")
+            raise HTTPException(status_code=404, detail=f"Asset group '{asset_group}' not found")
         return result
     except HTTPException:
         raise
     except (OSError, ValueError, RuntimeError) as e:
-        logger.exception("Failed to load venues by category")
+        logger.exception("Failed to load venues by asset group")
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
@@ -326,3 +332,53 @@ async def get_service_dependencies(service_name: str, request: Request):
         raise HTTPException(
             status_code=500, detail="Internal server error. Check server logs."
         ) from e
+
+
+@router.get("/shard-axis-matrix")
+async def get_shard_axis_matrix(
+    service: str | None = Query(None, description="Optional: filter to one service"),
+):
+    """Return the per-(service, asset_group) shard / display / primary axis SSOT.
+
+    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.plan.md`` Phase 2.
+
+    SSOT lives in
+    ``unified_api_contracts.registry.data_status_axis_matrix``. The
+    deployment-ui DataStatusTab reads this endpoint to drive the per-service
+    axis selector (DEFI → chain dropdown, sports → league_id dropdown,
+    strategy/execution → job_id picker, ml → model_family + training_period,
+    multi-timeframe → timeframe dropdown).
+
+    Empty axis tuples for ``(service, asset_group)`` pairs the service does
+    NOT cover (e.g. ``features-onchain-service`` only ships ``defi``)
+    deliberately surface as missing keys in the response — the UI shows
+    "asset_group not in scope" rather than rendering an empty panel.
+
+    Optional ``service`` query filters the matrix to one service for
+    smaller payloads.
+    """
+    # Lazy import keeps the route importable in mock mode where UAC
+    # may not be installed (Tier 0 emulator-only setup).
+    from unified_api_contracts.registry.data_status_axis_matrix import (
+        BREAKDOWN_AXES,
+        DISPLAY_AXES,
+        PRIMARY_AXIS,
+        SHARD_AXIS_MATRIX,
+    )
+
+    target = service if isinstance(service, str) and service else None
+
+    def _filter(items: dict[tuple[str, str], object]) -> dict[str, dict[str, object]]:
+        out: dict[str, dict[str, object]] = {}
+        for (svc, asset_group), value in items.items():
+            if target is not None and svc != target:
+                continue
+            out.setdefault(svc, {})[asset_group] = value
+        return out
+
+    return {
+        "shard_axes": _filter(SHARD_AXIS_MATRIX),
+        "display_axes": _filter(DISPLAY_AXES),
+        "primary_axis": _filter(PRIMARY_AXIS),
+        "breakdown_axes": _filter(BREAKDOWN_AXES),
+    }

@@ -34,18 +34,18 @@ class TestGenerateCacheKey:
         assert "2024-01-01" in key
         assert "2024-01-31" in key
 
-    def test_with_categories(self):
+    def test_with_asset_groups(self):
         key = self.svc._generate_cache_key(
-            "instruments-service", "2024-01-01", "2024-01-31", categories=["CEFI", "TRADFI"]
+            "instruments-service", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "TRADFI"]
         )
-        assert "cats:CEFI,TRADFI" in key
+        assert "ags:CEFI,TRADFI" in key
 
-    def test_categories_sorted(self):
+    def test_asset_groups_sorted(self):
         key1 = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", categories=["TRADFI", "CEFI"]
+            "svc", "2024-01-01", "2024-01-31", asset_groups=["TRADFI", "CEFI"]
         )
         key2 = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", categories=["CEFI", "TRADFI"]
+            "svc", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "TRADFI"]
         )
         assert key1 == key2
 

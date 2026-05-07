@@ -37,9 +37,9 @@ for _key in list(sys.modules):
         del sys.modules[_key]
 
 from deployment_api.routes.state_management import (
+    _asset_groups_from_state,
     _build_blob_timestamp_map,
     _build_existing_dates_sets,
-    _categories_from_state,
     _classify_all_shards,
     _classify_shard,
     _compute_classification_counts,
@@ -325,7 +325,7 @@ class TestBuildExistingDatesSetsInStateManagement:
     """Tests for _build_existing_dates_sets in state_management."""
 
     def test_basic_dates_found_list(self):
-        turbo = {"categories": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
+        turbo = {"asset_groups": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
         cat_dates, _venue_dates = _build_existing_dates_sets(turbo)
         assert "2024-01-01" in cat_dates["CEFI"]
 
@@ -339,7 +339,7 @@ class TestBuildBlobTimestampMapInStateManagement:
 
     def test_extracts_timestamps(self):
         turbo = {
-            "categories": {
+            "asset_groups": {
                 "CEFI": {
                     "_venue_date_blob_timestamps": {
                         "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
@@ -354,15 +354,15 @@ class TestBuildBlobTimestampMapInStateManagement:
         assert _build_blob_timestamp_map({}) == {}
 
 
-class TestCategoriesFromState:
-    """Tests for _categories_from_state."""
+class TestAssetGroupsFromState:
+    """Tests for _asset_groups_from_state."""
 
     def test_extracts_categories_from_succeeded_shards(self):
-        s1 = SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"})
+        s1 = SimpleNamespace(status="succeeded", dimensions={"asset_group": "CEFI"})
         s2 = SimpleNamespace(status="succeeded", dimensions={"category": "TRADFI"})
         s3 = SimpleNamespace(status="failed", dimensions={"category": "DEFI"})  # excluded
         state = SimpleNamespace(shards=[s1, s2, s3])
-        result = _categories_from_state(state)
+        result = _asset_groups_from_state(state)
         assert result is not None
         assert "CEFI" in result
         assert "TRADFI" in result
@@ -371,12 +371,12 @@ class TestCategoriesFromState:
     def test_no_succeeded_shards_returns_none(self):
         s1 = SimpleNamespace(status="pending", dimensions={"category": "CEFI"})
         state = SimpleNamespace(shards=[s1])
-        result = _categories_from_state(state)
+        result = _asset_groups_from_state(state)
         assert result is None
 
     def test_empty_shards_returns_none(self):
         state = SimpleNamespace(shards=[])
-        result = _categories_from_state(state)
+        result = _asset_groups_from_state(state)
         assert result is None
 
 

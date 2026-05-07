@@ -1,0 +1,103 @@
+# Cloud Build config for the `deployment-dashboard` Cloud Run service.
+#
+# Produces a single image that bundles:
+#   * deployment-api FastAPI server (this repo, HEAD)
+#   * deployment-ui Vite SPA build (sibling repo, branch matched at clone time)
+#
+# The image is pushed to the `deployment-dashboard` Artifact Registry repo so
+# the running Cloud Run revision can be rolled forward via:
+#   gcloud run services update deployment-dashboard \
+#       --region=asia-northeast1 \
+#       --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/deployment-dashboard/deployment-dashboard:$SHORT_SHA
+#
+# This config is invoked manually:
+#   gcloud builds submit . \
+#       --config=cloudbuild-dashboard.yaml \
+#       --region=asia-northeast1 \
+#       --substitutions=_UI_BRANCH=live-defi-rollout
+
+substitutions:
+  _SERVICE_NAME: "deployment-dashboard"
+  _REGISTRY_REPO: "deployment-dashboard"
+
+steps:
+  # ── Auth pre-check ────────────────────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
+    id: "auth-precheck"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        gcloud auth print-access-token >/dev/null
+        gcloud artifacts repositories describe ${_REGISTRY_REPO} \
+            --location=asia-northeast1 --quiet
+        echo "Auth pre-check passed"
+    waitFor: ["-"]
+
+  # ── Pre-pull the unified-trading-library base image so the build step's
+  # ── docker daemon has it cached + authed before the multi-stage FROM. ──
+  - name: "gcr.io/cloud-builders/docker"
+    id: "pull-base"
+    args:
+      [
+        "pull",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest",
+      ]
+    waitFor: ["-"]
+
+  # ── Verify deployment-ui-src/ is in the build context ─────────────────
+  # The submitter is responsible for staging the deployment-ui working tree
+  # at ./deployment-ui-src/ before invoking gcloud builds submit. Cloning
+  # private GitHub repos from inside Cloud Build requires extra credential
+  # plumbing, so we keep the pull on the operator side.
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "verify-ui-context"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        if [ ! -f deployment-ui-src/package.json ]; then
+          echo "FAIL: deployment-ui-src/package.json missing — stage the deployment-ui working tree before submitting." >&2
+          exit 1
+        fi
+        echo "deployment-ui-src/ present (package.json found)"
+    waitFor: ["-"]
+
+  # ── Build the dashboard image ─────────────────────────────────────────
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build"
+    args:
+      - "build"
+      - "-f"
+      - "Dockerfile.dashboard"
+      - "--build-arg"
+      - "PROJECT_ID=$PROJECT_ID"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+      - "-t"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
+      - "."
+    waitFor: ["pull-base", "verify-ui-context", "auth-precheck"]
+
+  # ── Push (skip the QG step — we trust the upstream deployment-api QG) ─
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push"
+    args:
+      [
+        "push",
+        "--all-tags",
+        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}",
+      ]
+    waitFor: ["build"]
+
+images:
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+
+timeout: "1200s"

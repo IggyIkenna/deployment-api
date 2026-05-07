@@ -220,7 +220,7 @@ class SyncService:
             # Always release lock after processing
             self.state_manager.release_deployment_lock(deployment_id)
 
-    def _acquire_and_launch(
+    def _acquire_and_launch(  # noqa: C901
         self,
         deployment_id: str,
         config: dict[str, object],
@@ -241,7 +241,13 @@ class SyncService:
             return 0
 
         batch_size = min(len(shards_to_launch), settings.DEFAULT_MAX_CONCURRENT)
-        acquired = int(self.quota_broker.try_acquire_batch(quota_shape, batch_size))  # type: ignore[union-attr, arg-type]  # dynamic object
+        _broker = self.quota_broker
+        if _broker is None:
+            return 0
+        _try_acquire: object = getattr(_broker, "try_acquire_batch", None)
+        if not callable(_try_acquire):
+            return 0
+        acquired = int(_try_acquire(quota_shape, batch_size))
         if acquired == 0:
             logger.debug("[SYNC_SERVICE] %s: No quota available for scheduling", deployment_id)
             return 0
@@ -270,7 +276,8 @@ class SyncService:
         for i in range(min(acquired, len(shards_to_launch))):
             shard = shards_to_launch[i]
             try:
-                job_id = orch.submit_shard(shard, config)  # type: ignore[union-attr, arg-type]  # dynamic object
+                _submit_fn: object = getattr(orch, "submit_shard", None)
+                job_id = _submit_fn(shard, config) if callable(_submit_fn) else None
                 if job_id:
                     shard["job_id"] = job_id
                     shard["status"] = "running"
@@ -280,7 +287,9 @@ class SyncService:
                 logger.error(
                     "[SYNC_SERVICE] Error launching shard %s: %s", shard.get("shard_id"), e
                 )
-                self.quota_broker.release(quota_shape, 1)  # type: ignore[union-attr]  # dynamic object
+                _release_fn: object = getattr(self.quota_broker, "release", None)
+                if callable(_release_fn):
+                    _release_fn(quota_shape, 1)
 
         if launched > 0:
             elapsed = _time.time() - launch_start
@@ -317,7 +326,7 @@ class SyncService:
                 state,
                 vm_map,
                 shard_statuses,
-                cast(dict[str, object], self.state_manager._pending_vm_deletes),  # type: ignore[reportPrivateUsage]
+                cast(dict[str, object], getattr(self.state_manager, "_pending_vm_deletes", {})),
             )
             if orphan_count > 0:
                 logger.info(

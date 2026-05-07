@@ -49,6 +49,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   semver:
     name: Semver Agent — deployment-api

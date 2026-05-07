@@ -14,7 +14,6 @@
   "extraPaths": [
     "../unified-cloud-interface",
     "../unified-config-interface",
-    "../unified-events-interface",
     "../unified-trading-library"
   ],
   "exclude": ["tests"]

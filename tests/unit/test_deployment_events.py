@@ -107,13 +107,13 @@ class TestNotifyDeploymentUpdatedSync:
         mock_q = MagicMock()
         ev._sync_queue = mock_q
 
-        # unified_cloud_interface.get_queue_client is lazily imported inside the function
+        # unified_trading_library.cloud_interface.get_queue_client is lazily imported inside the function
         mock_uci = MagicMock()
         mock_uci.get_queue_client = MagicMock(side_effect=RuntimeError("no queue"))
 
         with patch.dict(
             __import__("sys").modules,
-            {"unified_cloud_interface": mock_uci},
+            {"unified_trading_library.cloud_interface": mock_uci},
         ):
             ev.notify_deployment_updated_sync("dep-sync-1")
 
@@ -125,7 +125,7 @@ class TestNotifyDeploymentUpdatedSync:
         with patch.dict(
             __import__("sys").modules,
             {
-                "unified_cloud_interface": MagicMock(
+                "unified_trading_library.cloud_interface": MagicMock(
                     get_queue_client=MagicMock(side_effect=RuntimeError("no queue"))
                 )
             },
@@ -140,7 +140,7 @@ class TestNotifyDeploymentUpdatedSync:
         with patch.dict(
             __import__("sys").modules,
             {
-                "unified_cloud_interface": MagicMock(
+                "unified_trading_library.cloud_interface": MagicMock(
                     get_queue_client=MagicMock(side_effect=RuntimeError)
                 )
             },

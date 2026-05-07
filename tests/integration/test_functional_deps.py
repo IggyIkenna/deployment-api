@@ -29,7 +29,7 @@ class TestUnifiedConfigInterfaceFunctional:
 
     def test_deployment_api_config_extends_unified_cloud_config(self) -> None:
         """DeploymentApiConfig inherits from UnifiedCloudConfig correctly."""
-        from unified_config_interface import UnifiedCloudConfig
+        from unified_trading_library.config_interface import UnifiedCloudConfig
 
         from deployment_api.deployment_api_config import DeploymentApiConfig
 
@@ -73,11 +73,11 @@ class TestUnifiedConfigInterfaceFunctional:
 
     def test_unified_cloud_config_test_env_fields(self) -> None:
         """UnifiedCloudConfig reads env vars correctly in test mode."""
-        from unified_config_interface import UnifiedCloudConfig
+        from unified_trading_library.config_interface import UnifiedCloudConfig
 
         cfg = UnifiedCloudConfig()
         assert cfg.cloud_provider == "local"
-        assert cfg.cloud_mock_mode is True
+        assert cfg.is_mock_mode() is True
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ class TestUnifiedCloudInterfaceFunctional:
 
     def test_get_storage_client_local_provider(self) -> None:
         """get_storage_client(provider='local') returns a usable client."""
-        from unified_cloud_interface import get_storage_client
+        from unified_trading_library.cloud_interface import get_storage_client
 
         client = get_storage_client(provider="local")
         assert client is not None
@@ -102,7 +102,7 @@ class TestUnifiedCloudInterfaceFunctional:
 
     def test_storage_client_upload_download_roundtrip(self) -> None:
         """Upload bytes and download them back via local storage client."""
-        from unified_cloud_interface import get_storage_client
+        from unified_trading_library.cloud_interface import get_storage_client
 
         client = get_storage_client(provider="local")
         bucket = "deployment-api-test-bucket"
@@ -115,7 +115,7 @@ class TestUnifiedCloudInterfaceFunctional:
 
     def test_storage_client_blob_exists_check(self) -> None:
         """blob_exists returns correct booleans."""
-        from unified_cloud_interface import get_storage_client
+        from unified_trading_library.cloud_interface import get_storage_client
 
         client = get_storage_client(provider="local")
         bucket = "deployment-api-test-bucket"
@@ -126,7 +126,7 @@ class TestUnifiedCloudInterfaceFunctional:
 
     def test_storage_client_list_blobs_returns_iterable(self) -> None:
         """list_blobs returns an iterable of blob metadata objects."""
-        from unified_cloud_interface import get_storage_client
+        from unified_trading_library.cloud_interface import get_storage_client
 
         client = get_storage_client(provider="local")
         bucket = "deployment-api-list-test"
@@ -141,7 +141,7 @@ class TestUnifiedCloudInterfaceFunctional:
 
     def test_storage_client_delete_blob(self) -> None:
         """delete_blob removes a blob from local storage."""
-        from unified_cloud_interface import get_storage_client
+        from unified_trading_library.cloud_interface import get_storage_client
 
         client = get_storage_client(provider="local")
         bucket = "deployment-api-delete-test"
@@ -153,7 +153,7 @@ class TestUnifiedCloudInterfaceFunctional:
 
     def test_storage_client_type_import(self) -> None:
         """StorageClient type is importable for type annotations."""
-        from unified_cloud_interface import StorageClient
+        from unified_trading_library.cloud_interface import StorageClient
 
         assert StorageClient is not None
 
@@ -168,13 +168,13 @@ class TestUnifiedEventsInterfaceFunctional:
 
     def test_setup_events_test_mode(self) -> None:
         """setup_events() in 'test' mode completes without error."""
-        from unified_events_interface import setup_events
+        from unified_trading_library.events import setup_events
 
         setup_events("deployment-api-test", "test")
 
     def test_log_event_fires_without_error(self) -> None:
         """log_event() in test mode does not raise."""
-        from unified_events_interface import log_event, setup_events
+        from unified_trading_library.events import log_event, setup_events
 
         setup_events("deployment-api-test-log", "test")
         log_event(
@@ -184,7 +184,7 @@ class TestUnifiedEventsInterfaceFunctional:
 
     def test_log_event_with_severity_levels(self) -> None:
         """log_event() accepts various severity levels."""
-        from unified_events_interface import log_event, setup_events
+        from unified_trading_library.events import log_event, setup_events
 
         setup_events("deployment-api-test-sev", "test")
         for severity in ("INFO", "WARNING", "ERROR", "CRITICAL"):
@@ -205,7 +205,7 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_user_role_enum_has_expected_members(self) -> None:
         """UserRole enum includes VIEWER, OPERATOR, ADMIN, SUPER_ADMIN."""
-        from unified_internal_contracts.schemas.rbac import UserRole
+        from unified_api_contracts.internal.schemas.rbac import UserRole
 
         assert UserRole.VIEWER is not None
         assert UserRole.OPERATOR is not None
@@ -214,14 +214,14 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_permission_enum_has_members(self) -> None:
         """Permission enum has at least one member."""
-        from unified_internal_contracts.schemas.rbac import Permission
+        from unified_api_contracts.internal.schemas.rbac import Permission
 
         members = list(Permission)
         assert len(members) > 0
 
     def test_role_permissions_mapping(self) -> None:
         """ROLE_PERMISSIONS maps each UserRole to a frozenset of Permissions."""
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             ROLE_PERMISSIONS,
             Permission,
             UserRole,
@@ -240,7 +240,7 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_has_role_permission_function(self) -> None:
         """has_role_permission checks permission membership correctly."""
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             ROLE_PERMISSIONS,
             UserRole,
             has_role_permission,
@@ -256,7 +256,7 @@ class TestUnifiedInternalContractsFunctional:
         """UserProfile can be created and returns effective_permissions()."""
         from datetime import UTC, datetime
 
-        from unified_internal_contracts.schemas.rbac import UserProfile, UserRole
+        from unified_api_contracts.internal.schemas.rbac import UserProfile, UserRole
 
         profile = UserProfile(
             user_id="test-user-001",
@@ -277,7 +277,7 @@ class TestUnifiedInternalContractsFunctional:
         """UserProfile.has_permission() correctly checks role-based permissions."""
         from datetime import UTC, datetime
 
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             ROLE_PERMISSIONS,
             UserProfile,
             UserRole,
@@ -299,7 +299,7 @@ class TestUnifiedInternalContractsFunctional:
 
     def test_user_role_string_values(self) -> None:
         """UserRole values can be converted to/from strings."""
-        from unified_internal_contracts.schemas.rbac import UserRole
+        from unified_api_contracts.internal.schemas.rbac import UserRole
 
         for role in UserRole:
             # Roundtrip: enum -> str -> enum
@@ -419,7 +419,7 @@ class TestCrossDepIntegration:
 
     def test_rbac_permission_check_integration(self) -> None:
         """has_role_permission works for role-based checks used by rbac.py."""
-        from unified_internal_contracts.schemas.rbac import (
+        from unified_api_contracts.internal.schemas.rbac import (
             Permission,
             UserRole,
             has_role_permission,

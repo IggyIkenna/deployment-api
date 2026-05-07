@@ -4,7 +4,7 @@ Unit tests for service_status_checkers module.
 Tests cover:
 - _get_cache_dict: typed sub-dict extraction
 - _build_sort_key: Cloud Build object sort key
-- _get_category_blob_timestamp: GCS blob timestamp fetching (mocked storage)
+- _get_asset_group_blob_timestamp: GCS blob timestamp fetching (mocked storage)
 - _get_service_timestamps_sync: service timestamps (mocked storage)
 - get_latest_code_push: GitHub API calls (mocked Github)
 - get_latest_data_timestamp: async wrapper with caching
@@ -111,20 +111,20 @@ class TestBuildSortKey:
 
 
 # ---------------------------------------------------------------------------
-# _get_category_blob_timestamp
+# _get_asset_group_blob_timestamp
 # ---------------------------------------------------------------------------
 
 
 class TestGetCategoryBlobTimestamp:
     def test_returns_empty_when_no_blobs(self):
-        from deployment_api.routes.service_status_checkers import _get_category_blob_timestamp
+        from deployment_api.routes.service_status_checkers import _get_asset_group_blob_timestamp
 
         with patch("deployment_api.routes.service_status_checkers.list_objects", return_value=[]):
-            result = _get_category_blob_timestamp("test-bucket", "CEFI")
+            result = _get_asset_group_blob_timestamp("test-bucket", "CEFI")
         assert result == {}
 
     def test_returns_timestamp_for_latest_blob(self):
-        from deployment_api.routes.service_status_checkers import _get_category_blob_timestamp
+        from deployment_api.routes.service_status_checkers import _get_asset_group_blob_timestamp
 
         now = datetime.now(UTC)
         blob1 = MagicMock()
@@ -141,14 +141,14 @@ class TestGetCategoryBlobTimestamp:
             "deployment_api.routes.service_status_checkers.list_objects",
             return_value=[blob1, blob2],
         ):
-            result = _get_category_blob_timestamp("test-bucket", "CEFI")
+            result = _get_asset_group_blob_timestamp("test-bucket", "CEFI")
 
         assert "timestamp" in result
         assert result["file"] == "file2.parquet"
         assert result["size_mb"] == 3.0
 
     def test_handles_blob_without_size(self):
-        from deployment_api.routes.service_status_checkers import _get_category_blob_timestamp
+        from deployment_api.routes.service_status_checkers import _get_asset_group_blob_timestamp
 
         now = datetime.now(UTC)
         blob = MagicMock()
@@ -160,12 +160,12 @@ class TestGetCategoryBlobTimestamp:
             "deployment_api.routes.service_status_checkers.list_objects",
             return_value=[blob],
         ):
-            result = _get_category_blob_timestamp("test-bucket", "CEFI")
+            result = _get_asset_group_blob_timestamp("test-bucket", "CEFI")
 
         assert result["size_mb"] == 0
 
     def test_handles_blob_without_updated(self):
-        from deployment_api.routes.service_status_checkers import _get_category_blob_timestamp
+        from deployment_api.routes.service_status_checkers import _get_asset_group_blob_timestamp
 
         blob1 = MagicMock()
         blob1.updated = None
@@ -181,7 +181,7 @@ class TestGetCategoryBlobTimestamp:
             "deployment_api.routes.service_status_checkers.list_objects",
             return_value=[blob1, blob2],
         ):
-            result = _get_category_blob_timestamp("test-bucket", "CEFI")
+            result = _get_asset_group_blob_timestamp("test-bucket", "CEFI")
         # Should pick file2 (has updated timestamp)
         assert result.get("file") == "file2.parquet"
 
@@ -196,9 +196,9 @@ class TestGetServiceTimestampsSync:
         from deployment_api.routes.service_status_checkers import _get_service_timestamps_sync
 
         result = _get_service_timestamps_sync("unknown-service")
-        assert "by_category" in result or "error" in result or "latest" in result
+        assert "by_asset_group" in result or "error" in result or "latest" in result
 
-    def test_known_service_returns_by_category(self):
+    def test_known_service_returns_by_asset_group(self):
         from deployment_api.routes.service_status_checkers import _get_service_timestamps_sync
 
         now = datetime.now(UTC)
@@ -213,7 +213,7 @@ class TestGetServiceTimestampsSync:
         ):
             result = _get_service_timestamps_sync("instruments-service")
 
-        assert "by_category" in result
+        assert "by_asset_group" in result
         assert "latest" in result
 
     def test_returns_error_on_exception(self):
@@ -225,7 +225,7 @@ class TestGetServiceTimestampsSync:
         ):
             result = _get_service_timestamps_sync("instruments-service")
 
-        # Should return either by_category with errors or error key
+        # Should return either by_asset_group with errors or error key
         assert isinstance(result, dict)
 
     def test_handles_storage_error_per_category(self):
@@ -237,10 +237,10 @@ class TestGetServiceTimestampsSync:
         ):
             result = _get_service_timestamps_sync("market-tick-data-handler")
 
-        # by_category should contain error entries for each category
+        # by_asset_group should contain error entries for each category
         assert isinstance(result, dict)
-        if "by_category" in result:
-            for _cat, cat_result in result["by_category"].items():
+        if "by_asset_group" in result:
+            for _cat, cat_result in result["by_asset_group"].items():
                 assert "error" in cat_result
 
 
@@ -307,7 +307,7 @@ class TestGetLatestDataTimestamp:
     def test_returns_result_from_gcs_scan(self):
         from deployment_api.routes.service_status_checkers import get_latest_data_timestamp
 
-        mock_result = {"by_category": {"CEFI": {"timestamp": "2024-01-15T12:00:00+00:00"}}}
+        mock_result = {"by_asset_group": {"CEFI": {"timestamp": "2024-01-15T12:00:00+00:00"}}}
 
         with (
             patch(
@@ -325,12 +325,12 @@ class TestGetLatestDataTimestamp:
             result = asyncio.run(get_latest_data_timestamp("instruments-service", use_cache=False))
 
         assert result is not None
-        assert "by_category" in result
+        assert "by_asset_group" in result
 
     def test_uses_cache_when_fresh(self):
         from deployment_api.routes.service_status_checkers import get_latest_data_timestamp
 
-        cached_data = {"by_category": {}, "latest": "2024-01-15T12:00:00+00:00"}
+        cached_data = {"by_asset_group": {}, "latest": "2024-01-15T12:00:00+00:00"}
         cache_time = datetime.now(UTC).isoformat()
 
         mock_cache: dict[str, object] = {

@@ -13,6 +13,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import cast
 
+from deployment_api.utils.trading_axis import trading_axis_from_deployment_state
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,12 +36,18 @@ def _parse_state_blob(
     content: str,
     folder_name: str,
     service_filter: str | None,
+    asset_group_filter: str | None = None,
 ) -> dict[str, object] | None:
     """Parse a state.json blob content into a deployment summary dict."""
     try:
         data = cast("dict[str, object]", json.loads(content))
         if service_filter and data.get("service") != service_filter:
             return None
+        if asset_group_filter:
+            want = asset_group_filter.strip().upper()
+            got = trading_axis_from_deployment_state(data)
+            if not got or got != want:
+                return None
         shards = cast("list[dict[str, object]]", data.get("shards") or [])
         effective_status = _compute_effective_status(shards)
         total_shards = len(shards)
@@ -73,6 +81,7 @@ def _fetch_one_deployment(
     bucket_name: str,
     project_id: str | None,
     service_filter: str | None,
+    asset_group_filter: str | None = None,
 ) -> dict[str, object] | None:
     """Fetch and parse a single deployment state.json from GCS."""
     from deployment_api.utils.storage_client import get_storage_client
@@ -91,7 +100,7 @@ def _fetch_one_deployment(
     except (OSError, ValueError, RuntimeError) as e:
         logger.debug("Failed to read %s: %s", state_blob_name, e)
         return None
-    return _parse_state_blob(content, folder_name, service_filter)
+    return _parse_state_blob(content, folder_name, service_filter, asset_group_filter)
 
 
 def list_deployments(
@@ -100,6 +109,7 @@ def list_deployments(
     service: str | None = None,
     deployment_env: str = "development",
     limit: int = 20,
+    asset_group: str | None = None,
 ) -> list[dict[str, object]]:
     """
     List recent deployments from GCS state files.
@@ -113,6 +123,8 @@ def list_deployments(
         service: Optional service name filter
         deployment_env: Deployment environment (development/production)
         limit: Maximum number of deployments to return
+        asset_group: Optional trading-axis filter (CEFI, DEFI, …), matches
+            ``asset_group`` / legacy ``category`` in state or shard dimensions
 
     Returns:
         List of deployment summaries, newest first.
@@ -136,12 +148,21 @@ def list_deployments(
         valid_prefixes.sort(reverse=True)
         if service is not None:
             valid_prefixes = [f for f in valid_prefixes if service in f]
-        valid_prefixes = valid_prefixes[: limit * 2]
+        # When filtering by trading axis, many deployments may not match — scan deeper.
+        scan_cap = limit * (25 if asset_group else 2)
+        valid_prefixes = valid_prefixes[:scan_cap]
 
         results: list[dict[str, object]] = []
         with ThreadPoolExecutor(max_workers=min(len(valid_prefixes), 10)) as pool:
             futures = {
-                pool.submit(_fetch_one_deployment, f, bucket_name, project_id, service): f
+                pool.submit(
+                    _fetch_one_deployment,
+                    f,
+                    bucket_name,
+                    project_id,
+                    service,
+                    asset_group,
+                ): f
                 for f in valid_prefixes
             }
             for future in as_completed(futures):

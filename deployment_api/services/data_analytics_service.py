@@ -50,7 +50,7 @@ class DataAnalyticsService:
         service: str,
         start_date: str,
         end_date: str,
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
         **kwargs: object,
     ) -> str:
@@ -61,7 +61,7 @@ class DataAnalyticsService:
             service: Service name
             start_date: Start date
             end_date: End date
-            categories: Categories filter
+            asset_groups: Asset groups filter
             venues: Venues filter
             **kwargs: Additional parameters
 
@@ -74,8 +74,8 @@ class DataAnalyticsService:
             end_date,
         ]
 
-        if categories:
-            key_parts.append(f"cats:{','.join(sorted(categories))}")
+        if asset_groups:
+            key_parts.append(f"ags:{','.join(sorted(asset_groups))}")
         if venues:
             key_parts.append(f"venues:{','.join(sorted(venues))}")
 
@@ -182,7 +182,7 @@ class DataAnalyticsService:
         from_data_status_service: Callable[  # Callable to get fresh data
             ..., Coroutine[Any, Any, dict[str, object]]
         ],
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
     ) -> dict[str, object]:
         """
@@ -192,7 +192,7 @@ class DataAnalyticsService:
             service: Service name
             start_date: Start date
             end_date: End date
-            categories: Categories filter
+            asset_groups: Asset groups filter
             venues: Venues filter
             from_data_status_service: Callable to get fresh data
 
@@ -204,7 +204,7 @@ class DataAnalyticsService:
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=categories,
+            asset_groups=asset_groups,
             venues=venues,
         )
 
@@ -221,7 +221,7 @@ class DataAnalyticsService:
             service=service,
             start_date=start_date,
             end_date=end_date,
-            categories=categories,
+            asset_groups=asset_groups,
             venues=venues,
         )
 
@@ -432,7 +432,7 @@ class DataAnalyticsService:
         from_data_status_service: Callable[  # Callable to get data status
             ..., Coroutine[Any, Any, dict[str, object]]
         ],
-        categories: list[str] | None = None,
+        asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
         """
         Aggregate data status across multiple services.
@@ -441,7 +441,7 @@ class DataAnalyticsService:
             services: List of service names
             start_date: Start date
             end_date: End date
-            categories: Categories filter
+            asset_groups: Asset groups filter
             from_data_status_service: Callable to get service status
 
         Returns:
@@ -457,7 +457,7 @@ class DataAnalyticsService:
         aggregated: dict[str, object] = {
             "services": services,
             "date_range": {"start": start_date, "end": end_date},
-            "categories": categories,
+            "asset_groups": asset_groups,
             "aggregated_at": datetime.now(UTC).isoformat(),
             "service_results": service_results,
             "overall_summary": overall_summary,
@@ -471,7 +471,7 @@ class DataAnalyticsService:
                     service=service,
                     start_date=start_date,
                     end_date=end_date,
-                    categories=categories,
+                    asset_groups=asset_groups,
                 )
 
                 if "error" in result:

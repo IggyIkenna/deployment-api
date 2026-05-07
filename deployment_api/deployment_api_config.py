@@ -9,7 +9,7 @@ All fields read from the same environment variables as before. No behaviour chan
 """
 
 from pydantic import AliasChoices, Field
-from unified_config_interface import UnifiedCloudConfig
+from unified_trading_library.config_interface import UnifiedCloudConfig
 
 
 class DeploymentApiConfig(UnifiedCloudConfig):
@@ -120,7 +120,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     )
 
     cors_dev_origins: str = Field(
-        default="http://localhost:3000,http://localhost:5174,http://127.0.0.1:5174,http://localhost:8080",
+        default="http://localhost:3000,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5183,http://127.0.0.1:5183,http://localhost:8080",
         validation_alias=AliasChoices("CORS_DEV_ORIGINS"),
         description="Comma-separated static localhost origins allowed in development mode",
     )
@@ -369,10 +369,12 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Absolute path to the workspace root",
     )
 
-    cloud_mock_mode: bool = Field(
+    cloud_mock_mode: bool = Field(  # DEPRECATED: use is_mock_mode() instead
         default=False,
         validation_alias=AliasChoices("CLOUD_MOCK_MODE"),
-        description="Enable cloud mock mode for testing",
+        description=(
+            "DEPRECATED: Use is_mock_mode() instead. Legacy field kept for env var binding."
+        ),
     )
 
     # =========================================================================
@@ -495,7 +497,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         """Get the effective ML configs store bucket with project_id fallback."""
         if self.ml_configs_store_bucket:
             return self.ml_configs_store_bucket
-        return f"ml-configs-store-{self.gcp_project_id}"
+        return f"ml-configs-store-{self.gcp_project_id}"  # CORRECT-LOCAL
 
     @property
     def effective_state_bucket(self) -> str:

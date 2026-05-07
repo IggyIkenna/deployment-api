@@ -88,8 +88,8 @@ class TestGetServiceCategoriesRoute:
 
         result = asyncio.run(get_service_categories("instruments-service"))
         assert "service" in result
-        assert "categories" in result
-        assert isinstance(result["categories"], list)
+        assert "asset_groups" in result
+        assert isinstance(result["asset_groups"], list)
 
     def test_raises_404_when_config_not_found(self):
         from fastapi import HTTPException
@@ -105,7 +105,7 @@ class TestGetServiceCategoriesRoute:
         from deployment_api.routes.capabilities import get_service_categories
 
         result = asyncio.run(get_service_categories("features-calendar-service"))
-        assert result["categories"] == []
+        assert result["asset_groups"] == []
 
     def test_get_capabilities_returns_gcs_fuse(self):
         from deployment_api.routes.capabilities import get_capabilities

@@ -123,15 +123,19 @@ def _validate_domain(domain: str) -> None:
 
 def _make_config_store(domain: str, schema_version: str = "1.0") -> _ConfigStoreProto:
     """Create a ConfigStore for the given domain."""
-    from unified_config_interface import get_config_store  # pyright: ignore[reportMissingTypeStubs]
+    from unified_trading_library.config_interface import (
+        get_config_store,  # pyright: ignore[reportMissingTypeStubs]
+    )
 
     return cast(_ConfigStoreProto, get_config_store(domain=domain, schema_version=schema_version))
 
 
 def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> None:
     """Publish config-domain-{domain} event to notify subscribing services."""
-    from unified_cloud_interface import get_event_bus  # pyright: ignore[reportMissingTypeStubs]
-    from unified_events_interface import log_event
+    from unified_trading_library.cloud_interface import (
+        get_event_bus,  # pyright: ignore[reportMissingTypeStubs]
+    )
+    from unified_trading_library.events import log_event
 
     topic = f"{DOMAIN_TOPIC_PREFIX}{domain}"
     message_data = {
@@ -173,7 +177,7 @@ async def write_domain_config(
     _validate_domain(domain)
 
     def _write_sync() -> tuple[str, str]:
-        from unified_config_interface import (
+        from unified_trading_library.config_interface import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -218,7 +222,7 @@ async def read_domain_config(
     _validate_domain(domain)
 
     def _read_sync() -> tuple[dict[str, object], str | None]:
-        from unified_config_interface import (
+        from unified_trading_library.config_interface import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -227,7 +231,7 @@ async def read_domain_config(
         try:
             config_instance = store.load_config(config_class)
         except LookupError as e:
-            # ConfigStoreError from unified_config_interface is a LookupError subclass
+            # ConfigStoreError from UTL config_interface is a LookupError subclass
             # when no active config exists for the domain.
             raise HTTPException(
                 status_code=404,
@@ -282,7 +286,7 @@ async def diff_domain_config_versions(
     _validate_domain(domain)
 
     def _diff_sync() -> list[str]:
-        from unified_config_interface import (
+        from unified_trading_library.config_interface import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -340,7 +344,7 @@ async def rollback_domain_config(
     _validate_domain(domain)
 
     def _rollback_sync() -> tuple[str, str]:
-        from unified_config_interface import (
+        from unified_trading_library.config_interface import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 

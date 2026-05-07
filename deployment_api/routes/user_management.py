@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from unified_internal_contracts.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,
     UserRole,
 )

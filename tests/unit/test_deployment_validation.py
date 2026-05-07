@@ -149,8 +149,8 @@ class TestValidateDeploymentRequest:
 class TestValidateShardConfiguration:
     """Tests for validate_shard_configuration."""
 
-    def _make_req(self, category=None, date_granularity=None):
-        return SimpleNamespace(category=category, date_granularity=date_granularity)
+    def _make_req(self, asset_group=None, date_granularity=None):
+        return SimpleNamespace(asset_group=asset_group, date_granularity=date_granularity)
 
     def test_empty_config_returns_error(self):
         result = validate_shard_configuration({}, self._make_req())
@@ -167,14 +167,14 @@ class TestValidateShardConfiguration:
         result = validate_shard_configuration(config, self._make_req())
         assert result is None
 
-    def test_category_dim_without_default_and_no_category(self):
-        config = {"sharding_dimensions": ["category", "date"]}
-        result = validate_shard_configuration(config, self._make_req(category=None))
+    def test_asset_group_dim_without_default_and_no_value(self):
+        config = {"sharding_dimensions": ["asset_group", "date"]}
+        result = validate_shard_configuration(config, self._make_req(asset_group=None))
         assert result is not None
-        assert any("category" in d for d in result["details"])
+        assert any("asset_group" in d for d in result["details"])
 
-    def test_category_dim_with_default_categories(self):
-        config = {"sharding_dimensions": ["category", "date"], "default_categories": ["CEFI"]}
+    def test_asset_group_dim_with_default_categories(self):
+        config = {"sharding_dimensions": ["asset_group", "date"], "default_categories": ["CEFI"]}
         result = validate_shard_configuration(config, self._make_req())
         assert result is None
 
@@ -370,8 +370,8 @@ class TestGetServiceEarliestStart:
 
         expected_dates = {
             "instruments-service": {
-                "CEFI": {"category_start": "2022-01-01"},
-                "TRADFI": {"category_start": "2021-06-01"},
+                "CEFI": {"asset_group_start": "2022-01-01"},
+                "TRADFI": {"asset_group_start": "2021-06-01"},
             }
         }
         dates_file = tmp_path / "expected_start_dates.yaml"
@@ -386,7 +386,7 @@ class TestGetServiceEarliestStart:
 
         from deployment_api.routes.deployment_validation import _get_service_earliest_start
 
-        expected_dates = {"other-service": {"CEFI": {"category_start": "2022-01-01"}}}
+        expected_dates = {"other-service": {"CEFI": {"asset_group_start": "2022-01-01"}}}
         dates_file = tmp_path / "expected_start_dates.yaml"
         with open(dates_file, "w") as f:
             yaml.dump(expected_dates, f)

@@ -63,27 +63,27 @@ MOCK_SERVICES: list[dict[str, object]] = [
     {
         "name": "market-tick-data-service",
         "description": "Ingests and stores raw market tick data from all venues",
-        "dimensions": ["category", "venue", "date"],
+        "dimensions": ["asset_group", "venue", "date"],
     },
     {
         "name": "execution-service",
         "description": "Backtests execution strategies across instruments and venues",
-        "dimensions": ["category", "venue", "instrument", "date"],
+        "dimensions": ["asset_group", "venue", "instrument", "date"],
     },
     {
         "name": "feature-momentum-service",
         "description": "Computes momentum features from tick data",
-        "dimensions": ["category", "venue", "date"],
+        "dimensions": ["asset_group", "venue", "date"],
     },
     {
         "name": "strategy-service",
         "description": "Runs strategy backtests from grid configs",
-        "dimensions": ["category", "venue", "date"],
+        "dimensions": ["asset_group", "venue", "date"],
     },
     {
         "name": "instruments-service",
         "description": "Refreshes instrument definitions across all venues",
-        "dimensions": ["category", "venue"],
+        "dimensions": ["asset_group", "venue"],
     },
 ]
 

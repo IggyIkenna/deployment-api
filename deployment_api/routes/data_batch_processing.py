@@ -13,7 +13,7 @@ from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from deployment_api.utils.path_combinatorics import get_path_combinatorics
+from deployment_api.utils.path_combinatorics import PathCombinatorics, get_path_combinatorics
 from deployment_api.utils.storage_facade import (
     list_objects,
 )
@@ -30,21 +30,21 @@ from .batch_config_utils import (
     SERVICE_CONFIG,
     generate_date_range_and_year_months,
     get_expected_dates_for_venue,
-    get_expected_venues_for_category,
+    get_expected_venues_for_asset_group,
     is_venue_expected,
     load_expected_start_dates,
     load_venue_data_types,
 )
 from .batch_query_engine import (
-    get_expected_dates_for_category,
-    query_generic_prefixes_for_category,
-    query_specific_prefixes_for_category,
+    get_expected_dates_for_asset_group,
+    query_generic_prefixes_for_asset_group,
+    query_specific_prefixes_for_asset_group,
 )
 from .batch_result_processor import (
     build_final_response,
     calculate_overall_file_counts,
     calculate_venue_weighted_totals,
-    update_category_completion_percentages,
+    update_asset_group_completion_percentages,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,13 +66,13 @@ async def get_last_updated_batch(
 
     results: dict[str, object] = {}
 
-    def check_bucket_latest(service: str, cat: str, bucket_name: str) -> dict[str, object]:
+    def check_bucket_latest(service: str, asset_group: str, bucket_name: str) -> dict[str, object]:
         """Check latest file in a bucket. Uses storage facade (FUSE when production)."""
         try:
             blobs = list_objects(bucket_name, "", max_results=10)
 
             if not blobs:
-                return {"service": service, "category": cat, "latest": None}
+                return {"service": service, "asset_group": asset_group, "latest": None}
 
             # Find most recent
             latest_blob = max(
@@ -81,48 +81,48 @@ async def get_last_updated_batch(
             )
             return {
                 "service": service,
-                "category": cat,
+                "asset_group": asset_group,
                 "latest": (latest_blob.updated.isoformat() if latest_blob.updated else None),
             }
         except (OSError, ValueError, RuntimeError) as e:
-            return {"service": service, "category": cat, "error": str(e)}
+            return {"service": service, "asset_group": asset_group, "error": str(e)}
 
     # Build all tasks
     tasks: list[tuple[str, str, str]] = []
     for svc in services_to_check:
         if svc in BUCKET_MAPPING:
-            for cat, bucket in BUCKET_MAPPING[svc].items():
-                tasks.append((str(svc), str(cat), str(bucket)))
+            for ag, bucket in BUCKET_MAPPING[svc].items():
+                tasks.append((str(svc), str(ag), str(bucket)))
 
     # Parallel check (max 15 concurrent to avoid overwhelming GCS)
     from concurrent.futures import Future
 
     with ThreadPoolExecutor(max_workers=min(15, len(tasks))) as executor:
         futures: dict[Future[dict[str, object]], tuple[str, str]] = {
-            executor.submit(check_bucket_latest, svc, cat, bucket): (svc, cat)
-            for svc, cat, bucket in tasks
+            executor.submit(check_bucket_latest, svc, ag, bucket): (svc, ag)
+            for svc, ag, bucket in tasks
         }
         for future in as_completed(futures):
             result: dict[str, object] = future.result()
             svc_val = result.get("service")
             svc = str(svc_val) if isinstance(svc_val, str) else ""
             if svc not in results:
-                results[svc] = {"categories": {}}
+                results[svc] = {"asset_groups": {}}
             svc_entry_raw = results[svc]
             svc_entry: dict[str, object] = (
                 cast(dict[str, object], svc_entry_raw) if isinstance(svc_entry_raw, dict) else {}
             )
-            cats_raw = svc_entry.get("categories")
-            cats: dict[str, object] = (
-                cast(dict[str, object], cats_raw) if isinstance(cats_raw, dict) else {}
+            ag_raw = svc_entry.get("asset_groups")
+            ags: dict[str, object] = (
+                cast(dict[str, object], ag_raw) if isinstance(ag_raw, dict) else {}
             )
-            cat_val = result.get("category")
-            cat_key = str(cat_val) if isinstance(cat_val, str) else ""
-            cats[cat_key] = {
+            ag_val = result.get("asset_group")
+            ag_key = str(ag_val) if isinstance(ag_val, str) else ""
+            ags[ag_key] = {
                 "latest": result.get("latest"),
                 "error": result.get("error"),
             }
-            svc_entry["categories"] = cats
+            svc_entry["asset_groups"] = ags
             results[svc] = svc_entry
 
     return {"services": results}
@@ -143,10 +143,10 @@ def _parse_freshness_date(freshness_date: str) -> "datetime | None":
 def _check_instruments_request_size(
     service: str,
     include_sub_dimensions: bool,
-    categories: list[str],
+    asset_groups: list[str],
     start_date: str,
     end_date: str,
-    path_combinatorics: object,
+    path_combinatorics: PathCombinatorics,
 ) -> None:
     """Raise HTTPException if the instruments-service request is estimated to be too large."""
     max_estimated_checks = 35_000
@@ -155,8 +155,7 @@ def _check_instruments_request_size(
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
     total_venues = sum(
-        len(path_combinatorics.get_all_venues_for_category(cat))  # type: ignore[union-attr]
-        for cat in categories
+        len(path_combinatorics.get_all_venues_for_asset_group(ag)) for ag in asset_groups
     )
     days = (end_dt - start_dt).days + 1
     estimated = days * total_venues
@@ -165,16 +164,16 @@ def _check_instruments_request_size(
             status_code=400,
             detail=(
                 f"Request too large: {days} days x {total_venues} venues"
-                f" x {len(categories)} categories"
+                f" x {len(asset_groups)} asset groups"
                 f" = ~{estimated:,} GCS checks (limit {max_estimated_checks:,}). "
                 "Narrow the date range (e.g. last 6-12 months),"
-                " select specific categories, or add venue filter."
+                " select specific asset groups, or add venue filter."
             ),
         )
 
 
-def _sum_category_totals(results: dict[str, object]) -> tuple[int, int]:
-    """Sum dates_expected and dates_found across all non-error category results."""
+def _sum_asset_group_totals(results: dict[str, object]) -> tuple[int, int]:
+    """Sum dates_expected and dates_found across all non-error asset group results."""
     total_expected = 0
     total_found = 0
     for _r_raw in results.values():
@@ -194,7 +193,7 @@ def _build_venue_entry(
     venue_name: str,
     venue_dates: set[str],
     venue_expected_dates: set[str],
-    cat: str,
+    asset_group: str,
     venue_data_types_config: object,
     include_dates_list: bool,
 ) -> dict[str, object]:
@@ -204,7 +203,7 @@ def _build_venue_entry(
         "dates_expected": len(venue_expected_dates),
         "dates_expected_venue": len(venue_expected_dates),
         "is_expected": is_venue_expected(
-            cast(Mapping[str, object], venue_data_types_config), cat, venue_name
+            cast(Mapping[str, object], venue_data_types_config), asset_group, venue_name
         ),
         "completion_pct": (
             round(len(venue_dates) / len(venue_expected_dates) * 100, 1)
@@ -220,7 +219,7 @@ def _build_venue_entry(
 
 def _build_venues_result(
     venue_data: dict[str, object],
-    cat: str,
+    asset_group: str,
     service: str,
     all_dates: set[str],
     expected_start_dates_config: Mapping[str, object],
@@ -228,7 +227,7 @@ def _build_venues_result(
     venue_data_types_config: object,
     include_dates_list: bool,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Build venues dict and venue_summary for a category result."""
+    """Build venues dict and venue_summary for an asset group result."""
     venues_dict: dict[str, object] = {}
     for venue_name_raw, venue_dates_raw in venue_data.items():
         venue_name = str(venue_name_raw)
@@ -239,7 +238,7 @@ def _build_venues_result(
             all_dates,
             expected_start_dates_config,
             service,
-            cat,
+            asset_group,
             venue_name,
             upstream_avail_dates=upstream_dates,
         )
@@ -247,12 +246,12 @@ def _build_venues_result(
             venue_name,
             venue_dates,
             venue_expected_dates,
-            cat,
+            asset_group,
             venue_data_types_config,
             include_dates_list,
         )
-    expected_venues = get_expected_venues_for_category(
-        cast(Mapping[str, object], venue_data_types_config), cat
+    expected_venues = get_expected_venues_for_asset_group(
+        cast(Mapping[str, object], venue_data_types_config), asset_group
     )
     actual_venues: set[str] = set(venue_data.keys())
     venue_summary: dict[str, object] = {
@@ -265,8 +264,8 @@ def _build_venues_result(
     return venues_dict, venue_summary
 
 
-def _check_category(
-    cat: str,
+def _check_asset_group(
+    asset_group: str,
     service: str,
     all_dates: set[str],
     expected_start_dates_config: Mapping[str, object],
@@ -281,13 +280,22 @@ def _check_category(
     include_sub_dimensions: bool,
     sub_dimension_name: str | None,
 ) -> dict[str, object]:
-    """Check all date directories for a category using optimized queries."""
-    bucket_name = BUCKET_MAPPING[service].get(cat)
-    if not bucket_name:
-        return {"category": cat, "error": f"No bucket for category {cat}"}
+    """Check all date directories for an asset group using optimized queries.
 
-    expected_dates_for_cat = get_expected_dates_for_category(
-        all_dates, expected_start_dates_config, service, cat
+    Prefix strings for ``list_objects`` are built in ``batch_query_engine`` /
+    ``PathCombinatorics``; layout literals (e.g. hive ``category=...`` in paths
+    where the pipeline wrote them) are not derived from the Python name
+    ``asset_group`` — only the value (CEFI, defi, …) selects bucket and templates.
+    """
+    bucket_name = BUCKET_MAPPING[service].get(asset_group)
+    if not bucket_name:
+        return {
+            "asset_group": asset_group,
+            "error": f"No bucket for asset group {asset_group}",
+        }
+
+    expected_dates_for_group = get_expected_dates_for_asset_group(
+        all_dates, expected_start_dates_config, service, asset_group
     )
 
     try:
@@ -295,10 +303,10 @@ def _check_category(
             service in ["market-tick-data-handler", "market-data-processing-service"]
             and path_combinatorics
         ):
-            query_result = query_specific_prefixes_for_category(
+            query_result = query_specific_prefixes_for_asset_group(
                 service=service,
-                cat=cat,
-                dates_to_check=expected_dates_for_cat,
+                asset_group=asset_group,
+                dates_to_check=expected_dates_for_group,
                 venue=venue,
                 folder=folder,
                 data_type=data_type,
@@ -308,10 +316,10 @@ def _check_category(
                 upstream_avail_dates=upstream_dates,
             )
         else:
-            query_result = query_generic_prefixes_for_category(
+            query_result = query_generic_prefixes_for_asset_group(
                 service=service,
-                cat=cat,
-                dates_to_check=expected_dates_for_cat,
+                asset_group=asset_group,
+                dates_to_check=expected_dates_for_group,
                 venue=venue,
                 path_prefix=path_prefix,
             )
@@ -342,12 +350,12 @@ def _check_category(
         _ = query_result.get("venue_date_blob_timestamps")
 
         result: dict[str, object] = {
-            "category": cat,
+            "asset_group": asset_group,
             "bucket": bucket_name,
             "dates_found": len(found_dates),
-            "dates_expected": len(expected_dates_for_cat),
-            "completion_pct": round(len(found_dates) / len(expected_dates_for_cat) * 100, 1)
-            if expected_dates_for_cat
+            "dates_expected": len(expected_dates_for_group),
+            "completion_pct": round(len(found_dates) / len(expected_dates_for_group) * 100, 1)
+            if expected_dates_for_group
             else 0,
         }
 
@@ -355,8 +363,8 @@ def _check_category(
             result.update(
                 {
                     "dates_found_list": sorted(found_dates),
-                    "dates_expected_list": sorted(expected_dates_for_cat),
-                    "dates_missing_list": sorted(expected_dates_for_cat - found_dates),
+                    "dates_expected_list": sorted(expected_dates_for_group),
+                    "dates_missing_list": sorted(expected_dates_for_group - found_dates),
                 }
             )
 
@@ -376,7 +384,7 @@ def _check_category(
         if venue_data:
             venues_dict, venue_summary = _build_venues_result(
                 venue_data=venue_data,
-                cat=cat,
+                asset_group=asset_group,
                 service=service,
                 all_dates=all_dates,
                 expected_start_dates_config=expected_start_dates_config,
@@ -391,7 +399,7 @@ def _check_category(
 
     except (OSError, ValueError, RuntimeError) as e:
         logger.error("Error checking %s: %s", bucket_name, e)
-        return {"category": cat, "bucket": bucket_name, "error": str(e)}
+        return {"asset_group": asset_group, "bucket": bucket_name, "error": str(e)}
 
 
 def _parse_upstream_tick_result(
@@ -399,7 +407,7 @@ def _parse_upstream_tick_result(
 ) -> dict[str, dict[str, set[str]]]:
     """Parse a tick-handler turbo result into {category: {venue: set(dates)}} structure."""
     upstream_dates: dict[str, dict[str, set[str]]] = {}
-    tick_categories_raw = tick_result.get("categories")
+    tick_categories_raw = tick_result.get("asset_groups")
     tick_categories: dict[str, object] = (
         cast(dict[str, object], tick_categories_raw)
         if isinstance(tick_categories_raw, dict)
@@ -433,7 +441,7 @@ def _parse_upstream_tick_result(
 async def _fetch_upstream_dates(
     start_date: str,
     end_date: str,
-    category: list[str] | None,
+    asset_groups: list[str] | None,
     venue: list[str] | None,
     mode: str,
 ) -> dict[str, dict[str, set[str]]]:
@@ -445,7 +453,7 @@ async def _fetch_upstream_dates(
         service="market-tick-data-handler",
         start_date=start_date,
         end_date=end_date,
-        category=category,
+        asset_groups=asset_groups,
         venue=venue,
         include_sub_dimensions=True,
         include_instrument_types=False,
@@ -468,7 +476,7 @@ async def get_data_status_turbo_impl(
     service: str,
     start_date: str,
     end_date: str,
-    category: list[str] | None = None,
+    asset_groups: list[str] | None = None,
     venue: list[str] | None = None,
     folder: list[str] | None = None,
     data_type: list[str] | None = None,
@@ -495,7 +503,7 @@ async def get_data_status_turbo_impl(
         return {"error": f"Invalid mode: {mode}. Use 'batch' or 'live'."}
     path_prefix = LIVE_PATH_PREFIX if mode == "live" else ""
 
-    # Pre-validate freshness_date format (result not yet consumed by _check_category callers)
+    # Pre-validate freshness_date format (result not yet consumed by _check_asset_group callers)
     if freshness_date:
         _parse_freshness_date(freshness_date)
 
@@ -504,7 +512,7 @@ async def get_data_status_turbo_impl(
         service=service,
         start_date=start_date,
         end_date=end_date,
-        category=category,
+        asset_group=asset_groups,
         venue=venue,
         folder=folder,
         data_type=data_type,
@@ -533,7 +541,7 @@ async def get_data_status_turbo_impl(
         upstream_dates = await _fetch_upstream_dates(
             start_date=start_date,
             end_date=end_date,
-            category=category,
+            asset_groups=asset_groups,
             venue=venue,
             mode=mode,
         )
@@ -546,7 +554,7 @@ async def get_data_status_turbo_impl(
             )
         }
 
-    categories = category if category else list(BUCKET_MAPPING[service].keys())
+    ags = asset_groups if asset_groups else list(BUCKET_MAPPING[service].keys())
     config = SERVICE_CONFIG[service]
 
     # Load expected start dates config for filtering
@@ -555,7 +563,7 @@ async def get_data_status_turbo_impl(
     # Load venue data types config for expected vs actual tracking
     venue_data_types_config = load_venue_data_types()
 
-    # Generate ALL dates in range (before category filtering) for year-month prefixes
+    # Generate ALL dates in range (before asset-group filtering) for year-month prefixes
     all_dates, _year_months = generate_date_range_and_year_months(
         start_date, end_date, first_day_of_month_only
     )
@@ -565,18 +573,18 @@ async def get_data_status_turbo_impl(
 
     # Guard: prevent 503 timeout for very large requests
     _check_instruments_request_size(
-        service, include_sub_dimensions, categories, start_date, end_date, path_combinatorics
+        service, include_sub_dimensions, ags, start_date, end_date, path_combinatorics
     )
 
     sub_dimension_name = cast(str | None, config.get("sub_dimension"))
     results: dict[str, object] = {}
 
-    # Parallel check across categories
-    with ThreadPoolExecutor(max_workers=len(categories)) as executor:
+    # Parallel check across asset groups
+    with ThreadPoolExecutor(max_workers=len(ags)) as executor:
         futures = {
             executor.submit(
-                _check_category,
-                cat,
+                _check_asset_group,
+                ag,
                 service,
                 all_dates,
                 expected_start_dates_config,
@@ -590,14 +598,14 @@ async def get_data_status_turbo_impl(
                 include_dates_list,
                 include_sub_dimensions,
                 sub_dimension_name,
-            ): cat
-            for cat in categories
+            ): ag
+            for ag in ags
         }
         for future in as_completed(futures):
             result = future.result()
-            cat_key_raw = result.get("category")
-            cat_key = str(cat_key_raw) if isinstance(cat_key_raw, str) else ""
-            results[cat_key] = result
+            ag_key_raw = result.get("asset_group")
+            ag_key = str(ag_key_raw) if isinstance(ag_key_raw, str) else ""
+            results[ag_key] = result
 
     # Calculate overall totals using extracted functions
     total_venue_expected, total_venue_found, expected_missing, unexpected_missing = (
@@ -606,13 +614,13 @@ async def get_data_status_turbo_impl(
         )
     )
 
-    # Update category completion percentages to be venue-weighted
-    update_category_completion_percentages(
+    # Update per-asset-group completion percentages to be venue-weighted
+    update_asset_group_completion_percentages(
         results, all_dates, expected_start_dates_config, service, upstream_dates
     )
 
-    # Calculate category-level totals for reference
-    total_expected_category, total_found_category = _sum_category_totals(results)
+    # Calculate asset-group-level totals for reference
+    total_expected_asset_group, total_found_asset_group = _sum_asset_group_totals(results)
 
     # Calculate overall file counts if requested
     overall_file_counts = calculate_overall_file_counts(results, include_file_counts)
@@ -629,8 +637,8 @@ async def get_data_status_turbo_impl(
         all_dates=all_dates,
         total_venue_expected=total_venue_expected,
         total_venue_found=total_venue_found,
-        total_expected_category=total_expected_category,
-        total_found_category=total_found_category,
+        total_expected_asset_group=total_expected_asset_group,
+        total_found_asset_group=total_found_asset_group,
         expected_missing=expected_missing,
         unexpected_missing=unexpected_missing,
         results=results,
@@ -643,7 +651,7 @@ async def get_data_status_turbo_impl(
         service=service,
         start_date=start_date,
         end_date=end_date,
-        category=category,
+        asset_group=asset_groups,
         venue=venue,
         folder=folder,
         data_type=data_type,

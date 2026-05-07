@@ -15,14 +15,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
-from unified_config_interface import UnifiedCloudConfig
-from unified_events_interface import log_event
-from unified_internal_contracts.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     ROLE_PERMISSIONS,
     Permission,
     UserProfile,
     UserRole,
 )
+from unified_trading_library.config_interface import UnifiedCloudConfig
+from unified_trading_library.events import log_event
 
 logger = logging.getLogger(__name__)
 

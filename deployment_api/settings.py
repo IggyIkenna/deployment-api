@@ -144,7 +144,7 @@ ML_CONFIGS_STORE_BUCKET = _config.effective_ml_configs_store_bucket
 # =============================================================================
 # TESTING
 # =============================================================================
-CLOUD_MOCK_MODE = _config.cloud_mock_mode
+CLOUD_MOCK_MODE = _config.is_mock_mode()
 
 # =============================================================================
 # DEPLOYMENT-SERVICE HTTP CLIENT CONFIGURATION

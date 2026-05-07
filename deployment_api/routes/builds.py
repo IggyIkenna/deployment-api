@@ -30,19 +30,28 @@ from deployment_api.settings import (
     CLOUD_PROVIDER,
     WORKSPACE_ROOT,
 )
+from deployment_api.settings import gcp_project_id as default_project_id
+
+# AWS ECR configuration
+_ECR_REGION = "ap-northeast-1"
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Artifact Registry configuration (matches cloud-build-router.yml)
+# Artifact Registry configuration
 _AR_HOST = "asia-northeast1-docker.pkg.dev"
-_AR_REPO = "unified-trading"
-_GCP_PROJECTS: dict[str, str] = {
-    "dev": "uts-dev-ikenna",
-    "staging": "uts-staging-ikenna",
-    "prod": "uts-prod-ikenna",
+
+# Legacy AR repos use shortened names (pre-terraform).
+# Most newer repos use full service name as the AR repo.
+# Cloud Build pushes to unified-trading-system; legacy repos also checked.
+_AR_REPO_OVERRIDES: dict[str, str] = {
+    "instruments-service": "instruments",
+    "execution-service": "execution",
+    "market-data-processing-service": "market-data-processing",
 }
+# Cloud Build canonical repo — all services push here via cloudbuild.yaml _REGISTRY_REPO
+_CB_REGISTRY_REPO = "unified-trading-system"
 _SEMVER_RE = re.compile(r"^(\d+\.\d+\.\d+)(.*)$")
 _BRANCH_PREFIX_RE = re.compile(r"^(feat|fix|chore|refactor|perf|ci|docs|test)-(.+)$")
 
@@ -70,8 +79,16 @@ class DeployRequest(
     environment: Environment = Field(..., description="Target environment: dev, staging, or prod")
 
 
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
 def _tag_to_entry(tag: str) -> BuildEntry:
     """Parse an AR tag string into a BuildEntry with human-readable display."""
+    # Handle commit SHA tags (e.g., "3c1f37a", "abc1234def")
+    if _COMMIT_SHA_RE.match(tag):
+        return BuildEntry(
+            tag=tag, display=f"{tag[:7]} @ commit", version=tag[:7], branch="commit", is_v1=False
+        )
     m = _SEMVER_RE.match(tag)
     if not m:
         return BuildEntry(tag=tag, display=tag, version=tag, branch="unknown", is_v1=False)
@@ -116,7 +133,10 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
         return []
     try:
         manifest = cast(dict[str, object], json.loads(manifest_path.read_text()))
-        deployed: dict[str, dict[str, str]] = manifest.get("deployed_versions", {})  # type: ignore[assignment]  # noqa: qg-empty-fallback — dict.get default for missing key in manifest
+        deployed_raw: object = manifest.get("deployed_versions")  # noqa: qg-empty-fallback — dict.get default for missing key in manifest
+        deployed: dict[str, dict[str, str]] = (
+            cast(dict[str, dict[str, str]], deployed_raw) if isinstance(deployed_raw, dict) else {}
+        )
         env_deployed = deployed.get(env, {})  # noqa: qg-empty-fallback — dict.get default for missing env
         tag = env_deployed.get(service, "")  # noqa: qg-empty-fallback — dict.get default for missing service
         if tag:
@@ -126,26 +146,72 @@ def _mock_builds_from_manifest(service: str, env: str) -> list[BuildEntry]:
     return []
 
 
-async def _list_ar_tags(service: str, project: str) -> list[str]:
-    """List image tags from Artifact Registry for a given service + GCP project."""
-    try:
-        from google.cloud import (  # noqa: cloud-sdk-direct
-            artifactregistry_v1,  # type: ignore[import-untyped]
-        )
+def _get_ar_repo_name(service: str) -> str:
+    """Map service name to its Artifact Registry repository name."""
+    return _AR_REPO_OVERRIDES.get(service, service)
 
-        ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # type: ignore[reportUnknownMemberType]
-        repo = f"projects/{project}/locations/asia-northeast1/repositories/{_AR_REPO}"
-        parent = f"{repo}/packages/{service}"
-        tags: list[str] = []
-        ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # type: ignore[reportUnknownMemberType]
-        async for tag in await ar_client.list_tags(ar_request):  # type: ignore[union-attr]
-            # Tag name format: .../tags/{tag_name}
-            tag_name: str = str(getattr(cast(object, tag), "name", "")).split("/")[-1]
-            tags.append(tag_name)
+
+async def _list_ar_tags_from_repo(service: str, project: str, ar_repo: str) -> list[str]:
+    """List image tags from a single Artifact Registry repo."""
+    from google.cloud import (  # noqa: cloud-sdk-direct
+        artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs]  # no stubs for artifactregistry
+    )
+
+    ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # pyright: ignore[reportUnknownMemberType]
+    repo = f"projects/{project}/locations/asia-northeast1/repositories/{ar_repo}"
+    parent = f"{repo}/packages/{service}"
+    tags: list[str] = []
+    ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # pyright: ignore[reportUnknownMemberType]
+    _list_tags_fn: object = getattr(ar_client, "list_tags", None)
+    _pager: object = await _list_tags_fn(ar_request) if callable(_list_tags_fn) else None
+    if _pager is None:
         return tags
+    async for tag in _pager:  # pyright: ignore[reportUnknownVariableType]
+        tag_name: str = str(getattr(cast(object, tag), "name", "")).split("/")[-1]
+        tags.append(tag_name)
+    return tags
+
+
+async def _list_ar_tags(service: str, project: str) -> list[str]:
+    """List image tags from Artifact Registry, checking both legacy and CB repos."""
+    ar_repo = _get_ar_repo_name(service)
+    all_tags: list[str] = []
+    # Check legacy repo (e.g. "instruments") and CB repo ("unified-trading-system")
+    repos_to_check = [ar_repo]
+    if ar_repo != _CB_REGISTRY_REPO:
+        repos_to_check.append(_CB_REGISTRY_REPO)
+    for repo in repos_to_check:
+        try:
+            tags = await _list_ar_tags_from_repo(service, project, repo)
+            all_tags.extend(tags)
+        except Exception as e:
+            logger.debug("AR repo %s/%s: %s", repo, service, e)
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for t in all_tags:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return deduped
+
+
+async def _list_ecr_tags(service: str) -> list[str]:
+    """List image tags from AWS ECR for a service."""
+    import boto3  # Deferred — AWS SDK boundary
+
+    ecr = boto3.client("ecr", region_name=_ECR_REGION)
+    tags: list[str] = []
+    try:
+        paginator = ecr.get_paginator("list_images")
+        for page in paginator.paginate(repositoryName=service, filter={"tagStatus": "TAGGED"}):
+            for image_id in page.get("imageIds", []):  # noqa: qg-empty-fallback — AWS ECR pagination
+                tag = image_id.get("imageTag")
+                if tag:
+                    tags.append(str(tag))
     except Exception as e:
-        logger.warning("Could not list AR tags for %s/%s: %s", project, service, e)
-        return []
+        logger.debug("ECR %s: %s", service, e)
+    return tags
 
 
 @router.get("/api/builds/{service}", response_model=list[BuildEntry], tags=["Builds"])
@@ -171,9 +237,19 @@ async def list_builds(
             logger.info("Mock mode: no deployed_versions entry for %s/%s", service, env)
         return sorted(entries, key=_sort_key)
 
-    project = _GCP_PROJECTS.get(env)
+    # AWS ECR path
+    if CLOUD_PROVIDER == "aws":
+        tags = await _list_ecr_tags(service)
+        if not tags:
+            logger.warning("No ECR tags for %s — falling back to manifest", service)
+            return sorted(_mock_builds_from_manifest(service, env), key=_sort_key)
+        entries = [_tag_to_entry(t) for t in tags]
+        return sorted(entries, key=_sort_key)
+
+    # GCP Artifact Registry path
+    project = default_project_id
     if not project:
-        raise HTTPException(status_code=400, detail=f"Unknown environment: {env}")
+        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")  # noqa: qg-gcp-project-id
 
     tags = await _list_ar_tags(service, project)
     if not tags:
@@ -212,11 +288,37 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
             "message": f"Mock mode — would deploy {service}:{image_tag} to {env}",
         }
 
-    project = _GCP_PROJECTS.get(env)
-    if not project:
-        raise HTTPException(status_code=400, detail=f"Unknown environment: {env}")
+    # AWS ECS/App Runner deploy path
+    if CLOUD_PROVIDER == "aws":
+        import boto3  # Deferred — AWS SDK boundary
 
-    ar_image = f"{_AR_HOST}/{project}/{_AR_REPO}/{service}:{image_tag}"
+        try:
+            sts = boto3.client("sts", region_name=_ECR_REGION)
+            account_id: str = sts.get_caller_identity()["Account"]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"AWS credentials error: {e}") from e
+
+        ecr_image = f"{account_id}.dkr.ecr.{_ECR_REGION}.amazonaws.com/{service}:{image_tag}"
+        logger.info("AWS deploy: %s:%s → %s (image=%s)", service, image_tag, env, ecr_image)
+        # TODO: Implement ECS service update or App Runner deployment
+        # For now, return the image URI for manual deployment
+        return {
+            "status": "accepted",
+            "service": service,
+            "image_tag": image_tag,
+            "environment": env,
+            "image": ecr_image,
+            "cloud": "aws",
+            "message": f"AWS deploy queued — {service}:{image_tag} to {env}. ECS update pending.",
+        }
+
+    # GCP Cloud Run deploy path
+    project = default_project_id
+    if not project:
+        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")  # noqa: qg-gcp-project-id
+
+    ar_repo = _get_ar_repo_name(service)
+    ar_image = f"{_AR_HOST}/{project}/{ar_repo}/{service}:{image_tag}"
     region = "asia-northeast1"
 
     try:

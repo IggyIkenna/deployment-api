@@ -92,13 +92,13 @@ class TestRequestSizeGuard:
         max_estimated_checks = 35_000
         start_date = "2020-01-01"
         end_date = "2026-02-08"
-        categories = ["CEFI", "TRADFI", "DEFI"]
+        asset_groups = ["CEFI", "TRADFI", "DEFI"]
         num_venues_per_category = 20  # Mock: enough venues to trigger guard
 
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
         days = (end_dt - start_dt).days + 1
-        total_venues = num_venues_per_category * len(categories)
+        total_venues = num_venues_per_category * len(asset_groups)
         estimated = days * total_venues
 
         # Verify the guard WOULD trigger
@@ -108,9 +108,9 @@ class TestRequestSizeGuard:
 
         # Verify the error detail message would be correct
         guard_detail = (
-            f"Request too large: {days} days x {total_venues} venues x {len(categories)} categories "
+            f"Request too large: {days} days x {total_venues} venues x {len(asset_groups)} asset groups "
             f"= ~{estimated:,} GCS checks (limit {max_estimated_checks:,}). "
-            "Narrow the date range (e.g. last 6-12 months), select specific categories, or add venue filter."
+            "Narrow the date range (e.g. last 6-12 months), select specific asset groups, or add venue filter."
         )
         assert "Request too large" in guard_detail
         assert "Narrow the date range" in guard_detail
@@ -218,16 +218,16 @@ class TestInstrumentTypeExtraction:
                 service="market-tick-data-handler",
                 start_date="2024-01-01",
                 end_date="2024-01-02",
-                category=["CEFI"],
+                asset_groups=["CEFI"],
                 include_sub_dimensions=True,
                 include_instrument_types=False,  # instrument_types extraction uses separate code path
             )
         )
 
         # Verify structure
-        assert "categories" in result
-        assert "CEFI" in result["categories"]
-        cefi = result["categories"]["CEFI"]
+        assert "asset_groups" in result
+        assert "CEFI" in result["asset_groups"]
+        cefi = result["asset_groups"]["CEFI"]
 
         # Should have data_types breakdown (sub-dimension for market-tick-data-handler)
         assert "data_types" in cefi
@@ -1001,7 +1001,7 @@ class TestMetricConsistency:
         response_complete = {
             "overall_completion_pct": 100.0,
             "total_missing": 0,
-            "categories": {
+            "asset_groups": {
                 "CEFI": {"dates_missing": 0},
                 "TRADFI": {"dates_missing": 0},
             },
@@ -1014,14 +1014,14 @@ class TestMetricConsistency:
         response_partial = {
             "overall_completion_pct": 97.4,
             "total_missing": 19,
-            "categories": {
+            "asset_groups": {
                 "CEFI": {"dates_missing": 0},  # Category level shows 0!
                 "TRADFI": {"dates_missing": 0},  # Category level shows 0!
             },
         }
         # Category-level dates_missing can be 0 while venue-weighted total_missing > 0
         # This is why we use total_missing (venue-weighted) for consistency
-        sum(cat["dates_missing"] for cat in response_partial["categories"].values())
+        sum(cat["dates_missing"] for cat in response_partial["asset_groups"].values())
         # Category sum might be 0 while overall is not complete
         # This is the bug we fixed: use total_missing, not category sum
         assert response_partial["total_missing"] > 0
@@ -1055,28 +1055,28 @@ class TestMetricConsistency:
 
 
 class TestTotalMissingFallback:
-    """Tests for total_missing fallback to category-level when no venues found.
+    """Tests for total_missing fallback to asset-group-level when no venues found.
 
     Bug fixed: When no venues are found (e.g., services without venue breakdown),
     total_missing was 0 even though dates_missing showed missing data.
     This caused "All expected data present" to show incorrectly with 0% completion.
     """
 
-    def test_no_venues_uses_category_level_missing(self):
-        """Test that total_missing uses category-level when no venue data exists.
+    def test_no_venues_uses_asset_group_level_missing(self):
+        """Test that total_missing uses asset-group-level when no venue data exists.
 
         This tests the logic:
         - If total_venue_expected > 0: use venue-weighted missing
-        - Else: use category-level missing (fallback)
+        - Else: use asset-group-level missing (fallback)
         """
 
         # Simulate the calculation from data_status.py
         def calculate_total_missing(results, total_venue_expected, total_venue_found):
             """Replicate the fixed logic from data_status.py."""
-            total_expected_category = sum(
+            total_expected_asset_group = sum(
                 r.get("dates_expected", 0) for r in results.values() if "error" not in r
             )
-            total_found_category = sum(
+            total_found_asset_group = sum(
                 r.get("dates_found", 0) for r in results.values() if "error" not in r
             )
 
@@ -1084,8 +1084,8 @@ class TestTotalMissingFallback:
                 # Use venue-weighted
                 return total_venue_expected - total_venue_found
             else:
-                # Fallback to category-level
-                return total_expected_category - total_found_category
+                # Fallback to asset-group-level
+                return total_expected_asset_group - total_found_asset_group
 
         # Case 1: Service with venue data (instruments-service)
         results_with_venues = {"CEFI": {"dates_expected": 30, "dates_found": 30}}
@@ -1095,7 +1095,7 @@ class TestTotalMissingFallback:
         # Case 2: Service without venue data (e.g., market-data-processing DEFI)
         results_no_venues = {"DEFI": {"dates_expected": 3, "dates_found": 0}}
         total_missing = calculate_total_missing(results_no_venues, 0, 0)
-        assert total_missing == 3  # Falls back to category level
+        assert total_missing == 3  # Falls back to asset-group level
 
     def test_zero_total_missing_requires_zero_category_missing(self):
         """Test that total_missing=0 implies all category dates_missing are 0.
@@ -1253,7 +1253,7 @@ class TestDatesFoundListIncluded:
         """Test that turbo endpoint has filterable parameters.
 
         Note: include_dates_list is planned but not yet in the endpoint signature.
-        This test validates the existing filter parameters (category, venue).
+        This test validates the existing filter parameters (asset_group, venue).
         """
         import inspect
 
@@ -1261,7 +1261,7 @@ class TestDatesFoundListIncluded:
 
         sig = inspect.signature(get_data_status_turbo)
         params = list(sig.parameters.keys())
-        assert "category" in params
+        assert "asset_group" in params
         assert "venue" in params
 
     def test_dates_found_list_format(self):
@@ -1284,11 +1284,13 @@ class TestDatesFoundListIncluded:
         """Test that dates_found_list is empty when no data exists."""
         # When a category has no data, dates_found_list should be []
         sample_response = {
-            "categories": {"DEFI": {"dates_found": 0, "dates_expected": 3, "dates_found_list": []}}
+            "asset_groups": {
+                "DEFI": {"dates_found": 0, "dates_expected": 3, "dates_found_list": []}
+            }
         }
 
-        assert sample_response["categories"]["DEFI"]["dates_found_list"] == []
-        assert sample_response["categories"]["DEFI"]["dates_found"] == 0
+        assert sample_response["asset_groups"]["DEFI"]["dates_found_list"] == []
+        assert sample_response["asset_groups"]["DEFI"]["dates_found"] == 0
 
 
 class TestDefiVenueExtraction:
@@ -1569,3 +1571,471 @@ class TestExpectedMissingCalculation:
         cat_missing = cat_result_empty["dates_expected"] - cat_result_empty["dates_found"]
         # Should be 0 missing, so "All expected ✓" is valid
         assert cat_missing == 0
+
+
+class TestResolveExpectedDates:
+    """Tests for _resolve_expected_dates priority logic."""
+
+    def test_sports_reference_uses_fixture_calendar(self):
+        """Sports reference venues use the fixture calendar for expected dates."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        fixture_cal: set[str] = {"2025-01-10", "2025-01-15", "2025-01-20"}
+        result = svc._resolve_expected_dates(
+            "API_FOOTBALL_FIXTURES",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=fixture_cal,
+            ref_dates={},
+            venue_mapping=MagicMock(),
+        )
+        assert result == fixture_cal
+
+    def test_reference_driven_uses_ref_dates(self):
+        """Non-sports venues with ref_dates use instruments-service dates."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        ref: dict[str, set[str]] = {"BINANCE-SPOT": {"2025-01-05", "2025-01-06"}}
+        result = svc._resolve_expected_dates(
+            "BINANCE-SPOT",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=None,
+            ref_dates=ref,
+            venue_mapping=MagicMock(),
+        )
+        assert result == {"2025-01-05", "2025-01-06"}
+
+    def test_fallback_uses_trading_dates(self):
+        """Without fixture_calendar or ref_dates, falls back to VenueMapping."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        mock_vm = MagicMock()
+        mock_vm.get_expected_trading_dates.return_value = ["2025-01-02", "2025-01-03"]
+        result = svc._resolve_expected_dates(
+            "UNKNOWN-VENUE",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=None,
+            ref_dates={},
+            venue_mapping=mock_vm,
+        )
+        assert result == {"2025-01-02", "2025-01-03"}
+        mock_vm.get_expected_trading_dates.assert_called_once()
+
+    def test_eff_start_filters_fixture_calendar(self):
+        """Fixture calendar dates before eff_start are excluded."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        fixture_cal: set[str] = {"2024-12-31", "2025-01-10", "2025-01-20"}
+        result = svc._resolve_expected_dates(
+            "FOOTYSTATS_MATCH_STATS",
+            "2025-01-01",
+            "2025-01-31",
+            fixture_calendar=fixture_cal,
+            ref_dates={},
+            venue_mapping=MagicMock(),
+        )
+        assert result == {"2025-01-10", "2025-01-20"}
+
+
+class TestBuildSingleVenueEntry:
+    """Tests for _build_single_venue_entry."""
+
+    def test_basic_venue_entry(self):
+        """Build a basic venue entry with matching dates."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        v_df = pd.DataFrame({"date": ["2025-01-01", "2025-01-02"], "venue": ["V", "V"]})
+        entry = svc._build_single_venue_entry(
+            v_df,
+            "V",
+            "2025-01-01",
+            "2025-01-01",
+            "2025-01-03",
+            v_dates_all={"2025-01-01", "2025-01-02"},
+            v_all_dates={"2025-01-01", "2025-01-02", "2025-01-03"},
+            has_data_type=False,
+            venue_mapping=MagicMock(),
+        )
+        assert entry["dates_found"] == 2
+        assert entry["dates_expected"] == 3
+        assert entry["dates_missing"] == 1
+        assert entry["completion_pct"] == pytest.approx(66.67)
+
+    def test_venue_entry_with_data_types(self):
+        """Venue entry includes data_type breakdown when has_data_type is True."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        v_df = pd.DataFrame(
+            {
+                "date": ["2025-01-01", "2025-01-01"],
+                "venue": ["V", "V"],
+                "data_type": ["trades", "book_snapshot_5"],
+            }
+        )
+        mock_vm = MagicMock()
+        mock_vm.get_expected_trading_dates.return_value = ["2025-01-01"]
+        with (
+            patch(
+                "deployment_api.services.data_status_service.get_expected_data_types_for_venue",
+                return_value=["trades", "book_snapshot_5"],
+            ),
+            patch(
+                "deployment_api.services.data_status_service.get_venue_data_type_start_date",
+                return_value=None,
+            ),
+        ):
+            entry = svc._build_single_venue_entry(
+                v_df,
+                "V",
+                "2025-01-01",
+                "2025-01-01",
+                "2025-01-01",
+                v_dates_all={"2025-01-01"},
+                v_all_dates={"2025-01-01"},
+                has_data_type=True,
+                venue_mapping=mock_vm,
+            )
+        assert "data_types" in entry
+
+
+class TestDefiSubDimensionBreakdown:
+    """Tests for _build_defi_sub_dimension_breakdown."""
+
+    def test_groups_by_defi_source(self):
+        """Groups rows by _defi_source and produces per-sub-dim stats."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        df = pd.DataFrame(
+            {
+                "date": ["2025-01-01", "2025-01-01", "2025-01-02"],
+                "venue": ["AAVE_V3", "UNISWAP_V3", "AAVE_V3"],
+                "_defi_source": ["lending-indices", "dex-pools", "lending-indices"],
+            }
+        )
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-02")
+        assert "lending-indices" in result
+        assert "dex-pools" in result
+        assert result["lending-indices"]["dates_found"] == 2
+        assert result["dex-pools"]["dates_found"] == 1
+
+    def test_core_bucket_shows_as_defi_core(self):
+        """Main DEFI bucket rows (empty source) show as defi-core."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        df = pd.DataFrame(
+            {
+                "date": ["2025-01-01"],
+                "venue": ["SOME_VENUE"],
+                "_defi_source": [""],
+            }
+        )
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
+        assert "defi-core" in result
+        assert result["defi-core"]["dates_found"] == 1
+
+    def test_empty_without_defi_source_column(self):
+        """Returns empty dict when _defi_source column is absent."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        df = pd.DataFrame({"date": ["2025-01-01"], "venue": ["V"]})
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
+        assert result == {}
+
+    def test_includes_all_known_sub_dims(self):
+        """All known sub-dimensions appear even if no data (at 0%)."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        # Only gas-fees has data, but all should appear
+        df = pd.DataFrame(
+            {
+                "date": ["2025-01-01"],
+                "venue": ["GAS_TRACKER"],
+                "_defi_source": ["gas-fees"],
+            }
+        )
+        result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
+        # gas-fees should have data
+        assert result["gas-fees"]["dates_found"] == 1
+        # lending-indices should exist but at 0
+        assert "lending-indices" in result
+        assert result["lending-indices"]["dates_found"] == 0
+
+
+class TestReferenceExpectedDates:
+    """Tests for _get_reference_expected_dates."""
+
+    def test_returns_venue_date_mapping(self):
+        """Reads instruments index and returns per-venue date sets."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        svc._REF_DATA_CACHE.clear()
+        mock_idx = pd.DataFrame(
+            {
+                "date": ["2025-01-01", "2025-01-01", "2025-01-02"],
+                "venue": ["BINANCE-SPOT", "DERIBIT", "BINANCE-SPOT"],
+                "service_name": ["instruments-service"] * 3,
+            }
+        )
+        with patch(
+            "deployment_api.services.data_status_service._read_index_cached",
+            return_value=mock_idx,
+        ):
+            result = svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-02")
+        assert result["BINANCE-SPOT"] == {"2025-01-01", "2025-01-02"}
+        assert result["DERIBIT"] == {"2025-01-01"}
+
+    def test_empty_on_missing_bucket(self):
+        """Returns empty dict when instruments bucket doesn't exist."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        svc._REF_DATA_CACHE.clear()
+        with patch(
+            "deployment_api.services.data_status_service._read_index_cached",
+            side_effect=FileNotFoundError("no bucket"),
+        ):
+            result = svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-02")
+        assert result == {}
+
+    def test_caches_result(self):
+        """Second call returns cached result without re-reading."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        svc._REF_DATA_CACHE.clear()
+        mock_idx = pd.DataFrame(
+            {
+                "date": ["2025-01-01"],
+                "venue": ["V"],
+            }
+        )
+        with patch(
+            "deployment_api.services.data_status_service._read_index_cached",
+            return_value=mock_idx,
+        ) as mock_read:
+            svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-01")
+            svc._get_reference_expected_dates("cefi", "2025-01-01", "2025-01-01")
+        mock_read.assert_called_once()
+
+
+class TestServiceCategoryScope:
+    """Per-Appendix A: single-scope services must not emit 0/0 rows for
+    out-of-scope categories.  Locks the fix for audit defect #7 (2026-04-19):
+    features-onchain-service returning all 5 categories as 0/0 even though it
+    only covers DEFI.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disable_process_pool(self, monkeypatch):
+        """Force the serial path in ``_get_manifest_status_sync``.
+
+        The multi-cat tests (MDPS=3 cats, instruments-service=5 cats) trigger
+        the ProcessPool branch which forks a subprocess that fails when the
+        GCS client tries to initialise with ``project_id="test"``.  The
+        single-cat tests (features-onchain / sports / commodity) never hit
+        the pool so they pass.  We disable the pool unconditionally for this
+        class — the assertions only inspect the ``asset_groups`` key set, not
+        the per-cat payload, so the serial path is functionally equivalent.
+        """
+        monkeypatch.setattr(
+            "deployment_api.services.data_status_service._PROCESS_POOL_DISABLED",
+            True,
+        )
+
+    def test_features_onchain_returns_only_defi(self):
+        """features-onchain-service should only return DEFI in /turbo response."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="features-onchain-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["asset_groups"].keys()) == {"DEFI"}
+
+    def test_features_sports_returns_only_sports(self):
+        """features-sports-service should only return SPORTS."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="features-sports-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["asset_groups"].keys()) == {"SPORTS"}
+
+    def test_features_commodity_returns_only_tradfi(self):
+        """features-commodity-service should only return TRADFI."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="features-commodity-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["asset_groups"].keys()) == {"TRADFI"}
+
+    def test_mdps_returns_only_cefi_tradfi_defi(self):
+        """market-data-processing-service should not render SPORTS/PREDICTION."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="market-data-processing-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["asset_groups"].keys()) == {"CEFI", "TRADFI", "DEFI"}
+
+    def test_instruments_service_returns_all_five(self):
+        """instruments-service has no restriction — must emit all 5 categories."""
+        from deployment_api.services.data_status_service import DataStatusService
+
+        svc = DataStatusService(project_id="test")
+        result = svc._get_manifest_status_sync(
+            service="instruments-service",
+            start_date="2025-01-01",
+            end_date="2025-01-02",
+        )
+        assert set(result["asset_groups"].keys()) == {
+            "CEFI",
+            "TRADFI",
+            "DEFI",
+            "SPORTS",
+            "PREDICTION",
+        }
+
+
+class TestCoverageSemantics:
+    """Tests for per-category coverage semantics (dense vs event_driven).
+
+    Context: The data status page for market-tick-data-service PREDICTION was
+    showing 23.37% shards=8191/35049 because the denominator assumes every
+    Polymarket conditionId should trade every day. In reality event markets
+    come and go — the migration attempted every conditionId it found and
+    only wrote a manifest entry when rows>0. So 8191 shards represent
+    every day that had trading; the "missing" 26858 are underlying-days
+    where the market simply didn't trade.
+
+    The fix: event-driven categories (PREDICTION, SPORTS) display attempt
+    coverage (did we observe this underlying at all?) and expose capture
+    coverage + empty-rate estimate for the drill-down.
+    """
+
+    def test_prediction_polymarket_shows_100_attempt_coverage(self):
+        """99 underlyings with 8191/35049 shards: 100% attempt, 23.37% capture."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            COVERAGE_SEMANTICS,
+            _compute_attempt_coverage,
+        )
+
+        # Build a manifest slice with 99 distinct underlyings
+        rows = []
+        for i in range(99):
+            rows.append({"underlying": f"COND_{i:03d}", "date": "2025-06-01"})
+        df = pd.DataFrame(rows)
+
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "PREDICTION")
+        assert attempt_found == 99
+        assert attempt_expected == 99
+        assert COVERAGE_SEMANTICS["PREDICTION"] == "event_driven"
+
+        # Simulate the header calc in _build_manifest_asset_group
+        capture_pct = round(8191 / 35049 * 100, 2)  # = 23.37
+        attempt_pct = round(attempt_found / attempt_expected * 100, 2)
+        empty_rate = round(1.0 - (capture_pct / attempt_pct), 4)
+
+        assert attempt_pct == 100.0
+        assert capture_pct == 23.37
+        # (100 - 23.37) / 100 = 0.7663
+        assert abs(empty_rate - 0.7663) < 1e-4
+
+    def test_dense_category_cefi_attempt_equals_capture(self):
+        """CEFI is dense — attempt == capture and empty_rate_estimate is None."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            COVERAGE_SEMANTICS,
+            _compute_attempt_coverage,
+        )
+
+        # CEFI classified as dense
+        assert COVERAGE_SEMANTICS["CEFI"] == "dense"
+        assert COVERAGE_SEMANTICS["TRADFI"] == "dense"
+        assert COVERAGE_SEMANTICS["DEFI"] == "dense"
+
+        # _compute_attempt_coverage returns (0, 0) for dense categories —
+        # the caller falls back to the shards-weighted figure in that case.
+        df = pd.DataFrame(
+            [
+                {"venue": "BINANCE-SPOT", "underlying": "BTC", "date": "2025-06-01"},
+                {"venue": "BINANCE-SPOT", "underlying": "ETH", "date": "2025-06-01"},
+            ]
+        )
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "CEFI")
+        assert attempt_found == 0
+        assert attempt_expected == 0
+
+    def test_sports_uses_league_fixture_type_attempt_axis(self):
+        """SPORTS attempt unit = (league_id, fixture_type) pair."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _compute_attempt_coverage
+
+        df = pd.DataFrame(
+            [
+                {"league_id": "EPL", "fixture_type": "match", "date": "2025-06-01"},
+                {"league_id": "EPL", "fixture_type": "match", "date": "2025-06-02"},
+                {"league_id": "EPL", "fixture_type": "outrights", "date": "2025-06-01"},
+                {"league_id": "LALIGA", "fixture_type": "match", "date": "2025-06-01"},
+            ]
+        )
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "SPORTS")
+        # 3 distinct (league, fixture_type) pairs
+        assert attempt_found == 3
+        assert attempt_expected == 3
+
+    def test_prediction_empty_frame_returns_zero(self):
+        """Empty manifest → (0, 0) so caller falls back to capture coverage."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _compute_attempt_coverage
+
+        df = pd.DataFrame(columns=["underlying", "date"])
+        attempt_found, attempt_expected = _compute_attempt_coverage(df, "PREDICTION")
+        assert attempt_found == 0
+        assert attempt_expected == 0

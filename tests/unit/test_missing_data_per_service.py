@@ -81,7 +81,7 @@ def build_instruments_response(venues_with_data, all_dates, category="CEFI"):
             "end": max(all_dates) if all_dates else "",
             "days": total_dates,
         },
-        "categories": {
+        "asset_groups": {
             category: {
                 "dates_found": cat_dates_found,
                 "dates_expected": cat_dates_expected,
@@ -158,7 +158,7 @@ def build_market_tick_response(venues_with_data, all_dates, data_types, category
         "overall_dates_expected": total_venue_expected,
         "total_missing": total_missing,
         "date_range": {"start": min(all_dates), "end": max(all_dates), "days": total_dates},
-        "categories": {
+        "asset_groups": {
             category: {
                 "dates_found": cat_dates_found,
                 "dates_expected": total_dates,
@@ -208,7 +208,7 @@ def build_features_response(feature_groups_with_data, all_dates, category="CEFI"
         "overall_dates_expected": total_fg_expected,
         "total_missing": total_missing,
         "date_range": {"start": min(all_dates), "end": max(all_dates), "days": total_dates},
-        "categories": {
+        "asset_groups": {
             category: {
                 "dates_found": total_dates,  # Category-level: if any fg has data for a date
                 "dates_expected": total_dates,
@@ -241,7 +241,7 @@ def build_corporate_actions_response(dates_with_data, all_dates, category="TRADF
         "overall_dates_expected": total_dates,
         "total_missing": total_missing,
         "date_range": {"start": min(all_dates), "end": max(all_dates), "days": total_dates},
-        "categories": {
+        "asset_groups": {
             category: {
                 "dates_found": dates_found,
                 "dates_expected": total_dates,
@@ -388,7 +388,7 @@ class TestS3MissingVenues:
 
         assert "error" not in result
 
-        tradfi = result["categories"]["TRADFI"]
+        tradfi = result["asset_groups"]["TRADFI"]
         venue_summary = tradfi.get("venue_summary", {})
         expected_but_missing = venue_summary.get("expected_but_missing", [])
 
@@ -424,7 +424,7 @@ class TestS3MissingVenues:
         result = build_instruments_response(venues, dates, category="TRADFI")
 
         assert "error" not in result
-        tradfi = result["categories"]["TRADFI"]
+        tradfi = result["asset_groups"]["TRADFI"]
         expected_but_missing = tradfi.get("venue_summary", {}).get("expected_but_missing", [])
         assert "ICE" in expected_but_missing
 
@@ -445,7 +445,7 @@ class TestS3MissingVenues:
         result = build_instruments_response(venues, dates, category="CEFI")
 
         assert "error" not in result
-        cefi = result["categories"]["CEFI"]
+        cefi = result["asset_groups"]["CEFI"]
         expected_but_missing = cefi.get("venue_summary", {}).get("expected_but_missing", [])
 
         # Should detect missing venues
@@ -495,7 +495,7 @@ class TestS4DimensionWeightedSymmetry:
         venues = {"CBOE": dates, "NASDAQ": dates, "FX": dates}
         result = build_instruments_response(venues, dates, category="TRADFI")
 
-        tradfi = result["categories"]["TRADFI"]
+        tradfi = result["asset_groups"]["TRADFI"]
 
         # instruments-service venues should NOT have _dim_weighted_expected
         # (no data_type sub-dirs in GCS for instruments-service)
@@ -533,7 +533,7 @@ class TestS4DimensionWeightedSymmetry:
         result = build_market_tick_response(venues, dates, data_types, category="CEFI")
 
         assert "error" not in result
-        cefi = result["categories"]["CEFI"]
+        cefi = result["asset_groups"]["CEFI"]
 
         # Check present venues DO have _dim_weighted_expected
         has_dim = False
@@ -757,7 +757,7 @@ class TestS5CategoriesWithMissing:
         assert "error" not in result
 
         # Feed backend response into frontend logic
-        cats_with_missing = self._categories_with_missing(result["categories"])
+        cats_with_missing = self._categories_with_missing(result["asset_groups"])
         assert "TRADFI" in cats_with_missing, (
             "Frontend categoriesWithMissing should detect TRADFI has missing venues. "
             "If not, the Deploy Missing button won't work for this category."

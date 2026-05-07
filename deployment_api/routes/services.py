@@ -12,6 +12,7 @@ from typing import cast
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from deployment_api.config_loader import ConfigLoader
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.settings import (
     EXECUTION_STORE_BUCKET,
     ML_CONFIGS_STORE_BUCKET,
@@ -20,6 +21,8 @@ from deployment_api.settings import (
     STRATEGY_STORE_TRADFI_BUCKET,
 )
 from deployment_api.utils.cache import TTL_SERVICE_CONFIG, cache
+
+_cfg = DeploymentApiConfig()
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,11 @@ async def list_services(request: Request):
     Returns:
         List of services with their descriptions and dimensions.
     """
+    if _cfg.is_mock_mode():
+        from deployment_api.mock_state import get_store
+
+        items = get_store().list("services")
+        return {"services": items, "count": len(items)}
 
     def _load_services_sync():
         """Sync function to load services - runs in thread pool."""
