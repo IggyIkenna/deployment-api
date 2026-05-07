@@ -36,6 +36,11 @@ from deployment_api.services.data_status_hierarchical import (
     get_hierarchical_drilldown,
     list_supported_pairs,
 )
+from deployment_api.services.deploy_missing import (
+    DeployMissingError,
+    build_deploy_missing_preview,
+    list_supported_services as deploy_missing_supported_services,
+)
 from deployment_api.services.data_status_mock import (
     build_mock_shard_instruments,
     build_mock_turbo_response,
@@ -542,6 +547,57 @@ async def get_data_status_drilldown(
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)
         raise HTTPException(status_code=500, detail=f"hierarchical drilldown failed: {e!s}") from e
+
+
+@router.post("/deploy-missing-preview")
+async def post_deploy_missing_preview(
+    request: dict[str, object],
+):
+    """Build the surgical-recovery shell command for ONE leaf shard.
+
+    Phase 3 ships preview-mode (operator copies + runs the command from
+    their authenticated terminal); auto-launch is a follow-up plan
+    pending security review of the deployment-api -> gcloud perm
+    boundary. Body shape::
+
+        {
+            "service": "market-tick-data-service",
+            "asset_group": "defi",
+            "row_key": {"venue": "AAVEV3-ARBITRUM",
+                        "data_type": "lending_indices",
+                        "instrument_id": "USDC",
+                        "day": "2024-03-04"}
+        }
+    """
+    service = str(request.get("service", ""))
+    asset_group = str(request.get("asset_group", ""))
+    raw_row_key = request.get("row_key", {})
+    if not isinstance(raw_row_key, dict):
+        raise HTTPException(status_code=400, detail="row_key must be an object")
+    row_key: dict[str, str] = {str(k): str(v) for k, v in raw_row_key.items()}
+    if not service or not asset_group:
+        raise HTTPException(
+            status_code=400, detail="service and asset_group are required"
+        )
+    try:
+        preview = build_deploy_missing_preview(
+            service=service,
+            asset_group=asset_group,
+            row_key=row_key,
+        )
+    except DeployMissingError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return preview.to_dict()
+
+
+@router.get("/deploy-missing-services")
+async def get_deploy_missing_services():
+    """List services with a registered launcher script for Deploy-Missing.
+
+    UI consumers call this to decide which leaves render the
+    Deploy-Missing button vs a "manual recovery" placeholder.
+    """
+    return {"services": deploy_missing_supported_services()}
 
 
 @router.get("/drilldown-pairs")

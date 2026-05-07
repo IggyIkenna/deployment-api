@@ -75,6 +75,10 @@ def _ensure_services_mocked() -> None:
     # ``read_availability_index`` attribute on the real module.
     real_hierarchical = importlib.import_module("deployment_api.services.data_status_hierarchical")
 
+    # deploy_missing is a pure-function module (drilldown plan Phase 3).
+    # Loaded for the same reason as data_status_hierarchical above.
+    real_deploy_missing = importlib.import_module("deployment_api.services.deploy_missing")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -113,6 +117,10 @@ def _ensure_services_mocked() -> None:
     # plan Phase 1).
     sys.modules["deployment_api.services.data_status_hierarchical"] = real_hierarchical
     services_mod.data_status_hierarchical = real_hierarchical
+
+    # Re-register deploy_missing as a real module (drilldown plan Phase 3).
+    sys.modules["deployment_api.services.deploy_missing"] = real_deploy_missing
+    services_mod.deploy_missing = real_deploy_missing
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
