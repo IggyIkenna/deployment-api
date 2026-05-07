@@ -1662,6 +1662,88 @@ _FAILURE_PILLAR_KEYS: tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Per-empty-reason breakdown (writegate Phase 4.A — empty_confirmed taxonomy).
+# ---------------------------------------------------------------------------
+#
+# Companion to ``_compute_failure_pillar_counts``. Where pillars bucket
+# ``attempted_failed`` rows by typed-error class, this rolls up
+# ``empty_confirmed`` rows by their ``error_reason`` — the closed taxonomy
+# from ``unified_api_contracts.canonical.crosscutting.honest_coverage.EMPTY_CONFIRMED_REASONS``
+# stamped by Tier 3D.1 reconciler (existing rows) + Tier 3D.2 reader-side
+# fallback + Tier 2.E.2 writer-side ``record_expected_empty(reason=...)``
+# + Tier 3B sports ``record_empty(reason=SOURCE_RETURNED_ZERO)``.
+#
+# Without this rollup, the Phase 2.E + Phase 3.D + Phase 3.B work that
+# stamps typed reasons on every empty_confirmed row stays invisible to the
+# operator — the UI would see "X empty_confirmed shards" with no breakdown
+# of WHY (calendar holiday vs paused league vs source returned zero vs
+# pre-genesis chain). This rollup lets the data-status panel render a
+# stacked-bar of empty reasons next to the failure-pillars stack.
+
+# Closed-set keys exact-match the EMPTY_CONFIRMED_REASONS taxonomy plus a
+# ``empty_unclassified`` catch-all for legacy null-reason rows that haven't
+# been re-stamped yet by the Tier 3D.1 reconciler. Once the back-fill
+# completes for an asset_group, the catch-all should drop to zero — its
+# count is a cheap progress indicator for the back-fill rollout.
+_EMPTY_REASON_KEYS: tuple[str, ...] = (
+    "EXPECTED_HOLIDAY",
+    "EXPECTED_WEEKEND",
+    "EXPECTED_PAUSED_LEAGUE",
+    "EXPECTED_PRE_SOURCE_COVERAGE_START",
+    "EXPECTED_PRE_GENESIS_CHAIN",
+    "EXPECTED_INSTRUMENT_NOT_LISTED",
+    "EXPECTED_INSTRUMENT_DELISTED",
+    "EXPECTED_PARTIAL_HALF_DAY",
+    "EXPECTED_REFDATA_CADENCE_CHANGE",
+    "EXPECTED_DEPRECATED_DATA_TYPE",
+    "SOURCE_RETURNED_ZERO",
+    "empty_unclassified",  # legacy rows pre-Tier-3D.1 back-fill
+)
+
+
+def _compute_empty_reason_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Bucket ``empty_confirmed`` rows by ``error_reason`` per the closed taxonomy.
+
+    Args:
+        df: Manifest slice — typically a venue or category sub-frame.
+
+    Returns:
+        ``{empty_reason: count}`` for every key in ``_EMPTY_REASON_KEYS``.
+        Reasons with zero matches are included with count 0 so the UI can
+        render the full grid without conditional checks.
+
+    Empty rows whose ``error_reason`` doesn't match any registered closed-set
+    member fall into ``empty_unclassified`` rather than being silently
+    dropped — this counts the legacy rows that pre-date the Tier 3D.1
+    reconciler back-fill and surfaces back-fill progress to the operator.
+    Empty rows with NULL/blank ``error_reason`` (Tier 3D.1 hasn't reached
+    them yet) also land in ``empty_unclassified``.
+    """
+    out: dict[str, int] = dict.fromkeys(_EMPTY_REASON_KEYS, 0)
+    if df.empty or _CAPTURE_STATUS_COL not in df.columns:
+        return out
+    empty_mask = (
+        df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
+        == _CAPTURE_STATUS_EMPTY
+    )
+    if not bool(empty_mask.any()):
+        return out
+    if "error_reason" not in df.columns:
+        # Whole slice is legacy null-reason rows.
+        out["empty_unclassified"] = int(empty_mask.sum())
+        return out
+    reasons = df.loc[empty_mask, "error_reason"].fillna("").astype(str).str.strip()
+    known = set(_EMPTY_REASON_KEYS) - {"empty_unclassified"}
+    for reason in reasons:
+        if reason in known:
+            out[reason] += 1
+        else:
+            # Empty string, NaN-coerced "", or unrecognised value → unclassified.
+            out["empty_unclassified"] += 1
+    return out
+
+
 def _compute_failure_pillar_counts(df: pd.DataFrame) -> dict[str, int]:
     """Bucket ``attempted_failed`` rows by typed-error class prefix.
 
@@ -4209,6 +4291,7 @@ class DataStatusService:
         v_capture_counts = _compute_capture_status_counts(v_df)
         v_capture_rates = _derive_capture_status_rates(v_capture_counts, expected)
         v_failure_pillars = _compute_failure_pillar_counts(v_df)
+        v_empty_reasons = _compute_empty_reason_counts(v_df)
 
         venue_entry: dict[str, object] = {
             "dates_found": found,
@@ -4226,6 +4309,7 @@ class DataStatusService:
                 "attempted_failed": v_capture_counts[_CAPTURE_STATUS_FAILED],
             },
             "failure_pillars": v_failure_pillars,
+            "empty_reasons": v_empty_reasons,
             "attempt_coverage_pct": v_capture_rates["attempt_coverage_pct"],
             "capture_coverage_pct": v_capture_rates["capture_coverage_pct"],
             "empty_rate": v_capture_rates["empty_rate"],
