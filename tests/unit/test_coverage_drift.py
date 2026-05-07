@@ -25,49 +25,81 @@ class TestCoveragePerCalcLeague:
         assert _coverage_per_calc_league(pd.DataFrame()) == {}
 
     def test_all_captured_is_100pct(self) -> None:
-        snap = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
+        snap = _snapshot(
+            [
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
         assert _coverage_per_calc_league(snap) == {("team_form", "EPL"): 100.0}
 
     def test_failed_excluded_from_numerator(self) -> None:
-        snap = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"},
-        ])
+        snap = _snapshot(
+            [
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+            ]
+        )
         # 1 captured / 2 total = 50%
         assert _coverage_per_calc_league(snap) == {("team_form", "EPL"): 50.0}
 
     def test_empty_confirmed_counts_toward_coverage(self) -> None:
-        snap = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "empty_confirmed"},
-        ])
+        snap = _snapshot(
+            [
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "empty_confirmed",
+                },
+            ]
+        )
         assert _coverage_per_calc_league(snap) == {("team_form", "EPL"): 100.0}
 
 
 class TestDetectDrift:
     def test_no_drift_returns_empty(self) -> None:
-        snap = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
+        snap = _snapshot(
+            [
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
         assert detect_drift(snap, snap) == []
 
     def test_coverage_drop_triggers_event(self) -> None:
-        prev = _snapshot([
-            # 4 of 4 captured = 100%
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
-        cur = _snapshot([
-            # 1 captured + 3 failed = 25%
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"},
-        ])
+        prev = _snapshot(
+            [
+                # 4 of 4 captured = 100%
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
+        cur = _snapshot(
+            [
+                # 1 captured + 3 failed = 25%
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+            ]
+        )
         events = detect_drift(prev, cur)
         assert len(events) == 1
         ev = events[0]
@@ -79,34 +111,50 @@ class TestDetectDrift:
 
     def test_below_threshold_no_event(self) -> None:
         # 100% → 96% = 4pt drop, below default 5pt threshold
-        prev = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}
-        ] * 100)
-        cur = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}
-        ] * 96 + [
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"}
-        ] * 4)
+        prev = _snapshot(
+            [{"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}] * 100
+        )
+        cur = _snapshot(
+            [{"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}] * 96
+            + [
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                }
+            ]
+            * 4
+        )
         assert detect_drift(prev, cur) == []
 
     def test_coverage_gain_no_event(self) -> None:
         """Coverage going UP shouldn't trigger drift events."""
-        prev = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
-        cur = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
+        prev = _snapshot(
+            [
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
+        cur = _snapshot(
+            [
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
         # 50% → 100% = +50pt gain, no event
         assert detect_drift(prev, cur) == []
 
     def test_pair_disappearance_treated_as_drop_to_zero(self) -> None:
         """A (calc, league) that vanishes from current = 100% → 0% = drift."""
-        prev = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
+        prev = _snapshot(
+            [
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
         cur = pd.DataFrame(columns=["feature_group", "league_id", "capture_status"])
         events = detect_drift(prev, cur)
         assert len(events) == 1
@@ -116,25 +164,43 @@ class TestDetectDrift:
         """A (calc, league) appearing in current but not previous shouldn't
         trigger drift on day 1."""
         prev = pd.DataFrame(columns=["feature_group", "league_id", "capture_status"])
-        cur = _snapshot([
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-        ])
+        cur = _snapshot(
+            [
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
         assert detect_drift(prev, cur) == []
 
     def test_events_sorted_by_drop_magnitude(self) -> None:
-        prev = _snapshot([
-            # team_form / EPL: 100%
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
-            # team_xg / EPL: 100%
-            {"feature_group": "team_xg", "league_id": "EPL", "capture_status": "captured"},
-        ])
-        cur = _snapshot([
-            # team_form / EPL: 0% (50pt drop)
-            {"feature_group": "team_form", "league_id": "EPL", "capture_status": "attempted_failed"},
-            # team_xg / EPL: 0% (90pt-equivalent — but actually 100pt drop)
-            {"feature_group": "team_xg", "league_id": "EPL", "capture_status": "attempted_failed"},
-            {"feature_group": "team_xg", "league_id": "EPL", "capture_status": "attempted_failed"},
-        ])
+        prev = _snapshot(
+            [
+                # team_form / EPL: 100%
+                {"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"},
+                # team_xg / EPL: 100%
+                {"feature_group": "team_xg", "league_id": "EPL", "capture_status": "captured"},
+            ]
+        )
+        cur = _snapshot(
+            [
+                # team_form / EPL: 0% (50pt drop)
+                {
+                    "feature_group": "team_form",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+                # team_xg / EPL: 0% (90pt-equivalent — but actually 100pt drop)
+                {
+                    "feature_group": "team_xg",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+                {
+                    "feature_group": "team_xg",
+                    "league_id": "EPL",
+                    "capture_status": "attempted_failed",
+                },
+            ]
+        )
         events = detect_drift(prev, cur)
         # Both 100%→0% but team_xg has more rows so still 100pt drop.
         # Both should be reported, sorted by drift_pct desc.

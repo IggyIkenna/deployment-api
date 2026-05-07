@@ -23,7 +23,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
-
 from unified_api_contracts.sports import FEATURE_UPSTREAM_REQUIREMENTS
 
 # Drift threshold (percentage points). A (calc, league) reporting 80%
