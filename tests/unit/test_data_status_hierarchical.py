@@ -249,6 +249,15 @@ class TestPaginationAndBundledRootVirtualisation:
                 )
         return pd.DataFrame(rows)
 
+    # MTDS CeFi shard axes after Phase 6 reorder: (venue, data_type,
+    # instrument_type, instrument_id). To put ``instrument_id`` at the
+    # head of the returned tree, filter through every prior axis.
+    _PERP_PREFIX_FILTERS: dict[str, str] = {
+        "venue": "BINANCE-FUTURES",
+        "data_type": "trades",
+        "instrument_type": "PERPETUAL",
+    }
+
     def test_total_top_axis_children_reports_full_count(self) -> None:
         """``total_top_axis_children`` is the unfiltered child count at the
         head axis — UI uses it to render "showing N–M of T"."""
@@ -259,11 +268,11 @@ class TestPaginationAndBundledRootVirtualisation:
                 asset_group="cefi",
                 window_start="2024-03-01",
                 window_end="2024-03-01",
-                filters={"venue": "BINANCE-FUTURES"},
+                filters=dict(self._PERP_PREFIX_FILTERS),
                 expand_to_depth=0,
                 child_limit=200,
             )
-        # 750 instruments under the (venue, data_type) filter.
+        # 750 instruments under the (venue, data_type, instrument_type) filter.
         assert result["total_top_axis_children"] == 750
         tree = result["tree"]
         assert isinstance(tree, list)
@@ -280,7 +289,7 @@ class TestPaginationAndBundledRootVirtualisation:
                 asset_group="cefi",
                 window_start="2024-03-01",
                 window_end="2024-03-01",
-                filters={"venue": "BINANCE-FUTURES"},
+                filters=dict(self._PERP_PREFIX_FILTERS),
                 expand_to_depth=0,
                 child_offset=200,
                 child_limit=200,
@@ -302,7 +311,7 @@ class TestPaginationAndBundledRootVirtualisation:
                 asset_group="cefi",
                 window_start="2024-03-01",
                 window_end="2024-03-01",
-                filters={"venue": "BINANCE-FUTURES"},
+                filters=dict(self._PERP_PREFIX_FILTERS),
                 expand_to_depth=0,
                 child_offset=600,
                 child_limit=200,
@@ -321,7 +330,7 @@ class TestPaginationAndBundledRootVirtualisation:
                 asset_group="cefi",
                 window_start="2024-03-01",
                 window_end="2024-03-01",
-                filters={"venue": "BINANCE-FUTURES"},
+                filters=dict(self._PERP_PREFIX_FILTERS),
                 expand_to_depth=0,
             )
         tree = result["tree"]
@@ -341,7 +350,11 @@ class TestPaginationAndBundledRootVirtualisation:
                 asset_group="cefi",
                 window_start="2024-03-01",
                 window_end="2024-03-02",
-                filters={"venue": "DERIBIT"},
+                filters={
+                    "venue": "DERIBIT",
+                    "data_type": "options_chain",
+                    "instrument_type": "options_chain",
+                },
                 expand_to_depth=10,
             )
         tree = result["tree"]
@@ -363,7 +376,7 @@ class TestPaginationAndBundledRootVirtualisation:
                 asset_group="cefi",
                 window_start="2024-03-01",
                 window_end="2024-03-01",
-                filters={"venue": "BINANCE-FUTURES"},
+                filters=dict(self._PERP_PREFIX_FILTERS),
                 expand_to_depth=10,
             )
         tree = result["tree"]
@@ -406,3 +419,182 @@ class TestListSupportedPairs:
         axes = match["axes"]
         assert isinstance(axes, list)
         assert len(axes) >= 2  # At least one shard axis + date.
+
+
+# ---------------------------------------------------------------------------
+# Contract regression tests — catch the bugs Playwright surfaced 2026-05-07.
+# Pattern: rather than mocking the dependency to return a static df + asserting
+# the response shape, these tests assert the CALL CONTRACT to the dependency.
+# That's how we catch the "passed gs:// URI to a function expecting a bare
+# bucket name" bug class without needing live GCS or browser exercise.
+# ---------------------------------------------------------------------------
+
+
+class TestReadAvailabilityIndexCallContract:
+    """Regression: 2026-05-07 incident — ``read_availability_index`` was being
+    called with ``"gs://{bucket}/_index/availability_index.parquet"`` instead
+    of the bare bucket name. UTL silently returned ``DataFrame(0, 30)`` so the
+    UI rendered "No data for cefi" despite 1M+ captured shards. The mocked-
+    df-and-assert-shape tests above didn't catch this because the mock
+    accepts any positional arg.
+
+    Fix: assert the actual argument passed matches the bare-bucket-name
+    signature (no scheme, no path, no slashes).
+    """
+
+    def test_passes_bare_bucket_name_not_gs_uri(self) -> None:
+        captured_args: list[tuple] = []
+
+        def fake_read_availability_index(*args, **kwargs):
+            captured_args.append((args, kwargs))
+            return pd.DataFrame()
+
+        with patch.object(
+            _hier, "read_availability_index", side_effect=fake_read_availability_index
+        ):
+            get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-03",
+            )
+
+        assert len(captured_args) >= 1, "read_availability_index was not called"
+        positional, _kw = captured_args[0]
+        assert len(positional) >= 1, "read_availability_index expects a positional arg"
+        bucket_arg = positional[0]
+        assert isinstance(bucket_arg, str), (
+            f"read_availability_index expects str, got {type(bucket_arg)}"
+        )
+        # The bare bucket name has no scheme or slashes. A gs:// URI or a
+        # path-suffixed bucket-and-prefix string both fail this check.
+        assert "://" not in bucket_arg, (
+            f"read_availability_index called with URI {bucket_arg!r}; "
+            "expects bare bucket name (no scheme). 2026-05-07 incident."
+        )
+        assert "/" not in bucket_arg, (
+            f"read_availability_index called with path {bucket_arg!r}; "
+            "expects bare bucket name (no path)."
+        )
+
+    def test_passes_canonical_bucket_for_mtds_cefi(self) -> None:
+        """Cross-check the bucket NAME matches the project's canonical
+        template — `market-data-tick-{cat}-{pid}`. Catches both the URI
+        bug AND any future drift where the bucket-name builder changes
+        without the drill-down following along."""
+        captured: list[str] = []
+
+        def fake(*args, **kwargs):
+            if args:
+                captured.append(args[0])
+            return pd.DataFrame()
+
+        with patch.object(_hier, "read_availability_index", side_effect=fake):
+            get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-03",
+            )
+
+        assert len(captured) >= 1
+        bucket = captured[0]
+        # MTDS CeFi bucket = "market-data-tick-cefi-{pid}"
+        assert bucket.startswith("market-data-tick-cefi-"), (
+            f"unexpected bucket {bucket!r}"
+        )
+
+
+class TestRowKeyShapeAtEachDepth:
+    """Regression: 2026-05-07 incident — the UI's DeployMissingButton
+    rendered on every captured=0 ``is_leaf`` node, including intermediate
+    venue-level nodes whose row_key only carried ``{venue: X}``. The
+    /deploy-missing-preview endpoint then 400'd on the missing data_type
+    and day fields.
+
+    Fix surface: the leaf-row's row_key carries every parent axis value
+    AT THE DEPTH MATCHING THE NODE. UI consumers can then gate
+    DeployMissingButton on (venue + data_type + day) presence.
+
+    The render-gate fix lives in deployment-ui (HierarchicalShardDrilldown);
+    these tests pin the BACKEND contract so the row_key shape doesn't
+    silently regress and force the UI gate to drift.
+    """
+
+    def _mtds_cefi_manifest(self) -> pd.DataFrame:
+        rows: list[dict[str, object]] = []
+        for venue in ("BINANCE-FUTURES",):
+            for dt_name in ("trades", "book_snapshot_5"):
+                for inst in ("btcusdt",):
+                    rows.append(
+                        {
+                            "venue": venue,
+                            "data_type": dt_name,
+                            "instrument_type": "PERPETUAL",
+                            "instrument_id": inst,
+                            "date": "2024-03-04",
+                            "capture_status": "captured",
+                            "error_reason": "",
+                        }
+                    )
+        return pd.DataFrame(rows)
+
+    def test_top_level_node_has_only_top_axis_in_row_key(self) -> None:
+        """A venue-level node's row_key carries ONLY {venue}. The UI must
+        not emit Deploy-Missing on this node because the shard atom is
+        incomplete (missing data_type + day)."""
+        df = self._mtds_cefi_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-04",
+                window_end="2024-03-04",
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert tree, "expected at least one top-level node"
+        first = tree[0]
+        assert first["axis"] == "venue"
+        # row_key carries ONLY {venue}; no data_type, no day yet.
+        rk = first["row_key"]
+        assert "venue" in rk
+        assert "data_type" not in rk
+        assert "day" not in rk and "date" not in rk
+
+    def test_leaf_node_carries_full_shard_atom(self) -> None:
+        """A date-level leaf carries the full shard atom (venue +
+        data_type + day at minimum). The UI Deploy-Missing render gate
+        relies on this contract."""
+        df = self._mtds_cefi_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-04",
+                window_end="2024-03-04",
+                expand_to_depth=10,  # materialise the full tree to the leaf.
+            )
+
+        # Walk to a date-level leaf.
+        def _walk_to_leaves(nodes, leaves):
+            for n in nodes:
+                if not n["children"]:
+                    leaves.append(n)
+                else:
+                    _walk_to_leaves(n["children"], leaves)
+
+        leaves: list[dict] = []
+        _walk_to_leaves(result["tree"], leaves)
+        assert leaves, "expected at least one leaf"
+
+        # Find a date/day leaf.
+        date_leaves = [l for l in leaves if l["axis"] in ("date", "day")]
+        assert date_leaves, "expected at least one date-axis leaf"
+        rk = date_leaves[0]["row_key"]
+        # The full shard-atom requirement that the UI render-gate checks.
+        assert rk.get("venue"), f"leaf row_key missing venue: {rk}"
+        assert rk.get("data_type"), f"leaf row_key missing data_type: {rk}"
+        assert rk.get("day") or rk.get("date"), (
+            f"leaf row_key missing day/date: {rk}"
+        )
