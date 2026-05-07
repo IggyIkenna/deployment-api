@@ -1624,6 +1624,86 @@ def _compute_capture_status_counts(df: pd.DataFrame) -> dict[str, int]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-pillar failure breakdown (writegate Phase 4.A item 1)
+# ---------------------------------------------------------------------------
+#
+# The ``capture_status=attempted_failed`` rows carry a free-form
+# ``error_reason`` string set by the writer to ``repr(typed_error)``. To give
+# operators (deployment-ui DataStatusTab) per-pillar visibility instead of one
+# opaque "failure_rate" gauge, we bucket these strings by typed-error class
+# name into a fixed taxonomy.
+#
+# Each entry maps a UTL/MTDS typed-error class name to the manifest-row
+# breakdown column the UI binds. New typed-error classes ship over time
+# (``NanRatioExceededError``, ``SchemaMismatchError``, etc. per the writegate
+# plan); add them here in the same change as the typed-error class lands.
+# Anything unrecognised falls into ``failed_other`` so we don't silently drop
+# a new failure mode from operator visibility.
+
+_FAILURE_PILLAR_BY_ERROR_PREFIX: dict[str, str] = {
+    "UpstreamTimestampBiasError": "failed_timestamp_bias",
+    "MalformedTickFieldError": "failed_malformed",
+    "ClusterCoverageError": "failed_cluster",
+    "MissingClusterValidationError": "failed_cluster",
+    "LookaheadBiasError": "failed_lookahead_bias",
+}
+
+_FAILURE_PILLAR_KEYS: tuple[str, ...] = (
+    "failed_timestamp_bias",
+    "failed_malformed",
+    "failed_cluster",
+    "failed_lookahead_bias",
+    "failed_nan_ratio",  # placeholder — class lands in writegate Phase 1A.future
+    "failed_schema",  # placeholder — class lands in writegate Phase 1A.future
+    "failed_empty_placeholder_backfill",  # placeholder — reconciler error
+    "failed_missing_available_at",  # placeholder — write-time guard
+    "failed_other",  # catch-all for unrecognised reprs
+)
+
+
+def _compute_failure_pillar_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Bucket ``attempted_failed`` rows by typed-error class prefix.
+
+    Args:
+        df: Manifest slice — typically a venue or category sub-frame.
+
+    Returns:
+        ``{pillar_key: count}`` for every key in ``_FAILURE_PILLAR_KEYS``.
+        Pillars with zero matches are included with count 0 so the UI can
+        render the full grid without conditional checks.
+
+    Failed rows whose ``error_reason`` doesn't match any registered prefix
+    fall into ``failed_other`` rather than being silently dropped — this
+    catches future typed-error classes that ship before this taxonomy is
+    extended, surfacing them as "unclassified failures" in the UI.
+    """
+    out: dict[str, int] = dict.fromkeys(_FAILURE_PILLAR_KEYS, 0)
+    if df.empty or _CAPTURE_STATUS_COL not in df.columns:
+        return out
+    failed_mask = (
+        df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
+        == _CAPTURE_STATUS_FAILED
+    )
+    if not bool(failed_mask.any()):
+        return out
+    if "error_reason" not in df.columns:
+        # All failures are unclassified.
+        out["failed_other"] = int(failed_mask.sum())
+        return out
+    failed_reasons = df.loc[failed_mask, "error_reason"].fillna("").astype(str)
+    for reason in failed_reasons:
+        matched = False
+        for prefix, pillar in _FAILURE_PILLAR_BY_ERROR_PREFIX.items():
+            if reason.startswith(prefix):
+                out[pillar] += 1
+                matched = True
+                break
+        if not matched:
+            out["failed_other"] += 1
+    return out
+
+
 def _derive_capture_status_rates(
     counts: dict[str, int],
     total_expected_cells: int,
@@ -4128,6 +4208,7 @@ class DataStatusService:
         # drive the 4-state heatmap and the failure-rate drill-down.
         v_capture_counts = _compute_capture_status_counts(v_df)
         v_capture_rates = _derive_capture_status_rates(v_capture_counts, expected)
+        v_failure_pillars = _compute_failure_pillar_counts(v_df)
 
         venue_entry: dict[str, object] = {
             "dates_found": found,
@@ -4144,6 +4225,7 @@ class DataStatusService:
                 "empty_confirmed": v_capture_counts[_CAPTURE_STATUS_EMPTY],
                 "attempted_failed": v_capture_counts[_CAPTURE_STATUS_FAILED],
             },
+            "failure_pillars": v_failure_pillars,
             "attempt_coverage_pct": v_capture_rates["attempt_coverage_pct"],
             "capture_coverage_pct": v_capture_rates["capture_coverage_pct"],
             "empty_rate": v_capture_rates["empty_rate"],
