@@ -487,7 +487,7 @@ def _resolve_sports_instrument_type(asset_group: str, instrument_type: str, data
     return _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE.get(data_type, instrument_type)
 
 
-def get_schema_for_shard(
+def get_schema_for_shard(  # noqa: C901 — branchy by nature: 4-step resolution (registry → override → projection → honest-absence) + per-service synthesis + multi-axis kwarg threading
     *,
     asset_group: str,
     instrument_type: str,
@@ -636,7 +636,35 @@ def get_schema_for_shard(
             "projected_from": gs_uri,
         }
 
-    # Step 4: Honest absence.
+    # Step 4: Honest absence. Surface the probed paths so a path-drift
+    # bug is actionable from the modal — operator can paste the URI into
+    # ``gcloud storage ls`` and see whether the parquet really doesn't
+    # exist or the projection template just doesn't match the on-disk
+    # layout.
+    probed_paths: list[str] = []
+    if service and bucket and day:
+        try:
+            probed_paths = _build_leaf_parquet_candidates(
+                service=service, asset_group=cat_norm, day=day, axes=axes, bucket=bucket
+            )
+        except (ValueError, RuntimeError):
+            probed_paths = []
+    contract_key = f"({cat_norm}, {it_norm or '∅'}, {dt_norm or '∅'})"
+    if venue:
+        contract_key += f" venue={venue.upper()}"
+    parts = [
+        f"No UAC schema contract registered for {contract_key}",
+        f"and no parquet found on disk for service '{service}' on day '{day}'.",
+    ]
+    if probed_paths:
+        parts.append("Paths probed (first-hit-wins):")
+        for p in probed_paths:
+            parts.append(f"  • {p}")
+    parts.append(
+        "Either the writer hasn't shipped this axis yet, or the "
+        "projection path-template doesn't match the on-disk layout — "
+        "file the latter as a path-drift bug."
+    )
     return {
         "registered": False,
         "asset_group": cat_norm,
@@ -646,13 +674,8 @@ def get_schema_for_shard(
         "symbol_column": None,
         "source": "none",
         "columns": [],
-        "message": (
-            "No contract registered for this leaf shard AND no parquet "
-            "found on disk to project columns from. Either the writer "
-            "hasn't shipped yet (Phase 1 of the multi-axis-shard plan) "
-            "or the path-template the projection probes doesn't match "
-            "the on-disk layout — file the latter as a path-drift bug."
-        ),
+        "message": "\n".join(parts),
+        "probed_paths": probed_paths,
     }
 
 
