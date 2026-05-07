@@ -6,8 +6,21 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from deployment_api.services import upcoming_fixtures as uf
+
+
+@pytest.fixture(autouse=True)
+def _clear_fixtures_cache():
+    """The ``_FIXTURES_CACHE`` module-level dict in upcoming_fixtures persists
+    across tests.  ``test_list_upcoming_fixtures_concat_sort_dedupe`` runs with
+    ``days=1`` (cache_key=(1, None)) and writes its results; subsequent tests
+    using the same cache_key get those stale results back.  Clear before AND
+    after each test to keep tests order-independent."""
+    uf._FIXTURES_CACHE.clear()
+    yield
+    uf._FIXTURES_CACHE.clear()
 
 
 class _DatetimeStub:

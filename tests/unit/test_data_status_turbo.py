@@ -1854,6 +1854,23 @@ class TestServiceCategoryScope:
     only covers DEFI.
     """
 
+    @pytest.fixture(autouse=True)
+    def _disable_process_pool(self, monkeypatch):
+        """Force the serial path in ``_get_manifest_status_sync``.
+
+        The multi-cat tests (MDPS=3 cats, instruments-service=5 cats) trigger
+        the ProcessPool branch which forks a subprocess that fails when the
+        GCS client tries to initialise with ``project_id="test"``.  The
+        single-cat tests (features-onchain / sports / commodity) never hit
+        the pool so they pass.  We disable the pool unconditionally for this
+        class — the assertions only inspect the ``asset_groups`` key set, not
+        the per-cat payload, so the serial path is functionally equivalent.
+        """
+        monkeypatch.setattr(
+            "deployment_api.services.data_status_service._PROCESS_POOL_DISABLED",
+            True,
+        )
+
     def test_features_onchain_returns_only_defi(self):
         """features-onchain-service should only return DEFI in /turbo response."""
         from deployment_api.services.data_status_service import DataStatusService

@@ -232,7 +232,19 @@ class TestGetShardDetailGrouped:
 class TestGetShardDetailPerSymbol:
     def test_per_symbol_returns_time_series_head(self) -> None:
         fake_df = pd.DataFrame({"ts_event": ["2026-04-18T00:00:00Z"] * 3, "price": [1.0, 2.0, 3.0]})
-        objects: list[ObjectInfo] = []  # path resolved via direct leaf
+        # _mtds_shard_path lists the venue+data_type prefix and picks the
+        # parquet whose name ends with ``/{leaf}.parquet`` (dual-vocab fan-out
+        # introduced 2026-05-01).  We supply an ObjectInfo matching the leaf
+        # suffix so resolution returns a real path under either vocabulary.
+        objects: list[ObjectInfo] = [
+            ObjectInfo(
+                name=(
+                    "raw_tick_data/by_date/day=2026-04-18/asset_group=cefi/"
+                    "venue=DERIBIT/instrument_type=perpetual/data_type=trades/"
+                    "BTC-PERPETUAL.parquet"
+                )
+            )
+        ]
         with (
             patch.object(svc, "list_objects", return_value=objects),
             patch.object(svc, "_read_parquet_columns", return_value=fake_df),
