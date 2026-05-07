@@ -983,68 +983,46 @@ _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
 }
 
 
-def _canonicalise_defi_manifest(
-    filtered: pd.DataFrame,
-    venues_dict: dict[str, object],
-    venue_mapping: VenueMapping,
-) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Normalise DEFI legacy venue names + hyphenated data_types in place.
+def _canonicalise_defi_data_types(filtered: pd.DataFrame) -> pd.DataFrame:
+    """Normalise hyphenated DEFI ``data_type`` values to underscore form.
 
-    Phase 6e.1 + 6e.1b lifted DEFI honest-coverage from 0% → 50%:
-    - Manifest rows pre-dating the 2026-04 PROTOCOL-CHAIN migration carry
-      legacy names (``AAVE_V3``, ``UNISWAP_V2``, ``CURVE``, ``LIDO``). UAC
-      ``all_defi_venues`` uses canonical ``AAVEV3-ETHEREUM`` form.
-      ``VenueMapping.normalize_defi_venue(raw, chain=...)`` bridges the gap.
-    - Sub-dim buckets write hyphenated data_types (``lending-indices``,
-      ``dex-swaps``) but UAC ``VENUE_DATA_TYPE_CAPABILITIES`` uses underscore
-      form (``lending_indices``, ``dex_swaps``). Maps at module scope —
-      ``_DEFI_DATA_TYPE_ALIASES`` / ``_DEFI_SOURCE_TO_DATA_TYPE``.
+    Sub-dim buckets (``lending-indices``, ``dex-swaps``, ``dex-pools``,
+    ``lst-rates``, ``oracle-prices``, ``perp-funding``) write hyphenated
+    ``data_type`` values but UAC ``VENUE_DATA_TYPE_CAPABILITIES`` uses
+    canonical underscore form (``lending_indices``, ``dex_swaps``, …). Two
+    transforms applied here, both safe to remove once the corresponding
+    one-shot manifest migration runs (Plan B follow-up — currently no
+    successor plan; data_type alias migration is the natural next step):
 
-    Extracted from ``_apply_mtds_honest_coverage`` to keep that method under
-    ruff's C901 complexity threshold. SSOT:
-    ``codex/02-data/mtds-data-source-coverage-matrix.md`` §4.
+    * Case 1: infer ``data_type`` from ``_defi_source`` for blank rows.
+    * Case 2: map hyphenated forms to canonical underscore form via
+      ``_DEFI_DATA_TYPE_ALIASES``.
+
+    DeFi VENUE canonicalisation is no longer done here — UTL
+    ``manifest_writer._coerce_row_key`` + ``ManifestWriter.add`` apply
+    ``LEGACY_DEFI_VENUE_ALIASES`` at write time, and the 2026-05-07 MTDS
+    DEFI migration script rewrote 411,620 historical rows in place
+    (``market_tick_data_service/scripts/migrate_mtds_defi_legacy_venue_underscore.py``).
+    Live re-probe across 11 DEFI buckets confirmed 0 residual legacy-
+    underscore DeFi-venue rows. Per workspace rule "Manifest migration,
+    NOT fallback", the venue-side fallback is gone.
     """
-    if "venue" not in filtered.columns:
-        return filtered, venues_dict
-
-    chain_col = filtered["chain"] if "chain" in filtered.columns else None
-
-    def _norm(row_idx: int) -> str:
-        raw = str(filtered.iloc[row_idx]["venue"])
-        chain = str(chain_col.iloc[row_idx]) if chain_col is not None else None
-        return venue_mapping.normalize_defi_venue(raw, chain=chain or None)
-
-    filtered = filtered.copy()
-    filtered["venue"] = [_norm(i) for i in range(len(filtered))]
-
-    # Also normalise venues_dict keys — legacy ``AAVE_V3`` entries merge into
-    # canonical ``AAVEV3-ETHEREUM``.
-    remapped: dict[str, object] = {}
-    for raw_key, entry in venues_dict.items():
-        canonical = venue_mapping.normalize_defi_venue(str(raw_key))
-        remapped[canonical] = entry
-    venues_dict = remapped
-
     if "data_type" not in filtered.columns:
-        return filtered, venues_dict
+        return filtered
+
+    out = filtered.copy()
 
     # Case (1): infer from _defi_source for blank rows.
-    if "_defi_source" in filtered.columns:
-        blank_dt = filtered["data_type"].fillna("").astype(str).str.len() == 0
+    if "_defi_source" in out.columns:
+        blank_dt = out["data_type"].fillna("").astype(str).str.len() == 0
         if blank_dt.any():
             inferred = (
-                filtered["_defi_source"]
-                .fillna("")
-                .astype(str)
-                .map(_DEFI_SOURCE_TO_DATA_TYPE)
-                .fillna("")
+                out["_defi_source"].fillna("").astype(str).map(_DEFI_SOURCE_TO_DATA_TYPE).fillna("")
             )
-            filtered.loc[blank_dt, "data_type"] = inferred[blank_dt]
+            out.loc[blank_dt, "data_type"] = inferred[blank_dt]
     # Case (2): map hyphenated DEFI data_types to canonical underscore form.
-    filtered["data_type"] = (
-        filtered["data_type"].fillna("").astype(str).replace(_DEFI_DATA_TYPE_ALIASES)
-    )
-    return filtered, venues_dict
+    out["data_type"] = out["data_type"].fillna("").astype(str).replace(_DEFI_DATA_TYPE_ALIASES)
+    return out
 
 
 def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
@@ -3903,12 +3881,11 @@ class DataStatusService:
         """
         expected_venues = _mtds_expected_venues(category, venue_mapping)
 
-        # DEFI legacy-name + data_type canonicalisation (Phase 6e.1 + 6e.1b).
-        # Extracted to helper to keep this method under ruff's C901 threshold.
+        # DEFI hyphenated-data_type canonicalisation (Phase 6e.1b residual).
+        # Venue canonicalisation no longer needed — UTL write-hook +
+        # 2026-05-07 manifest migration completed that path.
         if category.upper() == "DEFI" and not filtered.empty:
-            filtered, venues_dict = _canonicalise_defi_manifest(
-                filtered, venues_dict, venue_mapping
-            )
+            filtered = _canonicalise_defi_data_types(filtered)
 
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
@@ -5462,23 +5439,15 @@ class DataStatusService:
                 )
                 filtered = filtered.loc[[not m for m in legacy_mask]].copy()
 
-        # 2026-05-06 DEFI-panel audit fix: canonicalise legacy
-        # ``venue=AAVE_V3 chain=ETHEREUM`` rows to ``venue=AAVEV3-ETHEREUM`` at
-        # the manifest read-point, BEFORE downstream helpers
-        # (``_build_venue_breakdown`` / ``_build_chain_breakdown`` /
-        # ``_build_underlying_grouping``) read distinct venue names. Without
-        # this, the v4 sub-dimension chain breakdown surfaced raw legacy
-        # forms in the UI (UNISWAP_V3 / AAVE_V3 / CURVE / MAKER / LIDO / ...)
-        # while the MTDS honest-coverage path enumerated UAC canonical
-        # forms (UNISWAPV3-ETHEREUM / AAVEV3-ETHEREUM) — same protocol
-        # appeared as TWO entries in the panel, with the legacy entry
-        # showing no chevron because honest-coverage attributed all
-        # captures to the canonical key. ``_canonicalise_defi_manifest``
-        # (extracted helper) does both venue normalisation +
-        # data_type alias normalisation; running it once here covers
-        # every downstream consumer in this category build.
+        # 2026-05-07 DEFI fallback removal: venue canonicalisation moved to
+        # the writer (UTL ``ManifestWriter`` hook) + 2026-05-07 migration
+        # closed all legacy underscore DeFi-venue rows. Per workspace rule
+        # "Manifest migration, NOT fallback" the venue-side read-time
+        # fallback is gone. Hyphenated ``data_type`` values
+        # (``dex-pools``/``lending-indices``/…) still need normalisation
+        # downstream until a paired data_type migration runs.
         if cat.lower() == "defi" and not filtered.empty:
-            filtered, _venues_dict_unused = _canonicalise_defi_manifest(filtered, {}, venue_mapping)
+            filtered = _canonicalise_defi_data_types(filtered)
 
         cat_found_dates = (
             {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
