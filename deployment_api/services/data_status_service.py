@@ -28,6 +28,11 @@ from unified_api_contracts import (
     is_per_instrument_shard_data_type,
     is_processed_data_type,
 )
+from unified_api_contracts.features import (
+    EXPECTED_FEATURE_GROUPS_BY_SERVICE,
+    get_feature_coverage_start,
+    is_known_feature_group,
+)
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     get_coverage_windows,
@@ -4194,7 +4199,9 @@ class DataStatusService:
             tf_breakdown = self._build_timeframe_breakdown(v_df, eff_start, end_date)
             if tf_breakdown:
                 venue_entry["timeframes"] = tf_breakdown
-            fg_breakdown = self._build_feature_group_breakdown(v_df, eff_start, end_date)
+            fg_breakdown = self._build_feature_group_breakdown_uac(
+                v_df, eff_start, end_date, service=service
+            )
             if fg_breakdown:
                 venue_entry["feature_groups"] = fg_breakdown
 
@@ -4262,10 +4269,109 @@ class DataStatusService:
         start_date: str,
         end_date: str,
     ) -> dict[str, object]:
-        """Per-feature_group coverage for features-* services."""
+        """Per-feature_group coverage for features-* services.
+
+        Note: shadowed by a sibling ``_build_feature_group_breakdown`` later
+        in this class (timeframe-aware version used by the v4 detail
+        breakdown path); preserved here to keep the file shape stable.
+        Phase 2C of feature_dag plan introduces a sibling
+        ``_build_feature_group_breakdown_uac`` for the UAC-denominator path.
+        """
         return self._build_simple_dimension_breakdown(
             venue_df, "feature_group", start_date, end_date
         )
+
+    @staticmethod
+    def _clip_dates_to_feature_coverage(
+        service: str,
+        feature_group: str,
+        start_date: str,
+        end_date: str,
+    ) -> tuple[str, str]:
+        """Clip ``[start_date, end_date]`` to UAC ``FEATURE_COVERAGE_START``.
+
+        Mirrors the sports ``clip_dates_to_source_coverage`` shape (UAC
+        ``unified_api_contracts.sports``). Used by
+        ``_build_feature_group_breakdown_uac`` so pre-coverage dates (e.g. Aave
+        V3 before its 2022-03-16 mainnet launch) drop out of the denominator
+        instead of inflating ``missing`` for ``aave_lending_rates``.
+
+        Returns the input window unchanged when no floor is registered for
+        ``(service, feature_group)`` — falls back to "no clip" semantics.
+        """
+        floor = get_feature_coverage_start(service, feature_group)
+        if floor is None:
+            return start_date, end_date
+        floor_iso = floor.isoformat()
+        return max(start_date, floor_iso), end_date
+
+    def _build_feature_group_breakdown_uac(
+        self,
+        venue_df: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+        service: str,
+    ) -> dict[str, object]:
+        """UAC-denominator per-feature_group breakdown for features-* services.
+
+        Distinct from the existing ``_build_feature_group_breakdown`` (which uses
+        observed-dates inference + optional timeframe sub-grouping); kept as a
+        sibling method so the two callers don't collide on signature. Plan:
+        ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.plan.md`` Phase 2C.
+
+        When ``service`` is registered in UAC ``EXPECTED_FEATURE_GROUPS_BY_SERVICE``,
+        the denominator becomes ``len(expected_feature_groups) * dates_in_clipped_window``
+        per CLAUDE.md "honest absence" principle: declared-not-yet-written
+        feature_groups render as ``missing`` instead of being silently absent.
+        Each ``(service, feature_group)`` pair clips its own dates window via
+        UAC ``FEATURE_COVERAGE_START`` (fallback: epoch — no clip).
+
+        When ``service`` is unregistered or has no expected feature_groups
+        declared (volatility / cross-instrument stubs today), falls through
+        to the legacy ``_build_simple_dimension_breakdown`` behaviour so
+        existing data-status calls remain wire-compatible.
+        """
+        expected_fgs = EXPECTED_FEATURE_GROUPS_BY_SERVICE.get(service, []) if service else []
+        if not expected_fgs:
+            return self._build_simple_dimension_breakdown(
+                venue_df, "feature_group", start_date, end_date
+            )
+        if "feature_group" not in venue_df.columns:
+            return {}
+        col_series = venue_df["feature_group"].astype(str)
+
+        observed_dates_by_fg: dict[str, set[str]] = {}
+        for fg in expected_fgs:
+            sub_df = venue_df[col_series == fg]
+            observed_dates_by_fg[fg] = {
+                str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date
+            }
+
+        result: dict[str, object] = {}
+        for fg in expected_fgs:
+            # Defensive — every entry MUST be in EXPECTED_FEATURE_GROUPS_BY_SERVICE
+            # by construction; the assert documents the invariant.
+            assert is_known_feature_group(service, fg)
+            clip_start, clip_end = self._clip_dates_to_feature_coverage(
+                service, fg, start_date, end_date
+            )
+            expected_dates: set[str] = set()
+            for ts in pd.date_range(clip_start, clip_end, freq="D"):
+                expected_dates.add(str(ts.date()))
+            found_dates = observed_dates_by_fg[fg] & expected_dates
+            missing_dates = sorted(expected_dates - found_dates)
+            found = len(found_dates)
+            expected_count = len(expected_dates)
+            pct = round(found / max(1, expected_count) * 100, 2)
+            result[fg] = {
+                "dates_found": found,
+                "dates_expected": expected_count,
+                "dates_missing": len(missing_dates),
+                "dates_found_list": sorted(found_dates),
+                "missing_dates": missing_dates,
+                "completion_pct": min(pct, 100.0),
+            }
+        return result
 
     def _build_instrument_type_breakdown(
         self,
