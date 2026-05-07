@@ -230,6 +230,38 @@ def _children_for_axis(
     return children
 
 
+def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
+    """Promote ``underlying`` into ``instrument_id`` for bundled-data_type rows.
+
+    Per ``availability-manifest-and-data-status.md`` § "underlying vs
+    instrument_id", bundled chain shards (``data_type ∈ {options_chain,
+    futures_chain}``) populate ``underlying`` with the base asset (BTC,
+    ETH, ESH4, NQH4) and leave ``instrument_id`` empty. The
+    SHARD_AXIS_MATRIX axis is ``instrument_id`` for MTDS / MDPS CeFi +
+    TradFi, so without virtualisation the drilldown's empty-string
+    filter (``v != ""`` in ``_children_for_axis``) excludes every
+    bundled row from the per-instrument level.
+
+    This helper is read-side only — the manifest writer is unchanged.
+    Per-instrument rows keep their ``instrument_id``; bundled rows get
+    ``instrument_id = underlying`` so the drilldown surfaces them at
+    the per-root level (BTC, ETH for Deribit options; ESH4, NQH4 for
+    CME futures).
+
+    Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md
+    § Phase 6 (operator finding 2026-05-07: bundled options/futures
+    drilldown collapsed at empty ``instrument_id``).
+    """
+    if "instrument_id" not in df.columns or "underlying" not in df.columns:
+        return df
+    out = df.copy()
+    inst = out["instrument_id"].astype(str)
+    under = out["underlying"].astype(str)
+    needs_root = (inst == "") | (inst == "nan")
+    out.loc[needs_root, "instrument_id"] = under[needs_root]
+    return out
+
+
 def get_hierarchical_drilldown(
     service: str,
     asset_group: str,
@@ -239,6 +271,8 @@ def get_hierarchical_drilldown(
     filters: dict[str, str] | None = None,
     expand_to_depth: int = 2,
     project_id: str | None = None,
+    child_offset: int = 0,
+    child_limit: int | None = None,
 ) -> dict[str, object]:
     """Build the hierarchical drill-down tree for ``(service, asset_group)``.
 
@@ -256,12 +290,24 @@ def get_hierarchical_drilldown(
             UI re-fetches with deeper filters on expand.
         project_id: GCP project for bucket name resolution; defaults to
             the deployment-api configured project.
+        child_offset: Pagination offset into the TOP-level children list
+            (the head axis below the deepest matched filter). Default 0.
+        child_limit: Max top-level children returned. ``None`` = no
+            slice (return all up to ``_MAX_CHILDREN_PER_NODE``); positive
+            int slices ``[child_offset : child_offset + child_limit]``.
+            Used by the UI to lazy-load big per-instrument lists
+            (BINANCE-FUTURES PERPETUAL, DERIBIT options chains, …).
 
     Returns:
         ``{"axes": (tuple), "tree": [DrilldownNode.to_dict(), ...],
             "totals": {captured, empty_confirmed, attempted_failed,
                        total, completion_pct}, "filtered_by": filters,
-            "service": service, "asset_group": asset_group}``.
+            "service": service, "asset_group": asset_group,
+            "child_offset": int, "child_limit": int | None,
+            "total_top_axis_children": int}``.
+
+        ``total_top_axis_children`` is the unfiltered child count at the
+        head axis — UI uses it to render "showing N–M of T" + load-more.
 
     Raises:
         ValueError: If the bucket cannot be resolved or the manifest read
@@ -291,11 +337,18 @@ def get_hierarchical_drilldown(
             "service": service,
             "asset_group": asset_group,
             "manifest_uri": manifest_uri,
+            "child_offset": child_offset,
+            "child_limit": child_limit,
+            "total_top_axis_children": 0,
         }
 
     if "date" in df.columns:
         df = df[(df["date"] >= window_start) & (df["date"] <= window_end)]
 
+    # Promote ``underlying`` into ``instrument_id`` BEFORE filtering so
+    # bundled-data_type rows respond to operator-supplied
+    # ``instrument_id`` filters keyed by root (BTC, ESH4, …).
+    df = _coalesce_instrument_id_from_underlying(df)
     df = _filter_manifest(df, axes, filters)
 
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)
@@ -310,6 +363,9 @@ def get_hierarchical_drilldown(
             "service": service,
             "asset_group": asset_group,
             "manifest_uri": manifest_uri,
+            "child_offset": child_offset,
+            "child_limit": child_limit,
+            "total_top_axis_children": 0,
         }
 
     head_axis, *rest = remaining_axes
@@ -322,6 +378,12 @@ def get_hierarchical_drilldown(
         current_depth=0,
     )
 
+    total_top_axis_children = len(tree)
+    if child_limit is not None and child_limit >= 0:
+        tree = tree[child_offset : child_offset + child_limit]
+    elif child_offset > 0:
+        tree = tree[child_offset:]
+
     captured, empty_confirmed, attempted_failed = _aggregate_counts(df)
     return {
         "axes": list(axes),
@@ -331,6 +393,9 @@ def get_hierarchical_drilldown(
         "service": service,
         "asset_group": asset_group,
         "manifest_uri": manifest_uri,
+        "child_offset": child_offset,
+        "child_limit": child_limit,
+        "total_top_axis_children": total_top_axis_children,
     }
 
 

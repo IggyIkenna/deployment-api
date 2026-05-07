@@ -500,6 +500,24 @@ async def get_data_status_drilldown(
         None, description="Prediction canonical_question_group filter"
     ),
     expand_to_depth: int = Query(2, ge=0, le=10, description="Levels to materialise eagerly"),
+    child_offset: int = Query(
+        0,
+        ge=0,
+        description=(
+            "Pagination offset into the top-level children list. "
+            "Combine with ``child_limit`` to fetch the next page when a "
+            "venue has thousands of instruments."
+        ),
+    ),
+    child_limit: int | None = Query(
+        None,
+        ge=1,
+        le=10_000,
+        description=(
+            "Max top-level children returned. ``None`` = no slice "
+            "(return all up to the per-node cap); positive int paginates."
+        ),
+    ),
 ):
     """Hierarchical shard-atom drill-down per the codex per-asset_group matrix.
 
@@ -545,6 +563,8 @@ async def get_data_status_drilldown(
             window_end=end_date,
             filters=filters,
             expand_to_depth=expand_to_depth,
+            child_offset=child_offset,
+            child_limit=child_limit,
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)

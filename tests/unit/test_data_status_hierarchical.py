@@ -201,6 +201,179 @@ class TestHierarchicalDrilldown:
         assert result["axes"] == ["venue", "date"]
 
 
+class TestPaginationAndBundledRootVirtualisation:
+    """Phase 6 (operator finding 2026-05-07): per-instrument pagination
+    + bundled-data_type root virtualisation. Plan:
+    ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md``.
+    """
+
+    def _patch_manifest(self, df: pd.DataFrame):
+        return patch.object(_hier, "read_availability_index", return_value=df)
+
+    def _per_instrument_perp_manifest(self, n_instruments: int) -> pd.DataFrame:
+        """N PERPETUAL instruments under one (venue, data_type, day)."""
+        rows: list[dict[str, object]] = []
+        for i in range(n_instruments):
+            rows.append(
+                {
+                    "venue": "BINANCE-FUTURES",
+                    "data_type": "trades",
+                    "instrument_type": "PERPETUAL",
+                    "instrument_id": f"INST{i:04d}USDT",
+                    "underlying": "",
+                    "chain": "",
+                    "date": "2024-03-01",
+                    "capture_status": "captured",
+                    "error_reason": "",
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _bundled_options_manifest(self) -> pd.DataFrame:
+        """Deribit options_chain — instrument_id empty, underlying populated."""
+        rows: list[dict[str, object]] = []
+        for root in ("BTC", "ETH", "SOL"):
+            for day in ("2024-03-01", "2024-03-02"):
+                rows.append(
+                    {
+                        "venue": "DERIBIT",
+                        "data_type": "options_chain",
+                        "instrument_type": "options_chain",
+                        "instrument_id": "",  # bundled — empty per writer contract
+                        "underlying": root,
+                        "chain": "",
+                        "date": day,
+                        "capture_status": "captured",
+                        "error_reason": "",
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def test_total_top_axis_children_reports_full_count(self) -> None:
+        """``total_top_axis_children`` is the unfiltered child count at the
+        head axis — UI uses it to render "showing N–M of T"."""
+        df = self._per_instrument_perp_manifest(n_instruments=750)
+        with self._patch_manifest(df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "BINANCE-FUTURES"},
+                expand_to_depth=0,
+                child_limit=200,
+            )
+        # 750 instruments under the (venue, data_type) filter.
+        assert result["total_top_axis_children"] == 750
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        assert len(tree) == 200
+        assert result["child_offset"] == 0
+        assert result["child_limit"] == 200
+
+    def test_pagination_offset_returns_next_slice(self) -> None:
+        """``child_offset=200, child_limit=200`` returns instruments 200-399."""
+        df = self._per_instrument_perp_manifest(n_instruments=750)
+        with self._patch_manifest(df):
+            page2 = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "BINANCE-FUTURES"},
+                expand_to_depth=0,
+                child_offset=200,
+                child_limit=200,
+            )
+        tree = page2["tree"]
+        assert isinstance(tree, list)
+        assert len(tree) == 200
+        # Sorted alphabetically — page 2 starts at INST0200USDT.
+        first = tree[0]
+        assert isinstance(first, dict)
+        assert first["value"] == "INST0200USDT"
+
+    def test_pagination_last_partial_page(self) -> None:
+        """750 instruments, page size 200 → page 4 has 150 items."""
+        df = self._per_instrument_perp_manifest(n_instruments=750)
+        with self._patch_manifest(df):
+            page4 = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "BINANCE-FUTURES"},
+                expand_to_depth=0,
+                child_offset=600,
+                child_limit=200,
+            )
+        tree = page4["tree"]
+        assert isinstance(tree, list)
+        assert len(tree) == 150
+
+    def test_no_limit_returns_full_list(self) -> None:
+        """``child_limit=None`` (default) returns every child up to the
+        per-node cap (10_000)."""
+        df = self._per_instrument_perp_manifest(n_instruments=750)
+        with self._patch_manifest(df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "BINANCE-FUTURES"},
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        assert len(tree) == 750  # No truncation.
+        assert result["total_top_axis_children"] == 750
+
+    def test_bundled_options_chain_surfaces_underlying_as_instrument_id(self) -> None:
+        """Bundled ``options_chain`` rows leave ``instrument_id`` empty;
+        the read-side virtualisation promotes ``underlying`` so the
+        per-instrument level shows BTC / ETH / SOL roots — matches the
+        codex shard atom ``(venue, data_type, options_chain, root, day)``."""
+        df = self._bundled_options_manifest()
+        with self._patch_manifest(df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"venue": "DERIBIT"},
+                expand_to_depth=10,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        # 3 distinct underlyings → 3 root nodes at the instrument_id axis.
+        values = sorted(
+            n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str)
+        )
+        assert values == ["BTC", "ETH", "SOL"]
+
+    def test_per_instrument_rows_unchanged_by_virtualisation(self) -> None:
+        """Per-instrument rows (instrument_id populated) must NOT be
+        rewritten — the virtualisation only fills empty instrument_id
+        from underlying, leaving real values alone."""
+        df = self._per_instrument_perp_manifest(n_instruments=5)
+        with self._patch_manifest(df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "BINANCE-FUTURES"},
+                expand_to_depth=10,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        values = sorted(
+            n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str)
+        )
+        assert values == [f"INST{i:04d}USDT" for i in range(5)]
+
+
 class TestListSupportedPairs:
     def test_includes_known_mtds_pairs(self) -> None:
         pairs = list_supported_pairs()
