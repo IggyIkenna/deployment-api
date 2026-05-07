@@ -2,9 +2,9 @@ name: Quality Gates
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging, live-defi-rollout]
   pull_request:
-    branches: [main]
+    branches: [main, staging, live-defi-rollout]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,5 +14,5 @@ jobs:
   quality-gates:
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates.yml@live-defi-rollout
     with:
-      dep_repos: "unified-api-contracts unified-cloud-interface unified-config-interface unified-trading-library unified-internal-contracts unified-trading-library"
+      dep_repos: "unified-api-contracts unified-trading-library"
     secrets: inherit
