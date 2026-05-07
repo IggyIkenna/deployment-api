@@ -25,7 +25,11 @@ from unified_api_contracts import SchemaContract, SchemaContractNotFoundError, l
 from unified_api_contracts.internal.schemas.contracts import (
     VENUE_CONTRACT_OVERRIDES,
 )
-from unified_trading_library import read_availability_index
+from unified_trading_library import (
+    LEGACY_REASON_ASSET_GROUPS,
+    classify_legacy_empty_row,
+    read_availability_index,
+)
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -372,12 +376,55 @@ def lookup_capture_status_for_shard(
     )
     if status not in ("captured", "empty_confirmed", "attempted_failed"):
         status = _DEFAULT_CAPTURE_STATUS
+    error_reason = _classify_lookup_legacy_empty_reason(
+        status=status,
+        error_reason=str(row.get("error_reason") or ""),
+        row=row,
+        asset_group=asset_group,
+        bucket=bucket,
+    )
     return {
         "status": status,
-        "error_reason": str(row.get("error_reason") or ""),
+        "error_reason": error_reason,
         "attempted_at": str(row.get("attempted_at") or ""),
         "written_at": str(row.get("written_at") or ""),
     }
+
+
+def _classify_lookup_legacy_empty_reason(
+    *,
+    status: str,
+    error_reason: str,
+    row: pd.Series[object],
+    asset_group: str,
+    bucket: str,
+) -> str:
+    """Reader-side fallback for legacy ``empty_confirmed`` lookup rows.
+
+    Returns ``error_reason`` unchanged unless the row is a pre-Phase-2.E.2
+    legacy row (status=empty_confirmed AND error_reason empty). In that
+    case, classify on the fly via the UTL helper — same SSOT the
+    Tier 3D.1 reconciler uses for batch back-fill (writegate Tier 3D.2).
+    """
+    if error_reason or status != "empty_confirmed":
+        return error_reason
+    ag_lower = asset_group.lower()
+    if ag_lower not in LEGACY_REASON_ASSET_GROUPS:
+        return error_reason
+    # Convert the pandas Series to a plain dict — UTL's classifier
+    # accepts ``Mapping[str, object]`` and pandas Series fails the
+    # nominal type check even though it implements ``.get()``.
+    row_dict: dict[str, object] = {str(k): v for k, v in row.items()}
+    try:
+        return classify_legacy_empty_row(ag_lower, row_dict)
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        logger.warning(
+            "classify_legacy_empty_row failed for %s in %s: %s",
+            ag_lower,
+            bucket,
+            exc,
+        )
+        return error_reason
 
 
 # ---------------------------------------------------------------------------

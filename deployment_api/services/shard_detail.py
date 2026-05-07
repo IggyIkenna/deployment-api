@@ -38,7 +38,12 @@ from unified_api_contracts import (
     lookup_contract,
 )
 from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
-from unified_trading_library import build_bucket, read_availability_index
+from unified_trading_library import (
+    LEGACY_REASON_ASSET_GROUPS,
+    build_bucket,
+    classify_legacy_empty_row,
+    read_availability_index,
+)
 
 from deployment_api.services.data_status_drilldown import (
     _read_parquet_columns,  # pyright: ignore[reportPrivateUsage]
@@ -553,14 +558,55 @@ def _manifest_row_for_coord(
     return out
 
 
+def _classify_legacy_empty_reason(
+    *,
+    status: str,
+    error_reason: str | None,
+    manifest: dict[str, str],
+    asset_group: str | None,
+) -> str | None:
+    """Reader-side fallback for legacy ``empty_confirmed`` manifest rows.
+
+    Returns ``error_reason`` unchanged unless the row is a pre-Phase-2.E.2
+    legacy row (status=empty_confirmed AND error_reason empty). In that
+    case classify on the fly via the UTL helper — same SSOT the Tier 3D.1
+    reconciler uses for batch back-fill so the UI sees a typed reason
+    immediately, without waiting for the reconciler to land on this row.
+    """
+    if error_reason is not None or status != "empty_confirmed" or not asset_group:
+        return error_reason
+    ag_lower = asset_group.lower()
+    if ag_lower not in LEGACY_REASON_ASSET_GROUPS:
+        return error_reason
+    try:
+        return classify_legacy_empty_row(ag_lower, manifest)
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        logger.warning(
+            "classify_legacy_empty_row failed for %s row %s: %s",
+            ag_lower,
+            manifest,
+            exc,
+        )
+        return error_reason
+
+
 def _gcs_metadata(
     *,
     bucket: str | None,
     object_path: str | None,
     manifest: dict[str, str] | None,
     pq_row_count: int | None,
+    asset_group: str | None = None,
 ) -> ShardGcsMetadata:
-    """Build the ``gcs`` block of the shard-detail response."""
+    """Build the ``gcs`` block of the shard-detail response.
+
+    When ``asset_group`` is provided and the manifest row has
+    ``capture_status=empty_confirmed`` AND a missing ``error_reason``,
+    :func:`_classify_legacy_empty_reason` classifies at read-time
+    (writegate Tier 3D.2 reader-side fallback) so the UI sees a typed
+    reason for legacy rows immediately, without waiting for the
+    Tier 3D.1 batch back-fill to land on this row.
+    """
     full_path = f"gs://{bucket}/{object_path}" if bucket and object_path else None
     size_bytes: int | None = None
     captured_at: str | None = None
@@ -590,6 +636,12 @@ def _gcs_metadata(
             status = "missing"
         err = manifest.get("error_reason") or ""
         error_reason = err or None
+        error_reason = _classify_legacy_empty_reason(
+            status=status,
+            error_reason=error_reason,
+            manifest=manifest,
+            asset_group=asset_group,
+        )
         attempted_at_raw = manifest.get("attempted_at")
         if not captured_at and attempted_at_raw:
             captured_at = attempted_at_raw
@@ -857,6 +909,7 @@ def get_shard_detail(
         object_path=object_path,
         manifest=manifest_row,
         pq_row_count=pq_row_count,
+        asset_group=asset_group,
     )
 
     download_urls = ShardDownloadUrls(
