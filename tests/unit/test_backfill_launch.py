@@ -1,4 +1,4 @@
-"""Integration tests for POST /api/backfill/launch.
+"""Tests for POST /api/backfill/launch (mocked-subprocess, no GCP creds).
 
 Coverage matrix (per work-stream-A plan §2.A):
   1. Auth — POST without X-API-Key → 401 (covered by FastAPI auth dep).
@@ -29,6 +29,23 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 
+# tests/unit/conftest.py pre-mocks `deployment_service` as an empty package
+# (`__path__ = []`) BEFORE this file is collected. That breaks submodule
+# imports like `from deployment_service.deployments_registry import ...`
+# which `deployment_api.routes.vm_deployments` does at module top. Pre-stub
+# the submodule with the symbols vm_deployments needs so `deployment_api.main`
+# can be imported here for TestClient.
+import sys
+from types import ModuleType
+from unittest.mock import MagicMock
+
+if "deployment_service.deployments_registry" not in sys.modules:
+    _dr_mod = ModuleType("deployment_service.deployments_registry")
+    _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
+    _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
+    _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
+    sys.modules["deployment_service.deployments_registry"] = _dr_mod
+
 from unittest.mock import patch
 
 import pytest
@@ -47,10 +64,19 @@ from unified_trading_library.events import setup_events
 
 setup_events("deployment-api", "test")
 
+# `auth.DISABLE_AUTH` is frozen at module-import time from the env. When this
+# test file is collected AFTER `auth.py` is already imported (e.g. by another
+# test that imported `deployment_api.main` first), the env var setdefaults
+# above are too late. Override the module attribute directly so verify_api_key
+# resolves to "dev-mode" for these tests regardless of import order.
+from deployment_api import auth as _auth_mod
+
+_auth_mod.DISABLE_AUTH = True
+
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes import backfill_launch as backfill_launch_module
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
+pytestmark = [pytest.mark.timeout(60)]
 
 
 # Canonical VM-name regex per the plan §2.A.4: lowercase prefix segment +

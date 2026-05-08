@@ -449,9 +449,7 @@ def _list_real_events(
         events.append(parsed)
     events.sort(key=lambda evt: evt.timestamp)
 
-    next_token = (
-        _encode_page_token(page_blobs[-1][1]) if (truncated and page_blobs) else None
-    )
+    next_token = _encode_page_token(page_blobs[-1][1]) if (truncated and page_blobs) else None
     return VMEventListResult(
         vm_name=vm_name,
         service=service,

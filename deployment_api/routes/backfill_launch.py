@@ -292,11 +292,7 @@ def _launcher_dir() -> Path:
     `Path(__file__).resolve().parents[3]` walks
     `routes/ -> deployment_api/ -> deployment-api/ -> workspace_root`.
     """
-    root = (
-        Path(_cfg.workspace_root)
-        if _cfg.workspace_root
-        else Path(__file__).resolve().parents[3]
-    )
+    root = Path(_cfg.workspace_root) if _cfg.workspace_root else Path(__file__).resolve().parents[3]
     return root / "deployment-service" / "scripts" / "vm"
 
 

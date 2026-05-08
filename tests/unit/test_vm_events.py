@@ -1,4 +1,4 @@
-"""Integration tests for GET /api/vm/events.
+"""Tests for GET /api/vm/events (mocked storage client, no GCP creds).
 
 Coverage matrix (per work-stream-A plan §2.B):
   1. Auth — covered by FastAPI verify_api_key dep.
@@ -28,6 +28,19 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 
+# tests/unit/conftest.py pre-mocks `deployment_service` as an empty package;
+# stub the submodule so vm_deployments.py's top-level import resolves.
+import sys
+from types import ModuleType
+from unittest.mock import MagicMock
+
+if "deployment_service.deployments_registry" not in sys.modules:
+    _dr_mod = ModuleType("deployment_service.deployments_registry")
+    _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
+    _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
+    _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
+    sys.modules["deployment_service.deployments_registry"] = _dr_mod
+
 from unittest.mock import patch
 
 import pytest
@@ -46,10 +59,18 @@ from unified_trading_library.events import setup_events
 
 setup_events("deployment-api", "test")
 
+# `auth.DISABLE_AUTH` is frozen at module-import time; when collected after
+# auth.py has already loaded under a non-test env, the os.environ.setdefault()
+# above is too late. Force the module attribute so verify_api_key short-
+# circuits to "dev-mode" for these tests regardless of collection order.
+from deployment_api import auth as _auth_mod
+
+_auth_mod.DISABLE_AUTH = True
+
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes import vm_events as vm_events_module
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
+pytestmark = [pytest.mark.timeout(60)]
 
 
 @pytest.fixture(scope="module")
