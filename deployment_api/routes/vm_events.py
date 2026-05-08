@@ -122,9 +122,7 @@ def _normalise_date(date: str | None) -> str:
     return date
 
 
-def _normalise_hour_range(
-    from_hour: int | None, to_hour: int | None, date: str
-) -> tuple[int, int]:
+def _normalise_hour_range(from_hour: int | None, to_hour: int | None, date: str) -> tuple[int, int]:
     """Default hour range. For today: 0..current_hour. For past dates: 0..23."""
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     is_today = date == today
@@ -214,9 +212,7 @@ def _parse_event_jsonl(blob_bytes: bytes, blob_name: str) -> VMLifecycleEvent | 
         return None
 
     metadata_raw = row_dict.get("metadata", {})
-    metadata = (
-        cast(dict[str, object], metadata_raw) if isinstance(metadata_raw, dict) else {}
-    )
+    metadata = cast(dict[str, object], metadata_raw) if isinstance(metadata_raw, dict) else {}
     severity = str(metadata.get("severity", "INFO")).upper()
     if severity not in _SEVERITY_ORDER:
         severity = "INFO"
@@ -332,9 +328,7 @@ def list_vm_events(
         description="Service name partition. Inferred from vm_name prefix if omitted.",
     ),
     date: str | None = Query(None, description="YYYY-MM-DD (default: today UTC)"),
-    from_hour: int | None = Query(
-        None, ge=0, le=23, description="Inclusive (default: 0)"
-    ),
+    from_hour: int | None = Query(None, ge=0, le=23, description="Inclusive (default: 0)"),
     to_hour: int | None = Query(
         None, ge=0, le=23, description="Inclusive (default: today=current hour, else 23)"
     ),
@@ -362,25 +356,83 @@ def list_vm_events(
     if _cfg.is_mock_mode():
         return _mock_events(vm_name, resolved_service, resolved_date)
 
-    bucket = _resolve_events_bucket()
-    storage = get_storage_client(project_id=_cfg.gcp_project_id)
+    return _list_real_events(
+        vm_name=vm_name,
+        service=resolved_service,
+        date=resolved_date,
+        start_hour=start_hour,
+        end_hour=end_hour,
+        severity_threshold=severity_threshold,
+        page_size=page_size,
+        next_page_token=next_page_token,
+    )
 
-    cursor_blob = _decode_page_token(next_page_token) if next_page_token else None
 
-    # Collect blob names across the hour range, sorted asc, then advance past
-    # cursor_blob if pagination is in flight.
+def _collect_blob_names(
+    storage: object,
+    bucket: str,
+    service: str,
+    date: str,
+    vm_name: str,
+    start_hour: int,
+    end_hour: int,
+) -> tuple[list[tuple[int, str]], list[int]]:
+    """List blob names across the requested hour partitions.
+
+    Returns (sorted [(hour, name)], hours_with_data).
+    """
     all_blob_names: list[tuple[int, str]] = []
     hours_scanned: list[int] = []
     for hour in range(start_hour, end_hour + 1):
-        names = _list_event_blobs_in_hour(
-            storage, bucket, resolved_service, resolved_date, vm_name, hour
-        )
+        names = _list_event_blobs_in_hour(storage, bucket, service, date, vm_name, hour)
         if names:
             hours_scanned.append(hour)
         for name in names:
             all_blob_names.append((hour, name))
+    return all_blob_names, hours_scanned
 
-    # Skip past cursor (exclusive — cursor is the LAST returned blob from prior page).
+
+def _fetch_and_parse_event(
+    storage: object,
+    bucket: str,
+    blob_name: str,
+) -> VMLifecycleEvent | None:
+    """Download + parse one blob. Per shard-level failure isolation, log +
+    return None on fetch / parse failure — never raise.
+    """
+    try:
+        blob_bytes = cast(
+            "bytes",
+            storage.download_bytes(bucket=bucket, blob_path=blob_name),  # pyright: ignore[reportAttributeAccessIssue]
+        )
+    except (OSError, ValueError) as exc:
+        log_event(
+            "EVENT_FETCH_FAILED",
+            severity="WARNING",
+            details={"blob_name": blob_name, "error": str(exc)},
+        )
+        return None
+    return _parse_event_jsonl(blob_bytes, blob_name)
+
+
+def _list_real_events(
+    *,
+    vm_name: str,
+    service: str,
+    date: str,
+    start_hour: int,
+    end_hour: int,
+    severity_threshold: int,
+    page_size: int,
+    next_page_token: str | None,
+) -> VMEventListResult:
+    bucket = _resolve_events_bucket()
+    storage = get_storage_client(project_id=_cfg.gcp_project_id)
+    cursor_blob = _decode_page_token(next_page_token) if next_page_token else None
+
+    all_blob_names, hours_scanned = _collect_blob_names(
+        storage, bucket, service, date, vm_name, start_hour, end_hour
+    )
     if cursor_blob is not None:
         all_blob_names = [(h, n) for h, n in all_blob_names if n > cursor_blob]
 
@@ -389,34 +441,21 @@ def list_vm_events(
 
     events: list[VMLifecycleEvent] = []
     for _, blob_name in page_blobs:
-        try:
-            blob_bytes = storage.download_bytes(bucket=bucket, blob_path=blob_name)
-        except (OSError, ValueError) as exc:
-            # Per shard-level failure isolation: log + skip, never raise inside loop.
-            log_event(
-                "EVENT_FETCH_FAILED",
-                severity="WARNING",
-                details={"blob_name": blob_name, "error": str(exc)},
-            )
-            continue
-        parsed = _parse_event_jsonl(blob_bytes, blob_name)
+        parsed = _fetch_and_parse_event(storage, bucket, blob_name)
         if parsed is None:
             continue
         if _SEVERITY_ORDER[parsed.severity] < severity_threshold:
             continue
         events.append(parsed)
-
     events.sort(key=lambda evt: evt.timestamp)
 
-    next_token: str | None = None
-    if truncated and page_blobs:
-        last_blob_name = page_blobs[-1][1]
-        next_token = _encode_page_token(last_blob_name)
-
+    next_token = (
+        _encode_page_token(page_blobs[-1][1]) if (truncated and page_blobs) else None
+    )
     return VMEventListResult(
         vm_name=vm_name,
-        service=resolved_service,
-        date=resolved_date,
+        service=service,
+        date=date,
         hours_scanned=hours_scanned,
         total_events=len(events),
         events=events,
@@ -428,4 +467,4 @@ def list_vm_events(
 # Re-exported for tests + helpers that want the inferred-service helper without
 # round-tripping through HTTP. Kept at module level rather than inline so test
 # fixtures can import it directly (e.g. when constructing fake bucket layouts).
-__all__ = ["router", "_infer_service_from_vm_name", "_resolve_events_bucket"]
+__all__ = ["_infer_service_from_vm_name", "_resolve_events_bucket", "router"]

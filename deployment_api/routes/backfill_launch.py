@@ -26,6 +26,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from os import environ as _process_env
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -291,10 +292,11 @@ def _launcher_dir() -> Path:
     `Path(__file__).resolve().parents[3]` walks
     `routes/ -> deployment_api/ -> deployment-api/ -> workspace_root`.
     """
-    if _cfg.workspace_root:
-        root = Path(_cfg.workspace_root)
-    else:
-        root = Path(__file__).resolve().parents[3]
+    root = (
+        Path(_cfg.workspace_root)
+        if _cfg.workspace_root
+        else Path(__file__).resolve().parents[3]
+    )
     return root / "deployment-service" / "scripts" / "vm"
 
 
@@ -368,6 +370,15 @@ def _build_run_ts() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
 
+def _apply_extra_metadata(env: dict[str, str], extra_metadata: dict[str, str]) -> None:
+    """Forward-compat: VM_-prefix + uppercase every key not already so-shaped."""
+    for raw_key, raw_value in extra_metadata.items():
+        normalised = raw_key.upper()
+        if not normalised.startswith("VM_"):
+            normalised = f"VM_{normalised}"
+        env.setdefault(normalised, raw_value)
+
+
 def _build_env_diff(
     request: BackfillLaunchRequest,
     vm_name: str,
@@ -385,37 +396,32 @@ def _build_env_diff(
         "MANIFEST_PER_VM_SHARDS": "true",
         "VM_ASSET_GROUP": request.asset_group.upper(),
     }
+    # gcloud metadata uses `,` as key-separator, so list-valued env vars
+    # use `;` (per setup-data-pipeline-vm.sh:678).
+    optional_str_pairs: list[tuple[str, str | None]] = [
+        ("VM_VENUE", request.venue),
+        ("VM_START_DATE", request.start_date),
+        ("VM_END_DATE", request.end_date),
+        ("VM_TIER_PLAN", request.tier_plan),
+        ("VM_YEAR", request.year),
+        ("VM_MONTH", request.month),
+        ("VM_ROOT_SYMBOL", request.root_symbol),
+    ]
+    for key, value in optional_str_pairs:
+        if value is not None:
+            env[key] = value
+    optional_list_pairs: list[tuple[str, list[str] | None]] = [
+        ("VM_DATA_TYPES", request.data_types),
+        ("VM_INSTRUMENT_IDS", request.instrument_ids),
+    ]
+    for key, value in optional_list_pairs:
+        if value:
+            env[key] = ";".join(value)
     if request.force:
         env["VM_FORCE"] = "true"
     if request.skip_dependency_check:
         env["SKIP_DEPENDENCY_CHECK"] = "true"
-    if request.venue is not None:
-        env["VM_VENUE"] = request.venue
-    if request.start_date is not None:
-        env["VM_START_DATE"] = request.start_date
-    if request.end_date is not None:
-        env["VM_END_DATE"] = request.end_date
-    if request.data_types:
-        # gcloud metadata uses `,` as key-separator so launchers parse VM_DATA_TYPES
-        # with `;` semicolons (see setup-data-pipeline-vm.sh:678).
-        env["VM_DATA_TYPES"] = ";".join(request.data_types)
-    if request.instrument_ids:
-        env["VM_INSTRUMENT_IDS"] = ";".join(request.instrument_ids)
-    if request.tier_plan is not None:
-        env["VM_TIER_PLAN"] = request.tier_plan
-    if request.year is not None:
-        env["VM_YEAR"] = request.year
-    if request.month is not None:
-        env["VM_MONTH"] = request.month
-    if request.root_symbol is not None:
-        env["VM_ROOT_SYMBOL"] = request.root_symbol
-    # Forward-compat metadata pass-through: every key is uppercased + prefixed
-    # with VM_ if it doesn't already collide with a reserved key.
-    for raw_key, raw_value in request.extra_metadata.items():
-        normalised = raw_key.upper()
-        if not normalised.startswith("VM_"):
-            normalised = f"VM_{normalised}"
-        env.setdefault(normalised, raw_value)
+    _apply_extra_metadata(env, request.extra_metadata)
     return env
 
 
@@ -555,11 +561,14 @@ def launch_backfill(request: BackfillLaunchRequest) -> BackfillLaunchResult:
             },
         )
 
-    import os
-
-    full_env = {**os.environ, **env_diff}
+    # Layer env_diff onto the current process env so the launcher inherits
+    # PATH / HOME / gcloud creds. `_process_env` is `os.environ` imported
+    # under a different name — this is subprocess env forwarding, not
+    # config-reading (which is the workspace rule against `os.environ` /
+    # `os.getenv`; UnifiedCloudConfig is the canonical config surface).
+    full_env = {**_process_env, **env_diff}
     try:
-        completed = subprocess.run(  # noqa: S603 — argv is constructed, shell=False
+        completed = subprocess.run(
             argv,
             env=full_env,
             capture_output=True,

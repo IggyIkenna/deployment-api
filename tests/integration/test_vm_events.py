@@ -46,8 +46,8 @@ from unified_trading_library.events import setup_events
 
 setup_events("deployment-api", "test")
 
-from deployment_api.routes import vm_events as vm_events_module
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.routes import vm_events as vm_events_module
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
@@ -325,17 +325,17 @@ class TestRealMode:
         date = "2026-05-07"
         service = "instruments-service"
         # Good event
-        fake_storage[
-            _path_for(service, date, vm_name, hour=0, ts_us=3000000, seq=1)
-        ] = _make_event_row(event="STARTED", service=service, timestamp="2026-05-07T00:00:00+00:00")
+        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000000, seq=1)] = (
+            _make_event_row(event="STARTED", service=service, timestamp="2026-05-07T00:00:00+00:00")
+        )
         # Garbage in middle
-        fake_storage[
-            _path_for(service, date, vm_name, hour=0, ts_us=3000001, seq=2)
-        ] = b"not-valid-json{{{\n"
+        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000001, seq=2)] = (
+            b"not-valid-json{{{\n"
+        )
         # Good event after
-        fake_storage[
-            _path_for(service, date, vm_name, hour=0, ts_us=3000002, seq=3)
-        ] = _make_event_row(event="STOPPED", service=service, timestamp="2026-05-07T00:01:00+00:00")
+        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000002, seq=3)] = (
+            _make_event_row(event="STOPPED", service=service, timestamp="2026-05-07T00:01:00+00:00")
+        )
         resp = client.get(
             "/api/vm/events",
             params={"vm_name": vm_name, "date": date, "from_hour": 0, "to_hour": 0},

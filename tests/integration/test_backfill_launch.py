@@ -47,8 +47,8 @@ from unified_trading_library.events import setup_events
 
 setup_events("deployment-api", "test")
 
-from deployment_api.routes import backfill_launch as backfill_launch_module
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.routes import backfill_launch as backfill_launch_module
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
@@ -252,9 +252,7 @@ class TestDryRun:
         assert body["env_diff"]["VM_FORCE"] == "true"
         assert body["vm_name_prefix"] == "mdps-backfill-tradfi"
 
-    def test_dry_run_extra_metadata_uppercased_and_prefixed(
-        self, client: TestClient
-    ) -> None:
+    def test_dry_run_extra_metadata_uppercased_and_prefixed(self, client: TestClient) -> None:
         """extra_metadata keys are uppercased + VM_-prefixed if absent."""
         resp = client.post(
             "/api/backfill/launch",
@@ -289,16 +287,12 @@ class TestRealModeMockedSubprocess:
         """Real-mode launch with subprocess.run monkeypatched returns dry_run=False."""
         captured: dict[str, object] = {}
 
-        def _fake_run(
-            argv: list[str], **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
+        def _fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             captured["argv"] = argv
             captured["env"] = kwargs.get("env", {})
             captured["timeout"] = kwargs.get("timeout")
             captured["shell"] = kwargs.get("shell")
-            return subprocess.CompletedProcess(
-                args=argv, returncode=0, stdout="ok\n", stderr=""
-            )
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok\n", stderr="")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         resp = client.post(
@@ -396,9 +390,7 @@ class TestRealModeMockedSubprocess:
         """
         # Empty workspace — launcher won't exist
         (tmp_path / "deployment-service" / "scripts" / "vm").mkdir(parents=True)
-        monkeypatch.setattr(
-            backfill_launch_module._cfg, "workspace_root", str(tmp_path)
-        )
+        monkeypatch.setattr(backfill_launch_module._cfg, "workspace_root", str(tmp_path))
 
         def _no_subprocess(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("subprocess.run must NOT be called when launcher is missing")
