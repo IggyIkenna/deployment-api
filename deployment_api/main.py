@@ -74,6 +74,7 @@ from .routes import (
     subscriptions,
     user_management,
     vm_deployments,
+    vm_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,7 @@ _authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=
 _authenticated_router.include_router(
     backfill_launch.router, prefix="/api/backfill", tags=["Backfill"]
 )
+_authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---

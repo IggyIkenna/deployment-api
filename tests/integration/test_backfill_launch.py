@@ -48,6 +48,7 @@ from unified_trading_library.events import setup_events
 setup_events("deployment-api", "test")
 
 from deployment_api.routes import backfill_launch as backfill_launch_module
+from deployment_api.deployment_api_config import DeploymentApiConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
@@ -71,8 +72,7 @@ def disable_mock_mode(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     the class — `_cfg.is_mock_mode()` then resolves through the patched
     method. monkeypatch reverts the class-level patch after each test.
     """
-    cfg_class = type(backfill_launch_module._cfg)
-    monkeypatch.setattr(cfg_class, "is_mock_mode", lambda self: False)
+    monkeypatch.setattr(DeploymentApiConfig, "is_mock_mode", lambda self: False)
     yield
 
 

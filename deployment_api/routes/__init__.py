@@ -3,6 +3,7 @@ API Routes Package
 """
 
 from . import (
+    backfill_launch,
     builds,
     capabilities,
     checklist,
@@ -20,9 +21,11 @@ from . import (
     shard_detail,
     sports_venues,
     user_management,
+    vm_events,
 )
 
 __all__ = [
+    "backfill_launch",
     "builds",
     "capabilities",
     "checklist",
@@ -40,4 +43,5 @@ __all__ = [
     "shard_detail",
     "sports_venues",
     "user_management",
+    "vm_events",
 ]
