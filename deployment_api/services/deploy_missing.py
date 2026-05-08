@@ -63,12 +63,21 @@ _SERVICE_LAUNCHER_SCRIPTS: dict[str, str] = {
     "market-tick-data-service": f"{_VM_SCRIPT_DIR}/launch-mtds-backfill-vm.sh",
     "market-data-processing-service": f"{_VM_SCRIPT_DIR}/launch-mdps-backfill-vm.sh",
     "instruments-service": f"{_VM_SCRIPT_DIR}/launch-instruments-backfill-vm.sh",
-    "features-onchain-service": f"{_VM_SCRIPT_DIR}/launch-features-onchain-backfill-vm.sh",
-    "features-delta-one-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-volatility-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-cross-instrument-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-sports-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-calendar-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
+    # Consolidated features-service (Phase 8A of
+    # `unified-trading-pm/plans/active/features_repo_consolidation_2026_05_08.md`).
+    # The single `launch-features-vm.sh --feature-family <name>` entry-point
+    # supersedes the 8 per-family launchers. Each `features-<family>-service`
+    # legacy slug points at the same launcher; callers pass
+    # `--feature-family <family>` to dispatch.
+    "features-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-onchain-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-delta-one-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-volatility-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-cross-instrument-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-sports-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-calendar-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-commodity-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-multi-timeframe-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
 }
 
 
