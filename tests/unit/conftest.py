@@ -79,6 +79,12 @@ def _ensure_services_mocked() -> None:
     # Loaded for the same reason as data_status_hierarchical above.
     real_deploy_missing = importlib.import_module("deployment_api.services.deploy_missing")
 
+    # tarball_staleness is a standalone helper (deploy-missing auto-launch
+    # plan Phase 1). Loaded as a real module so its unit tests can import
+    # the public surface (TarballStalenessChecker, RefreshResult, etc.)
+    # rather than colliding with the MagicMock services package below.
+    real_tarball_staleness = importlib.import_module("deployment_api.services.tarball_staleness")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -121,6 +127,11 @@ def _ensure_services_mocked() -> None:
     # Re-register deploy_missing as a real module (drilldown plan Phase 3).
     sys.modules["deployment_api.services.deploy_missing"] = real_deploy_missing
     services_mod.deploy_missing = real_deploy_missing
+
+    # Re-register tarball_staleness as a real module (deploy-missing
+    # auto-launch plan Phase 1).
+    sys.modules["deployment_api.services.tarball_staleness"] = real_tarball_staleness
+    services_mod.tarball_staleness = real_tarball_staleness
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
