@@ -122,6 +122,46 @@ _SERVICE_REPRESENTATIVE_ROW_KEYS: dict[str, tuple[str, dict[str, str]]] = {
             "day": "2024-03-04",
         },
     ),
+    # Consolidated features-service slugs (Phase 8A of
+    # ``unified-trading-pm/plans/active/features_repo_consolidation_2026_05_08.md``).
+    # Each legacy slug routes to the same launcher with
+    # ``--feature-family <family>``; the canonical "features-service" slug
+    # represents the unified entry-point. Representative row_keys cover
+    # carry (delta_one), commodity (cot positioning), and 1h/1d
+    # multi-timeframe rollups.
+    "features-service": (
+        "cefi",
+        {
+            "venue": "BYBIT",
+            "data_type": "carry",
+            "feature_group": "carry_basic",
+            "timeframe": "1h",
+            "instrument_id": "btcusdt",
+            "day": "2024-03-04",
+        },
+    ),
+    "features-commodity-service": (
+        "tradfi",
+        {
+            "venue": "CFTC",
+            "data_type": "cot_positioning",
+            "feature_group": "cot_managed_money",
+            "timeframe": "1d",
+            "instrument_id": "NG",
+            "day": "2024-03-04",
+        },
+    ),
+    "features-multi-timeframe-service": (
+        "cefi",
+        {
+            "venue": "BYBIT",
+            "data_type": "ohlcv_rollup",
+            "feature_group": "mtf_basic",
+            "timeframe": "1h",
+            "instrument_id": "btcusdt",
+            "day": "2024-03-04",
+        },
+    ),
 }
 
 
