@@ -52,6 +52,7 @@ from deployment_api.middleware import (
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
+    backfill_launch,
     builds,
     capabilities,
     chaos_injections,
@@ -162,6 +163,9 @@ _authenticated_router.include_router(
     user_management.router, prefix="/api/user-management", tags=["User Management"]
 )
 _authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=["VM Deployments"])
+_authenticated_router.include_router(
+    backfill_launch.router, prefix="/api/backfill", tags=["Backfill"]
+)
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---
