@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality-gates:
+  call-quality-gates:
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates.yml@live-defi-rollout
     with:
       dep_repos: "unified-api-contracts unified-trading-library"
