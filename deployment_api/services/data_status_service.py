@@ -293,7 +293,7 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
 # and surface in the data-status UI under the ``features-sports-service``
 # service tab — NOT under instruments-service SPORTS, because they're a
 # different production stage of the pipeline. See SSOT:
-# plans/active/features_sports_pipeline_deployment_2026_04_21.plan.md.
+# plans/active/features_sports_pipeline_deployment_2026_04_21.md.
 #
 # Denominator: ``api_football`` per-fixture calendar (FSS can only compute
 # features on dates where upstream FIXTURES exist; api_football is the
@@ -3206,7 +3206,7 @@ class DataStatusService:
         2. **On-demand fall-through** — original synchronous compute that
            iterates the availability indices.
 
-        See plan: ``data_status_offline_rollup_2026_05_06.plan.md``.
+        See plan: ``data_status_offline_rollup_2026_05_06.md``.
         """
         rollup = await asyncio.to_thread(_read_coverage_rollup_if_fresh, service)
         if rollup is not None:
@@ -3540,7 +3540,7 @@ class DataStatusService:
 
         The rollup is computed offline by ``data_status_rollup_worker``
         (Cloud Run Job + ``*/5 * * * *`` Scheduler cron). See plan:
-        ``data_status_offline_rollup_2026_05_06.plan.md``.
+        ``data_status_offline_rollup_2026_05_06.md``.
         """
         any_row_filter = any(
             f is not None and f != ""
@@ -4484,7 +4484,7 @@ class DataStatusService:
         Distinct from the existing ``_build_feature_group_breakdown`` (which uses
         observed-dates inference + optional timeframe sub-grouping); kept as a
         sibling method so the two callers don't collide on signature. Plan:
-        ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.plan.md`` Phase 2C.
+        ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.md`` Phase 2C.
 
         When ``service`` is registered in UAC ``EXPECTED_FEATURE_GROUPS_BY_SERVICE``,
         the denominator becomes ``len(expected_feature_groups) * dates_in_clipped_window``

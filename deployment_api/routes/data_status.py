@@ -63,7 +63,7 @@ data_analytics_service = DataAnalyticsService()
 # ---------------------------------------------------------------------------
 # Capture-status download response branching (multi-axis drilldown).
 #
-# Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md Phase 3.
+# Plan: data_status_multi_axis_shard_propagation_2026_05_06.md Phase 3.
 # The download endpoints below check the manifest's capture_status BEFORE
 # attempting to read the parquet. The branch dictates HTTP status + body
 # shape so the operator can tell:
@@ -404,7 +404,7 @@ async def get_data_status_manifest(
 ):
     """Get data status from manifest availability indices (fastest path).
 
-    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.plan.md`` Phase 2.
+    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.md`` Phase 2.
     Optional ``secondary_axis`` + filter params let the UI drill into a single
     league / canonical_question_group / job_id / chain / fixture_id slice.
     """
@@ -1000,7 +1000,7 @@ async def get_schema(
 ):
     """Return the leaf-shard SchemaContract columns for the requested axis tuple.
 
-    Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md Phase 3.
+    Plan: data_status_multi_axis_shard_propagation_2026_05_06.md Phase 3.
     All v7 multi-axis params are optional — populated ones narrow the
     parquet-projection probe to the deepest shard the operator clicked
     on. Each leaf parquet has its own column shape (CeFi spot

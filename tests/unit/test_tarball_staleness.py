@@ -1,6 +1,6 @@
 """Unit tests for `deployment_api.services.tarball_staleness`.
 
-Phase 1 of plans/active/deploy_missing_auto_launch_2026_05_07.plan.md.
+Phase 1 of plans/active/deploy_missing_auto_launch_2026_05_07.plan.
 
 Coverage:
   1. `_bundle_for` — known asset_groups return CORE + group; unknown

@@ -1,6 +1,6 @@
 """Hierarchical shard-atom drill-down for the Data Status page.
 
-Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md`` Phase 1.
+Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.md`` Phase 1.
 
 The pre-2026-05-07 data-status panel collapsed the per-asset_group drill-down
 to ``venue -> instrument_type -> day``, which is the right depth for
@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 # ``child_offset`` / ``child_limit`` params is the primary mechanism for
 # venues with thousands of instruments (BINANCE-FUTURES PERPETUAL,
 # DERIBIT options chains); this cap is an emergency bound.
-# Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md
+# Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.md
 # § Phase 6 (operator finding 2026-05-07: per-instrument drilldown was
 # silently truncated at the prior 500 default).
 _MAX_CHILDREN_PER_NODE: int = 10_000
@@ -248,7 +248,7 @@ def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
     the per-root level (BTC, ETH for Deribit options; ESH4, NQH4 for
     CME futures).
 
-    Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md
+    Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.md
     § Phase 6 (operator finding 2026-05-07: bundled options/futures
     drilldown collapsed at empty ``instrument_id``).
     """

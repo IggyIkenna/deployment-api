@@ -1,4 +1,4 @@
-"""Phase 2 of data_status_multi_axis_shard_propagation_2026_05_06.plan.md.
+"""Phase 2 of data_status_multi_axis_shard_propagation_2026_05_06.md.
 
 deployment-api consumes the UAC ``data_status_axis_matrix`` SSOT for:
 

@@ -1,6 +1,6 @@
 """Deploy-Missing surgical-recovery preview helper.
 
-Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md`` Phase 3.
+Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan`` Phase 3.
 
 The deployment-ui Data Status panel's Deploy-Missing button on a single
 leaf shard needs to fire a backfill VM scoped to ONE shard via the

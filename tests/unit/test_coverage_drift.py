@@ -1,6 +1,6 @@
 """Unit tests for coverage_drift detector (Phase 8.B).
 
-Plan: features_sports_honest_coverage_2026_05_05.plan.md, Phase 8.B.
+Plan: features_sports_honest_coverage_2026_05_05.md, Phase 8.B.
 """
 
 from __future__ import annotations

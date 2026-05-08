@@ -1,6 +1,6 @@
 """Unit tests for the UAC-denominator feature_group breakdown (Phase 2C).
 
-Plan: ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.plan.md``.
+Plan: ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.md``.
 
 Covers:
 

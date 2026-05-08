@@ -15,7 +15,7 @@ This module exposes the core comparator. The Cloud Run job + structured
 event emit lives in deployment-service (P8.B follow-up — out of scope
 for this commit).
 
-Plan: features_sports_honest_coverage_2026_05_05.plan.md, Phase 8.B.
+Plan: features_sports_honest_coverage_2026_05_05.md, Phase 8.B.
 """
 
 from __future__ import annotations

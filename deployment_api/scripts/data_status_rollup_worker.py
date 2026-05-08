@@ -13,7 +13,7 @@ rollup, slices by the user's date range in-memory (microseconds), and
 returns. **Latency drops from ~310-410s to <500ms** for the full range.
 
 Plan:
-    ``unified-trading-pm/plans/active/data_status_offline_rollup_2026_05_06.plan.md``
+    ``unified-trading-pm/plans/active/data_status_offline_rollup_2026_05_06.md``
 
 Why offline rollup vs on-demand:
     The honest-coverage compute is GIL-bound Python loops over 5 x

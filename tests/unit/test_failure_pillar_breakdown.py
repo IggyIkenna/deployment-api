@@ -1,6 +1,6 @@
 """Unit tests for ``_compute_failure_pillar_counts`` (writegate Phase 4.A item 1).
 
-Plan: ``writegate_honest_coverage_endtoend_2026_05_06.plan.md`` Phase 4.A.
+Plan: ``writegate_honest_coverage_endtoend_2026_05_06.md`` Phase 4.A.
 
 The helper bundles ``capture_status=attempted_failed`` rows by typed-error
 class prefix into a fixed taxonomy so the deployment-ui DataStatusTab can

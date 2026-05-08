@@ -205,7 +205,7 @@ class TestHierarchicalDrilldown:
 class TestPaginationAndBundledRootVirtualisation:
     """Phase 6 (operator finding 2026-05-07): per-instrument pagination
     + bundled-data_type root virtualisation. Plan:
-    ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md``.
+    ``data_status_drilldown_shard_atom_alignment_2026_05_07.md``.
     """
 
     def _patch_manifest(self, df: pd.DataFrame):

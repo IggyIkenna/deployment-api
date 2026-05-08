@@ -1,7 +1,7 @@
 """POST /api/backfill/launch — programmatic VM backfill launch.
 
 Work-stream-A keystone for the 2026-05-23 live-DeFi deadline. See
-`unified-trading-pm/plans/active/deployment_api_work_stream_a_2026_05_07.plan.md`
+`unified-trading-pm/plans/active/deployment_api_work_stream_a_2026_05_07.md`
 for the full behavioural contract; SSOTs:
 
   * `codex/03-observability/lifecycle-events.md` — the launched VM emits

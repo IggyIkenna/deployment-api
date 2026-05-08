@@ -16,7 +16,7 @@ and `event_sink.py` GcsEventSink. Each blob holds ONE JSON record:
     }
   }
 
-Plan: `deployment_api_work_stream_a_2026_05_07.plan.md` Phase 2.B.
+Plan: `deployment_api_work_stream_a_2026_05_07.md` Phase 2.B.
 
 V1 inline `_PREFIX_TO_SERVICE` mapping; lifted to UAC by the same successor
 plan as `backfill_launch.py`'s `_TASK_TO_LAUNCHER`.

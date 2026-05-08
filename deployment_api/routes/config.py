@@ -340,7 +340,7 @@ async def get_shard_axis_matrix(
 ):
     """Return the per-(service, asset_group) shard / display / primary axis SSOT.
 
-    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.plan.md`` Phase 2.
+    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.md`` Phase 2.
 
     SSOT lives in
     ``unified_api_contracts.registry.data_status_axis_matrix``. The

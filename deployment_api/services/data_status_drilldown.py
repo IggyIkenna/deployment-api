@@ -316,7 +316,7 @@ def lookup_capture_status_for_shard(
         ``attempted_at`` (ISO-8601 UTC timestamp or ``""``),
         ``written_at`` (manifest-write time or ``""``).
 
-    Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md
+    Plan: data_status_multi_axis_shard_propagation_2026_05_06.md
     Phase 3 (drilldown polish — distinguish empty_confirmed from
     path-drift zero bytes in the download UX).
     """
@@ -558,7 +558,7 @@ def get_schema_for_shard(  # noqa: C901 — branchy by nature: 4-step resolution
 ) -> dict[str, object]:
     """Return the SchemaContract columns for a shard tuple — leaf-shard granularity.
 
-    Phase 3 of data_status_multi_axis_shard_propagation_2026_05_06.plan.md
+    Phase 3 of data_status_multi_axis_shard_propagation_2026_05_06.md
     — schema view ALWAYS at the deepest shard level. Each leaf parquet has
     its own column shape (CeFi spot per-instrument vs DeFi options-chain
     bundle vs sports per-league fixture parquet differ in column shape),

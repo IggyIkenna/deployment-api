@@ -2232,7 +2232,7 @@ class TestMTDSPerInstrumentHonestCoverage:
     """Phase 8D -- per-(venue, data_type, instrument_id, date) denominator.
 
     SSOT:
-      - plan: ``plans/active/mtds_per_instrument_sentinels_2026_04_21.plan.md``
+      - plan: ``plans/active/mtds_per_instrument_sentinels_2026_04_21.md``
       - UAC accessor: ``get_expected_instruments_for_venue`` +
         ``is_per_instrument_shard_data_type`` (WAVE 8B, commit 74e278c).
       - MTDS orchestrator: Tier-3 fan-out landed in commit 2947dd2 (WAVE 8C).

@@ -12,7 +12,7 @@ audits can exercise the full Phase-C UI surface. All numbers are
 deterministic per (service, start_date, end_date) so repeated runs render
 identically.
 
-See: unified-trading-pm/plans/active/honest_coverage_metrics_2026_04_19.plan.md
+See: unified-trading-pm/plans/active/honest_coverage_metrics_2026_04_19.md
 """
 
 from __future__ import annotations

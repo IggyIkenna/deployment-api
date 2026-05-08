@@ -1,6 +1,6 @@
 """Tarball staleness check + Cloud Build refresh trigger.
 
-Phase 1 of plans/active/deploy_missing_auto_launch_2026_05_07.plan.md.
+Phase 1 of plans/active/deploy_missing_auto_launch_2026_05_07.md.
 
 This is a STANDALONE module — NOT wired into any route yet. Phase 2
 will wire it into the auto-launch endpoint as a pre-launch gate that

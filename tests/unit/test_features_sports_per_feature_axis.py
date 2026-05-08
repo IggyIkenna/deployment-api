@@ -1,6 +1,6 @@
 """Unit tests for _features_sports_expected_dates_for_calculator (Phase 3).
 
-Plan: features_sports_honest_coverage_2026_05_05.plan.md, Phase 3.D.
+Plan: features_sports_honest_coverage_2026_05_05.md, Phase 3.D.
 """
 
 from __future__ import annotations
