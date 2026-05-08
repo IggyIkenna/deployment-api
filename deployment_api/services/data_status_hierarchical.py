@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 import pandas as pd
+from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
 from unified_api_contracts.registry.data_status_axis_matrix import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
@@ -144,11 +145,22 @@ def _resolve_axis_order(service: str, asset_group: str) -> tuple[str, ...]:
     return (*axes, "date")
 
 
+_NON_AXIS_FILTERS: frozenset[str] = frozenset({"feature_family"})
+"""Filter keys that are NOT in any service's SHARD_AXIS_MATRIX axes but
+are valid manifest columns (post-:func:`_stamp_feature_family`) and so
+get applied unconditionally if the caller supplies them. Plan:
+features-repo consolidation Phase 8B (deployment-api side)."""
+
+
 def _filter_manifest(
     df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str, str]
 ) -> pd.DataFrame:
     """Apply level-by-level filters, narrowing the manifest to the
-    requested branch. Filters not in ``axes`` are ignored (defensive).
+    requested branch.
+
+    Filters in ``axes`` AND filters in :data:`_NON_AXIS_FILTERS` (e.g.
+    ``feature_family``, the parent classification of ``feature_group``)
+    both apply. Other filter keys are ignored (defensive).
     """
     out = df
     for axis in axes:
@@ -156,6 +168,11 @@ def _filter_manifest(
         if val is None or axis not in out.columns:
             continue
         out = out[out[axis].astype(str) == str(val)]
+    for non_axis_key in _NON_AXIS_FILTERS:
+        val = filters.get(non_axis_key)
+        if val is None or non_axis_key not in out.columns:
+            continue
+        out = out[out[non_axis_key].astype(str) == str(val)]
     return out
 
 
@@ -228,6 +245,35 @@ def _children_for_axis(
             )
         children.append(node)
     return children
+
+
+def _stamp_feature_family(df: pd.DataFrame) -> pd.DataFrame:
+    """Add (or fill in) a ``feature_family`` column on a manifest df.
+
+    Read-side derivation of the parent classification of ``feature_group``
+    using the UAC ``FEATURE_GROUP_TO_FAMILY`` registry. Write-time stamps
+    win when present (writer-stamped per UTL :class:`MissingFeatureFamilyError`
+    enforcement); empty / missing rows are filled by the registry lookup,
+    so consumers can group / filter by feature_family even when the
+    manifest predates the column. Rows without a ``feature_group`` (e.g.
+    market-tick-data-service rows) keep ``feature_family`` empty.
+
+    Plan: features-repo consolidation Phase 8B (deployment-api side).
+    """
+    if "feature_group" not in df.columns:
+        return df
+    out = df.copy()
+    if "feature_family" not in out.columns:
+        out["feature_family"] = ""
+    fg = out["feature_group"].astype(str)
+    ff = out["feature_family"].astype(str)
+    needs_stamp = (ff == "") | (ff == "nan")
+    if needs_stamp.any():
+        derived = fg.map(
+            lambda g: FEATURE_GROUP_TO_FAMILY[g].value if g in FEATURE_GROUP_TO_FAMILY else ""
+        )
+        out.loc[needs_stamp, "feature_family"] = derived[needs_stamp]
+    return out
 
 
 def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
@@ -349,6 +395,11 @@ def get_hierarchical_drilldown(
     # bundled-data_type rows respond to operator-supplied
     # ``instrument_id`` filters keyed by root (BTC, ESH4, …).
     df = _coalesce_instrument_id_from_underlying(df)
+    # Stamp ``feature_family`` (read-side) so callers can filter / group
+    # features-* manifests by the parent classification axis even when
+    # the manifest predates the column. Plan: features-repo consolidation
+    # Phase 8B (deployment-api side).
+    df = _stamp_feature_family(df)
     df = _filter_manifest(df, axes, filters)
 
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)

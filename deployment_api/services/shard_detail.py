@@ -37,6 +37,7 @@ from unified_api_contracts import (
     SchemaContractNotFoundError,
     lookup_contract,
 )
+from unified_api_contracts.features import get_feature_family
 from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
 from unified_trading_library import (
     LEGACY_REASON_ASSET_GROUPS,
@@ -1571,6 +1572,46 @@ def _file_size_via_metadata(bucket: str | None, object_path: str | None) -> int 
     return size if isinstance(size, int) else None
 
 
+def _resolve_feature_family(
+    df: pd.DataFrame | None,
+    feature_group: str | None,
+) -> str | None:
+    """Resolve ``feature_family`` for a features-* shard.
+
+    Resolution order (write-time wins, fallback to declarative mapping):
+    1. Parquet column ``feature_family`` (writer-stamped per UTL
+       :class:`MissingFeatureFamilyError` enforcement). Picks the first
+       non-null distinct value; logs + returns ``None`` if multiple
+       distinct values appear (writer contract violation).
+    2. UAC :func:`get_feature_family(feature_group)` lookup against the
+       ``FEATURE_GROUP_TO_FAMILY`` registry. Returns ``None`` if
+       ``feature_group`` is None / empty / unknown.
+
+    Returns the lowercase StrEnum ``value`` (e.g. ``"volatility"``,
+    ``"onchain"``) or ``None`` for non-features shards / unmapped groups.
+    """
+    if df is not None and "feature_family" in df.columns:
+        # ``.unique()`` returns an ``np.ndarray`` (typed Any in pyright);
+        # round-trip through ``set`` of explicit ``str`` to land at a
+        # ``set[str]`` we can reason about.
+        non_null = df["feature_family"].dropna().astype(str)
+        unique_set: set[str] = {str(v) for v in non_null.tolist()}
+        unique_set.discard("")
+        if len(unique_set) == 1:
+            return next(iter(unique_set))
+        if len(unique_set) > 1:
+            logger.warning(
+                "leaf-stats: parquet has %d distinct feature_family values: %s",
+                len(unique_set),
+                sorted(unique_set)[:5],
+            )
+    if feature_group:
+        family = get_feature_family(feature_group)
+        if family is not None:
+            return str(family.value)
+    return None
+
+
 def get_leaf_parquet_stats(
     *,
     service: str,
@@ -1581,6 +1622,7 @@ def get_leaf_parquet_stats(
     venue: str | None = None,
     underlying: str | None = None,
     instrument_id: str | None = None,
+    feature_group: str | None = None,
 ) -> LeafParquetStats:
     """Compute live per-leaf-parquet stats for one shard coordinate.
 
@@ -1590,7 +1632,15 @@ def get_leaf_parquet_stats(
     failures — missing path / parquet read error / corrupt file all
     resolve to ``available=False`` with an ``error_reason`` so the UI can
     render the error state without a 500.
+
+    ``feature_group`` is an optional kwarg used to resolve the
+    ``feature_family`` axis for features-* shards. When provided AND the
+    parquet either lacks the write-time ``feature_family`` column OR
+    cannot be read, the helper falls back to UAC
+    :func:`get_feature_family(feature_group)`. Plan: features-repo
+    consolidation Phase 8B (deployment-api side).
     """
+    family_from_group: str | None = _resolve_feature_family(None, feature_group)
     coord = ShardCoord(
         service=service,
         asset_group=asset_group,
@@ -1600,6 +1650,7 @@ def get_leaf_parquet_stats(
         venue=venue,
         underlying=underlying,
         instrument_id=instrument_id,
+        feature_family=family_from_group,
     )
     resolved = _gcs_path_for_shard(
         service=service,
@@ -1617,6 +1668,7 @@ def get_leaf_parquet_stats(
             gs_uri=None,
             available=False,
             error_reason="path_unresolved: no parquet matches this coordinate",
+            feature_family=family_from_group,
         )
     bucket, object_path = resolved
     gs_uri = f"gs://{bucket}/{object_path}"
@@ -1631,6 +1683,7 @@ def get_leaf_parquet_stats(
             available=False,
             error_reason=f"{type(exc).__name__}: {exc}"[:500],
             file_size_bytes=file_size,
+            feature_family=family_from_group,
         )
 
     truncated = False
@@ -1642,9 +1695,11 @@ def get_leaf_parquet_stats(
 
     columns = _compute_column_stats(df)
     available_at_envelope = _compute_available_at_envelope(df)
+    feature_family_resolved: str | None = _resolve_feature_family(df, feature_group)
 
+    final_coord = coord.model_copy(update={"feature_family": feature_family_resolved})
     return LeafParquetStats(
-        coord=coord,
+        coord=final_coord,
         gs_uri=gs_uri,
         available=True,
         row_count=len(df),
@@ -1654,4 +1709,5 @@ def get_leaf_parquet_stats(
         file_size_bytes=file_size,
         truncated=truncated,
         truncated_at_rows=truncated_at,
+        feature_family=feature_family_resolved,
     )

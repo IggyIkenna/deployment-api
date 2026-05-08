@@ -595,3 +595,168 @@ class TestRowKeyShapeAtEachDepth:
         assert rk.get("venue"), f"leaf row_key missing venue: {rk}"
         assert rk.get("data_type"), f"leaf row_key missing data_type: {rk}"
         assert rk.get("day") or rk.get("date"), f"leaf row_key missing day/date: {rk}"
+
+
+# ---------------------------------------------------------------------------
+# feature_family axis (Phase 8B — features-repo consolidation)
+# ---------------------------------------------------------------------------
+
+
+def _features_onchain_manifest() -> pd.DataFrame:
+    """Mixed-family manifest exercising stamping + filter behaviour.
+
+    Two onchain rows (one pre-stamped, one blank → UAC-fill) plus two
+    volatility-family rows pre-stamped on disk. Volatility rows use a
+    placeholder ``feature_group`` that is NOT yet in
+    ``FEATURE_GROUP_TO_FAMILY`` — this is the realistic case for a
+    family the registry doesn't yet enumerate; pre-stamped values must
+    survive the read-side stamper unchanged.
+    """
+    rows: list[dict[str, object]] = [
+        # onchain rows — pre-stamped feature_family.
+        {
+            "venue": "LIDO",
+            "chain": "ETHEREUM",
+            "feature_group": "lst_staking_yields",
+            "feature_family": "onchain",
+            "timeframe": "1d",
+            "instrument_id": "stETH",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "AAVEV3-ARBITRUM",
+            "chain": "ARBITRUM",
+            "feature_group": "aave_lending_rates",
+            "feature_family": "",  # missing — fallback should fill via UAC.
+            "timeframe": "1h",
+            "instrument_id": "USDC",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        # volatility-family rows — pre-stamped (writer-stamped). The
+        # placeholder feature_group is not in FEATURE_GROUP_TO_FAMILY,
+        # so the read-side stamper has nothing to fill — it must leave
+        # the pre-stamped value alone.
+        {
+            "venue": "DERIBIT",
+            "chain": "",
+            "feature_group": "placeholder_vol_group",
+            "feature_family": "volatility",
+            "timeframe": "1m",
+            "instrument_id": "BTC",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "DERIBIT",
+            "chain": "",
+            "feature_group": "placeholder_vol_group",
+            "feature_family": "volatility",
+            "timeframe": "1m",
+            "instrument_id": "ETH",
+            "date": "2024-03-02",
+            "capture_status": "empty_confirmed",
+            "error_reason": "EXPECTED_HOLIDAY",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestFeatureFamilyAxis:
+    def test_stamper_fills_blank_feature_family_via_uac(self) -> None:
+        df = _features_onchain_manifest()
+        stamped = _hier._stamp_feature_family(df)  # pyright: ignore[reportPrivateUsage]
+        # Pre-stamped rows preserve their write-time value (writer wins).
+        lst = stamped[stamped["feature_group"] == "lst_staking_yields"].iloc[0]
+        assert lst["feature_family"] == "onchain"
+        # Read-side UAC fallback fills the blank aave_lending_rates row.
+        aave = stamped[stamped["feature_group"] == "aave_lending_rates"].iloc[0]
+        assert aave["feature_family"] == "onchain"
+        # Pre-stamped volatility rows survive even though the placeholder
+        # feature_group has no UAC mapping (writer is the SSOT).
+        vol = stamped[stamped["instrument_id"] == "BTC"].iloc[0]
+        assert vol["feature_family"] == "volatility"
+
+    def test_stamper_handles_manifest_without_feature_group_column(self) -> None:
+        # MTDS / instruments-service manifests have no feature_group →
+        # stamper is a no-op.
+        df = pd.DataFrame(
+            {
+                "venue": ["BINANCE"],
+                "data_type": ["trades"],
+                "instrument_id": ["BTCUSDT"],
+                "date": ["2024-03-01"],
+                "capture_status": ["captured"],
+                "error_reason": [""],
+            }
+        )
+        stamped = _hier._stamp_feature_family(df)  # pyright: ignore[reportPrivateUsage]
+        assert "feature_family" not in stamped.columns
+
+    def test_filter_by_feature_family_narrows_to_one_family(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-onchain-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"feature_family": "onchain"},
+            )
+
+        # Only the 2 onchain rows should be counted (the 2 volatility
+        # rows were excluded by the feature_family filter).
+        totals = result["totals"]
+        assert totals["captured"] == 2
+        assert totals["empty_confirmed"] == 0
+        assert totals["attempted_failed"] == 0
+
+    def test_filter_by_feature_family_volatility(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-volatility-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"feature_family": "volatility"},
+            )
+        totals = result["totals"]
+        # 1 captured (BTC iv_surface day 1) + 1 empty_confirmed
+        # (ETH iv_surface day 2) — both volatility-family.
+        assert totals["captured"] == 1
+        assert totals["empty_confirmed"] == 1
+        assert totals["attempted_failed"] == 0
+
+    def test_no_feature_family_filter_returns_full_aggregate(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-onchain-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={},
+            )
+        # All 4 rows aggregated when filter omitted.
+        totals = result["totals"]
+        assert totals["captured"] + totals["empty_confirmed"] == 4
+
+    def test_filter_unknown_feature_family_yields_zero(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-onchain-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"feature_family": "not_a_real_family"},
+            )
+        totals = result["totals"]
+        assert totals["captured"] == 0
+        assert totals["empty_confirmed"] == 0
+        assert totals["attempted_failed"] == 0

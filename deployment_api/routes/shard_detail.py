@@ -95,6 +95,16 @@ async def get_leaf_parquet_stats_route(
         None, description="Underlying root for grouped bundles (BTC, ETH, …)"
     ),
     instrument_id: str | None = Query(None, description="Per-symbol leaf identifier"),
+    feature_group: str | None = Query(
+        None,
+        description=(
+            "features-* feature_group (e.g. lst_yields, gas_fees). When set, "
+            "resolves the parent feature_family axis via UAC "
+            "FEATURE_GROUP_TO_FAMILY; the parquet's write-time feature_family "
+            "column overrides when present. Plan: features-repo consolidation "
+            "Phase 8B."
+        ),
+    ),
 ) -> LeafParquetStats:
     """Live per-leaf-parquet stats (writegate Phase 4.A.3).
 
@@ -120,6 +130,7 @@ async def get_leaf_parquet_stats_route(
             venue=venue,
             underlying=underlying,
             instrument_id=instrument_id,
+            feature_group=feature_group,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

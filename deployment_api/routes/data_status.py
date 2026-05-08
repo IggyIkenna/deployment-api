@@ -495,6 +495,16 @@ async def get_data_status_drilldown(
     instrument_id: str | None = Query(None, description="Instrument id filter"),
     league_id: str | None = Query(None, description="Sports league id filter"),
     feature_group: str | None = Query(None, description="Features feature_group filter"),
+    feature_family: str | None = Query(
+        None,
+        description=(
+            "Features feature_family filter (parent classification of "
+            "feature_group — closed-set UAC FeatureFamily enum: calendar / "
+            "commodity / cross_instrument / delta_one / multi_timeframe / "
+            "onchain / sports / volatility). When omitted, all families are "
+            "aggregated. Plan: features-repo consolidation Phase 8B."
+        ),
+    ),
     timeframe: str | None = Query(None, description="Timeframe filter"),
     canonical_question_group: str | None = Query(
         None, description="Prediction canonical_question_group filter"
@@ -551,6 +561,7 @@ async def get_data_status_drilldown(
         "instrument_id": instrument_id,
         "league_id": league_id,
         "feature_group": feature_group,
+        "feature_family": feature_family,
         "timeframe": timeframe,
         "canonical_question_group": canonical_question_group,
     }

@@ -620,3 +620,122 @@ class TestGetLeafParquetStats:
         assert resp.coord.asset_group == "SPORTS"
         assert resp.coord.day == "2026-04-18"
         assert resp.coord.instrument_id == "abc-123"
+
+    # -----------------------------------------------------------------
+    # feature_family resolution (Phase 8B — features-repo consolidation)
+    # -----------------------------------------------------------------
+    def test_feature_family_resolved_from_uac_when_path_unresolved(self) -> None:
+        # Path doesn't resolve, but feature_group → UAC mapping should
+        # still populate feature_family on the unavailable response so
+        # the UI can render the family badge even on missing parquets.
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                venue="LIDO",
+                feature_group="lst_staking_yields",
+            )
+        assert resp.available is False
+        assert resp.feature_family == "onchain"
+        assert resp.coord.feature_family == "onchain"
+
+    def test_feature_family_from_parquet_column_overrides_group_mapping(self) -> None:
+        # Writer-stamped feature_family wins over the read-side UAC
+        # mapping (writer is the SSOT per UTL MissingFeatureFamilyError).
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-04-18T00:00:00Z"] * 3, utc=True),
+                "value": [1.0, 2.0, 3.0],
+                "available_at": pd.to_datetime(["2026-04-18T00:00:01Z"] * 3, utc=True),
+                "feature_family": ["onchain", "onchain", "onchain"],
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                venue="LIDO",
+                # Operator passes a wrong / mismatched feature_group;
+                # the parquet column wins.
+                feature_group="aave_lending_rates",
+            )
+        assert resp.available is True
+        assert resp.feature_family == "onchain"
+        assert resp.coord.feature_family == "onchain"
+
+    def test_feature_family_none_for_non_features_service(self) -> None:
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-04-18T00:00:00Z"] * 2, utc=True),
+                "price": [1.0, 2.0],
+                "available_at": pd.to_datetime(["2026-04-18T00:00:01Z"] * 2, utc=True),
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.feature_family is None
+        assert resp.coord.feature_family is None
+
+    def test_feature_family_unknown_group_returns_none(self) -> None:
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                feature_group="not_a_real_feature_group",
+            )
+        assert resp.feature_family is None
+        assert resp.coord.feature_family is None
+
+    def test_feature_family_drift_in_parquet_logged_returns_none(self) -> None:
+        # Writer contract violation: multiple distinct feature_family
+        # values in one parquet. Helper logs a warning + falls back to
+        # the UAC group mapping rather than picking arbitrarily.
+        df = pd.DataFrame(
+            {
+                "value": [1.0, 2.0, 3.0],
+                "available_at": pd.to_datetime(["2026-04-18T00:00:01Z"] * 3, utc=True),
+                "feature_family": ["onchain", "volatility", "onchain"],
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                feature_group="lst_staking_yields",
+            )
+        # Multi-value detected → falls back to UAC mapping for
+        # ``lst_staking_yields`` (onchain).
+        assert resp.available is True
+        assert resp.feature_family == "onchain"

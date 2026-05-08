@@ -21,7 +21,15 @@ CaptureStatusLiteral = Literal["captured", "empty_confirmed", "attempted_failed"
 
 
 class ShardCoord(BaseModel):  # CORRECT-LOCAL — API response shape, no other consumer
-    """Echo of the request coordinates the response corresponds to."""
+    """Echo of the request coordinates the response corresponds to.
+
+    ``feature_family`` is the parent classification of ``feature_group`` —
+    the closed-set UAC ``FeatureFamily`` enum (``calendar`` / ``commodity`` /
+    ``cross_instrument`` / ``delta_one`` / ``multi_timeframe`` / ``onchain`` /
+    ``sports`` / ``volatility``). Populated when the request resolves a
+    features-* shard; ``None`` for non-features services. Plan: features-repo
+    consolidation Phase 8B (deployment-api side).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -33,6 +41,7 @@ class ShardCoord(BaseModel):  # CORRECT-LOCAL — API response shape, no other c
     venue: str | None = None
     underlying: str | None = None
     instrument_id: str | None = None
+    feature_family: str | None = None
 
 
 class ShardSchemaColumn(BaseModel):  # CORRECT-LOCAL — API response shape
@@ -227,6 +236,14 @@ class LeafParquetStats(BaseModel):  # CORRECT-LOCAL — API response shape
 
     truncated_at_rows: int | None = None
     """Row prefix used when ``truncated`` is True (e.g. 500_000)."""
+
+    feature_family: str | None = None
+    """Top-level convenience echo of ``coord.feature_family``. Populated for
+    features-* shards via UAC ``get_feature_family(feature_group)`` / the
+    parquet's ``feature_family`` column when present (writer-stamped per
+    UTL ``MissingFeatureFamilyError`` enforcement). ``None`` for non-features
+    services or when the feature_group → family mapping is missing. Plan:
+    features-repo consolidation Phase 8B (deployment-api side)."""
 
 
 class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
