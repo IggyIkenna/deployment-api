@@ -33,7 +33,6 @@ from pathlib import Path
 
 from deployment_api.services import deploy_missing
 
-
 # Resolve workspace root from this test file's path:
 #   <workspace>/deployment-api/tests/unit/test_service_launcher_scripts_registry.py
 #                                  ^----- 4 parents up = workspace root

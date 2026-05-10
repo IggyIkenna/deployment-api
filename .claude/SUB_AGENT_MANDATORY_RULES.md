@@ -1,0 +1,1 @@
+../../unified-trading-pm/cursor-configs/SUB_AGENT_MANDATORY_RULES.md
