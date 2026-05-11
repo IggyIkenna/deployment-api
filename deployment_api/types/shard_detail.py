@@ -190,6 +190,41 @@ class LeafAvailableAtEnvelope(BaseModel):  # CORRECT-LOCAL — API response shap
     null_count: int = 0
 
 
+class LeafCompletenessEnvelope(BaseModel):  # CORRECT-LOCAL — API response shape
+    """Envelope of the ``completeness_fraction`` column for one leaf parquet
+    (writegate slice (b) Phase 5.5; ships forward-compatible).
+
+    Populated when the parquet has a ``completeness_fraction`` column written
+    by a service consuming the service-output emission policy
+    (`publish_with_policy()` / `publish_with_manifest_lookup()`). The
+    completeness_fraction is per-row in ``[0.0, 1.0]``: 1.0 means the upstream
+    window was fully captured at write-time; < 1.0 means a permissive policy
+    (``PARTIAL_OK`` / ``NAN_FILL``) admitted gaps.
+
+    Absent envelope (``present=False``) means the parquet predates the
+    emission-policy rollout (writegate slice (c) per-service Phase 6.1-6.9).
+    The UI renders a placeholder pill instead of the colour-coded envelope.
+
+    Distinct from :class:`LeafAvailableAtEnvelope` because completeness ranges
+    are numeric (vs ISO timestamps) and the colour-coding is value-driven
+    (green ≥ 1.0, amber 0.95-1.0, red < 0.95).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    present: bool
+    min_fraction: float | None = None
+    max_fraction: float | None = None
+    mean_fraction: float | None = None
+    null_count: int = 0
+    incomplete_window_present_count: int = 0
+    """Number of rows whose ``incomplete_window`` column is non-empty / non-null
+    (separate signal from `min_fraction < 1.0` — a row may have
+    `completeness_fraction == 1.0` and an empty `incomplete_window` list; both
+    columns track honest absence at row grain). Zero when the
+    ``incomplete_window`` column is absent."""
+
+
 class LeafParquetStats(BaseModel):  # CORRECT-LOCAL — API response shape
     """Live per-leaf-parquet stats response (writegate Phase 4.A.3).
 
@@ -224,6 +259,16 @@ class LeafParquetStats(BaseModel):  # CORRECT-LOCAL — API response shape
     available_at: LeafAvailableAtEnvelope = Field(
         default_factory=lambda: LeafAvailableAtEnvelope(present=False)
     )
+
+    completeness: LeafCompletenessEnvelope = Field(
+        default_factory=lambda: LeafCompletenessEnvelope(present=False)
+    )
+    """Envelope of the ``completeness_fraction`` + ``incomplete_window`` columns
+    when the parquet was written through the service-output emission policy
+    (writegate slice (b) Phase 5.5). ``present=False`` means the columns are
+    absent — the parquet predates the emission-policy rollout (slice (c) per-
+    service Phase 6.1-6.9 will fill it in). UI renders a placeholder pill
+    instead of the colour-coded envelope in that case."""
 
     file_size_bytes: int | None = None
     """Size of the parquet on GCS (footer call); useful sanity check

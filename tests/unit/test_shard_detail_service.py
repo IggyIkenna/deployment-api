@@ -739,3 +739,163 @@ class TestGetLeafParquetStats:
         # ``lst_staking_yields`` (onchain).
         assert resp.available is True
         assert resp.feature_family == "onchain"
+
+
+# ---------------------------------------------------------------------------
+# Completeness envelope (writegate slice (b) Phase 5.5; forward-compatible)
+# ---------------------------------------------------------------------------
+
+
+class TestCompletenessEnvelope:
+    """``_compute_completeness_envelope`` derives min/max/mean + null + incomplete-window counts.
+
+    Forward-compatible: when the parquet predates the writegate slice (c)
+    per-service rollout, the columns are absent → ``present=False``. When
+    present, the envelope computes the float stats + counts incomplete_window
+    rows where the JSON list is non-empty.
+    """
+
+    def test_absent_column_returns_present_false(self) -> None:
+        df = pd.DataFrame({"open": [100.0, 101.0], "close": [101.0, 102.0]})
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is False
+        assert env.min_fraction is None
+        assert env.max_fraction is None
+        assert env.mean_fraction is None
+        assert env.null_count == 0
+        assert env.incomplete_window_present_count == 0
+
+    def test_all_present_and_full_completeness(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0],
+                "completeness_fraction": [1.0, 1.0, 1.0],
+                "incomplete_window": ["[]", "[]", "[]"],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.min_fraction == 1.0
+        assert env.max_fraction == 1.0
+        assert env.mean_fraction == 1.0
+        assert env.null_count == 0
+        # All incomplete_window values are "[]" → none counted as present.
+        assert env.incomplete_window_present_count == 0
+
+    def test_mixed_completeness_and_populated_incomplete_window(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0, 103.0],
+                "completeness_fraction": [1.0, 0.95, 0.5, 1.0],
+                "incomplete_window": [
+                    "[]",
+                    '[{"venue": "BINANCE"}]',
+                    '[{"venue": "BINANCE"}, {"venue": "OKX"}]',
+                    "[]",
+                ],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.min_fraction == 0.5
+        assert env.max_fraction == 1.0
+        assert env.mean_fraction == round((1.0 + 0.95 + 0.5 + 1.0) / 4, 4)
+        # Two rows have non-empty incomplete_window lists.
+        assert env.incomplete_window_present_count == 2
+
+    def test_null_completeness_rows_counted_separately(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0],
+                "completeness_fraction": [1.0, None, 0.97],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.null_count == 1
+        assert env.min_fraction == 0.97
+        assert env.max_fraction == 1.0
+
+    def test_all_null_completeness_returns_no_stats(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0],
+                "completeness_fraction": [None, None],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.null_count == 2
+        assert env.min_fraction is None
+        assert env.max_fraction is None
+        assert env.mean_fraction is None
+
+    def test_incomplete_window_absent_when_completeness_present(self) -> None:
+        # Some emissions log incomplete rows via event payload only; the
+        # row-level column may not exist.
+        df = pd.DataFrame(
+            {
+                "open": [100.0],
+                "completeness_fraction": [0.92],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.incomplete_window_present_count == 0
+
+    def test_get_leaf_parquet_stats_threads_completeness_envelope(self) -> None:
+        # End-to-end: get_leaf_parquet_stats forwards the envelope on the
+        # response.
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-05-08T00:00:00Z"] * 2, utc=True),
+                "open": [100.0, 101.0],
+                "available_at": pd.to_datetime(["2026-05-08T00:00:01Z"] * 2, utc=True),
+                "completeness_fraction": [0.97, 1.0],
+                "incomplete_window": ['[{"venue": "BINANCE"}]', "[]"],
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=42),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-data-processing-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="ohlcv_1h",
+                day="2026-05-08",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.completeness.present is True
+        assert resp.completeness.min_fraction == 0.97
+        assert resp.completeness.max_fraction == 1.0
+        assert resp.completeness.incomplete_window_present_count == 1
+
+    def test_get_leaf_parquet_stats_absent_columns_returns_present_false(self) -> None:
+        # Legacy parquet predates the emission-policy rollout → present=False;
+        # endpoint stays backward-compatible.
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-05-08T00:00:00Z"], utc=True),
+                "open": [100.0],
+                "available_at": pd.to_datetime(["2026-05-08T00:00:01Z"], utc=True),
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-data-processing-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="ohlcv_1h",
+                day="2026-05-08",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.completeness.present is False

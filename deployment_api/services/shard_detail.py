@@ -54,6 +54,7 @@ from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.types.shard_detail import (
     CaptureStatusLiteral,
     LeafAvailableAtEnvelope,
+    LeafCompletenessEnvelope,
     LeafParquetColumnStat,
     LeafParquetStats,
     ShardClassLiteral,
@@ -1534,6 +1535,64 @@ def _compute_available_at_envelope(df: pd.DataFrame) -> LeafAvailableAtEnvelope:
         return LeafAvailableAtEnvelope(present=True, null_count=null_count)
 
 
+def _compute_completeness_envelope(df: pd.DataFrame) -> LeafCompletenessEnvelope:
+    """Derive the ``completeness_fraction`` + ``incomplete_window`` envelope.
+
+    Populated when the parquet has a ``completeness_fraction`` column written
+    via the writegate slice (b) emission-policy hooks (`publish_with_policy()`
+    / `publish_with_manifest_lookup()`). Absent column → ``present=False`` —
+    the parquet predates the slice (c) per-service rollout (Phase 6.1-6.9).
+
+    Min / max / mean computed over non-null float values; null_count is the
+    count of rows where ``completeness_fraction`` is NaN. The
+    ``incomplete_window_present_count`` is the count of rows where the
+    ``incomplete_window`` column (string JSON) is non-null AND non-empty
+    (e.g. ``"[]"`` counts as empty; ``"[{...}]"`` counts as present). Zero
+    when ``incomplete_window`` is absent.
+
+    Forward-compatible: when the slice (c) rollout adds the columns, this
+    helper auto-surfaces the envelope without any further deployment-api
+    changes. Per the workspace "Live = batch — same data, same fields" rule
+    the columns ship in the same parquet schema regardless of emission mode.
+    """
+    if "completeness_fraction" not in df.columns:
+        return LeafCompletenessEnvelope(present=False)
+    col = df["completeness_fraction"]
+    null_count = int(col.isna().sum())
+    non_null = col.dropna()
+    if non_null.empty:
+        return LeafCompletenessEnvelope(present=True, null_count=null_count)
+    try:
+        coerced = pd.to_numeric(non_null, errors="coerce")
+        coerced_list: list[object] = coerced.dropna().tolist()  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+        valid_values: list[float] = [float(v) for v in coerced_list]  # pyright: ignore[reportAny,reportArgumentType]
+    except (TypeError, ValueError):
+        valid_values = []
+    if not valid_values:
+        return LeafCompletenessEnvelope(present=True, null_count=null_count)
+    # incomplete_window column is optional even when completeness_fraction is
+    # present (some emissions log incomplete rows via event payload only,
+    # leaving the per-row column null).
+    incomplete_present = 0
+    if "incomplete_window" in df.columns:
+        iw_col = df["incomplete_window"]
+        # Non-null + non-empty: empty list serialises as "[]" (length 2);
+        # null values + scalar empty strings count as "no incomplete window".
+        iw_list: list[object] = iw_col.dropna().tolist()  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+        for raw in iw_list:
+            value = str(raw).strip()
+            if value and value not in ("[]", "{}", "null"):
+                incomplete_present += 1
+    return LeafCompletenessEnvelope(
+        present=True,
+        min_fraction=round(min(valid_values), 4),
+        max_fraction=round(max(valid_values), 4),
+        mean_fraction=round(sum(valid_values) / len(valid_values), 4),
+        null_count=null_count,
+        incomplete_window_present_count=incomplete_present,
+    )
+
+
 def _compute_column_stats(df: pd.DataFrame) -> list[LeafParquetColumnStat]:
     """Compute per-column non-null / null / NaN-ratio for a leaf parquet."""
     out: list[LeafParquetColumnStat] = []
@@ -1695,6 +1754,7 @@ def get_leaf_parquet_stats(
 
     columns = _compute_column_stats(df)
     available_at_envelope = _compute_available_at_envelope(df)
+    completeness_envelope = _compute_completeness_envelope(df)
     feature_family_resolved: str | None = _resolve_feature_family(df, feature_group)
 
     final_coord = coord.model_copy(update={"feature_family": feature_family_resolved})
@@ -1706,6 +1766,7 @@ def get_leaf_parquet_stats(
         column_count=len(columns),
         columns=columns,
         available_at=available_at_envelope,
+        completeness=completeness_envelope,
         file_size_bytes=file_size,
         truncated=truncated,
         truncated_at_rows=truncated_at,
