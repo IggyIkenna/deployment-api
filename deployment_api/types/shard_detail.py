@@ -19,6 +19,20 @@ ShardClassLiteral = Literal["grouped", "per_symbol", "reference", "fixtures"]
 
 CaptureStatusLiteral = Literal["captured", "empty_confirmed", "attempted_failed", "missing"]
 
+# Mirrors UAC ``ServiceEmissionStateEnum`` value set
+# (``unified_api_contracts.canonical.crosscutting.service_emission_state``).
+# The Pydantic ``Literal`` here is intentionally a thin type-level alias for the
+# closed-set UAC enum values; the enum itself owns SSOT semantics (see workspace
+# rule "Single Source of Truth — types in UAC"). Drift between this Literal and
+# the UAC enum is review-blocking; if a new state lands in UAC, bump this and
+# the deployment-ui TypeScript union in lockstep.
+ServiceEmissionStateLiteral = Literal[
+    "PUBLISHED_OK",
+    "PUBLISHED_DEGRADED",
+    "STALE_DATA_HEARTBEAT_ONLY",
+    "BLOCKED",
+]
+
 
 class ShardCoord(BaseModel):  # CORRECT-LOCAL — API response shape, no other consumer
     """Echo of the request coordinates the response corresponds to.
@@ -83,7 +97,14 @@ class ShardSchema(BaseModel):  # CORRECT-LOCAL — API response shape
 
 
 class ShardGcsMetadata(BaseModel):  # CORRECT-LOCAL — API response shape
-    """GCS footer + manifest metadata for one parquet shard."""
+    """GCS footer + manifest metadata for one parquet shard.
+
+    The four v8 manifest columns (``pipeline_mode`` / ``service_emission_state``
+    / ``last_emission_decision_at`` / ``expected_window_completeness_fraction``)
+    surface here when the underlying manifest row carries them (writegate Phase
+    4). Pre-v8 manifest rows have these fields absent on disk; the service
+    threads ``None`` so the UI renders a placeholder pill (forward-compat).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -93,6 +114,30 @@ class ShardGcsMetadata(BaseModel):  # CORRECT-LOCAL — API response shape
     captured_at: str | None
     capture_status: CaptureStatusLiteral
     error_reason: str | None = None
+
+    pipeline_mode: str | None = None
+    """Source-and-mode tag from UAC ``PipelineMode`` enum (one of the
+    ``batch_*`` source values or ``live_websocket``). The UI renders this as a
+    small badge next to ``capture_status`` (e.g. ``batch_databento`` /
+    ``live_websocket``). ``None`` on pre-v8 manifest rows or when the writer
+    did not stamp the column."""
+
+    service_emission_state: ServiceEmissionStateLiteral | None = None
+    """Service-output emission-policy state from UAC
+    ``ServiceEmissionStateEnum`` (writegate slice (b) / v8). ``None`` for
+    shards whose writer predates the emission-policy rollout (slice (c) Phase
+    6.1-6.9 will fill it in)."""
+
+    last_emission_decision_at: str | None = None
+    """ISO-8601 UTC timestamp when the publish-side emission policy last
+    decided on this row (writegate Phase 4). ``None`` on pre-v8 rows."""
+
+    expected_window_completeness_fraction: float | None = None
+    """Numeric in ``[0.0, 1.0]`` — manifest-row-level completeness derived
+    from ``(captured + empty_confirmed) / (captured + empty_confirmed +
+    attempted_failed + expected_unattempted)`` at write time. Distinct from
+    :class:`LeafCompletenessEnvelope` which carries the per-parquet-row
+    ``completeness_fraction`` envelope. ``None`` on pre-v8 rows."""
 
 
 class ShardDownloadUrls(BaseModel):  # CORRECT-LOCAL — API response shape

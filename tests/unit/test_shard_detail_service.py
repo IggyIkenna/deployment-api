@@ -899,3 +899,142 @@ class TestCompletenessEnvelope:
             )
         assert resp.available is True
         assert resp.completeness.present is False
+
+
+# ---------------------------------------------------------------------------
+# v8 manifest columns surfaced on ShardGcsMetadata
+# (writegate Phase 4 — pipeline_mode + service_emission_state +
+# last_emission_decision_at + expected_window_completeness_fraction)
+# ---------------------------------------------------------------------------
+
+
+class TestShardGcsMetadataV8Columns:
+    """``_gcs_metadata`` threads the 4 new v8 manifest columns when present.
+
+    Forward-compatibility check: pre-v8 manifest rows (column keys absent)
+    leave all four fields as ``None`` so the UI renders placeholder pills.
+    """
+
+    def test_v8_columns_threaded_from_manifest_row(self) -> None:
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+            "attempted_at": "2026-05-11T12:00:00Z",
+            "pipeline_mode": "batch_databento",
+            "service_emission_state": "PUBLISHED_DEGRADED",
+            "last_emission_decision_at": "2026-05-11T12:34:56Z",
+            "expected_window_completeness_fraction": "0.97",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=42,
+                asset_group="cefi",
+            )
+        assert result.pipeline_mode == "batch_databento"
+        assert result.service_emission_state == "PUBLISHED_DEGRADED"
+        assert result.last_emission_decision_at == "2026-05-11T12:34:56Z"
+        assert result.expected_window_completeness_fraction == pytest.approx(0.97)
+        # Existing fields still populated correctly.
+        assert result.capture_status == "captured"
+        assert result.row_count == 42
+
+    def test_v8_columns_absent_returns_none_for_forward_compat(self) -> None:
+        # Pre-v8 manifest row — no v8 keys present at all.
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=42,
+                asset_group="cefi",
+            )
+        assert result.pipeline_mode is None
+        assert result.service_emission_state is None
+        assert result.last_emission_decision_at is None
+        assert result.expected_window_completeness_fraction is None
+        # Capture status still passes through normally.
+        assert result.capture_status == "captured"
+
+    def test_v8_columns_none_when_no_manifest_row(self) -> None:
+        # No manifest row at all (e.g. shard not in manifest yet) — v8
+        # fields default to None; capture_status derives from GCS size only.
+        with patch.object(
+            svc, "get_object_metadata", return_value={"size": 100, "updated": None}
+        ):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=None,
+                pq_row_count=10,
+                asset_group="cefi",
+            )
+        assert result.pipeline_mode is None
+        assert result.service_emission_state is None
+        assert result.last_emission_decision_at is None
+        assert result.expected_window_completeness_fraction is None
+        assert result.capture_status == "captured"
+
+    def test_off_closed_set_service_emission_state_dropped_silently(self) -> None:
+        # A garbage value on disk MUST NOT leak into the API response —
+        # the Literal type means we'd otherwise corrupt the OpenAPI schema.
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+            "service_emission_state": "UNKNOWN_GARBAGE",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=1,
+                asset_group="cefi",
+            )
+        assert result.service_emission_state is None
+
+    def test_unparseable_completeness_fraction_falls_back_to_none(self) -> None:
+        # Float parse failure on the completeness column logs a warning
+        # and falls back to None — never raises.
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+            "expected_window_completeness_fraction": "not-a-float",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=1,
+                asset_group="cefi",
+            )
+        assert result.expected_window_completeness_fraction is None
+
+    def test_all_four_service_emission_states_accepted(self) -> None:
+        for state in (
+            "PUBLISHED_OK",
+            "PUBLISHED_DEGRADED",
+            "STALE_DATA_HEARTBEAT_ONLY",
+            "BLOCKED",
+        ):
+            manifest = {
+                "capture_status": "captured",
+                "error_reason": "",
+                "service_emission_state": state,
+            }
+            with patch.object(svc, "get_object_metadata", return_value=None):
+                result = svc._gcs_metadata(
+                    bucket="bucket-x",
+                    object_path="some/path.parquet",
+                    manifest=manifest,
+                    pq_row_count=1,
+                    asset_group="cefi",
+                )
+            assert result.service_emission_state == state

@@ -66,6 +66,7 @@ from deployment_api.types.shard_detail import (
     ShardPayloadGrouped,
     ShardPayloadPerSymbol,
     ShardPayloadReference,
+    ServiceEmissionStateLiteral,
     ShardSchema,
     ShardSchemaColumn,
     VenueDetailResponse,
@@ -98,6 +99,17 @@ _SAMPLE_ROW_LIMIT: int = 100
 
 # Signed URL TTL for the parquet download link.
 _SIGNED_URL_TTL_SECONDS: int = 3600
+
+# Closed-set membership check for the v8 ``service_emission_state`` manifest
+# column. Mirrors UAC ``ServiceEmissionStateEnum`` (see
+# ``unified_api_contracts.canonical.crosscutting.service_emission_state``) —
+# kept as a frozenset of literal strings so the hot path avoids the enum-
+# constructor cost on every manifest row read. Drift between this set and the
+# UAC enum is review-blocking; the Literal in
+# ``deployment_api/types/shard_detail.py`` owns the type-level surface.
+_VALID_SERVICE_EMISSION_STATES: frozenset[str] = frozenset(
+    {"PUBLISHED_OK", "PUBLISHED_DEGRADED", "STALE_DATA_HEARTBEAT_ONLY", "BLOCKED"}
+)
 
 # Data types that are always grouped / bundle-style — one parquet per
 # ``(venue, day)`` holds many symbols (strikes, expiries, pool addresses, …).
@@ -631,6 +643,10 @@ def _gcs_metadata(
 
     status: CaptureStatusLiteral
     error_reason: str | None = None
+    pipeline_mode: str | None = None
+    service_emission_state: ServiceEmissionStateLiteral | None = None
+    last_emission_decision_at: str | None = None
+    expected_window_completeness_fraction: float | None = None
     if manifest is not None:
         manifest_status = (manifest.get("capture_status") or "").lower()
         if manifest_status in {"captured", "empty_confirmed", "attempted_failed"}:
@@ -650,6 +666,34 @@ def _gcs_metadata(
         attempted_at_raw = manifest.get("attempted_at")
         if not captured_at and attempted_at_raw:
             captured_at = attempted_at_raw
+
+        # v8 manifest columns (writegate Phase 4). Forward-compatible:
+        # pre-v8 manifest rows lack these keys, so ``manifest.get(...)``
+        # returns ``None`` / empty string and the field stays ``None``.
+        pipeline_mode_raw = manifest.get("pipeline_mode") or ""
+        pipeline_mode = pipeline_mode_raw or None
+
+        emission_state_raw = manifest.get("service_emission_state") or ""
+        if emission_state_raw in _VALID_SERVICE_EMISSION_STATES:
+            service_emission_state = cast(ServiceEmissionStateLiteral, emission_state_raw)
+        # else: drop silently — invalid value on disk would otherwise leak
+        # an off-closed-set string into the API response. ``None`` matches
+        # the pre-v8 pre-existence shape so the UI renders the same
+        # placeholder pill.
+
+        last_emission_decision_raw = manifest.get("last_emission_decision_at") or ""
+        last_emission_decision_at = last_emission_decision_raw or None
+
+        completeness_raw = manifest.get("expected_window_completeness_fraction") or ""
+        if completeness_raw:
+            try:
+                expected_window_completeness_fraction = float(completeness_raw)
+            except ValueError as exc:
+                logger.warning(
+                    "expected_window_completeness_fraction parse failed for row %s: %s",
+                    manifest,
+                    exc,
+                )
     else:
         status = "captured" if size_bytes is not None else "missing"
 
@@ -660,6 +704,10 @@ def _gcs_metadata(
         captured_at=captured_at,
         capture_status=status,
         error_reason=error_reason,
+        pipeline_mode=pipeline_mode,
+        service_emission_state=service_emission_state,
+        last_emission_decision_at=last_emission_decision_at,
+        expected_window_completeness_fraction=expected_window_completeness_fraction,
     )
 
 
