@@ -67,6 +67,7 @@ from .routes import (
     epics,
     fixtures,
     infra_health,
+    kill_switch_routes,
     service_status,
     services,
     shard_detail,
@@ -168,6 +169,9 @@ _authenticated_router.include_router(
     backfill_launch.router, prefix="/api/backfill", tags=["Backfill"]
 )
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
+# Kill-switch router already declares /api/kill-switch prefix + verify_api_key
+# dependency internally; include directly on app so we don't double-gate.
+app.include_router(kill_switch_routes.router)
 app.include_router(_authenticated_router)
 
 # --- Unauthenticated health / utility routes (no API key required) ---
