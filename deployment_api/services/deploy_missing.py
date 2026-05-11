@@ -81,6 +81,38 @@ _SERVICE_LAUNCHER_SCRIPTS: dict[str, str] = {
 }
 
 
+# Live-cluster launcher registry (Phase 11.2 of
+# `unified-trading-pm/plans/active/live_pipeline_mtds_mdps_features_2026_05_08.md`).
+# These are NOT keyed by service slug like ``_SERVICE_LAUNCHER_SCRIPTS`` above
+# (which serves per-shard Deploy-Missing); they're keyed by **live-cluster role**
+# because the live pipeline deploys as a fixed set of VM types per
+# ``unified-trading-pm/codex/05-infrastructure/live-pipeline-architecture.md``
+# § "VM topology + launchers":
+#   - 5 per-asset_group MTDS producers (one per cefi/defi/tradfi/sports/prediction)
+#   - 5 per-asset_group MDPS+features consumers
+#   - 1 singleton features-cross-cutting consumer
+#   - 1 singleton replay-cascade producer (one window at a time)
+#
+# The deployment-UI consumes this registry for the per-asset_group "Deploy live
+# cluster" action (Phase 11.4 — UI button). Operators pick (a) cluster role
+# from the closed set + (b) asset_group (where applicable) + (c) ``--env``;
+# UI renders the resulting launcher command for tarball-from-local or
+# preview-only execution.
+#
+# Codex SSOT for the topology:
+# ``unified-trading-pm/codex/05-infrastructure/runtime-tiers-and-deployment.md``
+# § "Live-pipeline VM topology (2026-05-08 cutover)".
+_LIVE_CLUSTER_LAUNCHER_SCRIPTS: dict[str, str] = {
+    # Per-asset_group launchers — caller appends ``--asset-group <ag> --env <env>``.
+    "mtds-live": f"{_VM_SCRIPT_DIR}/launch-mtds-live.sh",
+    "mdps-features-live": f"{_VM_SCRIPT_DIR}/launch-mdps-features-live.sh",
+    # Singletons — caller appends ``--env <env>`` only; no asset_group axis.
+    "features-cross-cutting": f"{_VM_SCRIPT_DIR}/launch-features-cross-cutting.sh",
+    # Replay-cascade also takes ``--start``/``--end``/``--shard-key`` per invocation.
+    "replay-cascade": f"{_VM_SCRIPT_DIR}/launch-replay-cascade.sh",
+}
+
+
 # Required keys in the ``row_key`` payload depending on whether the leaf
 # is bundled (per-root parquet) or per-instrument (one parquet per
 # instrument). The 5th shard-key field varies by routing (--root vs
