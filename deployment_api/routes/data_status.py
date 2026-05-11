@@ -5,10 +5,12 @@ Endpoint for checking data completion status across services.
 Business logic delegated to service layer modules.
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Final, Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -1912,6 +1914,103 @@ def _build_live_row(
     )
 
 
+async def _fetch_health_data_freshness(
+    service_name: str,
+    base_url: str,
+    timeout_seconds: float,
+) -> dict[str, object] | None:
+    """Fetch ``data_freshness`` from one service's Health-API.
+
+    Per Phase 8 contract: services expose ``GET /health`` returning JSON
+    with a ``data_freshness`` field carrying the
+    :class:`~unified_trading_library.streaming.StreamingHealthSnapshot`
+    serialised dict (``last_event_age_seconds`` / ``consumer_lag_pending`` /
+    ``zero_activity_bar_rate`` / etc.).
+
+    Returns ``None`` on any failure (timeout / non-2xx / parse error /
+    missing field) — the endpoint treats these as soft failures + falls
+    back to the manifest-derived staleness for the affected shards.
+    """
+    url = base_url.rstrip("/") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(url, headers={"Accept": "application/json"})
+        if response.status_code != 200:
+            logger.warning(
+                "Live data-status: %s /health returned %d (url=%s)",
+                service_name,
+                response.status_code,
+                url,
+            )
+            return None
+        body = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "Live data-status: %s /health call failed (url=%s): %s",
+            service_name,
+            url,
+            exc,
+        )
+        return None
+    if not isinstance(body, dict):
+        return None
+    freshness = body.get("data_freshness")
+    if not isinstance(freshness, dict):
+        return None
+    return freshness
+
+
+async def _gather_health_data_freshness(
+    service_urls: dict[str, str],
+    timeout_seconds: float,
+) -> dict[str, dict[str, object]]:
+    """Fan-out per-service ``/health`` calls in parallel.
+
+    Returns the per-service ``data_freshness`` dicts. Services whose
+    /health call fails are omitted from the result; the endpoint
+    serves the manifest-derived staleness for those shards.
+    """
+    if not service_urls:
+        return {}
+    services = list(service_urls.items())
+    tasks = [
+        _fetch_health_data_freshness(service_name, base_url, timeout_seconds)
+        for service_name, base_url in services
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: dict[str, dict[str, object]] = {}
+    for (service_name, _base_url), result in zip(services, results, strict=False):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "Live data-status: %s /health gather failed: %r",
+                service_name,
+                result,
+            )
+            continue
+        if result is not None:
+            out[service_name] = result
+    return out
+
+
+def _staleness_seconds_from_health(
+    freshness: dict[str, object],
+) -> float | None:
+    """Extract ``last_event_age_seconds`` from one Health-API snapshot.
+
+    Returns ``None`` when the field is missing or non-numeric — caller
+    falls back to the manifest-derived staleness.
+    """
+    raw = freshness.get("last_event_age_seconds")
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _read_live_manifest_rows(asset_group: str) -> list[object]:
     """Read MTDS manifest for one asset_group, filtered to ``pipeline_mode=live_websocket``.
 
@@ -2010,6 +2109,24 @@ async def get_live_data_status(
     requested_asset_groups = _normalise_asset_groups(asset_group)
     now = datetime.now(UTC)
 
+    # Phase 11.1 Health-API HTTP join — fan-out one /health call per
+    # configured service in parallel. Empty URL registry → manifest-only
+    # fallback (no override; staleness derived from `attempted_at`).
+    per_service_freshness = await _gather_health_data_freshness(
+        service_urls=_cfg.live_pipeline_service_urls,
+        timeout_seconds=_cfg.live_pipeline_health_timeout_seconds,
+    )
+    # When any service supplied a precise `last_event_age_seconds`, prefer
+    # it over the coarse manifest-derived value. Across-shard for now —
+    # per-shard Health-API snapshots require a follow-up shape change.
+    precise_staleness_seconds: float | None = None
+    for freshness in per_service_freshness.values():
+        candidate = _staleness_seconds_from_health(freshness)
+        if candidate is None:
+            continue
+        if precise_staleness_seconds is None or candidate < precise_staleness_seconds:
+            precise_staleness_seconds = candidate
+
     all_rows: list[LiveStatusRow] = []
     seen_asset_groups: list[str] = []
     for ag in requested_asset_groups:
@@ -2018,7 +2135,12 @@ async def get_live_data_status(
             continue
         seen_asset_groups.append(ag)
         for row in manifest_rows:
-            all_rows.append(_build_live_row(row=row, asset_group=ag, now=now))
+            live_row = _build_live_row(row=row, asset_group=ag, now=now)
+            if precise_staleness_seconds is not None:
+                live_row = live_row.model_copy(
+                    update={"staleness_seconds": precise_staleness_seconds},
+                )
+            all_rows.append(live_row)
 
     return LiveStatusResponse(
         rows=all_rows,

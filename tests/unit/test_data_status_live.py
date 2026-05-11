@@ -273,6 +273,120 @@ def test_live_status_row_pydantic_shape_matches_phase_11_1_contract() -> None:
     assert row.capture_status == "captured"
 
 
+def test_live_status_health_api_http_join_overrides_staleness() -> None:
+    """When config has service URLs, /health response overrides manifest staleness."""
+
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_websocket"],
+        venues=["binance"],
+        attempted_ats=[datetime.now(UTC) - timedelta(seconds=300)],  # 5 min stale per manifest
+    )
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    async def _fake_get(self, url, **kwargs):
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "data_freshness": {"last_event_age_seconds": 12.5},
+                }
+
+        return _Resp()
+
+    app = _build_app_with_data_status_router()
+    from deployment_api.routes import data_status
+
+    # Override the config to register one service URL.
+    original_urls = data_status._cfg.live_pipeline_service_urls
+    data_status._cfg.live_pipeline_service_urls = {"market-tick-data-service": "http://mtds.local"}
+    try:
+        client = TestClient(app)
+        with (
+            patch("unified_trading_library.read_availability_index", side_effect=_read),
+            patch("httpx.AsyncClient.get", new=_fake_get),
+        ):
+            response = client.get("/api/data-status/live?asset_group=cefi")
+        assert response.status_code == 200
+        row = response.json()["rows"][0]
+        # Precise 12.5s from /health overrides the ~300s manifest-derived value.
+        assert row["staleness_seconds"] == 12.5
+    finally:
+        data_status._cfg.live_pipeline_service_urls = original_urls
+
+
+def test_live_status_health_api_http_failure_falls_back_to_manifest_staleness() -> None:
+    """/health call failure → manifest-derived staleness used (no exception bubbles)."""
+
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_websocket"],
+        attempted_ats=[datetime.now(UTC) - timedelta(seconds=45)],
+    )
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    async def _fake_get(self, url, **kwargs):
+        raise httpx.ConnectError("simulated network failure")
+
+    import httpx
+
+    app = _build_app_with_data_status_router()
+    from deployment_api.routes import data_status
+
+    original_urls = data_status._cfg.live_pipeline_service_urls
+    data_status._cfg.live_pipeline_service_urls = {"market-tick-data-service": "http://down.local"}
+    try:
+        client = TestClient(app)
+        with (
+            patch("unified_trading_library.read_availability_index", side_effect=_read),
+            patch("httpx.AsyncClient.get", new=_fake_get),
+        ):
+            response = client.get("/api/data-status/live?asset_group=cefi")
+        assert response.status_code == 200
+        row = response.json()["rows"][0]
+        # Manifest-derived ~45s (allow slop).
+        assert 43 <= row["staleness_seconds"] <= 50
+    finally:
+        data_status._cfg.live_pipeline_service_urls = original_urls
+
+
+def test_live_status_health_api_empty_registry_uses_manifest_staleness() -> None:
+    """Empty URL registry → no HTTP calls; manifest-derived staleness."""
+
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_websocket"],
+        attempted_ats=[datetime.now(UTC) - timedelta(seconds=20)],
+    )
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    app = _build_app_with_data_status_router()
+    from deployment_api.routes import data_status
+
+    original_urls = data_status._cfg.live_pipeline_service_urls
+    data_status._cfg.live_pipeline_service_urls = {}
+    try:
+        client = TestClient(app)
+        with patch("unified_trading_library.read_availability_index", side_effect=_read):
+            response = client.get("/api/data-status/live?asset_group=cefi")
+        assert response.status_code == 200
+        row = response.json()["rows"][0]
+        # Manifest-derived ~20s.
+        assert 18 <= row["staleness_seconds"] <= 25
+    finally:
+        data_status._cfg.live_pipeline_service_urls = original_urls
+
+
 def test_live_status_row_rejects_out_of_range_health_metrics() -> None:
     """Pydantic validators reject obviously-wrong inputs."""
     from pydantic import ValidationError
