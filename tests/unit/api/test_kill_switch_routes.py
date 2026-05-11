@@ -35,6 +35,7 @@ from unified_api_contracts.canonical.crosscutting.circuit_breaker import (  # no
     BreakerRecoveryMode,
 )
 from unified_api_contracts.internal.domain.deployment_service import KillSwitchScope
+from unified_trading_library.events import setup_events
 from unified_trading_library.kill_switch.bus import (
     get_kill_switch_bus,
     reset_kill_switch_bus,
@@ -57,19 +58,29 @@ from deployment_api.routes.kill_switch_routes import (
 
 @pytest.fixture(autouse=True)
 def _reset_bus() -> Iterator[None]:
-    """Reset the process-singleton bus between tests so state doesn't leak."""
+    """Reset the process-singleton bus between tests so state doesn't leak.
+
+    Also initialises the UTL event sink (kill-switch arm/disarm emit lifecycle
+    events; without ``setup_events()`` the bus raises ``RuntimeError: Event
+    logging not initialized``).
+    """
+    setup_events(service_name="deployment-api-test", mode="test")
     reset_kill_switch_bus()
     yield
     reset_kill_switch_bus()
 
 
 @pytest.fixture
-def app_with_auth_disabled() -> FastAPI:
-    """Minimal FastAPI app mounting the kill-switch router with auth bypassed."""
-    app = FastAPI()
+def app_with_auth_disabled() -> Iterator[FastAPI]:
+    """Minimal FastAPI app mounting the kill-switch router with auth bypassed.
+
+    Patches `DISABLE_AUTH=True` for the full test lifetime (yield-based) so
+    auth dependency lookups at request-time see the bypass.
+    """
     with patch("deployment_api.auth.DISABLE_AUTH", True):
+        app = FastAPI()
         app.include_router(kill_switch_router)
-    return app
+        yield app
 
 
 @pytest.fixture
