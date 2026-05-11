@@ -6,9 +6,12 @@ Business logic delegated to service layer modules.
 """
 
 import logging
+from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services import DataAnalyticsService, DataQueryService, DataStatusService
@@ -1626,3 +1629,158 @@ async def clear_drilldown_cache_endpoint():
     """Reset the drill-down TTL cache (schema / instruments / bucket counts)."""
     clear_drilldown_cache()
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Live-pipeline data-status endpoint — Phase 11.1 design-only stub.
+#
+# Plan: live_pipeline_mtds_mdps_features_2026_05_08.md Phase 11.
+# Implementation is BLOCKED on Phase 5/6 (live features-asset-scoped +
+# cross-cutting runners) shipping per features-consolidation Phase 7. This
+# stub returns an empty list with the correct shape so the deployment-ui
+# `LiveDataStatusTab` (Phase 11.3) can render against the contract before
+# the live pipeline is producing real shards.
+# ---------------------------------------------------------------------------
+
+
+# Closed set of capture-status states per writegate Phase 3.D.5 4-state
+# taxonomy (CLAUDE.md "Availability manifest v5 (honest-coverage)"). Lifted
+# inline here to keep this Phase-11 stub self-contained until the UAC
+# `CaptureStatus` Literal is unified across the dashboard tier; per
+# CLAUDE.md Citadel Rule 7 (SSOT) we converge on UAC once Phase 5/6
+# implementation makes the live producer publish live capture_status rows.
+LiveCaptureStatus = Literal[
+    "captured",
+    "empty_confirmed",
+    "attempted_failed",
+    "expected_unattempted",
+]
+
+
+class LiveStatusRow(BaseModel):
+    """One per-shard live-pipeline status row for the deployment-UI Live tab.
+
+    Phase 11.1 endpoint contract per
+    ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11. The
+    endpoint pivots the availability manifest by
+    ``pipeline_mode=live_websocket`` and joins per-shard health from the
+    Health-API endpoints (Phase 8 already shipped at UTL@54d658e8 +
+    UTL@908b1647).
+
+    Shard-key axes mirror the v5 manifest row key (per CLAUDE.md
+    "Shard-granularity SSOT"). Per-shard health metrics are sourced from
+    the consumer service's :func:`make_health_router`'s
+    ``data_freshness`` callback (per CLAUDE.md "Service Infrastructure
+    Requirements"):
+
+    * ``staleness_seconds`` — wall-clock seconds since the last
+      :class:`~unified_api_contracts.events.streaming.CandleComputedEvent`
+      for the shard.
+    * ``degraded_ratio_60s`` — fraction of the last-60s emissions where
+      ``emission_outcome="PUBLISHED_DEGRADED"`` (per CLAUDE.md service-
+      emission-policy SSOT). Higher means more WS reconnects + carry-
+      forward LTP bars (stale-not-missing rule fires).
+    * ``cluster_pct_skipped_60s`` — for bundled shards (options_chain /
+      futures_chain / prediction canonical-question-group / sports per-
+      fixture-bundle), fraction of expected_root_clusters that did NOT
+      receive a CandleComputed in the last 60s. 0% = full cluster
+      coverage; 100% = no-emit per Phase 4.3 Cat (A').
+    * ``last_candle_emitted_at`` — most recent CandleComputedEvent
+      ``available_at`` for the shard.
+
+    DESIGN-ONLY: the live endpoint currently returns an empty list; the
+    fields above land once the per-asset-group MDPS+features-asset-scoped
+    triplets publish to ``streaming.{asset_group}.candle_computed`` per
+    Phase 4 + 5 implementation.
+    """
+
+    asset_group: str
+    venue: str
+    chain: str | None = None
+    data_type: str
+    instrument_type: str | None = None
+    instrument_id: str | None = None
+    league_id: str | None = None
+    timeframe: str
+    feature_group: str | None = None
+    capture_status: LiveCaptureStatus
+    staleness_seconds: float = Field(
+        ...,
+        ge=0,
+        description=(
+            "Wall-clock seconds since the last CandleComputedEvent for this "
+            "shard. NaN-equivalent (set to +inf in implementation) when no "
+            "event has ever been seen."
+        ),
+    )
+    degraded_ratio_60s: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=("Fraction of last-60s emissions with emission_outcome=PUBLISHED_DEGRADED."),
+    )
+    cluster_pct_skipped_60s: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "For bundled shards: fraction of expected_root_clusters that "
+            "did NOT receive a CandleComputed in the last 60s. 0 for "
+            "non-bundled shards."
+        ),
+    )
+    last_candle_emitted_at: datetime | None = None
+
+
+class LiveStatusResponse(BaseModel):
+    """``GET /api/data-status/live`` response envelope."""
+
+    status: Literal["ok"] = "ok"
+    rows: list[LiveStatusRow] = Field(default_factory=list)
+    asset_groups: list[str] = Field(
+        default_factory=list,
+        description=("List of asset_groups represented in `rows` (deduped)."),
+    )
+    refreshed_at: datetime
+
+
+@router.get("/live", response_model=LiveStatusResponse)
+async def get_live_data_status(
+    asset_group: list[str] | None = Query(
+        None,
+        description=(
+            "Filter to specific asset_groups (closed set: cefi / defi / "
+            "tradfi / sports / prediction). Default: all."
+        ),
+    ),
+) -> LiveStatusResponse:
+    """Live-pipeline data-status pivoted by ``pipeline_mode=live_websocket``.
+
+    Phase 11.1 design-only stub. Returns an empty list with the correct
+    response shape until the live MDPS+features-asset-scoped clusters
+    publish to ``streaming.{asset_group}.candle_computed``.
+
+    Implementation gates (per
+    ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11):
+
+    1. Phase 5 + 6 ship the live producers (gated on
+       ``features_repo_consolidation_2026_05_08`` Phase 7).
+    2. Phase 8 Health-API endpoint exists per-service (shipped at
+       UTL@54d658e8).
+    3. This route reads the manifest with
+       ``pipeline_mode=live_websocket`` filter + joins per-shard health
+       from the Health-API endpoints + computes
+       ``degraded_ratio_60s`` / ``cluster_pct_skipped_60s`` from the
+       service's emission-event-stream tail.
+
+    Until then this returns ``{"status": "ok", "rows": [], "asset_groups":
+    [], "refreshed_at": <now>}`` so the deployment-ui ``LiveDataStatusTab``
+    can render its empty-state correctly + the integration smoke passes.
+    """
+
+    _ = asset_group  # parameter consumed once Phase 11.1 implementation lands.
+    return LiveStatusResponse(
+        rows=[],
+        asset_groups=[],
+        refreshed_at=datetime.now(),
+    )
