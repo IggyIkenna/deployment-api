@@ -337,10 +337,178 @@ def list_supported_services() -> list[str]:
     return sorted(_SERVICE_LAUNCHER_SCRIPTS.keys())
 
 
+# ── Phase 11.4 — live-cluster launch (Deploy live cluster UI button) ──────────
+
+
+# Closed set of valid asset_groups for the per-asset_group live-cluster roles.
+_LIVE_ASSET_GROUPS: frozenset[str] = frozenset({"cefi", "defi", "tradfi", "sports", "prediction"})
+
+# Closed set of valid env tiers per bucket-name SSOT (b+).
+_LIVE_DEPLOYMENT_ENVS: frozenset[str] = frozenset({"prod", "staging", "dev"})
+
+# Live-cluster roles that take ``--asset-group <ag>``. Replay-cascade takes
+# it too — its VM-name prefix is ``replay-{asset_group}-{ts}`` per
+# ``codex/05-infrastructure/runtime-tiers-and-deployment.md`` topology table.
+_LIVE_ROLES_PER_ASSET_GROUP: frozenset[str] = frozenset(
+    {"mtds-live", "mdps-features-live", "replay-cascade"},
+)
+
+# Live-cluster roles that take additional window-parameterised flags
+# (``--start``/``--end``/``--shard-key``).
+_LIVE_ROLES_WINDOW_PARAMETERISED: frozenset[str] = frozenset({"replay-cascade"})
+
+
+@dataclass
+class LiveClusterLaunchPreview:
+    """Structured response for the UI's Deploy-live-cluster copy-to-clipboard widget.
+
+    Mirrors ``DeployMissingPreview`` shape but keyed by live-cluster ROLE instead
+    of service slug (per Phase 11.2 — :data:`_LIVE_CLUSTER_LAUNCHER_SCRIPTS`).
+
+    Codex SSOT for the topology:
+    ``unified-trading-pm/codex/05-infrastructure/runtime-tiers-and-deployment.md``
+    § "Live-pipeline VM topology (2026-05-08 cutover)".
+    """
+
+    role: str
+    asset_group: str | None
+    deployment_env: str
+    launcher_script: str
+    command: str
+    notes: list[str]
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "asset_group": self.asset_group,
+            "deployment_env": self.deployment_env,
+            "launcher_script": self.launcher_script,
+            "command": self.command,
+            "notes": list(self.notes),
+            "warnings": list(self.warnings),
+        }
+
+
+def build_live_cluster_launch_preview(
+    *,
+    role: str,
+    asset_group: str | None,
+    deployment_env: str,
+    replay_start: str | None = None,
+    replay_end: str | None = None,
+    replay_shard_key: str | None = None,
+) -> LiveClusterLaunchPreview:
+    """Assemble the launcher command for ONE live-cluster VM type.
+
+    Args:
+        role: Live-cluster role key from
+            :data:`_LIVE_CLUSTER_LAUNCHER_SCRIPTS` —
+            ``"mtds-live"`` / ``"mdps-features-live"`` /
+            ``"features-cross-cutting"`` / ``"replay-cascade"``.
+        asset_group: Lowercase asset_group (cefi/defi/tradfi/sports/prediction)
+            for per-asset_group roles; ``None`` for singleton roles.
+        deployment_env: Target env tier (prod/staging/dev) per bucket-name
+            SSOT (b+).
+        replay_start / replay_end / replay_shard_key: Window-parameterised
+            args required when ``role == "replay-cascade"``.
+
+    Raises:
+        DeployMissingError: invalid role, missing required arg for that role,
+            or asset_group passed for a singleton role.
+    """
+    if role not in _LIVE_CLUSTER_LAUNCHER_SCRIPTS:
+        raise DeployMissingError(
+            f"Unknown live-cluster role '{role}'. "
+            f"Valid roles: {sorted(_LIVE_CLUSTER_LAUNCHER_SCRIPTS.keys())}",
+        )
+    if deployment_env not in _LIVE_DEPLOYMENT_ENVS:
+        raise DeployMissingError(
+            f"Unknown deployment_env '{deployment_env}'. "
+            f"Valid envs: {sorted(_LIVE_DEPLOYMENT_ENVS)}",
+        )
+    if role in _LIVE_ROLES_PER_ASSET_GROUP:
+        if asset_group is None or asset_group not in _LIVE_ASSET_GROUPS:
+            raise DeployMissingError(
+                f"Role '{role}' requires --asset-group; "
+                f"valid: {sorted(_LIVE_ASSET_GROUPS)} (got: {asset_group!r})",
+            )
+    elif asset_group is not None:
+        raise DeployMissingError(
+            f"Role '{role}' is singleton; pass asset_group=None (got: {asset_group!r})",
+        )
+    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:
+        if not (replay_start and replay_end and replay_shard_key):
+            raise DeployMissingError(
+                f"Role '{role}' requires --start, --end, --shard-key "
+                f"(got start={replay_start!r}, end={replay_end!r}, "
+                f"shard_key={replay_shard_key!r})",
+            )
+
+    launcher = _LIVE_CLUSTER_LAUNCHER_SCRIPTS[role]
+    cmd_parts: list[str] = [f"bash {launcher}"]
+    if asset_group is not None:
+        cmd_parts.append(f"--asset-group {asset_group}")
+    cmd_parts.append(f"--env {deployment_env}")
+    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:
+        cmd_parts.append(f"--start {replay_start}")
+        cmd_parts.append(f"--end {replay_end}")
+        cmd_parts.append(f"--shard-key {replay_shard_key}")
+    command = " \\\n  ".join(cmd_parts)
+
+    notes: list[str] = [
+        f"Live-cluster role: {role}. Launcher: {launcher}.",
+        "Singleton-locked: launcher refuses duplicate-launch in the same zone "
+        "for the same (role, asset_group) — re-run with --force to bypass.",
+        "Bucket naming uses (b+) env-aware shape via UTL "
+        "``resolve_bucket_name(cloud=, kind=, asset_group=, env=)``. Resolver "
+        "falls back to flat names until Phase 2 physical migration provisions "
+        "env-tiered buckets (window 2026-05-15→05-19).",
+        "Operational launch boundary: Phase 15 of "
+        "``unified-trading-pm/plans/active/live_pipeline_mtds_mdps_features_2026_05_08.md`` "
+        "(7-day live smoke, ≥2026-05-15). Operational launch awaits "
+        "(a) Harsh slot 5 per-service consumer wiring, "
+        "(b) Phase 12 batch-vs-live reconciliation gate green, "
+        "(c) tarball refresh via ``create-code-tarballs.sh --all``.",
+    ]
+    warnings_out: list[str] = []
+    if deployment_env != "prod":
+        warnings_out.append(
+            f"--env {deployment_env}: ensure the {deployment_env}-tier buckets are "
+            "provisioned. Phase 2 physical migration (2026-05-15→05-19) provisions "
+            "~300-400 env-tiered buckets; until then resolver falls back to flat "
+            "(prod-tier) buckets.",
+        )
+
+    logger.info(
+        "live-cluster-launch preview built role=%s asset_group=%s env=%s",
+        role,
+        asset_group,
+        deployment_env,
+    )
+    return LiveClusterLaunchPreview(
+        role=role,
+        asset_group=asset_group,
+        deployment_env=deployment_env,
+        launcher_script=launcher,
+        command=command,
+        notes=notes,
+        warnings=warnings_out,
+    )
+
+
+def list_supported_live_cluster_roles() -> list[str]:
+    """Enumerate live-cluster roles registered in :data:`_LIVE_CLUSTER_LAUNCHER_SCRIPTS`."""
+    return sorted(_LIVE_CLUSTER_LAUNCHER_SCRIPTS.keys())
+
+
 __all__ = [
     "DeployMissingError",
     "DeployMissingPreview",
+    "LiveClusterLaunchPreview",
     "build_deploy_missing_preview",
+    "build_live_cluster_launch_preview",
+    "list_supported_live_cluster_roles",
     "list_supported_services",
 ]
 

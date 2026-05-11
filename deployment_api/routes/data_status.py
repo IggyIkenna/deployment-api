@@ -48,6 +48,10 @@ from deployment_api.services.data_status_mock import (
 from deployment_api.services.deploy_missing import (
     DeployMissingError,
     build_deploy_missing_preview,
+    build_live_cluster_launch_preview,
+)
+from deployment_api.services.deploy_missing import (
+    list_supported_live_cluster_roles as deploy_missing_supported_live_cluster_roles,
 )
 from deployment_api.services.deploy_missing import (
     list_supported_services as deploy_missing_supported_services,
@@ -636,6 +640,70 @@ async def get_deploy_missing_services():
     Deploy-Missing button vs a "manual recovery" placeholder.
     """
     return {"services": deploy_missing_supported_services()}
+
+
+@router.post("/deploy-live-cluster-preview")
+async def post_deploy_live_cluster_preview(
+    request: dict[str, object],
+):
+    """Build the launcher command for ONE live-cluster VM type (Phase 11.4).
+
+    Live-cluster VMs deploy as a fixed topology per
+    ``unified-trading-pm/codex/05-infrastructure/runtime-tiers-and-deployment.md``
+    § "Live-pipeline VM topology (2026-05-08 cutover)":
+
+    * 5 per-asset_group MTDS producers (``role="mtds-live"``)
+    * 5 per-asset_group MDPS+features consumers (``role="mdps-features-live"``)
+    * 1 singleton features-cross-cutting (``role="features-cross-cutting"``)
+    * 1 singleton replay-cascade (``role="replay-cascade"`` — window-parameterised)
+
+    Body shape::
+
+        {
+            "role": "mtds-live",
+            "asset_group": "cefi",     # null for singleton roles
+            "deployment_env": "prod",  # prod | staging | dev
+            "replay_start": "...",     # required iff role=replay-cascade
+            "replay_end": "...",
+            "replay_shard_key": "..."
+        }
+    """
+    role = str(request.get("role", ""))
+    raw_asset_group = request.get("asset_group")
+    asset_group = str(raw_asset_group) if raw_asset_group not in (None, "") else None
+    deployment_env = str(request.get("deployment_env", "prod"))
+    replay_start_raw = request.get("replay_start")
+    replay_end_raw = request.get("replay_end")
+    replay_shard_key_raw = request.get("replay_shard_key")
+    replay_start = str(replay_start_raw) if replay_start_raw not in (None, "") else None
+    replay_end = str(replay_end_raw) if replay_end_raw not in (None, "") else None
+    replay_shard_key = (
+        str(replay_shard_key_raw) if replay_shard_key_raw not in (None, "") else None
+    )
+    if not role:
+        raise HTTPException(status_code=400, detail="role is required")
+    try:
+        preview = build_live_cluster_launch_preview(
+            role=role,
+            asset_group=asset_group,
+            deployment_env=deployment_env,
+            replay_start=replay_start,
+            replay_end=replay_end,
+            replay_shard_key=replay_shard_key,
+        )
+    except DeployMissingError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return preview.to_dict()
+
+
+@router.get("/deploy-live-cluster-roles")
+async def get_deploy_live_cluster_roles():
+    """List live-cluster roles registered in ``_LIVE_CLUSTER_LAUNCHER_SCRIPTS``.
+
+    UI consumers call this to render the "Deploy live cluster" role-picker
+    (per Phase 11.4 of live_pipeline_mtds_mdps_features_2026_05_08.md).
+    """
+    return {"roles": deploy_missing_supported_live_cluster_roles()}
 
 
 @router.get("/drilldown-pairs")
