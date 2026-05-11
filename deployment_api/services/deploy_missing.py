@@ -78,6 +78,14 @@ _SERVICE_LAUNCHER_SCRIPTS: dict[str, str] = {
     "features-calendar-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
     "features-commodity-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
     "features-multi-timeframe-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    # Cross-asset manifest rescan launcher (manifest_schema_final_gate_2026_05_09 Phase 3.A +
+    # manifest_cross_asset_rescan_design_2026_05_08 Phase 3.A). One singleton-locked VM walks
+    # all 5 asset_groups' availability manifests, auto-flips class-A drift rows (5 phantom-audit
+    # drift axes), and routes class-C ambiguous rows to operator triage. Service slug
+    # `cross-asset-rescan` is not a service repo — it's an operation the deployment-api
+    # Deploy-Missing UI button exposes for manifest hygiene. Singleton-lock + WORKERS=64 +
+    # HTTP_POOL_SIZE=128 + asia-northeast1-c default zone per the launcher itself.
+    "cross-asset-rescan": f"{_VM_SCRIPT_DIR}/launch-cross-asset-rescan-vm.sh",
 }
 
 
