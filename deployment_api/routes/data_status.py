@@ -6,8 +6,8 @@ Business logic delegated to service layer modules.
 """
 
 import logging
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Final, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -1744,6 +1744,216 @@ class LiveStatusResponse(BaseModel):
     refreshed_at: datetime
 
 
+_LIVE_PIPELINE_MODE: Final[str] = "live_websocket"
+"""Manifest ``pipeline_mode`` column value tagging live-pipeline shards.
+
+Mirrors UAC ``PipelineMode.LIVE_WEBSOCKET`` (in
+``unified_api_contracts.canonical.crosscutting.pipeline_mode``) without
+importing the StrEnum — the manifest carries the string-valued form per
+the v8 schema. When UAC ships a Literal-typed alias, swap the
+``Final[str]`` to it.
+"""
+
+_ASSET_GROUPS: Final[tuple[str, ...]] = ("cefi", "defi", "tradfi", "sports", "prediction")
+"""Closed set of asset_groups the live-status endpoint scans.
+
+Mirrors CLAUDE.md "Asset-group vocabulary". The endpoint iterates one
+MTDS bucket per asset_group when no filter is supplied.
+"""
+
+_LIVE_STATUS_SERVICE: Final[str] = "market-tick-data-service"
+"""MTDS shares the bucket name template with MDPS per
+``data_status_drilldown._BUCKET_TEMPLATES`` (both resolve to
+``market-data-tick-{asset_group}-{pid}``). Reading the manifest via
+``market-tick-data-service`` covers both raw-tick + MDPS-candle
+``pipeline_mode=live_websocket`` shards in one read.
+"""
+
+
+def _normalise_asset_groups(filter_values: list[str] | None) -> list[str]:
+    """Resolve the asset_group filter argument to a concrete iteration list.
+
+    Empty / ``None`` filter → all 5 asset_groups. Unknown asset_groups
+    are silently dropped (per Phase 11.1 endpoint contract — the
+    frontend tolerates partial responses).
+    """
+    if not filter_values:
+        return list(_ASSET_GROUPS)
+    requested = {ag.lower().strip() for ag in filter_values}
+    return [ag for ag in _ASSET_GROUPS if ag in requested]
+
+
+def _coerce_value(row, column: str) -> object:
+    """Return ``row[column]`` or ``None`` for missing/NaN cells."""
+    value = row.get(column)
+    if value is None:
+        return None
+    # pandas NaN check without importing numpy (truthy / equality patterns
+    # both fail for NaN; the ``!= value`` trick is the canonical NaN test).
+    try:
+        if value != value:
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _string_or_none(row, column: str) -> str | None:
+    """Coerce a manifest cell to ``str | None`` (empty string → None)."""
+    value = _coerce_value(row, column)
+    if value is None:
+        return None
+    out = str(value)
+    return out if out else None
+
+
+def _capture_status_from(row) -> LiveCaptureStatus:
+    """Coerce manifest ``capture_status`` to the closed-set Literal.
+
+    Defaults unknown / missing values to ``captured`` per the manifest
+    reader's legacy-back-compat convention (matches
+    :data:`~deployment_api.services.data_status_drilldown._DEFAULT_CAPTURE_STATUS`).
+    """
+    raw = _string_or_none(row, "capture_status") or "captured"
+    if raw in ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted"):
+        return raw  # type: ignore[return-value]
+    return "captured"
+
+
+def _staleness_seconds_from(
+    row,
+    *,
+    now: datetime,
+) -> float:
+    """Derive per-shard ``staleness_seconds`` from the manifest ``attempted_at``.
+
+    The manifest's ``attempted_at`` is the write-time stamp when MTDS /
+    MDPS finalised the shard's parquet — a coarse proxy for
+    last-event-age. The precise per-shard ``last_event_age_seconds``
+    comes from the consumer service's Health-API
+    :class:`~unified_trading_library.streaming.StreamingHealthSnapshot`;
+    the deployment-api Health-API HTTP join lands once a per-service
+    URL registry is wired in
+    :class:`~deployment_api.deployment_api_config.DeploymentApiConfig`.
+    Until then this manifest-derived signal is the best available data.
+
+    Returns ``inf`` when ``attempted_at`` is missing (treats the shard
+    as "never seen" → alerting tier-1 fires immediately).
+    """
+    raw = _coerce_value(row, "attempted_at")
+    if raw is None:
+        return float("inf")
+    if isinstance(raw, datetime):
+        attempted_at = raw
+    else:
+        try:
+            attempted_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return float("inf")
+    if attempted_at.tzinfo is None:
+        # Treat naïve manifest timestamps as UTC (manifest writer's
+        # convention).
+        attempted_at = attempted_at.replace(tzinfo=UTC)
+    # Normalise `now` to UTC for safe subtraction with the manifest's
+    # tz-aware timestamps.
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    delta = now_utc - attempted_at
+    return max(delta.total_seconds(), 0.0)
+
+
+def _last_candle_emitted_at(row) -> datetime | None:
+    """Manifest ``attempted_at`` as the surrogate for last-emitted-candle.
+
+    Strict Phase 8 contract says the Health-API
+    :class:`StreamingHealthSnapshot.last_event_age_seconds` is the SSOT;
+    the manifest write-time is a coarse approximation. Refinement
+    follows the Health-API HTTP join (deferred).
+    """
+    raw = _coerce_value(row, "attempted_at")
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_live_row(
+    *,
+    row,
+    asset_group: str,
+    now: datetime,
+) -> LiveStatusRow:
+    """Build one :class:`LiveStatusRow` from a manifest row.
+
+    Per-shard health metrics (``degraded_ratio_60s`` /
+    ``cluster_pct_skipped_60s``) stay at 0.0 until the Health-API HTTP
+    join lands — they require rolling-window emission stats that the
+    manifest doesn't carry. ``staleness_seconds`` + ``last_candle_emitted_at``
+    derive from the manifest's ``attempted_at`` (coarse proxy).
+    """
+    return LiveStatusRow(
+        asset_group=asset_group,
+        venue=str(_coerce_value(row, "venue") or ""),
+        chain=_string_or_none(row, "chain"),
+        data_type=str(_coerce_value(row, "data_type") or ""),
+        instrument_type=_string_or_none(row, "instrument_type"),
+        instrument_id=_string_or_none(row, "instrument_id"),
+        league_id=_string_or_none(row, "league_id"),
+        timeframe=str(_coerce_value(row, "timeframe") or ""),
+        feature_group=_string_or_none(row, "feature_group"),
+        capture_status=_capture_status_from(row),
+        staleness_seconds=_staleness_seconds_from(row, now=now),
+        degraded_ratio_60s=0.0,
+        cluster_pct_skipped_60s=0.0,
+        last_candle_emitted_at=_last_candle_emitted_at(row),
+    )
+
+
+def _read_live_manifest_rows(asset_group: str) -> list[object]:
+    """Read MTDS manifest for one asset_group, filtered to ``pipeline_mode=live_websocket``.
+
+    Returns an empty list when the manifest is unreachable, missing the
+    ``pipeline_mode`` column (pre-v8 manifest), or contains no live
+    rows. Mirrors the resilient-read shape used by
+    :func:`deployment_api.services.data_status_drilldown.build_mtds_shard_csv_export`
+    so the endpoint stays responsive even when one asset_group's bucket
+    is missing.
+    """
+    try:
+        from unified_trading_library import read_availability_index
+
+        from deployment_api.services.data_status_drilldown import build_bucket_name
+    except ImportError:  # pragma: no cover — UTL not installed in mock envs
+        return []
+    try:
+        bucket = build_bucket_name(_LIVE_STATUS_SERVICE, asset_group)
+    except ValueError:
+        return []
+    try:
+        df = read_availability_index(bucket)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "Live data-status: manifest read failed for %s/%s: %s",
+            _LIVE_STATUS_SERVICE,
+            asset_group,
+            exc,
+        )
+        return []
+    if df is None or len(df) == 0:
+        return []
+    if "pipeline_mode" not in df.columns:
+        # Pre-v8 manifest (no pipeline_mode column) → no live shards by
+        # definition; return empty.
+        return []
+    live_df = df[df["pipeline_mode"] == _LIVE_PIPELINE_MODE]
+    if len(live_df) == 0:
+        return []
+    return list(live_df.to_dict(orient="records"))
+
+
 @router.get("/live", response_model=LiveStatusResponse)
 async def get_live_data_status(
     asset_group: list[str] | None = Query(
@@ -1756,31 +1966,62 @@ async def get_live_data_status(
 ) -> LiveStatusResponse:
     """Live-pipeline data-status pivoted by ``pipeline_mode=live_websocket``.
 
-    Phase 11.1 design-only stub. Returns an empty list with the correct
-    response shape until the live MDPS+features-asset-scoped clusters
-    publish to ``streaming.{asset_group}.candle_computed``.
+    Phase 11.1 endpoint per
+    ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11. Reads
+    the v8 availability manifest for each requested asset_group, filters
+    to ``pipeline_mode == "live_websocket"``, and returns one
+    :class:`LiveStatusRow` per shard.
 
-    Implementation gates (per
-    ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11):
+    Sources:
 
-    1. Phase 5 + 6 ship the live producers (gated on
-       ``features_repo_consolidation_2026_05_08`` Phase 7).
-    2. Phase 8 Health-API endpoint exists per-service (shipped at
-       UTL@54d658e8).
-    3. This route reads the manifest with
-       ``pipeline_mode=live_websocket`` filter + joins per-shard health
-       from the Health-API endpoints + computes
-       ``degraded_ratio_60s`` / ``cluster_pct_skipped_60s`` from the
-       service's emission-event-stream tail.
+    * **Shard-key axes** (asset_group / venue / chain / data_type /
+      instrument_type / instrument_id / league_id / timeframe /
+      feature_group) — from the v8 manifest columns directly.
+    * **``capture_status``** — from the writegate Phase 3.D.5 4-state
+      taxonomy column (defaults to ``captured`` for legacy rows).
+    * **``staleness_seconds`` + ``last_candle_emitted_at``** — derived
+      from the manifest's ``attempted_at`` (write-time stamp). A coarse
+      proxy for last-event-age; precise per-shard
+      :class:`~unified_trading_library.streaming.StreamingHealthSnapshot.last_event_age_seconds`
+      requires an HTTP join against each consumer service's
+      :func:`~unified_trading_library.feature_service_base.build_health_router`
+      ``data_freshness`` callback. **The HTTP join is DEFERRED** until
+      a per-service URL registry lands in
+      :class:`~deployment_api.deployment_api_config.DeploymentApiConfig`
+      — tracked under ``live_pipeline_mtds_mdps_features_2026_05_08.md``
+      Phase 11.1 follow-ups.
+    * **``degraded_ratio_60s`` + ``cluster_pct_skipped_60s``** — stay
+      at ``0.0`` until the Health-API HTTP join ships (these require
+      rolling-window emission stats not carried in the manifest).
 
-    Until then this returns ``{"status": "ok", "rows": [], "asset_groups":
-    [], "refreshed_at": <now>}`` so the deployment-ui ``LiveDataStatusTab``
-    can render its empty-state correctly + the integration smoke passes.
+    Returns an empty ``rows`` list when:
+
+    * No requested asset_group's MTDS bucket has the v8 ``pipeline_mode``
+      column (pre-2026-05-08 manifests).
+    * No live producers have published yet (Phase 5/6 implementation
+      via Harsh slot 5 has not landed per-service consumer wire-in).
+    * Manifest reads fail (logged + treated as empty).
+
+    The endpoint stays responsive even when some asset_group buckets
+    are unreachable — failures are logged + the row-list aggregates
+    across the reachable buckets.
     """
 
-    _ = asset_group  # parameter consumed once Phase 11.1 implementation lands.
+    requested_asset_groups = _normalise_asset_groups(asset_group)
+    now = datetime.now(UTC)
+
+    all_rows: list[LiveStatusRow] = []
+    seen_asset_groups: list[str] = []
+    for ag in requested_asset_groups:
+        manifest_rows = _read_live_manifest_rows(ag)
+        if not manifest_rows:
+            continue
+        seen_asset_groups.append(ag)
+        for row in manifest_rows:
+            all_rows.append(_build_live_row(row=row, asset_group=ag, now=now))
+
     return LiveStatusResponse(
-        rows=[],
-        asset_groups=[],
-        refreshed_at=datetime.now(),
+        rows=all_rows,
+        asset_groups=seen_asset_groups,
+        refreshed_at=now,
     )

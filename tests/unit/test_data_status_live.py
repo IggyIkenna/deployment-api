@@ -1,23 +1,27 @@
-"""Unit tests for ``/api/data-status/live`` endpoint stub (Phase 11.1).
+"""Unit tests for ``/api/data-status/live`` endpoint (Phase 11.1 real wiring).
 
-Validates the Phase 11.1 endpoint contract: empty-list response with the
-correct shape so the deployment-ui ``LiveDataStatusTab`` (Phase 11.3)
-can render against the contract before live pipeline ships.
+Promoted 2026-05-11 from stub-only smoke to manifest-derived contract:
+the endpoint reads the v8 availability manifest, filters
+``pipeline_mode=live_websocket``, builds :class:`LiveStatusRow` per
+shard. Health-API HTTP join still deferred (depends on per-service URL
+registry); manifest-derived staleness is the implemented signal.
 
-Plan: ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11.
+Plan: ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11.1.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
+import pandas as pd
+import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
 def _build_app_with_data_status_router():
     """Mount only the data_status router for the live-status smoke."""
-    from fastapi import FastAPI
-
     from deployment_api.routes import data_status
 
     app = FastAPI()
@@ -25,42 +29,230 @@ def _build_app_with_data_status_router():
     return app
 
 
-def test_live_status_returns_empty_envelope_with_correct_shape() -> None:
-    """Phase 11.1 stub: endpoint returns 200 with empty rows + asset_groups."""
+def _mk_manifest_rows(
+    *,
+    pipeline_modes: list[str],
+    venues: list[str] | None = None,
+    capture_statuses: list[str] | None = None,
+    attempted_ats: list[datetime] | None = None,
+) -> pd.DataFrame:
+    """Build a synthetic manifest DataFrame matching the v8 schema's
+    superset columns (with ``pipeline_mode`` per the v8 plan)."""
+    n = len(pipeline_modes)
+    venues = venues or ["binance" for _ in range(n)]
+    capture_statuses = capture_statuses or ["captured" for _ in range(n)]
+    attempted_ats = attempted_ats or [datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC) for _ in range(n)]
+    return pd.DataFrame(
+        {
+            "pipeline_mode": pipeline_modes,
+            "venue": venues,
+            "chain": [None] * n,
+            "data_type": ["OHLCV_1M"] * n,
+            "instrument_type": [None] * n,
+            "instrument_id": [f"BTC-USDT-{i}" for i in range(n)],
+            "league_id": [None] * n,
+            "timeframe": ["1m"] * n,
+            "feature_group": [None] * n,
+            "capture_status": capture_statuses,
+            "attempted_at": attempted_ats,
+            "error_reason": [""] * n,
+        },
+    )
+
+
+def test_live_status_returns_empty_envelope_when_no_live_shards() -> None:
+    """No ``pipeline_mode=live_websocket`` rows → empty envelope."""
+
+    def _empty_read(bucket):
+        return _mk_manifest_rows(pipeline_modes=["batch_databento", "batch_tardis"])
 
     client = TestClient(_build_app_with_data_status_router())
-    response = client.get("/api/data-status/live")
+    with patch("unified_trading_library.read_availability_index", side_effect=_empty_read):
+        response = client.get("/api/data-status/live")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["rows"] == []
     assert payload["asset_groups"] == []
-    # refreshed_at is ISO-8601 datetime — parse to confirm validity.
-    refreshed = datetime.fromisoformat(payload["refreshed_at"])
-    assert isinstance(refreshed, datetime)
 
 
-def test_live_status_accepts_asset_group_filter() -> None:
-    """Phase 11.1 query-param contract: ``asset_group`` list filter accepted."""
+def test_live_status_returns_populated_rows_when_manifest_has_live_shards() -> None:
+    """Manifest with ``pipeline_mode=live_websocket`` rows → populated response."""
+
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_websocket", "live_websocket", "batch_databento"],
+        venues=["binance", "bybit", "binance"],
+    )
+    empty_rows = _mk_manifest_rows(pipeline_modes=[])
+
+    def _read_per_bucket(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return empty_rows
 
     client = TestClient(_build_app_with_data_status_router())
-    response = client.get("/api/data-status/live?asset_group=defi&asset_group=cefi")
+    with patch("unified_trading_library.read_availability_index", side_effect=_read_per_bucket):
+        response = client.get("/api/data-status/live")
 
     assert response.status_code == 200
     payload = response.json()
-    # Stub returns empty regardless of filter; contract is that the
-    # parameter is accepted (no 422 unprocessable entity).
+    # 2 live_websocket rows in cefi, 1 batch_databento dropped.
+    assert len(payload["rows"]) == 2
+    assert payload["asset_groups"] == ["cefi"]
+    venues_returned = {row["venue"] for row in payload["rows"]}
+    assert venues_returned == {"binance", "bybit"}
+
+
+def test_live_status_filters_by_asset_group_query_param() -> None:
+    """Endpoint honours ``?asset_group=`` filter."""
+
+    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["binance"])
+    defi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["uniswap_v3"])
+
+    def _read_per_bucket(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        if "defi" in bucket:
+            return defi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read_per_bucket):
+        response = client.get("/api/data-status/live?asset_group=defi")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["asset_groups"] == ["defi"]
+    assert len(payload["rows"]) == 1
+    assert payload["rows"][0]["venue"] == "uniswap_v3"
+
+
+def test_live_status_derives_staleness_from_attempted_at() -> None:
+    """``staleness_seconds`` derives from manifest ``attempted_at`` write-time."""
+
+    # Use a 90s-old tz-aware UTC attempted_at so the assertion is deterministic.
+    old_attempted = datetime.now(UTC) - timedelta(seconds=90)
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_websocket"],
+        attempted_ats=[old_attempted],
+    )
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read):
+        response = client.get("/api/data-status/live?asset_group=cefi")
+
+    payload = response.json()
+    row = payload["rows"][0]
+    # Allow slop for test-clock skew; staleness should be ≥ 89s and ≤ 95s.
+    assert 89 <= row["staleness_seconds"] <= 95
+
+
+def test_live_status_handles_missing_pipeline_mode_column_gracefully() -> None:
+    """Pre-v8 manifest (no ``pipeline_mode`` column) → empty live rows."""
+
+    pre_v8 = pd.DataFrame(
+        {
+            "venue": ["binance"],
+            "data_type": ["OHLCV_1M"],
+            "instrument_id": ["BTC-USDT"],
+            "timeframe": ["1m"],
+            "capture_status": ["captured"],
+            # No pipeline_mode column.
+        },
+    )
+
+    def _read(bucket):
+        return pre_v8
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read):
+        response = client.get("/api/data-status/live")
+
+    assert response.status_code == 200
+    assert response.json()["rows"] == []
+
+
+def test_live_status_handles_manifest_read_failure_gracefully() -> None:
+    """Manifest read OSError → asset_group dropped + endpoint stays responsive."""
+
+    def _read(bucket):
+        raise OSError("simulated bucket-not-found")
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read):
+        response = client.get("/api/data-status/live")
+
+    assert response.status_code == 200
+    payload = response.json()
     assert payload["rows"] == []
+    assert payload["asset_groups"] == []
+
+
+def test_live_status_capture_status_preserves_4_state_taxonomy() -> None:
+    """All 4 writegate Phase 3.D.5 capture_status values pass through."""
+
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_websocket"] * 4,
+        capture_statuses=[
+            "captured",
+            "empty_confirmed",
+            "attempted_failed",
+            "expected_unattempted",
+        ],
+    )
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read):
+        response = client.get("/api/data-status/live?asset_group=cefi")
+
+    payload = response.json()
+    statuses = {row["capture_status"] for row in payload["rows"]}
+    assert statuses == {
+        "captured",
+        "empty_confirmed",
+        "attempted_failed",
+        "expected_unattempted",
+    }
+
+
+def test_live_status_aggregates_across_multiple_asset_groups() -> None:
+    """When the filter is omitted, the endpoint reads ALL 5 asset_groups."""
+
+    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["binance"])
+    defi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["uniswap_v3"])
+    tradfi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["cme"])
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        if "defi" in bucket:
+            return defi_rows
+        if "tradfi" in bucket:
+            return tradfi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read):
+        response = client.get("/api/data-status/live")
+
+    payload = response.json()
+    assert sorted(payload["asset_groups"]) == ["cefi", "defi", "tradfi"]
+    assert len(payload["rows"]) == 3
 
 
 def test_live_status_row_pydantic_shape_matches_phase_11_1_contract() -> None:
-    """Per CLAUDE.md Citadel Rule 7 (SSOT): ``LiveStatusRow`` exposes the contract.
-
-    Asserts the closed-set capture_status taxonomy + shard-key axes + per-shard
-    health metric names line up with the Phase 11.1 endpoint contract in the
-    live-pipeline plan body.
-    """
+    """``LiveStatusRow`` exposes the v5/v8 shard-key + 4-state capture_status contract."""
     from deployment_api.routes.data_status import LiveStatusRow
 
     row = LiveStatusRow(
@@ -79,21 +271,10 @@ def test_live_status_row_pydantic_shape_matches_phase_11_1_contract() -> None:
     )
     assert row.asset_group == "defi"
     assert row.capture_status == "captured"
-    # Shape-check the 4-state taxonomy at the type level by constructing
-    # each variant; mypy/basedpyright catches drift here.
-    for status in (
-        "captured",
-        "empty_confirmed",
-        "attempted_failed",
-        "expected_unattempted",
-    ):
-        variant = row.model_copy(update={"capture_status": status})
-        assert variant.capture_status == status
 
 
 def test_live_status_row_rejects_out_of_range_health_metrics() -> None:
     """Pydantic validators reject obviously-wrong inputs."""
-    import pytest
     from pydantic import ValidationError
 
     from deployment_api.routes.data_status import LiveStatusRow
