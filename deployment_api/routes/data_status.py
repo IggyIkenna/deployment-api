@@ -2213,3 +2213,53 @@ async def get_live_data_status(
         asset_groups=seen_asset_groups,
         refreshed_at=now,
     )
+
+
+@router.get("/honest-coverage")
+async def get_honest_coverage(
+    query_date: str | None = Query(
+        None,
+        alias="date",
+        description="ISO date YYYY-MM-DD (default: today UTC)",
+    ),
+) -> Response:
+    """Cross-asset-group honest coverage for a given date.
+
+    Reads ``gs://central-element-323112-honest-coverage/{date}/coverage.json``
+    written daily by the ``measure-honest-coverage`` cron VM
+    (``deployment-service/scripts/vm/launch-measure-honest-coverage-vm.sh``)
+    and returns the JSON payload verbatim.
+
+    Phase 2C per ``cross_asset_group_catalogue_audit_2026_05_10.md``.
+    SSOT: ``codex/03-deployment/data-status-ui-surface.md``.
+
+    Returns 404 when coverage has not yet been measured for the requested
+    date (cron VM has not run yet, or staging env without backfill).
+    """
+    import json
+
+    from deployment_api.utils.storage_facade import read_object_text
+
+    run_date = query_date or datetime.now(UTC).date().isoformat()
+    coverage_bucket = "central-element-323112-honest-coverage"
+    object_path = f"{run_date}/coverage.json"
+
+    try:
+        raw = read_object_text(coverage_bucket, object_path)
+    except Exception as exc:
+        logger.info("honest-coverage: no data for %s: %s", run_date, exc)
+        raise HTTPException(
+            status_code=404,
+            detail=f"honest-coverage data not available for date={run_date}",
+        ) from exc
+
+    try:
+        json.loads(raw)
+    except Exception as exc:
+        logger.warning("honest-coverage: malformed JSON for %s: %s", run_date, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"honest-coverage JSON is malformed for date={run_date}",
+        ) from exc
+
+    return Response(content=raw, media_type="application/json")
