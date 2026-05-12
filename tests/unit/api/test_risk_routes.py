@@ -90,9 +90,7 @@ class TestListRiskRules:
         assert len(payload) > 0
         assert all(rule["scope"] == "PER_ARCHETYPE" for rule in payload)
 
-    def test_scope_and_applies_to_filters_specific_key(
-        self, client: TestClient
-    ) -> None:
+    def test_scope_and_applies_to_filters_specific_key(self, client: TestClient) -> None:
         resp = client.get(
             "/api/risk/rules",
             params={"scope": "PER_VENUE", "applies_to": "bybit"},
@@ -120,19 +118,13 @@ class TestListRiskRules:
         payload = resp.json()
         assert all(rule["scope"] == "GLOBAL" for rule in payload)
 
-    def test_per_strategy_family_scope_returns_family_rules(
-        self, client: TestClient
-    ) -> None:
-        resp = client.get(
-            "/api/risk/rules", params={"scope": "PER_STRATEGY_FAMILY"}
-        )
+    def test_per_strategy_family_scope_returns_family_rules(self, client: TestClient) -> None:
+        resp = client.get("/api/risk/rules", params={"scope": "PER_STRATEGY_FAMILY"})
         assert resp.status_code == 200
         payload = resp.json()
         assert all(rule["scope"] == "PER_STRATEGY_FAMILY" for rule in payload)
 
-    def test_rule_serialisation_includes_required_fields(
-        self, client: TestClient
-    ) -> None:
+    def test_rule_serialisation_includes_required_fields(self, client: TestClient) -> None:
         resp = client.get("/api/risk/rules", params={"scope": "PER_ARCHETYPE"})
         payload = resp.json()
         assert len(payload) > 0
@@ -154,9 +146,7 @@ class TestPreflightTest:
             archetype_id="UNKNOWN_ARCHETYPE_NO_RULES",
             strategy_family_id="UNKNOWN_FAMILY_NO_RULES",
         )
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": ctx}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": ctx})
         assert resp.status_code == 200
         body = resp.json()
         # No archetype/family rules fire; global rules see safe-zeros → MONITOR
@@ -166,9 +156,7 @@ class TestPreflightTest:
     def test_huge_size_fires_some_rule(self, client: TestClient) -> None:
         """A massive instruction size → some rule fires (BLOCK or SCALE_DOWN)."""
         ctx = _full_context(instruction_size_usd="999999999999")
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": ctx}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": ctx})
         assert resp.status_code == 200
         body = resp.json()
         # Could be BLOCK or SCALE_DOWN — either way some rule fired
@@ -195,9 +183,7 @@ class TestPreflightTest:
 
     def test_decimal_as_number_accepted(self, client: TestClient) -> None:
         ctx = _full_context(instruction_size_usd=100.5)  # float OK
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": ctx}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": ctx})
         assert resp.status_code == 200
 
     def test_applicable_rules_filter_override(self, client: TestClient) -> None:
@@ -219,9 +205,7 @@ class TestPreflightTest:
         assert resp.status_code == 200
 
     def test_response_shape_has_required_keys(self, client: TestClient) -> None:
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": _full_context()}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": _full_context()})
         assert resp.status_code == 200
         body = resp.json()
         for field in ("decision", "scale_factor", "fired_rules", "blocked_by", "reason"):
@@ -233,30 +217,31 @@ class TestPreflightTest:
         Global rules need every context field too, so still pass safe-zeros."""
         ctx = _full_context()
         # Suppress all per-axis keys but keep the breach-data fields
-        for axis in ("archetype_id", "venue_id", "account_id", "client_id",
-                     "asset_group", "strategy_family_id", "instrument_id"):
+        for axis in (
+            "archetype_id",
+            "venue_id",
+            "account_id",
+            "client_id",
+            "asset_group",
+            "strategy_family_id",
+            "instrument_id",
+        ):
             ctx[axis] = None  # mypy-friendly suppression via JSON null
         # Pydantic OrderContextRequest field types accept None per definition
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": ctx}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": ctx})
         assert resp.status_code == 200
         body = resp.json()
         assert body["decision"] in ("MONITOR", "BLOCK", "SCALE_DOWN", "TEST_ONLY")
 
     def test_invalid_decimal_string_returns_422(self, client: TestClient) -> None:
         ctx = _full_context(instruction_size_usd="not-a-decimal")
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": ctx}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": ctx})
         # Route catches InvalidOperation → 422
         assert resp.status_code in (422, 400)
 
     def test_all_axes_provided(self, client: TestClient) -> None:
         """Full order context with all 6 axes — exercises iter_applicable_rules."""
-        resp = client.post(
-            "/api/risk/preflight-test", json={"order_context": _full_context()}
-        )
+        resp = client.post("/api/risk/preflight-test", json={"order_context": _full_context()})
         assert resp.status_code == 200
 
 

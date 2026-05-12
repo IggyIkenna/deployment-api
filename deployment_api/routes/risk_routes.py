@@ -27,14 +27,14 @@ from typing import cast
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from unified_api_contracts.risk import (
+    ALL_RULES as _ALL_RULES,
+)
+from unified_api_contracts.risk import (
     RiskRule,
     RiskRuleConsequence,
     RiskRuleScope,
     get_rules_for,
     iter_applicable_rules,
-)
-from unified_api_contracts.risk import (
-    ALL_RULES as _ALL_RULES,
 )
 from unified_trading_library.risk import RuleEvalContext, risk_preflight
 
@@ -150,6 +150,47 @@ def _to_decimal(value: str | float | int | None) -> Decimal | None:
         ) from err
 
 
+def _string_axes(payload: OrderContextRequest) -> dict[str, str]:
+    """Collect the present string-valued context axes from the request."""
+    candidates: dict[str, str | None] = {
+        "archetype_id": payload.archetype_id,
+        "venue_id": payload.venue_id,
+        "account_id": payload.account_id,
+        "client_id": payload.client_id,
+        "asset_group": payload.asset_group,
+        "strategy_family_id": payload.strategy_family_id,
+        "instrument_id": payload.instrument_id,
+    }
+    return {k: v for k, v in candidates.items() if v is not None}
+
+
+def _decimal_axes(payload: OrderContextRequest) -> dict[str, Decimal]:
+    """Collect the present Decimal-coerced context axes from the request."""
+    candidates: dict[str, Decimal | None] = {
+        "instruction_size_usd": _to_decimal(payload.instruction_size_usd),
+        "current_leverage": _to_decimal(payload.current_leverage),
+        "current_concentration_pct": _to_decimal(payload.current_concentration_pct),
+        "current_correlation": _to_decimal(payload.current_correlation),
+        "gas_estimate_usd": _to_decimal(payload.gas_estimate_usd),
+        "capital_at_risk_usd": _to_decimal(payload.capital_at_risk_usd),
+        "open_interest_usd": _to_decimal(payload.open_interest_usd),
+        "gross_exposure_usd": _to_decimal(payload.gross_exposure_usd),
+        "net_exposure_usd": _to_decimal(payload.net_exposure_usd),
+        "daily_loss_usd": _to_decimal(payload.daily_loss_usd),
+    }
+    return {k: v for k, v in candidates.items() if v is not None}
+
+
+def _int_axes(payload: OrderContextRequest) -> dict[str, int]:
+    """Collect the present int-valued context axes from the request."""
+    candidates: dict[str, int | None] = {
+        "current_drawdown_bps": payload.current_drawdown_bps,
+        "funding_cost_apr_bps": payload.funding_cost_apr_bps,
+        "slippage_observed_bps": payload.slippage_observed_bps,
+    }
+    return {k: v for k, v in candidates.items() if v is not None}
+
+
 def _build_eval_context(payload: OrderContextRequest) -> RuleEvalContext:
     """Build the UTL ``RuleEvalContext`` TypedDict from the request payload.
 
@@ -157,75 +198,31 @@ def _build_eval_context(payload: OrderContextRequest) -> RuleEvalContext:
     ``total=False`` so missing fields just mean "no rule that reads that
     field will breach." See ``rule_evaluator._require`` for the
     fail-loud-on-missing behaviour when a fired rule needs an absent field.
+
+    Assembled as a plain ``dict[str, object]`` from the per-type axis collectors
+    then cast to ``RuleEvalContext`` — the collector keys are the closed set of
+    TypedDict keys, kept in sync with ``OrderContextRequest`` by construction.
     """
-    context: RuleEvalContext = {}
-
-    # String axes
-    if payload.archetype_id is not None:
-        context["archetype_id"] = payload.archetype_id
-    if payload.venue_id is not None:
-        context["venue_id"] = payload.venue_id
-    if payload.account_id is not None:
-        context["account_id"] = payload.account_id
-    if payload.client_id is not None:
-        context["client_id"] = payload.client_id
-    if payload.asset_group is not None:
-        context["asset_group"] = payload.asset_group
-    if payload.strategy_family_id is not None:
-        context["strategy_family_id"] = payload.strategy_family_id
-    if payload.instrument_id is not None:
-        context["instrument_id"] = payload.instrument_id
-
-    # Decimal axes
-    inst_size = _to_decimal(payload.instruction_size_usd)
-    if inst_size is not None:
-        context["instruction_size_usd"] = inst_size
-    leverage = _to_decimal(payload.current_leverage)
-    if leverage is not None:
-        context["current_leverage"] = leverage
-    concentration = _to_decimal(payload.current_concentration_pct)
-    if concentration is not None:
-        context["current_concentration_pct"] = concentration
-    correlation = _to_decimal(payload.current_correlation)
-    if correlation is not None:
-        context["current_correlation"] = correlation
-    gas = _to_decimal(payload.gas_estimate_usd)
-    if gas is not None:
-        context["gas_estimate_usd"] = gas
-    capital = _to_decimal(payload.capital_at_risk_usd)
-    if capital is not None:
-        context["capital_at_risk_usd"] = capital
-    oi = _to_decimal(payload.open_interest_usd)
-    if oi is not None:
-        context["open_interest_usd"] = oi
-    gross = _to_decimal(payload.gross_exposure_usd)
-    if gross is not None:
-        context["gross_exposure_usd"] = gross
-    net = _to_decimal(payload.net_exposure_usd)
-    if net is not None:
-        context["net_exposure_usd"] = net
-    loss = _to_decimal(payload.daily_loss_usd)
-    if loss is not None:
-        context["daily_loss_usd"] = loss
-
-    # Int axes
-    if payload.current_drawdown_bps is not None:
-        context["current_drawdown_bps"] = payload.current_drawdown_bps
-    if payload.funding_cost_apr_bps is not None:
-        context["funding_cost_apr_bps"] = payload.funding_cost_apr_bps
-    if payload.slippage_observed_bps is not None:
-        context["slippage_observed_bps"] = payload.slippage_observed_bps
-
-    return context
+    raw: dict[str, object] = {}
+    raw.update(_string_axes(payload))
+    raw.update(_decimal_axes(payload))
+    raw.update(_int_axes(payload))
+    return cast(RuleEvalContext, raw)
 
 
 def _serialise_rule(rule: RiskRule) -> dict[str, object]:
     """Serialise a :class:`RiskRule` for the API listing endpoint.
 
     Uses Pydantic's ``model_dump(mode="json")`` so StrEnum + Decimal serialise
-    to strings and the discriminated trigger union renders cleanly.
+    to strings and the discriminated trigger union renders cleanly. Adds the
+    computed ``kill_switch_scope`` (the result of :meth:`RiskRule.kill_switch_scope`)
+    so the deployment-ui RuleBrowser can show which kill-switch axis a rule
+    escalates to without re-deriving the seam-diagram mapping client-side.
     """
-    return cast(dict[str, object], rule.model_dump(mode="json"))
+    payload = cast(dict[str, object], rule.model_dump(mode="json"))
+    ks_scope = rule.kill_switch_scope()
+    payload["kill_switch_scope"] = ks_scope.value if ks_scope is not None else None
+    return payload
 
 
 # ---------------------------------------------------------------------------
