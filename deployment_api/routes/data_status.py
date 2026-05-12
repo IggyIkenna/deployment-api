@@ -677,9 +677,7 @@ async def post_deploy_live_cluster_preview(
     replay_shard_key_raw = request.get("replay_shard_key")
     replay_start = str(replay_start_raw) if replay_start_raw not in (None, "") else None
     replay_end = str(replay_end_raw) if replay_end_raw not in (None, "") else None
-    replay_shard_key = (
-        str(replay_shard_key_raw) if replay_shard_key_raw not in (None, "") else None
-    )
+    replay_shard_key = str(replay_shard_key_raw) if replay_shard_key_raw not in (None, "") else None
     if not role:
         raise HTTPException(status_code=400, detail="role is required")
     try:

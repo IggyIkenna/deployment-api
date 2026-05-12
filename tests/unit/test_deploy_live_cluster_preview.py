@@ -26,7 +26,9 @@ def test_list_roles_returns_closed_set() -> None:
 
 def test_mtds_live_cefi_prod_command_shape() -> None:
     preview = build_live_cluster_launch_preview(
-        role="mtds-live", asset_group="cefi", deployment_env="prod",
+        role="mtds-live",
+        asset_group="cefi",
+        deployment_env="prod",
     )
     assert preview.role == "mtds-live"
     assert preview.asset_group == "cefi"
@@ -39,7 +41,9 @@ def test_mtds_live_cefi_prod_command_shape() -> None:
 
 def test_features_cross_cutting_singleton_staging_warns() -> None:
     preview = build_live_cluster_launch_preview(
-        role="features-cross-cutting", asset_group=None, deployment_env="staging",
+        role="features-cross-cutting",
+        asset_group=None,
+        deployment_env="staging",
     )
     assert preview.role == "features-cross-cutting"
     assert preview.asset_group is None
@@ -67,35 +71,45 @@ def test_replay_cascade_window_parameterised() -> None:
 def test_unknown_role_raises() -> None:
     with pytest.raises(DeployMissingError, match="Unknown live-cluster role"):
         build_live_cluster_launch_preview(
-            role="bogus", asset_group=None, deployment_env="prod",
+            role="bogus",
+            asset_group=None,
+            deployment_env="prod",
         )
 
 
 def test_invalid_env_raises() -> None:
     with pytest.raises(DeployMissingError, match="Unknown deployment_env"):
         build_live_cluster_launch_preview(
-            role="mtds-live", asset_group="cefi", deployment_env="bogus",
+            role="mtds-live",
+            asset_group="cefi",
+            deployment_env="bogus",
         )
 
 
 def test_per_asset_group_role_missing_asset_group_raises() -> None:
     with pytest.raises(DeployMissingError, match="requires --asset-group"):
         build_live_cluster_launch_preview(
-            role="mtds-live", asset_group=None, deployment_env="prod",
+            role="mtds-live",
+            asset_group=None,
+            deployment_env="prod",
         )
 
 
 def test_singleton_role_with_asset_group_raises() -> None:
     with pytest.raises(DeployMissingError, match="is singleton"):
         build_live_cluster_launch_preview(
-            role="features-cross-cutting", asset_group="cefi", deployment_env="prod",
+            role="features-cross-cutting",
+            asset_group="cefi",
+            deployment_env="prod",
         )
 
 
 def test_replay_missing_window_args_raises() -> None:
     with pytest.raises(DeployMissingError, match="--start, --end, --shard-key"):
         build_live_cluster_launch_preview(
-            role="replay-cascade", asset_group="cefi", deployment_env="prod",
+            role="replay-cascade",
+            asset_group="cefi",
+            deployment_env="prod",
         )
 
 
@@ -112,13 +126,17 @@ def test_replay_partial_window_args_raises() -> None:
 def test_invalid_asset_group_raises() -> None:
     with pytest.raises(DeployMissingError, match="requires --asset-group"):
         build_live_cluster_launch_preview(
-            role="mtds-live", asset_group="bogus_ag", deployment_env="prod",
+            role="mtds-live",
+            asset_group="bogus_ag",
+            deployment_env="prod",
         )
 
 
 def test_preview_to_dict_serialises_all_fields() -> None:
     preview = build_live_cluster_launch_preview(
-        role="mdps-features-live", asset_group="sports", deployment_env="dev",
+        role="mdps-features-live",
+        asset_group="sports",
+        deployment_env="dev",
     )
     d = preview.to_dict()
     assert d["role"] == "mdps-features-live"

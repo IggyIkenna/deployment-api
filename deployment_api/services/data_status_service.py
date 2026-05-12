@@ -506,7 +506,7 @@ def _sports_expected_dates_for_league(
     return result
 
 
-def _sports_honest_coverage(  # noqa: C901  pre-existing complexity, refactor tracked separately
+def _sports_honest_coverage(
     filtered: pd.DataFrame,
     entity_name: str,
     start_date: str,
@@ -2921,7 +2921,7 @@ class DataStatusService:
         "perp-funding",
     ]
 
-    def _read_defi_merged_index(  # noqa: C901 — multi-bucket merge + DeFi-venue whitelist filter
+    def _read_defi_merged_index(
         self, service: str, cat: str
     ) -> pd.DataFrame:
         """Read availability index, merging sub-dimension buckets for MTDS DEFI.
@@ -5730,7 +5730,7 @@ class DataStatusService:
 
         return extras
 
-    def _build_manifest_category(  # noqa: C901 — branchy by nature (per-cat+per-shard expansion)
+    def _build_manifest_category(
         self,
         service: str,
         cat: str,

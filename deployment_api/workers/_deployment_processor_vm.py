@@ -33,7 +33,7 @@ from ._deployment_processor_helpers import (
 )
 
 # Re-export for callers that import these from this module.
-from ._deployment_processor_vm_cleanup import (  # noqa: F401 — re-exports
+from ._deployment_processor_vm_cleanup import (
     _handle_completed_pending_delete,
     _handle_orphan_vm_cleanup,
     _terminate_stuck_vm,

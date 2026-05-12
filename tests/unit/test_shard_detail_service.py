@@ -965,9 +965,7 @@ class TestShardGcsMetadataV8Columns:
     def test_v8_columns_none_when_no_manifest_row(self) -> None:
         # No manifest row at all (e.g. shard not in manifest yet) — v8
         # fields default to None; capture_status derives from GCS size only.
-        with patch.object(
-            svc, "get_object_metadata", return_value={"size": 100, "updated": None}
-        ):
+        with patch.object(svc, "get_object_metadata", return_value={"size": 100, "updated": None}):
             result = svc._gcs_metadata(
                 bucket="bucket-x",
                 object_path="some/path.parquet",
