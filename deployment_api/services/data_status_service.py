@@ -2814,6 +2814,11 @@ class DataStatusService:
         #   strategy: per-asset-group stores + a central cross-asset bucket.
         #   execution: per-asset-group stores (no central; per-asset is the
         #     atomic write unit because fills are venue-scoped).
+        # CORRECT-LOCAL — legacy local template dict; canonical SSOT is
+        # `cloud-providers.yaml` resolved via `resolve_bucket_name()` (kinds
+        # `ml-training-artifacts` / `strategy-store` / `execution-store`).
+        # Consolidation to the resolver tracked under
+        # ml_artefact_path_resolver_consumer_sweep_2026_05_12 issue.
         "ml-training-service": "ml-training-artifacts-{pid}",
         "ml-inference-service": "ml-inference-results-{pid}",
         "strategy-service": "strategy-store-{cat}-{pid}",

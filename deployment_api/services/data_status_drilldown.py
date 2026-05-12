@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # circular dependency of importing the big service).
 # ---------------------------------------------------------------------------
 
+# CORRECT-LOCAL — legacy local template dict mirroring DataStatusService._BUCKET_TEMPLATES.
+# Canonical SSOT is `cloud-providers.yaml` resolved via
+# `unified_trading_library.cloud_interface.bucket_naming.resolve_bucket_name()`.
+# This dict will be consolidated to the resolver in a follow-up sweep (tracked under
+# ml_artefact_path_resolver_consumer_sweep_2026_05_12 issue).
 _BUCKET_TEMPLATES: dict[str, str] = {
     "instruments-service": "instruments-store-{cat}-{pid}",
     "corporate-actions": "instruments-store-{cat}-{pid}",
