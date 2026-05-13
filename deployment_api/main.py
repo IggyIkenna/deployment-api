@@ -74,6 +74,7 @@ from .routes import (
     shard_detail,
     sports_venues,
     subscriptions,
+    treasury,
     user_management,
     vm_deployments,
     vm_events,
@@ -171,6 +172,7 @@ _authenticated_router.include_router(
 )
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
+_authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
 # Kill-switch router already declares /api/kill-switch prefix + verify_api_key
 # dependency internally; include directly on app so we don't double-gate.
 app.include_router(kill_switch_routes.router)

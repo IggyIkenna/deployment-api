@@ -20,6 +20,7 @@ from . import (
     services,
     shard_detail,
     sports_venues,
+    treasury,
     user_management,
     vm_events,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "services",
     "shard_detail",
     "sports_venues",
+    "treasury",
     "user_management",
     "vm_events",
 ]
