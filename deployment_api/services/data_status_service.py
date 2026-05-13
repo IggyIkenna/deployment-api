@@ -2334,12 +2334,12 @@ def _filter_coverage_to_asset_groups(
     recompute ``totals`` from the survivors.
     """
     if not asset_groups_filter:
-        return {**rollup, "served_from": "rollup"}
+        return {**rollup, "served_from": "rollup", "totals_source": "rollup"}
 
     filter_set = {ag.upper() for ag in asset_groups_filter}
     asset_groups = rollup.get("asset_groups", {})
     if not isinstance(asset_groups, dict):
-        return {**rollup, "served_from": "rollup"}
+        return {**rollup, "served_from": "rollup", "totals_source": "rollup"}
 
     filtered: dict[str, object] = {
         cat: payload for cat, payload in asset_groups.items() if cat.upper() in filter_set
@@ -2363,6 +2363,7 @@ def _filter_coverage_to_asset_groups(
         "asset_groups": filtered,
         "totals": totals,
         "served_from": "rollup",
+        "totals_source": "rollup",
     }
 
 
@@ -2921,9 +2922,7 @@ class DataStatusService:
         "perp-funding",
     ]
 
-    def _read_defi_merged_index(
-        self, service: str, cat: str
-    ) -> pd.DataFrame:
+    def _read_defi_merged_index(self, service: str, cat: str) -> pd.DataFrame:
         """Read availability index, merging sub-dimension buckets for MTDS DEFI.
 
         For market-tick-data-service + DEFI category, reads the main DEFI bucket
@@ -3517,6 +3516,7 @@ class DataStatusService:
                 "dates_across_categories": len(all_dates),
                 "latest_day_instruments": total_latest_day_instruments,
             },
+            "totals_source": "manifest",
         }
 
     async def get_manifest_status(
