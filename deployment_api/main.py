@@ -57,6 +57,7 @@ from .routes import (
     capabilities,
     chaos_injections,
     checklist,
+    client_treasury,
     cloud_builds,
     commentary,
     config,
@@ -75,6 +76,7 @@ from .routes import (
     sports_venues,
     subscriptions,
     treasury,
+    treasury_routes,
     user_management,
     vm_deployments,
     vm_events,
@@ -173,6 +175,20 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
+_authenticated_router.include_router(
+    treasury_routes.router, prefix="/api/treasury", tags=["Treasury"]
+)
+# /treasury/nav is intentionally also exposed without the /api prefix
+# (matches plan spec "/treasury/nav?client_id=<id>") so include on app directly too.
+app.include_router(
+    treasury_routes.router, prefix="/treasury", tags=["Treasury"],
+    dependencies=[]
+)
+# Phase 6.A + 6.B: per-client attribution view + subscription list.
+# CONSUMER role — builds on /api/treasury/rollup (Phase 3.D canonical).
+_authenticated_router.include_router(
+    client_treasury.router, prefix="/api", tags=["Treasury"]
+)
 # Kill-switch router already declares /api/kill-switch prefix + verify_api_key
 # dependency internally; include directly on app so we don't double-gate.
 app.include_router(kill_switch_routes.router)

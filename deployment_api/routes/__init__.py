@@ -21,6 +21,7 @@ from . import (
     shard_detail,
     sports_venues,
     treasury,
+    treasury_routes,
     user_management,
     vm_events,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "shard_detail",
     "sports_venues",
     "treasury",
+    "treasury_routes",
     "user_management",
     "vm_events",
 ]
