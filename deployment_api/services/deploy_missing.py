@@ -86,6 +86,15 @@ _SERVICE_LAUNCHER_SCRIPTS: dict[str, str] = {
     # Deploy-Missing UI button exposes for manifest hygiene. Singleton-lock + WORKERS=64 +
     # HTTP_POOL_SIZE=128 + asia-northeast1-c default zone per the launcher itself.
     "cross-asset-rescan": f"{_VM_SCRIPT_DIR}/launch-cross-asset-rescan-vm.sh",
+    # Strategy-service launchers (promote_workflow_may23_cli_path_2026_05_10.md Phase 1 +
+    # launcher_scripts_consolidation_into_deployment_service_2026_05_07.md Phase 2).
+    # "strategy-paper": paper-trade / backtest mode — Deploy-Missing recovery for strategy
+    # outputs; VM runs one tick of the strategy engine per archetype and writes signals.
+    # "strategy-live": live-trade mode — separate from _LIVE_CLUSTER_LAUNCHER_SCRIPTS because
+    # strategy is launched per-archetype (not per-asset_group cluster role). Both scripts
+    # exist under deployment-service/scripts/vm/ per promote_workflow Phase 1.
+    "strategy-paper": f"{_VM_SCRIPT_DIR}/launch-strategy-paper-vm.sh",
+    "strategy-live": f"{_VM_SCRIPT_DIR}/launch-strategy-live-vm.sh",
 }
 
 
