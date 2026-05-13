@@ -1267,11 +1267,13 @@ def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
     bucket = _instruments_bucket_for_category(category)
     day = _pick_latest_day(bucket, venue, category=category)
     instruments: list[dict[str, object]] = []
+    total_before_cap = 0
     if day is not None:
         df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day, category=category)
         if df is not None and not df.empty:
             records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             records = cast(list[object], records_raw)
+            total_before_cap = len(records)
             for r in records[:500]:
                 typed = _typed_row(r)
                 if typed is not None:
@@ -1281,6 +1283,7 @@ def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
         venue=venue,
         day=day,
         total_instruments=len(instruments),
+        total_instruments_unfiltered=total_before_cap,
         instruments=instruments,
     )
 

@@ -352,6 +352,7 @@ class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     chain: str | None = None
     protocol: str | None = None
     total_instruments: int = 0
+    total_instruments_unfiltered: int = 0
     total_pools: int = 0
     total_tokens: int = 0
     instruments: list[dict[str, object]] = Field(default_factory=list)
