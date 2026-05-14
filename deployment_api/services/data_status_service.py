@@ -506,7 +506,7 @@ def _sports_expected_dates_for_league(
     return result
 
 
-def _sports_honest_coverage(
+def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch sharing preamble; axes are inherently distinct computation paths
     filtered: pd.DataFrame,
     entity_name: str,
     start_date: str,
@@ -1703,6 +1703,13 @@ _EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_SOURCE_DOES_NOT_COVER_LEAGUE",
     "EXPECTED_REFDATA_CADENCE_CHANGE",
     "EXPECTED_DEPRECATED_DATA_TYPE",
+    "EXPECTED_KNOWN_SOURCE_GAP",
+    "EXPECTED_UPSTREAM_EMPTY",
+    "EXPECTED_FIXTURE_CANCELLED",
+    "EXPECTED_FIXTURE_POSTPONED",
+    "EXPECTED_NO_FIXTURE",
+    "EXPECTED_OUTSIDE_PROCESSING_SCOPE",
+    "LEGACY_MIGRATION_MISSING_EXPIRY",
     "SOURCE_RETURNED_ZERO",
     "empty_unclassified",  # legacy rows pre-Tier-3D.1 back-fill
 )
@@ -2922,7 +2929,7 @@ class DataStatusService:
         "perp-funding",
     ]
 
-    def _read_defi_merged_index(self, service: str, cat: str) -> pd.DataFrame:
+    def _read_defi_merged_index(self, service: str, cat: str) -> pd.DataFrame:  # noqa: C901 — multi-bucket merge with per-sub-dimension iteration; branching inherent to MTDS DEFI sub-dimension fan-out
         """Read availability index, merging sub-dimension buckets for MTDS DEFI.
 
         For market-tick-data-service + DEFI category, reads the main DEFI bucket
@@ -5730,7 +5737,7 @@ class DataStatusService:
 
         return extras
 
-    def _build_manifest_category(
+    def _build_manifest_category(  # noqa: C901 — multi-step manifest ETL pipeline (bucket resolve → date clamp → filter → venue alias → cell-grid); each step flows to the next
         self,
         service: str,
         cat: str,

@@ -407,7 +407,7 @@ class LiveClusterLaunchPreview:
         }
 
 
-def build_live_cluster_launch_preview(
+def build_live_cluster_launch_preview(  # noqa: C901 — role validation + command assembly pipeline; multiple guard clauses inherent to launcher-script contract
     *,
     role: str,
     asset_group: str | None,
@@ -454,7 +454,7 @@ def build_live_cluster_launch_preview(
         raise DeployMissingError(
             f"Role '{role}' is singleton; pass asset_group=None (got: {asset_group!r})",
         )
-    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:
+    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:  # noqa: SIM102 — guard clause for window-parameterised roles; separate if improves readability
         if not (replay_start and replay_end and replay_shard_key):
             raise DeployMissingError(
                 f"Role '{role}' requires --start, --end, --shard-key "
