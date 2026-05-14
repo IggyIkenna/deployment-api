@@ -55,6 +55,9 @@ class TestSelectCoverageGroupAxisFromSSOT:
         assert axis == "instruction_type"
 
     def test_features_sports_uses_feature_group(self) -> None:
+        # features-sports-service was consolidated into features-service in
+        # UAC data_status_axis_matrix.py; PRIMARY_AXIS[("features-service", "sports")]
+        # = "feature_group".
         dss = DataStatusService()
         idx = _index(
             [
@@ -62,7 +65,7 @@ class TestSelectCoverageGroupAxisFromSSOT:
                 {"feature_group": "footystats_only", "instrument_count": 3},
             ]
         )
-        axis = dss._select_coverage_group_axis("features-sports-service", "SPORTS", idx)
+        axis = dss._select_coverage_group_axis("features-service", "SPORTS", idx)
         assert axis == "feature_group"
 
     def test_falls_back_to_venue_for_unmapped_service(self) -> None:

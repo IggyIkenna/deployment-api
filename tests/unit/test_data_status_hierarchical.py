@@ -407,7 +407,9 @@ class TestListSupportedPairs:
         [
             ("market-tick-data-service", "defi"),
             ("instruments-service", "cefi"),
-            ("features-onchain-service", "defi"),
+            # features-onchain-service consolidated into features-service in UAC
+            # data_status_axis_matrix.py; use the canonical service name.
+            ("features-service", "defi"),
         ],
     )
     def test_known_pair_axes_sane(self, service: str, asset_group: str) -> None:

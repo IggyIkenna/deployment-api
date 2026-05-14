@@ -59,6 +59,11 @@ def _empty_manifest() -> pd.DataFrame:
 # Restrict to the canonical (service, asset_group) pairs we ship today.
 # The full SHARD_AXIS_MATRIX has experimental entries (training periods)
 # that don't yet have a stable manifest layout.
+# NOTE: features-* sub-family service names (features-delta-one-service,
+# features-volatility-service, features-onchain-service, features-sports-service)
+# were consolidated into ``features-service`` in UAC
+# ``data_status_axis_matrix.py`` (2026-05-14 consolidation). Use the
+# canonical ``features-service`` keys from SHARD_AXIS_MATRIX.
 _PUBLIC_SERVICE_PAIRS: tuple[tuple[str, str], ...] = (
     ("instruments-service", "cefi"),
     ("instruments-service", "tradfi"),
@@ -75,14 +80,12 @@ _PUBLIC_SERVICE_PAIRS: tuple[tuple[str, str], ...] = (
     ("market-data-processing-service", "defi"),
     ("market-data-processing-service", "sports"),
     ("market-data-processing-service", "prediction"),
-    ("features-delta-one-service", "cefi"),
-    ("features-delta-one-service", "tradfi"),
-    ("features-delta-one-service", "defi"),
-    ("features-volatility-service", "cefi"),
-    ("features-volatility-service", "tradfi"),
-    ("features-volatility-service", "defi"),
-    ("features-onchain-service", "defi"),
-    ("features-sports-service", "sports"),
+    ("features-service", "cefi"),
+    ("features-service", "tradfi"),
+    ("features-service", "defi"),
+    ("features-service", "sports"),
+    ("features-service", "shared"),
+    ("features-service", "prediction"),
 )
 
 
