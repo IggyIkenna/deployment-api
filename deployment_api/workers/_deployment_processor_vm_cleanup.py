@@ -337,7 +337,7 @@ def _handle_completed_pending_delete(
 
     vm_map_cpd: dict[str, object] = {}
     try:
-        from unified_trading_library.cloud_interface import get_compute_engine_client
+        from unified_trading_library import get_compute_engine_client
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
         instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")

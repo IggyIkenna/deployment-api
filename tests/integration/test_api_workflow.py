@@ -38,7 +38,7 @@ with (
 
 # Now that the app is imported, set up events in test mode so log_event()
 # calls from middleware become no-ops (log to console only).
-from unified_trading_library.events import setup_events
+from unified_trading_library import setup_events
 
 setup_events("deployment-api", "test")
 

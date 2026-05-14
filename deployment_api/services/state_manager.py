@@ -17,8 +17,8 @@ from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
+from unified_trading_library import StorageClient
 from unified_trading_library import get_storage_client as _get_storage_client
-from unified_trading_library.cloud_interface import StorageClient
 
 from deployment_api import settings
 from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils

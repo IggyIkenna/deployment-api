@@ -164,7 +164,7 @@ class TestAuditLogEmittedOnRecordCaptured:
 
     def test_audit_log_emitted_on_record_captured(self) -> None:
         """log_event is called with audit_event_type='AUDIT_RECORD_CAPTURED'."""
-        with patch("unified_trading_library.events.log_event") as mock_log_event:
+        with patch("unified_trading_library.log_event") as mock_log_event:
             # Simulate what a service does on record_captured:
             _emit_audit_log_entry(
                 event_type="AUDIT_RECORD_CAPTURED",
@@ -180,7 +180,7 @@ class TestAuditLogEmittedOnRecordCaptured:
 
     def test_audit_log_emitted_on_record_failed(self) -> None:
         """log_event is called with audit_event_type='AUDIT_RECORD_FAILED'."""
-        with patch("unified_trading_library.events.log_event") as mock_log_event:
+        with patch("unified_trading_library.log_event") as mock_log_event:
             _emit_audit_log_entry(
                 event_type="AUDIT_RECORD_FAILED",
                 client_id="demo-internal",
@@ -192,7 +192,7 @@ class TestAuditLogEmittedOnRecordCaptured:
 
     def test_audit_log_not_emitted_on_non_audit_path(self) -> None:
         """Non-audit writes must NOT emit an AUDIT_RECORD_* event."""
-        with patch("unified_trading_library.events.log_event") as mock_log_event:
+        with patch("unified_trading_library.log_event") as mock_log_event:
             # Writing to a non-audit bucket path should not trigger audit log
             _emit_audit_log_entry_if_audit_path(
                 bucket_kind="client-reports",
@@ -292,7 +292,7 @@ def _emit_audit_log_entry(
     Real implementation lives in execution_service.utils.audit_log;
     this stub validates the emission contract expected by Phase 3.B.
     """
-    from unified_trading_library.events import log_event  # type: ignore[import]
+    from unified_trading_library import log_event  # type: ignore[import]
 
     log_event(
         event_type=event_type,
@@ -313,7 +313,7 @@ def _emit_audit_log_entry_if_audit_path(
     if bucket_kind != "audit-records":
         # Non-audit writes do not emit AUDIT_RECORD_* events.
         return
-    from unified_trading_library.events import log_event  # type: ignore[import]
+    from unified_trading_library import log_event  # type: ignore[import]
 
     log_event(
         event_type="AUDIT_RECORD_CAPTURED",

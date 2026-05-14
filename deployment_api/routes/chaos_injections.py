@@ -26,7 +26,7 @@ from unified_api_contracts.internal.domain.deployment_service import (
     ChaosInjectionSpec,
     RuntimeProfile,
 )
-from unified_trading_library.topology.topology_reader import (
+from unified_trading_library import (
     list_chaos_injection_points,
 )
 

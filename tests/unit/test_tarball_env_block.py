@@ -10,11 +10,17 @@ Covers assert_tarball_not_blocked helper + the six env x override cells:
   production / no-override → DeployMissingError
   production / override    → allowed + AUDIT warning emitted
   prod (alias) / no-override → DeployMissingError
+
+Also covers structured log_event audit events (Phase 1 audit log wire-in):
+  TARBALL_DEPLOY_ATTEMPTED  — emitted when allowed (non-blocked env)
+  TARBALL_DEPLOY_BLOCKED    — emitted when rejected (blocked env, no override)
+  TARBALL_DEPLOY_OVERRIDE   — emitted when override bypasses block
 """
 
 from __future__ import annotations
 
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -63,3 +69,39 @@ class TestAssertTarballNotBlocked:
     def test_error_message_references_ssot(self) -> None:
         with pytest.raises(DeployMissingError, match=r"vm-tarball-deployment\.md"):
             assert_tarball_not_blocked("staging")
+
+
+class TestAuditLogWireIn:
+    """Verify structured log_event calls are emitted for each tarball-deploy outcome."""
+
+    def test_allowed_env_emits_tarball_deploy_attempted(self) -> None:
+        with patch("deployment_api.services.deploy_missing.log_event") as mock_log:
+            assert_tarball_not_blocked("development")
+        mock_log.assert_called_once()
+        call_kwargs = mock_log.call_args
+        assert call_kwargs.args[0] == "TARBALL_DEPLOY_ATTEMPTED"
+        assert call_kwargs.kwargs.get("details", {}).get("outcome") == "allowed"
+
+    def test_blocked_env_emits_tarball_deploy_blocked(self) -> None:
+        with patch("deployment_api.services.deploy_missing.log_event") as mock_log:
+            with pytest.raises(DeployMissingError):
+                assert_tarball_not_blocked("staging")
+        mock_log.assert_called_once()
+        call_kwargs = mock_log.call_args
+        assert call_kwargs.args[0] == "TARBALL_DEPLOY_BLOCKED"
+        assert call_kwargs.kwargs.get("details", {}).get("outcome") == "rejected"
+
+    def test_override_emits_tarball_deploy_override(self) -> None:
+        with patch("deployment_api.services.deploy_missing.log_event") as mock_log:
+            assert_tarball_not_blocked("production", override=True)
+        mock_log.assert_called_once()
+        call_kwargs = mock_log.call_args
+        assert call_kwargs.args[0] == "TARBALL_DEPLOY_OVERRIDE"
+        assert call_kwargs.kwargs.get("details", {}).get("outcome") == "override_allowed"
+
+    def test_log_event_failure_does_not_propagate(self) -> None:
+        with patch(
+            "deployment_api.services.deploy_missing.log_event",
+            side_effect=RuntimeError("events not initialized"),
+        ):
+            assert_tarball_not_blocked("development")  # must not raise

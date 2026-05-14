@@ -142,7 +142,7 @@ class TestWriteDomainConfig:
             patch.object(_cm, "_make_config_store", return_value=store),
             patch.object(_cm, "_publish_domain_event"),
             patch(
-                "unified_trading_library.config_interface.schema_for_domain",
+                "unified_trading_library.schema_for_domain",
                 return_value=schema_cls,
             ),
         ):
@@ -165,7 +165,7 @@ class TestWriteDomainConfig:
         with (
             patch.object(_cm, "_make_config_store", return_value=store),
             patch(
-                "unified_trading_library.config_interface.schema_for_domain",
+                "unified_trading_library.schema_for_domain",
                 return_value=schema_cls,
             ),
             pytest.raises(HTTPException) as exc,
@@ -184,7 +184,7 @@ class TestWriteDomainConfig:
         with (
             patch.object(_cm, "_make_config_store", return_value=store),
             patch(
-                "unified_trading_library.config_interface.schema_for_domain",
+                "unified_trading_library.schema_for_domain",
                 return_value=schema_cls,
             ),
             pytest.raises(HTTPException) as exc,
@@ -443,18 +443,8 @@ class TestPublishDomainEvent:
         mock_get_event_bus = MagicMock(return_value=mock_bus)
 
         with (
-            patch.dict(
-                sys.modules,
-                {
-                    "unified_trading_library.cloud_interface": MagicMock(
-                        get_event_bus=mock_get_event_bus
-                    )
-                },
-            ),
-            patch.dict(
-                sys.modules,
-                {"unified_trading_library.events": MagicMock(log_event=mock_log)},
-            ),
+            patch("unified_trading_library.get_event_bus", mock_get_event_bus),
+            patch("unified_trading_library.log_event", mock_log),
         ):
             _cm._publish_domain_event("instruments", "gs://b/v/x.yaml", "agent")
 

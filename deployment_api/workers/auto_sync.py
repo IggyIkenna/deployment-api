@@ -275,7 +275,7 @@ def _build_vm_map(service_name: str, deployment_id: str) -> dict[str, object] | 
     """
     vm_map: dict[str, object] = {}
     try:
-        from unified_trading_library.cloud_interface import get_compute_engine_client
+        from unified_trading_library import get_compute_engine_client
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
         instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")

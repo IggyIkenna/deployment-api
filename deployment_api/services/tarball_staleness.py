@@ -47,14 +47,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, cast
 
-from unified_trading_library.events import log_event
+from unified_trading_library import log_event
 
 from deployment_api.utils.storage_client import get_storage_client
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from unified_trading_library.cloud_interface import StorageClient
+    from unified_trading_library import StorageClient
 
 
 logger = logging.getLogger(__name__)

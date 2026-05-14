@@ -37,10 +37,10 @@ from unified_api_contracts.canonical.crosscutting.circuit_breaker import (  # no
     BreakerRecoveryMode,
 )
 from unified_api_contracts.internal.domain.deployment_service import KillSwitchScope
-from unified_trading_library.events import setup_events
-from unified_trading_library.kill_switch.bus import (
+from unified_trading_library import (
     get_kill_switch_bus,
     reset_kill_switch_bus,
+    setup_events,
 )
 
 import deployment_api.routes.kill_switch_routes as ks_routes

@@ -46,9 +46,7 @@ import sys
 import time
 from typing import Any
 
-from unified_trading_library.cloud_interface import get_storage_client
-from unified_trading_library.event_sink import GcsEventSink
-from unified_trading_library.events import log_event, setup_events
+from unified_trading_library import GcsEventSink, get_storage_client, log_event, setup_events
 
 from deployment_api.services.data_status_service import DataStatusService
 

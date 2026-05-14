@@ -32,7 +32,17 @@ import shlex
 from dataclasses import dataclass, field
 from typing import cast
 
+from unified_trading_library import log_event
+
 logger = logging.getLogger(__name__)
+
+
+def _emit_deploy_event(event_name: str, details: dict[str, object]) -> None:
+    """Best-effort structured event emission for tarball deploy audit trail."""
+    try:
+        log_event(event_name, severity="WARNING", details=details)
+    except Exception:
+        logger.debug("Structured event emission skipped (events not initialized): %s", event_name)
 
 
 # Supported launch modes for the Deploy-Missing flow.
@@ -79,14 +89,26 @@ def assert_tarball_not_blocked(deployment_env: str, *, override: bool = False) -
         DeployMissingError: if ``deployment_env`` is staging/production and override is False.
     """
     if deployment_env.lower() not in _TARBALL_BLOCKED_ENVS:
+        _emit_deploy_event(
+            "TARBALL_DEPLOY_ATTEMPTED",
+            {"deployment_env": deployment_env, "outcome": "allowed"},
+        )
         return
     if not override:
+        _emit_deploy_event(
+            "TARBALL_DEPLOY_BLOCKED",
+            {"deployment_env": deployment_env, "outcome": "rejected"},
+        )
         raise DeployMissingError(
             f"tarball-from-local deploy is blocked in {deployment_env!r} environment. "
             "Use the image deploy path (build + promote workflow). "
             "For emergency hotfix override, set 'override_tarball_block': true in the request "
             "body. SSOT: codex/05-infrastructure/vm-tarball-deployment.md"
         )
+    _emit_deploy_event(
+        "TARBALL_DEPLOY_OVERRIDE",
+        {"deployment_env": deployment_env, "outcome": "override_allowed"},
+    )
     logger.warning(
         "AUDIT: tarball-block override used in %r environment — "
         "operator bypassed env-locking guard. Review this action.",

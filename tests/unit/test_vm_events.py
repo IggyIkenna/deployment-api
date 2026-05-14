@@ -55,7 +55,7 @@ with (
 ):
     from deployment_api.main import app
 
-from unified_trading_library.events import setup_events
+from unified_trading_library import setup_events
 
 setup_events("deployment-api", "test")
 

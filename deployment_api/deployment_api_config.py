@@ -9,7 +9,7 @@ All fields read from the same environment variables as before. No behaviour chan
 """
 
 from pydantic import AliasChoices, Field
-from unified_trading_library.config_interface import UnifiedCloudConfig
+from unified_trading_library import UnifiedCloudConfig
 
 
 class DeploymentApiConfig(UnifiedCloudConfig):

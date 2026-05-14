@@ -15,7 +15,7 @@ from collections.abc import Iterator
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unified_trading_library.events import setup_events
+from unified_trading_library import setup_events
 
 from deployment_api.routes.risk_routes import router as risk_router
 

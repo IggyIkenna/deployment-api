@@ -84,7 +84,7 @@ def _load_snapshots_from_gcs(
     project_id: str,
 ) -> dict[str, list[dict[str, object]]]:
     """Load last-5 QG snapshot blobs per repo from GCS. Raises on GCS failure."""
-    from unified_trading_library.cloud_interface import download_from_storage, get_storage_client
+    from unified_trading_library import download_from_storage, get_storage_client
 
     bucket_name = f"{project_id}-deployment-events"
     prefix = "quality_gates_snapshot/"
@@ -110,7 +110,9 @@ def _load_snapshots_from_gcs(
             qg_status = str((row.get("qg_status") or ["unknown"])[0] or "unknown")
             failing_step_val = (row.get("failing_step") or [None])[0]
             failing_step: object = str(failing_step_val) if failing_step_val else None
-            snapshots_by_repo[repo_name].append({"qg_status": qg_status, "failing_step": failing_step})
+            snapshots_by_repo[repo_name].append(
+                {"qg_status": qg_status, "failing_step": failing_step}
+            )
         except Exception as blob_exc:
             logger.warning("[DEPLOY-READY] Failed to read parquet %s: %s", blob.name, blob_exc)
     return snapshots_by_repo

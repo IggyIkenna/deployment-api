@@ -40,7 +40,7 @@ os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 
 import pytest
-from unified_trading_library.events import setup_events
+from unified_trading_library import setup_events
 
 # Initialise event logging in test mode so log_event() inside the helper
 # is a no-op rather than a RuntimeError.

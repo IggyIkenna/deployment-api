@@ -120,7 +120,7 @@ def _collect_unhealthy_vms(
     Returns a list of ``(job_id, zone, shard_id, reason, message)`` tuples for
     VMs that should be terminated.
     """
-    from unified_trading_library.cloud_interface import get_compute_engine_client
+    from unified_trading_library import get_compute_engine_client
 
     ce_client = get_compute_engine_client(project_id=PROJECT_ID)
     kills: list[tuple[str, str | None, str, str, str]] = []
@@ -239,7 +239,7 @@ def _parse_healthy_vm_serial_events(
 
     Returns *updated* (True if any shard was mutated).
     """
-    from unified_trading_library.cloud_interface import get_compute_engine_client
+    from unified_trading_library import get_compute_engine_client
 
     ce_client = get_compute_engine_client(project_id=PROJECT_ID)
     for shard in shards:
@@ -318,7 +318,7 @@ def _build_vm_map_for_service(service_name: str) -> dict[str, object]:
 
     Returns an empty dict on any error (caller logs the warning).
     """
-    from unified_trading_library.cloud_interface import get_compute_engine_client
+    from unified_trading_library import get_compute_engine_client
 
     vm_map: dict[str, object] = {}
     try:

@@ -2063,7 +2063,7 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return cached[1]
 
     try:
-        from unified_trading_library.cloud_interface import get_storage_client
+        from unified_trading_library import get_storage_client
 
         client = get_storage_client(project_id=_pid)
         bucket_name = _rollup_bucket()
@@ -2294,7 +2294,7 @@ def _read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return cached[1]
 
     try:
-        from unified_trading_library.cloud_interface import get_storage_client
+        from unified_trading_library import get_storage_client
 
         client = get_storage_client(project_id=_pid)
         bucket_name = _rollup_bucket()
@@ -3742,7 +3742,7 @@ class DataStatusService:
         advisory flag for the UI, never a gate on completion math.
         """
         try:
-            from unified_trading_library.cloud_interface import get_compute_engine_client
+            from unified_trading_library import get_compute_engine_client
 
             svc_key = service.replace("-service", "").replace("market-data-processing", "mdps")
             svc_key = svc_key.replace("market-tick-data", "mtds").lower()

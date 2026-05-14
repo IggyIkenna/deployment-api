@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import date as _date
 from typing import TYPE_CHECKING, cast
 
-from unified_trading_library.events import log_event
+from unified_trading_library import log_event
 
 from deployment_api import settings as _settings
 from deployment_api.clients import deployment_service_client as _ds_client

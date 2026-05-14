@@ -53,13 +53,11 @@ from unified_api_contracts.canonical.crosscutting.circuit_breaker import (  # no
     BreakerRecoveryMode,
 )
 from unified_api_contracts.internal.domain.deployment_service import KillSwitchScope
-from unified_trading_library.kill_switch import (
+from unified_trading_library import (
     InMemoryAuditLogWriter,
-    map_switch_id_to_scope,
-)
-from unified_trading_library.kill_switch.bus import (
     KillSwitchBus,
     get_kill_switch_bus,
+    map_switch_id_to_scope,
 )
 
 from deployment_api.auth import verify_api_key

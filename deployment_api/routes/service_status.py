@@ -24,7 +24,7 @@ from google.auth import (  # pyright: ignore[reportMissingTypeStubs]  # google-a
     default,  # pyright: ignore[reportUnknownVariableType]
     impersonated_credentials,
 )
-from unified_trading_library.cloud_interface import get_secret_client
+from unified_trading_library import get_secret_client
 
 from deployment_api.settings import GITHUB_TOKEN_SA
 from deployment_api.utils.storage_facade import get_gcs_fuse_status

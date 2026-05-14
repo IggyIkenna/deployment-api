@@ -61,7 +61,7 @@ def deserialize(value: object) -> object:
     return cast(object, json.loads(value))
 
 
-from unified_trading_library.cloud_interface import AsyncRedisProvider
+from unified_trading_library import AsyncRedisProvider
 
 REDIS_AVAILABLE = True
 

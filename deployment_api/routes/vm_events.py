@@ -35,8 +35,7 @@ from unified_api_contracts.internal import (
     VMEventListResult,
     VMLifecycleEvent,
 )
-from unified_trading_library.cloud_interface import get_storage_client
-from unified_trading_library.events import log_event
+from unified_trading_library import get_storage_client, log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 

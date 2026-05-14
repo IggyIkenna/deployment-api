@@ -36,7 +36,7 @@ from unified_api_contracts.risk import (
     get_rules_for,
     iter_applicable_rules,
 )
-from unified_trading_library.risk import RuleEvalContext, risk_preflight
+from unified_trading_library import RuleEvalContext, risk_preflight
 
 logger = logging.getLogger(__name__)
 

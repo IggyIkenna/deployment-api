@@ -52,7 +52,11 @@ from ._deployment_processor_vm import (
 # Re-export symbols so tests can import from this module.
 from ._deployment_processor_vm_cleanup import (
     _handle_completed_pending_delete as _handle_completed_pending_delete,
+)
+from ._deployment_processor_vm_cleanup import (
     _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,
+)
+from ._deployment_processor_vm_cleanup import (
     _terminate_stuck_vm as _terminate_stuck_vm,
 )
 from .auto_sync import pending_vm_deletes
