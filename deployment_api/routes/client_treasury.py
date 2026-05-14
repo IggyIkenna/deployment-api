@@ -24,7 +24,6 @@ matching the contract shape. Wire to the real endpoint in Phase 9.A once availab
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -42,6 +41,12 @@ from unified_api_contracts.internal.domain.treasury import (
     TreasurySource,
     TreasurySourceAttribution,
     TreasurySourceBalance,
+    WithdrawalApprovalChain,
+    WithdrawalApprovalSignature,
+)
+from unified_api_contracts.registry.withdrawal_approval_rules import (
+    get_approver_pool,
+    get_required_approvers,
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -143,6 +148,14 @@ def get_treasury_rollup() -> TreasuryRollupResponse:
 # Allow tests to swap the treasury rollup provider
 _treasury_rollup_provider = get_treasury_rollup
 
+# ---------------------------------------------------------------------------
+# In-memory withdrawal approval chain store (Phase 1 MVP)
+# Key: withdrawal_id → WithdrawalApprovalChain
+# Production path: persisted via Phase 9.A.
+# ---------------------------------------------------------------------------
+
+_WITHDRAWAL_CHAINS: dict[str, WithdrawalApprovalChain] = {}
+
 
 def set_treasury_rollup_provider(fn: Callable[[], TreasuryRollupResponse]) -> None:
     """Replace the global rollup provider (injectable for tests)."""
@@ -210,25 +223,28 @@ class ClientSubscriptionListResponse(BaseModel):
     )
 
 
-class WithdrawalRequest(BaseModel):
-    """Request body for POST /api/clients/{client_id}/treasury/withdraw."""
+class WithdrawalApproveRequest(BaseModel):
+    """Request body for POST /api/clients/{client_id}/withdrawal/{withdrawal_id}/approve."""
 
-    amount: float = Field(..., description="Withdrawal amount (positive)")
-    currency: str = Field(..., description="Asset symbol, e.g. USDC")
-    destination: str = Field(..., description="Destination address or account identifier")
+    approver_id: str = Field(..., description="Operator ID from the approver pool")
+    amount_usd: str = Field(..., description="Withdrawal amount in USD as string decimal")
+    treasury_source: str = Field(..., description="TreasurySource enum value string")
+    hmac_signature: str = Field(
+        ..., description="Hex-encoded HMAC-SHA256 produced by sign_withdrawal_approval()"
+    )
+    signed_at: str = Field(..., description="ISO-8601 UTC timestamp at which approver signed")
 
 
-class WithdrawalResponse(BaseModel):
-    """Response for POST /api/clients/{client_id}/treasury/withdraw.
+class WithdrawalApproveResponse(BaseModel):
+    """Response model for POST /api/clients/{client_id}/withdrawal/{withdrawal_id}/approve."""
 
-    Phase 1 stub — returns pending_approval status with a unique request_id.
-    Real HMAC-signed approval chain wired in Phase 1 of
-    wallet_treasury_post_cutover_custody_signing_2026_06_01.md.
-    """
-
-    status: str = Field(default="pending_approval")
-    request_id: str = Field(..., description="Unique withdrawal request identifier (UUID4)")
-    audit_logged: bool = Field(default=True, description="Whether Cloud Audit Log write succeeded")
+    withdrawal_id: str
+    client_id: str
+    approver_id: str
+    quorum_reached: bool
+    approver_count: int
+    approvers_remaining: int
+    quorum_reached_at: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -468,25 +484,26 @@ async def get_client_subscriptions(client_id: str) -> ClientSubscriptionListResp
 
 
 @router.post(
-    "/clients/{client_id}/treasury/withdraw",
-    response_model=WithdrawalResponse,
-    summary="Request a treasury withdrawal (Phase 1 stub — pending_approval)",
+    "/clients/{client_id}/withdrawal/{withdrawal_id}/approve",
+    response_model=WithdrawalApproveResponse,
+    summary="Submit a withdrawal approval signature",
     tags=["Treasury"],
 )
-async def post_client_treasury_withdraw(
+async def approve_withdrawal(
     client_id: str,
-    request: WithdrawalRequest,
-) -> WithdrawalResponse:
-    """Submit a treasury withdrawal request.
+    withdrawal_id: str,
+    body: WithdrawalApproveRequest,
+) -> WithdrawalApproveResponse:
+    """Submit one approver's HMAC-signed withdrawal approval.
 
-    **Phase 1 stub** (wallet_treasury_post_cutover_custody_signing_2026_06_01.md Phase 1):
-    Returns ``pending_approval`` status immediately. Real HMAC-signed approval chain
-    (Cloud-KMS → Copper) will replace this stub in Phase 1.
-
-    Every call emits a Cloud Audit Log entry for compliance auditors
-    (cloudaudit.googleapis.com/data_access). Audit-log failure is non-blocking.
-
+    Accumulates approvals until quorum is reached per
+    ``get_required_approvers()`` (tier: SMALL=1, MEDIUM=2, LARGE=3).
     Returns 404 if the client has no registered subscriptions.
+    Returns 400 if the approver is not in the approver pool or has
+    already submitted an approval for this withdrawal.
+
+    The HMAC signature must have been produced by
+    ``execution_service.custody.withdrawal_signing.sign_withdrawal_approval()``.
     """
     store = get_subscription_store()
     if store.get(client_id) is None:
@@ -495,23 +512,82 @@ async def post_client_treasury_withdraw(
             detail={"message": f"No subscriptions found for client '{client_id}'"},
         )
 
-    request_id = str(uuid.uuid4())
+    try:
+        treasury_source = TreasurySource(body.treasury_source)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Invalid treasury_source: '{body.treasury_source}'"},
+        ) from exc
+
+    try:
+        amount_usd = Decimal(body.amount_usd)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Invalid amount_usd: '{body.amount_usd}'"},
+        ) from exc
+
+    try:
+        signed_at = datetime.fromisoformat(body.signed_at)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": f"Invalid signed_at timestamp: '{body.signed_at}'"},
+        ) from exc
+
+    if withdrawal_id not in _WITHDRAWAL_CHAINS:
+        required = get_required_approvers(treasury_source, amount_usd)
+        pool = get_approver_pool(treasury_source)
+        _WITHDRAWAL_CHAINS[withdrawal_id] = WithdrawalApprovalChain.new(
+            withdrawal_id=withdrawal_id,
+            amount_usd=amount_usd,
+            treasury_source=treasury_source,
+            required_approvers=required,
+            approver_pool=pool,
+        )
+
+    chain = _WITHDRAWAL_CHAINS[withdrawal_id]
+
+    sig = WithdrawalApprovalSignature(
+        withdrawal_id=withdrawal_id,
+        approver_id=body.approver_id,
+        amount_usd=amount_usd,
+        treasury_source=treasury_source,
+        hmac_signature=body.hmac_signature,
+        signed_at=signed_at,
+    )
+
+    try:
+        chain.add_approval(sig)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc)}) from exc
 
     _emit_cloud_audit_log(
-        operation="withdrawal_request",
+        operation="withdrawal_approval",
         client_id=client_id,
         details={
-            "request_id": request_id,
-            "amount": request.amount,
-            "currency": request.currency,
-            "destination": request.destination,
+            "withdrawal_id": withdrawal_id,
+            "approver_id": body.approver_id,
+            "quorum_reached": chain.quorum_reached,
         },
     )
 
-    return WithdrawalResponse(
-        status="pending_approval",
-        request_id=request_id,
-        audit_logged=True,
+    logger.info(
+        "Withdrawal approval recorded: withdrawal_id=%s approver=%s quorum=%s",
+        withdrawal_id,
+        body.approver_id,
+        chain.quorum_reached,
+    )
+
+    return WithdrawalApproveResponse(
+        withdrawal_id=withdrawal_id,
+        client_id=client_id,
+        approver_id=body.approver_id,
+        quorum_reached=chain.quorum_reached,
+        approver_count=chain.approver_count,
+        approvers_remaining=chain.approvers_remaining,
+        quorum_reached_at=chain.quorum_reached_at.isoformat() if chain.quorum_reached_at else None,
     )
 
 
@@ -519,10 +595,10 @@ __all__ = [
     "_build_client_treasury_view",
     "_build_subscription_list",
     "_emit_cloud_audit_log",
+    "approve_withdrawal",
     "get_client_subscriptions",
     "get_client_treasury",
     "get_subscription_store",
-    "post_client_treasury_withdraw",
     "router",
     "set_subscription_store",
     "set_treasury_rollup_provider",
