@@ -539,7 +539,7 @@ def _resolve_sports_instrument_type(asset_group: str, instrument_type: str, data
     return _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE.get(data_type, instrument_type)
 
 
-def get_schema_for_shard(
+def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline with fallback chain; branching is inherent
     *,
     asset_group: str,
     instrument_type: str,
@@ -808,7 +808,7 @@ def _first_parquet_under_prefix(gs_prefix: str) -> str | None:
     return None
 
 
-def _build_leaf_parquet_candidates(
+def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routing dispatch; branching inherent to multi-service layout
     *,
     service: str,
     asset_group: str,

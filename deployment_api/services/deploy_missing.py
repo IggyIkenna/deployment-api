@@ -54,6 +54,45 @@ logger = logging.getLogger(__name__)
 #   confuse this with the prod path.
 SUPPORTED_LAUNCH_MODES: frozenset[str] = frozenset({"preview", "tarball-from-local"})
 
+# Environments where tarball-from-local is blocked. tarball-from-local copies the
+# operator's LOCAL working tree into GCS — meaningless and dangerous from a hosted
+# Cloud Run pod. Blocked in staging/prod so operators can't accidentally push
+# uncommitted dev code into non-dev environments.
+# SSOT: codex/05-infrastructure/vm-tarball-deployment.md
+_TARBALL_BLOCKED_ENVS: frozenset[str] = frozenset({"staging", "production", "prod"})
+
+
+def assert_tarball_not_blocked(deployment_env: str, *, override: bool = False) -> None:
+    """Raise DeployMissingError if tarball-from-local is blocked in this environment.
+
+    tarball-from-local copies the operator's local working tree into GCS before
+    launching the VM. This only makes sense from a developer workstation — it is
+    meaningless (and dangerous) from the deployment-api Cloud Run pod running in
+    staging or production. Blocked by default; overridable for emergency hotfixes
+    with an audit log entry.
+
+    Args:
+        deployment_env: The current server deployment environment (from DEPLOYMENT_ENV).
+        override: If True, bypass the block and emit an audit log warning instead.
+
+    Raises:
+        DeployMissingError: if ``deployment_env`` is staging/production and override is False.
+    """
+    if deployment_env.lower() not in _TARBALL_BLOCKED_ENVS:
+        return
+    if not override:
+        raise DeployMissingError(
+            f"tarball-from-local deploy is blocked in {deployment_env!r} environment. "
+            "Use the image deploy path (build + promote workflow). "
+            "For emergency hotfix override, set 'override_tarball_block': true in the request "
+            "body. SSOT: codex/05-infrastructure/vm-tarball-deployment.md"
+        )
+    logger.warning(
+        "AUDIT: tarball-block override used in %r environment — "
+        "operator bypassed env-locking guard. Review this action.",
+        deployment_env,
+    )
+
 
 # Service slug -> launch-script name in
 # ``deployment-service/scripts/vm/``. Operators copy + run the produced
@@ -407,7 +446,7 @@ class LiveClusterLaunchPreview:
         }
 
 
-def build_live_cluster_launch_preview(
+def build_live_cluster_launch_preview(  # noqa: C901 — role validation + command assembly pipeline; multiple guard clauses inherent to launcher-script contract
     *,
     role: str,
     asset_group: str | None,
@@ -454,7 +493,7 @@ def build_live_cluster_launch_preview(
         raise DeployMissingError(
             f"Role '{role}' is singleton; pass asset_group=None (got: {asset_group!r})",
         )
-    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:
+    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:  # noqa: SIM102 — guard clause for window-parameterised roles; separate if improves readability
         if not (replay_start and replay_end and replay_shard_key):
             raise DeployMissingError(
                 f"Role '{role}' requires --start, --end, --shard-key "

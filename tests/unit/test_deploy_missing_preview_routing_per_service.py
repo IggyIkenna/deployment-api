@@ -162,6 +162,35 @@ _SERVICE_REPRESENTATIVE_ROW_KEYS: dict[str, tuple[str, dict[str, str]]] = {
             "day": "2024-03-04",
         },
     ),
+    # Manifest-hygiene singleton: walks all asset_groups; row_key fields are
+    # representative for shard-key construction even though the VM ignores them.
+    "cross-asset-rescan": (
+        "cefi",
+        {
+            "venue": "ALL",
+            "data_type": "availability_manifest",
+            "day": "2024-03-04",
+        },
+    ),
+    # Strategy-service launchers: per-archetype deploy-missing recovery.
+    "strategy-paper": (
+        "defi",
+        {
+            "venue": "BYBIT",
+            "data_type": "strategy_signals",
+            "instrument_id": "carry_staked_basis",
+            "day": "2024-03-04",
+        },
+    ),
+    "strategy-live": (
+        "defi",
+        {
+            "venue": "BYBIT",
+            "data_type": "strategy_signals",
+            "instrument_id": "carry_staked_basis",
+            "day": "2024-03-04",
+        },
+    ),
 }
 
 

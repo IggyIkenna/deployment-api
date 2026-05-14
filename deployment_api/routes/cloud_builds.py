@@ -87,7 +87,9 @@ __all__ = [
 ]
 
 # Public alias used by other modules in this package.
-from ._cloud_builds_types import get_gcp_build_client
+from ._cloud_builds_types import (  # noqa: E402 — re-export alias after module init; intentional position
+    get_gcp_build_client,
+)
 
 # ---------------------------------------------------------------------------
 # Route: list triggers

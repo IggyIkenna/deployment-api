@@ -45,6 +45,7 @@ async def get_region_config():
         "gcs_region": settings.GCS_REGION,
         "zones": [f"{settings.GCS_REGION}-{s}" for s in ["a", "b", "c"]],
         "enforce_single_region": settings.ENFORCE_SINGLE_REGION,
+        "deployment_env": settings.DEPLOYMENT_ENV,
     }
 
 

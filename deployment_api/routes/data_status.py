@@ -47,6 +47,7 @@ from deployment_api.services.data_status_mock import (
 )
 from deployment_api.services.deploy_missing import (
     DeployMissingError,
+    assert_tarball_not_blocked,
     build_deploy_missing_preview,
     build_live_cluster_launch_preview,
 )
@@ -615,12 +616,15 @@ async def post_deploy_missing_preview(
     asset_group = str(request.get("asset_group", ""))
     raw_row_key = request.get("row_key", {})
     mode = str(request.get("mode", "preview"))
+    override_tarball_block = bool(request.get("override_tarball_block", False))
     if not isinstance(raw_row_key, dict):
         raise HTTPException(status_code=400, detail="row_key must be an object")
     row_key: dict[str, str] = {str(k): str(v) for k, v in raw_row_key.items()}
     if not service or not asset_group:
         raise HTTPException(status_code=400, detail="service and asset_group are required")
     try:
+        if mode == "tarball-from-local":
+            assert_tarball_not_blocked(_cfg.deployment_env, override=override_tarball_block)
         preview = build_deploy_missing_preview(
             service=service,
             asset_group=asset_group,

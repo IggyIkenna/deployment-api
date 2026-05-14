@@ -220,7 +220,7 @@ class SyncService:
             # Always release lock after processing
             self.state_manager.release_deployment_lock(deployment_id)
 
-    def _acquire_and_launch(
+    def _acquire_and_launch(  # noqa: C901 — quota-acquire + shard-launch pipeline; multiple guard clauses are inherent to the launch-safety contract
         self,
         deployment_id: str,
         config: dict[str, object],
