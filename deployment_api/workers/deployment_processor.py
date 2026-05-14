@@ -46,14 +46,14 @@ from ._deployment_processor_helpers import (
 )
 from ._deployment_processor_vm import (
     _build_vm_map_for_service,
-    _handle_completed_pending_delete,
     _process_vm_health_and_status,
-    _terminate_stuck_vm,
 )
 
 # Re-export symbols so tests can import from this module.
 from ._deployment_processor_vm_cleanup import (
+    _handle_completed_pending_delete as _handle_completed_pending_delete,
     _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,
+    _terminate_stuck_vm as _terminate_stuck_vm,
 )
 from .auto_sync import pending_vm_deletes
 
