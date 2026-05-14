@@ -1223,7 +1223,7 @@ class TestTransferWindowAwareness:
     def test_is_transfer_window_venue(self):
         svc = _make_svc()
         assert svc._is_transfer_window_venue("TRANSFERMARKT_TEAMS")
-        assert svc._is_transfer_window_venue("TRANSFERMARKT_LEAGUES")
+        # TRANSFERMARKT_LEAGUES retired 2026-05-05 — removed from assertions
         assert not svc._is_transfer_window_venue("FOOTYSTATS_EPL")
         assert not svc._is_transfer_window_venue("UNDERSTAT_XG")
 
@@ -1231,7 +1231,7 @@ class TestTransferWindowAwareness:
         """Transfermarkt should NOT be classified as fixture-dependent."""
         svc = _make_svc()
         assert not svc._is_sports_reference_venue("TRANSFERMARKT_TEAMS")
-        assert not svc._is_sports_reference_venue("TRANSFERMARKT_LEAGUES")
+        # TRANSFERMARKT_LEAGUES retired 2026-05-05 — removed from assertions
         # Other sports venues are still fixture-dependent
         assert svc._is_sports_reference_venue("FOOTYSTATS_EPL")
         assert svc._is_sports_reference_venue("UNDERSTAT_XG")

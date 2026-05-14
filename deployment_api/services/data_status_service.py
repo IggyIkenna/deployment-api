@@ -3813,11 +3813,10 @@ class DataStatusService:
         {
             "XG",
             "UNDERSTAT_XG",  # Understat: 6 leagues only
-            "TRANSFERMARKT_LEAGUES",
             "PLAYER_VALUES",  # Transfermarkt: window-based
             "MATCHES",
             "PREDICTIONS",  # FootyStats: partial backfill
-            "SFI_LEAGUES",  # SFI: partial coverage
+            # TRANSFERMARKT_LEAGUES + SFI_LEAGUES retired 2026-05-05
         }
     )
 
