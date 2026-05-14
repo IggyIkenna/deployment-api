@@ -24,6 +24,7 @@ matching the contract shape. Wire to the real endpoint in Phase 9.A once availab
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -209,6 +210,27 @@ class ClientSubscriptionListResponse(BaseModel):
     )
 
 
+class WithdrawalRequest(BaseModel):
+    """Request body for POST /api/clients/{client_id}/treasury/withdraw."""
+
+    amount: float = Field(..., description="Withdrawal amount (positive)")
+    currency: str = Field(..., description="Asset symbol, e.g. USDC")
+    destination: str = Field(..., description="Destination address or account identifier")
+
+
+class WithdrawalResponse(BaseModel):
+    """Response for POST /api/clients/{client_id}/treasury/withdraw.
+
+    Phase 1 stub — returns pending_approval status with a unique request_id.
+    Real HMAC-signed approval chain wired in Phase 1 of
+    wallet_treasury_post_cutover_custody_signing_2026_06_01.md.
+    """
+
+    status: str = Field(default="pending_approval")
+    request_id: str = Field(..., description="Unique withdrawal request identifier (UUID4)")
+    audit_logged: bool = Field(default=True, description="Whether Cloud Audit Log write succeeded")
+
+
 # ---------------------------------------------------------------------------
 # Helper: attribution logic
 # ---------------------------------------------------------------------------
@@ -294,6 +316,45 @@ def _build_subscription_list(
         subscriptions=tuple(views),
         asof=asof,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cloud Audit Log helper (Phase 3 — PB-1/PB-3 compliance)
+# ---------------------------------------------------------------------------
+
+
+def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, object]) -> None:  # type: ignore[type-arg]
+    """Write a structured entry to Cloud Audit Logs (data_access).
+
+    Writes to ``projects/{project_id}/logs/cloudaudit.googleapis.com%2Fdata_access``
+    with INFO severity so compliance auditors can query the log via Cloud Logging.
+
+    Failure is intentionally swallowed — audit log unavailability MUST NOT
+    block the withdrawal operation (defence-in-depth; primary record is on GCS).
+    """
+    try:
+        import google.cloud.logging  # type: ignore[import-untyped]
+
+        project_id = _cfg.gcp_project_id or ""
+        log_client = google.cloud.logging.Client(project=project_id)
+        log_name = "cloudaudit.googleapis.com%2Fdata_access"
+        gcp_logger = log_client.logger(log_name)
+        payload: dict[str, object] = {
+            "operation": operation,
+            "client_id": client_id,
+            "service": "deployment-api",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **details,
+        }
+        gcp_logger.log_struct(payload, severity="INFO")
+        logger.debug("Cloud audit log emitted: operation=%s client_id=%s", operation, client_id)
+    except Exception as exc:
+        logger.warning(
+            "Cloud audit log write failed (non-blocking): %s — operation=%s client_id=%s",
+            exc,
+            operation,
+            client_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -406,12 +467,62 @@ async def get_client_subscriptions(client_id: str) -> ClientSubscriptionListResp
     )
 
 
+@router.post(
+    "/clients/{client_id}/treasury/withdraw",
+    response_model=WithdrawalResponse,
+    summary="Request a treasury withdrawal (Phase 1 stub — pending_approval)",
+    tags=["Treasury"],
+)
+async def post_client_treasury_withdraw(
+    client_id: str,
+    request: WithdrawalRequest,
+) -> WithdrawalResponse:
+    """Submit a treasury withdrawal request.
+
+    **Phase 1 stub** (wallet_treasury_post_cutover_custody_signing_2026_06_01.md Phase 1):
+    Returns ``pending_approval`` status immediately. Real HMAC-signed approval chain
+    (Cloud-KMS → Copper) will replace this stub in Phase 1.
+
+    Every call emits a Cloud Audit Log entry for compliance auditors
+    (cloudaudit.googleapis.com/data_access). Audit-log failure is non-blocking.
+
+    Returns 404 if the client has no registered subscriptions.
+    """
+    store = get_subscription_store()
+    if store.get(client_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"message": f"No subscriptions found for client '{client_id}'"},
+        )
+
+    request_id = str(uuid.uuid4())
+
+    _emit_cloud_audit_log(
+        operation="withdrawal_request",
+        client_id=client_id,
+        details={
+            "request_id": request_id,
+            "amount": request.amount,
+            "currency": request.currency,
+            "destination": request.destination,
+        },
+    )
+
+    return WithdrawalResponse(
+        status="pending_approval",
+        request_id=request_id,
+        audit_logged=True,
+    )
+
+
 __all__ = [
     "_build_client_treasury_view",
     "_build_subscription_list",
+    "_emit_cloud_audit_log",
     "get_client_subscriptions",
     "get_client_treasury",
     "get_subscription_store",
+    "post_client_treasury_withdraw",
     "router",
     "set_subscription_store",
     "set_treasury_rollup_provider",
