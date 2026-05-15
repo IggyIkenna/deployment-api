@@ -69,12 +69,14 @@ from .routes import (
     fixtures,
     infra_health,
     kill_switch_routes,
+    manual_pending,
     repo_readiness,
     risk_routes,
     service_status,
     services,
     shard_detail,
     sports_venues,
+    strategy_runs,
     subscriptions,
     treasury,
     treasury_routes,
@@ -176,6 +178,10 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
+_authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
+_authenticated_router.include_router(
+    manual_pending.router, prefix="/api", tags=["Manual Pending Queue"]
+)
 _authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
 _authenticated_router.include_router(
     treasury_routes.router, prefix="/api/treasury", tags=["Treasury"]
