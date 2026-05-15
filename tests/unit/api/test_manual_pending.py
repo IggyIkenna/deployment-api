@@ -9,37 +9,45 @@ Tests:
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from unified_trading_library import setup_events
 
+import deployment_api.routes.manual_pending as _mod
 from deployment_api.routes.manual_pending import router
+
+setup_events("deployment-api", "test")
 
 _PATCH_MOCK = "deployment_api.deployment_api_config.DeploymentApiConfig.is_mock_mode"
 _PATCH_CFG_URL = "deployment_api.routes.manual_pending._cfg.execution_service_url"
 
 
 @pytest.fixture
-def mock_client() -> TestClient:
+def mock_client() -> Generator[TestClient]:
+    _mod._PENDING.clear()
     with patch(_PATCH_MOCK, return_value=True):
         app = FastAPI()
         app.include_router(router)
-        return TestClient(app)
+        yield TestClient(app)
+    _mod._PENDING.clear()
 
 
 @pytest.fixture
-def prod_client() -> TestClient:
+def prod_client() -> Generator[TestClient]:
+    _mod._PENDING.clear()
     with patch(_PATCH_MOCK, return_value=False):
         app = FastAPI()
         app.include_router(router)
-        return TestClient(app)
+        yield TestClient(app)
+    _mod._PENDING.clear()
 
 
 class TestMockModeApprove:
     def test_approve_removes_from_queue(self, mock_client: TestClient) -> None:
-        # list to confirm fixture instruction is present
         r = mock_client.get("/manual/pending")
         assert r.status_code == 200
         instructions = r.json()

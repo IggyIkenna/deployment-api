@@ -31,6 +31,8 @@ from unified_api_contracts.internal.domain.strategy_service import (
     StrategyMaturityPhase,
 )
 from unified_trading_library import (
+    STRATEGY_MATURITY_ADVANCED,
+    STRATEGY_MATURITY_REGRESSED,
     STRATEGY_PROMOTE_REJECTED,
     STRATEGY_PROMOTED_TO_LIVE,
     STRATEGY_PROMOTED_TO_PAPER,
@@ -93,6 +95,45 @@ class PromoteRejectedResponse(BaseModel):  # CORRECT-LOCAL
     target_phase: str
     failed_gates: list[str]
     rejected_at: str
+
+
+class DemoteRequest(BaseModel):  # CORRECT-LOCAL
+    """Body for POST /promote/{strategy_id}/{candidate_manifest_id}/demote."""
+
+    demote_to_stage: str
+    operator: str
+    reason: str
+
+
+class DemoteResponse(BaseModel):  # CORRECT-LOCAL
+    """Response for a successful demote action."""
+
+    strategy_id: str
+    manifest_id: str
+    demoted_to_stage: str
+    operator: str
+    demoted_at: str
+    event_emitted: str
+
+
+class OverrideRequest(BaseModel):  # CORRECT-LOCAL
+    """Body for POST /promote/{strategy_id}/{candidate_manifest_id}/override."""
+
+    override_stage: str
+    operator: str
+    reason: str
+    risk_ack: bool
+
+
+class OverrideResponse(BaseModel):  # CORRECT-LOCAL
+    """Response for a successful override action."""
+
+    strategy_id: str
+    manifest_id: str
+    override_stage: str
+    operator: str
+    overridden_at: str
+    event_emitted: str
 
 
 # ---------------------------------------------------------------------------
@@ -266,4 +307,93 @@ async def promote_candidate(
         promoter=body.promoter,
         promoted_at=now_iso,
         event_emitted=event_name,
+    )
+
+
+@router.post("/{strategy_id}/{candidate_manifest_id}/demote")
+async def demote_candidate(
+    strategy_id: str,
+    candidate_manifest_id: str,
+    body: DemoteRequest,
+) -> DemoteResponse:
+    """Demote a strategy candidate to an earlier pipeline stage.
+
+    Emits STRATEGY_MATURITY_REGRESSED and records the reason in the audit trail.
+    Valid for any operator-initiated pipeline regression (e.g. live_early→paper_1d).
+    """
+    now_iso = datetime.now(UTC).isoformat()
+
+    log_event(
+        STRATEGY_MATURITY_REGRESSED,
+        severity="WARNING",
+        details={
+            "manifest_id": candidate_manifest_id,
+            "strategy_id": strategy_id,
+            "demoted_to_stage": body.demote_to_stage,
+            "operator": body.operator,
+            "reason": body.reason,
+            "source": "dart_ui",
+        },
+    )
+    logger.info(
+        "Demote recorded: strategy_id=%s demoted_to=%s operator=%s",
+        strategy_id,
+        body.demote_to_stage,
+        body.operator,
+    )
+    return DemoteResponse(
+        strategy_id=strategy_id,
+        manifest_id=candidate_manifest_id,
+        demoted_to_stage=body.demote_to_stage,
+        operator=body.operator,
+        demoted_at=now_iso,
+        event_emitted=STRATEGY_MATURITY_REGRESSED,
+    )
+
+
+@router.post("/{strategy_id}/{candidate_manifest_id}/override")
+async def override_candidate(
+    strategy_id: str,
+    candidate_manifest_id: str,
+    body: OverrideRequest,
+) -> OverrideResponse:
+    """Override a pipeline gate with elevated operator authority.
+
+    Emits STRATEGY_MATURITY_ADVANCED with is_override=True and records the
+    risk acknowledgement and reason in the audit trail.
+    """
+    if not body.risk_ack:
+        raise HTTPException(
+            status_code=422,
+            detail="risk_ack must be true — operator must acknowledge elevated risk.",
+        )
+
+    now_iso = datetime.now(UTC).isoformat()
+
+    log_event(
+        STRATEGY_MATURITY_ADVANCED,
+        severity="WARNING",
+        details={
+            "manifest_id": candidate_manifest_id,
+            "strategy_id": strategy_id,
+            "override_stage": body.override_stage,
+            "operator": body.operator,
+            "reason": body.reason,
+            "is_override": True,
+            "source": "dart_ui",
+        },
+    )
+    logger.info(
+        "Override recorded: strategy_id=%s stage=%s operator=%s",
+        strategy_id,
+        body.override_stage,
+        body.operator,
+    )
+    return OverrideResponse(
+        strategy_id=strategy_id,
+        manifest_id=candidate_manifest_id,
+        override_stage=body.override_stage,
+        operator=body.operator,
+        overridden_at=now_iso,
+        event_emitted=STRATEGY_MATURITY_ADVANCED,
     )
