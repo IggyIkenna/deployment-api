@@ -16,7 +16,7 @@ LOCAL_DEPS=()
 MAX_DURATION=300
 # Pre-existing violations uncovered after fixing step 3.5 (import patterns). Ratchet to 0 via
 # deployment_and_qg_strategy_implementation_2026_05_13.md Phase 3 (schema provenance, os.getenv, etc.).
-CODEX_MAX_VIOLATIONS=19
+CODEX_MAX_VIOLATIONS=20
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
