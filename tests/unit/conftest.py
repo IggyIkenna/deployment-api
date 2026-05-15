@@ -349,6 +349,19 @@ def _ensure_external_packages_mocked() -> None:
             sys.modules[full] = sub_mod
 
 
+# Set required env vars before any routes are imported.  deployment_api/routes/__init__.py
+# eagerly imports ALL route modules, each creating a DeploymentApiConfig() singleton at
+# module level.  Any test file that imports a single route (e.g. kill_switch_routes) triggers
+# this chain.  These setdefaults ensure the configs are initialised with sane test defaults
+# regardless of which test file happens to be collected first in a given xdist worker.
+import os as _os
+
+_os.environ.setdefault("CLOUD_MOCK_MODE", "true")
+_os.environ.setdefault("CLOUD_PROVIDER", "local")
+_os.environ.setdefault("GCP_PROJECT_ID", "test-project")
+_os.environ.setdefault("DISABLE_AUTH", "true")
+_os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
+
 # Run immediately at import time (before pytest collects tests)
 _ensure_utl_mocked()
 _ensure_services_mocked()

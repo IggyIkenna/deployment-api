@@ -41,10 +41,18 @@ class TestStorageClientFactoryAwsRouting:
     def test_returns_aws_storage_client_type_when_cloud_provider_aws(self) -> None:
         """deployment_api.get_storage_client returns a StorageClient with provider_name='aws' when CLOUD_PROVIDER=aws.
 
-        Uses real boto3 client creation (no network call at init time) to verify
-        the class dispatch, not just a monkey-patched mock return type.
+        Supplies fake AWS credentials so boto3 does not attempt the IMDSv2
+        metadata call (169.254.169.254) which is blocked by --allow-hosts in CI.
         """
-        with patch.dict(os.environ, {"CLOUD_PROVIDER": "aws"}):
+        with patch.dict(
+            os.environ,
+            {
+                "CLOUD_PROVIDER": "aws",
+                "AWS_ACCESS_KEY_ID": "testing",
+                "AWS_SECRET_ACCESS_KEY": "testing",
+                "AWS_DEFAULT_REGION": "us-east-1",
+            },
+        ):
             clear_client_caches()
             client = _get_storage_client()
 
@@ -57,7 +65,15 @@ class TestStorageClientFactoryAwsRouting:
     def test_gcs_storage_client_not_instantiated_when_cloud_provider_aws(self) -> None:
         """GCSStorageClient constructor must never be called when CLOUD_PROVIDER=aws."""
         with (
-            patch.dict(os.environ, {"CLOUD_PROVIDER": "aws"}),
+            patch.dict(
+                os.environ,
+                {
+                    "CLOUD_PROVIDER": "aws",
+                    "AWS_ACCESS_KEY_ID": "testing",
+                    "AWS_SECRET_ACCESS_KEY": "testing",
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                },
+            ),
             patch("unified_trading_library.cloud_interface.factory.GCSStorageClient") as mock_gcs,
         ):
             clear_client_caches()

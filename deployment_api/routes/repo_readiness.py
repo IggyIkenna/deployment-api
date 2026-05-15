@@ -58,8 +58,15 @@ def _evaluate_repo(
     plans_dir: Path | None,
 ) -> dict[str, object]:
     """Evaluate deploy-readiness for a single repo against the three criteria."""
+    last_snapshot_date: object = snapshots[0].get("snapshot_at") if snapshots else None
+
     if len(snapshots) < 5:
-        return {"repo": repo, "deploy_ready": False, "reason": "not_enough_snapshots"}
+        return {
+            "repo": repo,
+            "deploy_ready": False,
+            "reason": "not_enough_snapshots",
+            "last_snapshot_date": last_snapshot_date,
+        }
 
     failing = [s for s in snapshots[:5] if s.get("qg_status") != "green"]
     if failing:
@@ -68,16 +75,32 @@ def _evaluate_repo(
             "repo": repo,
             "deploy_ready": False,
             "reason": f"snapshot_failing: {first_step}",
+            "last_snapshot_date": last_snapshot_date,
         }
 
     if plans_dir is not None:
         issues_dir = plans_dir / "issues"
         if not _check_p0_issue_docs(issues_dir, repo):
-            return {"repo": repo, "deploy_ready": False, "reason": "open_p0_issue"}
+            return {
+                "repo": repo,
+                "deploy_ready": False,
+                "reason": "open_p0_issue",
+                "last_snapshot_date": last_snapshot_date,
+            }
         if not _check_no_inflight_refactor_banner(plans_dir, repo):
-            return {"repo": repo, "deploy_ready": False, "reason": "in_flight_refactor"}
+            return {
+                "repo": repo,
+                "deploy_ready": False,
+                "reason": "in_flight_refactor",
+                "last_snapshot_date": last_snapshot_date,
+            }
 
-    return {"repo": repo, "deploy_ready": True, "reason": "all_criteria_met"}
+    return {
+        "repo": repo,
+        "deploy_ready": True,
+        "reason": "all_criteria_met",
+        "last_snapshot_date": last_snapshot_date,
+    }
 
 
 def _load_snapshots_from_gcs(
@@ -110,8 +133,10 @@ def _load_snapshots_from_gcs(
             qg_status = str((row.get("qg_status") or ["unknown"])[0] or "unknown")
             failing_step_val = (row.get("failing_step") or [None])[0]
             failing_step: object = str(failing_step_val) if failing_step_val else None
+            snapshot_at_val = (row.get("snapshot_at") or [None])[0]
+            snapshot_at: object = str(snapshot_at_val) if snapshot_at_val else None
             snapshots_by_repo[repo_name].append(
-                {"qg_status": qg_status, "failing_step": failing_step}
+                {"qg_status": qg_status, "failing_step": failing_step, "snapshot_at": snapshot_at}
             )
         except Exception as blob_exc:
             logger.warning("[DEPLOY-READY] Failed to read parquet %s: %s", blob.name, blob_exc)
@@ -131,14 +156,35 @@ async def get_deploy_ready() -> list[dict[str, object]]:
     _api_cfg = DeploymentApiConfig()
     if _api_cfg.is_mock_mode():
         return [
-            {"repo": "deployment-api", "deploy_ready": True, "reason": "all_criteria_met"},
-            {"repo": "deployment-ui", "deploy_ready": True, "reason": "all_criteria_met"},
-            {"repo": "strategy-service", "deploy_ready": False, "reason": "snapshot_failing: lint"},
-            {"repo": "unified-trading-library", "deploy_ready": True, "reason": "all_criteria_met"},
+            {
+                "repo": "deployment-api",
+                "deploy_ready": True,
+                "reason": "all_criteria_met",
+                "last_snapshot_date": "2026-05-15T06:00:00Z",
+            },
+            {
+                "repo": "deployment-ui",
+                "deploy_ready": True,
+                "reason": "all_criteria_met",
+                "last_snapshot_date": "2026-05-15T06:00:00Z",
+            },
+            {
+                "repo": "strategy-service",
+                "deploy_ready": False,
+                "reason": "snapshot_failing: lint",
+                "last_snapshot_date": "2026-05-15T06:00:00Z",
+            },
+            {
+                "repo": "unified-trading-library",
+                "deploy_ready": True,
+                "reason": "all_criteria_met",
+                "last_snapshot_date": "2026-05-14T06:00:00Z",
+            },
             {
                 "repo": "unified-api-contracts",
                 "deploy_ready": False,
                 "reason": "in_flight_refactor",
+                "last_snapshot_date": None,
             },
         ]
 
