@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from unified_api_contracts.internal import (
     VMEventListResult,
     VMLifecycleEvent,
@@ -490,6 +491,87 @@ def _list_real_events(
         events=events,
         truncated=truncated,
         next_page_token=next_token,
+    )
+
+
+class VmLogLine(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """One structured log entry returned by the log-tail endpoint."""
+
+    timestamp: str
+    event: str
+    severity: str
+    message: str
+
+
+class VmLogTailResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    vm_name: str
+    service: str
+    lines: list[VmLogLine]
+    total_lines: int
+
+
+def _event_to_log_line(evt: VMLifecycleEvent) -> VmLogLine:
+    ts = evt.timestamp.isoformat(timespec="seconds").replace("+00:00", "Z")
+    msg = evt.details.get("message", "") if isinstance(evt.details, dict) else ""
+    if not msg:
+        msg = (
+            ", ".join(f"{k}={v}" for k, v in evt.details.items())
+            if isinstance(evt.details, dict)
+            else ""
+        )
+    return VmLogLine(timestamp=ts, event=evt.event, severity=evt.severity, message=msg)
+
+
+@router.get("/logs/{vm_name}", response_model=VmLogTailResult)
+def tail_vm_logs(
+    vm_name: str,
+    service: str | None = Query(
+        None, description="Service name. Inferred from vm_name prefix if omitted."
+    ),
+    tail: int = Query(100, ge=1, le=1000, description="Number of most-recent log lines to return"),
+    since: str | None = Query(
+        None, description="ISO 8601 timestamp — return lines at or after this time"
+    ),
+) -> VmLogTailResult:
+    """Return the last N log lines for a VM.
+
+    Reads from the same GCS events bucket as GET /api/vm/events, but returns a
+    simplified text-friendly representation (timestamp, event, severity, message)
+    suitable for inline log viewers.
+    """
+    resolved_service = service if service is not None else _infer_service_from_vm_name(vm_name)
+
+    if _cfg.is_mock_mode():
+        mock_date = datetime.now(UTC).strftime("%Y-%m-%d")
+        mock_result = _mock_events(vm_name, resolved_service, mock_date)
+        lines = [_event_to_log_line(e) for e in mock_result.events[:tail]]
+        return VmLogTailResult(
+            vm_name=vm_name, service=resolved_service, lines=lines, total_lines=len(lines)
+        )
+
+    if since is not None:
+        try:
+            date, from_hour = _parse_since(since)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        date = datetime.now(UTC).strftime("%Y-%m-%d")
+        from_hour = 0
+
+    real_result = _list_real_events(
+        vm_name=vm_name,
+        service=resolved_service,
+        date=date,
+        start_hour=from_hour,
+        end_hour=23,
+        severity_threshold=0,
+        page_size=tail,
+        next_page_token=None,
+    )
+    all_lines = [_event_to_log_line(e) for e in real_result.events]
+    tail_lines = all_lines[-tail:]
+    return VmLogTailResult(
+        vm_name=vm_name, service=resolved_service, lines=tail_lines, total_lines=len(tail_lines)
     )
 
 

@@ -525,3 +525,36 @@ class TestRealMode:
         )
         assert resp.status_code == 200
         assert resp.json()["total_events"] >= 0
+
+
+class TestLogTailMockMode:
+    """Tests for GET /api/vm/logs/{vm_name} in mock mode."""
+
+    def test_tail_returns_200_and_lines(self, client: TestClient) -> None:
+        resp = client.get("/api/vm/logs/af-backfill-20260507-010203")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "lines" in body
+        assert "vm_name" in body
+        assert body["vm_name"] == "af-backfill-20260507-010203"
+
+    def test_tail_respects_tail_param(self, client: TestClient) -> None:
+        resp = client.get("/api/vm/logs/af-backfill-20260507-010203", params={"tail": 1})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["lines"]) <= 1
+
+    def test_tail_line_has_expected_fields(self, client: TestClient) -> None:
+        resp = client.get("/api/vm/logs/af-backfill-20260507-010203")
+        assert resp.status_code == 200
+        lines = resp.json()["lines"]
+        if lines:
+            line = lines[0]
+            assert "timestamp" in line
+            assert "event" in line
+            assert "severity" in line
+            assert "message" in line
+
+    def test_tail_invalid_service_inference_returns_400(self, client: TestClient) -> None:
+        resp = client.get("/api/vm/logs/unknown-prefix-vm")
+        assert resp.status_code == 400
