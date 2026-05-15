@@ -88,6 +88,7 @@ from .routes import (
     user_management,
     vm_deployments,
     vm_events,
+    vm_events_ws,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,6 +221,7 @@ app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 app.include_router(make_events_relay_router())
 app.include_router(deploy_events_sse.router)  # GET /stream/deploy-events (SSE)
+app.include_router(vm_events_ws.router)  # WS /ws/vm/{vm_name}/events — live event stream
 
 
 @app.get("/metrics", include_in_schema=False)
