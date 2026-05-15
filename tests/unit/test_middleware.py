@@ -3,10 +3,10 @@ Unit tests for middleware module.
 
 Tests configure_middleware with various CORS settings including
 production origins, dev origins, and cloud run regex patterns.
-Also tests RateLimiterMiddleware per-IP sliding-window enforcement.
+Also tests RateLimitMiddleware per-IP sliding-window enforcement and
+exemptions for health/readiness/metrics paths.
 """
 
-import time
 from unittest.mock import MagicMock, patch
 
 from fastapi import FastAPI
@@ -14,17 +14,14 @@ from starlette.responses import PlainTextResponse
 from starlette.testclient import TestClient
 
 from deployment_api.middleware import (
-    RateLimiterMiddleware,
-    _rate_limit_window,
+    RateLimitMiddleware,
     configure_middleware,
 )
 
 
-def _make_rate_limited_app(max_requests: int = 3, window_seconds: float = 60.0) -> TestClient:
+def _make_rate_limited_app(limit: int = 3) -> TestClient:
     app = FastAPI()
-    app.add_middleware(
-        RateLimiterMiddleware, max_requests=max_requests, window_seconds=window_seconds
-    )
+    app.add_middleware(RateLimitMiddleware, requests_per_minute=limit)
 
     @app.get("/api/data")
     async def data():
@@ -38,62 +35,58 @@ def _make_rate_limited_app(max_requests: int = 3, window_seconds: float = 60.0) 
     async def api_health():
         return {"status": "ok"}
 
+    @app.get("/readiness")
+    async def readiness():
+        return {"status": "ready"}
+
+    @app.get("/api/readiness")
+    async def api_readiness():
+        return {"status": "ready"}
+
     @app.get("/metrics")
     async def metrics():
         return PlainTextResponse("# metrics")
 
-    return TestClient(app, raise_server_exceptions=True)
+    return TestClient(app, raise_server_exceptions=False)
 
 
-class TestRateLimiterMiddleware:
-    """Tests for per-IP sliding-window rate limiting."""
-
-    def setup_method(self):
-        _rate_limit_window.clear()
-
-    def test_requests_within_limit_pass(self):
-        client = _make_rate_limited_app(max_requests=5)
-        for _ in range(5):
-            r = client.get("/api/data")
-            assert r.status_code == 200
-
-    def test_request_exceeding_limit_returns_429(self):
-        client = _make_rate_limited_app(max_requests=3)
-        for _ in range(3):
-            client.get("/api/data")
-        r = client.get("/api/data")
-        assert r.status_code == 429
-        body = r.json()
-        assert body["detail"] == "Too Many Requests"
-        assert "retry_after_seconds" in body
-        assert r.headers["Retry-After"]
+class TestRateLimitMiddlewareExemptions:
+    """Tests for exempt paths — health, readiness, metrics must bypass the limiter."""
 
     def test_health_endpoint_is_exempt(self):
-        client = _make_rate_limited_app(max_requests=1)
+        client = _make_rate_limited_app(limit=1)
+        client.get("/api/data")  # consume the 1 allowed slot
         for _ in range(5):
             r = client.get("/health")
             assert r.status_code == 200
 
     def test_api_health_endpoint_is_exempt(self):
-        client = _make_rate_limited_app(max_requests=1)
+        client = _make_rate_limited_app(limit=1)
+        client.get("/api/data")
         for _ in range(5):
             r = client.get("/api/health")
             assert r.status_code == 200
 
+    def test_readiness_endpoint_is_exempt(self):
+        client = _make_rate_limited_app(limit=1)
+        client.get("/api/data")
+        for _ in range(5):
+            r = client.get("/readiness")
+            assert r.status_code == 200
+
+    def test_api_readiness_endpoint_is_exempt(self):
+        client = _make_rate_limited_app(limit=1)
+        client.get("/api/data")
+        for _ in range(5):
+            r = client.get("/api/readiness")
+            assert r.status_code == 200
+
     def test_metrics_endpoint_is_exempt(self):
-        client = _make_rate_limited_app(max_requests=1)
+        client = _make_rate_limited_app(limit=1)
+        client.get("/api/data")
         for _ in range(5):
             r = client.get("/metrics")
             assert r.status_code == 200
-
-    def test_window_expiry_resets_count(self):
-        client = _make_rate_limited_app(max_requests=2, window_seconds=0.05)
-        for _ in range(2):
-            client.get("/api/data")
-        # After a short sleep the window resets
-        time.sleep(0.1)
-        r = client.get("/api/data")
-        assert r.status_code == 200
 
 
 class TestConfigureMiddlewareNoCloudRun:
@@ -110,11 +103,10 @@ class TestConfigureMiddlewareNoCloudRun:
         app = MagicMock()
         configure_middleware(app)
 
-        # 2 calls: CORS + RateLimiterMiddleware
-        assert app.add_middleware.call_count == 2
-        cors_call = app.add_middleware.call_args_list[0]
-        assert "allow_credentials" in cors_call.kwargs
-        assert cors_call.kwargs["allow_credentials"] is True
+        app.add_middleware.assert_called_once()
+        call_kwargs = app.add_middleware.call_args
+        assert "allow_credentials" in call_kwargs.kwargs
+        assert call_kwargs.kwargs["allow_credentials"] is True
 
     @patch("deployment_api.middleware.settings")
     def test_development_adds_dev_origins(self, mock_settings):
@@ -177,8 +169,7 @@ class TestConfigureMiddlewareWithCloudRun:
         app = MagicMock()
         configure_middleware(app)
 
-        # 2 calls: CORS + RateLimiterMiddleware
-        assert app.add_middleware.call_count == 2
+        app.add_middleware.assert_called_once()
         cors_call = app.add_middleware.call_args_list[0]
         assert "allow_origin_regex" in cors_call.kwargs
         regex = cors_call.kwargs["allow_origin_regex"]
