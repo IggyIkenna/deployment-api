@@ -45,6 +45,22 @@ def _mtds_defi_manifest() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+_DRILLDOWN_NODE_GOLDEN_KEYS: frozenset[str] = frozenset(
+    {
+        "axis",
+        "value",
+        "captured",
+        "empty_confirmed",
+        "attempted_failed",
+        "total",
+        "completion_pct",
+        "row_key",
+        "children",
+        "is_leaf",
+    }
+)
+
+
 class TestDrilldownNodeShape:
     def test_completion_pct_is_captured_over_total(self) -> None:
         node = DrilldownNode(
@@ -66,6 +82,92 @@ class TestDrilldownNodeShape:
         children = d["children"]
         assert isinstance(children, list)
         assert len(children) == 1
+
+    def test_to_dict_golden_schema_has_exactly_ten_keys(self) -> None:
+        node = DrilldownNode(axis="venue", value="BINANCE", captured=5)
+        d = node.to_dict()
+        assert set(d.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS, (
+            f"to_dict() key set drifted. Missing: {_DRILLDOWN_NODE_GOLDEN_KEYS - set(d.keys())}. "
+            f"Extra: {set(d.keys()) - _DRILLDOWN_NODE_GOLDEN_KEYS}."
+        )
+
+    def test_to_dict_axis_is_str(self) -> None:
+        d = DrilldownNode(axis="chain", value="ARBITRUM").to_dict()
+        assert isinstance(d["axis"], str)
+
+    def test_to_dict_value_is_str(self) -> None:
+        d = DrilldownNode(axis="chain", value="ARBITRUM").to_dict()
+        assert isinstance(d["value"], str)
+
+    def test_to_dict_captured_is_int(self) -> None:
+        d = DrilldownNode(axis="venue", value="X", captured=3).to_dict()
+        assert isinstance(d["captured"], int)
+
+    def test_to_dict_empty_confirmed_is_int(self) -> None:
+        d = DrilldownNode(axis="venue", value="X", empty_confirmed=2).to_dict()
+        assert isinstance(d["empty_confirmed"], int)
+
+    def test_to_dict_attempted_failed_is_int(self) -> None:
+        d = DrilldownNode(axis="venue", value="X", attempted_failed=1).to_dict()
+        assert isinstance(d["attempted_failed"], int)
+
+    def test_to_dict_total_is_int_and_sum(self) -> None:
+        node = DrilldownNode(
+            axis="venue", value="X", captured=4, empty_confirmed=2, attempted_failed=1
+        )
+        d = node.to_dict()
+        assert isinstance(d["total"], int)
+        assert d["total"] == 7
+
+    def test_to_dict_completion_pct_is_float(self) -> None:
+        node = DrilldownNode(
+            axis="venue", value="X", captured=80, empty_confirmed=15, attempted_failed=5
+        )
+        d = node.to_dict()
+        assert isinstance(d["completion_pct"], float)
+        assert d["completion_pct"] == 80.0
+
+    def test_to_dict_row_key_is_dict(self) -> None:
+        node = DrilldownNode(axis="venue", value="X", row_key={"venue": "X", "date": "2024-03-01"})
+        d = node.to_dict()
+        assert isinstance(d["row_key"], dict)
+
+    def test_to_dict_row_key_default_is_empty_dict(self) -> None:
+        d = DrilldownNode(axis="venue", value="X").to_dict()
+        assert d["row_key"] == {}
+
+    def test_to_dict_children_is_list(self) -> None:
+        d = DrilldownNode(axis="venue", value="X").to_dict()
+        assert isinstance(d["children"], list)
+
+    def test_to_dict_children_are_dicts(self) -> None:
+        child = DrilldownNode(axis="date", value="2024-03-01", captured=1)
+        parent = DrilldownNode(axis="venue", value="X", children=[child])
+        d = parent.to_dict()
+        for c in d["children"]:
+            assert isinstance(c, dict)
+
+    def test_to_dict_children_have_golden_keys(self) -> None:
+        child = DrilldownNode(axis="date", value="2024-03-01", captured=1)
+        parent = DrilldownNode(axis="venue", value="X", children=[child])
+        d = parent.to_dict()
+        assert len(d["children"]) == 1
+        child_dict = d["children"][0]
+        assert set(child_dict.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS
+
+    def test_to_dict_is_leaf_true_when_no_children(self) -> None:
+        d = DrilldownNode(axis="date", value="2024-03-01").to_dict()
+        assert d["is_leaf"] is True
+
+    def test_to_dict_is_leaf_false_when_has_children(self) -> None:
+        child = DrilldownNode(axis="date", value="2024-03-01")
+        parent = DrilldownNode(axis="venue", value="X", children=[child])
+        assert parent.to_dict()["is_leaf"] is False
+
+    def test_to_dict_completion_pct_zero_when_total_zero(self) -> None:
+        d = DrilldownNode(axis="venue", value="X").to_dict()
+        assert d["total"] == 0
+        assert d["completion_pct"] == 0.0
 
 
 class TestHierarchicalDrilldown:
