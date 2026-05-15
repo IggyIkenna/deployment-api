@@ -30,6 +30,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from unified_trading_library import log_event
@@ -186,12 +187,36 @@ async def approve_instruction(instruction_id: str) -> ApproveRejectResponse:
             message=f"Instruction {instruction_id} approved — forwarded to execution-service.",
         )
 
-    # Production path: delegate to execution-service via PubSub
+    # Production path: forward to execution-service approve endpoint.
     log_event(
         "MANUAL_APPROVED",
         details={"instruction_id": instruction_id, "source": "dart_ui"},
     )
-    raise HTTPException(status_code=501, detail="Production manual-pending routing not yet wired")
+    exec_url = f"{_cfg.execution_service_url.rstrip('/')}/manual/pending/{instruction_id}/approve"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(exec_url)
+    except httpx.RequestError as exc:
+        logger.error("[manual_pending] execution-service unreachable for approve: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="execution-service unreachable — cannot unhold instruction"
+        ) from exc
+    if resp.status_code not in (200, 201):
+        logger.error(
+            "[manual_pending] execution-service approve returned %d: %s",
+            resp.status_code,
+            resp.text[:200],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"execution-service approve failed ({resp.status_code})",
+        )
+    logger.info("[manual_pending] Approved instruction_id=%s via execution-service", instruction_id)
+    return ApproveRejectResponse(
+        instruction_id=instruction_id,
+        action="approved",
+        message=f"Instruction {instruction_id} approved and forwarded to execution-service.",
+    )
 
 
 @router.post(
@@ -231,8 +256,33 @@ async def reject_instruction(
             message=f"Instruction {instruction_id} rejected — reason logged to audit trail.",
         )
 
+    # Production path: forward to execution-service reject endpoint.
     log_event(
         "MANUAL_REJECTED",
         details={"instruction_id": instruction_id, "reason": body.reason, "source": "dart_ui"},
     )
-    raise HTTPException(status_code=501, detail="Production manual-pending routing not yet wired")
+    exec_url = f"{_cfg.execution_service_url.rstrip('/')}/manual/pending/{instruction_id}/reject"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(exec_url, json={"reason": body.reason})
+    except httpx.RequestError as exc:
+        logger.error("[manual_pending] execution-service unreachable for reject: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="execution-service unreachable — cannot reject instruction"
+        ) from exc
+    if resp.status_code not in (200, 201):
+        logger.error(
+            "[manual_pending] execution-service reject returned %d: %s",
+            resp.status_code,
+            resp.text[:200],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"execution-service reject failed ({resp.status_code})",
+        )
+    logger.info("[manual_pending] Rejected instruction_id=%s via execution-service", instruction_id)
+    return ApproveRejectResponse(
+        instruction_id=instruction_id,
+        action="rejected",
+        message=f"Instruction {instruction_id} rejected — reason logged to execution-service.",
+    )

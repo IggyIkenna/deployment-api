@@ -426,6 +426,15 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Base URL for the deployment-service HTTP API",
     )
 
+    execution_service_url: str = Field(
+        default="http://localhost:8018",
+        validation_alias=AliasChoices("EXECUTION_SERVICE_URL"),
+        description=(
+            "Base URL for the execution-service HTTP API. Used by the manual-pending "
+            "approve/reject endpoints to forward operator decisions to the execution queue."
+        ),
+    )
+
     deployment_service_timeout_seconds: float = Field(
         default=300.0,
         validation_alias=AliasChoices("DEPLOYMENT_SERVICE_TIMEOUT_SECONDS"),
