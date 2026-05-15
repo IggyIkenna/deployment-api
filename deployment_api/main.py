@@ -231,6 +231,14 @@ async def metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+# /api/openapi.json — convenience alias for the auto-generated FastAPI schema.
+# Registered before health_router to prevent the catch-all from intercepting it.
+@app.get("/api/openapi.json", include_in_schema=False)
+async def api_openapi_spec() -> JSONResponse:
+    """Return the auto-generated OpenAPI 3.x schema for this service."""
+    return JSONResponse(app.openapi())
+
+
 # --- Unauthenticated health / utility routes (no API key required) ---
 app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
@@ -313,7 +321,7 @@ if _ui_dist:
             or full_path.startswith("assets/")
             or full_path.startswith("stream/")
             or full_path.startswith("infra/")
-            or full_path in {"metrics", "docs", "redoc", "openapi.json"}
+            or full_path in {"metrics", "docs", "redoc", "openapi.json", "ws"}
         ):
             raise HTTPException(status_code=404, detail="Not Found")
         candidate = _ui_dist / full_path
