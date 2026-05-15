@@ -291,3 +291,78 @@ class TestSimpleHealthDataFreshness:
         freshness = result["data_freshness"]
         assert isinstance(freshness.get("last_processed_date"), str)
         assert isinstance(freshness.get("stale"), bool)
+
+
+class TestDetailedHealthCheck:
+    """Tests for GET /api/health/detailed — per-component status."""
+
+    @pytest.mark.asyncio
+    async def test_mock_mode_returns_all_up(self):
+        with patch("deployment_api.health_routes._cloud_cfg") as mock_cfg:
+            mock_cfg.is_mock_mode.return_value = True
+            from deployment_api.health_routes import detailed_health_check
+
+            result = await detailed_health_check()
+
+        assert result["status"] == "healthy"
+        assert result["mock_mode"] is True
+        for component in ("gcs", "pubsub", "secret_manager", "deployment_events"):
+            assert result["components"][component]["status"] == "up"
+
+    @pytest.mark.asyncio
+    async def test_all_components_up_returns_healthy(self):
+        _up: dict[str, object] = {"status": "up", "detail": None}
+        with (
+            patch("deployment_api.health_routes._cloud_cfg") as mock_cfg,
+            patch("deployment_api.health_routes._check_gcs", return_value=_up),
+            patch("deployment_api.health_routes._check_pubsub", return_value=_up),
+            patch("deployment_api.health_routes._check_secret_manager", return_value=_up),
+            patch("deployment_api.health_routes._check_deployment_events", return_value=_up),
+        ):
+            mock_cfg.is_mock_mode.return_value = False
+            from deployment_api.health_routes import detailed_health_check
+
+            result = await detailed_health_check()
+
+        assert result["status"] == "healthy"
+        assert result["mock_mode"] is False
+        assert "checked_at" in result
+        assert "version" in result
+
+    @pytest.mark.asyncio
+    async def test_one_component_down_returns_degraded(self):
+        _up: dict[str, object] = {"status": "up", "detail": None}
+        _down: dict[str, object] = {"status": "down", "detail": "connection refused"}
+        with (
+            patch("deployment_api.health_routes._cloud_cfg") as mock_cfg,
+            patch("deployment_api.health_routes._check_gcs", return_value=_down),
+            patch("deployment_api.health_routes._check_pubsub", return_value=_up),
+            patch("deployment_api.health_routes._check_secret_manager", return_value=_up),
+            patch("deployment_api.health_routes._check_deployment_events", return_value=_up),
+        ):
+            mock_cfg.is_mock_mode.return_value = False
+            from deployment_api.health_routes import detailed_health_check
+
+            result = await detailed_health_check()
+
+        assert result["status"] == "degraded"
+        assert result["components"]["gcs"]["status"] == "down"
+
+    @pytest.mark.asyncio
+    async def test_all_components_down_returns_degraded(self):
+        _down: dict[str, object] = {"status": "down", "detail": "error"}
+        with (
+            patch("deployment_api.health_routes._cloud_cfg") as mock_cfg,
+            patch("deployment_api.health_routes._check_gcs", return_value=_down),
+            patch("deployment_api.health_routes._check_pubsub", return_value=_down),
+            patch("deployment_api.health_routes._check_secret_manager", return_value=_down),
+            patch("deployment_api.health_routes._check_deployment_events", return_value=_down),
+        ):
+            mock_cfg.is_mock_mode.return_value = False
+            from deployment_api.health_routes import detailed_health_check
+
+            result = await detailed_health_check()
+
+        assert result["status"] == "degraded"
+        for component in ("gcs", "pubsub", "secret_manager", "deployment_events"):
+            assert result["components"][component]["status"] == "down"
