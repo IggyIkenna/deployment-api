@@ -575,7 +575,39 @@ def tail_vm_logs(
     )
 
 
-# Re-exported for tests + helpers that want the inferred-service helper without
-# round-tripping through HTTP. Kept at module level rather than inline so test
-# fixtures can import it directly (e.g. when constructing fake bucket layouts).
-__all__ = ["_infer_service_from_vm_name", "_resolve_events_bucket", "router"]
+def infer_service_from_vm_name(vm_name: str) -> str:
+    """Public wrapper — see `_infer_service_from_vm_name` for details."""
+    return _infer_service_from_vm_name(vm_name)
+
+
+def fetch_vm_events_window(
+    vm_name: str,
+    service: str,
+    date: str,
+    start_hour: int,
+    end_hour: int,
+) -> VMEventListResult:
+    """Public helper for callers that need raw event lists (e.g. vm_health)."""
+    return _list_real_events(
+        vm_name=vm_name,
+        service=service,
+        date=date,
+        start_hour=start_hour,
+        end_hour=end_hour,
+        severity_threshold=0,
+        page_size=5000,
+        next_page_token=None,
+    )
+
+
+def mock_vm_events_for_date(vm_name: str, service: str, date: str) -> VMEventListResult:
+    """Public wrapper around _mock_events for external callers."""
+    return _mock_events(vm_name, service, date)
+
+
+__all__ = [
+    "fetch_vm_events_window",
+    "infer_service_from_vm_name",
+    "mock_vm_events_for_date",
+    "router",
+]

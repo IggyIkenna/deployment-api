@@ -94,6 +94,7 @@ from .routes import (
     vm_deployments,
     vm_events,
     vm_events_ws,
+    vm_health,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,7 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM Admin"])
 _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
+_authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM Health"])
 _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
