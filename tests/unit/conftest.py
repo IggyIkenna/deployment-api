@@ -337,6 +337,11 @@ def _ensure_external_packages_mocked() -> None:
             },
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
             "deployment.quota_broker_client": {"QuotaBrokerClient": MagicMock()},
+            "deployments_registry": {
+                "DEFAULT_BUCKET": "test-deployments-bucket",
+                "DeploymentRegistryEntry": MagicMock(),
+                "DeploymentsRegistry": MagicMock(),
+            },
         }.items():
             full = f"deployment_service.{sub_name}"
             sub_mod = ModuleType(full)
