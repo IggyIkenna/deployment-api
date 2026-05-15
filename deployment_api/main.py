@@ -47,6 +47,7 @@ from deployment_api.lifespan import lifespan
 from deployment_api.middleware import (
     CorrelationIdMiddleware,
     PrometheusMiddleware,
+    RateLimitMiddleware,
     configure_middleware,
 )
 from deployment_api.utils.service_utils import get_ui_dist_dir
@@ -112,6 +113,7 @@ configure_middleware(app)
 app.add_middleware(PrometheusMiddleware, service_name="deployment-api")  # pyright: ignore[reportArgumentType]
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(RequestAuditMiddleware)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=60)  # pyright: ignore[reportArgumentType]
 
 
 # --- Standard error handler ---

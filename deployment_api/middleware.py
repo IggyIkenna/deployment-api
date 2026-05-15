@@ -6,6 +6,7 @@ Handles CORS setup and other middleware configurations.
 
 import time
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI
@@ -51,6 +52,54 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         RECORDS_PROCESSED.labels(status=status).inc()
         PROCESSING_LATENCY.observe(duration)
         return response
+
+
+_RATE_LIMIT_EXEMPT_PREFIXES = ("/health", "/metrics", "/infra/health")
+_RATE_LIMIT_WINDOW_SECS = 60.0
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Sliding-window per-IP rate limiter.
+
+    Exempt paths: /health*, /metrics, /infra/health.
+    Default: 60 requests / 60 seconds per client IP.
+    Returns HTTP 429 with Retry-After header on exceed.
+    """
+
+    def __init__(self, app: ASGIApp, requests_per_minute: int = 60) -> None:
+        super().__init__(app)
+        self.limit = requests_per_minute
+        self._windows: dict[str, deque[float]] = {}
+
+    async def dispatch(self, request: Request, call_next: _RequestResponseEndpoint) -> Response:
+        path: str = request.url.path
+        if any(path.startswith(p) for p in _RATE_LIMIT_EXEMPT_PREFIXES):
+            return await call_next(request)
+
+        client_ip: str = request.client.host if request.client else "unknown"
+        now = time.time()
+        cutoff = now - _RATE_LIMIT_WINDOW_SECS
+
+        if client_ip not in self._windows:
+            self._windows[client_ip] = deque()
+        bucket = self._windows[client_ip]
+
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+
+        if len(bucket) >= self.limit:
+            _body = (
+                '{"error":{"code":"RATE_LIMITED","message":"Too many requests"},"retry_after":60}'
+            )
+            return Response(
+                content=_body,
+                status_code=429,
+                media_type="application/json",
+                headers={"Retry-After": "60"},
+            )
+
+        bucket.append(now)
+        return await call_next(request)
 
 
 def configure_middleware(app: FastAPI) -> None:
