@@ -41,7 +41,7 @@ setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version
 from deployment_api.auth import auth_cfg as _auth_cfg
-from deployment_api.auth import verify_api_key
+from deployment_api.firebase_auth import verify_any_auth
 from deployment_api.health_routes import router as health_router
 from deployment_api.lifespan import lifespan
 from deployment_api.middleware import (
@@ -138,8 +138,8 @@ async def standard_error_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
-# --- Authenticated API routes (require API key) ---
-_authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
+# --- Authenticated API routes (accept X-API-Key or Firebase Bearer token) ---
+_authenticated_router = APIRouter(dependencies=[Depends(verify_any_auth)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
 _authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
