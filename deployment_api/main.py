@@ -70,6 +70,7 @@ from .routes import (
     infra_health,
     kill_switch_routes,
     manual_pending,
+    promote,
     repo_readiness,
     risk_routes,
     service_status,
@@ -179,6 +180,7 @@ _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
+_authenticated_router.include_router(promote.router, prefix="/api", tags=["Promote Workflow"])
 _authenticated_router.include_router(
     manual_pending.router, prefix="/api", tags=["Manual Pending Queue"]
 )
