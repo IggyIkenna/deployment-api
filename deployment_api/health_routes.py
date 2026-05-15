@@ -24,6 +24,7 @@ _cloud_cfg = UnifiedCloudConfig()
 
 # --- Per-component health probes (isolated for testability) ---
 
+
 def _check_gcs() -> dict[str, object]:
     """Probe GCS reachability by attempting to instantiate the storage client."""
     try:

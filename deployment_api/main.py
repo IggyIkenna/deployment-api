@@ -66,6 +66,7 @@ from .routes import (
     config_management,
     data_status,
     deploy_events_sse,
+    deployment_diff,
     deployments,
     epics,
     execution_backtest_launch,
@@ -204,6 +205,7 @@ _authenticated_router.include_router(
 )
 _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM Admin"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
+_authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])

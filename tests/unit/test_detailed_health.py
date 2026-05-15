@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -17,6 +16,8 @@ from deployment_api.health_routes import (
     _check_gcs,
     _check_pubsub,
     _check_secret_manager,
+)
+from deployment_api.health_routes import (
     router as health_router,
 )
 
@@ -86,9 +87,7 @@ class TestDetailedHealthEndpoint:
             patch("deployment_api.health_routes._check_gcs", return_value=up_result),
             patch("deployment_api.health_routes._check_pubsub", return_value=up_result),
             patch("deployment_api.health_routes._check_secret_manager", return_value=up_result),
-            patch(
-                "deployment_api.health_routes._check_deployment_events", return_value=up_result
-            ),
+            patch("deployment_api.health_routes._check_deployment_events", return_value=up_result),
         ):
             mock_cfg.is_mock_mode.return_value = False
             mock_cfg.gcp_project_id = "test-project"
@@ -163,9 +162,7 @@ class TestCheckPubsub:
         assert result["status"] == "up"
 
     def test_down_when_subscriber_raises(self) -> None:
-        with patch(
-            "google.cloud.pubsub_v1.SubscriberClient", side_effect=Exception("pubsub down")
-        ):
+        with patch("google.cloud.pubsub_v1.SubscriberClient", side_effect=Exception("pubsub down")):
             with patch("deployment_api.health_routes._cloud_cfg") as mock_cfg:
                 mock_cfg.gcp_project_id = "test-proj"
                 result = _check_pubsub()
