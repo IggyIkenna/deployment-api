@@ -64,6 +64,7 @@ from .routes import (
     commentary,
     config,
     config_management,
+    cost_daily,
     data_status,
     deploy_events_sse,
     deployment_diff,
@@ -209,6 +210,7 @@ _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM A
 _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM Health"])
+_authenticated_router.include_router(cost_daily.router, prefix="/api", tags=["Costs"])
 _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
