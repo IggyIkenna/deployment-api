@@ -66,10 +66,12 @@ from .routes import (
     deploy_events_sse,
     deployments,
     epics,
+    execution_backtest_launch,
     fixtures,
     infra_health,
     kill_switch_routes,
     manual_pending,
+    ml_experiment_launch,
     promote,
     repo_readiness,
     risk_routes,
@@ -77,6 +79,7 @@ from .routes import (
     services,
     shard_detail,
     sports_venues,
+    strategy_backtest_launch,
     strategy_runs,
     subscriptions,
     treasury,
@@ -175,6 +178,15 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=["VM Deployments"])
 _authenticated_router.include_router(
     backfill_launch.router, prefix="/api/backfill", tags=["Backfill"]
+)
+_authenticated_router.include_router(
+    ml_experiment_launch.router, prefix="/api/ml/experiment", tags=["ML Experiment"]
+)
+_authenticated_router.include_router(
+    strategy_backtest_launch.router, prefix="/api/strategy/backtest", tags=["Strategy Backtest"]
+)
+_authenticated_router.include_router(
+    execution_backtest_launch.router, prefix="/api/execution/backtest", tags=["Execution Backtest"]
 )
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])

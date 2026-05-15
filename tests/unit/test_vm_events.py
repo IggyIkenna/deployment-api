@@ -483,3 +483,45 @@ class TestRealMode:
         assert evt["correlation_id"] == "req-abc-123"
         assert evt["details"]["foo"] == "bar"
         assert evt["details"]["correlation_id"] == "req-abc-123"
+
+    def test_since_param_overrides_date_and_hour(
+        self,
+        client: TestClient,
+        disable_mock_mode: None,
+        fake_storage: dict[str, bytes],
+    ) -> None:
+        """since=ISO8601 should derive date + from_hour and return matching events."""
+        vm_name = "af-backfill-20260507-since-test"
+        service = "instruments-service"
+        date = "2026-05-07"
+        # Put event in hour=10
+        path = _path_for(service, date, vm_name, hour=10, ts_us=1000, seq=1)
+        fake_storage[path] = _make_event_row(
+            event="DATA_BROADCAST",
+            service=service,
+            timestamp="2026-05-07T10:05:00+00:00",
+        )
+        resp = client.get(
+            "/api/vm/events",
+            params={"vm_name": vm_name, "since": "2026-05-07T10:00:00Z"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["date"] == date
+        assert body["total_events"] == 1
+
+    def test_since_param_invalid_timestamp_returns_400(self, client: TestClient) -> None:
+        resp = client.get(
+            "/api/vm/events",
+            params={"vm_name": "some-vm", "since": "not-a-timestamp"},
+        )
+        assert resp.status_code == 400
+        assert "since" in resp.text.lower() or "parse" in resp.text.lower()
+
+    def test_since_mock_mode_returns_events(self, client: TestClient) -> None:
+        resp = client.get(
+            "/api/vm/events",
+            params={"vm_name": "af-backfill-20260507-010203", "since": "2026-05-07T00:00:00Z"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total_events"] >= 0

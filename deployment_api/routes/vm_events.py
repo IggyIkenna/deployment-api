@@ -104,6 +104,20 @@ def _infer_service_from_vm_name(vm_name: str) -> str:
     return matches[0][1]
 
 
+def _parse_since(since: str) -> tuple[str, int]:
+    """Parse ISO 8601 `since` timestamp into (YYYY-MM-DD, hour_int).
+
+    Returns the date string and the UTC hour so the caller can set
+    date + from_hour for the blob scan.
+    """
+    try:
+        ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Cannot parse `since` as ISO 8601 timestamp: {since!r}") from exc
+    ts_utc = ts.astimezone(UTC)
+    return ts_utc.strftime("%Y-%m-%d"), ts_utc.hour
+
+
 def _normalise_date(date: str | None) -> str:
     """Default to today UTC; validate YYYY-MM-DD shape."""
     if date is None:
@@ -326,8 +340,20 @@ def list_vm_events(
         None,
         description="Service name partition. Inferred from vm_name prefix if omitted.",
     ),
-    date: str | None = Query(None, description="YYYY-MM-DD (default: today UTC)"),
-    from_hour: int | None = Query(None, ge=0, le=23, description="Inclusive (default: 0)"),
+    since: str | None = Query(
+        None,
+        description=(
+            "ISO 8601 timestamp — return events at or after this time. "
+            "When set, overrides `date` and `from_hour` (derived from the timestamp). "
+            "Example: 2026-05-15T10:00:00Z"
+        ),
+    ),
+    date: str | None = Query(
+        None, description="YYYY-MM-DD (default: today UTC). Ignored when `since` is set."
+    ),
+    from_hour: int | None = Query(
+        None, ge=0, le=23, description="Inclusive (default: 0). Ignored when `since` is set."
+    ),
     to_hour: int | None = Query(
         None, ge=0, le=23, description="Inclusive (default: today=current hour, else 23)"
     ),
@@ -346,7 +372,13 @@ def list_vm_events(
     """Return VM lifecycle events parsed from the events bucket.
 
     Auth is enforced upstream by `_authenticated_router` (verify_api_key).
+    When `since` is provided it takes precedence over `date` + `from_hour`.
     """
+    if since is not None:
+        try:
+            date, from_hour = _parse_since(since)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     resolved_service = service if service is not None else _infer_service_from_vm_name(vm_name)
     resolved_date = _normalise_date(date)
     start_hour, end_hour = _normalise_hour_range(from_hour, to_hour, resolved_date)
