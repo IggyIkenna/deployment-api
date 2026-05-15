@@ -57,35 +57,46 @@ def _empty_manifest() -> pd.DataFrame:
 
 
 # Restrict to the canonical (service, asset_group) pairs we ship today.
-# The full SHARD_AXIS_MATRIX has experimental entries (training periods)
-# that don't yet have a stable manifest layout.
+# ml-training-service is excluded: its ``training_period`` axis is
+# experimental and does not yet have a stable manifest layout.
 # NOTE: features-* sub-family service names (features-delta-one-service,
 # features-volatility-service, features-onchain-service, features-sports-service)
 # were consolidated into ``features-service`` in UAC
 # ``data_status_axis_matrix.py`` (2026-05-14 consolidation). Use the
 # canonical ``features-service`` keys from SHARD_AXIS_MATRIX.
 _PUBLIC_SERVICE_PAIRS: tuple[tuple[str, str], ...] = (
-    ("instruments-service", "cefi"),
-    ("instruments-service", "tradfi"),
-    ("instruments-service", "defi"),
-    ("instruments-service", "sports"),
-    ("instruments-service", "prediction"),
-    ("market-tick-data-service", "cefi"),
-    ("market-tick-data-service", "tradfi"),
-    ("market-tick-data-service", "defi"),
-    ("market-tick-data-service", "sports"),
-    ("market-tick-data-service", "prediction"),
-    ("market-data-processing-service", "cefi"),
-    ("market-data-processing-service", "tradfi"),
-    ("market-data-processing-service", "defi"),
-    ("market-data-processing-service", "sports"),
-    ("market-data-processing-service", "prediction"),
+    ("execution-service", "cefi"),
+    ("execution-service", "defi"),
+    ("execution-service", "prediction"),
+    ("execution-service", "sports"),
+    ("execution-service", "tradfi"),
     ("features-service", "cefi"),
-    ("features-service", "tradfi"),
     ("features-service", "defi"),
-    ("features-service", "sports"),
-    ("features-service", "shared"),
     ("features-service", "prediction"),
+    ("features-service", "shared"),
+    ("features-service", "sports"),
+    ("features-service", "tradfi"),
+    ("instruments-service", "cefi"),
+    ("instruments-service", "defi"),
+    ("instruments-service", "prediction"),
+    ("instruments-service", "sports"),
+    ("instruments-service", "tradfi"),
+    ("market-data-processing-service", "cefi"),
+    ("market-data-processing-service", "defi"),
+    ("market-data-processing-service", "prediction"),
+    ("market-data-processing-service", "sports"),
+    ("market-data-processing-service", "tradfi"),
+    ("market-tick-data-service", "cefi"),
+    ("market-tick-data-service", "defi"),
+    ("market-tick-data-service", "prediction"),
+    ("market-tick-data-service", "sports"),
+    ("market-tick-data-service", "tradfi"),
+    ("ml-inference-service", "shared"),
+    ("strategy-service", "cefi"),
+    ("strategy-service", "defi"),
+    ("strategy-service", "prediction"),
+    ("strategy-service", "sports"),
+    ("strategy-service", "tradfi"),
 )
 
 
