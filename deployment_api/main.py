@@ -54,6 +54,7 @@ from deployment_api.utils.service_utils import get_ui_dist_dir
 from .routes import (
     backfill_launch,
     builds,
+    builds_history,
     capabilities,
     chaos_injections,
     checklist,
@@ -166,6 +167,9 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(
     chaos_injections.router, prefix="/api", tags=["Chaos Injection"]
 )
+_authenticated_router.include_router(
+    builds_history.router, prefix="/api/builds", tags=["Builds"]
+)  # must be registered BEFORE builds.router (static /history before /{service})
 _authenticated_router.include_router(
     builds.router
 )  # /api/builds/{service} + /api/deployments/{service}/deploy

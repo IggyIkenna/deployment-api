@@ -31,14 +31,12 @@ from unified_api_contracts.internal.domain.strategy_service import (
     StrategyMaturityPhase,
 )
 from unified_trading_library import (
-    CandidateManifestStore,
-    UnifiedCloudConfig,
-    log_event,
-)
-from unified_trading_library.events import (
     STRATEGY_PROMOTE_REJECTED,
     STRATEGY_PROMOTED_TO_LIVE,
     STRATEGY_PROMOTED_TO_PAPER,
+    CandidateManifestStore,
+    UnifiedCloudConfig,
+    log_event,
 )
 
 from deployment_api.auth import verify_api_key
