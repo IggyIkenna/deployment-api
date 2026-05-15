@@ -400,6 +400,88 @@ def list_vm_events(
     )
 
 
+@router.get("/{vm_name}/events", response_model=VMEventListResult)
+def list_filtered_vm_events(
+    vm_name: str,
+    service: str | None = Query(
+        None,
+        description="Service name partition. Inferred from vm_name prefix if omitted.",
+    ),
+    since: str | None = Query(
+        None,
+        description="ISO 8601 timestamp — return events at or after this time.",
+    ),
+    type: str | None = Query(
+        None,
+        description="Filter by event type, e.g. STARTED, STOPPED, DATA_BROADCAST.",
+    ),
+    limit: int = Query(
+        100,
+        ge=1,
+        le=5000,
+        description="Max number of events to return (default 100).",
+    ),
+) -> VMEventListResult:
+    """Return VM lifecycle events filtered by type/time, path-param based.
+
+    Extends the query-param GET /events with path-based {vm_name}, event-type
+    filter, and a limit cap (simpler than full pagination for log-viewer use).
+    """
+    resolved_service = service if service is not None else _infer_service_from_vm_name(vm_name)
+
+    if _cfg.is_mock_mode():
+        resolved_date = datetime.now(UTC).strftime("%Y-%m-%d")
+        result = _mock_events(vm_name, resolved_service, resolved_date)
+        filtered = [e for e in result.events if type is None or e.event == type]
+        limited = filtered[:limit]
+        return VMEventListResult(
+            vm_name=vm_name,
+            service=resolved_service,
+            date=resolved_date,
+            events=limited,
+            total_events=len(filtered),
+            hours_scanned=result.hours_scanned,
+            truncated=len(filtered) > limit,
+            next_page_token=None,
+        )
+
+    try:
+        resolved_date, start_hour = (
+            _parse_since(since)
+            if since is not None
+            else (datetime.now(UTC).strftime("%Y-%m-%d"), 0)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        real_result = _list_real_events(
+            vm_name=vm_name,
+            service=resolved_service,
+            date=resolved_date,
+            start_hour=start_hour,
+            end_hour=23,
+            severity_threshold=0,
+            page_size=limit,
+            next_page_token=None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filtered = [e for e in real_result.events if type is None or e.event == type]
+    limited = filtered[:limit]
+    return VMEventListResult(
+        vm_name=vm_name,
+        service=resolved_service,
+        date=resolved_date,
+        events=limited,
+        total_events=len(filtered),
+        hours_scanned=real_result.hours_scanned,
+        truncated=len(filtered) > limit,
+        next_page_token=None,
+    )
+
+
 def _collect_blob_names(
     storage: object,
     bucket: str,
