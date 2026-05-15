@@ -216,18 +216,21 @@ _authenticated_router.include_router(client_treasury.router, prefix="/api", tags
 app.include_router(kill_switch_routes.router)
 app.include_router(_authenticated_router)
 
+
+# Register /metrics BEFORE health_router to avoid the health_router /{full_path:path}
+# catch-all intercepting it (routes are matched in registration order).
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    """Prometheus metrics endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 # --- Unauthenticated health / utility routes (no API key required) ---
 app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 app.include_router(make_events_relay_router())
 app.include_router(deploy_events_sse.router)  # GET /stream/deploy-events (SSE)
 app.include_router(vm_events_ws.router)  # WS /ws/vm/{vm_name}/events — live event stream
-
-
-@app.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
-    """Prometheus metrics endpoint."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 class PipelineTriggerRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
