@@ -74,6 +74,7 @@ from .routes import (
     manual_pending,
     ml_experiment_launch,
     promote,
+    recursive_borrow_coverage,
     repo_readiness,
     risk_routes,
     service_status,
@@ -153,6 +154,11 @@ _authenticated_router.include_router(
 )
 _authenticated_router.include_router(
     shard_detail.router, prefix="/api/data-status", tags=["Data Status"]
+)
+_authenticated_router.include_router(
+    recursive_borrow_coverage.router,
+    prefix="/api/data-status",
+    tags=["Data Status"],
 )
 _authenticated_router.include_router(fixtures.router, prefix="/api")
 _authenticated_router.include_router(
