@@ -24,6 +24,7 @@ from . import (
     treasury,
     treasury_routes,
     user_management,
+    vm_cost_estimate,
     vm_events,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "treasury",
     "treasury_routes",
     "user_management",
+    "vm_cost_estimate",
     "vm_events",
 ]

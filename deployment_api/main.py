@@ -90,6 +90,7 @@ from .routes import (
     treasury_routes,
     user_management,
     vm_admin,
+    vm_cost_estimate,
     vm_deployments,
     vm_events,
     vm_events_ws,
@@ -204,6 +205,7 @@ _authenticated_router.include_router(
     execution_backtest_launch.router, prefix="/api/execution/backtest", tags=["Execution Backtest"]
 )
 _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM Admin"])
+_authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
