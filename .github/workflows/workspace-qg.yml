@@ -36,7 +36,7 @@
 #
 # ## Substitution placeholders:
 #
-# - `unified-trading-library unified-api-contracts deployment-service position-balance-monitor-service` — rendered from workspace-manifest.json by rollout-workflow-templates.sh
+# - `unified-trading-library unified-api-contracts deployment-service position-balance-monitor-service market-tick-data-service` — rendered from workspace-manifest.json by rollout-workflow-templates.sh
 # - `deployment-api` — repo name (e.g. alerting-service)
 # - `deployment_api` — Python source dir (e.g. alerting_service)
 
@@ -64,7 +64,7 @@ jobs:
     name: Quality Gates (deployment-api)
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates.yml@live-defi-rollout
     with:
-      dep_repos: "unified-trading-library unified-api-contracts deployment-service position-balance-monitor-service"
+      dep_repos: "unified-trading-library unified-api-contracts deployment-service position-balance-monitor-service market-tick-data-service"
     secrets: inherit
     # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
     # are derived inside the reusable workflow from github.repository (caller's repo name)
