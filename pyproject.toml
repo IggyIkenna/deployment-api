@@ -63,7 +63,7 @@ unified-api-contracts = { path = "../unified-api-contracts", editable = true}
 deployment-service = { path = "../deployment-service", editable = true}
 position-balance-monitor-service = { path = "../position-balance-monitor-service", editable = true}
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py313"
 
 [tool.ruff.lint]
