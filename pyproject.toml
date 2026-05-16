@@ -52,7 +52,7 @@ dependencies = [
     "pip-audit>=2.7.0,<3.0.0",
     "bandit>=1.7.0,<2.0.0",
     "pyjwt>=2.12.0,<3.0.0",
-    "cryptography>=46.0.7",
+    "cryptography<47.0.0,>=46.0.7",
     "pygments>=2.20.0,<3.0.0",
     "requests>=2.33.0,<3.0.0",
 ]
