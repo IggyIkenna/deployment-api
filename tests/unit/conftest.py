@@ -85,6 +85,12 @@ def _ensure_services_mocked() -> None:
     # rather than colliding with the MagicMock services package below.
     real_tarball_staleness = importlib.import_module("deployment_api.services.tarball_staleness")
 
+    # deploy_missing_launch is the Phase 2 auto-launch service
+    # (deploy_missing_auto_launch_2026_05_07.md Phase 2). Loaded as a real
+    # module so its unit tests can import DeployMissingRateLimiter etc.
+    # without hitting the fake services package's empty __path__.
+    real_deploy_missing_launch = importlib.import_module("deployment_api.services.deploy_missing_launch")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -132,6 +138,10 @@ def _ensure_services_mocked() -> None:
     # auto-launch plan Phase 1).
     sys.modules["deployment_api.services.tarball_staleness"] = real_tarball_staleness
     services_mod.tarball_staleness = real_tarball_staleness
+
+    # Re-register deploy_missing_launch as a real module (Phase 2 auto-launch).
+    sys.modules["deployment_api.services.deploy_missing_launch"] = real_deploy_missing_launch
+    services_mod.deploy_missing_launch = real_deploy_missing_launch
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
@@ -186,9 +196,7 @@ def _ensure_external_packages_mocked() -> None:
         sys.modules["backends"] = backends_mod
 
         for sub_name, attrs in {
-            "base": {
-                "JobStatus": MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")
-            },
+            "base": {"JobStatus": MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")},
             "cloud_run": {"CloudRunBackend": MagicMock()},
             "vm": {"VMBackend": MagicMock()},
         }.items():

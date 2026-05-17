@@ -58,6 +58,9 @@ from deployment_api.services.deploy_missing import (
     list_supported_services as deploy_missing_supported_services,
 )
 
+# deploy_missing_launch is imported lazily inside post_deploy_missing_launch
+# to break the services/__init__ → deployment_manager → routes → services circular chain.
+
 _cfg = DeploymentApiConfig()
 
 logger = logging.getLogger(__name__)
@@ -190,9 +193,7 @@ def _capture_status_response(
             error_reason=error_reason,
             attempted_at=attempted_at,
         )
-        headers["Content-Disposition"] = (
-            f'attachment; filename="{filename_stem}.empty_confirmed.csv"'
-        )
+        headers["Content-Disposition"] = f'attachment; filename="{filename_stem}.empty_confirmed.csv"'
         headers["X-Row-Count"] = "0"
         return Response(content=body, media_type="text/csv; charset=utf-8", headers=headers)
 
@@ -204,9 +205,7 @@ def _capture_status_response(
             error_reason=error_reason,
             attempted_at=attempted_at,
         )
-        headers["Content-Disposition"] = (
-            f'attachment; filename="{filename_stem}.attempted_failed.csv"'
-        )
+        headers["Content-Disposition"] = f'attachment; filename="{filename_stem}.attempted_failed.csv"'
         headers["X-Row-Count"] = "0"
         return Response(content=body, media_type="text/csv; charset=utf-8", headers=headers)
 
@@ -305,9 +304,7 @@ async def get_data_status(
         logger.exception("Error in get_data_status")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.post("/missing-shards")
@@ -340,9 +337,7 @@ async def calculate_missing_shards(
         logger.exception("Error in calculate_missing_shards")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/last-updated")
@@ -366,9 +361,7 @@ async def get_last_updated(
         logger.exception("Error in get_last_updated")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/manifest")
@@ -395,10 +388,7 @@ async def get_data_status_manifest(
     ),
     canonical_question_group: str | None = Query(
         None,
-        description=(
-            "Filter prediction manifest rows to one canonical_question_group "
-            "(e.g. 'BTC_UP_DOWN_HOURLY')."
-        ),
+        description=("Filter prediction manifest rows to one canonical_question_group (e.g. 'BTC_UP_DOWN_HOURLY')."),
     ),
     job_id: str | None = Query(
         None,
@@ -453,17 +443,13 @@ async def get_data_status_manifest(
         logger.exception("Error in get_data_status_manifest")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/coverage-summary")
 async def get_coverage_summary(
     service: str = Query("instruments-service", description="Service name"),
-    asset_groups: str | None = Query(
-        None, description="Comma-separated asset groups (e.g. CEFI,DEFI)"
-    ),
+    asset_groups: str | None = Query(None, description="Comma-separated asset groups (e.g. CEFI,DEFI)"),
 ):
     """Get coverage summary with shard counts and latest-day instrument totals."""
     if _cfg.is_mock_mode():
@@ -487,9 +473,7 @@ async def get_coverage_summary(
         return result
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_coverage_summary")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/drilldown/{service}/{asset_group}")
@@ -516,9 +500,7 @@ async def get_data_status_drilldown(
         ),
     ),
     timeframe: str | None = Query(None, description="Timeframe filter"),
-    canonical_question_group: str | None = Query(
-        None, description="Prediction canonical_question_group filter"
-    ),
+    canonical_question_group: str | None = Query(None, description="Prediction canonical_question_group filter"),
     expand_to_depth: int = Query(2, ge=0, le=10, description="Levels to materialise eagerly"),
     child_offset: int = Query(
         0,
@@ -634,6 +616,65 @@ async def post_deploy_missing_preview(
     except DeployMissingError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return preview.to_dict()
+
+
+@router.post("/deploy-missing-launch")
+async def post_deploy_missing_launch(
+    request: dict[str, object],
+) -> dict[str, object]:
+    """Auto-launch a backfill VM for ONE leaf shard (Phase 2 auto-launch).
+
+    Phase 0 Decision 3 rate limits: 30/op/hr · 200/op/day · 100/proj/hr.
+    Per-shard idempotency: returns existing running VM if shard already in-flight.
+    Blocks up to 90s waiting for the VM to emit STARTED.
+
+    Body shape::
+
+        {
+            "service":    "market-tick-data-service",
+            "asset_group": "defi",
+            "row_key":    {"venue": "AAVEV3-ARBITRUM",
+                           "data_type": "lending_indices",
+                           "instrument_id": "USDC",
+                           "day": "2024-03-04"},
+            "operator_id":         "operator@example.com",  // required
+            "dry_run":             false,                   // optional
+            "skip_tarball_check":  false                    // optional
+        }
+    """
+    from deployment_api.services.deploy_missing_launch import (
+        DeployMissingLaunchResult,
+        DeployMissingRateLimitError,
+        launch_deploy_missing_vm,
+    )
+
+    service = str(request.get("service", ""))
+    asset_group = str(request.get("asset_group", ""))
+    operator_id = str(request.get("operator_id", "unknown"))
+    raw_row_key = request.get("row_key", {})
+    dry_run = bool(request.get("dry_run", False))
+    skip_tarball_check = bool(request.get("skip_tarball_check", False))
+
+    if not isinstance(raw_row_key, dict):
+        raise HTTPException(status_code=400, detail="row_key must be an object")
+    row_key: dict[str, str] = {str(k): str(v) for k, v in raw_row_key.items()}
+    if not service or not asset_group:
+        raise HTTPException(status_code=400, detail="service and asset_group are required")
+
+    try:
+        result: DeployMissingLaunchResult = launch_deploy_missing_vm(
+            service=service,
+            asset_group=asset_group,
+            row_key=row_key,
+            operator_id=operator_id,
+            dry_run=dry_run,
+            skip_tarball_check=skip_tarball_check,
+        )
+    except DeployMissingRateLimitError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except DeployMissingError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return result.to_dict()
 
 
 @router.get("/deploy-missing-services")
@@ -782,9 +823,7 @@ async def get_data_status_turbo(
         logger.exception("Error in get_data_status_turbo")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/turbo/stats")
@@ -794,9 +833,7 @@ async def get_turbo_cache_stats():
         return await data_analytics_service.get_cache_stats()
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_turbo_cache_stats")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.post("/turbo/clear")
@@ -827,9 +864,7 @@ async def clear_turbo_cache():
         return await data_analytics_service.clear_cache()
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in clear_turbo_cache")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/venue-filters")
@@ -847,9 +882,7 @@ async def get_venue_filters(service: str = Query(..., description="Service name"
         logger.exception("Error in get_venue_filters")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/list-files")
@@ -877,9 +910,7 @@ async def list_files_in_path(
         if isinstance(e, HTTPException):
             raise
         logger.exception("Error in list_files_in_path")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/instruments")
@@ -907,21 +938,15 @@ async def get_instruments_list(
         logger.exception("Error in get_instruments_list")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/instruments/search")
 async def search_instruments(
-    query: str = Query(
-        ..., description="Case-insensitive substring; whitespace = AND-match across tokens"
-    ),
+    query: str = Query(..., description="Case-insensitive substring; whitespace = AND-match across tokens"),
     asset_group: str | None = Query(
         None,
-        description=(
-            "Single asset group (cefi/tradfi/defi/sports/prediction). Omit to search all five."
-        ),
+        description=("Single asset group (cefi/tradfi/defi/sports/prediction). Omit to search all five."),
     ),
     limit: int = Query(50, description="Max matches returned (truncation flag in response)"),
 ):
@@ -943,9 +968,7 @@ async def search_instruments(
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in search_instruments")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/instrument-availability")
@@ -981,9 +1004,7 @@ async def get_instrument_availability(
         logger.exception("Error in get_instrument_availability")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.post("/analyze")
@@ -1022,9 +1043,7 @@ async def analyze_data_patterns(
         logger.exception("Error in analyze_data_patterns")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.post("/multi-service")
@@ -1050,9 +1069,7 @@ async def get_multi_service_status(
         logger.exception("Error in get_multi_service_status")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 # ---------------------------------------------------------------------------
@@ -1126,9 +1143,7 @@ async def get_schema(
         )
     except (ValueError, RuntimeError) as e:
         logger.exception("Error in get_schema")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/instruments-for-shard")
@@ -1198,9 +1213,7 @@ async def get_instruments_for_shard(
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_instruments_for_shard")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/bundle-preview")
@@ -1232,9 +1245,7 @@ async def get_bundle_preview(
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_bundle_preview")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/bucket-counts")
@@ -1284,14 +1295,11 @@ async def get_bucket_counts(
             "venue": venue,
             "day": resolved_day,
             "data_type": resolved_data_type,
-            "count": int(result.get("named_market_count", 0))
-            + int(result.get("other_market_count", 0)),
+            "count": int(result.get("named_market_count", 0)) + int(result.get("other_market_count", 0)),
         }
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_bucket_counts")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 def _default_bucket_counts_day() -> str:
@@ -1340,9 +1348,7 @@ async def download_csv(
     instrument_ids: str = Query("", description="Comma-separated instrument IDs (empty = all)"),
     chain: str | None = Query(None, description="DeFi chain leaf-axis filter"),
     league_id: str | None = Query(None, description="Sports league_id leaf-axis filter"),
-    job_id: str | None = Query(
-        None, description="ML / strategy / execution job_id leaf-axis filter"
-    ),
+    job_id: str | None = Query(None, description="ML / strategy / execution job_id leaf-axis filter"),
 ):
     """Stream a CSV of the selected instruments for one shard.
 
@@ -1392,9 +1398,7 @@ async def download_csv(
         raise HTTPException(status_code=413, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in download_csv")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
     if row_count == 0:
         # Manifest said captured, parquet read returned 0 rows → path drift.
@@ -1457,9 +1461,7 @@ async def download_fixtures_csv(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in download_fixtures_csv")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
     if row_count == 0:
         # Manifest claimed captured for this (day, league_id) but the
@@ -1488,9 +1490,7 @@ async def download_shard_csv(
     date: str = Query(..., description="Day (YYYY-MM-DD)"),
     chain: str | None = Query(None, description="DeFi chain leaf-axis filter"),
     league_id: str | None = Query(None, description="Sports league_id leaf-axis filter"),
-    job_id: str | None = Query(
-        None, description="ML / strategy / execution job_id leaf-axis filter"
-    ),
+    job_id: str | None = Query(None, description="ML / strategy / execution job_id leaf-axis filter"),
 ):
     """Stream a CSV for one (service, asset group, venue, date) shard or catalog.
 
@@ -1547,9 +1547,7 @@ async def download_shard_csv(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in download_shard_csv")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
     # Manifest said captured but parquet read returned 0 rows → path drift.
     # Distinct from the honest empty / never_attempted branches handled
@@ -1591,9 +1589,7 @@ async def get_fixture_breakdown(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in get_fixture_breakdown")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/pools/breakdown")
@@ -1618,9 +1614,7 @@ async def get_pool_breakdown(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in get_pool_breakdown")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/fixtures/download")
@@ -1652,9 +1646,7 @@ async def download_fixture_payload(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Error in download_fixture_payload")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
@@ -1691,9 +1683,7 @@ async def get_shard_info_endpoint(
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_shard_info_endpoint")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.post("/drilldown/clear-cache")
@@ -2044,8 +2034,7 @@ async def _gather_health_data_freshness(
         return {}
     services = list(service_urls.items())
     tasks = [
-        _fetch_health_data_freshness(service_name, base_url, timeout_seconds)
-        for service_name, base_url in services
+        _fetch_health_data_freshness(service_name, base_url, timeout_seconds) for service_name, base_url in services
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     out: dict[str, dict[str, object]] = {}
@@ -2128,8 +2117,7 @@ async def get_live_data_status(
     asset_group: list[str] | None = Query(
         None,
         description=(
-            "Filter to specific asset_groups (closed set: cefi / defi / "
-            "tradfi / sports / prediction). Default: all."
+            "Filter to specific asset_groups (closed set: cefi / defi / tradfi / sports / prediction). Default: all."
         ),
     ),
 ) -> LiveStatusResponse:

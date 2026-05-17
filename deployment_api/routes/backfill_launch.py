@@ -279,6 +279,11 @@ _REGISTERED_VM_PREFIXES: frozenset[str] = frozenset(
         "opt-deribit-",
         "opt-cboe-",
         "opt-cme-",
+        # Deploy-missing auto-launch VMs (deploy_missing_auto_launch_2026_05_07.md Phase 2).
+        # VM naming: dm-{shard_key_hash}-{run_ts}. Heartbeat-only (no MANIFEST_PER_VM_SHARDS
+        # shard-index writes to a fixed bucket; each VM writes to the service-specific bucket).
+        # Registered 2026-05-17 per CLAUDE.md "VM Naming Convention" HARD RULE.
+        "dm-",
     }
 )
 

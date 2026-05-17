@@ -306,9 +306,7 @@ def build_deploy_missing_preview(
         )
 
     if not row_key.get("venue") or not row_key.get("data_type"):
-        raise DeployMissingError(
-            f"row_key must include at least 'venue' and 'data_type'; got {row_key!r}"
-        )
+        raise DeployMissingError(f"row_key must include at least 'venue' and 'data_type'; got {row_key!r}")
 
     day = row_key.get("day") or row_key.get("date")
     if not day:
@@ -345,10 +343,7 @@ def build_deploy_missing_preview(
         # (uncommitted changes, branch toggles, hot-fixes). The combo
         # command chains the refresh + the launcher with ``&&`` so a
         # tarball-build failure aborts before launching the VM.
-        command = (
-            f"bash deployment-service/scripts/vm/create-code-tarballs.sh --all "
-            f"&& {launcher_invocation}"
-        )
+        command = f"bash deployment-service/scripts/vm/create-code-tarballs.sh --all && {launcher_invocation}"
         warnings_out.append(
             "LOCAL-ONLY: this mode copies code from your LOCAL working tree "
             "into the GCS tarball bucket. It only works when run from your "
@@ -413,6 +408,16 @@ def list_supported_services() -> list[str]:
     Deploy-Missing button vs. a "manual recovery" placeholder.
     """
     return sorted(_SERVICE_LAUNCHER_SCRIPTS.keys())
+
+
+def build_shard_key(asset_group: str, row_key: dict[str, str]) -> str:
+    """Public wrapper for the canonical 6-field pipe-delimited shard key."""
+    return _build_shard_key(asset_group, row_key)
+
+
+def get_launcher_script(service: str) -> str | None:
+    """Return the launcher script path for ``service``, or None if not registered."""
+    return _SERVICE_LAUNCHER_SCRIPTS.get(service)
 
 
 # ── Phase 11.4 — live-cluster launch (Deploy live cluster UI button) ──────────
@@ -497,19 +502,16 @@ def build_live_cluster_launch_preview(  # noqa: C901 — role validation + comma
     """
     if role not in _LIVE_CLUSTER_LAUNCHER_SCRIPTS:
         raise DeployMissingError(
-            f"Unknown live-cluster role '{role}'. "
-            f"Valid roles: {sorted(_LIVE_CLUSTER_LAUNCHER_SCRIPTS.keys())}",
+            f"Unknown live-cluster role '{role}'. Valid roles: {sorted(_LIVE_CLUSTER_LAUNCHER_SCRIPTS.keys())}",
         )
     if deployment_env not in _LIVE_DEPLOYMENT_ENVS:
         raise DeployMissingError(
-            f"Unknown deployment_env '{deployment_env}'. "
-            f"Valid envs: {sorted(_LIVE_DEPLOYMENT_ENVS)}",
+            f"Unknown deployment_env '{deployment_env}'. Valid envs: {sorted(_LIVE_DEPLOYMENT_ENVS)}",
         )
     if role in _LIVE_ROLES_PER_ASSET_GROUP:
         if asset_group is None or asset_group not in _LIVE_ASSET_GROUPS:
             raise DeployMissingError(
-                f"Role '{role}' requires --asset-group; "
-                f"valid: {sorted(_LIVE_ASSET_GROUPS)} (got: {asset_group!r})",
+                f"Role '{role}' requires --asset-group; valid: {sorted(_LIVE_ASSET_GROUPS)} (got: {asset_group!r})",
             )
     elif asset_group is not None:
         raise DeployMissingError(
@@ -586,6 +588,8 @@ __all__ = [
     "LiveClusterLaunchPreview",
     "build_deploy_missing_preview",
     "build_live_cluster_launch_preview",
+    "build_shard_key",
+    "get_launcher_script",
     "list_supported_live_cluster_roles",
     "list_supported_services",
 ]
