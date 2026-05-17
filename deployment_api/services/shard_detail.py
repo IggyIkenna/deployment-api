@@ -1132,7 +1132,9 @@ def _read_instruments_day_df(
             ]
             frames: list[pd.DataFrame] = []
             for path in parquet_paths:
-                gs_uri = f"gs://{bucket}/{path}"
+                # noqa rationale: function is GCS-locked (bucket arg from legacy UTL `build_bucket()` which is GCS-only).
+                # Cloud-agnostic migration tracked in deployment_api_shard_detail_gcs_locked_2026_05_17.md.
+                gs_uri = f"gs://{bucket}/{path}"  # noqa: gs-uri
                 try:
                     sub_df = _read_parquet_columns(gs_uri, None)
                     if sub_df is not None and not sub_df.empty:
@@ -1781,7 +1783,9 @@ def get_leaf_parquet_stats(
             feature_family=family_from_group,
         )
     bucket, object_path = resolved
-    gs_uri = f"gs://{bucket}/{object_path}"
+    # noqa rationale: function GCS-locked (resolved tuple from upstream `build_bucket()` GCS-only helper).
+    # Cloud-agnostic migration tracked in deployment_api_shard_detail_gcs_locked_2026_05_17.md.
+    gs_uri = f"gs://{bucket}/{object_path}"  # noqa: gs-uri
     file_size = _file_size_via_metadata(bucket, object_path)
 
     try:

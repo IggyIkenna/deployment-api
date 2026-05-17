@@ -36,7 +36,7 @@ def list_cloud_files(
         path_without_scheme = cloud_path[5:]
     else:
         raise ValueError(
-            f"Unsupported cloud path scheme. Must start with gs:// or s3://. Got: {cloud_path}"
+            f"Unsupported cloud path scheme. Must start with gs:// or s3://. Got: {cloud_path}"  # noqa: gs-uri (error message literal, not a URI formatter)
         )
 
     parts = path_without_scheme.split("/", 1)
