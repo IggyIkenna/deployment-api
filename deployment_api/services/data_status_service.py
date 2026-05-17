@@ -388,9 +388,7 @@ def _features_sports_expected_dates_for_calculator(
             # Cycle in the derived-DAG; bail to "unknown" rather than infinite-loop.
             return None
         next_visited = visited | {name}
-        reqs = FEATURE_UPSTREAM_REQUIREMENTS.get(name) or FEATURE_UPSTREAM_REQUIREMENTS.get(
-            f"{name}_calculator", []
-        )
+        reqs = FEATURE_UPSTREAM_REQUIREMENTS.get(name) or FEATURE_UPSTREAM_REQUIREMENTS.get(f"{name}_calculator", [])
         if not reqs:
             return None
         required_reqs = [r for r in reqs if r.required]
@@ -400,9 +398,7 @@ def _features_sports_expected_dates_for_calculator(
             return get_league_fixture_calendar(league_id, start_date, end_date)
         intersection: set[str] | None = None
         for req in required_reqs:
-            dates = _expected_dates_for_upstream(
-                req, league_id, start_date, end_date, _walk, next_visited
-            )
+            dates = _expected_dates_for_upstream(req, league_id, start_date, end_date, _walk, next_visited)
             if dates is None:
                 # Required upstream has no dates we can model; skip silently —
                 # the data-status reads from the manifest anyway, and over-
@@ -457,8 +453,7 @@ def _expected_dates_for_upstream(
     return [
         d
         for d in candidate
-        if not _is_in_known_gap(req.source, req.data_type, d)
-        and in_coverage(req.source, req.data_type, league_id, d)
+        if not _is_in_known_gap(req.source, req.data_type, d) and in_coverage(req.source, req.data_type, league_id, d)
     ]
 
 
@@ -541,17 +536,13 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
     source_key = str(meta["source"])
     classifications = tuple(cast(tuple[str, ...], meta["classifications"]))
 
-    expected_leagues = get_expected_leagues_for_source(
-        source_key, classifications=list(classifications)
-    )
+    expected_leagues = get_expected_leagues_for_source(source_key, classifications=list(classifications))
 
     # ``capture_status in {captured, empty_confirmed}`` = this shard was
     # attempted and either had data or was legitimately empty. v4 rows
     # without capture_status are implicit ``captured`` (existence of row = success).
     if "capture_status" in filtered.columns:
-        ok_mask = (
-            filtered["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
-        )
+        ok_mask = filtered["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
     else:
         ok_mask = pd.Series([True] * len(filtered), index=filtered.index)
     if axis == "per_feature_per_league_per_fixture_date":
@@ -591,9 +582,7 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
             expected_set_pf = set(expected_dates_pf)
             found_set_pf: set[str] = set()
             if ent_rows_by_league_pf is not None and lid in ent_rows_by_league_pf.groups:
-                found_set_pf = {
-                    str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()
-                }
+                found_set_pf = {str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()}
             covered_pf = expected_set_pf & found_set_pf
             missing_pf = sorted(expected_set_pf - found_set_pf)
             per_league_pf[lid] = {
@@ -628,10 +617,7 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
                 date_range = pd.date_range(clipped_start, clipped_end, freq="D")
             except ValueError:
                 date_range = pd.DatetimeIndex([])
-        if axis == "global_season":
-            expected_dates = 1
-        else:
-            expected_dates = max(1, len(date_range) // max(1, cadence_days))
+        expected_dates = 1 if axis == "global_season" else max(1, len(date_range) // max(1, cadence_days))
         found_dates = len({str(d) for d in ent_rows["date"].unique()}) if not ent_rows.empty else 0
         return {
             "axis": axis,
@@ -653,10 +639,7 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
     per_league: dict[str, dict[str, object]] = {}
     total_expected = 0
     total_found = 0
-    if "league_id" in ent_rows.columns:
-        ent_rows_by_league = ent_rows.groupby(ent_rows["league_id"].fillna(""))
-    else:
-        ent_rows_by_league = None
+    ent_rows_by_league = ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
 
     # Bucket-based week match for periodic cadences (2026-05-05 fix):
     # The orchestrator writes manifest rows for every active-season fixture
@@ -1021,9 +1004,7 @@ def _canonicalise_defi_data_types(filtered: pd.DataFrame) -> pd.DataFrame:
     if "_defi_source" in out.columns:
         blank_dt = out["data_type"].fillna("").astype(str).str.len() == 0
         if blank_dt.any():
-            inferred = (
-                out["_defi_source"].fillna("").astype(str).map(_DEFI_SOURCE_TO_DATA_TYPE).fillna("")
-            )
+            inferred = out["_defi_source"].fillna("").astype(str).map(_DEFI_SOURCE_TO_DATA_TYPE).fillna("")
             out.loc[blank_dt, "data_type"] = inferred[blank_dt]
     # Case (2): map hyphenated DEFI data_types to canonical underscore form.
     out["data_type"] = out["data_type"].fillna("").astype(str).replace(_DEFI_DATA_TYPE_ALIASES)
@@ -1182,9 +1163,7 @@ def _mtds_expected_dates_cached(
         expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
         per_venue_windows = get_coverage_windows(venue, data_type)
         if per_venue_windows:
-            expected_list = [
-                d for d in expected_list if any(s <= d <= e for s, e in per_venue_windows)
-            ]
+            expected_list = [d for d in expected_list if any(s <= d <= e for s, e in per_venue_windows)]
         elif data_type in _TRADFI_TICK_ONLY_DATA_TYPES:
             expected_list = [d for d in expected_list if is_in_tradfi_tick_window(d)]
         return frozenset(expected_list)
@@ -1192,9 +1171,7 @@ def _mtds_expected_dates_cached(
     expected_list = venue_mapping.get_expected_trading_dates(venue, effective_start, window_end)
     if expected_list:
         return frozenset(expected_list)
-    return frozenset(
-        d.strftime("%Y-%m-%d") for d in pd.date_range(effective_start, window_end, freq="D")
-    )
+    return frozenset(d.strftime("%Y-%m-%d") for d in pd.date_range(effective_start, window_end, freq="D"))
 
 
 def _mtds_expected_dates_for_venue_dt(
@@ -1300,13 +1277,9 @@ def _per_instrument_coverage(
 
     has_instrument_col = "instrument_id" in dt_rows.columns
     instrument_series = (
-        dt_rows["instrument_id"].fillna("").astype(str)
-        if has_instrument_col
-        else pd.Series([], dtype=str)
+        dt_rows["instrument_id"].fillna("").astype(str) if has_instrument_col else pd.Series([], dtype=str)
     )
-    date_series = (
-        dt_rows["date"].astype(str) if "date" in dt_rows.columns else pd.Series([], dtype=str)
-    )
+    date_series = dt_rows["date"].astype(str) if "date" in dt_rows.columns else pd.Series([], dtype=str)
 
     if has_instrument_col and len(dt_rows) > 0:
         # Rows that land with empty ``instrument_id`` predate Phase-8C
@@ -1373,9 +1346,7 @@ def _per_instrument_coverage(
     # prior O(|instruments|*|pairs|) ``sum(1 for ...)`` loop below.
     iid_counts = Counter(iid for iid, _ in found_pairs)
     instruments_with_shards = set(iid_counts)
-    missing_instruments = [
-        iid for iid in expected_instruments if iid not in instruments_with_shards
-    ]
+    missing_instruments = [iid for iid in expected_instruments if iid not in instruments_with_shards]
 
     entry: dict[str, object] = {
         "expected_shards": expected_count,
@@ -1405,9 +1376,7 @@ def _per_instrument_coverage(
             iid: {
                 "found": iid_counts.get(iid, 0),
                 "expected": n_dates,
-                "completion_pct": min(
-                    round(iid_counts.get(iid, 0) / max(1, n_dates) * 100, 2), 100.0
-                ),
+                "completion_pct": min(round(iid_counts.get(iid, 0) / max(1, n_dates) * 100, 2), 100.0),
             }
             for iid in expected_instruments
         }
@@ -1477,9 +1446,7 @@ def _mtds_honest_coverage_for_venue(
         venue_df = filtered[filtered["venue"] == venue]
 
     if "capture_status" in venue_df.columns:
-        ok_mask = (
-            venue_df["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
-        )
+        ok_mask = venue_df["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
     else:
         ok_mask = pd.Series([True] * len(venue_df), index=venue_df.index)
     venue_df_ok = venue_df[ok_mask] if not venue_df.empty else venue_df
@@ -1490,9 +1457,7 @@ def _mtds_honest_coverage_for_venue(
     missing_dts: list[str] = []
 
     for dt in sorted(expected_dts):
-        expected_dates = _mtds_expected_dates_for_venue_dt(
-            venue_mapping, venue, dt, category, window_start, window_end
-        )
+        expected_dates = _mtds_expected_dates_for_venue_dt(venue_mapping, venue, dt, category, window_start, window_end)
 
         if is_per_instrument_shard_data_type(dt):
             # Phase 8D Tier-3 branch — per-(venue, dt, instrument_id,
@@ -1614,9 +1579,7 @@ def _compute_capture_status_counts(df: pd.DataFrame) -> dict[str, int]:
         _CAPTURE_STATUS_CAPTURED: int(
             (
                 (series == _CAPTURE_STATUS_CAPTURED)
-                | ~series.isin(
-                    [_CAPTURE_STATUS_CAPTURED, _CAPTURE_STATUS_EMPTY, _CAPTURE_STATUS_FAILED]
-                )
+                | ~series.isin([_CAPTURE_STATUS_CAPTURED, _CAPTURE_STATUS_EMPTY, _CAPTURE_STATUS_FAILED])
             ).sum()
         ),
         _CAPTURE_STATUS_EMPTY: int((series == _CAPTURE_STATUS_EMPTY).sum()),
@@ -1705,6 +1668,7 @@ _EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_DEPRECATED_DATA_TYPE",
     "EXPECTED_KNOWN_SOURCE_GAP",
     "EXPECTED_UPSTREAM_EMPTY",
+    "EXPECTED_OUT_OF_COVERAGE_WINDOW",
     "EXPECTED_FIXTURE_CANCELLED",
     "EXPECTED_FIXTURE_POSTPONED",
     "EXPECTED_NO_FIXTURE",
@@ -1737,8 +1701,7 @@ def _compute_empty_reason_counts(df: pd.DataFrame) -> dict[str, int]:
     if df.empty or _CAPTURE_STATUS_COL not in df.columns:
         return out
     empty_mask = (
-        df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
-        == _CAPTURE_STATUS_EMPTY
+        df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower() == _CAPTURE_STATUS_EMPTY
     )
     if not bool(empty_mask.any()):
         return out
@@ -1777,8 +1740,7 @@ def _compute_failure_pillar_counts(df: pd.DataFrame) -> dict[str, int]:
     if df.empty or _CAPTURE_STATUS_COL not in df.columns:
         return out
     failed_mask = (
-        df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
-        == _CAPTURE_STATUS_FAILED
+        df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower() == _CAPTURE_STATUS_FAILED
     )
     if not bool(failed_mask.any()):
         return out
@@ -1822,12 +1784,8 @@ def _derive_capture_status_rates(
         "empty_confirmed_count": empty,
         "attempted_failed_count": failed,
         "attempted_total": attempted,
-        "attempt_coverage_pct": min(round(attempted / denom * 100, 2), 100.0)
-        if total_expected_cells > 0
-        else 0.0,
-        "capture_coverage_pct": min(round(captured / denom * 100, 2), 100.0)
-        if total_expected_cells > 0
-        else 0.0,
+        "attempt_coverage_pct": min(round(attempted / denom * 100, 2), 100.0) if total_expected_cells > 0 else 0.0,
+        "capture_coverage_pct": min(round(captured / denom * 100, 2), 100.0) if total_expected_cells > 0 else 0.0,
         "empty_rate": max(0.0, min(1.0, round(empty / attempted_denom, 4))),
         "failure_rate": max(0.0, min(1.0, round(failed / attempted_denom, 4))),
     }
@@ -1848,11 +1806,7 @@ def _build_failure_rate_by_dimension(
             continue
         venue_entry = cast(dict[str, object], venue_entry_raw)
         venue_failure_rate_raw = venue_entry.get("failure_rate", 0.0)
-        venue_failure_rate = (
-            float(venue_failure_rate_raw)
-            if isinstance(venue_failure_rate_raw, (int, float))
-            else 0.0
-        )
+        venue_failure_rate = float(venue_failure_rate_raw) if isinstance(venue_failure_rate_raw, (int, float)) else 0.0
         v_counts_raw = venue_entry.get("capture_status_counts", {})
         v_counts = cast(dict[str, int], v_counts_raw) if isinstance(v_counts_raw, dict) else {}
         failed_count = int(v_counts.get("attempted_failed", 0) or 0)
@@ -1927,9 +1881,7 @@ def _build_coverage_metrics(
     coverage_semantics = COVERAGE_SEMANTICS.get(category.upper(), "dense")
     attempt_found, attempt_expected = _compute_attempt_coverage(filtered, category)
     capture_counts = _compute_capture_status_counts(filtered)
-    has_phase_b_rows = (
-        capture_counts[_CAPTURE_STATUS_EMPTY] + capture_counts[_CAPTURE_STATUS_FAILED] > 0
-    )
+    has_phase_b_rows = capture_counts[_CAPTURE_STATUS_EMPTY] + capture_counts[_CAPTURE_STATUS_FAILED] > 0
     capture_rates = _derive_capture_status_rates(capture_counts, total_expected_cells)
 
     if coverage_semantics == "event_driven" and attempt_expected > 0 and not has_phase_b_rows:
@@ -2142,9 +2094,7 @@ def _slice_rollup_to_window(
     asset_groups = rollup.get("asset_groups")
     if not isinstance(asset_groups, dict):
         # Malformed rollup — surface loud rather than slice garbage.
-        raise RuntimeError(
-            f"rollup payload missing 'asset_groups' dict (got {type(asset_groups).__name__})"
-        )
+        raise RuntimeError(f"rollup payload missing 'asset_groups' dict (got {type(asset_groups).__name__})")
 
     sliced_asset_groups: dict[str, object] = {}
     filter_set = {ag.upper() for ag in asset_groups_filter} if asset_groups_filter else None
@@ -2164,9 +2114,7 @@ def _slice_rollup_to_window(
         sliced_cat.pop("_venue_expected_sliced", None)
 
     overall_pct_dates = (
-        min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
-        if overall_expected > 0
-        else 0.0
+        min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0) if overall_expected > 0 else 0.0
     )
     overall_pct_shards = (
         min(round(overall_shards_found / overall_shards_expected * 100, 2), 100.0)
@@ -2194,9 +2142,7 @@ def _slice_rollup_to_window(
     }
 
 
-def _slice_asset_group(
-    cat_payload: dict[str, object], start_date: str, end_date: str
-) -> dict[str, object]:
+def _slice_asset_group(cat_payload: dict[str, object], start_date: str, end_date: str) -> dict[str, object]:
     """Slice one asset_group's payload to the date window. See _slice_rollup_to_window."""
     sliced: dict[str, object] = dict(cat_payload)
     venue_found_total = 0
@@ -2238,21 +2184,13 @@ def _slice_asset_group(
     return sliced
 
 
-def _slice_venue(
-    venue_payload: dict[str, object], start_date: str, end_date: str
-) -> dict[str, object]:
+def _slice_venue(venue_payload: dict[str, object], start_date: str, end_date: str) -> dict[str, object]:
     """Slice one venue's payload to the date window. Recursive into per-data_type if present."""
     sliced: dict[str, object] = dict(venue_payload)
 
-    found = _filter_dates_in_window(
-        cast(list[str] | None, venue_payload.get("dates_found_list")), start_date, end_date
-    )
-    missing = _filter_dates_in_window(
-        cast(list[str] | None, venue_payload.get("missing_dates")), start_date, end_date
-    )
-    expected_dates_full = cast(list[str] | None, venue_payload.get("dates_expected_list")) or (
-        found + missing
-    )
+    found = _filter_dates_in_window(cast(list[str] | None, venue_payload.get("dates_found_list")), start_date, end_date)
+    missing = _filter_dates_in_window(cast(list[str] | None, venue_payload.get("missing_dates")), start_date, end_date)
+    expected_dates_full = cast(list[str] | None, venue_payload.get("dates_expected_list")) or (found + missing)
     expected = _filter_dates_in_window(expected_dates_full, start_date, end_date)
 
     sliced["dates_found_list"] = found
@@ -2261,9 +2199,7 @@ def _slice_venue(
     sliced["dates_expected"] = len(expected) if expected else (len(found) + len(missing))
     sliced["dates_missing"] = sliced["dates_expected"] - sliced["dates_found"]
     if isinstance(sliced["dates_expected"], int) and sliced["dates_expected"] > 0:
-        sliced["completion_pct"] = min(
-            round(sliced["dates_found"] / sliced["dates_expected"] * 100, 2), 100.0
-        )
+        sliced["completion_pct"] = min(round(sliced["dates_found"] / sliced["dates_expected"] * 100, 2), 100.0)
     else:
         sliced["completion_pct"] = 0.0
 
@@ -2271,9 +2207,7 @@ def _slice_venue(
     honest_dts = venue_payload.get("honest_data_types")
     if isinstance(honest_dts, dict):
         sliced["honest_data_types"] = {
-            dt: _slice_venue(dt_payload, start_date, end_date)
-            if isinstance(dt_payload, dict)
-            else dt_payload
+            dt: _slice_venue(dt_payload, start_date, end_date) if isinstance(dt_payload, dict) else dt_payload
             for dt, dt_payload in honest_dts.items()
         }
 
@@ -2348,9 +2282,7 @@ def _filter_coverage_to_asset_groups(
     if not isinstance(asset_groups, dict):
         return {**rollup, "served_from": "rollup", "totals_source": "rollup"}
 
-    filtered: dict[str, object] = {
-        cat: payload for cat, payload in asset_groups.items() if cat.upper() in filter_set
-    }
+    filtered: dict[str, object] = {cat: payload for cat, payload in asset_groups.items() if cat.upper() in filter_set}
     totals_keys = (
         "shards",
         "instrument_rows",
@@ -2436,8 +2368,7 @@ def _load_expected_start_dates_cached() -> dict[str, object]:
 
     if not yaml_path.exists():
         logger.warning(
-            "expected_start_dates.yaml not found at %s — "
-            "category aggregates will NOT clamp to launch dates",
+            "expected_start_dates.yaml not found at %s — category aggregates will NOT clamp to launch dates",
             yaml_path,
         )
         _EXPECTED_START_DATES_CACHE["value"] = {}
@@ -2532,9 +2463,7 @@ def _ensure_underlying_column(df: pd.DataFrame) -> pd.DataFrame:
     blank_mask = df["underlying"].isna() | (df["underlying"].astype(str).str.strip() == "")
     if blank_mask.any():
         df.loc[blank_mask, "underlying"] = (
-            df.loc[blank_mask, "instrument_id"]
-            .astype(str)
-            .map(_derive_underlying_from_instrument_id)
+            df.loc[blank_mask, "instrument_id"].astype(str).map(_derive_underlying_from_instrument_id)
         )
     return df
 
@@ -2954,9 +2883,7 @@ class DataStatusService:
 
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
         main_bucket = (
-            override.format(pid=self.project_id)
-            if override
-            else template.format(cat=cat.lower(), pid=self.project_id)
+            override.format(pid=self.project_id) if override else template.format(cat=cat.lower(), pid=self.project_id)
         )
 
         frames: list[pd.DataFrame] = []
@@ -3159,9 +3086,7 @@ class DataStatusService:
         effective_start = _clamp_to_venue_starts(filtered, start_date)
         all_dates = pd.date_range(effective_start, end_date, freq="D")
         found_dates = set(filtered["date"].unique())
-        missing = [
-            d.strftime("%Y-%m-%d") for d in all_dates if d.strftime("%Y-%m-%d") not in found_dates
-        ]
+        missing = [d.strftime("%Y-%m-%d") for d in all_dates if d.strftime("%Y-%m-%d") not in found_dates]
         if not missing:
             return None
         return {"missing": missing, "days_checked": len(all_dates)}
@@ -3343,13 +3268,9 @@ class DataStatusService:
                 continue
             values = index[axis].fillna("").astype(str)
             if has_count:
-                grouped = (
-                    index.assign(_axis=values).groupby("_axis")["instrument_count"].sum(min_count=1)
-                )
+                grouped = index.assign(_axis=values).groupby("_axis")["instrument_count"].sum(min_count=1)
                 axis_counts = {
-                    (str(k) if str(k).strip() else "__legacy__"): int(v)
-                    for k, v in grouped.items()
-                    if v and v > 0
+                    (str(k) if str(k).strip() else "__legacy__"): int(v) for k, v in grouped.items() if v and v > 0
                 }
             else:
                 axis_counts = {}
@@ -3416,11 +3337,7 @@ class DataStatusService:
         """
         if cat.lower() != "defi" or "venue" not in index.columns or index.empty:
             return index
-        chain_series = (
-            index["chain"]
-            if "chain" in index.columns
-            else pd.Series([""] * len(index), index=index.index)
-        )
+        chain_series = index["chain"] if "chain" in index.columns else pd.Series([""] * len(index), index=index.index)
         legacy_mask = [
             self._is_legacy_defi_venue_row(v, c)
             for v, c in zip(index["venue"].tolist(), chain_series.tolist(), strict=True)
@@ -3449,21 +3366,15 @@ class DataStatusService:
         unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []
         group_axis = self._select_coverage_group_axis(service, cat, index)
         unique_groups_list = (
-            sorted(str(v) for v in index[group_axis].unique() if str(v).strip())
-            if group_axis in index.columns
-            else []
+            sorted(str(v) for v in index[group_axis].unique() if str(v).strip()) if group_axis in index.columns else []
         )
         date_range: dict[str, str] | None = None
         if unique_dates:
             date_range = {"start": str(unique_dates[0]), "end": str(unique_dates[-1])}
         latest_day: str | None = str(unique_dates[-1]) if unique_dates else None
-        latest_day_instruments, latest_day_total = self._build_latest_day_breakdown(
-            date_index, latest_day, group_axis
-        )
+        latest_day_instruments, latest_day_total = self._build_latest_day_breakdown(date_index, latest_day, group_axis)
         total_instruments = (
-            int(index["instrument_count"].fillna(0).sum())
-            if "instrument_count" in index.columns
-            else shards
+            int(index["instrument_count"].fillna(0).sum()) if "instrument_count" in index.columns else shards
         )
         # Per-(service, asset_group) multi-axis breakdowns for the UI
         # ``BreakdownsAccordion``. Empty/absent columns surface as ``{}`` so
@@ -3560,8 +3471,7 @@ class DataStatusService:
         ``data_status_offline_rollup_2026_05_06.md``.
         """
         any_row_filter = any(
-            f is not None and f != ""
-            for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
+            f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
         )
         if not any_row_filter:
             rollup = await asyncio.to_thread(_read_rollup_if_fresh, service)
@@ -3885,9 +3795,7 @@ class DataStatusService:
             if "venue" in filtered.columns:
                 for v in filtered["venue"].unique():
                     v_str = str(v)
-                    v_dates = {
-                        str(d) for d in filtered.loc[filtered["venue"] == v, "date"].unique()
-                    }
+                    v_dates = {str(d) for d in filtered.loc[filtered["venue"] == v, "date"].unique()}
                     result[v_str] = v_dates
         except Exception:
             logger.debug("No upstream index for %s in %s", upstream, bucket)
@@ -3999,9 +3907,7 @@ class DataStatusService:
         use_ref_denominator = service in self._REFERENCE_DRIVEN_SERVICES and category
         ref_dates: dict[str, set[str]] = {}
         if use_ref_denominator:
-            ref_dates = self._get_reference_expected_dates(
-                category, start_date, end_date, service=service
-            )
+            ref_dates = self._get_reference_expected_dates(category, start_date, end_date, service=service)
 
         # Build fixture calendar — union of dates across all sports reference
         # venues in this category.  Used as the expected-date set for each
@@ -4111,9 +4017,7 @@ class DataStatusService:
         union_venues = set(new_venues.keys()) | set(expected_venues)
 
         for venue in sorted(union_venues):
-            honest = _mtds_honest_coverage_for_venue(
-                filtered, venue, category, start_date, end_date, venue_mapping
-            )
+            honest = _mtds_honest_coverage_for_venue(filtered, venue, category, start_date, end_date, venue_mapping)
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))
             if expected_shards == 0:
@@ -4159,9 +4063,7 @@ class DataStatusService:
             venue_entry["dates_expected"] = expected_shards
             venue_entry["dates_expected_venue"] = expected_shards
             venue_entry["dates_missing"] = max(0, expected_shards - found_shards)
-            venue_entry["completion_pct"] = min(
-                round(found_shards / max(1, expected_shards) * 100, 2), 100.0
-            )
+            venue_entry["completion_pct"] = min(round(found_shards / max(1, expected_shards) * 100, 2), 100.0)
             # Honest-coverage annotations — UI surfaces these as a second
             # tab / tooltip alongside the legacy ``data_types`` block.
             venue_entry["expected_data_types"] = honest["expected_data_types"]
@@ -4275,9 +4177,7 @@ class DataStatusService:
         if dim_expected > 0:
             venue_entry["dates_found"] = dim_found
             venue_entry["dates_expected"] = dim_expected
-            venue_entry["completion_pct"] = min(
-                round(dim_found / max(1, dim_expected) * 100, 2), 100.0
-            )
+            venue_entry["completion_pct"] = min(round(dim_found / max(1, dim_expected) * 100, 2), 100.0)
 
     def _build_single_venue_entry(
         self,
@@ -4382,9 +4282,7 @@ class DataStatusService:
             tf_breakdown = self._build_timeframe_breakdown(v_df, eff_start, end_date)
             if tf_breakdown:
                 venue_entry["timeframes"] = tf_breakdown
-            fg_breakdown = self._build_feature_group_breakdown_uac(
-                v_df, eff_start, end_date, service=service
-            )
+            fg_breakdown = self._build_feature_group_breakdown_uac(v_df, eff_start, end_date, service=service)
             if fg_breakdown:
                 venue_entry["feature_groups"] = fg_breakdown
 
@@ -4414,16 +4312,12 @@ class DataStatusService:
         # Universe of dates observed in this slice (clamped to the requested
         # window). For features services this is the natural "expected" set —
         # if delta-one wrote feature_group=X on day D, that shard is expected.
-        slice_dates = {
-            str(d) for d in venue_df["date"].unique() if start_date <= str(d) <= end_date
-        }
+        slice_dates = {str(d) for d in venue_df["date"].unique() if start_date <= str(d) <= end_date}
         total_expected = len(slice_dates)
         result: dict[str, object] = {}
         for value in values:
             sub_df = venue_df[col_series == value]
-            sub_dates = {
-                str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date
-            }
+            sub_dates = {str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date}
             found = len(sub_dates)
             missing = sorted(slice_dates - sub_dates)
             pct = round(found / max(1, total_expected) * 100, 2)
@@ -4460,9 +4354,7 @@ class DataStatusService:
         Phase 2C of feature_dag plan introduces a sibling
         ``_build_feature_group_breakdown_uac`` for the UAC-denominator path.
         """
-        return self._build_simple_dimension_breakdown(
-            venue_df, "feature_group", start_date, end_date
-        )
+        return self._build_simple_dimension_breakdown(venue_df, "feature_group", start_date, end_date)
 
     @staticmethod
     def _clip_dates_to_feature_coverage(
@@ -4516,9 +4408,7 @@ class DataStatusService:
         """
         expected_fgs = EXPECTED_FEATURE_GROUPS_BY_SERVICE.get(service, []) if service else []
         if not expected_fgs:
-            return self._build_simple_dimension_breakdown(
-                venue_df, "feature_group", start_date, end_date
-            )
+            return self._build_simple_dimension_breakdown(venue_df, "feature_group", start_date, end_date)
         if "feature_group" not in venue_df.columns:
             return {}
         col_series = venue_df["feature_group"].astype(str)
@@ -4526,18 +4416,14 @@ class DataStatusService:
         observed_dates_by_fg: dict[str, set[str]] = {}
         for fg in expected_fgs:
             sub_df = venue_df[col_series == fg]
-            observed_dates_by_fg[fg] = {
-                str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date
-            }
+            observed_dates_by_fg[fg] = {str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date}
 
         result: dict[str, object] = {}
         for fg in expected_fgs:
             # Defensive — every entry MUST be in EXPECTED_FEATURE_GROUPS_BY_SERVICE
             # by construction; the assert documents the invariant.
             assert is_known_feature_group(service, fg)
-            clip_start, clip_end = self._clip_dates_to_feature_coverage(
-                service, fg, start_date, end_date
-            )
+            clip_start, clip_end = self._clip_dates_to_feature_coverage(service, fg, start_date, end_date)
             expected_dates: set[str] = set()
             for ts in pd.date_range(clip_start, clip_end, freq="D"):
                 expected_dates.add(str(ts.date()))
@@ -4812,14 +4698,12 @@ class DataStatusService:
             dt_found = dt_dates & dt_expected
             dt_missing_dates = sorted(dt_expected - dt_found)
 
-            scope_in, dt_is_processed, actionable_missing, blocked_dates = (
-                self._classify_data_type_for_venue(
-                    category=category,
-                    venue=venue,
-                    data_type=dt,
-                    missing_dates=dt_missing_dates,
-                    venue_df=venue_df,
-                )
+            scope_in, dt_is_processed, actionable_missing, blocked_dates = self._classify_data_type_for_venue(
+                category=category,
+                venue=venue,
+                data_type=dt,
+                missing_dates=dt_missing_dates,
+                venue_df=venue_df,
             )
 
             pct = round(len(dt_found) / max(1, len(dt_expected)) * 100, 2)
@@ -4935,9 +4819,7 @@ class DataStatusService:
         if not leagues_in_data:
             return {}
 
-        use_fixture_counts = (
-            fixture_counts_by_league is not None and "instrument_count" in venue_df.columns
-        )
+        use_fixture_counts = fixture_counts_by_league is not None and "instrument_count" in venue_df.columns
 
         league_dict: dict[str, object] = {}
         for lid in sorted(leagues_in_data):
@@ -4955,9 +4837,7 @@ class DataStatusService:
                     continue
                 else:
                     # Other entities: expected = FIXTURES count for this league
-                    league_fixture_expected = fixture_counts_by_league.get(
-                        lid, league_fixture_found
-                    )
+                    league_fixture_expected = fixture_counts_by_league.get(lid, league_fixture_found)
 
                 # Date lists for backfill targeting (which dates have gaps?)
                 found_dates = sorted({str(d) for d in l_df["date"].unique()})
@@ -4965,10 +4845,7 @@ class DataStatusService:
                 # filtered to the current entity, so FIXTURES rows are absent).
                 manifest_src = full_manifest if full_manifest is not None else venue_df
                 fixtures_rows_for_league = (
-                    manifest_src[
-                        (manifest_src["data_type"] == "FIXTURES")
-                        & (manifest_src["league_id"] == lid)
-                    ]
+                    manifest_src[(manifest_src["data_type"] == "FIXTURES") & (manifest_src["league_id"] == lid)]
                     if "data_type" in manifest_src.columns
                     else pd.DataFrame()
                 )
@@ -5018,9 +4895,7 @@ class DataStatusService:
                     ),
                 }
 
-        self._add_na_leagues(
-            league_dict, entity_coverage, fixture_counts_by_league, is_fixtures_entity
-        )
+        self._add_na_leagues(league_dict, entity_coverage, fixture_counts_by_league, is_fixtures_entity)
         return league_dict
 
     @staticmethod
@@ -5147,9 +5022,7 @@ class DataStatusService:
             eff_start = max(start_date, vs) if vs else start_date
             v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
             if not v_expected:
-                v_expected = {
-                    d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
-                }
+                v_expected = {d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")}
             venue_expected_dates[v] = v_expected
         return venue_expected_dates
 
@@ -5233,30 +5106,19 @@ class DataStatusService:
                 chain_expected_dates |= v_expected
 
             dates_expected = len(chain_expected_dates) if chain_expected_dates else 1
-            dates_found = (
-                len(chain_dates & chain_expected_dates)
-                if chain_expected_dates
-                else len(chain_dates)
-            )
+            dates_found = len(chain_dates & chain_expected_dates) if chain_expected_dates else len(chain_dates)
 
-            if has_capture_status:
-                captured_chain_df = chain_df[chain_df["capture_status"] == "captured"]
-            else:
-                captured_chain_df = chain_df
+            captured_chain_df = chain_df[chain_df["capture_status"] == "captured"] if has_capture_status else chain_df
             shards_found = len(captured_chain_df)
 
-            shards_expected = self._shards_expected_for_chain(
-                chain_df, chain_venues, venue_expected_dates
-            )
+            shards_expected = self._shards_expected_for_chain(chain_df, chain_venues, venue_expected_dates)
             if shards_expected == 0:
                 shards_expected = max(1, shards_found)
 
             chain_dict[chain] = {
                 "shards_found": shards_found,
                 "shards_expected": shards_expected,
-                "completion_pct": min(
-                    round(shards_found / max(1, shards_expected) * 100, 2), 100.0
-                ),
+                "completion_pct": min(round(shards_found / max(1, shards_expected) * 100, 2), 100.0),
                 "dates_found": dates_found,
                 "dates_expected": dates_expected,
                 "venues": chain_venues,
@@ -5317,9 +5179,7 @@ class DataStatusService:
                     timeframes[tf] = {
                         "dates_found": len(tf_dates),
                         "dates_expected": tf_expected,
-                        "completion_pct": min(
-                            round(len(tf_dates) / max(1, tf_expected) * 100, 2), 100.0
-                        ),
+                        "completion_pct": min(round(len(tf_dates) / max(1, tf_expected) * 100, 2), 100.0),
                     }
                 if timeframes:
                     entry["timeframes"] = timeframes
@@ -5347,9 +5207,7 @@ class DataStatusService:
         df = _ensure_underlying_column(filtered)
 
         has_underlying = (
-            "underlying" in df.columns
-            and not df.empty
-            and df["underlying"].astype(str).str.len().sum() > 0
+            "underlying" in df.columns and not df.empty and df["underlying"].astype(str).str.len().sum() > 0
         )
         if not has_underlying:
             return {}
@@ -5374,9 +5232,7 @@ class DataStatusService:
 
             # Instrument types that carry this underlying
             ul_itypes = (
-                sorted(
-                    str(it) for it in ul_df["instrument_type"].unique() if it and str(it).strip()
-                )
+                sorted(str(it) for it in ul_df["instrument_type"].unique() if it and str(it).strip())
                 if "instrument_type" in ul_df.columns
                 else []
             )
@@ -5393,16 +5249,12 @@ class DataStatusService:
                 eff_start = max(start_date, vs) if vs else start_date
                 v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
                 if not v_expected:
-                    v_expected = {
-                        d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")
-                    }
+                    v_expected = {d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")}
                 ul_expected_dates |= v_expected
 
             if not ul_expected_dates:
                 # Fallback when no venues are present
-                ul_expected_dates = {
-                    d.strftime("%Y-%m-%d") for d in pd.date_range(start_date, end_date, freq="D")
-                }
+                ul_expected_dates = {d.strftime("%Y-%m-%d") for d in pd.date_range(start_date, end_date, freq="D")}
 
             expected = len(ul_expected_dates)
             found = len(ul_dates & ul_expected_dates)
@@ -5448,15 +5300,12 @@ class DataStatusService:
         total_fixture_count = 0
         if is_sports and "instrument_count" in filtered.columns:
             fix_rows = filtered[
-                (filtered["data_type"] == "FIXTURES")
-                & (filtered["league_id"].fillna("").str.len() > 0)
+                (filtered["data_type"] == "FIXTURES") & (filtered["league_id"].fillna("").str.len() > 0)
             ]
             if not fix_rows.empty:
                 for lid in fix_rows["league_id"].unique():
                     if lid:
-                        lid_count = int(
-                            fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum()
-                        )
+                        lid_count = int(fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum())
                         fixtures_by_league[str(lid)] = lid_count
                 total_fixture_count = sum(fixtures_by_league.values())
 
@@ -5469,9 +5318,7 @@ class DataStatusService:
         # manifest (iterating over non-SPORTS SSOT maps is not implemented yet).
         manifest_dt_vals: set[str] = set()
         if "data_type" in filtered.columns:
-            manifest_dt_vals = {
-                str(v) for v in filtered["data_type"].unique() if v and str(v).strip()
-            }
+            manifest_dt_vals = {str(v) for v in filtered["data_type"].unique() if v and str(v).strip()}
         # SPORTS: SSOT is canonical. Drop manifest data_types not in
         # SPORTS_DATA_TYPE_META — they're residual rows from removed entities
         # (e.g. SFI_STANDINGS, intentionally absent: SFI has no standings
@@ -5484,9 +5331,7 @@ class DataStatusService:
         # are derived products, not raw source data, so they live under the
         # FSS service tab rather than instruments-service SPORTS.
         is_fss = service == "features-sports-service"
-        active_meta: dict[str, dict[str, object]] = (
-            FEATURES_SPORTS_DATA_TYPE_META if is_fss else SPORTS_DATA_TYPE_META
-        )
+        active_meta: dict[str, dict[str, object]] = FEATURES_SPORTS_DATA_TYPE_META if is_fss else SPORTS_DATA_TYPE_META
         sports_ssot_vals: set[str] = set(active_meta.keys()) if is_sports else set()
         all_dt_vals: set[str] = sports_ssot_vals if is_sports else manifest_dt_vals
         for dt_val in sorted(all_dt_vals):
@@ -5546,9 +5391,7 @@ class DataStatusService:
         if not entity_start or "date" not in full_filtered.columns:
             return fixtures_by_league, total_fixture_count
 
-        fix_rows = full_filtered[
-            (full_filtered["data_type"] == "FIXTURES") & (full_filtered["date"] >= entity_start)
-        ]
+        fix_rows = full_filtered[(full_filtered["data_type"] == "FIXTURES") & (full_filtered["date"] >= entity_start)]
         if fix_rows.empty:
             return {}, 0
         if "league_id" not in fix_rows.columns:
@@ -5557,9 +5400,7 @@ class DataStatusService:
         clamped: dict[str, int] = {}
         for lid in fix_rows["league_id"].unique():
             if lid:
-                clamped[str(lid)] = int(
-                    fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum()
-                )
+                clamped[str(lid)] = int(fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum())
         return clamped, sum(clamped.values())
 
     def _build_sports_entity_entry(
@@ -5637,9 +5478,7 @@ class DataStatusService:
             dt_expected = sum(eff_fixtures_by_league.get(lid, 0) for lid in _entity_coverage)
         else:
             dt_found = entity_fixture_count
-            dt_expected = (
-                eff_total_fixture_count if eff_total_fixture_count > 0 else entity_fixture_count
-            )
+            dt_expected = eff_total_fixture_count if eff_total_fixture_count > 0 else entity_fixture_count
         dt_entry = {
             "dates_found": dt_found,
             "dates_expected": dt_expected,
@@ -5677,11 +5516,7 @@ class DataStatusService:
         extras: dict[str, object] = {}
 
         # DeFi sub-dimension breakdown
-        if (
-            "_defi_source" in filtered.columns
-            and service == "market-tick-data-service"
-            and cat.lower() == "defi"
-        ):
+        if "_defi_source" in filtered.columns and service == "market-tick-data-service" and cat.lower() == "defi":
             defi_sub_dims = self._build_defi_sub_dimension_breakdown(
                 filtered,
                 start_date,
@@ -5691,11 +5526,7 @@ class DataStatusService:
                 extras["defi_sub_dimensions"] = defi_sub_dims
 
         # Chain breakdown for DeFi
-        has_chain_data = (
-            "chain" in filtered.columns
-            and not filtered.empty
-            and filtered["chain"].str.len().sum() > 0
-        )
+        has_chain_data = "chain" in filtered.columns and not filtered.empty and filtered["chain"].str.len().sum() > 0
         if has_chain_data:
             chains_dict = self._build_chain_breakdown(
                 filtered,
@@ -5708,9 +5539,7 @@ class DataStatusService:
 
         # Feature group breakdown
         has_fg_data = (
-            "feature_group" in filtered.columns
-            and not filtered.empty
-            and filtered["feature_group"].str.len().sum() > 0
+            "feature_group" in filtered.columns and not filtered.empty and filtered["feature_group"].str.len().sum() > 0
         )
         if has_fg_data:
             fg_dict = self._build_feature_group_breakdown(
@@ -5782,9 +5611,7 @@ class DataStatusService:
         # Resolve the main bucket name (for display in the response)
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
         bucket = (
-            override.format(pid=self.project_id)
-            if override
-            else template.format(cat=cat.lower(), pid=self.project_id)
+            override.format(pid=self.project_id) if override else template.format(cat=cat.lower(), pid=self.project_id)
         )
 
         index = self._read_defi_merged_index(service, cat)
@@ -5848,9 +5675,7 @@ class DataStatusService:
         if cat.lower() == "defi" and not filtered.empty:
             filtered = _canonicalise_defi_data_types(filtered)
 
-        cat_found_dates = (
-            {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
-        )
+        cat_found_dates = {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
         cat_missing = sorted(set(cat_date_strs) - cat_found_dates)
         cat_found = len(cat_found_dates)
 
@@ -5973,9 +5798,7 @@ class DataStatusService:
         # data_type strings as venues. Otherwise the venue grouping is real
         # (CEFI/TRADFI/DEFI/PREDICTION on instruments-service / MTDS).
         # SSOT: codex/02-data/sports-data-source-coverage-matrix.md §3.
-        breakdown_axis = (
-            "data_type" if cat.upper() == "SPORTS" or regrouped_to_data_type else "venue"
-        )
+        breakdown_axis = "data_type" if cat.upper() == "SPORTS" or regrouped_to_data_type else "venue"
         result: dict[str, object] = {
             "category": cat,
             "bucket": bucket,
@@ -6246,9 +6069,7 @@ class DataStatusService:
                             validation_errors.append(
                                 {
                                     "venue": venue_name,
-                                    "error": err_raw
-                                    if isinstance(err_raw, str)
-                                    else "Unknown error",
+                                    "error": err_raw if isinstance(err_raw, str) else "Unknown error",
                                 }
                             )
                         else:

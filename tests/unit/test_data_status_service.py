@@ -15,9 +15,7 @@ import pandas as pd
 import pytest
 
 # Load directly to avoid circular import via services/__init__.py
-_path = os.path.join(
-    os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py"
-)
+_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py")
 _spec = importlib.util.spec_from_file_location("_dss_standalone", os.path.abspath(_path))
 assert _spec is not None and _spec.loader is not None
 _dss_mod = importlib.util.module_from_spec(_spec)
@@ -175,9 +173,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "DEFI"]
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "DEFI"])
 
         assert "-c" in captured["args"]
         assert "CEFI" in captured["args"]
@@ -193,9 +189,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", venues=["BINANCE", "OKX"]
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", venues=["BINANCE", "OKX"])
 
         assert "-v" in captured["args"]
         assert "BINANCE" in captured["args"]
@@ -252,9 +246,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "market-data-processing-service", "2024-01-01", "2024-01-31"
-            )
+            await svc.run_data_status_cli("market-data-processing-service", "2024-01-01", "2024-01-31")
 
         assert "--fast" in captured["args"]
 
@@ -268,9 +260,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", check_data_types=True
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", check_data_types=True)
 
         assert "--check-data-types" in captured["args"]
 
@@ -284,9 +274,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", check_feature_groups=True
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", check_feature_groups=True)
 
         assert "--check-feature-groups" in captured["args"]
 
@@ -300,9 +288,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", check_timeframes=True
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", check_timeframes=True)
 
         assert "--check-timeframes" in captured["args"]
 
@@ -318,26 +304,20 @@ class TestCalculateMissingShards:
     async def test_returns_error_when_scan_raises(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", side_effect=RuntimeError("scan failed")):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert "error" in result
 
     @pytest.mark.asyncio
     async def test_returns_missing_analysis_structure(self):
         svc = _make_svc()
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
             if "cefi" in cat.lower():
                 return {"missing": ["2024-01-01"], "days_checked": 2}
             return None
 
         with patch.object(svc, "_scan_category_manifest", side_effect=_mock_scan):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-02"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-02")
 
         assert result["service"] == "instruments-service"
         assert "total_missing" in result
@@ -349,18 +329,14 @@ class TestCalculateMissingShards:
     async def test_handles_no_missing(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", return_value=None):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert result["total_missing"] == 0
 
     @pytest.mark.asyncio
     async def test_handles_all_categories_empty(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", return_value=None):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert "total_missing" in result
         assert result["total_missing"] == 0
 
@@ -368,9 +344,7 @@ class TestCalculateMissingShards:
     async def test_counts_by_category(self):
         svc = _make_svc()
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
             cat_l = cat.lower()
             if "cefi" in cat_l:
                 return {"missing": ["2024-01-01"], "days_checked": 1}
@@ -379,9 +353,7 @@ class TestCalculateMissingShards:
             return None
 
         with patch.object(svc, "_scan_category_manifest", side_effect=_mock_scan):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-01"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-01")
 
         mbc = result["missing_by_category"]
         assert isinstance(mbc, dict)
@@ -391,9 +363,7 @@ class TestCalculateMissingShards:
     async def test_returns_correct_date_range(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", return_value=None):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert result["date_range"] == {"start": "2024-01-01", "end": "2024-01-31"}
 
     @pytest.mark.asyncio
@@ -401,9 +371,7 @@ class TestCalculateMissingShards:
         svc = _make_svc()
         calls: list[str] = []
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
             calls.append(cat)
             return None
 
@@ -421,17 +389,13 @@ class TestCalculateMissingShards:
     async def test_summary_contains_completion_rate(self):
         svc = _make_svc()
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
             if "cefi" in cat.lower():
                 return {"missing": ["2024-01-01"], "days_checked": 3}
             return None
 
         with patch.object(svc, "_scan_category_manifest", side_effect=_mock_scan):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-03"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-03")
 
         summary = result["summary"]
         assert isinstance(summary, dict)
@@ -467,9 +431,7 @@ class TestGetLastUpdatedInfo:
         svc = _make_svc()
 
         with patch.object(_dss_mod, "list_objects", return_value=[]):
-            result = await svc.get_last_updated_info(
-                "market-tick-data-handler", asset_groups=["cefi"]
-            )
+            result = await svc.get_last_updated_info("market-tick-data-handler", asset_groups=["cefi"])
 
         assert result["asset_groups"]["cefi"]["status"] == "empty"
 
@@ -501,9 +463,7 @@ class TestValidateDataCompleteness:
     @pytest.mark.asyncio
     async def test_returns_error_when_cli_fails(self):
         svc = _make_svc()
-        with patch.object(
-            svc, "run_data_status_cli", new=AsyncMock(return_value={"error": "failed"})
-        ):
+        with patch.object(svc, "run_data_status_cli", new=AsyncMock(return_value={"error": "failed"})):
             result = await svc.validate_data_completeness("svc-a", "2024-01-01")
         assert "error" in result
 
@@ -571,9 +531,7 @@ class TestBuildDataTypeBreakdown:
     def test_returns_empty_when_no_data_type_column(self):
         df = pd.DataFrame({"date": ["2024-01-01"], "venue": ["BINANCE-SPOT"]})
         vm = MagicMock()
-        result = self.svc._build_data_type_breakdown(
-            df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
-        )
+        result = self.svc._build_data_type_breakdown(df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm)
         assert result == {}
 
     def test_returns_data_types_from_index(self):
@@ -591,12 +549,8 @@ class TestBuildDataTypeBreakdown:
             "get_expected_data_types_for_venue",
             return_value=["trades", "book_snapshot_5"],
         ):
-            with patch.object(
-                _dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"
-            ):
-                result = self.svc._build_data_type_breakdown(
-                    df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
-                )
+            with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"):
+                result = self.svc._build_data_type_breakdown(df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm)
 
         assert "trades" in result
         assert "book_snapshot_5" in result
@@ -615,9 +569,7 @@ class TestBuildDataTypeBreakdown:
         vm.get_expected_trading_dates.return_value = ["2024-01-01"]
         with patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["trades"]):
             with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
-                result = self.svc._build_data_type_breakdown(
-                    df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
-                )
+                result = self.svc._build_data_type_breakdown(df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm)
 
         # Observed-but-not-UAC-declared dt is kept with is_expected=False
         assert "unexpected_type" in result
@@ -799,9 +751,7 @@ class TestPhantomExpectedClamp:
             return_value=["ODDS", "arbitrage_opportunity", "odds_movement", "odds_snapshot"],
         ):
             with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
-                result = self.svc._build_data_type_breakdown(
-                    df, "ODDS_API", "2024-01-01", "2024-01-03", vm
-                )
+                result = self.svc._build_data_type_breakdown(df, "ODDS_API", "2024-01-01", "2024-01-03", vm)
 
         # Only ODDS (observed) shows up. arbitrage_opportunity, odds_movement,
         # odds_snapshot are UAC-declared but never observed -> phantom -> dropped.
@@ -840,9 +790,7 @@ class TestPhantomExpectedClamp:
         btc_expected = int(result["BTC"]["dates_expected"])
         hype_expected = int(result["HYPE"]["dates_expected"])
         assert hype_expected == 1, f"HYPE should be clamped to 1 day, got {hype_expected}"
-        assert btc_expected > hype_expected, (
-            f"BTC ({btc_expected}) should span more days than HYPE ({hype_expected})"
-        )
+        assert btc_expected > hype_expected, f"BTC ({btc_expected}) should span more days than HYPE ({hype_expected})"
 
     def test_underlying_breakdown_clamps_to_observed_launch(self):
         """Underlying that launched mid-history does not get pre-launch phantom."""
@@ -875,9 +823,7 @@ class TestPhantomExpectedClamp:
         btc_expected = int(result["BTC"]["dates_expected"])
         sol_expected = int(result["SOL"]["dates_expected"])
         assert sol_expected == 1, f"SOL should be clamped to 1 day, got {sol_expected}"
-        assert btc_expected > sol_expected, (
-            f"BTC ({btc_expected}) should span more days than SOL ({sol_expected})"
-        )
+        assert btc_expected > sol_expected, f"BTC ({btc_expected}) should span more days than SOL ({sol_expected})"
 
     def test_data_type_breakdown_falls_back_to_observed_min_when_uac_unknown(self):
         """When UAC has no declared dt start, use earliest observed date."""
@@ -900,9 +846,7 @@ class TestPhantomExpectedClamp:
             return_value=["derivative_ticker"],
         ):
             with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
-                result = self.svc._build_data_type_breakdown(
-                    df, "DRIFT", "2024-01-01", "2024-06-02", vm
-                )
+                result = self.svc._build_data_type_breakdown(df, "DRIFT", "2024-01-01", "2024-06-02", vm)
 
         # Effective start clamps to observed min (2024-06-01), so expected
         # range is 2024-06-01..2024-06-02 = 2 days, NOT 2024-01-01..2024-06-02.
@@ -926,9 +870,7 @@ class TestBuildVenueBreakdown:
     def test_no_venue_column_returns_empty(self):
         df = pd.DataFrame({"date": ["2024-01-01"]})
         vm = MagicMock()
-        venues, found, expected = self.svc._build_venue_breakdown(
-            df, "2024-01-01", "2024-01-01", vm, 0, 1, service=""
-        )
+        venues, found, expected = self.svc._build_venue_breakdown(df, "2024-01-01", "2024-01-01", vm, 0, 1, service="")
         assert venues == {}
 
     def test_venue_breakdown_includes_data_types_when_present(self):
@@ -948,9 +890,7 @@ class TestBuildVenueBreakdown:
             "get_expected_data_types_for_venue",
             return_value=["trades", "book_snapshot_5"],
         ):
-            with patch.object(
-                _dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"
-            ):
+            with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"):
                 venues, found, expected = self.svc._build_venue_breakdown(
                     df,
                     "2024-01-01",
@@ -1070,16 +1010,12 @@ class TestScanCategoryManifest:
 
     def test_returns_none_when_index_read_fails(self):
         with patch.object(_dss_mod, "_read_index_cached", side_effect=OSError("no bucket")):
-            result = self.svc._scan_category_manifest(
-                "instruments-service", "CEFI", "2024-01-01", "2024-01-31"
-            )
+            result = self.svc._scan_category_manifest("instruments-service", "CEFI", "2024-01-01", "2024-01-31")
         assert result is None
 
     def test_returns_none_when_index_empty(self):
         with patch.object(_dss_mod, "_read_index_cached", return_value=pd.DataFrame()):
-            result = self.svc._scan_category_manifest(
-                "instruments-service", "CEFI", "2024-01-01", "2024-01-31"
-            )
+            result = self.svc._scan_category_manifest("instruments-service", "CEFI", "2024-01-01", "2024-01-31")
         assert result is None
 
     def test_returns_missing_dates(self):
@@ -1096,9 +1032,7 @@ class TestScanCategoryManifest:
             patch.object(_dss_mod, "_read_index_cached", return_value=index),
             patch.object(_dss_mod, "VenueMapping", return_value=vm),
         ):
-            result = self.svc._scan_category_manifest(
-                "instruments-service", "CEFI", "2024-01-01", "2024-01-03"
-            )
+            result = self.svc._scan_category_manifest("instruments-service", "CEFI", "2024-01-01", "2024-01-03")
         assert result is not None
         assert "2024-01-02" in result["missing"]
 
@@ -1211,9 +1145,7 @@ class TestGetManifestStatus:
     @pytest.mark.asyncio
     async def test_handles_no_template(self):
         svc = _make_svc()
-        result = await svc.get_manifest_status(
-            "unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
-        )
+        result = await svc.get_manifest_status("unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"])
         assert result["overall_completion_pct"] == 0.0
 
 
@@ -1323,9 +1255,7 @@ class TestEnsureUnderlyingColumn:
         assert list(result["underlying"]) == ["BTC", "ETH"]
 
     def test_derives_from_instrument_id_when_underlying_missing(self):
-        df = pd.DataFrame(
-            {"instrument_id": ["BTC-USDT-PERP", "ETH-USDC"], "date": ["2024-01-01"] * 2}
-        )
+        df = pd.DataFrame({"instrument_id": ["BTC-USDT-PERP", "ETH-USDC"], "date": ["2024-01-01"] * 2})
         result = _ensure(df)
         assert "underlying" in result.columns
         assert list(result["underlying"]) == ["BTC", "ETH"]
@@ -1864,6 +1794,9 @@ class TestMTDSHonestCoverage:
         assert len(result["missing_venues"]) >= 9
         assert result["expected_venues"]  # non-empty
 
+    @pytest.mark.skip(  # reason: TRADFI trades/tbbo removed from May-23 MVP (ohlcv_1m only); restore at tradfi_l1_l2_l3_tick_data_post_cutover_2026_06_01
+        reason="TRADFI trades/tbbo removed from May-23 MVP"
+    )
     def test_tradfi_tick_window_gate(self):
         """TRADFI ``trades`` / ``tbbo`` are only expected inside tick windows.
         2024-07-10..2024-07-15 is INSIDE window (2024-07-01..2024-07-31)."""
@@ -1936,6 +1869,9 @@ class TestMTDSHonestCoverage:
         assert nyse["dates_expected"] == 12
         assert nyse["dates_found"] == 3
 
+    @pytest.mark.skip(  # reason: TRADFI trades/tbbo removed from May-23 MVP (ohlcv_1m only); restore at tradfi_l1_l2_l3_tick_data_post_cutover_2026_06_01
+        reason="TRADFI trades/tbbo removed from May-23 MVP"
+    )
     def test_tradfi_tick_window_gate_outside_window(self):
         """Outside the tick window, ``tbbo`` drops from the denominator
         (legacy global tick-window clip via _TRADFI_TICK_ONLY_DATA_TYPES).
@@ -2122,13 +2058,9 @@ class TestMTDSHonestCoverage:
         assert "POLYMARKET" in result["expected_venues"]
         assert "KALSHI" in result["missing_venues"]
         poly = result["venues"]["POLYMARKET"]
-        assert sorted(poly["expected_data_types"]) == sorted(
-            ["trades", "book_snapshot", "market_metadata", "fills"]
-        )
+        assert sorted(poly["expected_data_types"]) == sorted(["trades", "book_snapshot", "market_metadata", "fills"])
         # Only ``trades`` has rows in the fixture -- the other 3 are missing.
-        assert sorted(poly["missing_data_types"]) == sorted(
-            ["book_snapshot", "market_metadata", "fills"]
-        )
+        assert sorted(poly["missing_data_types"]) == sorted(["book_snapshot", "market_metadata", "fills"])
         assert poly["dates_found"] == 1
 
     @pytest.mark.parametrize(
@@ -2157,17 +2089,14 @@ class TestMTDSHonestCoverage:
         assert isinstance(expected_data_types, list)
         # Each of the 4 SchemaContract data_types must appear as an expected row.
         assert data_type in expected_data_types, (
-            f"PREDICTION data_type {data_type!r} missing from expected_data_types: "
-            f"{expected_data_types}"
+            f"PREDICTION data_type {data_type!r} missing from expected_data_types: {expected_data_types}"
         )
 
         # Also verify the per-dt entry exists in the data_types breakdown so the
         # UI can render the row (even with 0 captured / 0% completion).
         data_types = honest["data_types"]
         assert isinstance(data_types, dict)
-        assert data_type in data_types, (
-            f"PREDICTION data_type {data_type!r} missing from data_types breakdown"
-        )
+        assert data_type in data_types, f"PREDICTION data_type {data_type!r} missing from data_types breakdown"
 
     def test_prediction_meta_includes_all_four_keys(self):
         """Sanity: ``PREDICTION_DATA_TYPE_META`` mirrors the 4 UAC SchemaContracts."""
@@ -2177,15 +2106,10 @@ class TestMTDSHonestCoverage:
         # ``indeterminate`` denominator marker (per Follow-up B prompt §B). The
         # UI shows captured count without an arbitrary per-day denominator.
         for dt in ("book_snapshot", "market_metadata", "fills"):
-            assert (
-                _dss_mod.PREDICTION_DATA_TYPE_META[dt]["expected_count_per_day"] == "indeterminate"
-            )
+            assert _dss_mod.PREDICTION_DATA_TYPE_META[dt]["expected_count_per_day"] == "indeterminate"
         # ``trades`` keeps the existing per-venue daily denominator from
         # ``_mtds_expected_dates_for_venue_dt``.
-        assert (
-            _dss_mod.PREDICTION_DATA_TYPE_META["trades"]["expected_count_per_day"]
-            == "per_venue_daily"
-        )
+        assert _dss_mod.PREDICTION_DATA_TYPE_META["trades"]["expected_count_per_day"] == "per_venue_daily"
 
     def test_category_completion_not_tautology(self):
         """Before Phase 6c, CEFI header showed 100% when a single venue
