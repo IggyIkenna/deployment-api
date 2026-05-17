@@ -78,6 +78,7 @@ from .routes import (
     ml_experiment_launch,
     promote,
     recursive_borrow_coverage,
+    repo_coverage,
     repo_readiness,
     risk_routes,
     service_status,
@@ -126,14 +127,8 @@ app.add_middleware(RateLimitMiddleware, requests_per_minute=60)  # pyright: igno
 async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
     request_id: str = getattr(request.state, "request_id", str(uuid.uuid4()))
-    raw_detail: str | dict[str, str] = (
-        exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-    )
-    message = (
-        raw_detail.get("message", str(exc.detail))
-        if isinstance(raw_detail, dict)
-        else str(raw_detail)
-    )
+    raw_detail: str | dict[str, str] = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    message = raw_detail.get("message", str(exc.detail)) if isinstance(raw_detail, dict) else str(raw_detail)
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -152,54 +147,32 @@ _authenticated_router = APIRouter(dependencies=[Depends(verify_any_auth)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
 _authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
-_authenticated_router.include_router(
-    checklist.router, prefix="/api/checklists", tags=["Checklists"]
-)
+_authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
 _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])
-_authenticated_router.include_router(
-    data_status.router, prefix="/api/data-status", tags=["Data Status"]
-)
-_authenticated_router.include_router(
-    shard_detail.router, prefix="/api/data-status", tags=["Data Status"]
-)
+_authenticated_router.include_router(data_status.router, prefix="/api/data-status", tags=["Data Status"])
+_authenticated_router.include_router(shard_detail.router, prefix="/api/data-status", tags=["Data Status"])
 _authenticated_router.include_router(
     recursive_borrow_coverage.router,
     prefix="/api/data-status",
     tags=["Data Status"],
 )
 _authenticated_router.include_router(fixtures.router, prefix="/api")
-_authenticated_router.include_router(
-    service_status.router, prefix="/api/service-status", tags=["Service Status"]
-)
-_authenticated_router.include_router(
-    capabilities.router, prefix="/api/capabilities", tags=["Capabilities"]
-)
+_authenticated_router.include_router(service_status.router, prefix="/api/service-status", tags=["Service Status"])
+_authenticated_router.include_router(capabilities.router, prefix="/api/capabilities", tags=["Capabilities"])
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds
-_authenticated_router.include_router(
-    subscriptions.router, prefix="/api", tags=["Client Subscriptions"]
-)
-_authenticated_router.include_router(
-    chaos_injections.router, prefix="/api", tags=["Chaos Injection"]
-)
+_authenticated_router.include_router(subscriptions.router, prefix="/api", tags=["Client Subscriptions"])
+_authenticated_router.include_router(chaos_injections.router, prefix="/api", tags=["Chaos Injection"])
 _authenticated_router.include_router(
     builds_history.router, prefix="/api/builds", tags=["Builds"]
 )  # must be registered BEFORE builds.router (static /history before /{service})
-_authenticated_router.include_router(
-    builds.router
-)  # /api/builds/{service} + /api/deployments/{service}/deploy
+_authenticated_router.include_router(builds.router)  # /api/builds/{service} + /api/deployments/{service}/deploy
 _authenticated_router.include_router(config_management.router, prefix="/api")
 _authenticated_router.include_router(commentary.router, prefix="/api", tags=["Commentary"])
 _authenticated_router.include_router(sports_venues.router)
-_authenticated_router.include_router(
-    user_management.router, prefix="/api/user-management", tags=["User Management"]
-)
+_authenticated_router.include_router(user_management.router, prefix="/api/user-management", tags=["User Management"])
 _authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=["VM Deployments"])
-_authenticated_router.include_router(
-    backfill_launch.router, prefix="/api/backfill", tags=["Backfill"]
-)
-_authenticated_router.include_router(
-    ml_experiment_launch.router, prefix="/api/ml/experiment", tags=["ML Experiment"]
-)
+_authenticated_router.include_router(backfill_launch.router, prefix="/api/backfill", tags=["Backfill"])
+_authenticated_router.include_router(ml_experiment_launch.router, prefix="/api/ml/experiment", tags=["ML Experiment"])
 _authenticated_router.include_router(
     strategy_backtest_launch.router, prefix="/api/strategy/backtest", tags=["Strategy Backtest"]
 )
@@ -214,15 +187,12 @@ _authenticated_router.include_router(cost_daily.router, prefix="/api", tags=["Co
 _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
+_authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
 _authenticated_router.include_router(promote.router, prefix="/api", tags=["Promote Workflow"])
-_authenticated_router.include_router(
-    manual_pending.router, prefix="/api", tags=["Manual Pending Queue"]
-)
+_authenticated_router.include_router(manual_pending.router, prefix="/api", tags=["Manual Pending Queue"])
 _authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
-_authenticated_router.include_router(
-    treasury_routes.router, prefix="/api/treasury", tags=["Treasury"]
-)
+_authenticated_router.include_router(treasury_routes.router, prefix="/api/treasury", tags=["Treasury"])
 # /treasury/nav is intentionally also exposed without the /api prefix
 # (matches plan spec "/treasury/nav?client_id=<id>") so include on app directly too.
 app.include_router(treasury_routes.router, prefix="/treasury", tags=["Treasury"], dependencies=[])
@@ -305,9 +275,7 @@ async def health_check_with_config() -> dict[str, object]:
     return {
         "status": "healthy",
         "version": _api_version,
-        "config_dir": (
-            str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None
-        ),
+        "config_dir": (str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None),
         "gcs_fuse": get_gcs_fuse_status(),
         "cloud_provider": _cloud_cfg.cloud_provider,
         "mock_mode": _cloud_cfg.is_mock_mode(),
