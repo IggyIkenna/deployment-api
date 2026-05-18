@@ -24,11 +24,12 @@ import logging
 from datetime import UTC, datetime
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from unified_trading_library import get_storage_client, log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.rate_limiting import endpoint_rate_limit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -179,6 +180,7 @@ def _mock_response(date: str) -> DailyCostResponse:
 @router.get("/costs/daily", response_model=DailyCostResponse)
 def get_daily_costs(
     date: str | None = Query(None, description="YYYY-MM-DD (default: today UTC)"),
+    _rl: None = Depends(endpoint_rate_limit(20)),
 ) -> DailyCostResponse:
     """Return per-asset_group / per-archetype / per-vm cost totals for a given date.
 

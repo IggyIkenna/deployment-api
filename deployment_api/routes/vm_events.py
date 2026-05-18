@@ -30,7 +30,7 @@ import logging
 from datetime import UTC, datetime
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from unified_api_contracts.internal import (
     VMEventListResult,
@@ -39,6 +39,7 @@ from unified_api_contracts.internal import (
 from unified_trading_library import get_storage_client, log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.rate_limiting import endpoint_rate_limit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -333,6 +334,7 @@ def _list_event_blobs_in_hour(
 
 @router.get("/events", response_model=VMEventListResult)
 def list_vm_events(
+    _rl: None = Depends(endpoint_rate_limit(30)),
     vm_name: str = Query(..., description="VM name (required)"),
     service: str | None = Query(
         None,
@@ -394,6 +396,7 @@ def list_vm_events(
 @router.get("/{vm_name}/events", response_model=VMEventListResult)
 def list_filtered_vm_events(
     vm_name: str,
+    _rl: None = Depends(endpoint_rate_limit(30)),
     service: str | None = Query(
         None,
         description="Service name partition. Inferred from vm_name prefix if omitted.",
@@ -590,6 +593,7 @@ def _event_to_log_line(evt: VMLifecycleEvent) -> VmLogLine:
 @router.get("/logs/{vm_name}", response_model=VmLogTailResult)
 def tail_vm_logs(
     vm_name: str,
+    _rl: None = Depends(endpoint_rate_limit(30)),
     service: str | None = Query(None, description="Service name. Inferred from vm_name prefix if omitted."),
     tail: int = Query(100, ge=1, le=1000, description="Number of most-recent log lines to return"),
     since: str | None = Query(None, description="ISO 8601 timestamp — return lines at or after this time"),

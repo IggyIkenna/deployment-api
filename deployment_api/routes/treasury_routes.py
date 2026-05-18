@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from position_balance_monitor_service.core.treasury_monitor import (
     compute_nav_by_client,
     compute_unified_nav,
@@ -33,6 +33,8 @@ from unified_api_contracts.internal.domain.treasury import (
     TreasuryRollupResponse,
     TreasurySourceBalance,
 )
+
+from deployment_api.rate_limiting import endpoint_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,7 @@ class TreasuryNAVByClientOut(BaseModel):
     tags=["Treasury"],
 )
 async def get_treasury_rollup(
+    _rl: None = Depends(endpoint_rate_limit(10)),
     venue_margin_usd: str | None = Query(
         default=None,
         description="Aggregated venue-margin USD balance (Decimal-as-string). If omitted, defaults to 0.",

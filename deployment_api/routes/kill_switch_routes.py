@@ -64,6 +64,7 @@ from unified_trading_library import (
 )
 
 from deployment_api.auth import verify_api_key
+from deployment_api.rate_limiting import endpoint_rate_limit
 from deployment_api.rbac import require_permission
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,7 @@ async def arm_kill_switch(
     kill_switch_id: KillSwitchId,
     body: ArmRequestBody,
     _check: None = Depends(require_permission(Permission.RISK_OVERRIDE)),
+    _rl: None = Depends(endpoint_rate_limit(5)),
 ) -> KillSwitchArmedEvent:
     """Arm a kill switch by ``KillSwitchId``.
 
@@ -288,6 +290,7 @@ async def disarm_kill_switch(
     kill_switch_id: KillSwitchId,
     body: ArmRequestBody,
     _check: None = Depends(require_permission(Permission.RISK_OVERRIDE)),
+    _rl: None = Depends(endpoint_rate_limit(5)),
 ) -> KillSwitchDisarmEvent:
     """Disarm a kill switch by ``KillSwitchId``.
 
