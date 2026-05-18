@@ -1,0 +1,329 @@
+"""Unit tests for routes/builds.py — pure helpers + mock-mode route coverage."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from unified_trading_library import setup_events
+
+setup_events("deployment-api", "test")
+
+_PATCH_CLOUD_MOCK_MODE = "deployment_api.routes.builds.CLOUD_MOCK_MODE"
+_PATCH_CLOUD_PROVIDER = "deployment_api.routes.builds.CLOUD_PROVIDER"
+_PATCH_PROJECT_ID = "deployment_api.routes.builds.default_project_id"
+_PATCH_WORKSPACE_ROOT = "deployment_api.routes.builds.WORKSPACE_ROOT"
+_PATCH_DISABLE_AUTH = "deployment_api.rbac.DISABLE_AUTH"
+
+
+# ── _tag_to_entry ─────────────────────────────────────────────────────────────
+
+
+class TestTagToEntry:
+    def test_semver_main_branch(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("1.2.3")
+        assert entry.tag == "1.2.3"
+        assert entry.branch == "main"
+        assert entry.version == "1.2.3"
+        assert entry.display == "1.2.3 @ main"
+        assert entry.is_v1 is True
+
+    def test_semver_staging_branch(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("0.3.168-staging")
+        assert entry.branch == "staging"
+        assert entry.display == "0.3.168 @ staging"
+        assert entry.is_v1 is False
+
+    def test_semver_feat_branch(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("0.3.168-feat-my-feature")
+        assert entry.branch == "feat/my-feature"
+        assert entry.display == "0.3.168 @ feat/my-feature"
+
+    def test_semver_fix_branch(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("1.0.0-fix-the-bug")
+        assert entry.branch == "fix/the-bug"
+
+    def test_semver_chore_branch(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("0.5.0-chore-cleanup")
+        assert entry.branch == "chore/cleanup"
+
+    def test_commit_sha_short(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("3c1f37a")
+        assert entry.tag == "3c1f37a"
+        assert entry.branch == "commit"
+        assert entry.display == "3c1f37a @ commit"
+        assert entry.is_v1 is False
+
+    def test_commit_sha_long(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("abc1234def5678ab")
+        assert entry.branch == "commit"
+
+    def test_non_semver_unknown_tag(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("not-a-version")
+        assert entry.tag == "not-a-version"
+        assert entry.branch == "unknown"
+        assert entry.is_v1 is False
+
+    def test_v1_major_version(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("2.0.0")
+        assert entry.is_v1 is True
+
+    def test_v0_is_not_v1(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("0.9.99")
+        assert entry.is_v1 is False
+
+    def test_feat_branch_with_dashes_in_name(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("0.1.0-feat-live-defi-rollout")
+        assert entry.branch == "feat/live-defi-rollout"
+
+
+# ── _sort_key ────────────────────────────────────────────────────────────────
+
+
+class TestSortKey:
+    def test_higher_major_sorts_first(self) -> None:
+        from deployment_api.routes.builds import BuildEntry, _sort_key
+
+        e1 = BuildEntry(tag="2.0.0", display="2.0.0 @ main", version="2.0.0", branch="main", is_v1=True)
+        e2 = BuildEntry(tag="1.0.0", display="1.0.0 @ main", version="1.0.0", branch="main", is_v1=True)
+        assert _sort_key(e1) < _sort_key(e2)
+
+    def test_higher_minor_sorts_first(self) -> None:
+        from deployment_api.routes.builds import BuildEntry, _sort_key
+
+        e1 = BuildEntry(tag="1.2.0", display="1.2.0 @ main", version="1.2.0", branch="main", is_v1=True)
+        e2 = BuildEntry(tag="1.1.0", display="1.1.0 @ main", version="1.1.0", branch="main", is_v1=True)
+        assert _sort_key(e1) < _sort_key(e2)
+
+    def test_higher_patch_sorts_first(self) -> None:
+        from deployment_api.routes.builds import BuildEntry, _sort_key
+
+        e1 = BuildEntry(tag="1.0.3", display="1.0.3 @ main", version="1.0.3", branch="main", is_v1=True)
+        e2 = BuildEntry(tag="1.0.1", display="1.0.1 @ main", version="1.0.1", branch="main", is_v1=True)
+        assert _sort_key(e1) < _sort_key(e2)
+
+    def test_invalid_version_returns_zero_tuple(self) -> None:
+        from deployment_api.routes.builds import BuildEntry, _sort_key
+
+        e = BuildEntry(tag="abc", display="abc @ commit", version="abc", branch="commit", is_v1=False)
+        assert _sort_key(e) == (0, 0, 0)
+
+
+# ── _mock_builds_from_manifest ───────────────────────────────────────────────
+
+
+class TestMockBuildsFromManifest:
+    def test_missing_manifest_returns_empty(self, tmp_path: Path) -> None:
+        from deployment_api.routes.builds import _mock_builds_from_manifest
+
+        with patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)):
+            result = _mock_builds_from_manifest("my-service", "dev")
+        assert result == []
+
+    def test_manifest_with_deployed_version_returns_entry(self, tmp_path: Path) -> None:
+        import json
+
+        from deployment_api.routes.builds import _mock_builds_from_manifest
+
+        pm_dir = tmp_path / "unified-trading-pm"
+        pm_dir.mkdir(parents=True)
+        manifest = {"deployed_versions": {"dev": {"my-service": "1.0.0"}}}
+        (pm_dir / "workspace-manifest.json").write_text(json.dumps(manifest))
+
+        with patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)):
+            result = _mock_builds_from_manifest("my-service", "dev")
+
+        assert len(result) == 1
+        assert result[0].tag == "1.0.0"
+
+    def test_manifest_with_missing_env_returns_empty(self, tmp_path: Path) -> None:
+        import json
+
+        from deployment_api.routes.builds import _mock_builds_from_manifest
+
+        pm_dir = tmp_path / "unified-trading-pm"
+        pm_dir.mkdir(parents=True)
+        manifest = {"deployed_versions": {"prod": {"my-service": "1.0.0"}}}
+        (pm_dir / "workspace-manifest.json").write_text(json.dumps(manifest))
+
+        with patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)):
+            result = _mock_builds_from_manifest("my-service", "dev")
+
+        assert result == []
+
+    def test_invalid_json_returns_empty(self, tmp_path: Path) -> None:
+        from deployment_api.routes.builds import _mock_builds_from_manifest
+
+        pm_dir = tmp_path / "unified-trading-pm"
+        pm_dir.mkdir(parents=True)
+        (pm_dir / "workspace-manifest.json").write_text("not-json!")
+
+        with patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)):
+            result = _mock_builds_from_manifest("my-service", "dev")
+
+        assert result == []
+
+
+# ── _get_ar_repo_name ────────────────────────────────────────────────────────
+
+
+class TestGetArRepoName:
+    def test_instruments_service_override(self) -> None:
+        from deployment_api.routes.builds import _get_ar_repo_name
+
+        assert _get_ar_repo_name("instruments-service") == "instruments"
+
+    def test_execution_service_override(self) -> None:
+        from deployment_api.routes.builds import _get_ar_repo_name
+
+        assert _get_ar_repo_name("execution-service") == "execution"
+
+    def test_unknown_service_uses_service_name(self) -> None:
+        from deployment_api.routes.builds import _get_ar_repo_name
+
+        assert _get_ar_repo_name("my-custom-service") == "my-custom-service"
+
+
+# ── list_builds route (mock mode) ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def client_builds() -> TestClient:
+    from deployment_api.routes.builds import router
+
+    app = FastAPI()
+    app.include_router(router)
+    with patch(_PATCH_DISABLE_AUTH, True):
+        return TestClient(app, raise_server_exceptions=False)
+
+
+def test_list_builds_mock_mode_empty_manifest(client_builds: TestClient, tmp_path: Path) -> None:
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, True),
+        patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=dev")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_list_builds_mock_mode_with_manifest_entry(client_builds: TestClient, tmp_path: Path) -> None:
+    import json
+
+    pm_dir = tmp_path / "unified-trading-pm"
+    pm_dir.mkdir(parents=True)
+    manifest = {"deployed_versions": {"dev": {"my-service": "1.2.3"}}}
+    (pm_dir / "workspace-manifest.json").write_text(json.dumps(manifest))
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, True),
+        patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=dev")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["tag"] == "1.2.3"
+    assert data[0]["branch"] == "main"
+
+
+def test_list_builds_local_provider_also_mock(client_builds: TestClient, tmp_path: Path) -> None:
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "local"),
+        patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=staging")
+    assert r.status_code == 200
+
+
+# ── deploy_build route (mock mode) ────────────────────────────────────────────
+
+
+def test_deploy_build_mock_mode_returns_accepted(client_builds: TestClient) -> None:
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, True),
+    ):
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "dev"},
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "accepted"
+    assert data["mock"] is True
+    assert data["service"] == "my-service"
+    assert data["image_tag"] == "1.2.3"
+
+
+def test_deploy_build_mock_mode_local_provider(client_builds: TestClient) -> None:
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "local"),
+    ):
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "0.5.1-staging", "environment": "staging"},
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "accepted"
+    assert data["mock"] is True
+
+
+def test_deploy_build_invalid_env_returns_422(client_builds: TestClient) -> None:
+    with patch(_PATCH_CLOUD_MOCK_MODE, True):
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "invalid-env"},
+        )
+    assert r.status_code == 422
+
+
+def test_deploy_build_gcp_no_project_returns_400(client_builds: TestClient) -> None:
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, ""),
+    ):
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "prod"},
+        )
+    assert r.status_code == 400
+
+
+def test_list_builds_gcp_no_project_returns_400(client_builds: TestClient) -> None:
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, ""),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=prod")
+    assert r.status_code == 400
