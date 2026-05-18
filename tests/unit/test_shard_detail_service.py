@@ -265,9 +265,7 @@ class TestGetShardDetailPerSymbol:
         assert resp.shard_class == "per_symbol"
         assert len(resp.sample_rows) == 3
         assert resp.payload_per_symbol is not None
-        assert resp.payload_per_symbol.instrument_list == [
-            {"key": "BTC-PERPETUAL", "type": "symbol"}
-        ]
+        assert resp.payload_per_symbol.instrument_list == [{"key": "BTC-PERPETUAL", "type": "symbol"}]
 
 
 # ---------------------------------------------------------------------------

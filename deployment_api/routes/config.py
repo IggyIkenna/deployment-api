@@ -100,9 +100,7 @@ async def get_venues(request: Request):
         return venues_config
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues config")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/venues/{asset_group}")
@@ -122,17 +120,13 @@ async def get_venues_by_asset_group(asset_group: str, request: Request):
 
         loader = get_config_loader(request)
         venues_config = loader.load_venues_config()
-        groups_raw: object = (
-            venues_config.get("asset_groups") or venues_config.get("categories") or {}
-        )
+        groups_raw: object = venues_config.get("asset_groups") or venues_config.get("categories") or {}
         groups = cast(dict[str, object], groups_raw) if isinstance(groups_raw, dict) else {}
 
         # Case-insensitive lookup; YAML may use ``categories`` or ``asset_groups``.
         for ag_name, ag_data_raw in groups.items():
             if ag_name.upper() == asset_group.upper():
-                ag_data = (
-                    cast(dict[str, object], ag_data_raw) if isinstance(ag_data_raw, dict) else {}
-                )
+                ag_data = cast(dict[str, object], ag_data_raw) if isinstance(ag_data_raw, dict) else {}
                 return {
                     "asset_group": ag_name,
                     "venues": ag_data.get("venues") or [],
@@ -149,9 +143,7 @@ async def get_venues_by_asset_group(asset_group: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues by asset group")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/expected-start-dates")
@@ -177,9 +169,7 @@ async def get_expected_start_dates(request: Request):
         return data
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load expected start dates")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/expected-start-dates/{service_name}")
@@ -223,9 +213,7 @@ async def get_service_start_dates(service_name: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load service start dates for %s", service_name)
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/dependencies")
@@ -251,9 +239,7 @@ async def get_dependencies(request: Request):
         return data
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load dependencies")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 def _load_service_deps_from_file(deps_path: Path, service_name: str) -> dict[str, object] | None:
@@ -330,9 +316,7 @@ async def get_service_dependencies(service_name: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load service dependencies for %s", service_name)
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/shard-axis-matrix")

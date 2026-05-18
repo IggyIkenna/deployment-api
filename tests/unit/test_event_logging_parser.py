@@ -16,9 +16,7 @@ def test_parse_service_event_simple():
 
 def test_parse_service_event_with_details():
     """Parse event with details in parentheses."""
-    result = parse_service_event(
-        "SERVICE_EVENT: INSTRUMENT_PROCESSING_COMPLETED (BTC-USDT-SWAP, 5760 candles)"
-    )
+    result = parse_service_event("SERVICE_EVENT: INSTRUMENT_PROCESSING_COMPLETED (BTC-USDT-SWAP, 5760 candles)")
     assert result is not None
     assert result["event_name"] == "INSTRUMENT_PROCESSING_COMPLETED"
     assert "BTC-USDT-SWAP" in result["details"]

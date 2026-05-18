@@ -120,9 +120,7 @@ class TestEvaluateRepo:
         assert result["reason"] == "open_p0_issue"
 
     def test_inflight_refactor_banner_blocks_deploy(self, tmp_path: Path) -> None:
-        (tmp_path / "refactor.md").write_text(
-            "> **🟡 IN-FLIGHT REFACTOR — touching my-repo contracts**\n\n# Body\n"
-        )
+        (tmp_path / "refactor.md").write_text("> **🟡 IN-FLIGHT REFACTOR — touching my-repo contracts**\n\n# Body\n")
         result = _evaluate_repo("my-repo", _green_snapshots(5), tmp_path)
         assert result["deploy_ready"] is False
         assert result["reason"] == "in_flight_refactor"

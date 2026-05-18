@@ -54,7 +54,11 @@ repos:
     hooks:
       - id: gitleaks
         name: Detect secrets with gitleaks
-        args: ["--config", "${WORKSPACE_ROOT:-..}/unified-trading-pm/.gitleaks.toml"]
+        args:
+          [
+            "--config",
+            "${WORKSPACE_ROOT:-..}/unified-trading-pm/.gitleaks.toml",
+          ]
 
   # Basic file checks
   - repo: https://github.com/pre-commit/pre-commit-hooks

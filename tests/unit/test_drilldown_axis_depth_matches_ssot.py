@@ -132,8 +132,7 @@ def test_drilldown_axes_match_shard_axis_matrix_ssot(service: str, asset_group: 
     # tuple or list depending on serialisation; the SSOT comparison is
     # what matters, not the container type.
     assert list(axes) == expected_full, (  # type: ignore[arg-type]
-        f"({service}, {asset_group}): drill-down axes drifted from SSOT — "
-        f"expected {expected_full}, got {axes}"
+        f"({service}, {asset_group}): drill-down axes drifted from SSOT — expected {expected_full}, got {axes}"
     )
 
 

@@ -47,9 +47,7 @@ async def test_valid_firebase_token_returns_email() -> None:
     """A valid Firebase token → email is returned from verified payload."""
     with (
         patch.object(firebase_auth_module, "DISABLE_AUTH", False),
-        patch.object(
-            firebase_auth_module, "_verify_firebase_id_token", return_value="user@example.com"
-        ),
+        patch.object(firebase_auth_module, "_verify_firebase_id_token", return_value="user@example.com"),
     ):
         result = await verify_firebase_token(authorization="Bearer valid.jwt.token")
     assert result == "user@example.com"

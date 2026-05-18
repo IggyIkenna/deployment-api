@@ -300,9 +300,7 @@ class GCSCache:
                         bucket = client.bucket(self.bucket_name)
                         blob = bucket.blob(self.blob_path)
                         if blob.exists():
-                            data = cast(
-                                dict[str, dict[str, object]], json.loads(blob.download_as_text())
-                            )
+                            data = cast(dict[str, dict[str, object]], json.loads(blob.download_as_text()))
                             self._local_cache = data
                             logger.info("Loaded GCS cache: %s keys", len(data))
                         else:
@@ -434,9 +432,7 @@ class UnifiedCache:
         if self.gcs:
             load_fn = getattr(self.gcs, "_load_from_gcs", None)
             if callable(load_fn):
-                _coro: Coroutine[object, object, None] = cast(
-                    Coroutine[object, object, None], load_fn()
-                )
+                _coro: Coroutine[object, object, None] = cast(Coroutine[object, object, None], load_fn())
                 await _coro
 
         # Start background cleanup task
@@ -671,12 +667,8 @@ def invalidate_service_status_cache_async(service: str | None = None):
 # =============================================================================
 
 TTL_HEALTH = 5  # Health checks - very short
-TTL_DEPLOYMENT_STATE = (
-    10  # Individual deployment state (active deployments - short for near-real-time)
-)
-TTL_DEPLOYMENT_STATE_TERMINAL = (
-    60  # Terminal deployment state (completed/failed/cancelled - longer)
-)
+TTL_DEPLOYMENT_STATE = 10  # Individual deployment state (active deployments - short for near-real-time)
+TTL_DEPLOYMENT_STATE_TERMINAL = 60  # Terminal deployment state (completed/failed/cancelled - longer)
 TTL_DEPLOYMENT_LIST = 30  # Deployment list (30s - keep list fresh for running/pending status)
 TTL_DATA_STATUS = 1800  # Data status checks (30 min - expensive queries, data rarely changes)
 TTL_SERVICE_STATUS = 120  # Service status (2 min)

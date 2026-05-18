@@ -93,9 +93,7 @@ def _coverage_blob_path(service: str) -> str:
     return f"{service}/coverage.json.gz"
 
 
-def _build_one_service_rollup(
-    dss: DataStatusService, service: str, end_date: str
-) -> dict[str, Any]:
+def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: str) -> dict[str, Any]:
     """Compute the full-range manifest rollup for one service.
 
     Bypasses the rollup-cache fast-path in
@@ -138,9 +136,7 @@ def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
     return buf.getvalue(), len(raw)
 
 
-def _write_rollup_to_gcs(
-    storage_client: object, bucket: str, service: str, payload: dict[str, Any]
-) -> dict[str, int]:
+def _write_rollup_to_gcs(storage_client: object, bucket: str, service: str, payload: dict[str, Any]) -> dict[str, int]:
     """Gzip + upload the manifest rollup via the unified cloud-interface API."""
     compressed, raw_size = _gzip_payload(payload)
     storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
@@ -291,8 +287,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Offline data-status rollup worker — see plan: "
-        "data_status_offline_rollup_2026_05_06"
+        description="Offline data-status rollup worker — see plan: data_status_offline_rollup_2026_05_06"
     )
     parser.add_argument("--project", required=True, help="GCP project ID")
     parser.add_argument(

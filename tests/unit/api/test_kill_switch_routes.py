@@ -242,9 +242,7 @@ class TestState:
 class TestAuditLog:
     @pytest.mark.asyncio
     async def test_audit_log_empty_returns_note(self) -> None:
-        resp = await get_kill_switch_audit_log(
-            switch_id=None, start_date=None, end_date=None, page=1, page_size=50
-        )
+        resp = await get_kill_switch_audit_log(switch_id=None, start_date=None, end_date=None, page=1, page_size=50)
         assert resp.entries == []
         assert resp.total == 0
         assert resp.note is not None
@@ -254,9 +252,7 @@ class TestAuditLog:
         body = ArmRequestBody(requested_by="op")
         await arm_kill_switch(KillSwitchId.KILL_PER_VENUE_BYBIT, body)
         await disarm_kill_switch(KillSwitchId.KILL_PER_VENUE_BYBIT, body)
-        resp = await get_kill_switch_audit_log(
-            switch_id=None, start_date=None, end_date=None, page=1, page_size=50
-        )
+        resp = await get_kill_switch_audit_log(switch_id=None, start_date=None, end_date=None, page=1, page_size=50)
         assert resp.total == 2
         actions = {e.action for e in resp.entries}
         assert actions == {"arm", "disarm"}
@@ -286,12 +282,8 @@ class TestAuditLog:
             KillSwitchId.KILL_PER_VENUE_BINANCE,
         ):
             await arm_kill_switch(sid, body)
-        page1 = await get_kill_switch_audit_log(
-            switch_id=None, start_date=None, end_date=None, page=1, page_size=2
-        )
-        page2 = await get_kill_switch_audit_log(
-            switch_id=None, start_date=None, end_date=None, page=2, page_size=2
-        )
+        page1 = await get_kill_switch_audit_log(switch_id=None, start_date=None, end_date=None, page=1, page_size=2)
+        page2 = await get_kill_switch_audit_log(switch_id=None, start_date=None, end_date=None, page=2, page_size=2)
         assert page1.total == 3
         assert len(page1.entries) == 2
         assert len(page2.entries) == 1
@@ -314,9 +306,7 @@ class TestAuthGate:
         assert payload["switch_id"] == "KILL_PER_VENUE_ASTER"
         assert payload["provenance"] == "OPERATOR_MANUAL"
 
-    def test_arm_without_api_key_rejected_when_auth_enabled(
-        self, app_with_auth_enabled: FastAPI
-    ) -> None:
+    def test_arm_without_api_key_rejected_when_auth_enabled(self, app_with_auth_enabled: FastAPI) -> None:
         """No ``X-API-Key`` header → verify_api_key raises 401."""
         from unittest.mock import MagicMock
 
@@ -352,9 +342,7 @@ class TestAuthGate:
             )
             assert resp.status_code == 200, resp.text
 
-    def test_audit_log_with_disabled_auth_returns_200(
-        self, app_with_auth_disabled: FastAPI
-    ) -> None:
+    def test_audit_log_with_disabled_auth_returns_200(self, app_with_auth_disabled: FastAPI) -> None:
         client = TestClient(app_with_auth_disabled)
         resp = client.get("/api/kill-switch/audit-log")
         assert resp.status_code == 200, resp.text
@@ -364,9 +352,7 @@ class TestAuthGate:
 
 
 class TestBodyValidation:
-    def test_unknown_kill_switch_id_in_path_returns_422(
-        self, app_with_auth_disabled: FastAPI
-    ) -> None:
+    def test_unknown_kill_switch_id_in_path_returns_422(self, app_with_auth_disabled: FastAPI) -> None:
         client = TestClient(app_with_auth_disabled)
         resp = client.post(
             "/api/kill-switch/NOT_A_REAL_ID/arm",

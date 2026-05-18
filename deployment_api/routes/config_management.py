@@ -163,9 +163,7 @@ def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> Non
 
 @router.post("/{domain}", response_model=ConfigVersionResponse)
 async def write_domain_config(
-    domain: Annotated[
-        str, Path(description="Config domain: instruments, strategies, clients, venues")
-    ],
+    domain: Annotated[str, Path(description="Config domain: instruments, strategies, clients, venues")],
     request: ConfigWriteRequest,
 ) -> ConfigVersionResponse:
     """Write a new version of the domain config.

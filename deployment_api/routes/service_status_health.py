@@ -49,9 +49,7 @@ def detect_anomalies(
                     "type": "deployment_without_data",
                     "severity": "warning",
                     "message": (
-                        f"Deployment ran"
-                        f" {(deploy_time - data_time).total_seconds() / 3600:.1f}h"
-                        " after data update"
+                        f"Deployment ran {(deploy_time - data_time).total_seconds() / 3600:.1f}h after data update"
                     ),
                 }
             )
@@ -62,11 +60,7 @@ def detect_anomalies(
                 {
                     "type": "code_not_built",
                     "severity": "warning",
-                    "message": (
-                        f"Code pushed"
-                        f" {(code_time - build_time).total_seconds() / 60:.0f}m"
-                        " ago but not built"
-                    ),
+                    "message": (f"Code pushed {(code_time - build_time).total_seconds() / 60:.0f}m ago but not built"),
                 }
             )
 

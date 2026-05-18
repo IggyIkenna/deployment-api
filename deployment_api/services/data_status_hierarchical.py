@@ -152,9 +152,7 @@ get applied unconditionally if the caller supplies them. Plan:
 features-repo consolidation Phase 8B (deployment-api side)."""
 
 
-def _filter_manifest(
-    df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str, str]
-) -> pd.DataFrame:
+def _filter_manifest(df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str, str]) -> pd.DataFrame:
     """Apply level-by-level filters, narrowing the manifest to the
     requested branch.
 
@@ -269,9 +267,7 @@ def _stamp_feature_family(df: pd.DataFrame) -> pd.DataFrame:
     ff = out["feature_family"].astype(str)
     needs_stamp = (ff == "") | (ff == "nan")
     if needs_stamp.any():
-        derived = fg.map(
-            lambda g: FEATURE_GROUP_TO_FAMILY[g].value if g in FEATURE_GROUP_TO_FAMILY else ""
-        )
+        derived = fg.map(lambda g: FEATURE_GROUP_TO_FAMILY[g].value if g in FEATURE_GROUP_TO_FAMILY else "")
         out.loc[needs_stamp, "feature_family"] = derived[needs_stamp]
     return out
 

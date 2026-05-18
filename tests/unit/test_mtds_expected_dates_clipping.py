@@ -75,11 +75,7 @@ def _all_chain_protocol_pairs() -> list[tuple[str, str]]:
     ``CHAIN_GENESIS_DATES`` (e.g. SOLANA in some entries) are exercised
     by the chain-only fallback elsewhere; this test focuses on the
     BOTH-cutoffs path."""
-    return [
-        (chain, protocol)
-        for (chain, protocol) in PROTOCOL_LAUNCH_DATES
-        if chain in CHAIN_GENESIS_DATES
-    ]
+    return [(chain, protocol) for (chain, protocol) in PROTOCOL_LAUNCH_DATES if chain in CHAIN_GENESIS_DATES]
 
 
 _PAIRS = _all_chain_protocol_pairs()

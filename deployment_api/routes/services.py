@@ -135,9 +135,7 @@ def _build_dim_info(dim: dict[str, object], venues_config: dict[str, object]) ->
             categories_raw: object = venues_config.get("categories") or {}
             categories_map = cast(dict[str, object], categories_raw)
             for category, cat_data in categories_map.items():
-                cat_data_dict = (
-                    cast(dict[str, object], cat_data) if isinstance(cat_data, dict) else {}
-                )
+                cat_data_dict = cast(dict[str, object], cat_data) if isinstance(cat_data, dict) else {}
                 cat_venues_raw: object = cat_data_dict.get("venues") or []
                 cat_venues: list[object] = (
                     cast(list[object], cat_venues_raw) if isinstance(cat_venues_raw, list) else []
@@ -153,13 +151,10 @@ def _load_dimensions_sync(loader: ConfigLoader, service_name: str) -> dict[str, 
     config = loader.load_service_config(service_name)
     venues_config = loader.load_venues_config()
     dimensions: list[dict[str, object]] = [
-        _build_dim_info(dim, venues_config)
-        for dim in cast(list[dict[str, object]], config.get("dimensions") or [])
+        _build_dim_info(dim, venues_config) for dim in cast(list[dict[str, object]], config.get("dimensions") or [])
     ]
     cli_args_raw: object = config.get("cli_args") or {}
-    cli_args: dict[str, object] = (
-        cast(dict[str, object], cli_args_raw) if isinstance(cli_args_raw, dict) else {}
-    )
+    cli_args: dict[str, object] = cast(dict[str, object], cli_args_raw) if isinstance(cli_args_raw, dict) else {}
     return {"service": service_name, "dimensions": dimensions, "cli_args": cli_args}
 
 
@@ -214,9 +209,7 @@ async def discover_configs(
 
         # Validate cloud path format
         if not cloud_path.startswith("gs://") and not cloud_path.startswith("s3://"):  # noqa: gs-uri
-            raise ValueError(
-                f"Invalid cloud path format. Must start with gs:// or s3://. Got: {cloud_path}"
-            )
+            raise ValueError(f"Invalid cloud path format. Must start with gs:// or s3://. Got: {cloud_path}")
 
         # List all JSON files recursively (increased limit to 10000 for large config sets)
         all_files = list_cloud_files(cloud_path, "**/*.json", max_results=10000)
@@ -229,9 +222,7 @@ async def discover_configs(
             "schema.json",
         }
         config_files = [
-            f
-            for f in all_files
-            if not any(f.endswith(f"/{excl}") or f.endswith(excl) for excl in excluded_filenames)
+            f for f in all_files if not any(f.endswith(f"/{excl}") or f.endswith(excl) for excl in excluded_filenames)
         ]
 
         return config_files

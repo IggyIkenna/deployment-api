@@ -116,9 +116,7 @@ async def calculate_shards(
     ):
         if resp.status != 200:
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/shards/calculate returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/shards/calculate returned HTTP {resp.status}: {body}")
         data = cast(dict[str, object], await resp.json())
         shards_val = data.get("shards")
         shards: list[dict[str, object]] = (
@@ -200,9 +198,7 @@ async def create_deployment(
     ):
         if resp.status not in (200, 201, 202):
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/deployments returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/deployments returned HTTP {resp.status}: {body}")
         result = cast(dict[str, object], await resp.json())
         return result
 
@@ -277,9 +273,7 @@ async def get_data_status(
     ):
         if resp.status != 200:
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/data-status returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/data-status returned HTTP {resp.status}: {body}")
         result = cast(dict[str, object], await resp.json())
         return result
 
@@ -350,9 +344,7 @@ async def cancel_vm_jobs(
     ):
         if resp.status not in (200, 202):
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/vm-jobs/cancel returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/vm-jobs/cancel returned HTTP {resp.status}: {body}")
         result = cast(dict[str, object], await resp.json())
         return result
 
@@ -391,10 +383,7 @@ async def get_vm_status_batch(
     ):
         if resp.status != 200:
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/vm-jobs/status-batch "
-                f"returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/vm-jobs/status-batch returned HTTP {resp.status}: {body}")
         data = cast(dict[str, object], await resp.json())
         statuses: dict[str, str] = {}
         raw_statuses = data.get("statuses")
@@ -436,9 +425,7 @@ async def quota_acquire_batch(
     ):
         if resp.status != 200:
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/quota/acquire returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/quota/acquire returned HTTP {resp.status}: {body}")
         data = cast(dict[str, object], await resp.json())
         acquired_raw = data.get("acquired", 0)
         acquired: int = int(acquired_raw) if isinstance(acquired_raw, (int, float)) else 0
@@ -478,10 +465,7 @@ async def get_cloud_run_status_batch(
     ):
         if resp.status != 200:
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/cloud-run/status-batch "
-                f"returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/cloud-run/status-batch returned HTTP {resp.status}: {body}")
         data = cast(dict[str, object], await resp.json())
         statuses: dict[str, str] = {}
         raw_statuses = data.get("statuses")
@@ -520,9 +504,7 @@ async def quota_release_batch(
     ):
         if resp.status not in (200, 204):
             body = await resp.text()
-            raise RuntimeError(
-                f"deployment-service /api/v1/quota/release returned HTTP {resp.status}: {body}"
-            )
+            raise RuntimeError(f"deployment-service /api/v1/quota/release returned HTTP {resp.status}: {body}")
 
 
 # ---------------------------------------------------------------------------
@@ -560,8 +542,7 @@ async def get_deployment_events(
         if resp.status != 200:
             body = await resp.text()
             raise RuntimeError(
-                f"deployment-service /api/v1/deployments/{deployment_id}/events "
-                f"returned HTTP {resp.status}: {body}"
+                f"deployment-service /api/v1/deployments/{deployment_id}/events returned HTTP {resp.status}: {body}"
             )
         data = cast(dict[str, object], await resp.json())
         events_val = data.get("events")
@@ -589,8 +570,7 @@ async def get_vm_events(
         if resp.status != 200:
             body = await resp.text()
             raise RuntimeError(
-                f"deployment-service /api/v1/deployments/{deployment_id}/vm-events "
-                f"returned HTTP {resp.status}: {body}"
+                f"deployment-service /api/v1/deployments/{deployment_id}/vm-events returned HTTP {resp.status}: {body}"
             )
         data = cast(dict[str, object], await resp.json())
         events_val = data.get("events")
@@ -642,8 +622,7 @@ async def live_rollback(
         if resp.status not in (200, 202):
             body = await resp.text()
             raise RuntimeError(
-                f"deployment-service /api/v1/deployments/{deployment_id}/rollback "
-                f"returned HTTP {resp.status}: {body}"
+                f"deployment-service /api/v1/deployments/{deployment_id}/rollback returned HTTP {resp.status}: {body}"
             )
         result = cast(dict[str, object], await resp.json())
         return result

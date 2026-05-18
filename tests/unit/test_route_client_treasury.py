@@ -229,9 +229,7 @@ class TestGetClientSubscriptions:
     async def test_suspended_subscription_present_in_list(self) -> None:
         """6.B: suspended subscription appears with is_active=False."""
         active = _make_subscription("client-alpha", archetype="carry_staked_basis")
-        suspended = _make_subscription(
-            "client-alpha", archetype="arbitrage_price_dispersion", suspended=True
-        )
+        suspended = _make_subscription("client-alpha", archetype="arbitrage_price_dispersion", suspended=True)
         set_subscription_store({"client-alpha": [active, suspended]})
 
         resp = await get_client_subscriptions("client-alpha")
@@ -252,12 +250,8 @@ class TestGetClientSubscriptions:
     @pytest.mark.asyncio
     async def test_multi_subscription_active_count_and_allocation(self) -> None:
         """6.B: two active subscriptions → active_count=2, allocation sums correctly."""
-        sub1 = _make_subscription(
-            "multi-client", archetype="carry_staked_basis", allocation_pct="60"
-        )
-        sub2 = _make_subscription(
-            "multi-client", archetype="arbitrage_price_dispersion", allocation_pct="40"
-        )
+        sub1 = _make_subscription("multi-client", archetype="carry_staked_basis", allocation_pct="60")
+        sub2 = _make_subscription("multi-client", archetype="arbitrage_price_dispersion", allocation_pct="40")
         set_subscription_store({"multi-client": [sub1, sub2]})
 
         resp = await get_client_subscriptions("multi-client")
@@ -289,9 +283,7 @@ class TestCrossEndpointNavReconciliation:
         """Single client at 100% → client NAV == rollup total NAV."""
         rollup = _make_rollup(copper="300000", ceffu="150000", defi="50000")
         _use_rollup(rollup)
-        set_subscription_store(
-            {"client-solo": [_make_subscription("client-solo", allocation_pct="100")]}
-        )
+        set_subscription_store({"client-solo": [_make_subscription("client-solo", allocation_pct="100")]})
 
         resp = await get_client_treasury("client-solo")
         client_nav = Decimal(resp.total_nav_usd)

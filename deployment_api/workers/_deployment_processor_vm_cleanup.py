@@ -140,13 +140,9 @@ def _handle_orphan_vm_cleanup(
     if to_fire:
         try:
             service_account_email = str(
-                ValidationUtils.get_required(
-                    config, "service_account_email", "bulk cancellation orchestrator"
-                )
+                ValidationUtils.get_required(config, "service_account_email", "bulk cancellation orchestrator")
             )
-            job_name = str(
-                ValidationUtils.get_required(config, "job_name", "bulk cancellation backend")
-            )
+            job_name = str(ValidationUtils.get_required(config, "job_name", "bulk cancellation backend"))
             _cancel_vm_jobs_sync(
                 deployment_id=deployment_id,
                 project_id=PROJECT_ID,
@@ -232,8 +228,7 @@ def _fire_cpd_running_vm_deletes(
             _vm_zone_from_map(vm_map_cpd, cast(str, s.get("job_id"))),
         )
         for s in shards
-        if s.get("job_id")
-        and _vm_status_from_map(vm_map_cpd, cast(str, s.get("job_id"))) == "RUNNING"
+        if s.get("job_id") and _vm_status_from_map(vm_map_cpd, cast(str, s.get("job_id"))) == "RUNNING"
     ]
     orphan_max_cpd = settings.ORPHAN_DELETE_MAX_PARALLEL
     to_fire_cpd = running_vms[:orphan_max_cpd]

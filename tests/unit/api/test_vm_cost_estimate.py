@@ -26,15 +26,11 @@ def client() -> TestClient:
 
 class TestVmCostEstimate:
     def test_returns_200_for_known_machine(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 2.0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 2.0})
         assert r.status_code == 200
 
     def test_response_shape(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 1.0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 1.0})
         body = r.json()
         for field in (
             "machine_type",
@@ -54,9 +50,7 @@ class TestVmCostEstimate:
             assert field in body, f"Missing field: {field}"
 
     def test_compute_cost_matches_rate_times_hours(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 10.0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 10.0})
         body = r.json()
         expected_compute = round(body["hourly_rate_usd"] * 10.0, 4)
         assert abs(body["compute_cost_usd"] - expected_compute) < 0.001
@@ -75,32 +69,24 @@ class TestVmCostEstimate:
         assert abs(triple - single * 3) < 0.01
 
     def test_unknown_machine_type_flagged(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "a100-ultra-gpu", "runtime_hours": 1.0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "a100-ultra-gpu", "runtime_hours": 1.0})
         assert r.status_code == 200
         body = r.json()
         assert body["unknown_machine_type"] is True
         assert body["total_cost_usd"] > 0
 
     def test_dry_run_true_in_mock_mode(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "n1-standard-8", "runtime_hours": 3.0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "n1-standard-8", "runtime_hours": 3.0})
         assert r.json()["dry_run"] is True
 
     def test_currency_and_region(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "n1-standard-1", "runtime_hours": 1.0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "n1-standard-1", "runtime_hours": 1.0})
         body = r.json()
         assert body["currency"] == "USD"
         assert body["region"] == "asia-northeast1"
 
     def test_invalid_runtime_hours_rejected(self, client: TestClient) -> None:
-        r = client.post(
-            "/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 0}
-        )
+        r = client.post("/api/vm/cost-estimate", json={"machine_type": "n1-standard-4", "runtime_hours": 0})
         assert r.status_code == 422
 
     def test_total_equals_compute_plus_disk(self, client: TestClient) -> None:
@@ -109,6 +95,4 @@ class TestVmCostEstimate:
             json={"machine_type": "n1-standard-4", "runtime_hours": 4.0, "disk_gb": 100},
         )
         body = r.json()
-        assert (
-            abs(body["total_cost_usd"] - (body["compute_cost_usd"] + body["disk_cost_usd"])) < 0.001
-        )
+        assert abs(body["total_cost_usd"] - (body["compute_cost_usd"] + body["disk_cost_usd"])) < 0.001

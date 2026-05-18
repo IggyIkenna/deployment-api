@@ -12,9 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 # Load data_analytics_service directly without triggering services/__init__.py
 # The module only imports: json, logging, datetime, timedelta, typing — no circular deps
-_path = os.path.join(
-    os.path.dirname(__file__), "../../deployment_api/services/data_analytics_service.py"
-)
+_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_analytics_service.py")
 _spec = importlib.util.spec_from_file_location("_das_standalone", os.path.abspath(_path))
 assert _spec is not None and _spec.loader is not None
 _das_mod = importlib.util.module_from_spec(_spec)
@@ -41,18 +39,12 @@ class TestGenerateCacheKey:
         assert "ags:CEFI,TRADFI" in key
 
     def test_asset_groups_sorted(self):
-        key1 = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", asset_groups=["TRADFI", "CEFI"]
-        )
-        key2 = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "TRADFI"]
-        )
+        key1 = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", asset_groups=["TRADFI", "CEFI"])
+        key2 = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "TRADFI"])
         assert key1 == key2
 
     def test_with_venues(self):
-        key = self.svc._generate_cache_key(
-            "svc", "2024-01-01", "2024-01-31", venues=["BINANCE", "COINBASE"]
-        )
+        key = self.svc._generate_cache_key("svc", "2024-01-01", "2024-01-31", venues=["BINANCE", "COINBASE"])
         assert "venues:" in key
 
     def test_with_kwargs(self):

@@ -27,9 +27,7 @@ class TestSingleSourceCalculator:
     def test_team_form_uses_api_football_calendar(self) -> None:
         """team_form requires only api_football FIXTURES → expected = full
         fixture calendar (no further intersection)."""
-        with patch(
-            "deployment_api.services.data_status_service.get_league_fixture_calendar"
-        ) as mock_cal:
+        with patch("deployment_api.services.data_status_service.get_league_fixture_calendar") as mock_cal:
             mock_cal.return_value = ["2024-04-13", "2024-04-20", "2024-04-27"]
             result = _features_sports_expected_dates_for_calculator(
                 calc_name="team_form",
@@ -55,9 +53,7 @@ class TestMultiUpstreamCalculator:
     def test_team_xg_intersection_of_understat_and_api_football(self) -> None:
         """team_xg = understat XG + api_football FIXTURES (both required).
         Expected = intersection of both upstreams' expected dates."""
-        with patch(
-            "deployment_api.services.data_status_service.get_league_fixture_calendar"
-        ) as mock_cal:
+        with patch("deployment_api.services.data_status_service.get_league_fixture_calendar") as mock_cal:
             mock_cal.return_value = [
                 "2024-04-13",
                 "2024-04-20",
@@ -77,9 +73,7 @@ class TestMultiUpstreamCalculator:
         """team_xg in MLS: understat XG is out-of-coverage (only 6 European
         leagues) → required-upstream intersection collapses to empty.
         Calculator should produce no expected dates → NaN-by-design throughout."""
-        with patch(
-            "deployment_api.services.data_status_service.get_league_fixture_calendar"
-        ) as mock_cal:
+        with patch("deployment_api.services.data_status_service.get_league_fixture_calendar") as mock_cal:
             mock_cal.return_value = ["2024-04-13", "2024-04-20"]
             result = _features_sports_expected_dates_for_calculator(
                 calc_name="team_xg",
@@ -97,9 +91,7 @@ class TestDerivedCalculator:
         """team_derived = derived team_form + derived team_goals (both
         required). Should walk into both, find their api_football FIXTURES
         requirements, and intersect."""
-        with patch(
-            "deployment_api.services.data_status_service.get_league_fixture_calendar"
-        ) as mock_cal:
+        with patch("deployment_api.services.data_status_service.get_league_fixture_calendar") as mock_cal:
             mock_cal.return_value = ["2024-04-13", "2024-04-20"]
             result = _features_sports_expected_dates_for_calculator(
                 calc_name="team_derived",
@@ -141,9 +133,7 @@ class TestSportsHonestCoveragePerFeatureBranch:
 
         # Empty manifest → expected_shards from the helper, found_shards = 0
         result = _sports_honest_coverage(
-            filtered=pd.DataFrame(
-                columns=["data_type", "feature_group", "league_id", "date", "capture_status"]
-            ),
+            filtered=pd.DataFrame(columns=["data_type", "feature_group", "league_id", "date", "capture_status"]),
             entity_name="team_form",
             start_date="2024-04-01",
             end_date="2024-04-30",

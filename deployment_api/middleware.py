@@ -62,9 +62,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             bucket.popleft()
 
         if len(bucket) >= self.limit:
-            _body = (
-                '{"error":{"code":"RATE_LIMITED","message":"Too many requests"},"retry_after":60}'
-            )
+            _body = '{"error":{"code":"RATE_LIMITED","message":"Too many requests"},"retry_after":60}'
             return Response(
                 content=_body,
                 status_code=429,

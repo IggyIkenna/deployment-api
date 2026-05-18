@@ -159,9 +159,7 @@ async def list_triggers(
 
         return cast(
             TriggersResponseDict,
-            await cache.get_or_fetch(
-                cache_key, fetch_aws_triggers, TTL_BUILD_INFO, force_refresh=force_refresh
-            ),
+            await cache.get_or_fetch(cache_key, fetch_aws_triggers, TTL_BUILD_INFO, force_refresh=force_refresh),
         )
 
     _ensure_gcp()
@@ -181,9 +179,7 @@ async def list_triggers(
 
     return cast(
         TriggersResponseDict,
-        await cache.get_or_fetch(
-            cache_key, fetch_triggers, TTL_BUILD_INFO, force_refresh=force_refresh
-        ),
+        await cache.get_or_fetch(cache_key, fetch_triggers, TTL_BUILD_INFO, force_refresh=force_refresh),
     )
 
 
@@ -205,9 +201,7 @@ async def _trigger_gcp_build(trigger_name: str, service: str, branch: str) -> Tr
         logger.info("Build ID not in operation response, querying recent builds...")
         await asyncio.sleep(2)
         for _attempt in range(3):
-            recent_build = await asyncio.to_thread(
-                _find_recent_build_sync, trigger_id_result, trigger_time_result
-            )
+            recent_build = await asyncio.to_thread(_find_recent_build_sync, trigger_id_result, trigger_time_result)
             if recent_build:
                 build_id = recent_build["build_id"]
                 log_url = recent_build.get("log_url")
@@ -254,8 +248,7 @@ async def trigger_build(request: TriggerBuildRequest) -> TriggerBuildResponse:
         return TriggerBuildResponse(
             success=False,
             message=(
-                f"Unknown service/library: {request.service}."
-                f" Valid options: {', '.join(ALL_REPOS_WITH_TRIGGERS)}"
+                f"Unknown service/library: {request.service}. Valid options: {', '.join(ALL_REPOS_WITH_TRIGGERS)}"
             ),
             service=request.service,
             branch=request.branch,
@@ -451,9 +444,7 @@ async def get_library_status(library: str) -> LibraryStatusDict:
 
     # Get package version from pyproject.toml (local workspace)
     try:
-        pyproject_path = (
-            Path(WORKSPACE_ROOT) / library / "pyproject.toml" if WORKSPACE_ROOT else None
-        )
+        pyproject_path = Path(WORKSPACE_ROOT) / library / "pyproject.toml" if WORKSPACE_ROOT else None
         if pyproject_path and pyproject_path.exists():
             with open(pyproject_path, "rb") as f:
                 pyproject: dict[str, object] = cast(dict[str, object], tomllib.load(f))
@@ -461,9 +452,7 @@ async def get_library_status(library: str) -> LibraryStatusDict:
                 if isinstance(project_section_raw, dict):
                     project_section = cast(dict[str, object], project_section_raw)
                     version_raw = project_section.get("version")
-                    result["package_version"] = (
-                        str(version_raw) if version_raw is not None else None
-                    )
+                    result["package_version"] = str(version_raw) if version_raw is not None else None
     except (OSError, ValueError, KeyError) as e:
         logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
         pass
@@ -487,8 +476,7 @@ async def get_library_status(library: str) -> LibraryStatusDict:
             result["quality_gates_status"] = {
                 "status": status,
                 "is_passing": status == "SUCCESS",
-                "last_build_time": latest_build.get("finish_time")
-                or latest_build.get("create_time"),
+                "last_build_time": latest_build.get("finish_time") or latest_build.get("create_time"),
                 "commit_sha": latest_build.get("commit_sha"),
                 "branch": latest_build.get("branch"),
             }
@@ -538,9 +526,7 @@ async def check_dependencies() -> DependencyCheckResponseDict:
                             "library": library,
                             "issue": "Quality gates failing",
                             "status": str(_qg_status_raw) if _qg_status_raw is not None else "",
-                            "last_build_time": str(_qg_last_build_raw)
-                            if _qg_last_build_raw is not None
-                            else None,
+                            "last_build_time": str(_qg_last_build_raw) if _qg_last_build_raw is not None else None,
                             "affected_services": _dep_services,
                         },
                     )

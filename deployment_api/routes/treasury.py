@@ -42,12 +42,8 @@ class TreasurySourceAttribution(BaseModel):
     """Per-source attribution for a single client."""
 
     source: str = Field(..., description="TreasurySource enum value (e.g. COPPER, DEFI_HOT_WALLET)")
-    client_share_pct: str = Field(
-        ..., description="Client's allocation % for this source (Decimal-as-string)"
-    )
-    client_share_usd: str = Field(
-        ..., description="Client's USD share of this source NAV (Decimal-as-string)"
-    )
+    client_share_pct: str = Field(..., description="Client's allocation % for this source (Decimal-as-string)")
+    client_share_usd: str = Field(..., description="Client's USD share of this source NAV (Decimal-as-string)")
     source_nav_usd: str = Field(..., description="Total NAV for this source (Decimal-as-string)")
 
 
@@ -69,9 +65,7 @@ class ShareClassSubscriptionResponse(BaseModel):
     share_class_id: str
     archetype_id: str
     allocation_pct: str = Field(..., description="Allocation % (Decimal-as-string)")
-    max_drawdown_for_suspension_pct: str = Field(
-        ..., description="Drawdown gate % (Decimal-as-string)"
-    )
+    max_drawdown_for_suspension_pct: str = Field(..., description="Drawdown gate % (Decimal-as-string)")
     subscribed_at: str = Field(..., description="ISO-8601 UTC timestamp")
     suspended_at: str | None = None
     suspension_reason: str = ""
@@ -83,9 +77,7 @@ class AllocationDecision(BaseModel):
 
     archetype_id: str
     share_class_id: str
-    allocation_amount_usd: str = Field(
-        ..., description="USD allocated to this archetype (Decimal-as-string)"
-    )
+    allocation_amount_usd: str = Field(..., description="USD allocated to this archetype (Decimal-as-string)")
     decision_event_id: str = ""
     decided_at: str = Field(..., description="ISO-8601 UTC timestamp")
 
@@ -113,9 +105,7 @@ class ClientTreasuryResponse(BaseModel):
     custody_ping_results: list[CustodyPingResult]
     allocations: list[AllocationDecision]
     last_settled: TradeSettledSummary | None = None
-    nav_usd: str = Field(
-        ..., description="Total NAV attributable to this client (Decimal-as-string)"
-    )
+    nav_usd: str = Field(..., description="Total NAV attributable to this client (Decimal-as-string)")
 
 
 class ClientSubscriptionsResponse(BaseModel):

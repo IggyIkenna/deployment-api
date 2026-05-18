@@ -128,9 +128,7 @@ class TestDenominatorClipsPreCutoffDays:
             window_end=window_end,
         )
         for d_str in result:
-            assert d_str >= protocol_launch, (
-                f"Pre-launch day {d_str!r} leaked through (floor={protocol_launch})"
-            )
+            assert d_str >= protocol_launch, f"Pre-launch day {d_str!r} leaked through (floor={protocol_launch})"
 
     def test_window_entirely_pre_genesis_returns_empty_denominator(self) -> None:
         """If the requested window ends strictly before chain genesis,
@@ -190,8 +188,7 @@ class TestDenominatorClipsPreCutoffDays:
         protocol_launch = PROTOCOL_LAUNCH_DATES[(chain, protocol)]
         # Verify the SSOT relation we are testing.
         assert protocol_launch > chain_genesis, (
-            f"Test premise broken: BSC genesis {chain_genesis} must be earlier than "
-            f"AAVEV3-BSC launch {protocol_launch}"
+            f"Test premise broken: BSC genesis {chain_genesis} must be earlier than AAVEV3-BSC launch {protocol_launch}"
         )
         venue = f"{protocol}-{chain}"
         # Window: pre-BSC-genesis through post-AAVEV3-launch.
@@ -205,9 +202,7 @@ class TestDenominatorClipsPreCutoffDays:
             window_end=window_end,
         )
         for d_str in result:
-            assert d_str >= protocol_launch, (
-                f"Day {d_str!r} bypassed protocol_launch floor {protocol_launch}"
-            )
+            assert d_str >= protocol_launch, f"Day {d_str!r} bypassed protocol_launch floor {protocol_launch}"
 
     def test_today_is_late_2026(self) -> None:
         """Sanity: this suite assumes the workspace clock is ~2026-05;
@@ -216,6 +211,5 @@ class TestDenominatorClipsPreCutoffDays:
         the past breaks. Fail loud if the clock drifts by years."""
         today = datetime.now().date()
         assert today >= date(2026, 5, 1), (
-            f"Workspace clock {today} predates this suite's reference window — "
-            f"check fixture freshness"
+            f"Workspace clock {today} predates this suite's reference window — check fixture freshness"
         )

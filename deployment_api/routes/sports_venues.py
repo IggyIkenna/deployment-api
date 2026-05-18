@@ -123,9 +123,7 @@ def check_venue_health(
             notes="Mock mode — no real connectivity check",
         )
     logger.info("check_venue_health: venue=%s", venue_key)
-    return VenueHealthResponse(
-        venue_key=venue_key, reachable=False, notes="Live check not configured"
-    )
+    return VenueHealthResponse(venue_key=venue_key, reachable=False, notes="Live check not configured")
 
 
 @router.post("/{venue_key}/enable")

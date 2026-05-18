@@ -92,9 +92,7 @@ async def run_pipeline_uat(
             log_event("PIPELINE_UAT_ERROR", details={"run_id": request.run_id, "error": str(exc)})
             commentary = f"[Commentary unavailable: {type(exc).__name__}]"
     else:
-        commentary = (
-            "[Commentary disabled — set PIPELINE_UAT_COMMENTARY_ENABLED=true and ANTHROPIC_API_KEY]"
-        )
+        commentary = "[Commentary disabled — set PIPELINE_UAT_COMMENTARY_ENABLED=true and ANTHROPIC_API_KEY]"
 
     output_path = f"pipeline-uat/day={date_str}/run={request.run_id}.json"
     output: dict[str, object] = {
@@ -210,9 +208,7 @@ async def _assemble_context(
     # Execution T+1 recon (execution alpha)
     try:
         date_str = datetime.now(UTC).strftime("%Y-%m-%d")
-        raw_bytes = storage.download_bytes(
-            f"execution-store-{project_id}", "t1_recon/latest/summary.json"
-        )
+        raw_bytes = storage.download_bytes(f"execution-store-{project_id}", "t1_recon/latest/summary.json")
         recon = cast(dict[str, object], json.loads(raw_bytes))
         context["execution_alpha_bps"] = recon.get("execution_alpha_bps")
         context["execution_recon_date"] = recon.get("date", date_str)

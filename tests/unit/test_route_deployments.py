@@ -46,9 +46,7 @@ class TestListDeployments:
         expected = {"deployments": [{"deployment_id": "d1"}], "total": 1}
         with patch.object(_dep_routes, "state_manager") as sm:
             sm.list_deployments.return_value = expected
-            result = await _dep_routes.list_deployments(
-                limit=50, offset=0, status=None, service=None
-            )
+            result = await _dep_routes.list_deployments(limit=50, offset=0, status=None, service=None)
         assert result["total"] == 1
 
     @pytest.mark.asyncio

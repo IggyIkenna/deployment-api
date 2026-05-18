@@ -86,9 +86,7 @@ class TestProductionApprove:
             patch(_PATCH_CFG_URL, new="http://localhost:8018"),
             patch("deployment_api.routes.manual_pending.httpx.AsyncClient") as mock_ac,
         ):
-            mock_ac.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_resp))
-            )
+            mock_ac.return_value.__aenter__ = AsyncMock(return_value=MagicMock(post=AsyncMock(return_value=mock_resp)))
             mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
             r = prod_client.post("/manual/pending/instr-001/approve")
 
@@ -118,9 +116,7 @@ class TestProductionApprove:
             patch(_PATCH_CFG_URL, new="http://localhost:8018"),
             patch("deployment_api.routes.manual_pending.httpx.AsyncClient") as mock_ac,
         ):
-            mock_ac.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(post=AsyncMock(return_value=mock_resp))
-            )
+            mock_ac.return_value.__aenter__ = AsyncMock(return_value=MagicMock(post=AsyncMock(return_value=mock_resp)))
             mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
             r = prod_client.post("/manual/pending/instr-001/reject", json={"reason": "stale"})
 

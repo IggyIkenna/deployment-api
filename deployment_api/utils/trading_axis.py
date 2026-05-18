@@ -73,21 +73,14 @@ def trading_axis_from_deployment_state(data: dict[str, object]) -> str | None:
         return ag
 
     cfg = data.get("config")
-    if (
-        isinstance(cfg, dict)
-        and (ag := _scan_mapping_for_axis(cast(dict[str, object], cfg))) is not None
-    ):
+    if isinstance(cfg, dict) and (ag := _scan_mapping_for_axis(cast(dict[str, object], cfg))) is not None:
         return ag
 
     if (ag := _scan_shards_for_axis(data.get("shards"))) is not None:
         return ag
 
     cli_cmd = data.get("cli_command")
-    if (
-        isinstance(cli_cmd, str)
-        and cli_cmd.strip()
-        and (ag := _scan_cli_for_axis(cli_cmd)) is not None
-    ):
+    if isinstance(cli_cmd, str) and cli_cmd.strip() and (ag := _scan_cli_for_axis(cli_cmd)) is not None:
         return ag
 
     return _scan_cli_args_for_axis(data.get("cli_args"))

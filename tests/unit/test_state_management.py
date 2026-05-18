@@ -190,9 +190,7 @@ class TestShardHasForce:
 class TestClassifyShardBlobBranches:
     """Covers lines 229-239: DATA_STALE, EXPECTED_SKIP, VERIFIED (no timestamps)."""
 
-    def _make_shard(
-        self, status="succeeded", args=None, start_time=None, end_time=None, failure_category=None
-    ):
+    def _make_shard(self, status="succeeded", args=None, start_time=None, end_time=None, failure_category=None):
         return SimpleNamespace(
             status=status,
             args=args or [],
@@ -337,11 +335,7 @@ class TestBuildBlobTimestampMap:
 
     def test_extracts_venue_date_timestamps(self):
         now = datetime.now(UTC)
-        turbo = {
-            "asset_groups": {
-                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2026-01-01": now}}}
-            }
-        }
+        turbo = {"asset_groups": {"CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2026-01-01": now}}}}}
         result = _build_blob_timestamp_map(turbo)
         assert "CEFI" in result
         assert "BINANCE" in result["CEFI"]
@@ -457,9 +451,7 @@ class TestComputeClassificationCounts:
 
 
 class TestComputeVerifiedSucceededShardIds:
-    def _make_shard(
-        self, shard_id, status="succeeded", category="CEFI", venue="", date="2026-01-01"
-    ):
+    def _make_shard(self, shard_id, status="succeeded", category="CEFI", venue="", date="2026-01-01"):
         dims: dict[str, object] = {"category": category, "date": date}
         if venue:
             dims["venue"] = venue

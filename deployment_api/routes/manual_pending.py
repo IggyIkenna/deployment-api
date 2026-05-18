@@ -171,9 +171,7 @@ async def approve_instruction(instruction_id: str) -> ApproveRejectResponse:
     if _cfg.is_mock_mode():
         with _QUEUE_LOCK:
             if instruction_id not in _PENDING:
-                raise HTTPException(
-                    status_code=404, detail=f"Instruction {instruction_id!r} not found"
-                )
+                raise HTTPException(status_code=404, detail=f"Instruction {instruction_id!r} not found")
             del _PENDING[instruction_id]
 
         log_event(
@@ -238,18 +236,14 @@ async def reject_instruction(
     if _cfg.is_mock_mode():
         with _QUEUE_LOCK:
             if instruction_id not in _PENDING:
-                raise HTTPException(
-                    status_code=404, detail=f"Instruction {instruction_id!r} not found"
-                )
+                raise HTTPException(status_code=404, detail=f"Instruction {instruction_id!r} not found")
             del _PENDING[instruction_id]
 
         log_event(
             "MANUAL_REJECTED",
             details={"instruction_id": instruction_id, "reason": body.reason, "source": "dart_ui"},
         )
-        logger.info(
-            "[manual_pending] Rejected instruction_id=%s reason=%r", instruction_id, body.reason
-        )
+        logger.info("[manual_pending] Rejected instruction_id=%s reason=%r", instruction_id, body.reason)
         return ApproveRejectResponse(
             instruction_id=instruction_id,
             action="rejected",

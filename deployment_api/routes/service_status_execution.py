@@ -19,9 +19,7 @@ type _TimeframeMap = defaultdict[str, list[_ConfigEntry]]
 type _ModeMap = defaultdict[str, _TimeframeMap]
 type _BreakdownEntry = dict[str, int | list[str]]
 
-_ALGO_RE = re.compile(
-    r"^([A-Z_]+?)_(?:horizon|profile|display|clip|urgency|num_|participation|lambda|sigma|passive)"
-)
+_ALGO_RE = re.compile(r"^([A-Z_]+?)_(?:horizon|profile|display|clip|urgency|num_|participation|lambda|sigma|passive)")
 
 
 def _parse_gs_path(gs_path: str) -> tuple[str, str, str] | None:
@@ -63,9 +61,7 @@ def _list_exec_configs(
     for obj in config_objs:
         if not obj.name.endswith(".json"):
             continue
-        rel_path = (
-            obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
-        )
+        rel_path = obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
         parts = rel_path.split("/")
         if len(parts) < 4:
             continue
@@ -215,9 +211,7 @@ def _summarize_hierarchy(
                         "timeframe": timeframe_name,
                         "total": tf_total,
                         "with_results": tf_with_results,
-                        "completion_pct": (
-                            round(tf_with_results / tf_total * 100, 1) if tf_total > 0 else 0
-                        ),
+                        "completion_pct": (round(tf_with_results / tf_total * 100, 1) if tf_total > 0 else 0),
                         "missing_configs": [
                             {
                                 "config_file": c.get("config_file") or "",
@@ -244,18 +238,14 @@ def _summarize_hierarchy(
                         algo_entry["with_results"] = cast(int, algo_entry["with_results"]) + 1
                     else:
                         p = f"{strategy_name}/{mode_name}/{timeframe_name}"
-                        cast(list[str], algo_entry["missing"]).append(
-                            f"{p}/{c.get('config_file') or ''}"
-                        )
+                        cast(list[str], algo_entry["missing"]).append(f"{p}/{c.get('config_file') or ''}")
 
             modes.append(
                 {
                     "mode": mode_name,
                     "total": mode_configs,
                     "with_results": mode_with_results,
-                    "completion_pct": (
-                        round(mode_with_results / mode_configs * 100, 1) if mode_configs > 0 else 0
-                    ),
+                    "completion_pct": (round(mode_with_results / mode_configs * 100, 1) if mode_configs > 0 else 0),
                     "timeframes": timeframes,
                 }
             )
@@ -271,9 +261,7 @@ def _summarize_hierarchy(
                 "total": strategy_configs,
                 "with_results": strategy_with_results,
                 "completion_pct": (
-                    round(strategy_with_results / strategy_configs * 100, 1)
-                    if strategy_configs > 0
-                    else 0
+                    round(strategy_with_results / strategy_configs * 100, 1) if strategy_configs > 0 else 0
                 ),
                 "result_dates": sorted(strategy_result_dates),
                 "result_date_count": len(strategy_result_dates),
@@ -342,25 +330,13 @@ async def get_execution_service_data_status(
             configs = _list_exec_configs(bucket_name, config_prefix, version)
             logger.info("Found %s configs under %s", len(configs), config_path)
 
-            filter_start = (
-                datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
-                if start_date
-                else None
-            )
-            filter_end = (
-                datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC).date()
-                if end_date
-                else None
-            )
-            existing_ids, dates_by_strategy = _collect_result_strategy_ids(
-                bucket_name, filter_start, filter_end
-            )
+            filter_start = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC).date() if start_date else None
+            filter_end = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC).date() if end_date else None
+            existing_ids, dates_by_strategy = _collect_result_strategy_ids(bucket_name, filter_start, filter_end)
             logger.info("Found %s unique result strategy_ids", len(existing_ids))
 
             hierarchy = _build_hierarchy_from_configs(configs, existing_ids, dates_by_strategy)
-            strategies, total_configs, total_with_results, bd_mode, bd_tf, bd_algo = (
-                _summarize_hierarchy(hierarchy)
-            )
+            strategies, total_configs, total_with_results, bd_mode, bd_tf, bd_algo = _summarize_hierarchy(hierarchy)
 
             return {
                 "config_path": config_path,
@@ -368,17 +344,13 @@ async def get_execution_service_data_status(
                 "total_configs": total_configs,
                 "configs_with_results": total_with_results,
                 "missing_count": total_configs - total_with_results,
-                "completion_pct": (
-                    round(total_with_results / total_configs * 100, 1) if total_configs > 0 else 0
-                ),
+                "completion_pct": (round(total_with_results / total_configs * 100, 1) if total_configs > 0 else 0),
                 "strategy_count": len(strategies),
                 "strategies": strategies,
                 "breakdown_by_mode": bd_mode,
                 "breakdown_by_timeframe": bd_tf,
                 "breakdown_by_algo": bd_algo,
-                "date_filter": (
-                    {"start": start_date, "end": end_date} if start_date or end_date else None
-                ),
+                "date_filter": ({"start": start_date, "end": end_date} if start_date or end_date else None),
             }
         except (OSError, ValueError, RuntimeError) as e:
             logger.exception("Error getting execution-service data status: %s", e)
@@ -411,9 +383,7 @@ def _list_missing_configs_filtered(
     for obj in config_objs:
         if not obj.name.endswith(".json"):
             continue
-        rel_path = (
-            obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
-        )
+        rel_path = obj.name[len(config_prefix) :] if obj.name.startswith(config_prefix) else obj.name
         parts = rel_path.split("/")
         if len(parts) < 4:
             continue
@@ -575,14 +545,10 @@ def _calculate_missing_shards_sync(
             all_expected_dates.add(current.strftime("%Y-%m-%d"))
             current += timedelta(days=1)
 
-        configs = _list_missing_configs_filtered(
-            bucket_name, config_prefix, version, strategy, mode, timeframe, algo
-        )
+        configs = _list_missing_configs_filtered(bucket_name, config_prefix, version, strategy, mode, timeframe, algo)
         logger.info("[EXEC-MISSING] Found %s configs after filters", len(configs))
 
-        result_dates_by_strategy = _collect_result_dates_in_range(
-            bucket_name, filter_start, filter_end
-        )
+        result_dates_by_strategy = _collect_result_dates_in_range(bucket_name, filter_start, filter_end)
 
         return _build_missing_shards_result(
             configs=configs,

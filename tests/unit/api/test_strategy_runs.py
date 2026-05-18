@@ -24,9 +24,7 @@ from deployment_api.routes.strategy_runs import router
 @pytest.fixture
 def mock_client() -> TestClient:
     """Minimal FastAPI app with strategy_runs router in mock mode."""
-    with patch(
-        "deployment_api.deployment_api_config.DeploymentApiConfig.is_mock_mode", return_value=True
-    ):
+    with patch("deployment_api.deployment_api_config.DeploymentApiConfig.is_mock_mode", return_value=True):
         app = FastAPI()
         app.include_router(router)
         return TestClient(app)

@@ -380,15 +380,9 @@ async def get_kill_switch_state() -> KillSwitchStateResponse:
 
 @router.get("/audit-log", response_model=KillSwitchAuditResponse)
 async def get_kill_switch_audit_log(
-    switch_id: KillSwitchId | None = Query(
-        default=None, description="Filter to a specific KillSwitchId."
-    ),
-    start_date: date | None = Query(
-        default=None, description="Inclusive lower bound on event date (YYYY-MM-DD)."
-    ),
-    end_date: date | None = Query(
-        default=None, description="Inclusive upper bound on event date (YYYY-MM-DD)."
-    ),
+    switch_id: KillSwitchId | None = Query(default=None, description="Filter to a specific KillSwitchId."),
+    start_date: date | None = Query(default=None, description="Inclusive lower bound on event date (YYYY-MM-DD)."),
+    end_date: date | None = Query(default=None, description="Inclusive upper bound on event date (YYYY-MM-DD)."),
     page: int = Query(default=1, ge=1, description="1-indexed page number."),
     page_size: int = Query(default=50, ge=1, le=500, description="Rows per page."),
 ) -> KillSwitchAuditResponse:

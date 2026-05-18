@@ -58,9 +58,7 @@ _BRANCH_PREFIX_RE = re.compile(r"^(feat|fix|chore|refactor|perf|ci|docs|test)-(.
 Environment = Literal["dev", "staging", "prod"]
 
 
-class BuildEntry(
-    BaseModel
-):  # CORRECT-LOCAL — API response schema local to this route; not a domain contract
+class BuildEntry(BaseModel):  # CORRECT-LOCAL — API response schema local to this route; not a domain contract
     """A single available build in Artifact Registry."""
 
     tag: str = Field(..., description="Artifact Registry image tag")
@@ -70,9 +68,7 @@ class BuildEntry(
     is_v1: bool = Field(..., description="True if version >= 1.0.0")
 
 
-class DeployRequest(
-    BaseModel
-):  # CORRECT-LOCAL — API request schema local to this route; not a domain contract
+class DeployRequest(BaseModel):  # CORRECT-LOCAL — API request schema local to this route; not a domain contract
     """Request body for deploying a specific build tag to an environment."""
 
     image_tag: str = Field(..., description="Artifact Registry image tag to deploy")
@@ -86,9 +82,7 @@ def _tag_to_entry(tag: str) -> BuildEntry:
     """Parse an AR tag string into a BuildEntry with human-readable display."""
     # Handle commit SHA tags (e.g., "3c1f37a", "abc1234def")
     if _COMMIT_SHA_RE.match(tag):
-        return BuildEntry(
-            tag=tag, display=f"{tag[:7]} @ commit", version=tag[:7], branch="commit", is_v1=False
-        )
+        return BuildEntry(tag=tag, display=f"{tag[:7]} @ commit", version=tag[:7], branch="commit", is_v1=False)
     m = _SEMVER_RE.match(tag)
     if not m:
         return BuildEntry(tag=tag, display=tag, version=tag, branch="unknown", is_v1=False)

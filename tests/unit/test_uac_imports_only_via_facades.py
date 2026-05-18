@@ -58,15 +58,11 @@ def _collect_uac_imports(source: str) -> list[tuple[str, int]]:
     imports: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
-            if node.module == "unified_api_contracts" or node.module.startswith(
-                "unified_api_contracts."
-            ):
+            if node.module == "unified_api_contracts" or node.module.startswith("unified_api_contracts."):
                 imports.append((node.module, node.lineno))
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "unified_api_contracts" or alias.name.startswith(
-                    "unified_api_contracts."
-                ):
+                if alias.name == "unified_api_contracts" or alias.name.startswith("unified_api_contracts."):
                     imports.append((alias.name, node.lineno))
     return imports
 
@@ -83,13 +79,10 @@ def test_no_banned_uac_internal_imports(filename: str) -> None:
     source = path.read_text(encoding="utf-8")
     imports = _collect_uac_imports(source)
     violations = [
-        (mod, lineno)
-        for mod, lineno in imports
-        if any(mod.startswith(prefix) for prefix in _BANNED_PREFIXES)
+        (mod, lineno) for mod, lineno in imports if any(mod.startswith(prefix) for prefix in _BANNED_PREFIXES)
     ]
-    assert not violations, (
-        f"{filename} imports UAC-internal modules — replace with public facades:\n"
-        + "\n".join(f"  line {lineno}: from {mod} ..." for mod, lineno in violations)
+    assert not violations, f"{filename} imports UAC-internal modules — replace with public facades:\n" + "\n".join(
+        f"  line {lineno}: from {mod} ..." for mod, lineno in violations
     )
 
 
@@ -104,8 +97,7 @@ def test_at_least_one_facade_import_present_when_uac_used() -> None:
             continue
         for module, _lineno in _collect_uac_imports(path.read_text(encoding="utf-8")):
             if module == "unified_api_contracts" or (
-                module.startswith("unified_api_contracts.")
-                and not any(module.startswith(p) for p in _BANNED_PREFIXES)
+                module.startswith("unified_api_contracts.") and not any(module.startswith(p) for p in _BANNED_PREFIXES)
             ):
                 found_facade = True
                 break

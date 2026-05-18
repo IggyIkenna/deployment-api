@@ -372,9 +372,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     cloud_mock_mode: bool = Field(  # DEPRECATED: use is_mock_mode() instead
         default=False,
         validation_alias=AliasChoices("CLOUD_MOCK_MODE"),
-        description=(
-            "DEPRECATED: Use is_mock_mode() instead. Legacy field kept for env var binding."
-        ),
+        description=("DEPRECATED: Use is_mock_mode() instead. Legacy field kept for env var binding."),
     )
 
     # =========================================================================

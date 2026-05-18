@@ -243,9 +243,7 @@ def refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
     if compute_type == "cloud_run":
         # Batch refresh for Cloud Run: group executions by region/job and list once per group.
         # This avoids N get_execution() calls for large deployments.
-        running_shards = [
-            s for s in shards if cast(str, s.get("status") or "") == "running" and s.get("job_id")
-        ]
+        running_shards = [s for s in shards if cast(str, s.get("status") or "") == "running" and s.get("job_id")]
 
         # Group by (region, job_name)
         groups: dict[tuple[str, str], list[str]] = {}
@@ -435,9 +433,7 @@ def refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
         "status": new_status,
         "updated": updated_count > 0,
         "shards_updated": updated_count,
-        "message": (
-            f"Refreshed {updated_count} shard(s)" if updated_count > 0 else "No changes detected"
-        ),
+        "message": (f"Refreshed {updated_count} shard(s)" if updated_count > 0 else "No changes detected"),
     }
 
 
@@ -548,9 +544,7 @@ def resume_deployment_sync(deployment_id: str) -> dict[str, object]:
         "deployment_id": deployment_id,
         "resumed": resumed_count > 0,
         "resumed_shards": resumed_count,
-        "message": f"Resumed {resumed_count} shard(s)"
-        if resumed_count > 0
-        else "No shards to resume",
+        "message": f"Resumed {resumed_count} shard(s)" if resumed_count > 0 else "No shards to resume",
     }
 
 

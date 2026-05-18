@@ -281,10 +281,7 @@ class TestHierarchicalDrilldownAwsRequiredKeys:
         }
         missing = required_totals_keys - set(totals.keys())  # type: ignore[arg-type]
         assert not missing, f"totals dict missing keys: {missing}"
-        assert (
-            totals["total"]
-            == totals["captured"] + totals["empty_confirmed"] + totals["attempted_failed"]
-        )  # type: ignore[index]
+        assert totals["total"] == totals["captured"] + totals["empty_confirmed"] + totals["attempted_failed"]  # type: ignore[index]
 
 
 class TestHierarchicalDrilldownAwsNoGcsDispatch:

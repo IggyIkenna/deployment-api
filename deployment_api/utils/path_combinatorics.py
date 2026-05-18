@@ -122,10 +122,7 @@ class CombinatoricEntry:
         if self.timeframe:
             # market-data-processing-service: flat path
             # processed_candles/by_date/day=.../timeframe=.../data_type=.../{instrument}.parquet
-            return (
-                f"{base_prefix}/day={date_str}"
-                f"/timeframe={self.timeframe}/data_type={self.data_type}/"
-            )
+            return f"{base_prefix}/day={date_str}/timeframe={self.timeframe}/data_type={self.data_type}/"
         else:
             # market-tick-data-handler: key=value for hive partitioning
             # raw_tick_data/by_date/day=.../data_type=.../instrument_type=equities/
@@ -203,18 +200,14 @@ class PathCombinatorics:
         self.config = cast(dict[str, dict[str, object]], raw) if isinstance(raw, dict) else {}
         logger.debug("Loaded venue_data_types.yaml with %s categories", len(self.config))
 
-    def _resolve_data_types(
-        self, data_types: "list[object] | dict[str, object]"
-    ) -> tuple[list[str], set[str]]:
+    def _resolve_data_types(self, data_types: "list[object] | dict[str, object]") -> tuple[list[str], set[str]]:
         """Resolve data_types config into (final_data_types, tick_window_only_types)."""
         if not isinstance(data_types, dict):
             return [str(d) for d in data_types if d is not None], set()
         dt_dict: dict[str, object] = data_types
         default_val = dt_dict.get("default")
         tick_val = dt_dict.get("tick_window")
-        default_list: list[str] = (
-            cast(list[str], default_val) if isinstance(default_val, list) else []
-        )
+        default_list: list[str] = cast(list[str], default_val) if isinstance(default_val, list) else []
         tick_list: list[str] = cast(list[str], tick_val) if isinstance(tick_val, list) else []
         tick_window_only = set(tick_list) - set(default_list)
         all_dt: set[str] = set()
@@ -233,18 +226,12 @@ class PathCombinatorics:
         if accessible_types_val is None:
             return folders, False
         accessible_types: list[object] = (
-            cast(list[object], accessible_types_val)
-            if isinstance(accessible_types_val, list)
-            else []
+            cast(list[object], accessible_types_val) if isinstance(accessible_types_val, list) else []
         )
         if len(accessible_types) == 0:
             return [], True
-        accessible_folders: set[str | None] = {
-            INSTRUMENT_TYPE_TO_FOLDER.get(str(t)) for t in accessible_types
-        } - {None}
-        filtered: list[object] = [
-            f for f in folders if isinstance(f, str) and f in accessible_folders
-        ]
+        accessible_folders: set[str | None] = {INSTRUMENT_TYPE_TO_FOLDER.get(str(t)) for t in accessible_types} - {None}
+        filtered: list[object] = [f for f in folders if isinstance(f, str) and f in accessible_folders]
         return filtered, not filtered
 
     def _build_combinatorics(self) -> None:
@@ -261,9 +248,7 @@ class PathCombinatorics:
         for asset_group in ["CEFI", "TRADFI", "DEFI"]:  # CORRECT-LOCAL
             cat_config: dict[str, object] = self.config.get(asset_group) or {}
             venues_val = cat_config.get("venues")
-            venues: dict[str, object] = (
-                cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
-            )
+            venues: dict[str, object] = cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
 
             for venue_raw, venue_config_raw in venues.items():
                 if not isinstance(venue_config_raw, dict):
@@ -272,18 +257,12 @@ class PathCombinatorics:
                 venue_config = cast(dict[str, object], venue_config_raw)
 
                 folders_val = venue_config.get("folders")
-                folders: list[object] = (
-                    cast(list[object], folders_val) if isinstance(folders_val, list) else []
-                )
+                folders: list[object] = cast(list[object], folders_val) if isinstance(folders_val, list) else []
                 data_types_val = venue_config.get("data_types")
                 data_types: list[object] | dict[str, object] = (
                     cast(list[object], data_types_val)
                     if isinstance(data_types_val, list)
-                    else (
-                        cast(dict[str, object], data_types_val)
-                        if isinstance(data_types_val, dict)
-                        else []
-                    )
+                    else (cast(dict[str, object], data_types_val) if isinstance(data_types_val, dict) else [])
                 )
                 start_date_val = venue_config.get("start_date")
                 start_date: str | None = start_date_val if isinstance(start_date_val, str) else None
@@ -313,8 +292,7 @@ class PathCombinatorics:
 
         if skipped_venues:
             logger.info(
-                "Skipped %s venue(s) with no accessible instrument types"
-                " (Tardis subscription limitation): %s",
+                "Skipped %s venue(s) with no accessible instrument types (Tardis subscription limitation): %s",
                 len(skipped_venues),
                 ", ".join(skipped_venues),
             )
@@ -334,9 +312,7 @@ class PathCombinatorics:
             try:
                 with open(config_path) as f:
                     raw_svc: object = cast(object, yaml.safe_load(f))
-                svc_config: dict[str, object] = (
-                    cast(dict[str, object], raw_svc) if isinstance(raw_svc, dict) else {}
-                )
+                svc_config: dict[str, object] = cast(dict[str, object], raw_svc) if isinstance(raw_svc, dict) else {}
                 dims: dict[str, list[str]] = {}
                 raw_dimensions = svc_config.get("dimensions")
                 dimensions: list[object] = (
@@ -352,9 +328,7 @@ class PathCombinatorics:
                     name = name_val
                     if dim.get("type") == "fixed" and "values" in dim:
                         values_val = dim["values"]
-                        dims[name] = (
-                            cast(list[str], values_val) if isinstance(values_val, list) else []
-                        )
+                        dims[name] = cast(list[str], values_val) if isinstance(values_val, list) else []
                 self.service_dimensions[svc] = dims
                 logger.debug(
                     "Loaded sharding dimensions for %s: %s",

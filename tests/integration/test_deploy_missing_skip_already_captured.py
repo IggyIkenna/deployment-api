@@ -90,9 +90,7 @@ def _decompose_shard_key(args: argparse.Namespace) -> argparse.Namespace:
         return args
     parts = [p.strip() for p in shard_key.split("|")]
     if len(parts) != len(_SHARD_KEY_FIELDS):
-        raise ValueError(
-            f"--shard-key {shard_key!r} has {len(parts)} fields; expected {len(_SHARD_KEY_FIELDS)}"
-        )
+        raise ValueError(f"--shard-key {shard_key!r} has {len(parts)} fields; expected {len(_SHARD_KEY_FIELDS)}")
     fields = dict(zip(_SHARD_KEY_FIELDS, parts, strict=True))
     if fields["asset_group"] and getattr(args, "asset_group", None) in (None, ""):
         args.asset_group = fields["asset_group"]
@@ -307,9 +305,7 @@ class TestDeployMissingSkipAlreadyCaptured:
             "instrument_id": "btc-perp",
             "day": "2025-01-15",
         }
-        preview = build_deploy_missing_preview(
-            service="market-tick-data-service", asset_group="cefi", row_key=row_key
-        )
+        preview = build_deploy_missing_preview(service="market-tick-data-service", asset_group="cefi", row_key=row_key)
         args = _empty_args()
         args.shard_key = preview.shard_key
         decomposed = _decompose_shard_key(args)

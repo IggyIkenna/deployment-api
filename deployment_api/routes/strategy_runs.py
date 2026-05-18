@@ -104,9 +104,7 @@ def _make_mock_run(strategy_id: str, mode: str, run_date: str, seed: int) -> Run
 def _mock_runs(strategy_id: str, mode: str, limit: int) -> list[RunRecord]:
     """Return synthetic runs for mock mode."""
     today = date.today()
-    return [
-        _make_mock_run(strategy_id, mode, str(today - timedelta(days=i)), i) for i in range(limit)
-    ]
+    return [_make_mock_run(strategy_id, mode, str(today - timedelta(days=i)), i) for i in range(limit)]
 
 
 # ---------------------------------------------------------------------------

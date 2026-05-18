@@ -25,12 +25,10 @@ LIVE_PATH_PREFIX = "live/"
 
 # Build per-category bucket dicts from MarketCategory enum — SSOT in UAC.
 _instruments_buckets = {
-    cat.value: build_bucket("instruments", project_id=_pid, asset_group=cat.value.lower())
-    for cat in MarketCategory
+    cat.value: build_bucket("instruments", project_id=_pid, asset_group=cat.value.lower()) for cat in MarketCategory
 }
 _tick_buckets = {
-    cat.value: build_bucket("raw_tick_data", project_id=_pid, asset_group=cat.value.lower())
-    for cat in MarketCategory
+    cat.value: build_bucket("raw_tick_data", project_id=_pid, asset_group=cat.value.lower()) for cat in MarketCategory
 }
 
 # Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL
@@ -173,9 +171,7 @@ def _get_venues_dict(asset_group_config: Mapping[str, object]) -> dict[str, obje
     return cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
 
 
-def get_expected_venues_for_asset_group(
-    venue_config: Mapping[str, object], asset_group: str
-) -> set[str]:
+def get_expected_venues_for_asset_group(venue_config: Mapping[str, object], asset_group: str) -> set[str]:
     """Get the set of expected venues for an asset group from venue_data_types.yaml."""
     ag_config = _get_asset_group_section(venue_config, asset_group)
     venues = _get_venues_dict(ag_config)
@@ -188,16 +184,12 @@ def is_venue_expected(venue_config: Mapping[str, object], asset_group: str, venu
     return venue in expected_venues
 
 
-def get_expected_data_types_for_venue(
-    venue_config: Mapping[str, object], asset_group: str, venue: str
-) -> list[str]:
+def get_expected_data_types_for_venue(venue_config: Mapping[str, object], asset_group: str, venue: str) -> list[str]:
     """Get expected data_types for a specific venue from venue_data_types.yaml."""
     ag_config = _get_asset_group_section(venue_config, asset_group)
     venues = _get_venues_dict(ag_config)
     venue_val = venues.get(venue)
-    venue_cfg: dict[str, object] = (
-        cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
-    )
+    venue_cfg: dict[str, object] = cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
     dt_val = venue_cfg.get("data_types")
     return cast(list[str], dt_val) if isinstance(dt_val, list) else []
 
@@ -209,16 +201,12 @@ def get_expected_instrument_types_for_venue(
     ag_config = _get_asset_group_section(venue_config, asset_group)
     venues = _get_venues_dict(ag_config)
     venue_val = venues.get(venue)
-    venue_cfg: dict[str, object] = (
-        cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
-    )
+    venue_cfg: dict[str, object] = cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
     it_val = venue_cfg.get("instrument_types")
     return cast(list[str], it_val) if isinstance(it_val, list) else []
 
 
-def _get_service_config(
-    expected_dates_config: Mapping[str, object], service: str
-) -> dict[str, object]:
+def _get_service_config(expected_dates_config: Mapping[str, object], service: str) -> dict[str, object]:
     """Get service config dict safely."""
     svc_val = expected_dates_config.get(service)
     return cast(dict[str, object], svc_val) if isinstance(svc_val, dict) else {}
@@ -244,13 +232,9 @@ def get_data_type_start_date(
 
     # Check for data_type-specific start dates
     dt_start_val = asset_group_config.get("data_type_start_dates")
-    dt_start_dates: dict[str, object] = (
-        cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
-    )
+    dt_start_dates: dict[str, object] = cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
     venue_dt_val = dt_start_dates.get(venue)
-    venue_dt_config: dict[str, object] = (
-        cast(dict[str, object], venue_dt_val) if isinstance(venue_dt_val, dict) else {}
-    )
+    venue_dt_config: dict[str, object] = cast(dict[str, object], venue_dt_val) if isinstance(venue_dt_val, dict) else {}
     if data_type in venue_dt_config:
         # Explicit config for this data_type (could be null = not available)
         dt_val = venue_dt_config.get(data_type)
@@ -258,9 +242,7 @@ def get_data_type_start_date(
 
     # Fall back to venue start date
     venues_val = asset_group_config.get("venues")
-    venues: dict[str, object] = (
-        cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
-    )
+    venues: dict[str, object] = cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
     if venue in venues:
         v_val = venues[venue]
         return str(v_val) if isinstance(v_val, str) else None
@@ -324,9 +306,7 @@ def get_venue_start_date(
         return None
 
     venues_val = asset_group_config.get("venues")
-    venues: dict[str, object] = (
-        cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
-    )
+    venues: dict[str, object] = cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
     if venue in venues:
         v_val = venues[venue]
         return str(v_val) if isinstance(v_val, str) else None
@@ -399,8 +379,6 @@ def generate_date_range_and_year_months(
     if first_day_of_month_only:
         original_count = len(all_dates)
         all_dates = {d for d in all_dates if d.endswith("-01")}
-        logger.info(
-            "[TURBO] First-day-of-month filter: %s -> %s dates", original_count, len(all_dates)
-        )
+        logger.info("[TURBO] First-day-of-month filter: %s -> %s dates", original_count, len(all_dates))
 
     return all_dates, year_months

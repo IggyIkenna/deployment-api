@@ -162,9 +162,7 @@ class TestReadVmStatusMap:
         ep = _make_ep()
         vm_data = {"vm-1": {"status": "RUNNING", "job_id": "vm-1"}}
 
-        with patch.dict(
-            _ep_globals, {"read_object_text": MagicMock(return_value=json.dumps(vm_data))}
-        ):
+        with patch.dict(_ep_globals, {"read_object_text": MagicMock(return_value=json.dumps(vm_data))}):
             result = ep.read_vm_status_map("dep-1")
 
         assert result == vm_data
@@ -172,9 +170,7 @@ class TestReadVmStatusMap:
     def test_returns_empty_on_read_error(self):
         ep = _make_ep()
 
-        with patch.dict(
-            _ep_globals, {"read_object_text": MagicMock(side_effect=OSError("not found"))}
-        ):
+        with patch.dict(_ep_globals, {"read_object_text": MagicMock(side_effect=OSError("not found"))}):
             result = ep.read_vm_status_map("dep-1")
 
         assert result == {}
@@ -200,9 +196,7 @@ class TestReadShardStatuses:
             _ep_globals,
             {
                 "read_object_text": MagicMock(return_value=event_json),
-                "parse_service_event": MagicMock(
-                    return_value={"status": "succeeded", "some_key": "val"}
-                ),
+                "parse_service_event": MagicMock(return_value={"status": "succeeded", "some_key": "val"}),
             },
         ):
             result = ep.read_shard_statuses("dep-1", shards)
@@ -214,9 +208,7 @@ class TestReadShardStatuses:
         ep = _make_ep()
         shards = [{"shard_id": "s1"}]
 
-        with patch.dict(
-            _ep_globals, {"read_object_text": MagicMock(side_effect=OSError("not found"))}
-        ):
+        with patch.dict(_ep_globals, {"read_object_text": MagicMock(side_effect=OSError("not found"))}):
             result = ep.read_shard_statuses("dep-1", shards)
 
         assert result == {}
@@ -270,9 +262,7 @@ class TestNotifyDeploymentUpdated:
     def test_handles_notify_error_gracefully(self):
         ep = _make_ep()
         mock_events_mod = MagicMock()
-        mock_events_mod.notify_deployment_updated_sync = MagicMock(
-            side_effect=RuntimeError("queue full")
-        )
+        mock_events_mod.notify_deployment_updated_sync = MagicMock(side_effect=RuntimeError("queue full"))
 
         with patch.dict(
             sys.modules,

@@ -173,12 +173,8 @@ class TreasurySourceAttributionModel(BaseModel):
     """JSON-serialisable view of TreasurySourceAttribution."""
 
     source: str = Field(..., description="TreasurySource enum value")
-    source_total_nav_usd: str = Field(
-        ..., description="Total source NAV (all clients) as string decimal"
-    )
-    client_allocation_pct: str = Field(
-        ..., description="Client's allocation share (0-100) as string decimal"
-    )
+    source_total_nav_usd: str = Field(..., description="Total source NAV (all clients) as string decimal")
+    client_allocation_pct: str = Field(..., description="Client's allocation share (0-100) as string decimal")
     client_nav_usd: str = Field(..., description="Client-attributed NAV as string decimal")
     source_reachable: bool = Field(..., description="Whether the source responded at rollup time")
     is_stub: bool = Field(False, description="True when source SDK is not yet wired")
@@ -206,9 +202,7 @@ class ClientShareClassSubscriptionViewModel(BaseModel):
     subscribed_at: str = Field(..., description="ISO-8601 UTC subscription timestamp")
     suspended_at: str | None = None
     suspension_reason: str = ""
-    max_drawdown_for_suspension_pct: str = Field(
-        ..., description="Drawdown gate % as string decimal"
-    )
+    max_drawdown_for_suspension_pct: str = Field(..., description="Drawdown gate % as string decimal")
 
 
 class ClientSubscriptionListResponse(BaseModel):
@@ -218,9 +212,7 @@ class ClientSubscriptionListResponse(BaseModel):
     subscriptions: list[ClientShareClassSubscriptionViewModel]
     asof: str = Field(..., description="ISO-8601 UTC query timestamp")
     active_count: int
-    total_active_allocation_pct: str = Field(
-        ..., description="Sum of active allocation percentages as string decimal"
-    )
+    total_active_allocation_pct: str = Field(..., description="Sum of active allocation percentages as string decimal")
 
 
 class WithdrawalApproveRequest(BaseModel):
@@ -229,9 +221,7 @@ class WithdrawalApproveRequest(BaseModel):
     approver_id: str = Field(..., description="Operator ID from the approver pool")
     amount_usd: str = Field(..., description="Withdrawal amount in USD as string decimal")
     treasury_source: str = Field(..., description="TreasurySource enum value string")
-    hmac_signature: str = Field(
-        ..., description="Hex-encoded HMAC-SHA256 produced by sign_withdrawal_approval()"
-    )
+    hmac_signature: str = Field(..., description="Hex-encoded HMAC-SHA256 produced by sign_withdrawal_approval()")
     signed_at: str = Field(..., description="ISO-8601 UTC timestamp at which approver signed")
 
 

@@ -51,30 +51,22 @@ class TestDeployMissingAwsLauncherRouting:
             f"market-tick-data-service launcher is {launcher!r} — expected EC2 script. "
             "AWS routing requires the ec2 variant."
         )
-        assert "vm.sh" not in launcher, (
-            f"market-tick-data-service launcher {launcher!r} still points to GCE vm.sh."
-        )
+        assert "vm.sh" not in launcher, f"market-tick-data-service launcher {launcher!r} still points to GCE vm.sh."
 
     def test_instruments_service_resolves_to_ec2_launcher_when_aws(self) -> None:
         """instruments-service resolves to launch-instruments-backfill-ec2.sh on AWS."""
         launcher = _SERVICE_LAUNCHER_SCRIPTS.get("instruments-service", "")
-        assert "ec2" in launcher, (
-            f"instruments-service launcher is {launcher!r} — expected EC2 script."
-        )
+        assert "ec2" in launcher, f"instruments-service launcher is {launcher!r} — expected EC2 script."
 
     def test_features_service_resolves_to_ec2_launcher_when_aws(self) -> None:
         """features-service resolves to launch-features-ec2.sh on AWS."""
         launcher = _SERVICE_LAUNCHER_SCRIPTS.get("features-service", "")
-        assert "ec2" in launcher, (
-            f"features-service launcher is {launcher!r} — expected EC2 script."
-        )
+        assert "ec2" in launcher, f"features-service launcher is {launcher!r} — expected EC2 script."
 
     def test_mdps_resolves_to_ec2_launcher_when_aws(self) -> None:
         """market-data-processing-service resolves to the EC2 launcher on AWS."""
         launcher = _SERVICE_LAUNCHER_SCRIPTS.get("market-data-processing-service", "")
-        assert "ec2" in launcher, (
-            f"market-data-processing-service launcher is {launcher!r} — expected EC2 script."
-        )
+        assert "ec2" in launcher, f"market-data-processing-service launcher is {launcher!r} — expected EC2 script."
 
     def test_no_launcher_contains_gce_vm_script_suffix_when_all_aws(self) -> None:
         """When fully migrated to AWS, no launcher in _SERVICE_LAUNCHER_SCRIPTS should end in -vm.sh."""
@@ -100,8 +92,7 @@ class TestDeployMissingAwsLauncherRouting:
 
         command = preview.command
         assert "ec2" in command or "EC2" in command, (
-            f"Preview command does not reference EC2 script: {command!r}. "
-            "AWS path must route to EC2 launchers."
+            f"Preview command does not reference EC2 script: {command!r}. AWS path must route to EC2 launchers."
         )
         assert "launch-instruments-backfill-vm.sh" not in command, (
             f"Preview command still references GCE vm.sh script: {command!r}."
@@ -121,9 +112,7 @@ class TestDeployMissingCurrentLauncherStateDocumented:
             pytest.skip("EC2 launchers have landed — this pre-migration state test is obsolete.")
 
         gce_launchers = [v for v in _SERVICE_LAUNCHER_SCRIPTS.values() if "vm.sh" in v]
-        assert len(gce_launchers) > 0, (
-            "Expected at least one GCE vm.sh launcher — state has changed, review E.3 tests."
-        )
+        assert len(gce_launchers) > 0, "Expected at least one GCE vm.sh launcher — state has changed, review E.3 tests."
 
     def test_no_ec2_launchers_in_current_scripts(self) -> None:
         """Pre-migration guard: no EC2 launchers exist yet.

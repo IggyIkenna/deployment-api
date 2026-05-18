@@ -61,9 +61,7 @@ def test_live_launch_success(client: TestClient) -> None:
     mock_result.returncode = 0
     mock_result.stderr = ""
     with patch(_PATCH_SUBPROCESS, return_value=mock_result) as mock_sub, patch(_PATCH_LOG):
-        with patch(
-            "deployment_api.routes.execution_backtest_launch.Path.exists", return_value=True
-        ):
+        with patch("deployment_api.routes.execution_backtest_launch.Path.exists", return_value=True):
             with patch("deployment_api.routes.execution_backtest_launch._cfg") as mock_cfg:
                 mock_cfg.is_mock_mode.return_value = False
                 mock_cfg.gcp_project_id = "test-project"

@@ -143,9 +143,7 @@ class TestCheckGcs:
         assert result["detail"] is None
 
     def test_down_when_exception_raised(self) -> None:
-        with patch(
-            "unified_trading_library.get_storage_client", side_effect=RuntimeError("GCS offline")
-        ):
+        with patch("unified_trading_library.get_storage_client", side_effect=RuntimeError("GCS offline")):
             result = _check_gcs()
         assert result["status"] == "down"
         assert "GCS offline" in str(result["detail"])
@@ -174,9 +172,7 @@ class TestCheckSecretManager:
     def test_up_when_client_succeeds(self) -> None:
         mock_client = MagicMock()
         mock_client.list_secrets.return_value = iter([])
-        with patch(
-            "google.cloud.secretmanager.SecretManagerServiceClient", return_value=mock_client
-        ):
+        with patch("google.cloud.secretmanager.SecretManagerServiceClient", return_value=mock_client):
             with patch("deployment_api.health_routes._cloud_cfg") as mock_cfg:
                 mock_cfg.gcp_project_id = "test-proj"
                 result = _check_secret_manager()

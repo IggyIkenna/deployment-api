@@ -62,9 +62,7 @@ class TestGetClientTreasury:
         total_attrib = sum(Decimal(r.client_share_usd) for r in resp.treasury_attribution)
         nav = Decimal(resp.nav_usd)
         # Allow 1 cent rounding tolerance from Decimal quantization
-        assert abs(total_attrib - nav) <= Decimal("0.05"), (
-            f"Attribution sum {total_attrib} != nav {nav}"
-        )
+        assert abs(total_attrib - nav) <= Decimal("0.05"), f"Attribution sum {total_attrib} != nav {nav}"
 
     @pytest.mark.asyncio
     async def test_allocation_amounts_sum_to_nav(self) -> None:
@@ -72,9 +70,7 @@ class TestGetClientTreasury:
         resp = await get_client_treasury("demo", rollup_nav_usd="1000000.00")
         total_alloc = sum(Decimal(a.allocation_amount_usd) for a in resp.allocations)
         nav = Decimal(resp.nav_usd)
-        assert abs(total_alloc - nav) <= Decimal("0.05"), (
-            f"Allocation sum {total_alloc} != nav {nav}"
-        )
+        assert abs(total_alloc - nav) <= Decimal("0.05"), f"Allocation sum {total_alloc} != nav {nav}"
 
     @pytest.mark.asyncio
     async def test_invalid_client_id_raises_400(self) -> None:
@@ -191,10 +187,6 @@ class TestBuildTreasuryAttribution:
         # Demo subscriptions: 60% carry + 40% arb = 100% total
         client_total = sum(Decimal(a.client_share_usd) for a in attribution)
         source_total = sum(Decimal(a.source_nav_usd) for a in attribution)
-        assert abs(source_total - rollup) <= Decimal("1"), (
-            f"Source NAV total {source_total} != rollup {rollup}"
-        )
+        assert abs(source_total - rollup) <= Decimal("1"), f"Source NAV total {source_total} != rollup {rollup}"
         # Client share should equal source NAV when allocation is 100%
-        assert abs(client_total - rollup) <= Decimal("1"), (
-            f"Client share total {client_total} != rollup {rollup}"
-        )
+        assert abs(client_total - rollup) <= Decimal("1"), f"Client share total {client_total} != rollup {rollup}"

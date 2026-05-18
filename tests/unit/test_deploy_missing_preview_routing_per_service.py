@@ -228,15 +228,10 @@ def test_each_service_routes_to_a_launcher_script(service: str) -> None:
         f"{service} launcher_script must end in .sh; got {preview.launcher_script!r}"
     )
     assert "launch-" in preview.launcher_script, (
-        f"{service} launcher_script must follow the launch-*.sh naming convention; "
-        f"got {preview.launcher_script!r}"
+        f"{service} launcher_script must follow the launch-*.sh naming convention; got {preview.launcher_script!r}"
     )
-    assert preview.command.startswith("bash "), (
-        f"{service} command must start with 'bash '; got {preview.command!r}"
-    )
-    assert "--shard-key=" in preview.command, (
-        f"{service} command missing --shard-key flag; got {preview.command!r}"
-    )
+    assert preview.command.startswith("bash "), f"{service} command must start with 'bash '; got {preview.command!r}"
+    assert "--shard-key=" in preview.command, f"{service} command missing --shard-key flag; got {preview.command!r}"
     # shard_key has the canonical 6-field shape.
     assert preview.shard_key.count("|") == 5, (
         f"{service} shard_key has {preview.shard_key.count('|') + 1} fields; "

@@ -66,9 +66,7 @@ class EventProcessor:
             logger.error("Invalid JSON in VM status map for deployment %s: %s", deployment_id, e)
             return {}
         except RuntimeError as e:
-            logger.error(
-                "Unexpected error reading VM status map for deployment %s: %s", deployment_id, e
-            )
+            logger.error("Unexpected error reading VM status map for deployment %s: %s", deployment_id, e)
             return {}
 
     def read_shard_statuses(
@@ -92,9 +90,7 @@ class EventProcessor:
             if not shard_id:
                 continue
 
-            status_obj_path = (
-                f"deployments.{self.deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
-            )
+            status_obj_path = f"deployments.{self.deployment_env}/{deployment_id}/shards/{shard_id}/status.txt"
             try:
                 status_text = read_object_text(self.state_bucket, status_obj_path)
                 event_data = parse_service_event(status_text)
@@ -335,9 +331,7 @@ class EventProcessor:
         """
         try:
             shards_raw2: object = state.get("shards") or []
-            shards = (
-                cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
-            )
+            shards = cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
             config_raw2: object = state.get("config") or {}
             config = cast(dict[str, object], config_raw2) if isinstance(config_raw2, dict) else {}
 
@@ -347,9 +341,7 @@ class EventProcessor:
 
             try:
                 service_account_email = str(
-                    ValidationUtils.get_required(
-                        config, "service_account_email", "Cloud Run backend"
-                    )
+                    ValidationUtils.get_required(config, "service_account_email", "Cloud Run backend")
                 )
             except ConfigurationError as e:
                 logger.error("[EVENT_PROCESSOR] %s: %s", deployment_id, e)
@@ -414,9 +406,7 @@ class EventProcessor:
             if not orphan_tuples:
                 return 0
 
-            return self._fire_orphan_cleanup(
-                deployment_id, config, orphan_tuples, pending_vm_deletes
-            )
+            return self._fire_orphan_cleanup(deployment_id, config, orphan_tuples, pending_vm_deletes)
 
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
@@ -433,9 +423,7 @@ class EventProcessor:
         """Create orchestrator backend and fire cancel for each orphan VM."""
         _orchestrator_cls = cast(
             type[object],
-            _importlib.import_module(
-                "deployment_service.deployment.orchestrator"
-            ).DeploymentOrchestrator,
+            _importlib.import_module("deployment_service.deployment.orchestrator").DeploymentOrchestrator,
         )
 
         try:

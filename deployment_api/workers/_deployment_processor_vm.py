@@ -364,9 +364,7 @@ def _process_vm_health_and_status(
             )
             # For healthy running VMs, parse serial log events.
             killed_shard_ids = {shard_id for _, _, shard_id, _, _ in vm_health_kills}
-            updated = _parse_healthy_vm_serial_events(
-                shards, vm_map, killed_shard_ids, now, updated
-            )
+            updated = _parse_healthy_vm_serial_events(shards, vm_map, killed_shard_ids, now, updated)
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[AUTO_SYNC] VM health check error: %s", e)
 

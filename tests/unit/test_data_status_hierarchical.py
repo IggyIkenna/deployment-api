@@ -112,17 +112,13 @@ class TestDrilldownNodeShape:
         assert isinstance(d["attempted_failed"], int)
 
     def test_to_dict_total_is_int_and_sum(self) -> None:
-        node = DrilldownNode(
-            axis="venue", value="X", captured=4, empty_confirmed=2, attempted_failed=1
-        )
+        node = DrilldownNode(axis="venue", value="X", captured=4, empty_confirmed=2, attempted_failed=1)
         d = node.to_dict()
         assert isinstance(d["total"], int)
         assert d["total"] == 7
 
     def test_to_dict_completion_pct_is_float(self) -> None:
-        node = DrilldownNode(
-            axis="venue", value="X", captured=80, empty_confirmed=15, attempted_failed=5
-        )
+        node = DrilldownNode(axis="venue", value="X", captured=80, empty_confirmed=15, attempted_failed=5)
         d = node.to_dict()
         assert isinstance(d["completion_pct"], float)
         assert d["completion_pct"] == 80.0
@@ -463,9 +459,7 @@ class TestPaginationAndBundledRootVirtualisation:
         tree = result["tree"]
         assert isinstance(tree, list)
         # 3 distinct underlyings → 3 root nodes at the instrument_id axis.
-        values = sorted(
-            n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str)
-        )
+        values = sorted(n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str))
         assert values == ["BTC", "ETH", "SOL"]
 
     def test_per_instrument_rows_unchanged_by_virtualisation(self) -> None:
@@ -484,9 +478,7 @@ class TestPaginationAndBundledRootVirtualisation:
             )
         tree = result["tree"]
         assert isinstance(tree, list)
-        values = sorted(
-            n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str)
-        )
+        values = sorted(n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str))
         assert values == [f"INST{i:04d}USDT" for i in range(5)]
 
 
@@ -554,9 +546,7 @@ class TestReadAvailabilityIndexCallContract:
             captured_args.append((args, kwargs))
             return pd.DataFrame()
 
-        with patch.object(
-            _hier, "read_availability_index", side_effect=fake_read_availability_index
-        ):
+        with patch.object(_hier, "read_availability_index", side_effect=fake_read_availability_index):
             get_hierarchical_drilldown(
                 service="market-tick-data-service",
                 asset_group="defi",
@@ -568,9 +558,7 @@ class TestReadAvailabilityIndexCallContract:
         positional, _kw = captured_args[0]
         assert len(positional) >= 1, "read_availability_index expects a positional arg"
         bucket_arg = positional[0]
-        assert isinstance(bucket_arg, str), (
-            f"read_availability_index expects str, got {type(bucket_arg)}"
-        )
+        assert isinstance(bucket_arg, str), f"read_availability_index expects str, got {type(bucket_arg)}"
         # The bare bucket name has no scheme or slashes. A gs:// URI or a
         # path-suffixed bucket-and-prefix string both fail this check.
         assert "://" not in bucket_arg, (
@@ -578,8 +566,7 @@ class TestReadAvailabilityIndexCallContract:
             "expects bare bucket name (no scheme). 2026-05-07 incident."
         )
         assert "/" not in bucket_arg, (
-            f"read_availability_index called with path {bucket_arg!r}; "
-            "expects bare bucket name (no path)."
+            f"read_availability_index called with path {bucket_arg!r}; expects bare bucket name (no path)."
         )
 
     def test_passes_canonical_bucket_for_mtds_cefi(self) -> None:

@@ -145,9 +145,7 @@ class TestCancelDeploymentSync:
         with (
             patch.object(_ds_routes, "load_state", return_value=state),
             patch.object(_ds_routes, "save_state"),
-            patch.object(
-                _ds_routes, "notify_deployment_updated_sync", side_effect=OSError("notify failed")
-            ),
+            patch.object(_ds_routes, "notify_deployment_updated_sync", side_effect=OSError("notify failed")),
         ):
             result = cancel_deployment_sync("dep-1")
         assert result["cancelled"] is True

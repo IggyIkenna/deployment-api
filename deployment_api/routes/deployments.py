@@ -45,9 +45,7 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     compute: str = Field("cloud_run", description="Compute mode: cloud_run or vm")
     mode: str = Field("batch", description="Deployment mode: 'batch' or 'live'")
     cloud_provider: str = Field("gcp", description="Cloud provider: gcp, aws, or local")
-    operational_mode: str = Field(
-        "", description="Service-specific operational mode (e.g. train_phase1, execute)"
-    )
+    operational_mode: str = Field("", description="Service-specific operational mode (e.g. train_phase1, execute)")
 
     # Date range for data processing
     start_date: str | None = Field(None, description="Start date (YYYY-MM-DD)")
@@ -79,9 +77,7 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     # Exclude dates: mapping of asset group -> list of date strings to skip
     # Used by "Deploy Missing" to exclude dates that already have complete data
-    exclude_dates: dict[str, list[str]] | None = Field(
-        None, description="Dates to exclude per asset group"
-    )
+    exclude_dates: dict[str, list[str]] | None = Field(None, description="Dates to exclude per asset group")
 
     # Logging configuration
     log_level: str = Field("INFO", description="Log level for deployment jobs")
@@ -196,9 +192,7 @@ async def list_deployments(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     status: str | None = Query(None, description="Filter by status"),
     service: str | None = Query(None, description="Filter by service"),
-    asset_group: str | None = Query(
-        None, description="Filter by trading axis (CEFI, DEFI, SPORTS, …)"
-    ),
+    asset_group: str | None = Query(None, description="Filter by trading axis (CEFI, DEFI, SPORTS, …)"),
     category: str | None = Query(
         None,
         description="Deprecated — use asset_group",
@@ -259,9 +253,7 @@ async def get_deployment_status(
 
         item = get_store().get("deployments", deployment_id)
         if item is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return item
     try:
         result = state_manager.get_deployment_status(deployment_id, detailed=detailed)
@@ -297,9 +289,7 @@ async def verify_deployment_completion(
         logger.exception("Deployment not found for verification: %s", deployment_id)
         raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed during verification for %s: %s", deployment_id, e
-        )
+        logger.error("Cloud provider connection failed during verification for %s: %s", deployment_id, e)
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to verify deployment %s: %s", deployment_id, e)
@@ -537,9 +527,7 @@ async def deploy_missing_shards(
                 "missing_analysis": missing_analysis,
                 "deployment": None,
                 "dry_run": True,
-                "message": (
-                    f"Found {total_missing} missing shard(s) — dry run, no deployment created"
-                ),
+                "message": (f"Found {total_missing} missing shard(s) — dry run, no deployment created"),
             }
 
         # Step 3: If no missing shards and not forcing, return early
@@ -552,9 +540,7 @@ async def deploy_missing_shards(
             }
 
         # Step 4-6: Build and submit the deployment
-        deploy_result = await _submit_missing_deployment(
-            req, missing_analysis, total_missing, background_tasks
-        )
+        deploy_result = await _submit_missing_deployment(req, missing_analysis, total_missing, background_tasks)
         return deploy_result
     except ValueError as e:
         logger.exception("Invalid request for deploy-missing")
@@ -578,9 +564,7 @@ async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         updated = get_store().update("deployments", deployment_id, {"status": "cancelled"})
         if updated is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "cancelled"}
     try:
         result = state_manager.cancel_deployment(deployment_id)
@@ -589,9 +573,7 @@ async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, s
         logger.exception("Deployment not found for cancellation: %s", deployment_id)
         raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed during cancellation for %s: %s", deployment_id, e
-        )
+        logger.error("Cloud provider connection failed during cancellation for %s: %s", deployment_id, e)
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to cancel deployment %s: %s", deployment_id, e)
@@ -606,9 +588,7 @@ async def resume_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         updated = get_store().update("deployments", deployment_id, {"status": "running"})
         if updated is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "running"}
     try:
         result = state_manager.resume_deployment(deployment_id)
@@ -636,9 +616,7 @@ async def retry_failed_shards(
 
         item = get_store().get("deployments", deployment_id)
         if item is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         if not dry_run:
             get_store().update("deployments", deployment_id, {"status": "retrying"})
         return {
@@ -676,9 +654,7 @@ async def update_deployment(
             raise HTTPException(status_code=400, detail="No update parameters provided")
         updated = get_store().update("deployments", deployment_id, fields)
         if updated is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "updated"}
     try:
         if update_request.tag:
@@ -705,9 +681,7 @@ async def delete_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         deleted = get_store().delete("deployments", deployment_id)
         if not deleted:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "deleted"}
     try:
         result = state_manager.delete_deployment(deployment_id)
@@ -716,9 +690,7 @@ async def delete_deployment(deployment_id: str, request: Request) -> dict[str, s
         logger.exception("Deployment not found for deletion: %s", deployment_id)
         raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed during deletion for %s: %s", deployment_id, e
-        )
+        logger.error("Cloud provider connection failed during deletion for %s: %s", deployment_id, e)
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to delete deployment %s: %s", deployment_id, e)
@@ -726,9 +698,7 @@ async def delete_deployment(deployment_id: str, request: Request) -> dict[str, s
 
 
 @router.post("/deployments/bulk-delete")
-async def bulk_delete_deployments(
-    bulk_request: BulkDeleteRequest, request: Request
-) -> dict[str, object]:
+async def bulk_delete_deployments(bulk_request: BulkDeleteRequest, request: Request) -> dict[str, object]:
     """Delete multiple deployments."""
     try:
         result = state_manager.bulk_delete_deployments(bulk_request.deployment_ids)
@@ -790,9 +760,7 @@ async def get_deployment_logs(
         logger.exception("Deployment not found for log retrieval: %s", deployment_id)
         raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed while getting logs for %s: %s", deployment_id, e
-        )
+        logger.error("Cloud provider connection failed while getting logs for %s: %s", deployment_id, e)
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get logs for deployment %s: %s", deployment_id, e)
@@ -812,9 +780,7 @@ async def get_deployment_report(deployment_id: str, request: Request) -> dict[st
         logger.error("Report data not found for deployment %s: %s", deployment_id, e)
         raise HTTPException(status_code=404, detail="Report data not available") from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed while generating report for %s: %s", deployment_id, e
-        )
+        logger.error("Cloud provider connection failed while generating report for %s: %s", deployment_id, e)
         raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get deployment report for %s: %s", deployment_id, e)
@@ -829,9 +795,7 @@ class RollbackRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     service: str = Field(..., description="Cloud Run Service name")
     region: str = Field(..., description="GCP region")
-    target_revision: str | None = Field(
-        None, description="Specific revision to roll back to (None = previous)"
-    )
+    target_revision: str | None = Field(None, description="Specific revision to roll back to (None = previous)")
 
 
 @router.get("/deployments/{deployment_id}/events")
@@ -905,9 +869,7 @@ async def get_deployment_vm_events(
 
 
 @router.post("/deployments/{deployment_id}/rollback")
-async def rollback_live_deployment(
-    deployment_id: str, rollback_request: RollbackRequest
-) -> dict[str, object]:
+async def rollback_live_deployment(deployment_id: str, rollback_request: RollbackRequest) -> dict[str, object]:
     """
     Roll back a live Cloud Run Service deployment to the previous revision.
 
@@ -980,7 +942,5 @@ async def get_live_deployment_health(
         )
         raise HTTPException(status_code=502, detail="Health check unavailable") from e
     except (OSError, ValueError) as e:
-        logger.exception(
-            "Error fetching live health for deployment %s service %s", deployment_id, service
-        )
+        logger.exception("Error fetching live health for deployment %s service %s", deployment_id, service)
         raise HTTPException(status_code=500, detail="Internal error — see server logs") from e

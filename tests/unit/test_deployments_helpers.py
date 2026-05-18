@@ -81,9 +81,7 @@ class TestBuildDeployEnvVars:
         assert env["OPERATIONAL_MODE"] == "train_phase1"
 
     def test_operational_mode_execute(self):
-        env = build_deploy_env_vars(
-            "execution-service", "proj", "dep", 1, operational_mode="execute"
-        )
+        env = build_deploy_env_vars("execution-service", "proj", "dep", 1, operational_mode="execute")
         assert env["OPERATIONAL_MODE"] == "execute"
 
     def test_all_runtime_topology_vars_together(self):
@@ -115,9 +113,7 @@ class TestRuntimeProfileFanout:
     def test_backtest_profile_fans_out_all_five_env_vars(self):
         from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
 
-        env = build_deploy_env_vars(
-            "svc", "proj", "dep", 1, runtime_profile=RuntimeProfile.BACKTEST
-        )
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, runtime_profile=RuntimeProfile.BACKTEST)
         assert env["RUNTIME_PROFILE"] == "backtest"
         assert env["CLOUD_MOCK_MODE"] == "false"
         assert env["MOCK_STATE_MODE"] == "deterministic"

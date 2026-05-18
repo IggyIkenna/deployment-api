@@ -213,9 +213,7 @@ def get_recent_builds_for_projects_sync(
     return result
 
 
-def start_codebuild_sync(
-    project_name: str, branch: str = "live-defi-rollout"
-) -> dict[str, str | None]:
+def start_codebuild_sync(project_name: str, branch: str = "live-defi-rollout") -> dict[str, str | None]:
     """Start a CodeBuild build for a project.
 
     Returns dict with build_id, log_url, status.

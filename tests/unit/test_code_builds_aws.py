@@ -147,9 +147,7 @@ class TestListCodebuildProjects:
             ]
         }
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             triggers = list_codebuild_projects_sync()
 
         assert len(triggers) == 2
@@ -163,9 +161,7 @@ class TestListCodebuildProjects:
         mock_paginator.paginate.return_value = [{"projects": ["unrelated-project"]}]
         mock_client.get_paginator.return_value = mock_paginator
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             triggers = list_codebuild_projects_sync()
 
         assert triggers == []
@@ -184,9 +180,7 @@ class TestGetCodebuildHistory:
             ]
         }
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             history = get_codebuild_history_sync("proj", limit=5)
 
         assert len(history) == 2
@@ -197,9 +191,7 @@ class TestGetCodebuildHistory:
         mock_client = MagicMock()
         mock_client.list_builds_for_project.return_value = {"ids": []}
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             history = get_codebuild_history_sync("proj")
 
         assert history == []
@@ -215,9 +207,7 @@ class TestGetRecentBuildsForProjects:
             "builds": [{"id": "proj:latest", "buildStatus": "SUCCEEDED", "projectName": "proj"}]
         }
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             result = get_recent_builds_for_projects_sync(["proj"])
 
         assert "proj" in result
@@ -228,9 +218,7 @@ class TestGetRecentBuildsForProjects:
         mock_client = MagicMock()
         mock_client.list_builds_for_project.side_effect = Exception("ProjectNotFound")
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             result = get_recent_builds_for_projects_sync(["nonexistent"])
 
         assert result["nonexistent"] is None
@@ -248,9 +236,7 @@ class TestStartCodebuild:
             }
         }
 
-        with patch(
-            "deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client
-        ):
+        with patch("deployment_api.routes._code_builds_aws._get_codebuild_client", return_value=mock_client):
             result = start_codebuild_sync("instruments-service-build", "live-defi-rollout")
 
         assert result["build_id"] == "new-build-123"

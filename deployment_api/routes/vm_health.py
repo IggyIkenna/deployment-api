@@ -170,12 +170,8 @@ def _fetch_events_for_window(
 @router.get("/vm/{vm_name}/health", response_model=VmHealthResult)
 def get_vm_health(
     vm_name: str,
-    service: str | None = Query(
-        None, description="Service name. Inferred from vm_name prefix if omitted."
-    ),
-    scan_hours: int = Query(
-        24, ge=1, le=72, description="Trailing hours of events to scan (default 24)"
-    ),
+    service: str | None = Query(None, description="Service name. Inferred from vm_name prefix if omitted."),
+    scan_hours: int = Query(24, ge=1, le=72, description="Trailing hours of events to scan (default 24)"),
 ) -> VmHealthResult:
     """Return aggregate health state for a VM based on its GCS event history."""
     resolved_service = service if service is not None else infer_service_from_vm_name(vm_name)

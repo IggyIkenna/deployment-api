@@ -146,10 +146,7 @@ def all_fresh_blobs(fixed_now: datetime) -> dict[str, _FakeBlob]:
     """Every CEFI bundle tarball present + 30min newer than `fixed_now`."""
     bundle = _bundle_for("CEFI")
     fresh_ts = fixed_now + timedelta(minutes=30)
-    return {
-        f"code/{name}": _FakeBlob(name=f"code/{name}", _exists=True, updated=fresh_ts)
-        for name in bundle
-    }
+    return {f"code/{name}": _FakeBlob(name=f"code/{name}", _exists=True, updated=fresh_ts) for name in bundle}
 
 
 @pytest.fixture
@@ -192,9 +189,7 @@ def make_checker() -> Iterator[_MakeCheckerFactory]:
     ) -> tuple[TarballStalenessChecker, _FakeInvoker]:
         bucket = _FakeBucket(blobs=blobs)
         storage = _FakeStorage(bucket=bucket)
-        fake_invoker: _FakeInvoker = (
-            invoker if isinstance(invoker, _FakeInvoker) else _FakeInvoker()
-        )
+        fake_invoker: _FakeInvoker = invoker if isinstance(invoker, _FakeInvoker) else _FakeInvoker()
         checker = TarballStalenessChecker(
             project_id="test-project",
             invoker=fake_invoker,
@@ -364,9 +359,7 @@ class TestTriggerRefresh:
         checker.trigger_refresh("DEFI", trigger_name="custom-trigger", branch="feat/x")
         assert invoker.run_calls == [("custom-trigger", "feat/x")]
 
-    def test_unknown_asset_group_raises_before_invoking(
-        self, make_checker: _MakeCheckerFactory
-    ) -> None:
+    def test_unknown_asset_group_raises_before_invoking(self, make_checker: _MakeCheckerFactory) -> None:
         invoker = _FakeInvoker()
         checker, _ = make_checker({}, invoker=invoker)
         with pytest.raises(TarballStalenessError, match="Unknown asset_group"):

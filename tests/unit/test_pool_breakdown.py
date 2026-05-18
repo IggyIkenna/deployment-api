@@ -51,9 +51,7 @@ class TestBuildPoolBreakdown:
     def test_no_data_for_venue_chain(self):
         # Listing returns empty -> status="no_data".
         with patch.object(drilldown, "_list_pool_entities_for_venue", return_value=[]):
-            result = drilldown.build_pool_breakdown(
-                day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM"
-            )
+            result = drilldown.build_pool_breakdown(day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM")
         assert result["status"] == "no_data"
         assert result["pools"] == []
         assert result["pools_expected"] == 0
@@ -74,9 +72,7 @@ class TestBuildPoolBreakdown:
             patch.object(drilldown, "_list_pool_entities_for_venue", return_value=entities),
             patch.object(drilldown, "_read_pool_ids_from_parquet", side_effect=fake_read),
         ):
-            result = drilldown.build_pool_breakdown(
-                day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM"
-            )
+            result = drilldown.build_pool_breakdown(day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM")
         assert result["status"] == "resolved"
         assert result["pools_expected"] == 3
         assert set(result["data_types_expected"]) == {"dex_pool_state", "dex_pool_swaps"}
@@ -102,9 +98,7 @@ class TestBuildPoolBreakdown:
             patch.object(drilldown, "_list_pool_entities_for_venue", return_value=entities),
             patch.object(drilldown, "_read_pool_ids_from_parquet", side_effect=fake_read),
         ):
-            result = drilldown.build_pool_breakdown(
-                day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM"
-            )
+            result = drilldown.build_pool_breakdown(day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM")
         pools_by_id = {p["pool_id"]: p for p in cast(list[dict[str, object]], result["pools"])}
         usdc_weth = pools_by_id["USDC-WETH-500"]
         wbtc_weth = pools_by_id["WBTC-WETH-500"]
@@ -131,9 +125,7 @@ class TestBuildPoolBreakdown:
             patch.object(drilldown, "_list_pool_entities_for_venue", return_value=entities),
             patch.object(drilldown, "_read_pool_ids_from_parquet", side_effect=fake_read),
         ):
-            result = drilldown.build_pool_breakdown(
-                day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM"
-            )
+            result = drilldown.build_pool_breakdown(day=self._DAY, venue="UNISWAP_V3", chain="ETHEREUM")
         assert result["status"] == "resolved"
         # USDC-WETH-500 is the only pool surfaced via swaps; state failed for everyone.
         pools = cast(list[dict[str, object]], result["pools"])
@@ -145,9 +137,7 @@ class TestBuildPoolBreakdown:
     def test_venue_chain_partition_uppercased(self):
         # Mixed-case venue/chain inputs always normalised to UPPER for partition.
         with patch.object(drilldown, "_list_pool_entities_for_venue", return_value=[]):
-            result = drilldown.build_pool_breakdown(
-                day=self._DAY, venue="uniswap_v3", chain="ethereum"
-            )
+            result = drilldown.build_pool_breakdown(day=self._DAY, venue="uniswap_v3", chain="ethereum")
         assert result["venue_chain"] == "UNISWAP_V3-ETHEREUM"
         assert result["venue"] == "UNISWAP_V3"
         assert result["chain"] == "ETHEREUM"
@@ -171,9 +161,7 @@ class TestListPoolEntitiesForVenue:
             from deployment_api.utils import storage_facade
 
             with patch.object(storage_facade, "list_objects", return_value=objs):
-                result = drilldown._list_pool_entities_for_venue(
-                    day="2026-04-20", venue_chain="UNISWAP_V3-ETHEREUM"
-                )
+                result = drilldown._list_pool_entities_for_venue(day="2026-04-20", venue_chain="UNISWAP_V3-ETHEREUM")
         assert len(result) == 2
         instr_types = {r[0] for r in result}
         data_types = {r[1] for r in result}
@@ -190,9 +178,7 @@ class TestListPoolEntitiesForVenue:
         from deployment_api.utils import storage_facade
 
         with patch.object(storage_facade, "list_objects", return_value=objs):
-            result = drilldown._list_pool_entities_for_venue(
-                day="2026-04-20", venue_chain="AAVE_V3-ETHEREUM"
-            )
+            result = drilldown._list_pool_entities_for_venue(day="2026-04-20", venue_chain="AAVE_V3-ETHEREUM")
         # Only the parquet should make it through.
         assert len(result) == 1
 
@@ -204,9 +190,7 @@ class TestReadPoolIdsFromParquet:
         # instrument_key (canonical) is preferred when present.
         df = _df("instrument_key", ["A:B:C", "D:E:F", "A:B:C"])  # dup → set
         with (
-            patch.object(
-                drilldown, "_parquet_schema_names", return_value={"instrument_key", "venue"}
-            ),
+            patch.object(drilldown, "_parquet_schema_names", return_value={"instrument_key", "venue"}),
             patch.object(drilldown, "_read_parquet_columns", return_value=df),
         ):
             status, ids = drilldown._read_pool_ids_from_parquet("gs://b/x.parquet")
@@ -231,9 +215,7 @@ class TestReadPoolIdsFromParquet:
         assert ids == set()
 
     def test_attempted_failed_on_read_error(self):
-        with patch.object(
-            drilldown, "_parquet_schema_names", side_effect=FileNotFoundError("missing")
-        ):
+        with patch.object(drilldown, "_parquet_schema_names", side_effect=FileNotFoundError("missing")):
             status, ids = drilldown._read_pool_ids_from_parquet("gs://b/x.parquet")
         assert status == "attempted_failed"
         assert ids == set()

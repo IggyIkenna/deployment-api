@@ -226,10 +226,7 @@ class TestCacheKeyBuilders:
         assert deployment_key("deploy-123") == "deployment:deploy-123"
 
     def test_deployment_list_key_with_service(self):
-        assert (
-            deployment_list_key("instruments-service", 50)
-            == "deployments:instruments-service:limit-50"
-        )
+        assert deployment_list_key("instruments-service", 50) == "deployments:instruments-service:limit-50"
 
     def test_deployment_list_key_no_service(self):
         assert deployment_list_key(None, 20) == "deployments:all:limit-20"
@@ -338,9 +335,7 @@ class TestRedisCacheMethods:
     async def test_connect_failure_sets_provider_none(self):
         cache = self._make_redis_cache()
 
-        with patch(
-            "deployment_api.utils.cache.AsyncRedisProvider", side_effect=OSError("conn refused")
-        ):
+        with patch("deployment_api.utils.cache.AsyncRedisProvider", side_effect=OSError("conn refused")):
             await cache.connect()
 
         assert cache._provider is None

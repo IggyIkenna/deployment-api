@@ -111,9 +111,7 @@ class TestDetectDrift:
 
     def test_below_threshold_no_event(self) -> None:
         # 100% → 96% = 4pt drop, below default 5pt threshold
-        prev = _snapshot(
-            [{"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}] * 100
-        )
+        prev = _snapshot([{"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}] * 100)
         cur = _snapshot(
             [{"feature_group": "team_form", "league_id": "EPL", "capture_status": "captured"}] * 96
             + [

@@ -112,10 +112,7 @@ async def get_image_info(image_url: str) -> dict[str, object] | None:
 
     headers = {
         "Authorization": f"Bearer {token}",
-        "Accept": (
-            "application/vnd.docker.distribution.manifest.v2+json,"
-            " application/vnd.oci.image.manifest.v1+json"
-        ),
+        "Accept": ("application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"),
     }
 
     try:

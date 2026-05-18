@@ -138,9 +138,7 @@ class DeploymentManager:
         self.default_project_id = _settings.gcp_project_id
         self.default_max_concurrent = 100
 
-    def validate_deployment_request(
-        self, deploy_request: DeployRequest
-    ) -> dict[str, object] | None:
+    def validate_deployment_request(self, deploy_request: DeployRequest) -> dict[str, object] | None:
         """
         Validate deployment request parameters.
 
@@ -219,9 +217,7 @@ class DeploymentManager:
             vm_shape: VmQuotaShape = vm_quota_shape_from_compute_config(compute_config)
             single_vm_shape: dict[str, float] = vm_shape.per_shard()
             total_shape: dict[str, float] = multiply_resources(single_vm_shape, max_concurrent)
-            recommended_concurrent: int = (
-                max_concurrent  # Simplified: no headroom data available here
-            )
+            recommended_concurrent: int = max_concurrent  # Simplified: no headroom data available here
         else:
             # Cloud Run quota calculation
             cpu_raw = compute_config.get("cpu", 2)
@@ -270,17 +266,11 @@ class DeploymentManager:
         ]
         if deploy_request.start_date:
             start_date_val = deploy_request.start_date
-            start_str: str = (
-                start_date_val.isoformat()
-                if isinstance(start_date_val, _date)
-                else str(start_date_val)
-            )
+            start_str: str = start_date_val.isoformat() if isinstance(start_date_val, _date) else str(start_date_val)
             cli_parts.extend(["--start-date", start_str])
         if deploy_request.end_date:
             end_date_val = deploy_request.end_date
-            end_str: str = (
-                end_date_val.isoformat() if isinstance(end_date_val, _date) else str(end_date_val)
-            )
+            end_str: str = end_date_val.isoformat() if isinstance(end_date_val, _date) else str(end_date_val)
             cli_parts.extend(["--end-date", end_str])
         if deploy_request.tag:
             cli_parts.extend(["--tag", deploy_request.tag])
@@ -319,17 +309,13 @@ class DeploymentManager:
         )
 
         # Validate request
-        validation_error: dict[str, object] | None = self.validate_deployment_request(
-            deploy_request
-        )
+        validation_error: dict[str, object] | None = self.validate_deployment_request(deploy_request)
         if validation_error:
             raise ValueError(str(validation_error))
 
         # Validate shard configuration
         loader_for_validation = ConfigLoader(config_dir)
-        service_cfg: dict[str, object] = loader_for_validation.load_service_config(
-            deploy_request.service
-        )
+        service_cfg: dict[str, object] = loader_for_validation.load_service_config(deploy_request.service)
         shard_error = validate_shard_configuration(service_cfg, deploy_request)
         if shard_error:
             raise ValueError(str(shard_error))
@@ -341,9 +327,7 @@ class DeploymentManager:
             raise ValueError(str(quota_error))
 
         # Validate image availability
-        _ = loader_for_validation.get_compute_recommendation(
-            deploy_request.service, deploy_request.compute
-        )
+        _ = loader_for_validation.get_compute_recommendation(deploy_request.service, deploy_request.compute)
         region_for_validation: str = deploy_request.region or self.default_region
         raw_docker_image = service_cfg.get("docker_image")
         docker_image_for_validation: str = (
@@ -354,9 +338,7 @@ class DeploymentManager:
                 f"/{deploy_request.service}/{deploy_request.service}:latest"
             )
         )
-        image_error = validate_image_availability(
-            docker_image_for_validation, region_for_validation
-        )
+        image_error = validate_image_availability(docker_image_for_validation, region_for_validation)
         if image_error:
             raise ValueError(str(image_error))
 
@@ -477,9 +459,7 @@ class DeploymentManager:
                     f"/{deploy_request.service}/{deploy_request.service}:latest"
                 )
             )
-            job_name: str = cast(
-                str, service_config.get("cloud_run_job_name", deploy_request.service)
-            )
+            job_name: str = cast(str, service_config.get("cloud_run_job_name", deploy_request.service))
 
             # Submit deployment to deployment-service HTTP API
             # deployment-service owns DeploymentOrchestrator execution logic

@@ -49,9 +49,7 @@ def list_cloud_files(
     for obj in objects:
         blob_name: str = obj.name
         # Apply glob pattern matching against the blob name
-        if fnmatch.fnmatch(blob_name, pattern) or fnmatch.fnmatch(
-            blob_name.split("/")[-1], pattern
-        ):
+        if fnmatch.fnmatch(blob_name, pattern) or fnmatch.fnmatch(blob_name.split("/")[-1], pattern):
             if cloud_path.startswith("gs://"):  # noqa: gs-uri
                 results.append(f"gs://{bucket_name}/{blob_name}")  # noqa: gs-uri
             else:

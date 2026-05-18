@@ -13,9 +13,7 @@ from unittest.mock import MagicMock, patch
 
 # Mock modules that deployment_processor imports at module level
 sys.modules.setdefault("deployment", MagicMock())
-sys.modules.setdefault(
-    "deployment.state", MagicMock(DeploymentStatus=MagicMock(), StateManager=MagicMock())
-)
+sys.modules.setdefault("deployment.state", MagicMock(DeploymentStatus=MagicMock(), StateManager=MagicMock()))
 sys.modules.setdefault(
     "deployment_service.config.config_validator",
     MagicMock(
@@ -393,9 +391,7 @@ def _make_mock_facade(list_objs=None, read_text="SUCCESS", write_fn=None):
 class TestProcessDeploymentsBatchExtended:
     """Extended coverage for process_deployments_batch."""
 
-    def _run_batch(
-        self, state, facade=None, lock_fn=None, path="deployments.development/dep-1/state.json"
-    ):
+    def _run_batch(self, state, facade=None, lock_fn=None, path="deployments.development/dep-1/state.json"):
         if facade is None:
             facade = _make_mock_facade()
         if lock_fn is None:
@@ -510,9 +506,7 @@ class TestProcessDeploymentsBatchExtended:
             patch.dict(
                 sys.modules,
                 {
-                    "deployment_api.utils.deployment_events": MagicMock(
-                        notify_deployment_updated_sync=notify_mock
-                    ),
+                    "deployment_api.utils.deployment_events": MagicMock(notify_deployment_updated_sync=notify_mock),
                 },
             ),
         ):
@@ -610,9 +604,7 @@ class TestProcessDeploymentsBatchExtended:
         def capture_write(bucket, path, text):
             written.update(json.loads(text))
 
-        facade = _make_mock_facade(
-            list_objs=[obj], read_text="SUCCESS:done", write_fn=capture_write
-        )
+        facade = _make_mock_facade(list_objs=[obj], read_text="SUCCESS:done", write_fn=capture_write)
 
         with patch(
             "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
@@ -622,10 +614,7 @@ class TestProcessDeploymentsBatchExtended:
 
         assert num_active == 1
         # shard started as "running" and GCS says SUCCESS -> status updated -> state written
-        assert (
-            written.get("status") in ("completed", "running", "completed_pending_delete")
-            or synced >= 0
-        )
+        assert written.get("status") in ("completed", "running", "completed_pending_delete") or synced >= 0
 
     def test_running_state_with_gcs_status_objects_failed(self):
         """Lines 250-255: GCS status FAILED -> shard marked failed."""
@@ -645,9 +634,7 @@ class TestProcessDeploymentsBatchExtended:
         def capture_write(bucket, path, text):
             written.update(json.loads(text))
 
-        facade = _make_mock_facade(
-            list_objs=[obj], read_text="FAILED:error msg", write_fn=capture_write
-        )
+        facade = _make_mock_facade(list_objs=[obj], read_text="FAILED:error msg", write_fn=capture_write)
 
         with patch(
             "deployment_api.workers._deployment_processor_cloud_run._get_cloud_run_status_batch_sync",
@@ -687,9 +674,7 @@ class TestProcessDeploymentsBatchExtended:
             patch.dict(
                 sys.modules,
                 {
-                    "deployment_api.utils.deployment_events": MagicMock(
-                        notify_deployment_updated_sync=notify_mock
-                    ),
+                    "deployment_api.utils.deployment_events": MagicMock(notify_deployment_updated_sync=notify_mock),
                 },
             ),
         ):
@@ -982,9 +967,7 @@ class TestProcessVmHealthAndStatusExtended:
         if config is None:
             config = {}
 
-        ce_client = self._make_ce_client_mock(
-            serial_contents=serial_contents, serial_raise=serial_raise
-        )
+        ce_client = self._make_ce_client_mock(serial_contents=serial_contents, serial_raise=serial_raise)
 
         shard_statuses = {}
 
@@ -1443,9 +1426,7 @@ class TestHandleOrphanVmCleanupExtended:
             config = {"service_account_email": "sa@proj.iam", "job_name": "my-job"}
 
         with (
-            patch(
-                "deployment_api.workers._deployment_processor_vm_cleanup.settings"
-            ) as mock_settings,
+            patch("deployment_api.workers._deployment_processor_vm_cleanup.settings") as mock_settings,
             patch(
                 "deployment_api.workers._deployment_processor_vm_cleanup._cancel_vm_jobs_sync",
                 return_value={},
@@ -1576,9 +1557,7 @@ class TestHandleOrphanVmCleanupExtended:
         import deployment_api.workers.deployment_processor as dp_mod
         from deployment_api.workers.deployment_processor import _pending_vm_deletes
 
-        shards = [
-            _make_shard(job_id=f"vm-{i}", status="succeeded", shard_id=f"s{i}") for i in range(10)
-        ]
+        shards = [_make_shard(job_id=f"vm-{i}", status="succeeded", shard_id=f"s{i}") for i in range(10)]
         vm_map = {f"vm-{i}": {"status": "RUNNING", "zone": "us-central1-a"} for i in range(10)}
         shard_statuses = {f"s{i}": ("succeeded", "gcs") for i in range(10)}
 

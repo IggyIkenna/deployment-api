@@ -55,12 +55,7 @@ if "deployment_api.routes" not in sys.modules:
 
 _spec = importlib.util.spec_from_file_location(
     "deployment_api.routes.config_management",
-    str(
-        pathlib.Path(__file__).parent.parent.parent
-        / "deployment_api"
-        / "routes"
-        / "config_management.py"
-    ),
+    str(pathlib.Path(__file__).parent.parent.parent / "deployment_api" / "routes" / "config_management.py"),
 )
 assert _spec is not None and _spec.loader is not None
 _cm = importlib.util.module_from_spec(_spec)
@@ -206,12 +201,8 @@ class TestReadDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].ConfigStoreError = _mock_config_store_error_cls
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].ConfigStoreError = _mock_config_store_error_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             result = asyncio.run(_cm.read_domain_config("instruments"))
 
@@ -230,12 +221,8 @@ class TestReadDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].ConfigStoreError = _mock_config_store_error_cls
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].ConfigStoreError = _mock_config_store_error_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.read_domain_config("strategies"))
@@ -248,12 +235,8 @@ class TestReadDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].ConfigStoreError = _mock_config_store_error_cls
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].ConfigStoreError = _mock_config_store_error_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.read_domain_config("clients"))
@@ -319,9 +302,7 @@ class TestDiffDomainConfigVersions:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             result = asyncio.run(
                 _cm.diff_domain_config_versions(
@@ -342,23 +323,15 @@ class TestDiffDomainConfigVersions:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
-                asyncio.run(
-                    _cm.diff_domain_config_versions(
-                        "instruments", "20991231T000000Z", "20260101T110000Z"
-                    )
-                )
+                asyncio.run(_cm.diff_domain_config_versions("instruments", "20991231T000000Z", "20260101T110000Z"))
         assert exc.value.status_code == 404
 
     def test_diff_invalid_domain_raises_422(self):
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(
-                _cm.diff_domain_config_versions("nope", "20260101T120000Z", "20260101T110000Z")
-            )
+            asyncio.run(_cm.diff_domain_config_versions("nope", "20260101T120000Z", "20260101T110000Z"))
         assert exc.value.status_code == 422
 
 
@@ -384,9 +357,7 @@ class TestRollbackDomainConfig:
             patch.object(_cm, "_publish_domain_event"),
         ):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             result = asyncio.run(_cm.rollback_domain_config("venues", "20260101T100000Z"))
 
@@ -400,9 +371,7 @@ class TestRollbackDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.rollback_domain_config("venues", "20991231T000000Z"))
@@ -422,9 +391,7 @@ class TestRollbackDomainConfig:
 
         with patch.object(_cm, "_make_config_store", return_value=store):
             sys.modules["unified_trading_library.config_interface"].ConfigStore = type(store)
-            sys.modules[
-                "unified_trading_library.config_interface"
-            ].schema_for_domain.return_value = schema_cls
+            sys.modules["unified_trading_library.config_interface"].schema_for_domain.return_value = schema_cls
 
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(_cm.rollback_domain_config("venues", "20260101T100000Z"))
@@ -457,11 +424,7 @@ class TestPublishDomainEvent:
 
         with patch.dict(
             sys.modules,
-            {
-                "unified_trading_library.cloud_interface": MagicMock(
-                    get_event_bus=mock_get_event_bus
-                )
-            },
+            {"unified_trading_library.cloud_interface": MagicMock(get_event_bus=mock_get_event_bus)},
         ):
             # Must not raise
             _cm._publish_domain_event("strategies", "gs://b/v/x.yaml", "agent")

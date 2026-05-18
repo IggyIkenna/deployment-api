@@ -20,9 +20,7 @@ _logs_cache: dict[str, tuple[float, dict[str, object]]] = {}
 # In-memory cache for VM logs (GCS fetch) to avoid hammering GCS on rapid log tab opens
 _VM_LOGS_CACHE_TTL_SEC = 15
 _VM_LOGS_CACHE_MAX_ENTRIES = 50
-_vm_logs_cache: dict[
-    str, tuple[float, tuple[list[object], str]]
-] = {}  # key -> (expiry_ts, (logs, message))
+_vm_logs_cache: dict[str, tuple[float, tuple[list[object], str]]] = {}  # key -> (expiry_ts, (logs, message))
 
 # In-memory cache for expensive completion verification breakdown (data-status turbo)
 _VERIFICATION_CACHE_TTL_SEC = 15 * 60
@@ -165,9 +163,7 @@ async def invalidate_deployment_cache(deployment_id: str | None = None):
     await cache.clear_pattern("deployments:*")
 
 
-async def get_cached_deployment_state(
-    state_manager: object, deployment_id: str, force_refresh: bool = False
-) -> object:
+async def get_cached_deployment_state(state_manager: object, deployment_id: str, force_refresh: bool = False) -> object:
     """Get deployment state with smart caching (Redis + in-memory fallback).
 
     Uses shorter TTL (10s) for active deployments and longer TTL (60s) for terminal ones.
@@ -189,9 +185,7 @@ async def get_cached_deployment_state(
         raw: object = await asyncio.to_thread(load_fn, deployment_id)
         return raw
 
-    state: object = await cache.get_or_fetch(
-        cache_key, fetch_fresh, TTL_DEPLOYMENT_STATE, force_refresh
-    )
+    state: object = await cache.get_or_fetch(cache_key, fetch_fresh, TTL_DEPLOYMENT_STATE, force_refresh)
 
     # Re-cache with longer TTL if the deployment is in a terminal state
     if state and hasattr(state, "status"):

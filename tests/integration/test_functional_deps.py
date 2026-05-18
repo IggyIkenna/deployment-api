@@ -435,7 +435,5 @@ class TestCrossDepIntegration:
         assert isinstance(viewer_has_any, bool)
 
         # SUPER_ADMIN should have all permissions
-        super_admin_has_all = all(
-            has_role_permission(UserRole.SUPER_ADMIN, perm) for perm in Permission
-        )
+        super_admin_has_all = all(has_role_permission(UserRole.SUPER_ADMIN, perm) for perm in Permission)
         assert super_admin_has_all is True

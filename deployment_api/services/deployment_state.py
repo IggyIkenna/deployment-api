@@ -122,9 +122,7 @@ class DeploymentStateManager:
 
         # Extract date range from config or shard dimensions
         cfg_raw = state.get("config")
-        cfg: dict[str, object] = (
-            cast(dict[str, object], cfg_raw) if isinstance(cfg_raw, dict) else {}
-        )
+        cfg: dict[str, object] = cast(dict[str, object], cfg_raw) if isinstance(cfg_raw, dict) else {}
         start_date = str(cfg.get("start_date") or "")
         end_date = str(cfg.get("end_date") or "")
 
@@ -274,9 +272,7 @@ class DeploymentStateManager:
 
             # Invalidate caches (async fns called from sync context)
             try:
-                asyncio.gather(
-                    invalidate_deployment_state_cache(deployment_id), invalidate_deployment_cache()
-                )
+                asyncio.gather(invalidate_deployment_state_cache(deployment_id), invalidate_deployment_cache())
             except RuntimeError:
                 # No event loop, skip cache invalidation (will be handled elsewhere)
                 logger.debug("Skipping cache invalidation - no event loop available")
@@ -374,9 +370,7 @@ class DeploymentStateManager:
             logger.error("Failed to update deployment %s tag: %s", deployment_id, e)
             raise ValueError(f"Failed to update deployment tag: {e}") from e
 
-    def verify_deployment_completion(
-        self, deployment_id: str, force_refresh: bool = False
-    ) -> dict[str, object]:
+    def verify_deployment_completion(self, deployment_id: str, force_refresh: bool = False) -> dict[str, object]:
         """
         Verify deployment completion and data integrity.
 
@@ -447,20 +441,14 @@ class DeploymentStateManager:
             try:
                 created_raw = deployment["created_at"]
                 updated_raw = deployment["updated_at"]
-                created_str = (
-                    str(created_raw).replace("Z", "+00:00") if created_raw is not None else ""
-                )
-                updated_str = (
-                    str(updated_raw).replace("Z", "+00:00") if updated_raw is not None else ""
-                )
+                created_str = str(created_raw).replace("Z", "+00:00") if created_raw is not None else ""
+                updated_str = str(updated_raw).replace("Z", "+00:00") if updated_raw is not None else ""
                 created = datetime.fromisoformat(created_str)
                 updated = datetime.fromisoformat(updated_str)
                 duration = updated - created
                 deployment["duration_minutes"] = int(duration.total_seconds() / 60)
             except (ValueError, TypeError, OSError) as e:
-                logger.debug(
-                    "Suppressed %s during enrich deployment summary: %s", type(e).__name__, e
-                )
+                logger.debug("Suppressed %s during enrich deployment summary: %s", type(e).__name__, e)
                 pass
 
         # Add success rate if shard information is available

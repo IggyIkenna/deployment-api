@@ -345,9 +345,7 @@ class TestRetiredDataTypesHonestCoverage:
     with their honest ``empty_confirmed`` status so operators can see the gap.
     """
 
-    def test_sfi_leagues_empty_confirmed_appears_in_tree(
-        self, sports_manifest: pd.DataFrame
-    ) -> None:
+    def test_sfi_leagues_empty_confirmed_appears_in_tree(self, sports_manifest: pd.DataFrame) -> None:
         with (
             patch(
                 "deployment_api.services.data_status_hierarchical.read_availability_index",

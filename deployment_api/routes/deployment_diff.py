@@ -31,12 +31,8 @@ class DiffEntry(BaseModel):
     """A single service that appeared in the diff."""
 
     service: str = Field(..., description="Service name.")
-    from_version: str | None = Field(
-        default=None, description="Version at from_sha; None for newly added services."
-    )
-    to_version: str | None = Field(
-        default=None, description="Version at to_sha; None for removed services."
-    )
+    from_version: str | None = Field(default=None, description="Version at from_sha; None for newly added services.")
+    to_version: str | None = Field(default=None, description="Version at to_sha; None for removed services.")
 
 
 class DeploymentDiffResponse(BaseModel):

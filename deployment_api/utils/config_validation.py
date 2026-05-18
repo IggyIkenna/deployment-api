@@ -36,17 +36,14 @@ class ValidationUtils:
         return value
 
     @staticmethod
-    def get_with_default(
-        config: dict[str, object], key: str, default: object, context: str = ""
-    ) -> object:
+    def get_with_default(config: dict[str, object], key: str, default: object, context: str = "") -> object:
         """Get a value from config with a sensible non-empty default."""
         value = config.get(key)
         if value is None or (isinstance(value, str) and value.strip() == ""):
             if isinstance(default, str) and default == "":
                 context_msg = f" in {context}" if context else ""
                 logger.warning(
-                    "Using empty string default for '%s'%s"
-                    " - consider using ValidationUtils.get_required() instead",
+                    "Using empty string default for '%s'%s - consider using ValidationUtils.get_required() instead",
                     key,
                     context_msg,
                 )

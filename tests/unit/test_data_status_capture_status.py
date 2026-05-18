@@ -97,12 +97,8 @@ class TestDeriveCaptureStatusRates:
 class TestBuildCoverageMetricsHonestCoverage:
     def test_prediction_event_driven_proxy_path_pre_phase_b(self) -> None:
         """PREDICTION, no sentinel rows → proxy (distinct-underlying) path."""
-        df = pd.DataFrame(
-            [{"underlying": f"COND_{i:03d}", "date": "2025-06-01"} for i in range(99)]
-        )
-        metrics = _build_coverage_metrics(
-            df, "PREDICTION", capture_coverage_pct=23.37, total_expected_cells=35049
-        )
+        df = pd.DataFrame([{"underlying": f"COND_{i:03d}", "date": "2025-06-01"} for i in range(99)])
+        metrics = _build_coverage_metrics(df, "PREDICTION", capture_coverage_pct=23.37, total_expected_cells=35049)
         assert metrics["coverage_semantics"] == "event_driven"
         assert metrics["attempt_coverage_pct"] == 100.0
         assert metrics["capture_coverage_pct"] == 23.37
@@ -122,9 +118,7 @@ class TestBuildCoverageMetricsHonestCoverage:
             + [{"underlying": "BTC", "capture_status": "attempted_failed"} for _ in range(10)]
         )
         df = pd.DataFrame(rows)
-        metrics = _build_coverage_metrics(
-            df, "PREDICTION", capture_coverage_pct=25.0, total_expected_cells=200
-        )
+        metrics = _build_coverage_metrics(df, "PREDICTION", capture_coverage_pct=25.0, total_expected_cells=200)
         assert metrics["attempt_coverage_pct"] == 50.0  # 100/200
         assert metrics["capture_coverage_pct"] == 25.0
         assert metrics["empty_rate_estimate"] == 0.4  # 40/100
@@ -137,9 +131,7 @@ class TestBuildCoverageMetricsHonestCoverage:
                 {"venue": "BINANCE-SPOT", "capture_status": "captured"},
             ]
         )
-        metrics = _build_coverage_metrics(
-            df, "CEFI", capture_coverage_pct=95.0, total_expected_cells=1000
-        )
+        metrics = _build_coverage_metrics(df, "CEFI", capture_coverage_pct=95.0, total_expected_cells=1000)
         assert metrics["coverage_semantics"] == "dense"
         assert metrics["attempt_coverage_pct"] == 95.0
         assert metrics["capture_coverage_pct"] == 95.0
@@ -147,9 +139,7 @@ class TestBuildCoverageMetricsHonestCoverage:
         assert metrics["failure_rate"] == 0.0
 
     def test_empty_frame_returns_zero_everything(self) -> None:
-        metrics = _build_coverage_metrics(
-            pd.DataFrame(), "CEFI", capture_coverage_pct=0.0, total_expected_cells=0
-        )
+        metrics = _build_coverage_metrics(pd.DataFrame(), "CEFI", capture_coverage_pct=0.0, total_expected_cells=0)
         assert metrics["attempt_coverage_pct"] == 0.0
         assert metrics["capture_coverage_pct"] == 0.0
         assert metrics["empty_rate_estimate"] is None

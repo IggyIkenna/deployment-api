@@ -73,9 +73,7 @@ def _count_missing_venue_expected(
     return total
 
 
-def calculate_overall_file_counts(
-    results: dict[str, object], include_file_counts: bool
-) -> dict[str, object] | None:
+def calculate_overall_file_counts(results: dict[str, object], include_file_counts: bool) -> dict[str, object] | None:
     """Calculate overall file counts across all categories.
 
     Args:
@@ -110,9 +108,7 @@ def calculate_overall_file_counts(
             "total_files": total_files_all,
             "dates_with_file_counts": total_dates_with_files,
             "avg_files_per_date": (
-                round(total_files_all / total_dates_with_files, 1)
-                if total_dates_with_files > 0
-                else 0
+                round(total_files_all / total_dates_with_files, 1) if total_dates_with_files > 0 else 0
             ),
         }
     return None
@@ -152,18 +148,12 @@ def calculate_venue_weighted_totals(
 
         venue_summary_raw = cat_result.get("venue_summary")
         venue_summary: dict[str, object] = (
-            cast(dict[str, object], venue_summary_raw)
-            if isinstance(venue_summary_raw, dict)
-            else {}
+            cast(dict[str, object], venue_summary_raw) if isinstance(venue_summary_raw, dict) else {}
         )
         venues_raw = cat_result.get("venues")
-        venues: dict[str, object] = (
-            cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
-        )
+        venues: dict[str, object] = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
         cat_dates_expected_raw = cat_result.get("dates_expected")
-        cat_dates_expected = (
-            int(cat_dates_expected_raw) if isinstance(cat_dates_expected_raw, int) else 0
-        )
+        cat_dates_expected = int(cat_dates_expected_raw) if isinstance(cat_dates_expected_raw, int) else 0
         cat_dates_found_raw = cat_result.get("dates_found")
         cat_dates_found = int(cat_dates_found_raw) if isinstance(cat_dates_found_raw, int) else 0
 
@@ -230,9 +220,7 @@ def update_asset_group_completion_percentages(
         if "error" in cat_result:
             continue
         venues_raw = cat_result.get("venues")
-        venues: dict[str, object] = (
-            cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
-        )
+        venues: dict[str, object] = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
         if not venues:
             # No venue breakdown, keep date-level calculation
             continue
@@ -255,9 +243,7 @@ def update_asset_group_completion_percentages(
         # Add missing expected venues (they have 0 found but should count as expected)
         venue_summary_raw = cat_result.get("venue_summary")
         venue_summary: dict[str, object] = (
-            cast(dict[str, object], venue_summary_raw)
-            if isinstance(venue_summary_raw, dict)
-            else {}
+            cast(dict[str, object], venue_summary_raw) if isinstance(venue_summary_raw, dict) else {}
         )
         cat_venue_expected += _count_missing_venue_expected(
             cat_result,
@@ -311,11 +297,7 @@ def build_final_response(
         total_missing = expected_missing
     else:
         # No venue data - fall back to asset-group-level calculation
-        overall_pct = (
-            (total_found_asset_group / total_expected_asset_group * 100)
-            if total_expected_asset_group
-            else 0
-        )
+        overall_pct = (total_found_asset_group / total_expected_asset_group * 100) if total_expected_asset_group else 0
         total_missing = total_expected_asset_group - total_found_asset_group
 
     response: dict[str, object] = {

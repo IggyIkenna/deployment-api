@@ -36,9 +36,7 @@ def _save_and_notify(
     if save_fn(state_path, state):
         notify_fn(deployment_id)
         if launched_this_tick > 0:
-            logger.info(
-                "[SYNC_SERVICE] Updated %s (launched %s)", deployment_id, launched_this_tick
-            )
+            logger.info("[SYNC_SERVICE] Updated %s (launched %s)", deployment_id, launched_this_tick)
         else:
             logger.info("[SYNC_SERVICE] Updated %s", deployment_id)
         return True
@@ -80,9 +78,7 @@ class SyncService:
         try:
             _quota_broker_client_cls = cast(
                 type[object],
-                _importlib.import_module(
-                    "deployment_service.deployment.quota_broker_client"
-                ).QuotaBrokerClient,
+                _importlib.import_module("deployment_service.deployment.quota_broker_client").QuotaBrokerClient,
             )
 
             return _quota_broker_client_cls()
@@ -231,9 +227,7 @@ class SyncService:
 
         _orchestrator_cls = cast(
             type[object],
-            _importlib.import_module(
-                "deployment_service.deployment.orchestrator"
-            ).DeploymentOrchestrator,
+            _importlib.import_module("deployment_service.deployment.orchestrator").DeploymentOrchestrator,
         )
 
         quota_shape = vm_quota_shape_from_compute_config(config)
@@ -254,9 +248,7 @@ class SyncService:
 
         try:
             service_account_email = str(
-                ValidationUtils.get_required(
-                    config, "service_account_email", "deployment orchestrator"
-                )
+                ValidationUtils.get_required(config, "service_account_email", "deployment orchestrator")
             )
         except ConfigurationError as e:
             logger.error("[SYNC_SERVICE] %s: %s", deployment_id, e)
@@ -284,9 +276,7 @@ class SyncService:
                     shard["started_at"] = datetime.now(UTC).isoformat()
                     launched += 1
             except (OSError, ValueError, RuntimeError) as e:
-                logger.error(
-                    "[SYNC_SERVICE] Error launching shard %s: %s", shard.get("shard_id"), e
-                )
+                logger.error("[SYNC_SERVICE] Error launching shard %s: %s", shard.get("shard_id"), e)
                 _release_fn: object = getattr(self.quota_broker, "release", None)
                 if callable(_release_fn):
                     _release_fn(quota_shape, 1)
@@ -329,18 +319,12 @@ class SyncService:
                 cast(dict[str, object], getattr(self.state_manager, "_pending_vm_deletes", {})),
             )
             if orphan_count > 0:
-                logger.info(
-                    "[SYNC_SERVICE] %s: Fired %s orphan VM deletes", deployment_id, orphan_count
-                )
+                logger.info("[SYNC_SERVICE] %s: Fired %s orphan VM deletes", deployment_id, orphan_count)
         elif compute_type == "cloud_run":
-            updated = updated or self.event_processor.process_cloud_run_updates(
-                deployment_id, state, shard_statuses
-            )
+            updated = updated or self.event_processor.process_cloud_run_updates(deployment_id, state, shard_statuses)
         return updated, launched_this_tick
 
-    def _process_deployment_locked(
-        self, deployment_id: str, state_path: str, state: dict[str, object]
-    ) -> bool:
+    def _process_deployment_locked(self, deployment_id: str, state_path: str, state: dict[str, object]) -> bool:
         """
         Process a deployment while holding its lock.
 
@@ -380,9 +364,7 @@ class SyncService:
         # Update overall deployment status if all shards are terminal
         if updated:
             all_terminal, has_failures = self.event_processor.check_all_shards_terminal(shards)
-            if self.event_processor.update_deployment_status(
-                state, all_terminal, has_failures, now
-            ):
+            if self.event_processor.update_deployment_status(state, all_terminal, has_failures, now):
                 updated = True
             state["updated_at"] = now.isoformat()
 
@@ -416,9 +398,7 @@ class SyncService:
         config_raw: object = state.get("config") or {}
         config = cast(dict[str, object], config_raw) if isinstance(config_raw, dict) else {}
         shards_raw2: object = state.get("shards") or []
-        shards2 = (
-            cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
-        )
+        shards2 = cast(list[dict[str, object]], shards_raw2) if isinstance(shards_raw2, list) else []
 
         # Find shards that need to be launched
         shards_to_launch = [s for s in shards2 if s.get("status") == "pending"]

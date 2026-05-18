@@ -94,9 +94,7 @@ class TestStorageFacadeAwsDispatch:
         mock_blob.size = 2048
         mock_client.list_blobs.return_value = [mock_blob]
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             results = list_objects("my-s3-bucket", "prefix/")
 
         mock_client.list_blobs.assert_called_once()
@@ -110,9 +108,7 @@ class TestStorageFacadeAwsDispatch:
         mock_client = MagicMock()
         mock_client.blob_exists.return_value = True
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = object_exists("my-s3-bucket", "path/file.parquet")
 
         mock_client.blob_exists.assert_called_once_with("my-s3-bucket", "path/file.parquet")
@@ -124,9 +120,7 @@ class TestStorageFacadeAwsDispatch:
         mock_client = MagicMock()
         mock_client.download_bytes.return_value = b"s3-payload"
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = read_object_bytes("my-s3-bucket", "file.parquet")
 
         mock_client.download_bytes.assert_called_once_with("my-s3-bucket", "file.parquet")
@@ -155,9 +149,7 @@ class TestStorageFacadeAwsDispatch:
         mock_client = MagicMock()
         mock_client.list_blobs.return_value = []
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             results = list_objects("my-s3-bucket", "nonexistent/prefix/")
 
         assert results == []
@@ -167,11 +159,7 @@ class TestStorageFacadeAwsDispatch:
         """write_object_bytes calls client.upload_bytes — not any GCS bucket/blob API."""
         mock_client = MagicMock()
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             write_object_bytes("my-s3-bucket", "path/out.parquet", b"row-data")
 
-        mock_client.upload_bytes.assert_called_once_with(
-            "my-s3-bucket", "path/out.parquet", b"row-data"
-        )
+        mock_client.upload_bytes.assert_called_once_with("my-s3-bucket", "path/out.parquet", b"row-data")

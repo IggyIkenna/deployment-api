@@ -346,16 +346,14 @@ class TestRealMode:
         date = "2026-05-07"
         service = "instruments-service"
         # Good event
-        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000000, seq=1)] = (
-            _make_event_row(event="STARTED", service=service, timestamp="2026-05-07T00:00:00+00:00")
+        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000000, seq=1)] = _make_event_row(
+            event="STARTED", service=service, timestamp="2026-05-07T00:00:00+00:00"
         )
         # Garbage in middle
-        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000001, seq=2)] = (
-            b"not-valid-json{{{\n"
-        )
+        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000001, seq=2)] = b"not-valid-json{{{\n"
         # Good event after
-        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000002, seq=3)] = (
-            _make_event_row(event="STOPPED", service=service, timestamp="2026-05-07T00:01:00+00:00")
+        fake_storage[_path_for(service, date, vm_name, hour=0, ts_us=3000002, seq=3)] = _make_event_row(
+            event="STOPPED", service=service, timestamp="2026-05-07T00:01:00+00:00"
         )
         resp = client.get(
             "/api/vm/events",
@@ -445,12 +443,8 @@ class TestRealMode:
         service = "instruments-service"
         today = _today()
         path = _path_for(service, today, vm_name, hour=0, ts_us=5000000, seq=1)
-        fake_storage[path] = _make_event_row(
-            event="STARTED", service=service, timestamp=f"{today}T00:00:00+00:00"
-        )
-        resp = client.get(
-            "/api/vm/events", params={"vm_name": vm_name, "from_hour": 0, "to_hour": 0}
-        )
+        fake_storage[path] = _make_event_row(event="STARTED", service=service, timestamp=f"{today}T00:00:00+00:00")
+        resp = client.get("/api/vm/events", params={"vm_name": vm_name, "from_hour": 0, "to_hour": 0})
         assert resp.status_code == 200, resp.json()
         body = resp.json()
         assert body["date"] == today

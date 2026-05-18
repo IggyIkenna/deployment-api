@@ -126,10 +126,7 @@ def launch_strategy_backtest(
     if request.grid_density not in _VALID_GRID_DENSITIES:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unknown grid_density '{request.grid_density}'."
-                f" Valid: {sorted(_VALID_GRID_DENSITIES)}"
-            ),
+            detail=(f"Unknown grid_density '{request.grid_density}'. Valid: {sorted(_VALID_GRID_DENSITIES)}"),
         )
 
     correlation_id = str(uuid.uuid4())

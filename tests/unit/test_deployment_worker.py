@@ -11,9 +11,7 @@ from unittest.mock import MagicMock, patch
 
 # Mock the 'deployment' package before importing deployment_worker
 sys.modules.setdefault("deployment", MagicMock())
-sys.modules.setdefault(
-    "deployment.state", MagicMock(DeploymentStatus=MagicMock(), StateManager=MagicMock())
-)
+sys.modules.setdefault("deployment.state", MagicMock(DeploymentStatus=MagicMock(), StateManager=MagicMock()))
 
 import deployment_api.workers.deployment_worker as dw
 

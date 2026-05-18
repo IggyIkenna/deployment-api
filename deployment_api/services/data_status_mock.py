@@ -257,11 +257,7 @@ def build_mock_turbo_response(
         total_captured += int(seed["captured"])
         total_expected += int(seed["dates_expected"])
 
-    overall_pct = (
-        min(round(total_captured / max(1, total_expected) * 100, 2), 100.0)
-        if total_expected > 0
-        else 0.0
-    )
+    overall_pct = min(round(total_captured / max(1, total_expected) * 100, 2), 100.0) if total_expected > 0 else 0.0
     return {
         "service": service,
         "date_range": {"start": start_date, "end": end_date, "days": 30},

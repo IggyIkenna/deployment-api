@@ -116,9 +116,7 @@ INFRASTRUCTURE_WITH_TRIGGERS = [
 ]
 
 # All trackable repos (services + libraries + infrastructure)
-ALL_REPOS_WITH_TRIGGERS = (
-    SERVICES_WITH_TRIGGERS + LIBRARIES_WITH_TRIGGERS + INFRASTRUCTURE_WITH_TRIGGERS
-)
+ALL_REPOS_WITH_TRIGGERS = SERVICES_WITH_TRIGGERS + LIBRARIES_WITH_TRIGGERS + INFRASTRUCTURE_WITH_TRIGGERS
 
 
 # ---------------------------------------------------------------------------

@@ -68,13 +68,9 @@ async def ws_vm_events(
             date = now.strftime("%Y-%m-%d")
             current_hour = now.hour
 
-            all_blobs, _ = _collect_blob_names(
-                storage, bucket, resolved_service, date, vm_name, 0, current_hour
-            )
+            all_blobs, _ = _collect_blob_names(storage, bucket, resolved_service, date, vm_name, 0, current_hour)
 
-            new_blobs = [
-                (h, n) for h, n in all_blobs if last_seen_blob is None or n > last_seen_blob
-            ]
+            new_blobs = [(h, n) for h, n in all_blobs if last_seen_blob is None or n > last_seen_blob]
 
             for _, blob_name in new_blobs:
                 parsed = _fetch_and_parse_event(storage, bucket, blob_name)

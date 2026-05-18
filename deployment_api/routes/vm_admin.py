@@ -43,9 +43,7 @@ def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _find_active_by_vm_name(
-    registry: DeploymentsRegistry, vm_name: str
-) -> DeploymentRegistryEntry | None:
+def _find_active_by_vm_name(registry: DeploymentsRegistry, vm_name: str) -> DeploymentRegistryEntry | None:
     for entry in registry.list_active():
         if entry.vm_name == vm_name:
             return entry

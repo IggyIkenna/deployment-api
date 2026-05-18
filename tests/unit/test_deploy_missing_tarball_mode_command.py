@@ -52,14 +52,11 @@ class TestTarballFromLocalModeChainsCorrectly:
         assert "create-code-tarballs.sh" in preview.command
         assert "launch-mtds-backfill-vm.sh" in preview.command
         # CRITICAL: chained with ``&&`` so a refresh failure aborts the launch.
-        assert " && " in preview.command, (
-            f"tarball-from-local mode lost its && chain — command={preview.command!r}"
-        )
+        assert " && " in preview.command, f"tarball-from-local mode lost its && chain — command={preview.command!r}"
         # Negative pin — never the unsafe ``;`` separator (which would
         # run the launcher even after a tarball build failure).
         assert ";" not in preview.command, (
-            f"tarball-from-local must NOT use ';' — would run launcher on refresh failure. "
-            f"command={preview.command!r}"
+            f"tarball-from-local must NOT use ';' — would run launcher on refresh failure. command={preview.command!r}"
         )
 
     def test_refresh_step_runs_before_launcher(self) -> None:
@@ -96,9 +93,7 @@ class TestTarballFromLocalModeChainsCorrectly:
             "tarball-from-local mode must emit a LOCAL-ONLY warning so operators "
             "don't run the command from a remote shell / Cloud Run pod."
         )
-        assert "UNCOMMITTED" in joined, (
-            "tarball-from-local must warn about uncommitted-changes capture."
-        )
+        assert "UNCOMMITTED" in joined, "tarball-from-local must warn about uncommitted-changes capture."
 
     def test_preview_mode_does_not_emit_chain(self) -> None:
         """Default ``preview`` mode is a single launcher invocation — no
@@ -163,6 +158,4 @@ class TestShardKeyShapeAcrossModes:
             f"shard_key={preview.shard_key!r}"
         )
         # Round-trip extract per the canonical decomposer's regex shape.
-        assert re.match(
-            r"^[a-z]+\|[^|]+\|[^|]+\|[^|]*\|[^|]+\|\d{4}-\d{2}-\d{2}$", preview.shard_key
-        )
+        assert re.match(r"^[a-z]+\|[^|]+\|[^|]+\|[^|]*\|[^|]+\|\d{4}-\d{2}-\d{2}$", preview.shard_key)

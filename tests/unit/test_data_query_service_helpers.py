@@ -24,10 +24,7 @@ def _svc() -> DataQueryService:
 def test_build_bucket_name_lowercases_asset_group() -> None:
     svc = _svc()
     assert svc.build_bucket_name("market-data-tick", "CEFI") == "market-data-tick-cefi-test-project"
-    assert (
-        svc.build_bucket_name("market-data-tick", "tradfi")
-        == "market-data-tick-tradfi-test-project"
-    )
+    assert svc.build_bucket_name("market-data-tick", "tradfi") == "market-data-tick-tradfi-test-project"
 
 
 # ---------------------------------------------------------------------------

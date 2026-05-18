@@ -199,8 +199,7 @@ def _bundle_for(asset_group: str) -> tuple[str, ...]:
     group = _ASSET_GROUP_TARBALLS.get(key)
     if group is None:
         raise TarballStalenessError(
-            f"Unknown asset_group {asset_group!r}. "
-            f"Expected one of: {[*sorted(_ASSET_GROUP_TARBALLS), 'ALL']}"
+            f"Unknown asset_group {asset_group!r}. Expected one of: {[*sorted(_ASSET_GROUP_TARBALLS), 'ALL']}"
         )
     return _CORE_TARBALLS + group
 
@@ -492,8 +491,7 @@ class TarballStalenessChecker:
         # to avoid silently producing wrong answers.
         if latest_commit_timestamp.tzinfo is None:
             raise TarballStalenessError(
-                "latest_commit_timestamp must be tz-aware (UTC); "
-                f"got naive datetime {latest_commit_timestamp!r}"
+                f"latest_commit_timestamp must be tz-aware (UTC); got naive datetime {latest_commit_timestamp!r}"
             )
         return oldest < latest_commit_timestamp
 
@@ -573,8 +571,7 @@ class TarballStalenessChecker:
         oldest = self.compute_bundle_oldest_mtime(asset_group)
         if latest_commit_timestamp.tzinfo is None:
             raise TarballStalenessError(
-                "latest_commit_timestamp must be tz-aware (UTC); "
-                f"got naive datetime {latest_commit_timestamp!r}"
+                f"latest_commit_timestamp must be tz-aware (UTC); got naive datetime {latest_commit_timestamp!r}"
             )
         if oldest is not None and oldest >= latest_commit_timestamp:
             return RefreshResult(
@@ -594,9 +591,7 @@ class TarballStalenessChecker:
                 bundle_oldest_mtime=oldest,
                 latest_commit_timestamp=latest_commit_timestamp,
             )
-        build_id, log_url = self.trigger_refresh(
-            asset_group, trigger_name=trigger_name, branch=branch
-        )
+        build_id, log_url = self.trigger_refresh(asset_group, trigger_name=trigger_name, branch=branch)
         terminal_status = self.poll_build(
             build_id,
             timeout_seconds=poll_timeout_seconds,

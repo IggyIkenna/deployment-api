@@ -64,8 +64,7 @@ def _validate_profile_allows_chaos(profile: RuntimeProfile) -> None:
             status_code=403,
             detail={
                 "message": (
-                    "Chaos injection is FORBIDDEN in runtime_profile=prod. "
-                    "Use staging, paper, mock-live, or backtest."
+                    "Chaos injection is FORBIDDEN in runtime_profile=prod. Use staging, paper, mock-live, or backtest."
                 )
             },
         )
@@ -78,12 +77,7 @@ def _validate_point_registered(point: ChaosInjectionPoint) -> None:
     if point not in registered:
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": (
-                    f"ChaosInjectionPoint '{point}' is not declared in "
-                    "runtime-topology.yaml chaos_hooks"
-                )
-            },
+            detail={"message": (f"ChaosInjectionPoint '{point}' is not declared in runtime-topology.yaml chaos_hooks")},
         )
 
 

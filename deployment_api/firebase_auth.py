@@ -73,9 +73,7 @@ async def verify_any_auth(
 
     raise HTTPException(
         status_code=401,
-        detail=(
-            "Authentication required: provide X-API-Key or Authorization: Bearer <firebase-token>"
-        ),
+        detail=("Authentication required: provide X-API-Key or Authorization: Bearer <firebase-token>"),
     )
 
 

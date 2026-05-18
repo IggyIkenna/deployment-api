@@ -90,9 +90,7 @@ async def infra_health() -> dict[str, object]:
                 )
         except (OSError, ValueError, RuntimeError) as e:
             err = str(e)
-            checks.append(
-                {"name": "gcs_state_bucket", "status": "error", "detail": "", "error": err}
-            )
+            checks.append({"name": "gcs_state_bucket", "status": "error", "detail": "", "error": err})
             errors.append(err)
 
         # Check Secret Manager connectivity

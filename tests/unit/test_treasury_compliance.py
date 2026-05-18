@@ -106,9 +106,7 @@ class TestApproveWithdrawalHappyPath:
 
         with pytest.raises(HTTPException) as exc:
             with patch("google.cloud.logging.Client"):
-                await approve_withdrawal(
-                    "client-alpha", "wid-001", _small_approval_body("operator:harsh")
-                )
+                await approve_withdrawal("client-alpha", "wid-001", _small_approval_body("operator:harsh"))
 
         assert exc.value.status_code == 400
         assert "quorum already reached" in exc.value.detail["message"]

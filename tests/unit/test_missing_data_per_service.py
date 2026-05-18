@@ -57,17 +57,11 @@ def build_instruments_response(venues_with_data, all_dates, category="CEFI"):
             total_venue_expected += total_dates
 
     num_present = len(venues_expected) - len(expected_but_missing)
-    cat_dates_found = (
-        len(set().union(*[set(v) for v in venues_with_data.values() if v]))
-        if venues_with_data
-        else 0
-    )
+    cat_dates_found = len(set().union(*[set(v) for v in venues_with_data.values() if v])) if venues_with_data else 0
     cat_dates_expected = total_dates
 
     total_missing = total_venue_expected - total_venue_found
-    overall_pct = (
-        round(total_venue_found / total_venue_expected * 100, 1) if total_venue_expected else 0
-    )
+    overall_pct = round(total_venue_found / total_venue_expected * 100, 1) if total_venue_expected else 0
 
     return {
         "overall_completion_pct": overall_pct,
@@ -85,9 +79,7 @@ def build_instruments_response(venues_with_data, all_dates, category="CEFI"):
             category: {
                 "dates_found": cat_dates_found,
                 "dates_expected": cat_dates_expected,
-                "completion_pct": round(cat_dates_found / cat_dates_expected * 100, 1)
-                if cat_dates_expected
-                else 0,
+                "completion_pct": round(cat_dates_found / cat_dates_expected * 100, 1) if cat_dates_expected else 0,
                 "dates_missing": max(0, cat_dates_expected - cat_dates_found),
                 "is_expected": True,
                 "is_available": True,
@@ -144,13 +136,9 @@ def build_market_tick_response(venues_with_data, all_dates, data_types, category
         total_venue_found += dim_weighted_found
         total_venue_expected += dim_weighted_expected
 
-    cat_dates_found = (
-        len(set().union(*[set(v) for v in venues_with_data.values()])) if venues_with_data else 0
-    )
+    cat_dates_found = len(set().union(*[set(v) for v in venues_with_data.values()])) if venues_with_data else 0
     total_missing = total_venue_expected - total_venue_found
-    overall_pct = (
-        round(total_venue_found / total_venue_expected * 100, 1) if total_venue_expected else 0
-    )
+    overall_pct = round(total_venue_found / total_venue_expected * 100, 1) if total_venue_expected else 0
 
     return {
         "overall_completion_pct": overall_pct,
@@ -168,8 +156,7 @@ def build_market_tick_response(venues_with_data, all_dates, data_types, category
                 "venues": venue_results,
                 "venue_summary": {"expected_but_missing": [], "num_present": len(venue_results)},
                 "data_types": {
-                    dt: {"dates_found": cat_dates_found, "dates_expected": total_dates}
-                    for dt in data_types
+                    dt: {"dates_found": cat_dates_found, "dates_expected": total_dates} for dt in data_types
                 },
             }
         },
@@ -212,9 +199,7 @@ def build_features_response(feature_groups_with_data, all_dates, category="CEFI"
             category: {
                 "dates_found": total_dates,  # Category-level: if any fg has data for a date
                 "dates_expected": total_dates,
-                "dates_missing": 0
-                if total_fg_found == total_fg_expected
-                else max(0, total_dates - total_dates),
+                "dates_missing": 0 if total_fg_found == total_fg_expected else max(0, total_dates - total_dates),
                 "is_expected": True,
                 "is_available": True,
                 "venues": {},

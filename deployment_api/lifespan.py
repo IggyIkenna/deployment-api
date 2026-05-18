@@ -109,18 +109,14 @@ async def lifespan(app: FastAPI):
     if app.state.codex_dir is not None:
         logger.info("Codex readiness dir: %s", app.state.codex_dir)
     else:
-        logger.warning(
-            "Codex readiness dir: not found — checklist endpoints will return 404 "
-            "(codex v3.0 is SSOT)"
-        )
+        logger.warning("Codex readiness dir: not found — checklist endpoints will return 404 (codex v3.0 is SSOT)")
 
     app.state.epics_dir = get_epics_dir()
     if app.state.epics_dir is not None:
         logger.info("Epics dir: %s", app.state.epics_dir)
     else:
         logger.warning(
-            "Epics dir: not found — /api/epics will return 503 "
-            "(codex 11-project-management/epics/ must be present)"
+            "Epics dir: not found — /api/epics will return 503 (codex 11-project-management/epics/ must be present)"
         )
 
     app.state.plans_dir = get_plans_dir()

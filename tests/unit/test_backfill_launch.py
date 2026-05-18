@@ -145,9 +145,7 @@ class TestRequestValidation:
         )
         assert resp.status_code == 422
 
-    def test_unregistered_prefix_returns_400(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unregistered_prefix_returns_400(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """Forge a launcher spec whose resolved prefix isn't in the registry."""
         # Inject a temp task→spec entry whose prefix template renders to an
         # unregistered string. We monkey-patch the dict in place.
@@ -188,9 +186,7 @@ class TestRequestValidation:
 
 
 class TestDryRun:
-    def test_dry_run_mdps_backfill(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_dry_run_mdps_backfill(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """Happy path: dry_run=True → stub result, no subprocess call."""
         spy: dict[str, object] = {"called": False}
 

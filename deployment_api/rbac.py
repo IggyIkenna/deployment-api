@@ -125,9 +125,7 @@ def require_role(
         current_role = await get_current_user_role(request)
 
         current_level = role_hierarchy.index(current_role) if current_role in role_hierarchy else -1
-        required_level = (
-            role_hierarchy.index(minimum_role) if minimum_role in role_hierarchy else 999
-        )
+        required_level = role_hierarchy.index(minimum_role) if minimum_role in role_hierarchy else 999
 
         if current_level < required_level:
             log_event(

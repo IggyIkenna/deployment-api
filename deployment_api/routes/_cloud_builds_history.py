@@ -107,12 +107,8 @@ async def _get_recent_builds_for_triggers(
             results: dict[str, BuildInfoDict] = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(trigger_ids), 8)
-            ) as executor:
-                futures = {
-                    executor.submit(_fetch_latest_build, client, tid): tid for tid in trigger_ids
-                }
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(trigger_ids), 8)) as executor:
+                futures = {executor.submit(_fetch_latest_build, client, tid): tid for tid in trigger_ids}
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         result = future.result()

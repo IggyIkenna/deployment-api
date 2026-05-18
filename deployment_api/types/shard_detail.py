@@ -301,13 +301,9 @@ class LeafParquetStats(BaseModel):  # CORRECT-LOCAL — API response shape
     row_count: int = 0
     column_count: int = 0
     columns: list[LeafParquetColumnStat] = Field(default_factory=list)
-    available_at: LeafAvailableAtEnvelope = Field(
-        default_factory=lambda: LeafAvailableAtEnvelope(present=False)
-    )
+    available_at: LeafAvailableAtEnvelope = Field(default_factory=lambda: LeafAvailableAtEnvelope(present=False))
 
-    completeness: LeafCompletenessEnvelope = Field(
-        default_factory=lambda: LeafCompletenessEnvelope(present=False)
-    )
+    completeness: LeafCompletenessEnvelope = Field(default_factory=lambda: LeafCompletenessEnvelope(present=False))
     """Envelope of the ``completeness_fraction`` + ``incomplete_window`` columns
     when the parquet was written through the service-output emission policy
     (writegate slice (b) Phase 5.5). ``present=False`` means the columns are

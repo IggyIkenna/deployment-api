@@ -96,9 +96,7 @@ def _extract_github_info(trigger: object) -> tuple[str | None, str | None]:
         name = str(cast(object, getattr(github, "name", "")) or "")
         github_repo: str | None = f"{owner}/{name}" if owner and name else None
         push: object = cast(object, getattr(github, "push", None))
-        branch_pattern: str | None = (
-            str(cast(object, getattr(push, "branch", "")) or "") if push else None
-        )
+        branch_pattern: str | None = str(cast(object, getattr(push, "branch", "")) or "") if push else None
         return github_repo, branch_pattern or None
     if repo_event:
         repo_path = str(cast(object, getattr(repo_event, "repository", "")) or "")
@@ -192,9 +190,7 @@ def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentB
 # ---------------------------------------------------------------------------
 
 
-def _extract_build_id_from_op(
-    op_name: str | None, operation: object
-) -> tuple[str | None, str | None]:
+def _extract_build_id_from_op(op_name: str | None, operation: object) -> tuple[str | None, str | None]:
     """Extract build_id and log_url from a Cloud Build operation object."""
     from ._cloud_builds_types import _build_op_meta_cls
 
@@ -204,12 +200,7 @@ def _extract_build_id_from_op(
         if hasattr(operation, "metadata") and getattr(operation, "metadata", None):
             meta = _build_op_meta_cls()()
             op_metadata: object = getattr(operation, "metadata", None)
-            if (
-                op_metadata is not None
-                and hasattr(op_metadata, "Unpack")
-                and op_metadata.Unpack(meta)
-                and meta.build
-            ):
+            if op_metadata is not None and hasattr(op_metadata, "Unpack") and op_metadata.Unpack(meta) and meta.build:
                 build_id = meta.build.id
                 log_url = meta.build.log_url
     except (OSError, ValueError, RuntimeError) as unpack_err:

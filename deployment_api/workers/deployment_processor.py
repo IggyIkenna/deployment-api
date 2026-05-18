@@ -99,9 +99,7 @@ def _process_stuck_shards(
             if elapsed > (timeout_seconds + grace_seconds):
                 shard["status"] = "failed"
                 shard["end_time"] = now.isoformat()
-                shard["error_message"] = (
-                    f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"
-                )
+                shard["error_message"] = f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"
                 shard["failure_category"] = "timeout"
                 _terminate_stuck_vm(shard, config, deployment_id, now)
                 updated = True
@@ -214,9 +212,7 @@ def _process_active_deployment(
         service_name = cast(str, state.get("service") or "")
         if service_name:
             vm_map = _build_vm_map_for_service(service_name)
-        updated = _process_vm_health_and_status(
-            shards, vm_map, now, config, deployment_id, shard_statuses, updated
-        )
+        updated = _process_vm_health_and_status(shards, vm_map, now, config, deployment_id, shard_statuses, updated)
 
     # For Cloud Run: refresh running executions in batch.
     if compute_type == "cloud_run":
@@ -244,9 +240,7 @@ def _process_active_deployment(
         )
 
     if updated:
-        _finalise_updated_state(
-            state, state_path, deployment_id, compute_type, now, launched_this_tick
-        )
+        _finalise_updated_state(state, state_path, deployment_id, compute_type, now, launched_this_tick)
         return 1
     return 0
 
@@ -306,9 +300,7 @@ def _run_deployment_batch_concurrent(
 
     active_states.sort(
         key=lambda x: sum(
-            1
-            for s in cast(list[dict[str, object]], x[1].get("shards") or [])
-            if s.get("status") == "running"
+            1 for s in cast(list[dict[str, object]], x[1].get("shards") or []) if s.get("status") == "running"
         ),
         reverse=True,
     )

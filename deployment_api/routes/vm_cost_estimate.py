@@ -98,9 +98,7 @@ def estimate_vm_cost(req: VmCostEstimateRequest) -> VmCostEstimateResponse:
     if unknown:
         # Fall back to n1-standard-4 rate with a flag so callers know it's approximate.
         hourly = _MACHINE_HOURLY_USD["n1-standard-4"]
-        logger.warning(
-            "Unknown machine type %r — using n1-standard-4 rate as proxy", req.machine_type
-        )
+        logger.warning("Unknown machine type %r — using n1-standard-4 rate as proxy", req.machine_type)
 
     compute_cost = round(hourly * req.runtime_hours * req.count, 4)
     disk_cost = round(_DISK_HOURLY_USD_PER_GB * req.disk_gb * req.runtime_hours * req.count, 4)

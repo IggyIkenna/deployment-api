@@ -273,9 +273,7 @@ async def promote_candidate(
         )
 
     event_name = (
-        STRATEGY_PROMOTED_TO_PAPER
-        if target_phase == StrategyMaturityPhase.PAPER_1D
-        else STRATEGY_PROMOTED_TO_LIVE
+        STRATEGY_PROMOTED_TO_PAPER if target_phase == StrategyMaturityPhase.PAPER_1D else STRATEGY_PROMOTED_TO_LIVE
     )
     log_event(
         event_name,
@@ -300,9 +298,7 @@ async def promote_candidate(
     return PromoteResponse(
         manifest_id=candidate_manifest_id,
         strategy_id=strategy_id,
-        strategy_instance_id=strategy_id
-        if is_mock
-        else (manifest.strategy_instance_id if manifest else strategy_id),
+        strategy_instance_id=strategy_id if is_mock else (manifest.strategy_instance_id if manifest else strategy_id),
         target_phase=target_phase.value,
         promoter=body.promoter,
         promoted_at=now_iso,

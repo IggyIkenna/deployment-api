@@ -136,13 +136,11 @@ class TreasuryNAVByClientOut(BaseModel):
 async def get_treasury_rollup(
     venue_margin_usd: str | None = Query(
         default=None,
-        description="Aggregated venue-margin USD balance (Decimal-as-string). "
-        "If omitted, defaults to 0.",
+        description="Aggregated venue-margin USD balance (Decimal-as-string). If omitted, defaults to 0.",
     ),
     on_chain_usd: str | None = Query(
         default=None,
-        description="On-chain DeFi wallet USD balance (Decimal-as-string). "
-        "If omitted, defaults to 0.",
+        description="On-chain DeFi wallet USD balance (Decimal-as-string). If omitted, defaults to 0.",
     ),
     copper_usd: str | None = Query(
         default=None,
@@ -180,8 +178,7 @@ async def get_treasury_rollup(
 
     if rollup.has_stubs:
         logger.warning(
-            "Treasury rollup returned stub data — Copper/CEFFU not yet wired. "
-            "has_stubs=True; reconciliation_status=%s",
+            "Treasury rollup returned stub data — Copper/CEFFU not yet wired. has_stubs=True; reconciliation_status=%s",
             rollup.reconciliation_status,
         )
 

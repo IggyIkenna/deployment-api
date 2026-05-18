@@ -814,10 +814,7 @@ class TestBuildCsvExport:
 
 class TestBuildBucketName:
     def test_mtds_cefi_bucket(self):
-        assert (
-            drilldown.build_bucket_name("market-tick-data-service", "CEFI", "proj")
-            == "market-data-tick-cefi-proj"
-        )
+        assert drilldown.build_bucket_name("market-tick-data-service", "CEFI", "proj") == "market-data-tick-cefi-proj"
 
     def test_instruments_service_bucket(self):
         assert (

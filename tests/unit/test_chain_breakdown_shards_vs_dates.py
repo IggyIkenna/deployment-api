@@ -112,8 +112,7 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
         assert isinstance(shards_found, int)
         assert isinstance(dates_found, int)
         assert shards_found == 120, (
-            f"shards_found should be 120 (2 venues x 3 data_types x 4 instruments x 5 days), "
-            f"got {shards_found}"
+            f"shards_found should be 120 (2 venues x 3 data_types x 4 instruments x 5 days), got {shards_found}"
         )
         assert shards_found > dates_found * 10, (
             f"shard-vs-date fanout collapsed: shards_found={shards_found} "

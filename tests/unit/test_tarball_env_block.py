@@ -31,9 +31,7 @@ class TestAssertTarballNotBlocked:
     def test_development_allows_tarball_no_override(self) -> None:
         assert_tarball_not_blocked("development")  # must not raise
 
-    def test_development_allows_tarball_with_override(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_development_allows_tarball_with_override(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="deployment_api.services.deploy_missing"):
             assert_tarball_not_blocked("development", override=True)
         assert "AUDIT" not in caplog.text
@@ -42,9 +40,7 @@ class TestAssertTarballNotBlocked:
         with pytest.raises(DeployMissingError, match="staging"):
             assert_tarball_not_blocked("staging")
 
-    def test_staging_override_succeeds_and_emits_audit(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_staging_override_succeeds_and_emits_audit(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="deployment_api.services.deploy_missing"):
             assert_tarball_not_blocked("staging", override=True)  # must not raise
         assert "AUDIT" in caplog.text
@@ -54,9 +50,7 @@ class TestAssertTarballNotBlocked:
         with pytest.raises(DeployMissingError, match="production"):
             assert_tarball_not_blocked("production")
 
-    def test_production_override_succeeds_and_emits_audit(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_production_override_succeeds_and_emits_audit(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="deployment_api.services.deploy_missing"):
             assert_tarball_not_blocked("production", override=True)  # must not raise
         assert "AUDIT" in caplog.text

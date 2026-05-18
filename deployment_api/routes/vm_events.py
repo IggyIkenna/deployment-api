@@ -165,10 +165,7 @@ def _normalise_severity(severity_floor: str | None) -> int:
             status_code=400,
             detail={
                 "code": "BAD_SEVERITY",
-                "message": (
-                    f"severity_floor '{severity_floor}' must be one of "
-                    f"{sorted(_SEVERITY_ORDER.keys())}"
-                ),
+                "message": (f"severity_floor '{severity_floor}' must be one of {sorted(_SEVERITY_ORDER.keys())}"),
             },
         )
     return _SEVERITY_ORDER[floor]
@@ -349,22 +346,16 @@ def list_vm_events(
             "Example: 2026-05-15T10:00:00Z"
         ),
     ),
-    date: str | None = Query(
-        None, description="YYYY-MM-DD (default: today UTC). Ignored when `since` is set."
-    ),
+    date: str | None = Query(None, description="YYYY-MM-DD (default: today UTC). Ignored when `since` is set."),
     from_hour: int | None = Query(
         None, ge=0, le=23, description="Inclusive (default: 0). Ignored when `since` is set."
     ),
-    to_hour: int | None = Query(
-        None, ge=0, le=23, description="Inclusive (default: today=current hour, else 23)"
-    ),
+    to_hour: int | None = Query(None, ge=0, le=23, description="Inclusive (default: today=current hour, else 23)"),
     severity_floor: str | None = Query(
         None,
         description="INFO|WARNING|ERROR|CRITICAL — drop events below floor (default: INFO)",
     ),
-    page_size: int = Query(
-        _DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE, description="Max events per page"
-    ),
+    page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE, description="Max events per page"),
     next_page_token: str | None = Query(
         None,
         description="Opaque cursor from a prior truncated response.",
@@ -447,9 +438,7 @@ def list_filtered_vm_events(
 
     try:
         resolved_date, start_hour = (
-            _parse_since(since)
-            if since is not None
-            else (datetime.now(UTC).strftime("%Y-%m-%d"), 0)
+            _parse_since(since) if since is not None else (datetime.now(UTC).strftime("%Y-%m-%d"), 0)
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -544,9 +533,7 @@ def _list_real_events(
     storage = get_storage_client(project_id=_cfg.gcp_project_id)
     cursor_blob = _decode_page_token(next_page_token) if next_page_token else None
 
-    all_blob_names, hours_scanned = _collect_blob_names(
-        storage, bucket, service, date, vm_name, start_hour, end_hour
-    )
+    all_blob_names, hours_scanned = _collect_blob_names(storage, bucket, service, date, vm_name, start_hour, end_hour)
     if cursor_blob is not None:
         all_blob_names = [(h, n) for h, n in all_blob_names if n > cursor_blob]
 
@@ -596,24 +583,16 @@ def _event_to_log_line(evt: VMLifecycleEvent) -> VmLogLine:
     ts = evt.timestamp.isoformat(timespec="seconds").replace("+00:00", "Z")
     msg = evt.details.get("message", "") if isinstance(evt.details, dict) else ""
     if not msg:
-        msg = (
-            ", ".join(f"{k}={v}" for k, v in evt.details.items())
-            if isinstance(evt.details, dict)
-            else ""
-        )
+        msg = ", ".join(f"{k}={v}" for k, v in evt.details.items()) if isinstance(evt.details, dict) else ""
     return VmLogLine(timestamp=ts, event=evt.event, severity=evt.severity, message=msg)
 
 
 @router.get("/logs/{vm_name}", response_model=VmLogTailResult)
 def tail_vm_logs(
     vm_name: str,
-    service: str | None = Query(
-        None, description="Service name. Inferred from vm_name prefix if omitted."
-    ),
+    service: str | None = Query(None, description="Service name. Inferred from vm_name prefix if omitted."),
     tail: int = Query(100, ge=1, le=1000, description="Number of most-recent log lines to return"),
-    since: str | None = Query(
-        None, description="ISO 8601 timestamp — return lines at or after this time"
-    ),
+    since: str | None = Query(None, description="ISO 8601 timestamp — return lines at or after this time"),
 ) -> VmLogTailResult:
     """Return the last N log lines for a VM.
 
@@ -627,9 +606,7 @@ def tail_vm_logs(
         mock_date = datetime.now(UTC).strftime("%Y-%m-%d")
         mock_result = _mock_events(vm_name, resolved_service, mock_date)
         lines = [_event_to_log_line(e) for e in mock_result.events[:tail]]
-        return VmLogTailResult(
-            vm_name=vm_name, service=resolved_service, lines=lines, total_lines=len(lines)
-        )
+        return VmLogTailResult(vm_name=vm_name, service=resolved_service, lines=lines, total_lines=len(lines))
 
     if since is not None:
         try:
@@ -652,9 +629,7 @@ def tail_vm_logs(
     )
     all_lines = [_event_to_log_line(e) for e in real_result.events]
     tail_lines = all_lines[-tail:]
-    return VmLogTailResult(
-        vm_name=vm_name, service=resolved_service, lines=tail_lines, total_lines=len(tail_lines)
-    )
+    return VmLogTailResult(vm_name=vm_name, service=resolved_service, lines=tail_lines, total_lines=len(tail_lines))
 
 
 def infer_service_from_vm_name(vm_name: str) -> str:

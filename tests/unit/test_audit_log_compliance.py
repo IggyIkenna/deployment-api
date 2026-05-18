@@ -22,9 +22,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _make_gcs_client(
-    versioning_enabled: bool = True, retention_period: int | None = 220752000
-) -> MagicMock:
+def _make_gcs_client(versioning_enabled: bool = True, retention_period: int | None = 220752000) -> MagicMock:
     """Return a mocked google.cloud.storage.Client-like object."""
     client = MagicMock()
     bucket = MagicMock()
@@ -114,9 +112,7 @@ class TestAuditRetentionLock7Years:
         """Bucket retention_policy.retention_period == 7 years AND is_locked=True."""
         client, bucket, blob_obj, _ = _make_gcs_client(retention_period=self.SEVEN_YEARS_SECS)
         bucket_obj = client.bucket("trading-audit-records-prd-central-element-323112")
-        assert bucket_obj.retention_policy is not None, (
-            "Audit bucket must have a retention_policy set."
-        )
+        assert bucket_obj.retention_policy is not None, "Audit bucket must have a retention_policy set."
         assert bucket_obj.retention_policy.retention_period == self.SEVEN_YEARS_SECS, (
             f"Expected 7-year retention ({self.SEVEN_YEARS_SECS}s); "
             f"got {bucket_obj.retention_policy.retention_period}s."
@@ -143,9 +139,7 @@ class TestAuditRetentionLock7Years:
         # Simulate unlocked bucket
         bucket_obj.retention_policy.is_locked = False
         with pytest.raises(AssertionError):
-            assert bucket_obj.retention_policy.is_locked, (
-                "Retention policy must be locked for compliance."
-            )
+            assert bucket_obj.retention_policy.is_locked, "Retention policy must be locked for compliance."
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +262,7 @@ class TestAuditLogImmutableAfterWrite:
 
         # Different correlation_ids → distinct paths even at the same timestamp
         assert path1 != path2, (
-            "Audit paths with different correlation_ids must differ "
-            f"(path1={path1!r}, path2={path2!r})."
+            f"Audit paths with different correlation_ids must differ (path1={path1!r}, path2={path2!r})."
         )
 
 

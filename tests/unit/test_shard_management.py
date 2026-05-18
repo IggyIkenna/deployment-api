@@ -366,9 +366,7 @@ class TestBuildExistingDatesSets:
     def test_extracts_dates_found_list(self):
         from deployment_api.routes.shard_management import build_existing_dates_sets
 
-        turbo_result = {
-            "asset_groups": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}
-        }
+        turbo_result = {"asset_groups": {"CEFI": {"dates_found_list": ["2024-01-01", "2024-01-02"]}}}
         cat_dates, _venue_dates = build_existing_dates_sets(turbo_result)
         assert "CEFI" in cat_dates
         assert "2024-01-01" in cat_dates["CEFI"]
@@ -420,11 +418,7 @@ class TestBuildBlobTimestampMap:
     def test_extracts_timestamps_from_turbo_result(self):
         turbo_result = {
             "asset_groups": {
-                "CEFI": {
-                    "_venue_date_blob_timestamps": {
-                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
-                    }
-                }
+                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}}}
             }
         }
         result = _build_blob_timestamp_map(turbo_result)
