@@ -18,10 +18,14 @@ from deployment_service.deployments_registry import (
     DeploymentRegistryEntry,
     DeploymentsRegistry,
 )
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+    Permission,
+)
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.rbac import require_permission
 from deployment_api.utils.storage_facade import delete_object, write_object_text
 
 router = APIRouter()
@@ -51,7 +55,10 @@ def _find_active_by_vm_name(registry: DeploymentsRegistry, vm_name: str) -> Depl
 
 
 @router.post("/vm/admin/{vm_name}/cancel", response_model=AdminActionResult, status_code=202)
-def cancel_vm(vm_name: str) -> AdminActionResult:
+def cancel_vm(
+    vm_name: str,
+    _check: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
+) -> AdminActionResult:
     """Mark a running VM deployment as cancelled (terminal state → archive).
 
     Returns 202 immediately; GCS is updated synchronously before responding.
@@ -100,7 +107,10 @@ def cancel_vm(vm_name: str) -> AdminActionResult:
 
 
 @router.post("/vm/admin/{vm_name}/pause", response_model=AdminActionResult, status_code=202)
-def pause_vm(vm_name: str) -> AdminActionResult:
+def pause_vm(
+    vm_name: str,
+    _check: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
+) -> AdminActionResult:
     """Write a pause-signal blob to GCS.
 
     VMs that implement cooperative pause poll for this blob and suspend
@@ -132,7 +142,10 @@ def pause_vm(vm_name: str) -> AdminActionResult:
 
 
 @router.post("/vm/admin/{vm_name}/resume", response_model=AdminActionResult, status_code=202)
-def resume_vm(vm_name: str) -> AdminActionResult:
+def resume_vm(
+    vm_name: str,
+    _check: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
+) -> AdminActionResult:
     """Delete the pause-signal blob to allow the VM to resume processing.
 
     Returns 202. If no pause signal exists, returns success (idempotent).

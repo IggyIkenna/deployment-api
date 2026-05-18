@@ -19,16 +19,21 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from unified_api_contracts.internal.domain.deployment_service import (
     ChaosInjectionPoint,
     ChaosInjectionSpec,
     RuntimeProfile,
 )
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+    Permission,
+)
 from unified_trading_library import (
     list_chaos_injection_points,
 )
+
+from deployment_api.rbac import require_permission
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -82,7 +87,10 @@ def _validate_point_registered(point: ChaosInjectionPoint) -> None:
 
 
 @router.post("/chaos/injections", response_model=InjectionResponse, status_code=201)
-async def create_injection(req: CreateInjectionRequest) -> InjectionResponse:
+async def create_injection(
+    req: CreateInjectionRequest,
+    _check: None = Depends(require_permission(Permission.SYSTEM_ADMIN)),
+) -> InjectionResponse:
     """Register a new chaos injection. Forbidden in prod."""
     _validate_profile_allows_chaos(req.runtime_profile)
     _validate_point_registered(req.point)
@@ -154,7 +162,10 @@ async def get_injection(injection_id: str) -> InjectionResponse:
 
 
 @router.delete("/chaos/injections/{injection_id}", status_code=204)
-async def revoke_injection(injection_id: str) -> None:
+async def revoke_injection(
+    injection_id: str,
+    _check: None = Depends(require_permission(Permission.SYSTEM_ADMIN)),
+) -> None:
     """Revoke an active chaos injection."""
     if injection_id not in _active_injections:
         raise HTTPException(

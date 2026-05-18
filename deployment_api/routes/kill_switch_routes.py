@@ -53,6 +53,9 @@ from unified_api_contracts.canonical.crosscutting.circuit_breaker import (  # no
     BreakerRecoveryMode,
 )
 from unified_api_contracts.internal.domain.deployment_service import KillSwitchScope
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+    Permission,
+)
 from unified_trading_library import (
     InMemoryAuditLogWriter,
     KillSwitchBus,
@@ -61,6 +64,7 @@ from unified_trading_library import (
 )
 
 from deployment_api.auth import verify_api_key
+from deployment_api.rbac import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +244,7 @@ def _audit_entry(event: KillSwitchArmedEvent | KillSwitchDisarmEvent) -> KillSwi
 async def arm_kill_switch(
     kill_switch_id: KillSwitchId,
     body: ArmRequestBody,
+    _check: None = Depends(require_permission(Permission.RISK_OVERRIDE)),
 ) -> KillSwitchArmedEvent:
     """Arm a kill switch by ``KillSwitchId``.
 
@@ -282,6 +287,7 @@ async def arm_kill_switch(
 async def disarm_kill_switch(
     kill_switch_id: KillSwitchId,
     body: ArmRequestBody,
+    _check: None = Depends(require_permission(Permission.RISK_OVERRIDE)),
 ) -> KillSwitchDisarmEvent:
     """Disarm a kill switch by ``KillSwitchId``.
 
