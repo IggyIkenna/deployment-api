@@ -210,6 +210,56 @@ class TestCreateDeploymentMock:
 # ── asset_group filter in list mock mode ──────────────────────────────────────
 
 
+class TestDeployMissingShardsMock:
+    def test_mock_returns_mock_flag(self, client_dep_mock: TestClient) -> None:
+        r = client_dep_mock.post(
+            "/deployments/deploy-missing",
+            json={
+                "service": "market-tick-data-service",
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-07",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["mock"] is True
+        assert "missing_analysis" in data
+        assert "deployment" in data
+
+    def test_mock_returns_missing_analysis_shape(self, client_dep_mock: TestClient) -> None:
+        r = client_dep_mock.post(
+            "/deployments/deploy-missing",
+            json={
+                "service": "strategy-service",
+                "start_date": "2026-02-01",
+                "end_date": "2026-02-07",
+                "dry_run": False,
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        analysis = data["missing_analysis"]
+        assert "total_missing" in analysis
+        assert "summary" in analysis
+        dep = data["deployment"]
+        assert "deployment_id" in dep
+        assert dep["status"] == "pending"
+
+    def test_mock_dry_run_echoes_flag(self, client_dep_mock: TestClient) -> None:
+        r = client_dep_mock.post(
+            "/deployments/deploy-missing",
+            json={
+                "service": "execution-service",
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-03",
+                "dry_run": True,
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["dry_run"] is True
+
+
 class TestAssetGroupFilterMock:
     def test_asset_group_filter_applied(self, mock_store: MagicMock) -> None:
         from deployment_api.routes.deployments import router

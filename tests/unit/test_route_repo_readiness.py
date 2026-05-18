@@ -192,6 +192,80 @@ def test_get_deploy_ready_gcs_failure_returns_no_data(client_repo_readiness: Tes
     assert data[0]["reason"] == "no_snapshots_in_gcs"
 
 
+def test_get_deploy_ready_workspace_root_plans_dir(client_repo_readiness: TestClient, tmp_path: Path) -> None:
+    """Lines 202-204: workspace_root set + plans dir exists → plans_dir used."""
+    mock_cfg = MagicMock()
+    mock_cfg.is_mock_mode.return_value = False
+    mock_cfg.gcp_project_id = "test-project"
+    mock_cfg.workspace_root = str(tmp_path)
+
+    plans_active = tmp_path / "unified-trading-pm" / "plans" / "active"
+    plans_active.mkdir(parents=True)
+
+    green = {"qg_status": "green", "failing_step": None, "snapshot_at": "2026-05-15"}
+    mock_snaps: dict[str, list[dict[str, object]]] = {
+        "some-service": [green] * 5,
+    }
+
+    with (
+        patch(_PATCH_API_CFG, return_value=mock_cfg),
+        patch("deployment_api.routes.repo_readiness._load_snapshots_from_gcs", return_value=mock_snaps),
+    ):
+        r = client_repo_readiness.get("/repos/deploy-ready")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert any(item["repo"] == "some-service" for item in data)
+
+
+def test_get_deploy_ready_unexpected_exception_returns_error(client_repo_readiness: TestClient) -> None:
+    """Lines 213-215: unexpected exception outside GCS block → error result."""
+    mock_cfg = MagicMock()
+    mock_cfg.is_mock_mode.return_value = False
+    # Make gcp_project_id raise to trigger the outer except
+    type(mock_cfg).gcp_project_id = property(lambda self: (_ for _ in ()).throw(RuntimeError("unexpected cfg error")))
+
+    with patch(_PATCH_API_CFG, return_value=mock_cfg):
+        r = client_repo_readiness.get("/repos/deploy-ready")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data[0]["repo"] == "error"
+    assert data[0]["deploy_ready"] is False
+
+
+def test_check_p0_issue_docs_oserror_skips_file(tmp_path: Path) -> None:
+    """Lines 33-34: OSError on read_text → file is skipped, returns True."""
+    from unittest.mock import patch as _patch
+    from pathlib import Path as P
+
+    from deployment_api.routes.repo_readiness import _check_p0_issue_docs
+
+    issues_dir = tmp_path / "issues"
+    issues_dir.mkdir()
+    bad_file = issues_dir / "bad.md"
+    bad_file.write_text("placeholder")
+
+    with _patch.object(P, "read_text", side_effect=OSError("permission denied")):
+        result = _check_p0_issue_docs(issues_dir, "some-repo")
+    assert result is True
+
+
+def test_check_no_inflight_banner_oserror_skips_file(tmp_path: Path) -> None:
+    """Lines 47-48: OSError on read_text → file is skipped, returns True."""
+    from unittest.mock import patch as _patch
+    from pathlib import Path as P
+
+    from deployment_api.routes.repo_readiness import _check_no_inflight_refactor_banner
+
+    plans_dir = tmp_path
+    (plans_dir / "plan.md").write_text("placeholder")
+
+    with _patch.object(P, "read_text", side_effect=OSError("io error")):
+        result = _check_no_inflight_refactor_banner(plans_dir, "some-repo")
+    assert result is True
+
+
 def test_get_deploy_ready_with_snapshots_returns_sorted(client_repo_readiness: TestClient) -> None:
     mock_cfg = MagicMock()
     mock_cfg.is_mock_mode.return_value = False

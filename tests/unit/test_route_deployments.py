@@ -788,3 +788,205 @@ class TestGetDeploymentLogsElseBranch:
             sm.get_deployment_logs.return_value = {"logs": ["a", "b"]}
             result = await _dep_routes.get_deployment_logs("dep-1", stream=False)
         assert len(result["logs"]) == 2
+
+
+# ── deploy_missing_shards (non-mock paths) ────────────────────────────────────
+
+
+def _make_deploy_missing_req(**kw) -> _dep_routes.DeployMissingRequest:
+    defaults = {
+        "service": "market-tick-data-service",
+        "start_date": "2026-01-01",
+        "end_date": "2026-01-03",
+        "asset_group": None,
+        "venue": None,
+        "force": False,
+        "dry_run": False,
+        "compute": "cloud_run",
+        "mode": "batch",
+    }
+    defaults.update(kw)
+    return _dep_routes.DeployMissingRequest(**defaults)
+
+
+class TestDeployMissingShards:
+    @pytest.mark.asyncio
+    async def test_dry_run_returns_analysis_no_deploy(self):
+        req = _make_deploy_missing_req(dry_run=True)
+        analysis = {"total_missing": 5, "missing_by_date": {"2026-01-01": 2}}
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(return_value=analysis)
+            result = await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert result["dry_run"] is True
+        assert result["deployment"] is None
+        assert result["missing_analysis"] == analysis
+
+    @pytest.mark.asyncio
+    async def test_no_missing_no_force_returns_early(self):
+        req = _make_deploy_missing_req(force=False)
+        analysis = {"total_missing": 0}
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(return_value=analysis)
+            result = await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert result["deployment"] is None
+        assert "nothing to deploy" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_missing_shards_triggers_deployment(self):
+        req = _make_deploy_missing_req(asset_group="cefi")
+        analysis = {
+            "total_missing": 2,
+            "missing_by_date": {"2026-01-01": 2},
+        }
+        create_result = {
+            "deployment_id": "dep-xyz",
+            "status": "pending",
+            "total_shards": 2,
+            "cli_command": "cmd --service market-tick-data-service",
+        }
+        with (
+            patch.object(_dep_routes, "data_status_service") as dss,
+            patch.object(_dep_routes, "deployment_manager") as dm,
+        ):
+            dss.calculate_missing_shards = AsyncMock(return_value=analysis)
+            dm.create_deployment = AsyncMock(return_value=create_result)
+            result = await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert result["dry_run"] is False
+        assert result["deployment"]["deployment_id"] == "dep-xyz"
+        assert result["deployment"]["total_shards"] == 2
+
+    @pytest.mark.asyncio
+    async def test_error_in_analysis_raises_500(self):
+        from fastapi import HTTPException
+
+        req = _make_deploy_missing_req()
+        analysis = {"error": "GCS unavailable"}
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(return_value=analysis)
+            with pytest.raises(HTTPException) as exc:
+                await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_value_error_raises_400(self):
+        from fastapi import HTTPException
+
+        req = _make_deploy_missing_req()
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(side_effect=ValueError("bad param"))
+            with pytest.raises(HTTPException) as exc:
+                await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_file_not_found_raises_400(self):
+        from fastapi import HTTPException
+
+        req = _make_deploy_missing_req()
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(side_effect=FileNotFoundError("cfg missing"))
+            with pytest.raises(HTTPException) as exc:
+                await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_connection_error_raises_503(self):
+        from fastapi import HTTPException
+
+        req = _make_deploy_missing_req()
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(side_effect=ConnectionError("cloud down"))
+            with pytest.raises(HTTPException) as exc:
+                await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert exc.value.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_os_error_raises_500(self):
+        from fastapi import HTTPException
+
+        req = _make_deploy_missing_req()
+        with patch.object(_dep_routes, "data_status_service") as dss:
+            dss.calculate_missing_shards = AsyncMock(side_effect=OSError("io fail"))
+            with pytest.raises(HTTPException) as exc:
+                await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_force_deploys_even_when_no_missing(self):
+        req = _make_deploy_missing_req(force=True)
+        analysis = {"total_missing": 0, "missing_by_date": {}}
+        create_result = {
+            "deployment_id": "dep-force",
+            "status": "pending",
+            "total_shards": 10,
+            "cli_command": "cmd",
+        }
+        with (
+            patch.object(_dep_routes, "data_status_service") as dss,
+            patch.object(_dep_routes, "deployment_manager") as dm,
+        ):
+            dss.calculate_missing_shards = AsyncMock(return_value=analysis)
+            dm.create_deployment = AsyncMock(return_value=create_result)
+            result = await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert result["deployment"]["deployment_id"] == "dep-force"
+
+    @pytest.mark.asyncio
+    async def test_no_asset_group_uses_all_key(self):
+        req = _make_deploy_missing_req(asset_group=None)
+        analysis = {"total_missing": 1, "missing_by_date": {}}
+        create_result = {
+            "deployment_id": "dep-noag",
+            "status": "pending",
+            "total_shards": 1,
+            "cli_command": "cmd",
+        }
+        with (
+            patch.object(_dep_routes, "data_status_service") as dss,
+            patch.object(_dep_routes, "deployment_manager") as dm,
+        ):
+            dss.calculate_missing_shards = AsyncMock(return_value=analysis)
+            dm.create_deployment = AsyncMock(return_value=create_result)
+            result = await _dep_routes.deploy_missing_shards(req, _make_request(), _make_bg_tasks())
+        assert result["deployment"]["deployment_id"] == "dep-noag"
+
+
+class TestListDeploymentsAgFilterNonDict:
+    def test_non_dict_items_filtered_out(self):
+        """Line 227: _matches returns False for non-dict items."""
+        import asyncio
+
+        mock_store_val = MagicMock()
+        mock_store_val.list.return_value = [
+            "not-a-dict",
+            {"asset_group": "DEFI", "service": "s", "status": "running"},
+        ]
+
+        original_mode = _dep_routes._cfg.cloud_mock_mode
+        original_data_mode = _dep_routes._cfg.data_mode
+        _dep_routes._cfg.cloud_mock_mode = True
+        _dep_routes._cfg.data_mode = "mock"
+
+        try:
+            with (
+                patch("deployment_api.mock_state.get_store", return_value=mock_store_val),
+                patch(
+                    "deployment_api.utils.trading_axis.trading_axis_from_deployment_state",
+                    side_effect=lambda d: d.get("asset_group"),
+                ),
+            ):
+                result = asyncio.run(
+                    _dep_routes.list_deployments(
+                        limit=50,
+                        offset=0,
+                        status=None,
+                        service=None,
+                        asset_group="DEFI",
+                        category=None,
+                    )
+                )
+        finally:
+            _dep_routes._cfg.cloud_mock_mode = original_mode
+            _dep_routes._cfg.data_mode = original_data_mode
+
+        items = result["deployments"]
+        assert all(isinstance(item, dict) for item in items)
