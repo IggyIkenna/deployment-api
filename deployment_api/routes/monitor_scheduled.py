@@ -32,6 +32,8 @@ from deployment_service.deployments_registry import (
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from deployment_api import settings as _settings
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,7 @@ class ScheduledMonitorResponse(BaseModel):
     total: int
     queried_at: str
     cloud: str
+    env: str
     phase_d_registry_available: bool
 
 
@@ -132,5 +135,6 @@ def list_scheduled_jobs(
         total=len(jobs),
         queried_at=datetime.now(UTC).isoformat(),
         cloud=cloud,
+        env=_settings.DEPLOYMENT_ENV,
         phase_d_registry_available=False,
     )

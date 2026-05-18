@@ -25,6 +25,8 @@ from deployment_service.deployments_registry import (
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from deployment_api import settings as _settings
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,7 @@ class LiveMonitorResponse(BaseModel):
     total: int
     queried_at: str
     cloud: str
+    env: str
 
 
 @router.get("/monitor/live", response_model=LiveMonitorResponse, tags=["Monitor"])
@@ -134,4 +137,5 @@ def list_live_clusters(
         total=len(clusters),
         queried_at=datetime.now(UTC).isoformat(),
         cloud=cloud,
+        env=_settings.DEPLOYMENT_ENV,
     )

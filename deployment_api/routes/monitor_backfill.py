@@ -22,6 +22,8 @@ from deployment_service.deployments_registry import (
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from deployment_api import settings as _settings
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,7 @@ class BackfillMonitorResponse(BaseModel):
     total: int
     queried_at: str
     cloud: str
+    env: str
 
 
 @router.get("/monitor/backfill", response_model=BackfillMonitorResponse, tags=["Monitor"])
@@ -128,4 +131,5 @@ def list_backfill_jobs(
         total=len(jobs),
         queried_at=datetime.now(UTC).isoformat(),
         cloud=cloud,
+        env=_settings.DEPLOYMENT_ENV,
     )
