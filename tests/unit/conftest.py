@@ -381,12 +381,13 @@ _ensure_services_mocked()
 _ensure_external_packages_mocked()
 
 
-import pytest as _pytest
 from collections.abc import Generator as _Generator
+
+import pytest as _pytest
 
 
 @_pytest.fixture(autouse=True)
-def _reset_rate_limit_windows() -> _Generator[None, None, None]:
+def _reset_rate_limit_windows() -> _Generator[None]:
     """Reset sliding-window rate-limiter state before/after every test.
 
     Two separate rate limiters share global/instance state across tests:
@@ -403,13 +404,13 @@ def _reset_rate_limit_windows() -> _Generator[None, None, None]:
 
     if "deployment_api.main" in sys.modules:
         try:
-            from deployment_api.middleware import RateLimitMiddleware as _RLM
+            from deployment_api.middleware import RateLimitMiddleware as _RateLimitMiddleware
 
             _app = sys.modules["deployment_api.main"].app
             node = _app.middleware_stack
             depth = 0
             while node is not None and depth < 20:
-                if isinstance(node, _RLM):
+                if isinstance(node, _RateLimitMiddleware):
                     node._windows.clear()  # type: ignore[attr-defined]
                     break
                 node = getattr(node, "app", None)

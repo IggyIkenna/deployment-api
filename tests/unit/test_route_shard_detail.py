@@ -136,10 +136,7 @@ def test_venue_detail_calls_service_and_returns_result(client_shard: TestClient)
     mock_result = MagicMock(spec=VenueDetailResponse)
     with patch(_PATCH_FETCH_VENUE_DETAIL, return_value=mock_result):
         r = client_shard.get(
-            "/api/data-status/venue-detail"
-            "?service=instruments-service"
-            "&asset_group=DEFI"
-            "&venue=uniswap-ethereum"
+            "/api/data-status/venue-detail?service=instruments-service&asset_group=DEFI&venue=uniswap-ethereum"
         )
     assert r.status_code == 200
 
@@ -147,10 +144,7 @@ def test_venue_detail_calls_service_and_returns_result(client_shard: TestClient)
 def test_venue_detail_value_error_returns_400(client_shard: TestClient) -> None:
     with patch(_PATCH_FETCH_VENUE_DETAIL, side_effect=ValueError("unknown venue")):
         r = client_shard.get(
-            "/api/data-status/venue-detail"
-            "?service=instruments-service"
-            "&asset_group=DEFI"
-            "&venue=bad-venue"
+            "/api/data-status/venue-detail?service=instruments-service&asset_group=DEFI&venue=bad-venue"
         )
     assert r.status_code == 400
     assert "unknown venue" in r.json()["detail"]
@@ -159,9 +153,6 @@ def test_venue_detail_value_error_returns_400(client_shard: TestClient) -> None:
 def test_venue_detail_os_error_returns_500(client_shard: TestClient) -> None:
     with patch(_PATCH_FETCH_VENUE_DETAIL, side_effect=OSError("gcs error")):
         r = client_shard.get(
-            "/api/data-status/venue-detail"
-            "?service=instruments-service"
-            "&asset_group=DEFI"
-            "&venue=uniswap-ethereum"
+            "/api/data-status/venue-detail?service=instruments-service&asset_group=DEFI&venue=uniswap-ethereum"
         )
     assert r.status_code == 500

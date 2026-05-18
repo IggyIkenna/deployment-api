@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
@@ -206,9 +205,7 @@ class TestIsRepoComplete:
     def test_not_quickmerged_returns_false(self) -> None:
         from deployment_api.routes.epics import _is_repo_complete
 
-        ok, reason = _is_repo_complete(
-            self._make_repo_data(quickmerged=False), "cr3", "na", "core"
-        )
+        ok, reason = _is_repo_complete(self._make_repo_data(quickmerged=False), "cr3", "na", "core")
         assert ok is False
         assert "quickmerged" in reason
 
@@ -257,16 +254,12 @@ class TestComputeEpic:
             "my-service": {
                 "code_readiness": {"current_stage": "cr5"},
                 "business_readiness": {"current_stage": "br5"},
-                "asset_group_readiness": {
-                    "core": {"branch_status": {"main": {"quickmerged": True}}}
-                },
+                "asset_group_readiness": {"core": {"branch_status": {"main": {"quickmerged": True}}}},
             }
         }
         epic: dict[str, object] = {
             "epic_id": "defi",
-            "required_repos": [
-                {"repo": "my-service", "min_stage": "cr3", "min_br_stage": "na", "asset_group": "core"}
-            ],
+            "required_repos": [{"repo": "my-service", "min_stage": "cr3", "min_br_stage": "na", "asset_group": "core"}],
         }
         result = _compute_epic(epic, repo_data)
         assert result["completed"] == 1
@@ -322,6 +315,7 @@ def test_list_epics_no_epics_dir_returns_503(client_epics: TestClient) -> None:
 
 def test_list_epics_with_empty_epics_returns_empty_list(client_epics: TestClient) -> None:
     from fastapi import FastAPI
+
     from deployment_api.routes.epics import router
 
     app = FastAPI()
@@ -342,6 +336,7 @@ def test_list_epics_with_empty_epics_returns_empty_list(client_epics: TestClient
 
 def test_list_epics_with_epics_returns_summaries() -> None:
     from fastapi import FastAPI
+
     from deployment_api.routes.epics import router
 
     app = FastAPI()
@@ -376,6 +371,7 @@ def test_list_epics_with_epics_returns_summaries() -> None:
 
 def test_get_epic_detail_no_config_returns_503() -> None:
     from fastapi import FastAPI
+
     from deployment_api.routes.epics import router
 
     app = FastAPI()
@@ -389,6 +385,7 @@ def test_get_epic_detail_no_config_returns_503() -> None:
 
 def test_get_epic_detail_not_found_returns_404() -> None:
     from fastapi import FastAPI
+
     from deployment_api.routes.epics import router
 
     app = FastAPI()
@@ -407,6 +404,7 @@ def test_get_epic_detail_not_found_returns_404() -> None:
 
 def test_get_epic_detail_found_returns_full_result() -> None:
     from fastapi import FastAPI
+
     from deployment_api.routes.epics import router
 
     app = FastAPI()

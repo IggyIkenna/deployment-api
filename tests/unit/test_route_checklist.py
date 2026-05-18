@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -250,9 +249,7 @@ class TestGetWarnings:
             "categories": [
                 {
                     "name": "cr",
-                    "items": [
-                        {"id": "cr1", "description": "CR1", "status": "pending", "blocking": False}
-                    ],
+                    "items": [{"id": "cr1", "description": "CR1", "status": "pending", "blocking": False}],
                 }
             ]
         }
@@ -266,9 +263,7 @@ class TestGetWarnings:
             "categories": [
                 {
                     "name": "cr",
-                    "items": [
-                        {"id": "cr5", "description": "CR5", "status": "pending", "blocking": True}
-                    ],
+                    "items": [{"id": "cr5", "description": "CR5", "status": "pending", "blocking": True}],
                 }
             ]
         }
@@ -379,9 +374,7 @@ def test_validate_checklist_found_returns_result() -> None:
     app.include_router(router, prefix="/checklists")
     with tempfile.TemporaryDirectory() as tmp:
         yaml_path = Path(tmp) / "my-service.yaml"
-        yaml_path.write_text(
-            "repo: my-service\ncode_readiness:\n  cr1_functionality:\n    status: pass\n"
-        )
+        yaml_path.write_text("repo: my-service\ncode_readiness:\n  cr1_functionality:\n    status: pass\n")
         app.state.codex_dir = Path(tmp)
         with patch(_PATCH_DISABLE_AUTH, True):
             client = TestClient(app, raise_server_exceptions=False)

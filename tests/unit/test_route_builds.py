@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -327,3 +327,190 @@ def test_list_builds_gcp_no_project_returns_400(client_builds: TestClient) -> No
     ):
         r = client_builds.get("/api/builds/my-service?env=prod")
     assert r.status_code == 400
+
+
+# ── list_builds AWS ECR and GCP AR live paths ─────────────────────────────────
+
+
+def test_list_builds_aws_ecr_with_tags(client_builds: TestClient) -> None:
+    """Lines 236-241: AWS ECR path returns sorted entries from _list_ecr_tags."""
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "aws"),
+        patch("deployment_api.routes.builds._list_ecr_tags", return_value=["1.2.3", "0.9.0"]),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=prod")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+
+
+def test_list_builds_aws_ecr_empty_falls_back_to_manifest(client_builds: TestClient, tmp_path: Path) -> None:
+    """Lines 237-239: AWS ECR empty → fallback to manifest."""
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "aws"),
+        patch("deployment_api.routes.builds._list_ecr_tags", return_value=[]),
+        patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=prod")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_list_builds_gcp_ar_with_tags(client_builds: TestClient) -> None:
+    """Lines 248-255: GCP AR path returns entries from _list_ar_tags."""
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds._list_ar_tags", return_value=["1.5.0", "1.4.0"]),
+    ):
+        r = client_builds.get("/api/builds/execution-service?env=prod")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 2
+
+
+def test_list_builds_gcp_ar_empty_falls_back_to_manifest(client_builds: TestClient, tmp_path: Path) -> None:
+    """Lines 248-252: GCP AR empty → fallback to manifest."""
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds._list_ar_tags", return_value=[]),
+        patch(_PATCH_WORKSPACE_ROOT, str(tmp_path)),
+    ):
+        r = client_builds.get("/api/builds/my-service?env=prod")
+    assert r.status_code == 200
+
+
+# ── deploy_build AWS and GCP live paths ───────────────────────────────────────
+
+
+def test_deploy_build_aws_path_returns_accepted(client_builds: TestClient) -> None:
+    """Lines 287-307: AWS ECS deploy path with mocked boto3.client."""
+    from unittest.mock import MagicMock
+
+    mock_sts = MagicMock()
+    mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "aws"),
+        patch("boto3.client", return_value=mock_sts),
+    ):
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "prod"},
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "accepted"
+    assert data["cloud"] == "aws"
+
+
+def test_deploy_build_gcp_cloud_run_success(client_builds: TestClient) -> None:
+    """Lines 314-348: GCP Cloud Run deploy via subprocess.run."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stderr = ""
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds.subprocess") as mock_sub,
+    ):
+        mock_sub.run.return_value = mock_proc
+        mock_sub.TimeoutExpired = subprocess.TimeoutExpired
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "prod"},
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "deploying"
+    assert data["service"] == "my-service"
+
+
+def test_deploy_build_gcp_cloud_run_failure_returns_502(client_builds: TestClient) -> None:
+    """Lines 335-340: gcloud run deploy failure → 502."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.stderr = "Error: revision failed to become ready"
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds.subprocess") as mock_sub,
+    ):
+        mock_sub.run.return_value = mock_proc
+        mock_sub.TimeoutExpired = subprocess.TimeoutExpired
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "prod"},
+        )
+    assert r.status_code == 502
+
+
+def test_deploy_build_gcp_cloud_run_timeout_returns_504(client_builds: TestClient) -> None:
+    """Line 349-350: subprocess.TimeoutExpired → 504."""
+    import subprocess
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds.subprocess") as mock_sub,
+    ):
+        mock_sub.run.side_effect = subprocess.TimeoutExpired(cmd="gcloud", timeout=120)
+        mock_sub.TimeoutExpired = subprocess.TimeoutExpired
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "prod"},
+        )
+    assert r.status_code == 504
+
+
+# ── _list_ecr_tags direct unit test ──────────────────────────────────────────
+
+
+def test_list_ecr_tags_returns_tag_list() -> None:
+    """Lines 195-208: _list_ecr_tags with mocked boto3 via sys.modules."""
+    import asyncio
+    import sys
+    from unittest.mock import MagicMock
+
+    mock_paginator = MagicMock()
+    mock_paginator.paginate.return_value = [
+        {"imageIds": [{"imageTag": "1.0.0"}, {"imageTag": "0.9.0"}]},
+    ]
+    mock_ecr = MagicMock()
+    mock_ecr.get_paginator.return_value = mock_paginator
+    mock_boto3 = MagicMock()
+    mock_boto3.client.return_value = mock_ecr
+
+    sys.modules["boto3"] = mock_boto3  # type: ignore[assignment]
+    try:
+        # Force re-import of builds module so the deferred boto3 import picks up the mock
+        import importlib
+
+        import deployment_api.routes.builds as _builds_mod
+
+        importlib.reload(_builds_mod)
+        result = asyncio.run(_builds_mod._list_ecr_tags("my-svc"))
+    finally:
+        sys.modules.pop("boto3", None)
+        # Reload to restore clean state
+        importlib.reload(_builds_mod)
+
+    assert "1.0.0" in result
+    assert "0.9.0" in result
