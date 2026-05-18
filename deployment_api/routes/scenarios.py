@@ -1,10 +1,12 @@
-"""Scenario registry API routes — Phase 7.A of simulation_scenarios_topology_price_shocks_2026_05_09.md."""
+"""Scenario registry API routes — Phases 7.A + 7.C of simulation_scenarios_topology_price_shocks_2026_05_09.md."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from unified_api_contracts import (
+    CUTOVER_ARCHETYPES,
+    SCENARIO_ARCHETYPE_MATRIX,
     SCENARIO_REGISTRY,
     ScenarioOverlay,
 )
@@ -46,5 +48,55 @@ async def list_scenarios(
     return {
         "total": len(scenarios),
         "asset_group_filter": asset_group,
-        "scenarios": [_to_list_item(s).model_dump() for s in sorted(scenarios, key=lambda s: s.scenario_id)],
+        "scenarios": [
+            _to_list_item(s).model_dump()
+            for s in sorted(scenarios, key=lambda s: s.scenario_id)
+        ],
     }
+
+
+@router.get("/matrix/{archetype}")
+async def get_scenario_matrix(archetype: str) -> dict[str, object]:
+    """Return scenarios in the regression matrix for the given archetype.
+
+    Only archetypes declared in CUTOVER_ARCHETYPES are valid. Each entry
+    in the response is enriched with the full ScenarioListItem from the registry.
+    """
+    if archetype not in CUTOVER_ARCHETYPES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"Unknown archetype {archetype!r}",
+                "valid_archetypes": sorted(CUTOVER_ARCHETYPES),
+            },
+        )
+    scenario_ids = SCENARIO_ARCHETYPE_MATRIX[archetype]
+    scenarios = [
+        _to_list_item(SCENARIO_REGISTRY[sid]).model_dump()
+        for sid in sorted(scenario_ids)
+        if sid in SCENARIO_REGISTRY
+    ]
+    return {
+        "archetype": archetype,
+        "total": len(scenarios),
+        "scenarios": scenarios,
+    }
+
+
+@router.get("/report/{run_id}")
+async def get_scenario_report(run_id: str) -> dict[str, object]:
+    """Return the ScenarioReport for a completed scenario run.
+
+    Phase 7.C — GCS parquet read path. Currently returns 501 because
+    ScenarioReportEmitter (Phase 2.C of the simulation plan) is DEFERRED
+    per compressed pre-cutover scope; the pre-cutover harness uses
+    in-memory + JSONL only. Wire GCS path here when Phase 2.C ships.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "message": f"Report for run_id={run_id!r} not available",
+            "reason": "ScenarioReportEmitter (Phase 2.C) deferred; pre-cutover harness uses in-memory + JSONL",
+            "run_id": run_id,
+        },
+    )

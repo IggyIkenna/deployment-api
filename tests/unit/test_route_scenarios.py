@@ -1,4 +1,4 @@
-"""Unit tests for routes/scenarios.py — Phase 7.A scenario list endpoint."""
+"""Unit tests for routes/scenarios.py — Phases 7.A + 7.C scenario endpoints."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ setup_events("deployment-api", "test")
 
 
 class TestListScenarios:
-    """Tests for the GET /api/scenarios/list endpoint."""
+    """Tests for GET /api/scenarios/list."""
 
     def test_list_all_returns_all_scenarios(self) -> None:
         import asyncio
@@ -96,3 +96,83 @@ class TestToListItem:
             assert item.asset_groups == sorted(item.asset_groups)
             assert item.expected_outcome_count == len(s.expected_outcomes)
             break
+
+
+class TestGetScenarioMatrix:
+    """Tests for GET /api/scenarios/matrix/{archetype}."""
+
+    def test_known_archetype_returns_scenarios(self) -> None:
+        import asyncio
+
+        from deployment_api.routes.scenarios import get_scenario_matrix
+
+        result = asyncio.run(get_scenario_matrix("carry_staked_basis"))
+        assert result["archetype"] == "carry_staked_basis"
+        assert isinstance(result["total"], int)
+        assert isinstance(result["scenarios"], list)
+
+    def test_matrix_scenarios_have_list_item_shape(self) -> None:
+        import asyncio
+
+        from deployment_api.routes.scenarios import get_scenario_matrix
+
+        result = asyncio.run(get_scenario_matrix("carry_staked_basis"))
+        for s in result["scenarios"]:
+            assert "scenario_id" in s
+            assert "category" in s
+            assert "asset_groups" in s
+
+    def test_unknown_archetype_raises_400(self) -> None:
+        import asyncio
+
+        import pytest
+        from fastapi import HTTPException
+
+        from deployment_api.routes.scenarios import get_scenario_matrix
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(get_scenario_matrix("nonexistent_archetype"))
+        assert exc_info.value.status_code == 400
+
+    def test_matrix_scenarios_sorted_by_id(self) -> None:
+        import asyncio
+
+        from unified_api_contracts import CUTOVER_ARCHETYPES
+
+        from deployment_api.routes.scenarios import get_scenario_matrix
+
+        for archetype in CUTOVER_ARCHETYPES:
+            result = asyncio.run(get_scenario_matrix(archetype))
+            ids = [s["scenario_id"] for s in result["scenarios"]]
+            assert ids == sorted(ids)
+
+
+class TestGetScenarioReport:
+    """Tests for GET /api/scenarios/report/{run_id}."""
+
+    def test_any_run_id_raises_501(self) -> None:
+        import asyncio
+
+        import pytest
+        from fastapi import HTTPException
+
+        from deployment_api.routes.scenarios import get_scenario_report
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(get_scenario_report("any-run-id"))
+        assert exc_info.value.status_code == 501
+
+    def test_501_detail_mentions_phase_2c(self) -> None:
+        import asyncio
+
+        import pytest
+        from fastapi import HTTPException
+
+        from deployment_api.routes.scenarios import get_scenario_report
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(get_scenario_report("test-run-123"))
+        detail = exc_info.value.detail
+        assert isinstance(detail, dict)
+        assert "Phase 2.C" in detail["reason"]
+        assert detail["run_id"] == "test-run-123"
