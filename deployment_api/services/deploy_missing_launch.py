@@ -71,7 +71,7 @@ def _build_events_uri(project_id: str, service: str, run_ts: str, vm_name: str) 
     """Construct events GCS URI matching base_service.py SSOT."""
     date_part = run_ts[:8]
     iso_date = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
-    return f"gs://{project_id}-events/events/{service}/{iso_date}/{vm_name}/"
+    return f"gs://{project_id}-events/events/{service}/{iso_date}/{vm_name}/"  # noqa: gs-uri  — events bucket env-tier pending Phase 2.6 sub-step
 
 
 def _get_latest_commit_timestamp(workspace_root: str) -> datetime | None:

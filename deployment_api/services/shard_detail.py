@@ -608,7 +608,7 @@ def _gcs_metadata(  # noqa: C901 — multi-field manifest status pipeline (GCS p
     reason for legacy rows immediately, without waiting for the
     Tier 3D.1 batch back-fill to land on this row.
     """
-    full_path = f"gs://{bucket}/{object_path}" if bucket and object_path else None
+    full_path = f"gs://{bucket}/{object_path}" if bucket and object_path else None  # noqa: gs-uri  — URI composer, bucket already resolved
     size_bytes: int | None = None
     captured_at: str | None = None
     if bucket and object_path:
@@ -913,7 +913,7 @@ def get_shard_detail(
         if resolved is not None:
             bucket, object_path = resolved
 
-    gs_uri: str | None = f"gs://{bucket}/{object_path}" if bucket and object_path else None
+    gs_uri: str | None = f"gs://{bucket}/{object_path}" if bucket and object_path else None  # noqa: gs-uri  — URI composer, bucket already resolved
 
     pq_row_count: int | None = None
     sample_rows: list[dict[str, object]] = []
@@ -1077,7 +1077,7 @@ def _read_instruments_day_df(*, bucket: str, venue: str, day: str, category: str
     last_err: Exception | None = None
     for alias in aliases:
         leaf_uri = (
-            f"gs://{bucket}/instrument_availability/by_date/day={day}/{partition_key}={alias}/instruments.parquet"
+            f"gs://{bucket}/instrument_availability/by_date/day={day}/{partition_key}={alias}/instruments.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
         )
         try:
             df = _read_parquet_columns(leaf_uri, None)

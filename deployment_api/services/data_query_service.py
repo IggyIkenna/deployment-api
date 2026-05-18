@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import build_bucket
+from unified_trading_library import build_bucket, resolve_bucket_name
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import (
@@ -463,7 +463,8 @@ class DataQueryService:
         deduplicate to ``(league_id, venue, instrument_type)`` for the search
         return, treating ``league_id`` as the ``canonical_id``.
         """
-        gs_uri = f"gs://instruments-store-sports-{self.project_id}/_index/availability_index.parquet"
+        _sports_bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+        gs_uri = f"gs://{_sports_bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket resolved via resolve_bucket_name
         df = self._read_parquet_columns_safe(gs_uri, ["league_id", "venue", "instrument_type"])
         if df is None or df.empty:
             return []
@@ -521,7 +522,7 @@ class DataQueryService:
                     venue = p[len("venue=") :]
                     break
             if venue:
-                per_venue[venue] = f"gs://{bucket}/{obj.name}"
+                per_venue[venue] = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved
         return per_venue
 
     def _extend_corpus_from_venue_parquet(

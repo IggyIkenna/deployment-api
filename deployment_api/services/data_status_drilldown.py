@@ -29,6 +29,7 @@ from unified_trading_library import (
     LEGACY_REASON_ASSET_GROUPS,
     classify_legacy_empty_row,
     read_availability_index,
+    resolve_bucket_name,
 )
 
 from deployment_api.settings import gcp_project_id as _pid
@@ -796,7 +797,7 @@ def _first_parquet_under_prefix(gs_prefix: str) -> str | None:
     for blob in blobs:
         name = getattr(blob, "name", None)
         if isinstance(name, str) and name.endswith(".parquet"):
-            return f"gs://{bucket}/{name}"
+            return f"gs://{bucket}/{name}"  # noqa: gs-uri  — URI composer, bucket already resolved
     return None
 
 
@@ -837,7 +838,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routi
     # instruments-service / corporate-actions: per-(venue, day) bundle.
     venue = axes.get("venue") or ""
     if svc in ("instruments-service", "corporate-actions") and venue:
-        candidates.append(f"gs://{bucket}/by_date/day={day}/venue={venue.upper()}/instruments.parquet")
+        candidates.append(f"gs://{bucket}/by_date/day={day}/venue={venue.upper()}/instruments.parquet")  # noqa: gs-uri  — URI composer, bucket already resolved
         return candidates
 
     # MTDS / MDPS / features-*: per-instrument (or bundle root for
@@ -854,7 +855,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routi
     timeframe = (axes.get("timeframe") or "").lower()
 
     if data_type_value and venue:
-        prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"
+        prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"  # noqa: gs-uri  — URI composer, bucket already resolved
         venue_partition = f"venue={venue.upper()}"
         if chain:
             venue_partition = f"venue={venue.upper()}-{chain}"
@@ -876,8 +877,8 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routi
         if venue:
             partitions += f"/venue={venue.upper()}"
         if instrument_id:
-            candidates.append(f"gs://{bucket}/{partitions}/{instrument_id}.parquet")
-        candidates.append(f"gs://{bucket}/{partitions}/")
+            candidates.append(f"gs://{bucket}/{partitions}/{instrument_id}.parquet")  # noqa: gs-uri  — URI composer, bucket already resolved
+        candidates.append(f"gs://{bucket}/{partitions}/")  # noqa: gs-uri  — URI composer, bucket already resolved
 
     # ML / strategy / execution: experiment-keyed partitions. The
     # writers may not yet emit job_id= (Phase 1B work) so we probe
@@ -888,14 +889,14 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routi
     strategy_id = axes.get("strategy_id") or ""
     instruction_type = (axes.get("instruction_type") or "").upper()
     if svc in ("ml-training-service", "ml-inference-service") and model_family:
-        base = f"gs://{bucket}/by_date/day={day}/model_family={model_family}"
+        base = f"gs://{bucket}/by_date/day={day}/model_family={model_family}"  # noqa: gs-uri  — URI composer, bucket already resolved
         if training_period:
             base += f"/training_period={training_period}"
         if job_id:
             candidates.append(f"{base}/job_id={job_id}/")
         candidates.append(f"{base}/")
     if svc in ("strategy-service", "execution-service") and strategy_id:
-        base = f"gs://{bucket}/by_date/day={day}/strategy_id={strategy_id}"
+        base = f"gs://{bucket}/by_date/day={day}/strategy_id={strategy_id}"  # noqa: gs-uri  — URI composer, bucket already resolved
         if instruction_type:
             base += f"/instruction_type={instruction_type}"
         if job_id:
@@ -1006,7 +1007,7 @@ def _collect_parquet_files(bucket: str, prefix: str) -> list[dict[str, object]]:
         size = getattr(o, "size", None)
         files.append(
             {
-                "file_uri": f"gs://{bucket}/{name}",
+                "file_uri": f"gs://{bucket}/{name}",  # noqa: gs-uri  — URI composer, bucket already resolved
                 "size_bytes": int(size) if isinstance(size, int) else 0,
                 "_name": name,
             }
@@ -1531,7 +1532,7 @@ def _count_distinct_in_other_bucket(
         if not isinstance(name, str) or not name.endswith(".parquet"):
             continue
         try:
-            return len(_distinct_values_in_parquet(f"gs://{bucket}/{name}", symbol_col))
+            return len(_distinct_values_in_parquet(f"gs://{bucket}/{name}", symbol_col))  # noqa: gs-uri  — URI composer, bucket already resolved
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Failed to read OTHER parquet %s: %s", name, exc)
     return 0
@@ -1560,7 +1561,7 @@ def _read_parquet_columns(gs_uri: str, columns: list[str] | None = None) -> pd.D
     import pyarrow.parquet as pq
 
     if not gs_uri.startswith("gs://"):
-        raise ValueError(f"Not a gs:// URI: {gs_uri}")
+        raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
     bucket_key = gs_uri[len("gs://") :]
     # gcsfs + pyarrow lack usable type stubs; we keep every cross-boundary
     # value narrowed to ``object`` and re-check at the DataFrame boundary.
@@ -1598,7 +1599,7 @@ def _parquet_schema_names(gs_uri: str) -> set[str]:
     import pyarrow.parquet as pq
 
     if not gs_uri.startswith("gs://"):
-        raise ValueError(f"Not a gs:// URI: {gs_uri}")
+        raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
     bucket_key = gs_uri[len("gs://") :]
     fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
     open_fn: object = getattr(fs_any, "open", None)
@@ -1771,8 +1772,8 @@ def build_fixtures_csv_export(
         raise ValueError(f"League {league_id} has no api_football_id — not sourced from API-Football")
     af_id = int(league.api_football_id)
 
-    pid = project_id or _pid
-    gs_uri = f"gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet"
+    _sports_bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+    gs_uri = f"gs://{_sports_bucket}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet"  # noqa: gs-uri  — URI composer, bucket resolved via resolve_bucket_name
 
     try:
         df = _read_parquet_columns(gs_uri)
@@ -1836,8 +1837,8 @@ _FIXTURE_META_ALIASES: dict[str, list[str]] = {
 
 
 def _entity_gs_uri(*, day: str, path_suffix: str, filename: str, project_id: str | None = None) -> str:
-    pid = project_id or _pid
-    return f"gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/{path_suffix}/{filename}"
+    _sports_bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+    return f"gs://{_sports_bucket}/sports_reference/by_date/day={day}/{path_suffix}/{filename}"  # noqa: gs-uri  — URI composer, bucket resolved via resolve_bucket_name
 
 
 def _probe_fid_column(gs_uri: str) -> tuple[str, str | None]:
@@ -2211,7 +2212,7 @@ def _list_pool_entities_for_venue(
         if key in seen:
             continue
         seen.add(key)
-        gs_uri = f"gs://{bucket}/{obj.name}"
+        gs_uri = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved
         out.append((instrument_type, data_type, gs_uri))
     return out
 
@@ -2521,7 +2522,7 @@ def build_instruments_shard_csv_export(
         )
 
     bucket = build_bucket_name(service, asset_group, project_id)
-    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"
+    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
 
     try:
         df = _read_parquet_columns(gs_uri)

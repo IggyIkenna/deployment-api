@@ -127,7 +127,7 @@ def _build_argv(
 
 def _build_events_uri(project_id: str, vm_name: str, run_ts: str) -> str:
     date_fmt = f"{run_ts[:4]}-{run_ts[4:6]}-{run_ts[6:8]}"
-    return f"gs://{project_id}-events/events/{_SERVICE}/{date_fmt}/{vm_name}/"
+    return f"gs://{project_id}-events/events/{_SERVICE}/{date_fmt}/{vm_name}/"  # noqa: gs-uri  — events bucket env-tier pending Phase 2.6 sub-step
 
 
 @router.post("/launch", response_model=MlExperimentLaunchResult)

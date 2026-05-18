@@ -448,7 +448,7 @@ def _build_events_uri(project_id: str, service: str, run_ts: str, vm_name: str) 
     """
     date_partition = run_ts[:8]  # YYYYMMDD → YYYY-MM-DD
     iso_date = f"{date_partition[:4]}-{date_partition[4:6]}-{date_partition[6:8]}"
-    return f"gs://{project_id}-events/events/{service}/{iso_date}/{vm_name}/"
+    return f"gs://{project_id}-events/events/{service}/{iso_date}/{vm_name}/"  # noqa: gs-uri  — events bucket env-tier pending Phase 2.6 sub-step
 
 
 def _stub_dry_run_result(

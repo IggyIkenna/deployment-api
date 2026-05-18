@@ -362,7 +362,7 @@ def get_hierarchical_drilldown(
     # ``read_availability_index`` takes the BUCKET NAME (no scheme), NOT
     # a ``gs://...`` URI — passing the URI silently returns an empty df.
     # Same call shape as ``data_status_service.py``'s preflight skip path.
-    manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"
+    manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
     df = read_availability_index(bucket)
     if df is None or len(df) == 0:
         return {

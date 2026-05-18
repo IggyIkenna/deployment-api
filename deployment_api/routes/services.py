@@ -208,8 +208,8 @@ async def discover_configs(
         from deployment_api.utils.cloud_storage_client import list_cloud_files
 
         # Validate cloud path format
-        if not cloud_path.startswith("gs://") and not cloud_path.startswith("s3://"):  # noqa: gs-uri
-            raise ValueError(f"Invalid cloud path format. Must start with gs:// or s3://. Got: {cloud_path}")
+        if not cloud_path.startswith("gs://") and not cloud_path.startswith("s3://"):
+            raise ValueError(f"Invalid cloud path format. Must start with gs:// or s3://. Got: {cloud_path}")  # noqa: gs-uri  — error message string, not a URI constructor
 
         # List all JSON files recursively (increased limit to 10000 for large config sets)
         all_files = list_cloud_files(cloud_path, "**/*.json", max_results=10000)
@@ -268,8 +268,8 @@ async def list_directories(
 
     def _list_directories_sync():
         # Validate cloud path format
-        if not cloud_path.startswith("gs://"):  # noqa: gs-uri
-            raise ValueError(f"Invalid GCS path format. Must start with gs://. Got: {cloud_path}")
+        if not cloud_path.startswith("gs://"):
+            raise ValueError(f"Invalid GCS path format. Must start with gs://. Got: {cloud_path}")  # noqa: gs-uri  — error message string, not a URI constructor
 
         # Parse bucket and prefix from gs:// path
         path_without_scheme = cloud_path[5:]  # Remove gs:// prefix
