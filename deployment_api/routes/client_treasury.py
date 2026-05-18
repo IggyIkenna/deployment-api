@@ -405,6 +405,7 @@ def _serialise_subscription_view(
     response_model=ClientTreasuryViewResponse,
     summary="Per-client treasury attribution view",
     tags=["Treasury"],
+    operation_id="client_treasury_phase6a_get",
 )
 async def get_client_treasury(client_id: str) -> ClientTreasuryViewResponse:
     """Return the treasury attribution view for a specific client.
@@ -444,6 +445,7 @@ async def get_client_treasury(client_id: str) -> ClientTreasuryViewResponse:
     response_model=ClientSubscriptionListResponse,
     summary="Per-client share-class subscription list",
     tags=["Treasury"],
+    operation_id="client_subscriptions_phase6b_get",
 )
 async def get_client_subscriptions(client_id: str) -> ClientSubscriptionListResponse:
     """Return all share-class subscriptions for a specific client.
