@@ -80,3 +80,55 @@ class TestFilteredEventsProdMode:
     def test_bad_since_returns_400(self, prod_client: TestClient) -> None:
         r = prod_client.get("/vm/cefi-backfill-20260515/events", params={"since": "not-a-date"})
         assert r.status_code == 400
+
+
+class TestFilterCombinations:
+    """Pagination + multi-param filter combos in mock mode."""
+
+    def test_type_and_limit_combined_respects_both(self, mock_client: TestClient) -> None:
+        r = mock_client.get(
+            "/vm/cefi-backfill-20260515/events",
+            params={"type": "STARTED", "limit": 1},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["events"]) <= 1
+        for evt in body["events"]:
+            assert evt["event"] == "STARTED"
+
+    def test_limit_1_returns_at_most_one_event(self, mock_client: TestClient) -> None:
+        r = mock_client.get("/vm/cefi-backfill-20260515/events", params={"limit": 1})
+        assert r.status_code == 200
+        assert len(r.json()["events"]) <= 1
+
+    def test_large_limit_returns_all_available(self, mock_client: TestClient) -> None:
+        r_default = mock_client.get("/vm/cefi-backfill-20260515/events")
+        r_large = mock_client.get("/vm/cefi-backfill-20260515/events", params={"limit": 5000})
+        assert r_default.status_code == 200
+        assert r_large.status_code == 200
+        assert r_large.json()["total_events"] == r_default.json()["total_events"]
+
+    def test_since_valid_iso_returns_200(self, mock_client: TestClient) -> None:
+        r = mock_client.get(
+            "/vm/cefi-backfill-20260515/events",
+            params={"since": "2026-05-15T00:00:00Z"},
+        )
+        assert r.status_code == 200
+        assert "events" in r.json()
+
+    def test_since_and_type_combined_returns_200(self, mock_client: TestClient) -> None:
+        r = mock_client.get(
+            "/vm/cefi-backfill-20260515/events",
+            params={"since": "2026-05-15T00:00:00Z", "type": "STARTED"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        for evt in body["events"]:
+            assert evt["event"] == "STARTED"
+
+    def test_truncated_flag_set_when_limit_cuts_results(self, mock_client: TestClient) -> None:
+        r_full = mock_client.get("/vm/cefi-backfill-20260515/events")
+        total = r_full.json()["total_events"]
+        if total > 1:
+            r = mock_client.get("/vm/cefi-backfill-20260515/events", params={"limit": 1})
+            assert r.json()["truncated"] is True

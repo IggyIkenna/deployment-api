@@ -7,10 +7,12 @@ from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 from unified_trading_library import setup_events
 
+from deployment_api.firebase_auth import verify_any_auth
+from deployment_api.middleware import RateLimitMiddleware
 from deployment_api.routes.cost_daily import VmCostRow, _aggregate, _parse_blob, router
 
 setup_events("deployment-api", "test")
@@ -149,9 +151,74 @@ class TestProdModeNoBlobs:
     def test_returns_zero_when_no_blobs(self, prod_client: TestClient) -> None:
         mock_storage = MagicMock()
         mock_storage.list_blobs.return_value = []
-        with patch(
-            "deployment_api.routes.cost_daily.get_storage_client", return_value=mock_storage
-        ):
+        with patch("deployment_api.routes.cost_daily.get_storage_client", return_value=mock_storage):
             r = prod_client.get("/costs/daily?date=2026-05-15")
         assert r.status_code == 200
         assert r.json()["total_usd"] == 0.0
+
+
+_PATCH_DISABLE_AUTH = "deployment_api.firebase_auth.DISABLE_AUTH"
+_PATCH_VERIFY_TOKEN = "deployment_api.firebase_auth._verify_firebase_id_token"
+_PATCH_AUTH_CFG = "deployment_api.auth._auth_cfg"
+
+
+def _make_authed_cost_app(rate_limit: int = 60) -> FastAPI:
+    """Mini app with auth + rate-limit wiring for cost endpoint."""
+    app = FastAPI()
+    app.add_middleware(RateLimitMiddleware, requests_per_minute=rate_limit)  # pyright: ignore[reportArgumentType]
+    authed = APIRouter(dependencies=[Depends(verify_any_auth)])
+    authed.include_router(router)
+    app.include_router(authed)
+    return app
+
+
+class TestCostEndpointAuthAndRateLimit:
+    def test_missing_auth_returns_401(self) -> None:
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_MOCK, return_value=True),
+        ):
+            client = TestClient(_make_authed_cost_app(), raise_server_exceptions=False)
+            r = client.get("/costs/daily?date=2026-05-15")
+        assert r.status_code == 401
+
+    def test_api_key_auth_returns_200(self) -> None:
+        mock_auth_cfg = type("cfg", (), {"api_key": "test-key"})()
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_AUTH_CFG, mock_auth_cfg),
+            patch(_PATCH_MOCK, return_value=True),
+        ):
+            client = TestClient(_make_authed_cost_app(), raise_server_exceptions=False)
+            r = client.get("/costs/daily?date=2026-05-15", headers={"X-API-Key": "test-key"})
+        assert r.status_code == 200
+
+    def test_firebase_token_returns_200(self) -> None:
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_VERIFY_TOKEN, return_value="user@example.com"),
+            patch(_PATCH_MOCK, return_value=True),
+        ):
+            client = TestClient(_make_authed_cost_app(), raise_server_exceptions=False)
+            r = client.get(
+                "/costs/daily?date=2026-05-15",
+                headers={"Authorization": "Bearer valid.jwt"},
+            )
+        assert r.status_code == 200
+
+    def test_rate_limit_429_after_threshold(self) -> None:
+        """Endpoint returns 429 once per-IP window is exhausted."""
+        with patch(_PATCH_MOCK, return_value=True):
+            client = TestClient(_make_authed_cost_app(rate_limit=2), raise_server_exceptions=False)
+            for _ in range(2):
+                client.get("/costs/daily?date=2026-05-15")
+            r = client.get("/costs/daily?date=2026-05-15")
+        assert r.status_code == 429
+
+    def test_rate_limit_429_has_retry_after_header(self) -> None:
+        with patch(_PATCH_MOCK, return_value=True):
+            client = TestClient(_make_authed_cost_app(rate_limit=2), raise_server_exceptions=False)
+            for _ in range(2):
+                client.get("/costs/daily?date=2026-05-15")
+            r = client.get("/costs/daily?date=2026-05-15")
+        assert r.headers.get("retry-after") == "60"
