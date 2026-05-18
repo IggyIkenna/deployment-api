@@ -348,9 +348,7 @@ class DataQueryService:
         query_tokens: list[str] = [t.lower() for t in query_normalised.split() if t.strip()]
 
         # Resolve category list to walk.
-        cats_to_walk: list[str] = (
-            [asset_group.lower()] if asset_group else list(self._SEARCH_CATEGORIES)
-        )
+        cats_to_walk: list[str] = [asset_group.lower()] if asset_group else list(self._SEARCH_CATEGORIES)
 
         all_matches: list[dict[str, str]] = []
         truncated = False
@@ -465,9 +463,7 @@ class DataQueryService:
         deduplicate to ``(league_id, venue, instrument_type)`` for the search
         return, treating ``league_id`` as the ``canonical_id``.
         """
-        gs_uri = (
-            f"gs://instruments-store-sports-{self.project_id}/_index/availability_index.parquet"
-        )
+        gs_uri = f"gs://instruments-store-sports-{self.project_id}/_index/availability_index.parquet"
         df = self._read_parquet_columns_safe(gs_uri, ["league_id", "venue", "instrument_type"])
         if df is None or df.empty:
             return []
@@ -588,12 +584,9 @@ class DataQueryService:
         Uses pyarrow + gcsfs locally. Failures (network, schema mismatch,
         missing column) return None so the caller can fall back gracefully.
         """
-        try:
-            import gcsfs  # type: ignore[import-untyped]
-            import pyarrow.parquet as pq  # type: ignore[import-untyped]
-        except ImportError:
-            logger.warning("search_instruments: pyarrow / gcsfs not installed")
-            return None
+        import gcsfs  # type: ignore[import-untyped]
+        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
         if not gs_uri.startswith("gs://"):
             return None
         bucket_key = gs_uri[len("gs://") :]
@@ -754,12 +747,8 @@ class DataQueryService:
             except ValueError as e:
                 return {"error": f"Invalid date format: {e}"}
 
-            avail_from = (
-                self._parse_avail_date(available_from, "available_from") if available_from else None
-            )
-            avail_to = (
-                self._parse_avail_date(available_to, "available_to") if available_to else None
-            )
+            avail_from = self._parse_avail_date(available_from, "available_from") if available_from else None
+            avail_to = self._parse_avail_date(available_to, "available_to") if available_to else None
 
             effective_start = max(start_dt, avail_from) if avail_from else start_dt
             effective_end = min(end_dt, avail_to) if avail_to else end_dt
@@ -794,9 +783,7 @@ class DataQueryService:
                     "total_days": total_days,
                     "available_days": available_days,
                     "missing_days": total_days - available_days,
-                    "availability_rate": (
-                        available_days / total_days * 100 if total_days > 0 else 0.0
-                    ),
+                    "availability_rate": (available_days / total_days * 100 if total_days > 0 else 0.0),
                 },
             }
 

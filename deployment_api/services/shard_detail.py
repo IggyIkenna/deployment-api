@@ -134,9 +134,7 @@ _GROUPED_DATA_TYPES: frozenset[str] = frozenset(
 )
 
 # Per-symbol instrument types — one parquet per instrument per day.
-_PER_SYMBOL_INSTRUMENT_TYPES: frozenset[str] = frozenset(
-    {"PERPETUAL", "SPOT_PAIR", "SPOT", "EQUITY", "FUTURE"}
-)
+_PER_SYMBOL_INSTRUMENT_TYPES: frozenset[str] = frozenset({"PERPETUAL", "SPOT_PAIR", "SPOT", "EQUITY", "FUTURE"})
 
 # Shard-class defaults per service when the (category, instrument_type,
 # data_type) tuple is otherwise ambiguous.  instruments-service always
@@ -231,9 +229,7 @@ def _column_dict(col: object) -> ShardSchemaColumn:
     )
 
 
-def _resolve_instrument_type_auto(
-    *, category: str, data_type: str, venue: str | None
-) -> str | None:
+def _resolve_instrument_type_auto(*, category: str, data_type: str, venue: str | None) -> str | None:
     """Resolve an ``instrument_type`` for a (category, data_type) pair.
 
     Used when the UI passes ``instrument_type=AUTO`` (or one of the other
@@ -259,16 +255,12 @@ def _resolve_instrument_type_auto(
     if venue:
         venue_norm = venue.upper()
         venue_matches: list[str] = sorted(
-            it
-            for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES
-            if c == cat_norm and v == venue_norm and dt == dt_norm
+            it for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES if c == cat_norm and v == venue_norm and dt == dt_norm
         )
         if venue_matches:
             return venue_matches[0]
 
-    base_matches: list[str] = sorted(
-        it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm
-    )
+    base_matches: list[str] = sorted(it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm)
     if base_matches:
         return base_matches[0]
     return None
@@ -291,9 +283,7 @@ def _resolve_schema(
     resolved_via: Literal["explicit", "auto", "none"]
     it_norm: str
     if is_auto:
-        auto_pick = _resolve_instrument_type_auto(
-            category=category, data_type=data_type, venue=venue
-        )
+        auto_pick = _resolve_instrument_type_auto(category=category, data_type=data_type, venue=venue)
         if auto_pick is None:
             return (
                 ShardSchema(
@@ -315,11 +305,7 @@ def _resolve_schema(
         it_norm = auto_pick
         resolved_via = "auto"
     else:
-        it_norm = (
-            (instrument_type or "").lower()
-            if (instrument_type or "").isupper()
-            else instrument_type
-        )
+        it_norm = (instrument_type or "").lower() if (instrument_type or "").isupper() else instrument_type
         resolved_via = "explicit"
 
     dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
@@ -553,9 +539,7 @@ def _manifest_row_for_coord(
     if df.empty or "date" not in df.columns:
         return None
 
-    mask = _manifest_coord_mask(
-        df, day=day, venue=venue, data_type=data_type, instrument_id=instrument_id
-    )
+    mask = _manifest_coord_mask(df, day=day, venue=venue, data_type=data_type, instrument_id=instrument_id)
     scoped = df.loc[mask]
     if scoped.empty:
         return None
@@ -755,17 +739,13 @@ def _read_parquet_footer_row_count(gs_uri: str) -> int | None:
         return None
 
 
-def _sample_rows(
-    *, gs_uri: str, limit: int, schema_columns: list[ShardSchemaColumn]
-) -> list[dict[str, object]]:
+def _sample_rows(*, gs_uri: str, limit: int, schema_columns: list[ShardSchemaColumn]) -> list[dict[str, object]]:
     """Return the first ``limit`` rows of the parquet as a list of dicts.
 
     Only projects the first 20 declared columns (or all columns when the
     schema is unknown) to keep the JSON payload small.
     """
-    project_cols: list[str] | None = (
-        [c.name for c in schema_columns[:20]] if schema_columns else None
-    )
+    project_cols: list[str] | None = [c.name for c in schema_columns[:20]] if schema_columns else None
     try:
         df: pd.DataFrame = _read_parquet_columns(gs_uri, project_cols)
     except (OSError, ValueError, RuntimeError) as exc:
@@ -824,11 +804,8 @@ def _parquet_signed_url(bucket: str | None, object_path: str | None) -> str | No
     """
     if not bucket or not object_path:
         return None
-    try:
-        from google.cloud import storage  # pyright: ignore[reportMissingImports]
-    except ImportError:
-        logger.debug("google-cloud-storage not importable; no signed URL available")
-        return None
+    from google.cloud import storage  # noqa: cloud-sdk-direct
+
     try:
         client: object = storage.Client(project=_pid)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
         bucket_obj_fn: object = getattr(client, "bucket", None)
@@ -942,9 +919,7 @@ def get_shard_detail(
     sample_rows: list[dict[str, object]] = []
     if gs_uri is not None:
         pq_row_count = _read_parquet_footer_row_count(gs_uri)
-        sample_rows = _sample_rows(
-            gs_uri=gs_uri, limit=_SAMPLE_ROW_LIMIT, schema_columns=schema.columns
-        )
+        sample_rows = _sample_rows(gs_uri=gs_uri, limit=_SAMPLE_ROW_LIMIT, schema_columns=schema.columns)
 
     # Manifest capture_status lookup — shard-scoped, never fatal.
     manifest_row: dict[str, str] | None = None
@@ -985,11 +960,7 @@ def get_shard_detail(
     payload_fixtures: ShardPayloadFixtures | None = None
 
     if shard_class == "grouped":
-        distinct = (
-            _distinct_symbols(gs_uri=gs_uri, symbol_column=schema.symbol_column)
-            if gs_uri is not None
-            else []
-        )
+        distinct = _distinct_symbols(gs_uri=gs_uri, symbol_column=schema.symbol_column) if gs_uri is not None else []
         payload_grouped = ShardPayloadGrouped(instrument_list=distinct)
     elif shard_class == "per_symbol":
         leaf = instrument_id or underlying or ""
@@ -998,9 +969,7 @@ def get_shard_detail(
         )
         payload_per_symbol = ShardPayloadPerSymbol(instrument_list=instrument_list)
     elif shard_class == "reference":
-        payload_reference = ShardPayloadReference(
-            instrument_definitions=list(sample_rows) if sample_rows else []
-        )
+        payload_reference = ShardPayloadReference(instrument_definitions=list(sample_rows) if sample_rows else [])
     elif shard_class == "fixtures":
         payload_fixtures = ShardPayloadFixtures(fixtures=list(sample_rows) if sample_rows else [])
 
@@ -1090,9 +1059,7 @@ def _partition_key_for_category(category: str) -> str:
     return "venue"
 
 
-def _read_instruments_day_df(
-    *, bucket: str, venue: str, day: str, category: str = ""
-) -> pd.DataFrame | None:
+def _read_instruments_day_df(*, bucket: str, venue: str, day: str, category: str = "") -> pd.DataFrame | None:
     """Read the instruments-service per-(venue, day) parquet, or ``None``.
 
     Tries every venue alias from :func:`_venue_aliases_for_bucket`. Falls
@@ -1110,8 +1077,7 @@ def _read_instruments_day_df(
     last_err: Exception | None = None
     for alias in aliases:
         leaf_uri = (
-            f"gs://{bucket}/instrument_availability/by_date/day={day}/"
-            f"{partition_key}={alias}/instruments.parquet"
+            f"gs://{bucket}/instrument_availability/by_date/day={day}/{partition_key}={alias}/instruments.parquet"
         )
         try:
             df = _read_parquet_columns(leaf_uri, None)
@@ -1127,13 +1093,12 @@ def _read_instruments_day_df(
             parquet_paths = [
                 getattr(o, "name", "")
                 for o in nested_objs
-                if isinstance(getattr(o, "name", None), str)
-                and getattr(o, "name", "").endswith("instruments.parquet")
+                if isinstance(getattr(o, "name", None), str) and getattr(o, "name", "").endswith("instruments.parquet")
             ]
             frames: list[pd.DataFrame] = []
             for path in parquet_paths:
-                # noqa rationale: function is GCS-locked (bucket arg from legacy UTL `build_bucket()` which is GCS-only).
-                # Cloud-agnostic migration tracked in deployment_api_shard_detail_gcs_locked_2026_05_17.md.
+                # gs-uri-rationale: GCS-locked (legacy UTL `build_bucket()` GCS-only).
+                # Cloud-agnostic migration: deployment_api_shard_detail_gcs_locked_2026_05_17.md.
                 gs_uri = f"gs://{bucket}/{path}"  # noqa: gs-uri
                 try:
                     sub_df = _read_parquet_columns(gs_uri, None)
@@ -1377,9 +1342,7 @@ def _typed_row(raw: object) -> dict[str, object] | None:
     return typed
 
 
-def _defi_composite_detail(
-    df: pd.DataFrame, *, venue: str, chain: str, protocol: str, day: str
-) -> VenueDetailResponse:
+def _defi_composite_detail(df: pd.DataFrame, *, venue: str, chain: str, protocol: str, day: str) -> VenueDetailResponse:
     """Build a composite (protocol-chain) DeFi venue-detail response."""
     if "protocol" in df.columns:
         df = df[df["protocol"].astype(str).str.upper() == protocol.upper()]
@@ -1405,9 +1368,7 @@ def _defi_composite_detail(
     )
 
 
-def _defi_chain_only_detail(
-    df: pd.DataFrame, *, venue: str, chain: str, day: str
-) -> VenueDetailResponse:
+def _defi_chain_only_detail(df: pd.DataFrame, *, venue: str, chain: str, day: str) -> VenueDetailResponse:
     """Build a chain-only DeFi venue-detail response with per-protocol aggregates."""
     protocols_agg: dict[str, dict[str, int]] = {}
     total_pools = 0
@@ -1442,9 +1403,7 @@ def _defi_chain_only_detail(
     )
 
 
-def _load_defi_df(
-    bucket: str, *, venue: str, chain: str, protocol: str | None, day: str
-) -> pd.DataFrame | None:
+def _load_defi_df(bucket: str, *, venue: str, chain: str, protocol: str | None, day: str) -> pd.DataFrame | None:
     """Try the composite file first; fall back to the chain file for composite venues."""
     df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day, category="DEFI")
     if (df is None or df.empty) and protocol is not None:
@@ -1783,7 +1742,7 @@ def get_leaf_parquet_stats(
             feature_family=family_from_group,
         )
     bucket, object_path = resolved
-    # noqa rationale: function GCS-locked (resolved tuple from upstream `build_bucket()` GCS-only helper).
+    # gs-uri-rationale: function GCS-locked (resolved tuple from upstream `build_bucket()` GCS-only helper).
     # Cloud-agnostic migration tracked in deployment_api_shard_detail_gcs_locked_2026_05_17.md.
     gs_uri = f"gs://{bucket}/{object_path}"  # noqa: gs-uri
     file_size = _file_size_via_metadata(bucket, object_path)

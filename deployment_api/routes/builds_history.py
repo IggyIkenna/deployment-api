@@ -60,18 +60,10 @@ class TarballInfo(BaseModel):
     """GCS tarball metadata (no full gs:// URI — callers compose from bucket + object_path)."""
 
     bucket: str = Field(..., description="GCS bucket name (without gs:// prefix).")
-    object_path: str = Field(
-        ..., description="Object path within bucket, e.g. code/strategy-service-code.tar.gz."
-    )
-    updated_at: datetime | None = Field(
-        default=None, description="Last-modified timestamp from GCS object metadata."
-    )
-    size_bytes: int | None = Field(
-        default=None, description="Object size in bytes from GCS metadata."
-    )
-    sha256_hex: str | None = Field(
-        default=None, description="SHA-256 from sibling manifest.json if present."
-    )
+    object_path: str = Field(..., description="Object path within bucket, e.g. code/strategy-service-code.tar.gz.")
+    updated_at: datetime | None = Field(default=None, description="Last-modified timestamp from GCS object metadata.")
+    size_bytes: int | None = Field(default=None, description="Object size in bytes from GCS metadata.")
+    sha256_hex: str | None = Field(default=None, description="SHA-256 from sibling manifest.json if present.")
 
 
 class BuildLineageEntry(BaseModel):
@@ -84,9 +76,7 @@ class BuildLineageEntry(BaseModel):
     image_tags: list[str] = Field(
         default_factory=list, description="Available Docker image tags from Artifact Registry."
     )
-    latest_image_tag: str | None = Field(
-        default=None, description="Most recent semver tag (highest version)."
-    )
+    latest_image_tag: str | None = Field(default=None, description="Most recent semver tag (highest version).")
 
 
 class BuildsHistoryResponse(BaseModel):
@@ -147,18 +137,12 @@ def _mock_entries(project_id: str, services: list[str], limit: int) -> list[Buil
     return entries
 
 
-async def _live_entries(
-    project_id: str, services: list[str], limit: int
-) -> list[BuildLineageEntry]:
+async def _live_entries(project_id: str, services: list[str], limit: int) -> list[BuildLineageEntry]:
     """Fetch tarball metadata from GCS + image tags from AR per service."""
-    try:
-        from google.cloud import (  # noqa: cloud-sdk-direct
-            artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs]
-        )
-        from google.cloud import storage as gcs_storage  # noqa: cloud-sdk-direct
-    except ImportError:
-        logger.warning("google-cloud libs unavailable; returning empty builds history")
-        return []
+    from google.cloud import (  # noqa: cloud-sdk-direct
+        artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs]
+    )
+    from google.cloud import storage as gcs_storage  # noqa: cloud-sdk-direct
 
     bucket_name = _tarball_bucket(project_id)
     try:
@@ -198,9 +182,7 @@ async def _live_entries(
         # --- AR image tags ---
         image_tags: list[str] = []
         try:
-            repo = (
-                f"projects/{project_id}/locations/asia-northeast1/repositories/{_CB_REGISTRY_REPO}"
-            )
+            repo = f"projects/{project_id}/locations/asia-northeast1/repositories/{_CB_REGISTRY_REPO}"
             parent = f"{repo}/packages/{svc}"
             pager: object = await ar_client.list_tags(parent=parent)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
             async for tag in pager:  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
@@ -225,12 +207,8 @@ async def _live_entries(
 
 @router.get("/history", response_model=BuildsHistoryResponse)
 async def list_builds_history(
-    service: str | None = Query(
-        default=None, description="Filter by service name. Omit to return all known services."
-    ),
-    limit: int = Query(
-        default=10, ge=1, le=100, description="Maximum number of service entries to return."
-    ),
+    service: str | None = Query(default=None, description="Filter by service name. Omit to return all known services."),
+    limit: int = Query(default=10, ge=1, le=100, description="Maximum number of service entries to return."),
 ) -> BuildsHistoryResponse:
     """Return tarball + Docker-image lineage for all known services (or a specific one)."""
     project_id = _cfg.gcp_project_id

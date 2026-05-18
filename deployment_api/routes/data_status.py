@@ -2080,12 +2080,10 @@ def _read_live_manifest_rows(asset_group: str) -> list[object]:
     so the endpoint stays responsive even when one asset_group's bucket
     is missing.
     """
-    try:
-        from unified_trading_library import read_availability_index
+    from unified_trading_library import read_availability_index
 
-        from deployment_api.services.data_status_drilldown import build_bucket_name
-    except ImportError:  # pragma: no cover — UTL not installed in mock envs
-        return []
+    from deployment_api.services.data_status_drilldown import build_bucket_name
+
     try:
         bucket = build_bucket_name(_LIVE_STATUS_SERVICE, asset_group)
     except ValueError:
