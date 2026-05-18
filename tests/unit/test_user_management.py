@@ -257,9 +257,7 @@ class TestUserManagementServiceCreate:
         store = {"viewer_at_example_com": dict(_VIEWER_DATA)}
         svc = UserManagementService()
         with patch(_PATCH_LOAD, return_value=store), pytest.raises(ValueError, match="already exists"):
-            svc.create_user(
-                CreateUserRequest(email="viewer@example.com", display_name="Dupe", role="viewer")
-            )
+            svc.create_user(CreateUserRequest(email="viewer@example.com", display_name="Dupe", role="viewer"))
 
 
 class TestUserManagementServiceUpdate:

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from deployment_api.routes.shard_management import (
     _asset_group_from_shard_dims,
@@ -26,12 +25,10 @@ from deployment_api.routes.shard_management import (
     build_existing_dates_sets,
     classify_all_shards,
     compute_classification_counts,
-    compute_completed_breakdown,
     get_all_zones_for_vm_lookup,
     get_state_date_range,
     resolve_shard_blob_data,
 )
-
 
 # ── _get_shards ───────────────────────────────────────────────────────────────
 
