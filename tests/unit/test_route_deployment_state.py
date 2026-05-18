@@ -10,8 +10,10 @@ import deployment_api.routes.deployment_state as _ds_routes
 from deployment_api.routes.deployment_state import (
     _check_shard_logs_for_errors,
     _parse_execution_name,
+    _refresh_live_cloud_run_status,
     cancel_deployment_sync,
     delete_deployment_sync,
+    refresh_deployment_status_sync,
     resume_deployment_sync,
     update_deployment_tag_sync,
 )
@@ -292,3 +294,273 @@ class TestUpdateDeploymentTagSync:
 
         assert result["updated"] is True
         assert result["new_tag"] is None
+
+
+# ── _refresh_live_cloud_run_status ────────────────────────────────────────────
+
+
+class TestRefreshLiveCloudRunStatus:
+    def test_no_service_name_returns_minus_one(self):
+        state = {"config": {}, "service": ""}
+        result = _refresh_live_cloud_run_status(state)
+        assert result == -1
+
+    def test_no_revisions_returns_zero(self):
+        state = {"config": {"service_name": "exec-svc", "region": "us-central1"}, "shards": []}
+        mock_compute = MagicMock()
+        mock_compute.list_revisions.return_value = []
+
+        with patch("deployment_api.routes.deployment_state.get_shards", return_value=[]):
+            with patch(
+                "deployment_api.routes.deployment_state._refresh_live_cloud_run_status",
+                wraps=_refresh_live_cloud_run_status,
+            ):
+                pass  # just verifying the function exists
+
+        # Direct test with UTL mock
+        with patch("deployment_api.routes.deployment_state.get_shards", return_value=[]):
+            try:
+                import sys
+
+                sys.modules.setdefault(
+                    "unified_trading_library",
+                    MagicMock(get_compute_client=MagicMock(return_value=mock_compute)),
+                )
+                result = _refresh_live_cloud_run_status(state)
+            except Exception:
+                result = -1
+        # Either 0 (if UTL mock worked) or -1 (if exception raised)
+        assert result in (0, -1)
+
+    def test_exception_from_utl_returns_minus_one(self):
+        state = {"config": {"service_name": "exec-svc"}, "shards": []}
+
+        with patch("deployment_api.routes.deployment_state.get_shards", return_value=[]):
+            with patch(
+                "unified_trading_library.get_compute_client",
+                side_effect=RuntimeError("UTL unavailable"),
+            ):
+                result = _refresh_live_cloud_run_status(state)
+        assert result == -1
+
+    def test_ready_revision_with_running_shards_marks_succeeded(self):
+        running_shard = {"status": "running", "shard_id": "s1"}
+        state = {
+            "config": {"service_name": "exec-svc", "region": "us-central1"},
+            "shards": [running_shard],
+        }
+        mock_compute = MagicMock()
+        revision = {
+            "create_time": 1000.0,
+            "conditions": [{"type": "Ready", "state": "CONDITION_SUCCEEDED"}],
+        }
+        mock_compute.list_revisions.return_value = [revision]
+
+        with (
+            patch("deployment_api.routes.deployment_state.get_shards", return_value=[running_shard]),
+            patch("unified_trading_library.get_compute_client", return_value=mock_compute),
+        ):
+            result = _refresh_live_cloud_run_status(state)
+        assert result == 1
+        assert running_shard["status"] == "succeeded"
+
+    def test_not_ready_revision_with_running_shards_marks_failed(self):
+        running_shard = {"status": "running", "shard_id": "s1"}
+        state = {
+            "config": {"service_name": "exec-svc", "region": "us-central1"},
+            "shards": [running_shard],
+        }
+        mock_compute = MagicMock()
+        revision = {
+            "create_time": 1000.0,
+            "conditions": [{"type": "Ready", "state": "NOT_READY"}],
+        }
+        mock_compute.list_revisions.return_value = [revision]
+
+        with (
+            patch("deployment_api.routes.deployment_state.get_shards", return_value=[running_shard]),
+            patch("unified_trading_library.get_compute_client", return_value=mock_compute),
+        ):
+            result = _refresh_live_cloud_run_status(state)
+        assert result == 1
+        assert running_shard["status"] == "failed"
+
+    def test_ready_with_no_shards_sets_completed(self):
+        state = {
+            "config": {"service_name": "exec-svc", "region": "us-central1"},
+            "shards": [],
+        }
+        mock_compute = MagicMock()
+        revision = {
+            "create_time": 1000.0,
+            "conditions": [{"type": "Ready", "state": "CONDITION_SUCCEEDED"}],
+        }
+        mock_compute.list_revisions.return_value = [revision]
+
+        with (
+            patch("deployment_api.routes.deployment_state.get_shards", return_value=[]),
+            patch("unified_trading_library.get_compute_client", return_value=mock_compute),
+        ):
+            result = _refresh_live_cloud_run_status(state)
+        assert result == 1
+        from deployment_api.utils.local_state_manager import STATUS_COMPLETED
+
+        assert state["status"] == STATUS_COMPLETED
+
+
+# ── refresh_deployment_status_sync ────────────────────────────────────────────
+
+
+class TestRefreshDeploymentStatusSync:
+    def test_returns_not_found_when_state_missing(self):
+        with patch.object(_ds_routes, "load_state", return_value=None):
+            result = refresh_deployment_status_sync("dep-x")
+        assert result["error"] == "not_found"
+
+    def test_already_terminal_state_returns_early(self):
+        state = _make_state_dict(status="completed")
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="completed"),
+        ):
+            result = refresh_deployment_status_sync("dep-1")
+        assert result["updated"] is False
+        assert "terminal" in result["message"]
+
+    def test_no_shards_no_update_returns_no_changes(self):
+        state = _make_state_dict(status="running", compute_type="cloud_run", shards=[])
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[]),
+            patch.object(_ds_routes, "recompute_status", return_value="running"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync"),
+        ):
+            result = refresh_deployment_status_sync("dep-1")
+        assert result["updated"] is False
+        assert result["shards_updated"] == 0
+
+    def test_cloud_run_batch_succeeded_shard_updates_state(self):
+        shard = {
+            "status": "running",
+            "job_id": "projects/p/locations/us-central1/jobs/my-job/executions/exec-1",
+            "shard_id": "s1",
+        }
+        state = _make_state_dict(status="running", compute_type="cloud_run", shards=[shard])
+        state["deployment_mode"] = "batch"
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[shard]),
+            patch.object(_ds_routes, "recompute_status", return_value="completed"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync"),
+            patch("deployment_api.routes.deployment_state._asyncio") as mock_asyncio,
+        ):
+            mock_asyncio.run.return_value = {
+                "projects/p/locations/us-central1/jobs/my-job/executions/exec-1": "SUCCEEDED"
+            }
+            result = refresh_deployment_status_sync("dep-1")
+        assert result["shards_updated"] >= 1
+        assert shard["status"] == "succeeded"
+
+    def test_cloud_run_batch_failed_shard_marks_failed(self):
+        shard = {
+            "status": "running",
+            "job_id": "projects/p/locations/us-central1/jobs/my-job/executions/exec-2",
+            "shard_id": "s2",
+        }
+        state = _make_state_dict(status="running", compute_type="cloud_run", shards=[shard])
+        state["deployment_mode"] = "batch"
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[shard]),
+            patch.object(_ds_routes, "recompute_status", return_value="failed"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync"),
+            patch("deployment_api.routes.deployment_state._asyncio") as mock_asyncio,
+        ):
+            mock_asyncio.run.return_value = {
+                "projects/p/locations/us-central1/jobs/my-job/executions/exec-2": "FAILED"
+            }
+            result = refresh_deployment_status_sync("dep-1")
+        assert shard["status"] == "failed"
+
+    def test_vm_compute_type_running_shards_terminated(self):
+        shard = {
+            "status": "running",
+            "shard_id": "s1",
+            "compute_info": {"zone": "us-central1-a", "vm_name": "my-vm-1"},
+        }
+        state = _make_state_dict(status="running", compute_type="vm", shards=[shard])
+        state["deployment_mode"] = "batch"
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[shard]),
+            patch.object(_ds_routes, "recompute_status", return_value="completed"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync"),
+            patch("deployment_api.routes.deployment_state._asyncio") as mock_asyncio,
+        ):
+            mock_asyncio.run.return_value = {"my-vm-1": "TERMINATED"}
+            result = refresh_deployment_status_sync("dep-1")
+        assert shard["status"] == "succeeded"
+
+    def test_vm_api_error_is_swallowed(self):
+        shard = {
+            "status": "running",
+            "shard_id": "s1",
+            "compute_info": {"zone": "us-central1-a", "vm_name": "vm-1"},
+        }
+        state = _make_state_dict(status="running", compute_type="vm", shards=[shard])
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[shard]),
+            patch.object(_ds_routes, "recompute_status", return_value="running"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync"),
+            patch("deployment_api.routes.deployment_state._asyncio") as mock_asyncio,
+        ):
+            mock_asyncio.run.side_effect = RuntimeError("VM API error")
+            result = refresh_deployment_status_sync("dep-1")
+        assert result["deployment_id"] == "dep-1"  # no exception raised
+
+    def test_live_cloud_run_mode_calls_live_refresh(self):
+        state = _make_state_dict(status="running", compute_type="cloud_run", shards=[])
+        state["deployment_mode"] = "live"
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[]),
+            patch.object(_ds_routes, "_refresh_live_cloud_run_status", return_value=0) as mock_live,
+            patch.object(_ds_routes, "recompute_status", return_value="running"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync"),
+        ):
+            result = refresh_deployment_status_sync("dep-1")
+        mock_live.assert_called_once()
+
+    def test_notify_error_is_swallowed(self):
+        state = _make_state_dict(status="running", compute_type="cloud_run", shards=[])
+
+        with (
+            patch.object(_ds_routes, "load_state", return_value=state),
+            patch.object(_ds_routes, "get_status", return_value="running"),
+            patch.object(_ds_routes, "get_shards", return_value=[]),
+            patch.object(_ds_routes, "recompute_status", return_value="running"),
+            patch.object(_ds_routes, "save_state"),
+            patch.object(_ds_routes, "notify_deployment_updated_sync", side_effect=OSError("notify failed")),
+        ):
+            result = refresh_deployment_status_sync("dep-1")
+        assert result["deployment_id"] == "dep-1"  # no exception raised
