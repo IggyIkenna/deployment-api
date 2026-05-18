@@ -57,7 +57,10 @@ async def get_current_user_role(
     if profile is None:
         return UserRole.VIEWER
 
-    return UserRole(profile.role)
+    try:
+        return UserRole(profile.role)
+    except ValueError:
+        return UserRole.VIEWER
 
 
 def require_permission(
