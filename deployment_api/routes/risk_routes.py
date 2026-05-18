@@ -146,7 +146,7 @@ def _to_decimal(value: str | float | int | None) -> Decimal | None:
     except (InvalidOperation, ValueError) as err:
         raise HTTPException(
             status_code=422,
-            detail=f"Cannot coerce {value!r} to Decimal: {err}",
+            detail=f"Parameter value {value!r} is not a valid decimal number",
         ) from err
 
 

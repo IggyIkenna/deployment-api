@@ -372,7 +372,7 @@ def list_vm_events(
         try:
             date, from_hour = _parse_since(since)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
     resolved_service = service if service is not None else _infer_service_from_vm_name(vm_name)
     resolved_date = _normalise_date(date)
     start_hour, end_hour = _normalise_hour_range(from_hour, to_hour, resolved_date)
@@ -444,7 +444,7 @@ def list_filtered_vm_events(
             _parse_since(since) if since is not None else (datetime.now(UTC).strftime("%Y-%m-%d"), 0)
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
 
     try:
         real_result = _list_real_events(
@@ -458,7 +458,7 @@ def list_filtered_vm_events(
             next_page_token=None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
 
     filtered = [e for e in real_result.events if type is None or e.event == type]
     limited = filtered[:limit]
@@ -616,7 +616,7 @@ def tail_vm_logs(
         try:
             date, from_hour = _parse_since(since)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
     else:
         date = datetime.now(UTC).strftime("%Y-%m-%d")
         from_hour = 0

@@ -553,7 +553,7 @@ async def approve_withdrawal(
     try:
         chain.add_approval(sig)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"message": str(exc)}) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid approval signature: {exc}") from exc
 
     _emit_cloud_audit_log(
         operation="withdrawal_approval",

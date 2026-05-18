@@ -67,7 +67,7 @@ async def get_shard_detail_route(
             instrument_id=instrument_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
     except (OSError, RuntimeError):
         logger.exception("shard-detail failed for %s/%s/%s", service, asset_group, venue)
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from None
@@ -121,7 +121,7 @@ async def get_leaf_parquet_stats_route(
             feature_group=feature_group,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
     except (OSError, RuntimeError):
         logger.exception("leaf-stats failed for %s/%s/%s/%s", service, asset_group, venue, data_type)
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from None
@@ -142,7 +142,7 @@ async def get_venue_detail_route(
             venue=venue,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"Invalid input: {exc}") from exc
     except (OSError, RuntimeError):
         logger.exception("venue-detail failed for %s/%s/%s", service, asset_group, venue)
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from None

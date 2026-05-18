@@ -168,7 +168,7 @@ def launch_execution_backtest(
             logger.error("execution-backtest launcher failed: %s", result.stderr[:2000])
             raise HTTPException(
                 status_code=502,
-                detail=f"Launcher exited {result.returncode}: {result.stderr[:500]}",
+                detail=f"Launcher exited with code {result.returncode} — check server logs for details",
             )
         effective_argv: list[str] = []
     else:

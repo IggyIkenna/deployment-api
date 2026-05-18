@@ -109,7 +109,7 @@ class TestApproveWithdrawalHappyPath:
                 await approve_withdrawal("client-alpha", "wid-001", _small_approval_body("operator:harsh"))
 
         assert exc.value.status_code == 400
-        assert "quorum already reached" in exc.value.detail["message"]
+        assert "quorum already reached" in str(exc.value.detail)
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ class TestApproveWithdrawalValidation:
                 await approve_withdrawal("client-alpha", "wid-006", body)
 
         assert exc.value.status_code == 400
-        assert "not in pool" in exc.value.detail["message"]
+        assert "not in pool" in str(exc.value.detail)
 
 
 # ---------------------------------------------------------------------------
