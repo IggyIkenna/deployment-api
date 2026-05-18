@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,
 )
+from unified_trading_library import log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.rbac import require_permission
@@ -67,6 +68,11 @@ def cancel_vm(
     """
     if _cfg.is_mock_mode():
         logger.info("mock cancel for vm_name=%s", vm_name)
+        log_event(
+            "VM_CANCEL_REQUESTED",
+            severity="WARNING",
+            details={"vm_name": vm_name, "mock": True},
+        )
         return AdminActionResult(
             vm_name=vm_name,
             action="cancel",
@@ -98,6 +104,11 @@ def cancel_vm(
         raise HTTPException(status_code=502, detail="Failed to persist cancel") from exc
 
     logger.info("cancelled vm_name=%s deployment_id=%s", vm_name, entry.deployment_id)
+    log_event(
+        "VM_CANCEL_REQUESTED",
+        severity="WARNING",
+        details={"vm_name": vm_name, "deployment_id": entry.deployment_id, "mock": False},
+    )
     return AdminActionResult(
         vm_name=vm_name,
         action="cancel",
@@ -118,6 +129,11 @@ def pause_vm(
     Returns 202; the VM may not pause immediately.
     """
     if _cfg.is_mock_mode():
+        log_event(
+            "VM_PAUSE_REQUESTED",
+            severity="INFO",
+            details={"vm_name": vm_name, "mock": True},
+        )
         return AdminActionResult(
             vm_name=vm_name,
             action="pause",
@@ -133,6 +149,11 @@ def pause_vm(
         raise HTTPException(status_code=502, detail="Failed to write pause signal") from exc
 
     logger.info("pause signal written for vm_name=%s key=%s", vm_name, signal_key)
+    log_event(
+        "VM_PAUSE_REQUESTED",
+        severity="INFO",
+        details={"vm_name": vm_name, "signal_key": signal_key, "mock": False},
+    )
     return AdminActionResult(
         vm_name=vm_name,
         action="pause",
@@ -151,6 +172,11 @@ def resume_vm(
     Returns 202. If no pause signal exists, returns success (idempotent).
     """
     if _cfg.is_mock_mode():
+        log_event(
+            "VM_RESUME_REQUESTED",
+            severity="INFO",
+            details={"vm_name": vm_name, "mock": True},
+        )
         return AdminActionResult(
             vm_name=vm_name,
             action="resume",
@@ -166,6 +192,11 @@ def resume_vm(
         raise HTTPException(status_code=502, detail="Failed to clear pause signal") from exc
 
     logger.info("resume signal cleared for vm_name=%s", vm_name)
+    log_event(
+        "VM_RESUME_REQUESTED",
+        severity="INFO",
+        details={"vm_name": vm_name, "mock": False},
+    )
     return AdminActionResult(
         vm_name=vm_name,
         action="resume",

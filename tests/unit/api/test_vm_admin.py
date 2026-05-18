@@ -73,6 +73,39 @@ class TestResumeMockMode:
         assert r.json()["vm_name"] == "ml-train-defi-20260515"
 
 
+class TestAuditEmissions:
+    """Verify log_event is called for every VM admin action (mock mode)."""
+
+    _PATCH_LOG = "deployment_api.routes.vm_admin.log_event"
+
+    def test_cancel_emits_audit_event(self, mock_client: TestClient) -> None:
+        with patch(self._PATCH_LOG) as mock_log:
+            mock_client.post("/vm/admin/backfill-cefi-20260515/cancel")
+        mock_log.assert_called_once()
+        call_args = mock_log.call_args
+        assert call_args[0][0] == "VM_CANCEL_REQUESTED"
+        assert call_args[1]["severity"] == "WARNING"
+        assert call_args[1]["details"]["vm_name"] == "backfill-cefi-20260515"
+
+    def test_pause_emits_audit_event(self, mock_client: TestClient) -> None:
+        with patch(self._PATCH_LOG) as mock_log:
+            mock_client.post("/vm/admin/my-vm-123/pause")
+        mock_log.assert_called_once()
+        call_args = mock_log.call_args
+        assert call_args[0][0] == "VM_PAUSE_REQUESTED"
+        assert call_args[1]["severity"] == "INFO"
+        assert call_args[1]["details"]["vm_name"] == "my-vm-123"
+
+    def test_resume_emits_audit_event(self, mock_client: TestClient) -> None:
+        with patch(self._PATCH_LOG) as mock_log:
+            mock_client.post("/vm/admin/ml-train-defi-20260515/resume")
+        mock_log.assert_called_once()
+        call_args = mock_log.call_args
+        assert call_args[0][0] == "VM_RESUME_REQUESTED"
+        assert call_args[1]["severity"] == "INFO"
+        assert call_args[1]["details"]["vm_name"] == "ml-train-defi-20260515"
+
+
 class TestCancelProdMode:
     def test_cancel_404_when_not_found(self, prod_client: TestClient) -> None:
         with patch("deployment_api.routes.vm_admin.DeploymentsRegistry") as mock_reg_cls:
