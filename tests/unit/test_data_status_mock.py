@@ -86,7 +86,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="CEFI",
+            asset_group="CEFI",
             dates_expected=100,
             captured_total=90,
             empty_total=5,
@@ -100,7 +100,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="SPORTS",
+            asset_group="SPORTS",
             dates_expected=200,
             captured_total=150,
             empty_total=40,
@@ -112,7 +112,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="PREDICTION",
+            asset_group="PREDICTION",
             dates_expected=800,
             captured_total=200,
             empty_total=500,
@@ -125,7 +125,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="CEFI",
+            asset_group="CEFI",
             dates_expected=10,
             captured_total=8,
             empty_total=0,
@@ -139,7 +139,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="CEFI",
+            asset_group="CEFI",
             dates_expected=10,
             captured_total=10,
             empty_total=0,
@@ -151,7 +151,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="CEFI",
+            asset_group="CEFI",
             dates_expected=30,
             captured_total=27,
             empty_total=2,
@@ -165,7 +165,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="TRADFI",
+            asset_group="TRADFI",
             dates_expected=100,
             captured_total=90,
             empty_total=5,
@@ -181,7 +181,7 @@ class TestMockCategoryEntry:
         from deployment_api.services.data_status_mock import _mock_category_entry
 
         result = _mock_category_entry(
-            category="UNKNOWN",
+            asset_group="UNKNOWN",
             dates_expected=10,
             captured_total=8,
             empty_total=1,
@@ -287,7 +287,7 @@ class TestBuildMockShardInstruments:
 
         result = build_mock_shard_instruments(
             service="instruments-service",
-            category="CEFI",
+            asset_group="CEFI",
             venue="BINANCE",
             day="2024-01-01",
             instrument_type="spot",
@@ -302,7 +302,7 @@ class TestBuildMockShardInstruments:
 
         result = build_mock_shard_instruments(
             service="instruments-service",
-            category="CEFI",
+            asset_group="CEFI",
             venue="BINANCE",
             day="2024-01-01",
             instrument_type="spot",
@@ -318,7 +318,7 @@ class TestBuildMockShardInstruments:
 
         result = build_mock_shard_instruments(
             service="instruments-service",
-            category="CEFI",
+            asset_group="CEFI",
             venue="BINANCE",
             day="2024-01-01",
             instrument_type="spot",
@@ -331,7 +331,7 @@ class TestBuildMockShardInstruments:
 
         result = build_mock_shard_instruments(
             service="svc",
-            category="DEFI",
+            asset_group="DEFI",
             venue="UNISWAP",
             day="2024-06-01",
             instrument_type="lp",
@@ -346,7 +346,7 @@ class TestBuildMockShardInstruments:
 
         result = build_mock_shard_instruments(
             service="instruments-service",
-            category="CEFI",
+            asset_group="CEFI",
             venue="BINANCE",
             day="2024-01-01",
             instrument_type="spot",
