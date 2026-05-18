@@ -36,6 +36,10 @@ from pydantic import BaseModel, Field
 from unified_trading_library import log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.messages import (
+    EXECUTION_SERVICE_UNREACHABLE_REJECT,
+    EXECUTION_SERVICE_UNREACHABLE_UNHOLD,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -196,9 +200,7 @@ async def approve_instruction(instruction_id: str) -> ApproveRejectResponse:
             resp = await client.post(exec_url)
     except httpx.RequestError as exc:
         logger.error("[manual_pending] execution-service unreachable for approve: %s", exc)
-        raise HTTPException(
-            status_code=502, detail="execution-service unreachable — cannot unhold instruction"
-        ) from exc
+        raise HTTPException(status_code=502, detail=EXECUTION_SERVICE_UNREACHABLE_UNHOLD) from exc
     if resp.status_code not in (200, 201):
         logger.error(
             "[manual_pending] execution-service approve returned %d: %s",
@@ -261,9 +263,7 @@ async def reject_instruction(
             resp = await client.post(exec_url, json={"reason": body.reason})
     except httpx.RequestError as exc:
         logger.error("[manual_pending] execution-service unreachable for reject: %s", exc)
-        raise HTTPException(
-            status_code=502, detail="execution-service unreachable — cannot reject instruction"
-        ) from exc
+        raise HTTPException(status_code=502, detail=EXECUTION_SERVICE_UNREACHABLE_REJECT) from exc
     if resp.status_code not in (200, 201):
         logger.error(
             "[manual_pending] execution-service reject returned %d: %s",
