@@ -29,15 +29,19 @@ from datetime import UTC, datetime
 from os import environ as _process_env
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from unified_api_contracts.internal import (
     BackfillLaunchRequest,
     BackfillLaunchResult,
     BackfillLaunchTaskKind,
 )
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+    Permission,
+)
 from unified_trading_library import log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.rbac import require_permission
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -477,7 +481,10 @@ def _stub_dry_run_result(
 
 
 @router.post("/launch", response_model=BackfillLaunchResult)
-def launch_backfill(request: BackfillLaunchRequest) -> BackfillLaunchResult:
+def launch_backfill(
+    request: BackfillLaunchRequest,
+    _rbac: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
+) -> BackfillLaunchResult:
     """Launch a backfill VM via the deployment-service launcher script.
 
     Auth is enforced upstream by `_authenticated_router` (verify_api_key).

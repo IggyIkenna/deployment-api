@@ -16,11 +16,15 @@ from datetime import UTC, datetime
 from os import environ as _process_env
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
+    Permission,
+)
 from unified_trading_library import log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.rbac import require_permission
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -115,6 +119,7 @@ def _build_events_uri(project_id: str, vm_name: str, launched_at: datetime) -> s
 @router.post("/launch", response_model=StrategyBacktestLaunchResult)
 def launch_strategy_backtest(
     request: StrategyBacktestLaunchRequest,
+    _rbac: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
 ) -> StrategyBacktestLaunchResult:
     """Launch a strategy config-grid backtest VM for the given archetype."""
     archetype_norm = request.archetype.lower()

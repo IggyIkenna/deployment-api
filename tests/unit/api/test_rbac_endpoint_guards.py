@@ -11,6 +11,7 @@ the patch context stays alive during the test (not just during fixture setup).
 from __future__ import annotations
 
 from collections.abc import Generator
+from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -153,3 +154,197 @@ class TestChaosInjectionsRbac:
         """SUPER_ADMIN DELETE on missing id → 404 (RBAC passed, business logic ran)."""
         r = super_admin_client.delete("/chaos/injections/chaos_nonexistent")
         assert r.status_code == 404
+
+
+# ── backfill_launch RBAC ──────────────────────────────────────────────────────
+
+
+class TestBackfillLaunchRbac:
+    """POST /launch requires DEPLOY_TRIGGER; VIEWER → 403, OPERATOR → 200."""
+
+    _PAYLOAD: ClassVar[dict[str, object]] = {
+        "task": "cefi_backfill",
+        "asset_group": "cefi",
+        "start_date": "2024-01-01",
+        "end_date": "2024-01-31",
+        "dry_run": True,
+    }
+
+    @pytest.fixture
+    def viewer_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.backfill_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.VIEWER)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    @pytest.fixture
+    def operator_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.backfill_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.OPERATOR)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    def test_viewer_returns_403(self, viewer_client: TestClient) -> None:
+        r = viewer_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code == 403
+        assert "Insufficient permissions" in r.json()["detail"]
+
+    def test_operator_rbac_passes(self, operator_client: TestClient) -> None:
+        r = operator_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code != 403
+
+
+# ── ml_experiment_launch RBAC ─────────────────────────────────────────────────
+
+
+class TestMlExperimentLaunchRbac:
+    """POST /launch requires DEPLOY_TRIGGER; VIEWER → 403, OPERATOR → non-403."""
+
+    _PAYLOAD: ClassVar[dict[str, object]] = {
+        "asset_group": "cefi",
+        "instruments": ["BTC"],
+        "dry_run": True,
+    }
+
+    @pytest.fixture
+    def viewer_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.ml_experiment_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.VIEWER)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    @pytest.fixture
+    def operator_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.ml_experiment_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.OPERATOR)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    def test_viewer_returns_403(self, viewer_client: TestClient) -> None:
+        r = viewer_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code == 403
+        assert "Insufficient permissions" in r.json()["detail"]
+
+    def test_operator_rbac_passes(self, operator_client: TestClient) -> None:
+        r = operator_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code != 403
+
+
+# ── strategy_backtest_launch RBAC ─────────────────────────────────────────────
+
+
+class TestStrategyBacktestLaunchRbac:
+    """POST /launch requires DEPLOY_TRIGGER; VIEWER → 403, OPERATOR → non-403."""
+
+    _PAYLOAD: ClassVar[dict[str, object]] = {
+        "archetype": "carry_staked_basis",
+        "start_date": "2024-01-01",
+        "end_date": "2024-01-31",
+        "dry_run": True,
+    }
+
+    @pytest.fixture
+    def viewer_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.strategy_backtest_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.VIEWER)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    @pytest.fixture
+    def operator_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.strategy_backtest_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.OPERATOR)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    def test_viewer_returns_403(self, viewer_client: TestClient) -> None:
+        r = viewer_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code == 403
+        assert "Insufficient permissions" in r.json()["detail"]
+
+    def test_operator_rbac_passes(self, operator_client: TestClient) -> None:
+        r = operator_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code != 403
+
+
+# ── execution_backtest_launch RBAC ────────────────────────────────────────────
+
+
+class TestExecutionBacktestLaunchRbac:
+    """POST /launch requires DEPLOY_TRIGGER; VIEWER → 403, OPERATOR → non-403."""
+
+    _PAYLOAD: ClassVar[dict[str, object]] = {
+        "archetype": "carry_staked_basis",
+        "dry_run": True,
+    }
+
+    @pytest.fixture
+    def viewer_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.execution_backtest_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.VIEWER)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    @pytest.fixture
+    def operator_client(self) -> Generator[TestClient]:
+        from deployment_api.routes.execution_backtest_launch import router
+
+        app = FastAPI()
+        app.include_router(router)
+        with (
+            patch(_PATCH_DISABLE_AUTH, False),
+            patch(_PATCH_GET_ROLE, new=AsyncMock(return_value=UserRole.OPERATOR)),
+            patch(_PATCH_MOCK_MODE, return_value=True),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    def test_viewer_returns_403(self, viewer_client: TestClient) -> None:
+        r = viewer_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code == 403
+        assert "Insufficient permissions" in r.json()["detail"]
+
+    def test_operator_rbac_passes(self, operator_client: TestClient) -> None:
+        r = operator_client.post("/launch", json=self._PAYLOAD)
+        assert r.status_code != 403
