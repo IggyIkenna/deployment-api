@@ -13,9 +13,7 @@ from typing import cast
 
 import yaml
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import build_bucket
-
-from deployment_api.settings import gcp_project_id as _pid
+from unified_trading_library import resolve_bucket_name
 
 logger = logging.getLogger(__name__)
 
@@ -24,41 +22,53 @@ logger = logging.getLogger(__name__)
 LIVE_PATH_PREFIX = "live/"
 
 # Build per-category bucket dicts from MarketCategory enum — SSOT in UAC.
+# PREDICTION uses dedicated flat kinds (instruments-store-prediction / market-data-tick-prediction)
+# because the yaml per-AG dicts for instruments-store / market-data omit PREDICTION.
 _instruments_buckets = {
-    cat.value: build_bucket("instruments", project_id=_pid, asset_group=cat.value.lower()) for cat in MarketCategory
+    cat.value: (
+        resolve_bucket_name(cloud="gcp", kind="instruments-store-prediction")
+        if cat.value == "PREDICTION"
+        else resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group=cat.value.lower())
+    )
+    for cat in MarketCategory
 }
 _tick_buckets = {
-    cat.value: build_bucket("raw_tick_data", project_id=_pid, asset_group=cat.value.lower()) for cat in MarketCategory
+    cat.value: (
+        resolve_bucket_name(cloud="gcp", kind="market-data-tick-prediction")
+        if cat.value == "PREDICTION"
+        else resolve_bucket_name(cloud="gcp", kind="market-data", asset_group=cat.value.lower())
+    )
+    for cat in MarketCategory
 }
 
-# Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL
-BUCKET_MAPPING = {  # CORRECT-LOCAL
+# Service -> bucket mapping — delegates to cloud-providers.yaml via resolve_bucket_name.
+BUCKET_MAPPING = {
     "instruments-service": _instruments_buckets,
     "market-tick-data-handler": _tick_buckets,
     # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
     "market-data-processing-service": _tick_buckets,
-    "features-delta-one-service": {  # CORRECT-LOCAL
-        "CEFI": f"features-delta-one-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"features-delta-one-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"features-delta-one-tradfi-{_pid}",  # CORRECT-LOCAL
+    "features-delta-one-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="tradfi"),
     },
-    "features-calendar-service": {  # CORRECT-LOCAL
-        # Calendar features are UNIVERSAL - use single bucket (CEFI)
-        # Temporal patterns, economic events, macro indicators don't vary by category
-        "CEFI": f"features-calendar-cefi-{_pid}",  # CORRECT-LOCAL
+    "features-calendar-service": {
+        # Calendar is a flat/universal bucket; routed under CEFI key since calendar
+        # features are cross-asset-group by design.
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-calendar"),
     },
-    "features-onchain-service": {  # CORRECT-LOCAL
-        "CEFI": f"features-onchain-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"features-onchain-defi-{_pid}",  # CORRECT-LOCAL
+    "features-onchain-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="defi"),
     },
-    "features-volatility-service": {  # CORRECT-LOCAL
-        "CEFI": f"features-volatility-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"features-volatility-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"features-volatility-tradfi-{_pid}",  # CORRECT-LOCAL
+    "features-volatility-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="tradfi"),
     },
-    "corporate-actions": {  # CORRECT-LOCAL
+    "corporate-actions": {
         # Corporate actions are TRADFI-only (uses instruments-store bucket)
-        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="tradfi"),
     },
 }
 

@@ -39,32 +39,39 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Bucket naming (mirrors DataStatusService._BUCKET_TEMPLATES without the
-# circular dependency of importing the big service).
+# Bucket naming — delegates to cloud-providers.yaml via resolve_bucket_name().
+# Phase 2.6.4 delegate flip: ml-models-store / ml-predictions-store per yaml SSOT.
 # ---------------------------------------------------------------------------
 
-# CORRECT-LOCAL — legacy local template dict mirroring DataStatusService._BUCKET_TEMPLATES.
-# Canonical SSOT is `cloud-providers.yaml` resolved via
-# `unified_trading_library.cloud_interface.bucket_naming.resolve_bucket_name()`.
-# This dict will be consolidated to the resolver in a follow-up sweep (tracked under
-# ml_artefact_path_resolver_consumer_sweep_2026_05_12 issue).
-_BUCKET_TEMPLATES: dict[str, str] = {
-    "instruments-service": "instruments-store-{cat}-{pid}",
-    "corporate-actions": "instruments-store-{cat}-{pid}",
-    "market-tick-data-service": "market-data-tick-{cat}-{pid}",
-    "market-data-processing-service": "market-data-tick-{cat}-{pid}",
-    "features-delta-one-service": "features-delta-one-{cat}-{pid}",
-    "features-volatility-service": "features-volatility-{cat}-{pid}",
-    "features-onchain-service": "features-onchain-{pid}",
-    "features-sports-service": "features-sports-{pid}",
-    "features-calendar-service": "features-calendar-{pid}",
-    "features-multi-timeframe-service": "features-multi-timeframe-{cat}-{pid}",
-    "features-cross-instrument-service": "features-cross-instrument-{cat}-{pid}",
-    "features-commodity-service": "features-commodity-{pid}",
-    "ml-training-service": "ml-models-store-{pid}",
-    "ml-inference-service": "ml-predictions-{pid}",
-    "strategy-service": "strategy-store-{pid}",
-    "execution-service": "execution-store-{pid}",
+# Service → yaml kind mapping.
+_SERVICE_TO_KIND: dict[str, str] = {
+    "instruments-service": "instruments-store",
+    "corporate-actions": "instruments-store",
+    "market-tick-data-service": "market-data",
+    "market-data-processing-service": "market-data",
+    "features-delta-one-service": "features-delta-one",
+    "features-volatility-service": "features-volatility",
+    "features-onchain-service": "features-onchain",
+    "features-sports-service": "features-sports",
+    "features-calendar-service": "features-calendar",
+    "features-multi-timeframe-service": "features-multi-timeframe",
+    "features-cross-instrument-service": "features-cross-instrument",
+    "ml-training-service": "ml-models-store",
+    "ml-inference-service": "ml-predictions-store",
+    "strategy-service": "strategy-store",
+    "execution-service": "execution-store",
+}
+
+# CORRECT-LOCAL: features-commodity has no yaml kind; flat template retained until
+# cloud-providers.yaml gains the entry (bucket_name_ssot plan pending item).
+_COMMODITY_BUCKET_TEMPLATE = "features-commodity-{pid}"
+
+# Kinds whose per-AG yaml dict omits PREDICTION — route to a flat prediction kind instead.
+_PREDICTION_KIND_MAP: dict[str, str] = {
+    "instruments-store": "instruments-store-prediction",
+    "market-data": "market-data-tick-prediction",
+    "strategy-store": "strategy-store-prediction",
+    "execution-store": "execution-store-prediction",
 }
 
 
@@ -93,11 +100,17 @@ def _is_bundled(instrument_type: str) -> bool:
 
 def build_bucket_name(service: str, asset_group: str, project_id: str | None = None) -> str:
     """Resolve the GCS bucket for a (service, asset group) pair."""
-    pid = project_id or _pid
-    template = _BUCKET_TEMPLATES.get(service)
-    if template is None:
+    if service == "features-commodity-service":
+        return _COMMODITY_BUCKET_TEMPLATE.format(pid=project_id or _pid)
+    kind = _SERVICE_TO_KIND.get(service)
+    if kind is None:
         raise ValueError(f"Unknown service: {service}")
-    return template.format(cat=asset_group.lower(), pid=pid)
+    ag: str | None = asset_group.lower() if asset_group else None
+    if ag == "prediction":
+        pred_kind = _PREDICTION_KIND_MAP.get(kind)
+        if pred_kind:
+            return resolve_bucket_name(cloud="gcp", kind=pred_kind)
+    return resolve_bucket_name(cloud="gcp", kind=kind, asset_group=ag)
 
 
 # ---------------------------------------------------------------------------

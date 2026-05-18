@@ -13,14 +13,13 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TypedDict
 
 import pandas as pd
+from unified_trading_library import resolve_bucket_name
 
-from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_client import get_storage_client
 from deployment_api.utils.storage_facade import object_exists
 
 logger = logging.getLogger(__name__)
 
-_SPORTS_BUCKET_TEMPLATE = "instruments-store-sports-{pid}"
 _MAX_DAYS = 31
 
 # In-process TTL cache for upcoming fixtures. Keyed on (days, league_id).
@@ -55,8 +54,8 @@ class UpcomingFixture(TypedDict):  # CORRECT-LOCAL — API response shape, no cr
     round: str
 
 
-def _sports_bucket(project_id: str | None = None) -> str:
-    return _SPORTS_BUCKET_TEMPLATE.format(pid=project_id or _pid)
+def _sports_bucket() -> str:
+    return resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
 
 
 def _read_fixtures_parquet(bucket: str, object_path: str) -> pd.DataFrame:
@@ -229,7 +228,7 @@ def list_upcoming_fixtures(
     if cached is not None and (now - cached[0]) < _FIXTURES_CACHE_TTL_SEC:
         return cached[1]
 
-    bucket = _sports_bucket(project_id)
+    bucket = _sports_bucket()
     today = datetime.now(UTC).date()
 
     frames = _read_frames_for_window(bucket, start=today, inclusive_extra_days=days)

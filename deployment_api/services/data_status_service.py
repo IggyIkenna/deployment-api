@@ -60,7 +60,7 @@ from unified_api_contracts.sports import (
 from unified_api_contracts.sports import (
     is_in_known_gap as _is_in_known_gap,
 )
-from unified_trading_library import read_availability_index
+from unified_trading_library import read_availability_index, resolve_bucket_name
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -2726,40 +2726,33 @@ class DataStatusService:
         root = re.sub(r"V\d+$", "", head)
         return root in cls._DEFI_LEGACY_PROTOCOL_PREFIXES
 
-    # ── Bucket resolution (mirrors deployment-service ManifestReader) ──
-    _BUCKET_TEMPLATES: ClassVar[dict[str, str]] = {
-        "instruments-service": "instruments-store-{cat}-{pid}",
-        "corporate-actions": "instruments-store-{cat}-{pid}",
-        "market-tick-data-service": "market-data-tick-{cat}-{pid}",
-        "market-data-processing-service": "market-data-tick-{cat}-{pid}",
-        "features-delta-one-service": "features-delta-one-{cat}-{pid}",
-        "features-volatility-service": "features-volatility-{cat}-{pid}",
-        "features-onchain-service": "features-onchain-{pid}",
-        "features-sports-service": "features-sports-{pid}",
-        "features-calendar-service": "features-calendar-{pid}",
-        "features-multi-timeframe-service": "features-multi-timeframe-{cat}-{pid}",
-        "features-cross-instrument-service": "features-cross-instrument-{cat}-{pid}",
-        "features-commodity-service": "features-commodity-{cat}-{pid}",
-        # Experiment-based services use a different shape than the
-        # pricing→features→strategy ladder. Their data is keyed by
-        # experiment/run identifiers (model_family, training_period,
-        # strategy_id, client_id, instruction_type) rather than the daily
-        # asset_group x venue x date shard. Buckets:
-        #   ml-training: artifacts (model checkpoints, training metrics)
-        #   ml-inference: no current bucket — predictions are streamed, not
-        #     pooled into a manifest yet (greenfield observability).
-        #   strategy: per-asset-group stores + a central cross-asset bucket.
-        #   execution: per-asset-group stores (no central; per-asset is the
-        #     atomic write unit because fills are venue-scoped).
-        # CORRECT-LOCAL — legacy local template dict; canonical SSOT is
-        # `cloud-providers.yaml` resolved via `resolve_bucket_name()` (kinds
-        # `ml-training-artifacts` / `strategy-store` / `execution-store`).
-        # Consolidation to the resolver tracked under
-        # ml_artefact_path_resolver_consumer_sweep_2026_05_12 issue.
-        "ml-training-service": "ml-training-artifacts-{pid}",
-        "ml-inference-service": "ml-inference-results-{pid}",
-        "strategy-service": "strategy-store-{cat}-{pid}",
-        "execution-service": "execution-store-{cat}-{pid}",
+    # ── Bucket resolution (delegates to cloud-providers.yaml via resolve_bucket_name) ──
+    _SERVICE_TO_KIND: ClassVar[dict[str, str]] = {
+        "instruments-service": "instruments-store",
+        "corporate-actions": "instruments-store",
+        "market-tick-data-service": "market-data",
+        "market-data-processing-service": "market-data",
+        "features-delta-one-service": "features-delta-one",
+        "features-volatility-service": "features-volatility",
+        "features-onchain-service": "features-onchain",
+        "features-sports-service": "features-sports",
+        "features-calendar-service": "features-calendar",
+        "features-multi-timeframe-service": "features-multi-timeframe",
+        "features-cross-instrument-service": "features-cross-instrument",
+        "ml-training-service": "ml-models-store",
+        "ml-inference-service": "ml-predictions-store",
+        "strategy-service": "strategy-store",
+        "execution-service": "execution-store",
+    }
+    # CORRECT-LOCAL — features-commodity has no yaml kind yet; stays local until
+    # kind is added to cloud-providers.yaml.
+    _COMMODITY_BUCKET_TEMPLATE: ClassVar[str] = "features-commodity-{pid}"
+    # Kinds whose per-AG yaml dict omits PREDICTION — route to a flat prediction kind.
+    _PREDICTION_KIND_MAP: ClassVar[dict[str, str]] = {
+        "instruments-store": "instruments-store-prediction",
+        "market-data": "market-data-tick-prediction",
+        "strategy-store": "strategy-store-prediction",
+        "execution-store": "execution-store-prediction",
     }
 
     # Per-service category scope (SSOT: deployment-ui-playwright-audit-checklist
@@ -2828,7 +2821,7 @@ class DataStatusService:
     # token_transfers, bridge_events, governance_events, mev_events) and
     # eigenlayer_rewards write into the main ``market-data-tick-defi-{pid}``
     # bucket (via ``get_tick_data_bucket(asset_group="defi")``) so they're
-    # picked up by the default ``_BUCKET_TEMPLATES`` entry — no override needed.
+    # picked up by the default ``_SERVICE_TO_KIND`` → ``resolve_bucket_name`` path — no override needed.
     _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
         ("market-tick-data-service", "gas-fees"): "gas-fees-{pid}",
         ("market-tick-data-service", "evm-defi"): "evm-defi-{pid}",
@@ -2877,14 +2870,21 @@ class DataStatusService:
         feeds reference, e.g. COINBASE-SPOT-as-oracle-source) silently
         leaked into the DEFI cell-grid as if they were DeFi protocols.
         """
-        template = self._BUCKET_TEMPLATES.get(service)
-        if not template:
-            return pd.DataFrame()
-
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
-        main_bucket = (
-            override.format(pid=self.project_id) if override else template.format(cat=cat.lower(), pid=self.project_id)
-        )
+        if override:
+            main_bucket = override.format(pid=self.project_id)
+        elif service == "features-commodity-service":
+            main_bucket = self._COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
+        else:
+            kind = self._SERVICE_TO_KIND.get(service)
+            if kind is None:
+                return pd.DataFrame()
+            ag = cat.lower() or None
+            if ag == "prediction":
+                pred_kind = self._PREDICTION_KIND_MAP.get(kind)
+                main_bucket = resolve_bucket_name(cloud="gcp", kind=pred_kind if pred_kind else kind)
+            else:
+                main_bucket = resolve_bucket_name(cloud="gcp", kind=kind, asset_group=ag)
 
         frames: list[pd.DataFrame] = []
         try:
@@ -3773,14 +3773,18 @@ class DataStatusService:
         if cached and (now - cached[0]) < self._REF_DATA_CACHE_TTL:
             return cached[1]
 
-        upstream_template = self._BUCKET_TEMPLATES.get(upstream, "")
-        if not upstream_template:
-            return {}
-        # For single-bucket upstreams (no {cat}), format without cat
-        if "{cat}" in upstream_template:
-            bucket = upstream_template.format(cat=category.lower(), pid=self.project_id)
+        if upstream == "features-commodity-service":
+            bucket = self._COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
         else:
-            bucket = upstream_template.format(pid=self.project_id)
+            upstream_kind = self._SERVICE_TO_KIND.get(upstream, "")
+            if not upstream_kind:
+                return {}
+            ag = category.lower() or None
+            if ag == "prediction":
+                pred_kind = self._PREDICTION_KIND_MAP.get(upstream_kind)
+                bucket = resolve_bucket_name(cloud="gcp", kind=pred_kind if pred_kind else upstream_kind)
+            else:
+                bucket = resolve_bucket_name(cloud="gcp", kind=upstream_kind, asset_group=ag)
 
         result: dict[str, set[str]] = {}
         try:
@@ -5586,7 +5590,6 @@ class DataStatusService:
         ``canonical_question_group`` / ``job_id`` / ``chain`` /
         ``fixture_id`` slice. Empty/None == no filter.
         """
-        template = self._BUCKET_TEMPLATES.get(service)
         empty: dict[str, object] = {
             "category": cat,
             "bucket": "",
@@ -5600,7 +5603,7 @@ class DataStatusService:
             "_venue_found": 0,
             "_venue_expected": 0,
         }
-        if not template:
+        if service not in self._SERVICE_TO_KIND and service != "features-commodity-service":
             return empty
 
         # Skip categories that don't apply to this service (single-bucket services)
@@ -5610,9 +5613,18 @@ class DataStatusService:
 
         # Resolve the main bucket name (for display in the response)
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
-        bucket = (
-            override.format(pid=self.project_id) if override else template.format(cat=cat.lower(), pid=self.project_id)
-        )
+        if override:
+            bucket = override.format(pid=self.project_id)
+        elif service == "features-commodity-service":
+            bucket = self._COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
+        else:
+            kind = self._SERVICE_TO_KIND[service]
+            ag = cat.lower() or None
+            if ag == "prediction":
+                pred_kind = self._PREDICTION_KIND_MAP.get(kind)
+                bucket = resolve_bucket_name(cloud="gcp", kind=pred_kind if pred_kind else kind)
+            else:
+                bucket = resolve_bucket_name(cloud="gcp", kind=kind, asset_group=ag)
 
         index = self._read_defi_merged_index(service, cat)
         if index.empty:
