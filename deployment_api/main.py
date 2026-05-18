@@ -76,6 +76,7 @@ from .routes import (
     kill_switch_routes,
     manual_pending,
     ml_experiment_launch,
+    monitor_backfill,
     promote,
     recursive_borrow_coverage,
     repo_coverage,
@@ -191,6 +192,7 @@ _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", 
 _authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
 _authenticated_router.include_router(promote.router, prefix="/api", tags=["Promote Workflow"])
 _authenticated_router.include_router(manual_pending.router, prefix="/api", tags=["Manual Pending Queue"])
+_authenticated_router.include_router(monitor_backfill.router, prefix="/api", tags=["Monitor"])
 _authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
 _authenticated_router.include_router(treasury_routes.router, prefix="/api/treasury", tags=["Treasury"])
 # /treasury/nav is intentionally also exposed without the /api prefix
