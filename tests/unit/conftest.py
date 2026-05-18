@@ -379,3 +379,44 @@ _os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 _ensure_utl_mocked()
 _ensure_services_mocked()
 _ensure_external_packages_mocked()
+
+
+import pytest as _pytest
+from collections.abc import Generator as _Generator
+
+
+@_pytest.fixture(autouse=True)
+def _reset_rate_limit_windows() -> _Generator[None, None, None]:
+    """Reset sliding-window rate-limiter state before/after every test.
+
+    Two separate rate limiters share global/instance state across tests:
+    1. endpoint_rate_limit() — stores timestamps in module-level _ENDPOINT_WINDOWS.
+    2. RateLimitMiddleware — stores per-IP deques in self._windows on the main app
+       instance.  TestClient always presents as "testclient" IP, so after 60 requests
+       across any test files that share the main app the middleware returns 429.
+
+    Clearing both before each test prevents cross-file 429 failures.
+    """
+    import deployment_api.rate_limiting as _rl
+
+    _rl._ENDPOINT_WINDOWS.clear()
+
+    if "deployment_api.main" in sys.modules:
+        try:
+            from deployment_api.middleware import RateLimitMiddleware as _RLM
+
+            _app = sys.modules["deployment_api.main"].app
+            node = _app.middleware_stack
+            depth = 0
+            while node is not None and depth < 20:
+                if isinstance(node, _RLM):
+                    node._windows.clear()  # type: ignore[attr-defined]
+                    break
+                node = getattr(node, "app", None)
+                depth += 1
+        except Exception:
+            pass
+
+    yield
+
+    _rl._ENDPOINT_WINDOWS.clear()
