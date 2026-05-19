@@ -316,7 +316,7 @@ def lookup_capture_status_for_shard(
         asset_group: Asset group bucket key (cefi/tradfi/defi/sports/
             prediction/shared).
         day: ISO date (``YYYY-MM-DD``) to filter on.
-        **axes: Any of the v7 shard axes (venue, chain, league_id,
+        **axes: The v7 shard axes (venue, chain, league_id,
             fixture_id, canonical_question_group, job_id,
             model_family, training_period, strategy_id,
             instruction_type, feature_group, timeframe, instrument_id,

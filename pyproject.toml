@@ -39,7 +39,7 @@ dependencies = [
     "unified-trading-library>=0.1.0,<1.0.0",
     "unified-api-contracts>=0.1.0,<1.0.0",
     "deployment-service>=0.1.0,<1.0.0",
-    "position-balance-monitor-service>=0.1.0,<1.0.0",
+    "strategy-service>=0.1.0,<1.0.0",
     "pytest>=9.0.3,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
     "pytest-socket>=0.7.0,<1.0.0",
@@ -61,7 +61,7 @@ dependencies = [
 unified-trading-library = { path = "../unified-trading-library", editable = true}
 unified-api-contracts = { path = "../unified-api-contracts", editable = true}
 deployment-service = { path = "../deployment-service", editable = true}
-position-balance-monitor-service = { path = "../position-balance-monitor-service", editable = true}
+strategy-service = { path = "../strategy-service", editable = true}
 [tool.ruff]
 line-length = 120
 target-version = "py313"
