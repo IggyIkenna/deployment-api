@@ -329,7 +329,7 @@ def _build_subscription_list(
 # ---------------------------------------------------------------------------
 
 
-def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, object]) -> None:
+def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, object]) -> None:  # pyright: ignore[reportMissingTypeArgument]
     """Write a structured entry to Cloud Audit Logs (data_access).
 
     Writes to ``projects/{project_id}/logs/cloudaudit.googleapis.com%2Fdata_access``
@@ -339,7 +339,7 @@ def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, obj
     block the withdrawal operation (defence-in-depth; primary record is on GCS).
     """
     try:
-        import google.cloud.logging  # pyright: ignore[reportMissingTypeStubs]
+        import google.cloud.logging  # pyright: ignore[reportMissingModuleSource]
 
         project_id = _cfg.gcp_project_id or ""
         log_client = google.cloud.logging.Client(project=project_id)
