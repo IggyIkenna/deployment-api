@@ -3952,7 +3952,7 @@ requires-dist = [
     { name = "unified-api-contracts", editable = "../unified-api-contracts" },
     { name = "urllib3", specifier = ">=2.7.0,<3.0.0" },
     { name = "vulture", specifier = ">=2.0,<3.0.0" },
-    { name = "web3", specifier = ">=6.20.0,<8.0.0" },
+    { name = "web3", specifier = ">=6.20.0,<7.0.0" },
 ]
 
 [[package]]
