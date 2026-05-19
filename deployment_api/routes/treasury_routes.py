@@ -23,7 +23,7 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from position_balance_monitor_service.core.treasury_monitor import (
+from strategy_service.position.core.treasury_monitor import (
     compute_nav_by_client,
     compute_unified_nav,
 )
