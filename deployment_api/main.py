@@ -74,6 +74,7 @@ from .routes import (
     fixtures,
     infra_health,
     kill_switch_routes,
+    log_stream,
     manual_pending,
     ml_experiment_launch,
     monitor_backfill,
@@ -201,6 +202,7 @@ _authenticated_router.include_router(monitor_backfill.router, prefix="/api", tag
 _authenticated_router.include_router(monitor_experiments.router, prefix="/api", tags=["Monitor"])
 _authenticated_router.include_router(monitor_live.router, prefix="/api", tags=["Monitor"])
 _authenticated_router.include_router(monitor_scheduled.router, prefix="/api", tags=["Monitor"])
+_authenticated_router.include_router(log_stream.router, tags=["Log Stream"])  # GET /api/logs/stream/{target_ref}
 _authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
 _authenticated_router.include_router(treasury_routes.router, prefix="/api/treasury", tags=["Treasury"])
 # /treasury/nav is intentionally also exposed without the /api prefix
