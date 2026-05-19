@@ -2102,8 +2102,8 @@ _DEFI_POOL_ID_CANDIDATE_COLS: tuple[str, ...] = (
 
 
 def _defi_tick_bucket(project_id: str | None = None) -> str:
-    pid = project_id or _pid
-    return f"market-data-tick-defi-{pid}"
+    # project_id ignored — resolve_bucket_name resolves from SSOT (cloud-providers.yaml)
+    return resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="defi")
 
 
 def _venue_chain_partition(venue: str, chain: str) -> str:
