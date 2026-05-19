@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -32,7 +32,7 @@ class CoverageSummary(BaseModel):
 
 
 class RecursiveBorrowCoverageResponse(BaseModel):
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     cache_ttl_seconds: int = 60
     cells: list[CellCoverage]
     summary: CoverageSummary
