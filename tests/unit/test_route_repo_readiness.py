@@ -236,9 +236,6 @@ def test_get_deploy_ready_unexpected_exception_returns_error(client_repo_readine
 
 def test_check_p0_issue_docs_oserror_skips_file(tmp_path: Path) -> None:
     """Lines 33-34: OSError on read_text → file is skipped, returns True."""
-    from pathlib import Path as P
-    from unittest.mock import patch as _patch
-
     from deployment_api.routes.repo_readiness import _check_p0_issue_docs
 
     issues_dir = tmp_path / "issues"
@@ -246,22 +243,19 @@ def test_check_p0_issue_docs_oserror_skips_file(tmp_path: Path) -> None:
     bad_file = issues_dir / "bad.md"
     bad_file.write_text("placeholder")
 
-    with _patch.object(P, "read_text", side_effect=OSError("permission denied")):
+    with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
         result = _check_p0_issue_docs(issues_dir, "some-repo")
     assert result is True
 
 
 def test_check_no_inflight_banner_oserror_skips_file(tmp_path: Path) -> None:
     """Lines 47-48: OSError on read_text → file is skipped, returns True."""
-    from pathlib import Path as P
-    from unittest.mock import patch as _patch
-
     from deployment_api.routes.repo_readiness import _check_no_inflight_refactor_banner
 
     plans_dir = tmp_path
     (plans_dir / "plan.md").write_text("placeholder")
 
-    with _patch.object(P, "read_text", side_effect=OSError("io error")):
+    with patch.object(Path, "read_text", side_effect=OSError("io error")):
         result = _check_no_inflight_refactor_banner(plans_dir, "some-repo")
     assert result is True
 
