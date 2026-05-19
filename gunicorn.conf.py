@@ -9,8 +9,12 @@ Environment variables:
     PORT: Port to bind to (default: 8080)
 """
 
-from deployment_api.settings import PORT as _PORT
-from deployment_api.settings import WORKERS as _WORKERS
+import os
+
+# Read directly from env to avoid triggering the full UTL→UAC import chain
+# during gunicorn config loading (before the WSGI app is initialised).
+_PORT = int(os.environ.get("PORT", 8080))
+_WORKERS = int(os.environ.get("WORKERS", 4))
 
 # Server socket
 bind = f"0.0.0.0:{_PORT}"

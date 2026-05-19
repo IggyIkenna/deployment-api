@@ -80,13 +80,20 @@ RUN uv pip install --system --no-cache-dir \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
 
-# Upgrade UAC to match the workspace — the UTL base image ships a cached UAC
-# that may predate modules added since the last base-image build. All of UAC's
-# own deps (pydantic, ccxt, etc.) are already in the base image, so --no-deps
-# is safe: we're just overlaying newer Python source files.
-COPY _unified-api-contracts/ /tmp/unified-api-contracts/
-RUN uv pip install --system --no-cache-dir --no-deps /tmp/unified-api-contracts \
-    && rm -rf /tmp/unified-api-contracts
+# Surgical UAC patch: inject only the new crosscutting modules that
+# monitor_live.py + monitor_scheduled.py import. Does NOT replace the UAC
+# __init__.py built into the base image (which is known-good). Copies the 5
+# new module files added 2026-05-19 (after the last base-image build):
+# cloud_target, environment_tier, lifecycle_class (deps of live_cluster_registry)
+# + live_cluster_registry + scheduler_registry.
+COPY _unified-api-contracts/unified_api_contracts/canonical/crosscutting/ /tmp/uac_crosscutting/
+RUN UAC_XC="$(python3 -c "import unified_api_contracts, os; print(os.path.join(os.path.dirname(unified_api_contracts.__file__), 'canonical', 'crosscutting'))")" && \
+    cp /tmp/uac_crosscutting/cloud_target.py "${UAC_XC}/cloud_target.py" && \
+    cp /tmp/uac_crosscutting/environment_tier.py "${UAC_XC}/environment_tier.py" && \
+    cp /tmp/uac_crosscutting/lifecycle_class.py "${UAC_XC}/lifecycle_class.py" && \
+    cp /tmp/uac_crosscutting/live_cluster_registry.py "${UAC_XC}/live_cluster_registry.py" && \
+    cp /tmp/uac_crosscutting/scheduler_registry.py "${UAC_XC}/scheduler_registry.py" && \
+    rm -rf /tmp/uac_crosscutting
 
 # Install deployment-service from the pre-bundled sibling source. The
 # tier-3 deploy script rsyncs ../deployment-service/ into ./_deployment-service/
