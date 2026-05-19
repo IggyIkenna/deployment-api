@@ -119,9 +119,7 @@ def _gce_action_cmd(vm_name: str, action: str, project_id: str, zone: str) -> st
         return shlex.join(
             ["gcloud", "compute", "instances", "stop", vm_name, f"--zone={zone}", f"--project={project_id}"]
         )
-    return shlex.join(
-        ["gcloud", "compute", "instances", "reset", vm_name, f"--zone={zone}", f"--project={project_id}"]
-    )
+    return shlex.join(["gcloud", "compute", "instances", "reset", vm_name, f"--zone={zone}", f"--project={project_id}"])
 
 
 def _run_gce_cmd(cmd_str: str) -> tuple[bool, str]:
@@ -177,31 +175,6 @@ def _do_experiment_action(deployment_id: str, action: str, dry_run: bool) -> Exp
         executed_at=datetime.now(UTC).isoformat(),
     )
 
-
-@router.post(
-    "/monitor/experiments/{deployment_id}/stop",
-    response_model=ExperimentActionResponse,
-    tags=["Monitor"],
-)
-def stop_experiment(
-    deployment_id: str,
-    dry_run: bool = Query(default=False, description="Preview command without executing"),
-) -> ExperimentActionResponse:
-    """Stop a running experiment VM (gcloud compute instances stop)."""
-    return _do_experiment_action(deployment_id, "stop", dry_run)
-
-
-@router.post(
-    "/monitor/experiments/{deployment_id}/restart",
-    response_model=ExperimentActionResponse,
-    tags=["Monitor"],
-)
-def restart_experiment(
-    deployment_id: str,
-    dry_run: bool = Query(default=False, description="Preview command without executing"),
-) -> ExperimentActionResponse:
-    """Hard-restart a running experiment VM (gcloud compute instances reset)."""
-    return _do_experiment_action(deployment_id, "restart", dry_run)
 
 
 @router.get("/monitor/experiments", response_model=ExperimentMonitorResponse, tags=["Monitor"])
