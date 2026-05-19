@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from typing import ClassVar, Literal, cast
@@ -419,7 +420,7 @@ def _expected_dates_for_upstream(
     league_id: str,
     start_date: str,
     end_date: str,
-    walk: object,
+    walk: Callable[[str, frozenset[str]], list[str] | None],
     visited: frozenset[str],
 ) -> list[str] | None:
     """Expected dates for a single ``UpstreamReq`` of a feature calculator.
@@ -431,7 +432,7 @@ def _expected_dates_for_upstream(
     if req.source == "derived":
         # walk(req.data_type, visited) — req.data_type carries the upstream
         # calculator's name when source="derived".
-        return walk(req.data_type, visited)  # type: ignore[operator,no-any-return]
+        return walk(req.data_type, visited)
 
     # League may be out of coverage for this entity (e.g. understat XG
     # for MLS) — but in_coverage's league-check is league_id-only, not
@@ -2364,7 +2365,7 @@ def _load_expected_start_dates_cached() -> dict[str, object]:
         workspace_root = here.parents[4]
         config_dir = workspace_root / "unified-trading-pm" / "configs"
 
-    yaml_path = config_dir / "expected_start_dates.yaml"  # type: ignore[operator]
+    yaml_path = config_dir / "expected_start_dates.yaml"  # pyright: ignore[reportOperatorIssue]
 
     if not yaml_path.exists():
         logger.warning(
@@ -3660,7 +3661,7 @@ class DataStatusService:
             # aggregatedList returns every zone — we only care about name +
             # status. The API is dict-like on the .items() mapping; each
             # zone bucket carries an ``instances`` list we walk once.
-            raw = ce.instances().aggregatedList(project=self.project_id).execute()  # type: ignore[attr-defined]
+            raw = ce.instances().aggregatedList(project=self.project_id).execute()  # pyright: ignore[reportAttributeAccessIssue]
             items: object = raw.get("items", {}) if isinstance(raw, dict) else {}
             if not isinstance(items, dict):
                 return False
@@ -4089,7 +4090,7 @@ class DataStatusService:
         fixture_calendar: set[str] | None,
         ref_dates: dict[str, set[str]],
         venue_mapping: VenueMapping,
-    ) -> set[str]:
+    ) -> set[str] | None:
         """Resolve the expected-date set for a venue.
 
         Priority:
@@ -4103,7 +4104,7 @@ class DataStatusService:
         # misleading % against full fixture calendar). Returns None to signal
         # "use found dates as denominator" to the caller.
         if self._is_sparse_sports_entity(venue):
-            return None  # type: ignore[return-value]
+            return None
         if self._is_sports_reference_venue(venue) and fixture_calendar is not None:
             return {d for d in fixture_calendar if d >= eff_start}
         if venue in ref_dates:
@@ -4114,7 +4115,7 @@ class DataStatusService:
         self,
         start: str,
         end: str,
-    ) -> set[str]:
+    ) -> set[str] | None:
         """Return expected dates for Understat XG.
 
         Understat XG covers only 6 leagues. We don't have a league-filtered
@@ -4124,7 +4125,7 @@ class DataStatusService:
         a misleading percentage against the full 38-league calendar.
         """
         # Return None — caller handles this as "use found dates as expected"
-        return None  # type: ignore[return-value]
+        return None
 
     @staticmethod
     def _resolve_transfer_window_dates(start: str, end: str) -> set[str]:

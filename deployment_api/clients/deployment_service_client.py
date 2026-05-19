@@ -44,7 +44,7 @@ def _timeout() -> aiohttp.ClientTimeout:
 def _make_session(**kwargs: object) -> aiohttp.ClientSession:
     """Create an aiohttp session with ThreadedResolver (OS DNS)."""
     connector = aiohttp.TCPConnector(resolver=aiohttp.resolver.ThreadedResolver())
-    return aiohttp.ClientSession(connector=connector, **kwargs)  # type: ignore[arg-type]
+    return aiohttp.ClientSession(connector=connector, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
 # ---------------------------------------------------------------------------

@@ -246,11 +246,7 @@ class TestCancelVmJobs:
 
         with patch(_PATCH_MAKE_SESSION, return_value=session):
             with pytest.raises(RuntimeError, match="HTTP 500"):
-                asyncio.run(
-                    cancel_vm_jobs(
-                        "d", "p", "r", "sa@p.com", "bucket", "prefix", "job", [("j1", None)]
-                    )
-                )
+                asyncio.run(cancel_vm_jobs("d", "p", "r", "sa@p.com", "bucket", "prefix", "job", [("j1", None)]))
 
 
 # ── get_vm_status_batch ───────────────────────────────────────────────────────
@@ -330,7 +326,9 @@ class TestGetCloudRunStatusBatch:
 
         with patch(_PATCH_MAKE_SESSION, return_value=session):
             result = asyncio.run(
-                get_cloud_run_status_batch("proj", "us-central1", "sa@proj.iam.gserviceaccount.com", "job", ["job-1", "job-2"])
+                get_cloud_run_status_batch(
+                    "proj", "us-central1", "sa@proj.iam.gserviceaccount.com", "job", ["job-1", "job-2"]
+                )
             )
         assert result == {"job-1": "SUCCEEDED", "job-2": "FAILED"}
 
@@ -519,4 +517,4 @@ class TestMakeSessionIntegration:
             result = asyncio.run(calculate_shards("svc", "/cfg"))
         assert result == []
         url_called = session.post.call_args[0][0]
-        assert "http://ds-svc:9000/api/v1/shards/calculate" == url_called
+        assert url_called == "http://ds-svc:9000/api/v1/shards/calculate"

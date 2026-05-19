@@ -585,8 +585,8 @@ class DataQueryService:
         Uses pyarrow + gcsfs locally. Failures (network, schema mismatch,
         missing column) return None so the caller can fall back gracefully.
         """
-        import gcsfs  # type: ignore[import-untyped]
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+        import gcsfs  # pyright: ignore[reportMissingTypeStubs]
+        import pyarrow.parquet as pq  # pyright: ignore[reportMissingTypeStubs]
 
         if not gs_uri.startswith("gs://"):
             return None

@@ -486,9 +486,7 @@ class TestRefreshDeploymentStatusSync:
             patch.object(_ds_routes, "notify_deployment_updated_sync"),
             patch("deployment_api.routes.deployment_state._asyncio") as mock_asyncio,
         ):
-            mock_asyncio.run.return_value = {
-                "projects/p/locations/us-central1/jobs/my-job/executions/exec-2": "FAILED"
-            }
+            mock_asyncio.run.return_value = {"projects/p/locations/us-central1/jobs/my-job/executions/exec-2": "FAILED"}
             result = refresh_deployment_status_sync("dep-1")
         assert shard["status"] == "failed"
 

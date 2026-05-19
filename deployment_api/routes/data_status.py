@@ -8,7 +8,7 @@ Business logic delegated to service layer modules.
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -1878,7 +1878,7 @@ def _capture_status_from(row) -> LiveCaptureStatus:
     """
     raw = _string_or_none(row, "capture_status") or "captured"
     if raw in ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted"):
-        return raw  # type: ignore[return-value]
+        return cast(LiveCaptureStatus, raw)
     return "captured"
 
 
@@ -2065,7 +2065,7 @@ def _staleness_seconds_from_health(
     if isinstance(raw, (int, float)):
         return float(raw)
     try:
-        return float(raw)  # type: ignore[arg-type]
+        return float(cast(float | int | str, raw))
     except (TypeError, ValueError):
         return None
 

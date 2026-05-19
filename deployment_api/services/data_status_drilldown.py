@@ -1453,7 +1453,7 @@ def get_shard_info(
 def cast_dict(obj: object) -> dict[str, object]:
     """Narrow ``object`` → ``dict[str, object]`` without runtime cost."""
     if isinstance(obj, dict):
-        return obj  # type: ignore[return-value]
+        return cast(dict[str, object], obj)
     raise TypeError(f"Expected dict, got {type(obj).__name__}")
 
 

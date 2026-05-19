@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, datetime
+from typing import cast
 
 from fastapi import APIRouter, Depends
 from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
@@ -106,7 +107,7 @@ def _get_coverage() -> RecursiveBorrowCoverageResponse:
     global _cache_ts
     now_ts = time.monotonic()
     if now_ts - _cache_ts < _CACHE_TTL_SECONDS and "response" in _cache:
-        return _cache["response"]  # type: ignore[return-value]
+        return cast(RecursiveBorrowCoverageResponse, _cache["response"])
 
     if _cfg.is_mock_mode():
         cells = _mock_cells()

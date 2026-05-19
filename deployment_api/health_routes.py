@@ -39,7 +39,7 @@ def _check_gcs() -> dict[str, object]:
 def _check_pubsub() -> dict[str, object]:
     """Probe Pub/Sub reachability via the project subscription list."""
     try:
-        from google.cloud import pubsub_v1  # type: ignore[import]
+        from google.cloud import pubsub_v1  # pyright: ignore[reportMissingModuleSource]
 
         project_id = _cloud_cfg.gcp_project_id
         subscriber = pubsub_v1.SubscriberClient()
@@ -53,7 +53,7 @@ def _check_pubsub() -> dict[str, object]:
 def _check_secret_manager() -> dict[str, object]:
     """Probe Secret Manager by listing secrets (first page only)."""
     try:
-        from google.cloud import secretmanager  # type: ignore[import]
+        from google.cloud import secretmanager  # pyright: ignore[reportMissingModuleSource]
 
         project_id = _cloud_cfg.gcp_project_id
         client = secretmanager.SecretManagerServiceClient()
@@ -67,7 +67,7 @@ def _check_secret_manager() -> dict[str, object]:
 def _check_deployment_events() -> dict[str, object]:
     """Probe the deployment-api-events Pub/Sub topic existence."""
     try:
-        from google.cloud import pubsub_v1  # type: ignore[import]
+        from google.cloud import pubsub_v1  # pyright: ignore[reportMissingModuleSource]
 
         project_id = _cloud_cfg.gcp_project_id
         publisher = pubsub_v1.PublisherClient()

@@ -48,10 +48,7 @@ async def list_scenarios(
     return {
         "total": len(scenarios),
         "asset_group_filter": asset_group,
-        "scenarios": [
-            _to_list_item(s).model_dump()
-            for s in sorted(scenarios, key=lambda s: s.scenario_id)
-        ],
+        "scenarios": [_to_list_item(s).model_dump() for s in sorted(scenarios, key=lambda s: s.scenario_id)],
     }
 
 
@@ -72,9 +69,7 @@ async def get_scenario_matrix(archetype: str) -> dict[str, object]:
         )
     scenario_ids = SCENARIO_ARCHETYPE_MATRIX[archetype]
     scenarios = [
-        _to_list_item(SCENARIO_REGISTRY[sid]).model_dump()
-        for sid in sorted(scenario_ids)
-        if sid in SCENARIO_REGISTRY
+        _to_list_item(SCENARIO_REGISTRY[sid]).model_dump() for sid in sorted(scenario_ids) if sid in SCENARIO_REGISTRY
     ]
     return {
         "archetype": archetype,

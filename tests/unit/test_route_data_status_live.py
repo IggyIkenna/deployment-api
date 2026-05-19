@@ -46,9 +46,7 @@ def client_ds_live() -> TestClient:
 class TestGetDataStatusLive:
     def test_happy_path_returns_result(self, client_ds_live: TestClient) -> None:
         mock_dss = MagicMock()
-        mock_dss.run_data_status_cli = AsyncMock(
-            return_value={"status": "ok", "service": "strategy-service"}
-        )
+        mock_dss.run_data_status_cli = AsyncMock(return_value={"status": "ok", "service": "strategy-service"})
         with patch(_PATCH_DSS, mock_dss):
             r = client_ds_live.get(
                 "/data-status",
@@ -295,9 +293,7 @@ class TestPostDeployMissingPreviewLive:
 class TestGetDataStatusTurboLive:
     def test_happy_path(self, client_ds_live: TestClient) -> None:
         mock_das = MagicMock()
-        mock_das.get_data_status_turbo = AsyncMock(
-            return_value={"mode": "turbo", "service": "strategy-service"}
-        )
+        mock_das.get_data_status_turbo = AsyncMock(return_value={"mode": "turbo", "service": "strategy-service"})
         with patch(_PATCH_DAS, mock_das):
             r = client_ds_live.get(
                 "/data-status/turbo",

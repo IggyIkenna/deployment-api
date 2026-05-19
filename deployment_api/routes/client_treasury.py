@@ -92,7 +92,7 @@ def get_subscription_store() -> dict[str, list[ClientShareClassSubscription]]:
 def set_subscription_store(store: dict[str, list[ClientShareClassSubscription]]) -> None:
     """Replace the global subscription store (used in tests for isolation)."""
     global _SUBSCRIPTION_STORE
-    _SUBSCRIPTION_STORE = store  # type: ignore[reportConstantRedefinition]
+    _SUBSCRIPTION_STORE = store  # pyright: ignore[reportConstantRedefinition]
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +329,7 @@ def _build_subscription_list(
 # ---------------------------------------------------------------------------
 
 
-def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, object]) -> None:  # type: ignore[type-arg]
+def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, object]) -> None:
     """Write a structured entry to Cloud Audit Logs (data_access).
 
     Writes to ``projects/{project_id}/logs/cloudaudit.googleapis.com%2Fdata_access``
@@ -339,12 +339,12 @@ def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, obj
     block the withdrawal operation (defence-in-depth; primary record is on GCS).
     """
     try:
-        import google.cloud.logging  # type: ignore[import-untyped]
+        import google.cloud.logging  # pyright: ignore[reportMissingTypeStubs]
 
         project_id = _cfg.gcp_project_id or ""
         log_client = google.cloud.logging.Client(project=project_id)
         log_name = "cloudaudit.googleapis.com%2Fdata_access"
-        gcp_logger = log_client.logger(log_name)  # type: ignore[reportUnknownMemberType]
+        gcp_logger = log_client.logger(log_name)  # pyright: ignore[reportUnknownMemberType]
         payload: dict[str, object] = {
             "operation": operation,
             "client_id": client_id,
@@ -352,7 +352,7 @@ def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, obj
             "timestamp": datetime.now(UTC).isoformat(),
             **details,
         }
-        gcp_logger.log_struct(payload, severity="INFO")  # type: ignore[reportUnknownMemberType]
+        gcp_logger.log_struct(payload, severity="INFO")  # pyright: ignore[reportUnknownMemberType]
         logger.debug("Cloud audit log emitted: operation=%s client_id=%s", operation, client_id)
     except Exception as exc:
         logger.warning(
