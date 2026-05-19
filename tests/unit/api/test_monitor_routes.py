@@ -320,7 +320,7 @@ class TestMonitorScheduled:
         assert r.status_code == 200
         body = r.json()
         assert body["jobs"] == []
-        assert body["phase_d_registry_available"] is False
+        assert body["phase_d_registry_available"] is True
         assert "env" in body
 
     def test_cron_vm_included(self, scheduled_client: TestClient) -> None:
@@ -361,7 +361,7 @@ class TestMonitorScheduled:
         assert body["total"] == 1
         assert body["jobs"][0]["name"] == "qg-snapshot-20260518"
 
-    def test_phase_d_always_false(self, scheduled_client: TestClient) -> None:
+    def test_phase_d_registry_available_true(self, scheduled_client: TestClient) -> None:
         with patch(_REG_SCHEDULED) as mock_cls:
             mock_reg = MagicMock()
             mock_reg.list_active.return_value = []
@@ -369,7 +369,7 @@ class TestMonitorScheduled:
             mock_cls.return_value = mock_reg
             r = scheduled_client.get("/monitor/scheduled?cloud=aws")
         body = r.json()
-        assert body["phase_d_registry_available"] is False
+        assert body["phase_d_registry_available"] is True
         assert body["cloud"] == "aws"
 
     def test_registry_error_returns_empty(self, scheduled_client: TestClient) -> None:

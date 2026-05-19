@@ -1,6 +1,7 @@
 """GET /api/monitor/scheduled — list Cloud Scheduler / EventBridge / VM-cron jobs.
 
 Phase C (c4) of deployment_ui_lifecycle_tabs_2026_05_08.md.
+Phase D (d2 deploy-missing, d3 pause/resume) of same plan.
 
 Lists every scheduled job declared in the Phase D scheduler registry
 (SchedulerSpec UAC SSOT — see d1 in the lifecycle tabs plan) joined with
@@ -13,9 +14,9 @@ marker in the response so the UI can distinguish the two modes.
 
 Lifecycle action endpoints:
   POST /api/monitor/scheduled/{name}/run-now
-  POST /api/monitor/scheduled/{name}/pause
-  POST /api/monitor/scheduled/{name}/resume
-  POST /api/monitor/scheduled/deploy-missing
+  POST /api/monitor/scheduled/{name}/pause        (Phase D.3)
+  POST /api/monitor/scheduled/{name}/resume       (Phase D.3)
+  POST /api/monitor/scheduled/deploy-missing      (Phase D.2)
 
 Read-only GET; operator-auth (X-API-Key) inherited from the authenticated router.
 """
@@ -23,6 +24,8 @@ Read-only GET; operator-auth (X-API-Key) inherited from the authenticated router
 from __future__ import annotations
 
 import logging
+import shlex
+import subprocess
 from datetime import UTC, datetime
 
 from deployment_service.deployments_registry import (
@@ -31,14 +34,22 @@ from deployment_service.deployments_registry import (
 )
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
+from unified_api_contracts.canonical.crosscutting.cloud_target import CloudTarget
+from unified_api_contracts.canonical.crosscutting.environment_tier import EnvironmentTier
+from unified_api_contracts.canonical.crosscutting.scheduler_registry import (
+    SchedulerSpec,
+    SchedulerTargetKind,
+    get_schedulers_for_env,
+)
 
 from deployment_api import settings as _settings
+from deployment_api.deployment_api_config import DeploymentApiConfig
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_cfg = DeploymentApiConfig()
 
 # Prefixes that identify scheduled/cron VMs in the deployments registry.
-# These are VMs launched by Cloud Scheduler triggers (not operator-initiated).
 _SCHEDULED_PREFIXES: tuple[str, ...] = (
     "cron-",
     "scheduled-",
@@ -47,10 +58,36 @@ _SCHEDULED_PREFIXES: tuple[str, ...] = (
     "vm-cron-",
 )
 
+# Default Cloud Scheduler location — matches workspace asia-northeast1 primary region.
+_DEFAULT_SCHEDULER_LOCATION = "asia-northeast1"
+
+# HTTP target URL template for Cloud Run-backed scheduler entries.
+_CLOUD_RUN_TARGET_TEMPLATE = "https://{service}.run.app/scheduler/trigger"
+
 
 def _is_scheduled_vm(vm_name: str) -> bool:
-    """Return True when vm_name looks like a scheduler-triggered VM."""
     return any(vm_name.startswith(p) for p in _SCHEDULED_PREFIXES)
+
+
+def _resolve_cloud_target(cloud_str: str) -> CloudTarget:
+    try:
+        return CloudTarget(cloud_str.upper())
+    except ValueError:
+        return CloudTarget.GCP
+
+
+def _resolve_env_tier() -> EnvironmentTier:
+    env = _settings.DEPLOYMENT_ENV.lower()
+    if env in {"staging"}:
+        return EnvironmentTier.STAGING
+    if env in {"production", "prod"}:
+        return EnvironmentTier.PROD
+    return EnvironmentTier.DEV
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
 
 
 class ScheduledJobEntry(BaseModel):
@@ -82,6 +119,124 @@ class ScheduledMonitorResponse(BaseModel):
     phase_d_registry_available: bool
 
 
+class DeployMissingEntryResult(BaseModel):
+    """Per-entry result for POST /api/monitor/scheduled/deploy-missing."""
+
+    name: str
+    asset_group: str
+    schedule_cron: str
+    action: str
+    status: str
+    command: str
+    error: str | None = None
+
+
+class DeployMissingResponse(BaseModel):
+    """Response from POST /api/monitor/scheduled/deploy-missing."""
+
+    results: list[DeployMissingEntryResult]
+    total_checked: int
+    deployed_count: int
+    skipped_count: int
+    failed_count: int
+    cloud: str
+    env: str
+    executed_at: str
+
+
+class SchedulerActionResponse(BaseModel):
+    """Response from POST /api/monitor/scheduled/{name}/pause|resume."""
+
+    name: str
+    action: str
+    status: str
+    command: str
+    error: str | None = None
+    executed_at: str
+
+
+# ---------------------------------------------------------------------------
+# Helpers for gcloud Cloud Scheduler commands
+# ---------------------------------------------------------------------------
+
+
+def _build_gcloud_create_cmd(spec: SchedulerSpec, project_id: str, location: str) -> str:
+    """Build the ``gcloud scheduler jobs create http`` command for a SchedulerSpec."""
+    if spec.target_kind == SchedulerTargetKind.CLOUD_RUN:
+        target_url = _CLOUD_RUN_TARGET_TEMPLATE.format(service=spec.target_ref)
+    else:
+        target_url = f"https://{spec.target_ref}.example.com/scheduler/trigger"
+
+    parts = [
+        "gcloud",
+        "scheduler",
+        "jobs",
+        "create",
+        "http",
+        spec.name,
+        f"--schedule={spec.schedule_cron}",
+        f"--uri={target_url}",
+        "--http-method=POST",
+        f"--project={project_id}",
+        f"--location={location}",
+        "--max-retry-attempts=3",
+        f"--attempt-deadline={spec.expected_max_runtime_seconds}s",
+        "--time-zone=UTC",
+    ]
+    return shlex.join(parts)
+
+
+def _build_gcloud_pause_cmd(name: str, project_id: str, location: str) -> str:
+    return shlex.join(
+        ["gcloud", "scheduler", "jobs", "pause", name, f"--project={project_id}", f"--location={location}"]
+    )
+
+
+def _build_gcloud_resume_cmd(name: str, project_id: str, location: str) -> str:
+    return shlex.join(
+        ["gcloud", "scheduler", "jobs", "resume", name, f"--project={project_id}", f"--location={location}"]
+    )
+
+
+def _gcloud_job_exists(name: str, project_id: str, location: str) -> bool:
+    """Return True if a Cloud Scheduler job with this name already exists."""
+    result = subprocess.run(
+        [
+            "gcloud",
+            "scheduler",
+            "jobs",
+            "describe",
+            name,
+            f"--project={project_id}",
+            f"--location={location}",
+            "--format=value(name)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.returncode == 0
+
+
+def _run_gcloud_cmd(cmd_str: str) -> tuple[bool, str]:
+    """Run a pre-built gcloud command string and return (success, error_detail)."""
+    try:
+        args = shlex.split(cmd_str)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            return True, ""
+        return False, result.stderr.strip()
+    except FileNotFoundError:
+        return False, "gcloud binary not found; copy command and run from an authenticated terminal"
+    except subprocess.TimeoutExpired:
+        return False, "gcloud command timed out after 60s"
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
 @router.get("/monitor/scheduled", response_model=ScheduledMonitorResponse, tags=["Monitor"])
 def list_scheduled_jobs(
     cloud: str = Query(default="gcp", description="Cloud target: gcp or aws"),
@@ -92,8 +247,8 @@ def list_scheduled_jobs(
 
     Until the Phase D SchedulerSpec registry ships, returns entries from the
     DeploymentsRegistry whose VM-name prefix matches known scheduler patterns.
-    ``phase_d_registry_available=false`` in the response signals the UI to show
-    a "Scheduler registry not yet configured" placeholder alongside any results.
+    ``phase_d_registry_available=true`` is now set since the Phase D UAC SSOT
+    (d1) has shipped.
 
     The ``cloud`` parameter scopes the results when Phase D registry ships;
     currently GCS registry is the source of truth regardless of cloud.
@@ -136,5 +291,185 @@ def list_scheduled_jobs(
         queried_at=datetime.now(UTC).isoformat(),
         cloud=cloud,
         env=_settings.DEPLOYMENT_ENV,
-        phase_d_registry_available=False,
+        phase_d_registry_available=True,
+    )
+
+
+@router.post("/monitor/scheduled/deploy-missing", response_model=DeployMissingResponse, tags=["Monitor"])
+def deploy_missing_schedulers(
+    cloud: str = Query(default="gcp", description="Cloud target: gcp or aws"),
+    dry_run: bool = Query(default=False, description="If true, return commands without executing"),
+) -> DeployMissingResponse:
+    """Create any Cloud Scheduler / EventBridge jobs that are in the registry but not deployed.
+
+    Idempotent — checks each registry entry before creating; skips already-deployed jobs.
+    Reads the Phase D UAC SSOT (``SCHEDULER_REGISTRY``) filtered to the current environment
+    tier and cloud target.
+
+    In mock mode (``CLOUD_MOCK_MODE=true``) or when ``dry_run=true``, returns the
+    per-entry commands without executing them.
+    """
+    cloud_target = _resolve_cloud_target(cloud)
+    env_tier = _resolve_env_tier()
+    project_id = _cfg.gcp_project_id
+    location = _DEFAULT_SCHEDULER_LOCATION
+    is_mock = _cfg.is_mock_mode() or dry_run
+
+    specs = get_schedulers_for_env(env_tier, cloud_target=cloud_target)
+    results: list[DeployMissingEntryResult] = []
+
+    for spec in specs:
+        if cloud_target == CloudTarget.GCP:
+            cmd = _build_gcloud_create_cmd(spec, project_id, location)
+        else:
+            cmd = (
+                f"aws events put-rule --name {spec.name} --schedule-expression "
+                f"'cron({spec.schedule_cron})' --region us-east-1"
+            )
+
+        if is_mock:
+            results.append(
+                DeployMissingEntryResult(
+                    name=spec.name,
+                    asset_group=spec.asset_group,
+                    schedule_cron=spec.schedule_cron,
+                    action="create",
+                    status="preview",
+                    command=cmd,
+                )
+            )
+            continue
+
+        if cloud_target == CloudTarget.GCP:
+            try:
+                already_exists = _gcloud_job_exists(spec.name, project_id, location)
+            except Exception as exc:
+                already_exists = False
+                logger.warning("scheduler describe failed for %s: %s", spec.name, exc)
+
+            if already_exists:
+                results.append(
+                    DeployMissingEntryResult(
+                        name=spec.name,
+                        asset_group=spec.asset_group,
+                        schedule_cron=spec.schedule_cron,
+                        action="skip",
+                        status="already_deployed",
+                        command=cmd,
+                    )
+                )
+                continue
+
+            success, err = _run_gcloud_cmd(cmd)
+            results.append(
+                DeployMissingEntryResult(
+                    name=spec.name,
+                    asset_group=spec.asset_group,
+                    schedule_cron=spec.schedule_cron,
+                    action="create",
+                    status="deployed" if success else "failed",
+                    command=cmd,
+                    error=err or None,
+                )
+            )
+        else:
+            results.append(
+                DeployMissingEntryResult(
+                    name=spec.name,
+                    asset_group=spec.asset_group,
+                    schedule_cron=spec.schedule_cron,
+                    action="create",
+                    status="preview",
+                    command=cmd,
+                    error="AWS EventBridge deploy-missing requires boto3 — operator run required",
+                )
+            )
+
+    deployed = sum(1 for r in results if r.status == "deployed")
+    skipped = sum(1 for r in results if r.status == "already_deployed")
+    failed = sum(1 for r in results if r.status == "failed")
+
+    return DeployMissingResponse(
+        results=results,
+        total_checked=len(results),
+        deployed_count=deployed,
+        skipped_count=skipped,
+        failed_count=failed,
+        cloud=cloud,
+        env=_settings.DEPLOYMENT_ENV,
+        executed_at=datetime.now(UTC).isoformat(),
+    )
+
+
+@router.post("/monitor/scheduled/{name}/pause", response_model=SchedulerActionResponse, tags=["Monitor"])
+def pause_scheduler(
+    name: str,
+    cloud: str = Query(default="gcp", description="Cloud target: gcp or aws"),
+    dry_run: bool = Query(default=False, description="If true, return command without executing"),
+) -> SchedulerActionResponse:
+    """Pause a Cloud Scheduler job by name (Phase D.3).
+
+    Idempotent — pausing an already-paused job is a no-op on the cloud side.
+    In mock mode or dry_run, returns the command without executing.
+    """
+    project_id = _cfg.gcp_project_id
+    location = _DEFAULT_SCHEDULER_LOCATION
+    is_mock = _cfg.is_mock_mode() or dry_run
+
+    if cloud.lower() == "gcp":
+        cmd = _build_gcloud_pause_cmd(name, project_id, location)
+    else:
+        cmd = f"aws events disable-rule --name {name} --region us-east-1"
+
+    if is_mock:
+        return SchedulerActionResponse(
+            name=name, action="pause", status="preview", command=cmd, executed_at=datetime.now(UTC).isoformat()
+        )
+
+    success, err = _run_gcloud_cmd(cmd)
+    return SchedulerActionResponse(
+        name=name,
+        action="pause",
+        status="ok" if success else "failed",
+        command=cmd,
+        error=err or None,
+        executed_at=datetime.now(UTC).isoformat(),
+    )
+
+
+@router.post("/monitor/scheduled/{name}/resume", response_model=SchedulerActionResponse, tags=["Monitor"])
+def resume_scheduler(
+    name: str,
+    cloud: str = Query(default="gcp", description="Cloud target: gcp or aws"),
+    dry_run: bool = Query(default=False, description="If true, return command without executing"),
+) -> SchedulerActionResponse:
+    """Resume a paused Cloud Scheduler job by name (Phase D.3).
+
+    Idempotent — resuming a running job is a no-op on the cloud side.
+    In mock mode or dry_run, returns the command without executing.
+    Auto-pause on Phase H circuit-breaker trip (instruments_live Phase H.2) —
+    operator manual-resume only (this endpoint).
+    """
+    project_id = _cfg.gcp_project_id
+    location = _DEFAULT_SCHEDULER_LOCATION
+    is_mock = _cfg.is_mock_mode() or dry_run
+
+    if cloud.lower() == "gcp":
+        cmd = _build_gcloud_resume_cmd(name, project_id, location)
+    else:
+        cmd = f"aws events enable-rule --name {name} --region us-east-1"
+
+    if is_mock:
+        return SchedulerActionResponse(
+            name=name, action="resume", status="preview", command=cmd, executed_at=datetime.now(UTC).isoformat()
+        )
+
+    success, err = _run_gcloud_cmd(cmd)
+    return SchedulerActionResponse(
+        name=name,
+        action="resume",
+        status="ok" if success else "failed",
+        command=cmd,
+        error=err or None,
+        executed_at=datetime.now(UTC).isoformat(),
     )
