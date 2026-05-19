@@ -25,7 +25,7 @@ cause was the missing protocol-launch clip.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from unified_api_contracts.registry.chain_env import (
@@ -209,7 +209,7 @@ class TestDenominatorClipsPreCutoffDays:
         if the test ever runs in a far-future where AAVEV3 has shut
         down or restructured, the assumption that 2022-03-16 is in
         the past breaks. Fail loud if the clock drifts by years."""
-        today = datetime.now().date()
+        today = datetime.now(timezone.utc).date()
         assert today >= date(2026, 5, 1), (
             f"Workspace clock {today} predates this suite's reference window — check fixture freshness"
         )
