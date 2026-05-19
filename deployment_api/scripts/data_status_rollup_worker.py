@@ -184,15 +184,10 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
 
     # RuntimeError = already initialised by an outer bootstrap — acceptable.
     with contextlib.suppress(RuntimeError):
-        setup_events(
-            service_name="data-status-rollup-worker",
-            mode="batch",
-            sink=GcsEventSink(
-                project_id=project_id,
-                bucket=f"{project_id}-events",
-                service_name="data-status-rollup-worker",
-            ),
+        _sink = GcsEventSink(
+            project_id=project_id, bucket=f"{project_id}-events", service_name="data-status-rollup-worker"
         )
+        setup_events(service_name="data-status-rollup-worker", mode="batch", sink=_sink)
     log_event("STARTED", details={"project_id": project_id, "bucket": bucket, "services": services})
 
     end_date = _today_iso()
