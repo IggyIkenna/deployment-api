@@ -38,8 +38,7 @@ out.write_text(json.dumps(schema, indent=2))
 
 paths = schema.get("paths", {})
 endpoint_count = sum(
-    len([m for m in methods if m in {"get", "post", "put", "patch", "delete"}])
-    for methods in paths.values()
+    len([m for m in methods if m in {"get", "post", "put", "patch", "delete"}]) for methods in paths.values()
 )
 missing_summary = [
     f"{method.upper()} {path}"
