@@ -80,6 +80,14 @@ RUN uv pip install --system --no-cache-dir \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
 
+# Upgrade UAC to match the workspace — the UTL base image ships a cached UAC
+# that may predate modules added since the last base-image build. All of UAC's
+# own deps (pydantic, ccxt, etc.) are already in the base image, so --no-deps
+# is safe: we're just overlaying newer Python source files.
+COPY _unified-api-contracts/ /tmp/unified-api-contracts/
+RUN uv pip install --system --no-cache-dir --no-deps /tmp/unified-api-contracts \
+    && rm -rf /tmp/unified-api-contracts
+
 # Install deployment-service from the pre-bundled sibling source. The
 # tier-3 deploy script rsyncs ../deployment-service/ into ./_deployment-service/
 # before submitting the build (Cloud Build context can't reach sibling repos).
