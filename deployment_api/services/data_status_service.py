@@ -1675,6 +1675,9 @@ _EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_OUTSIDE_PROCESSING_SCOPE",
     "EXPECTED_LEGACY_MIGRATION_MISSING_EXPIRY",
     "SOURCE_RETURNED_ZERO",
+    "NO_INPUT_AVAILABLE",
+    "LEG_ABSENT_LEFT",
+    "LEG_ABSENT_RIGHT",
     "empty_unclassified",  # legacy rows pre-Tier-3D.1 back-fill
 )
 

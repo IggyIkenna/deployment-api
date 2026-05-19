@@ -260,3 +260,119 @@ def list_experiment_jobs(
         cloud=cloud,
         env=_settings.DEPLOYMENT_ENV,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase BB.3 lifecycle action models + helpers
+# ---------------------------------------------------------------------------
+
+
+class ExperimentActionResponse(BaseModel):
+    """Response from POST /api/monitor/experiments/{vm_name}/{stop|restart}."""
+
+    vm_name: str
+    action: str
+    status: str
+    command: str
+    error: str | None = None
+    executed_at: str
+
+
+def _build_vm_action_cmd(vm_name: str, action: str, project_id: str) -> str:
+    gcloud_action = "stop" if action == "stop" else "start"
+    return shlex.join(
+        [
+            "gcloud",
+            "compute",
+            "instances",
+            gcloud_action,
+            vm_name,
+            f"--zone={_DEFAULT_GCE_ZONE}",
+            f"--project={project_id}",
+            "--quiet",
+        ]
+    )
+
+
+def _do_experiment_action(vm_name: str, action: str, dry_run: bool) -> ExperimentActionResponse:
+    try:
+        registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
+        active = list(registry.list_active())
+        archived = list(registry.list_recent_archive(days=3))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Registry unavailable: {exc}") from exc
+
+    all_entries = active + archived
+    matched = next((e for e in all_entries if e.vm_name == vm_name and _is_experiment_vm(e.vm_name)), None)
+    if matched is None:
+        raise HTTPException(status_code=404, detail=f"Experiment VM '{vm_name}' not found in registry")
+
+    project_id = _cfg.gcp_project_id
+    is_mock = _cfg.is_mock_mode() or dry_run
+
+    cmd = _build_vm_action_cmd(vm_name, action, project_id)
+    if is_mock:
+        return ExperimentActionResponse(
+            vm_name=vm_name,
+            action=action,
+            status="preview",
+            command=cmd,
+            executed_at=datetime.now(UTC).isoformat(),
+        )
+
+    try:
+        args = shlex.split(cmd)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        ok = result.returncode == 0
+        return ExperimentActionResponse(
+            vm_name=vm_name,
+            action=action,
+            status="ok" if ok else "failed",
+            command=cmd,
+            error=result.stderr.strip() if not ok else None,
+            executed_at=datetime.now(UTC).isoformat(),
+        )
+    except FileNotFoundError:
+        return ExperimentActionResponse(
+            vm_name=vm_name,
+            action=action,
+            status="failed",
+            command=cmd,
+            error="gcloud CLI not found; run from authenticated terminal",
+            executed_at=datetime.now(UTC).isoformat(),
+        )
+    except subprocess.TimeoutExpired:
+        return ExperimentActionResponse(
+            vm_name=vm_name,
+            action=action,
+            status="failed",
+            command=cmd,
+            error="command timed out after 60s",
+            executed_at=datetime.now(UTC).isoformat(),
+        )
+
+
+@router.post(
+    "/monitor/experiments/{vm_name}/stop",
+    response_model=ExperimentActionResponse,
+    tags=["Monitor"],
+)
+def stop_experiment(
+    vm_name: str,
+    dry_run: bool = Query(default=False, description="If true, return command without executing"),
+) -> ExperimentActionResponse:
+    """Stop a running experiment VM (gcloud compute instances stop)."""
+    return _do_experiment_action(vm_name, "stop", dry_run)
+
+
+@router.post(
+    "/monitor/experiments/{vm_name}/restart",
+    response_model=ExperimentActionResponse,
+    tags=["Monitor"],
+)
+def restart_experiment(
+    vm_name: str,
+    dry_run: bool = Query(default=False, description="If true, return command without executing"),
+) -> ExperimentActionResponse:
+    """Restart a stopped experiment VM (gcloud compute instances start)."""
+    return _do_experiment_action(vm_name, "restart", dry_run)

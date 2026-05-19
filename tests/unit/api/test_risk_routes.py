@@ -64,6 +64,8 @@ def _full_context(**overrides: object) -> dict[str, object]:
         "net_exposure_usd": "100",
         "daily_loss_usd": "0",
         "slippage_observed_bps": 0,
+        "reference_venue_notional_usd": "10000",
+        "secondary_venue_notional_usd": "0",
     }
     base.update(overrides)
     return base

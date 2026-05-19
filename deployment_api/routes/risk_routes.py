@@ -97,6 +97,8 @@ class OrderContextRequest(BaseModel):
     net_exposure_usd: str | float | int | None = None
     daily_loss_usd: str | float | int | None = None
     slippage_observed_bps: int | None = None
+    reference_venue_notional_usd: str | float | int | None = None
+    secondary_venue_notional_usd: str | float | int | None = None
 
 
 class ApplicableRulesFilter(BaseModel):
@@ -177,6 +179,8 @@ def _decimal_axes(payload: OrderContextRequest) -> dict[str, Decimal]:
         "gross_exposure_usd": _to_decimal(payload.gross_exposure_usd),
         "net_exposure_usd": _to_decimal(payload.net_exposure_usd),
         "daily_loss_usd": _to_decimal(payload.daily_loss_usd),
+        "reference_venue_notional_usd": _to_decimal(payload.reference_venue_notional_usd),
+        "secondary_venue_notional_usd": _to_decimal(payload.secondary_venue_notional_usd),
     }
     return {k: v for k, v in candidates.items() if v is not None}
 
