@@ -101,7 +101,6 @@ class ExperimentMonitorResponse(BaseModel):
     env: str
 
 
-
 @router.get("/monitor/experiments", response_model=ExperimentMonitorResponse, tags=["Monitor"])
 def list_experiment_jobs(
     cloud: str = Query(default="gcp", description="Cloud target: gcp or aws"),

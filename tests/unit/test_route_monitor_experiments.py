@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from deployment_api.main import app
@@ -33,8 +32,6 @@ def _make_live_entry() -> MagicMock:
     entry.vm_name = "strategy-live-abc123"
     entry.status = "running"
     return entry
-
-
 
 
 # ---------------------------------------------------------------------------

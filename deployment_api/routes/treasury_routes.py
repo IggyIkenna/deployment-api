@@ -23,11 +23,11 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from strategy_service.position.core.treasury_monitor import (
     compute_nav_by_client,
     compute_unified_nav,
 )
-from pydantic import BaseModel, ConfigDict, Field
 from unified_api_contracts.internal.domain.treasury import (
     TreasuryNAVByClient,
     TreasuryRollupResponse,

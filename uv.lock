@@ -1598,6 +1598,22 @@ wheels = [
 ]
 
 [[package]]
+name = "hyperliquid-python-sdk"
+version = "0.23.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "eth-account" },
+    { name = "eth-utils" },
+    { name = "msgpack" },
+    { name = "requests" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/ad/12b4559a953e26fc56677de5bf689023e11213196b802b991a6e6db94814/hyperliquid_python_sdk-0.23.0.tar.gz", hash = "sha256:14df0b62511a0cf08ca5a73f73f03656868ee67845ed3362539a79674511bb51", size = 25255, upload-time = "2026-04-14T21:51:24.646Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/e9/b7b23aefc319727f670992904b1defd7aee5fc3f59a51c141a87db05f7da/hyperliquid_python_sdk-0.23.0-py3-none-any.whl", hash = "sha256:5b4f9f7ab8c0b1ad9848f2222901dc047c8f97a6e6fe3fd7286b7b34337f80cb", size = 24638, upload-time = "2026-04-14T21:51:23.27Z" },
+]
+
+[[package]]
 name = "hypothesis"
 version = "6.151.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1866,6 +1882,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "freezegun" },
     { name = "httpx" },
+    { name = "hyperliquid-python-sdk" },
     { name = "lz4" },
     { name = "pandas" },
     { name = "pandas-stubs" },
@@ -1911,6 +1928,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<1.0.0" },
     { name = "freezegun", specifier = ">=1.2.2,<2.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
+    { name = "hyperliquid-python-sdk", specifier = ">=0.23.0,<1.0.0" },
     { name = "lz4", specifier = ">=4.3.0,<5.0.0" },
     { name = "pandas", specifier = ">=2.3.0,<3.0.0" },
     { name = "pandas-stubs", specifier = ">=2.2.0,<3.0.0" },
@@ -4132,6 +4150,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f9/9f/2e084219b4b461111b73a7b8d77da70a2698f41b1bb015aeb933f25c8452/web3-6.20.3.tar.gz", hash = "sha256:c69dbf1a61ace172741d06990e60afc7f55f303eac087e7235f382df3047d017", size = 1487992, upload-time = "2024-08-22T17:24:33.756Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/33/045a539ba43325769227c313f5103c466a1d2ed5a1a31f124d094799414d/web3-6.20.3-py3-none-any.whl", hash = "sha256:529fbb33f2476ce8185f7a2ed7e2e07c4c28621b0e89b845fbfdcaea9571286d", size = 1610984, upload-time = "2024-08-22T17:24:30.666Z" },
+]
+
+[[package]]
+name = "websocket-client"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
 ]
 
 [[package]]
