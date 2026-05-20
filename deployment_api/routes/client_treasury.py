@@ -591,7 +591,9 @@ __all__ = [
     "get_client_subscriptions",
     "get_client_treasury",
     "get_subscription_store",
+    "get_withdrawal_chain_store",
     "router",
     "set_subscription_store",
     "set_treasury_rollup_provider",
+    "set_withdrawal_chain_store",
 ]
