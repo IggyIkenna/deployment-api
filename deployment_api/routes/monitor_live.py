@@ -35,10 +35,10 @@ from deployment_service.deployments_registry import (
 )
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from unified_api_contracts.canonical.crosscutting.cloud_target import CloudTarget
-from unified_api_contracts.canonical.crosscutting.environment_tier import EnvironmentTier
-from unified_api_contracts.canonical.crosscutting.live_cluster_registry import (
+from unified_api_contracts import (
     LIVE_CLUSTER_REGISTRY,
+    CloudTarget,
+    EnvironmentTier,
     LiveClusterDeploymentKind,
     LiveClusterSpec,
 )

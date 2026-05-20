@@ -34,9 +34,9 @@ from deployment_service.deployments_registry import (
 )
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-from unified_api_contracts.canonical.crosscutting.cloud_target import CloudTarget
-from unified_api_contracts.canonical.crosscutting.environment_tier import EnvironmentTier
-from unified_api_contracts.canonical.crosscutting.scheduler_registry import (
+from unified_api_contracts import (
+    CloudTarget,
+    EnvironmentTier,
     SchedulerSpec,
     SchedulerTargetKind,
     get_schedulers_for_env,

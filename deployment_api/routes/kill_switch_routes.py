@@ -49,9 +49,7 @@ from unified_api_contracts import (
     KillSwitchId,
     KillSwitchProvenance,
 )
-from unified_api_contracts.canonical.crosscutting.circuit_breaker import (  # noqa: qg-deep-import
-    BreakerRecoveryMode,
-)
+from unified_api_contracts import BreakerRecoveryMode
 from unified_api_contracts.internal.domain.deployment_service import KillSwitchScope
 from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,
