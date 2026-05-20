@@ -110,7 +110,6 @@ _MOCK_TO_VERSIONS = {
     "execution-service": "0.15.0",  # changed
     "features-service": "0.21.0",  # unchanged
     "market-tick-data-service": "0.8.1",  # unchanged
-    "risk-and-exposure-service": "0.4.0",  # added
     # strategy-service removed
 }
 

@@ -121,9 +121,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "ml-inference-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
-        "pnl-attribution-service-code.tar.gz",
-        "risk-and-exposure-service-code.tar.gz",
-        "position-balance-monitor-service-code.tar.gz",
     ),
     "TRADFI": (
         "instruments-service-code.tar.gz",
@@ -138,9 +135,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "ml-inference-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
-        "pnl-attribution-service-code.tar.gz",
-        "risk-and-exposure-service-code.tar.gz",
-        "position-balance-monitor-service-code.tar.gz",
     ),
     "DEFI": (
         "instruments-service-code.tar.gz",
@@ -150,9 +144,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "features-delta-one-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
-        "pnl-attribution-service-code.tar.gz",
-        "risk-and-exposure-service-code.tar.gz",
-        "position-balance-monitor-service-code.tar.gz",
     ),
     "SPORTS": (
         "instruments-service-code.tar.gz",
@@ -163,8 +154,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "ml-inference-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
-        "pnl-attribution-service-code.tar.gz",
-        "risk-and-exposure-service-code.tar.gz",
     ),
     "PREDICTION": (
         "instruments-service-code.tar.gz",
@@ -173,8 +162,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "features-cross-instrument-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
-        "pnl-attribution-service-code.tar.gz",
-        "risk-and-exposure-service-code.tar.gz",
     ),
 }
 

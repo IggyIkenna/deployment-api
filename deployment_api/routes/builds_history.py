@@ -48,7 +48,6 @@ _KNOWN_TARBALL_SERVICES = [
     "features-onchain-service",
     "strategy-service",
     "execution-service",
-    "risk-and-exposure-service",
     "ml-training-service",
     "ml-inference-service",
     "alerting-service",

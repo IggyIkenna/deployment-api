@@ -146,7 +146,7 @@ def test_mock_entries_missing_manifest(tmp_path: Path) -> None:
     from deployment_api.routes.builds_history import _mock_entries
 
     with patch("deployment_api.routes.builds_history._workspace_root", return_value=tmp_path):
-        entries = _mock_entries("test-project", ["execution-service", "risk-and-exposure-service"], 5)
+        entries = _mock_entries("test-project", ["execution-service", "strategy-service"], 5)
 
     assert len(entries) == 2
     assert all(e.latest_image_tag is None for e in entries)
