@@ -43,13 +43,13 @@ from datetime import UTC, date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from unified_api_contracts import (
+    BreakerRecoveryMode,
     KillSwitchArmedEvent,
     KillSwitchArmRequest,
     KillSwitchDisarmEvent,
     KillSwitchId,
     KillSwitchProvenance,
 )
-from unified_api_contracts import BreakerRecoveryMode
 from unified_api_contracts.internal.domain.deployment_service import KillSwitchScope
 from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,

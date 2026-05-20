@@ -9,6 +9,7 @@ backward-compatible with legacy parquet that predates the column.
 from __future__ import annotations
 
 import pandas as pd
+from unified_api_contracts import CaptureStatusCounts
 
 from deployment_api.services.data_status_service import (
     _build_coverage_metrics,
@@ -30,16 +31,16 @@ class TestComputeCaptureStatusCounts:
             ]
         )
         counts = _compute_capture_status_counts(df)
-        assert counts["captured"] == 2
-        assert counts["empty_confirmed"] == 1
-        assert counts["attempted_failed"] == 3
+        assert counts.captured == 2
+        assert counts.empty_confirmed == 1
+        assert counts.attempted_failed == 3
 
     def test_legacy_frame_no_column_coerces_to_captured(self) -> None:
         df = pd.DataFrame([{"venue": "BINANCE-SPOT"}, {"venue": "OKX-SPOT"}])
         counts = _compute_capture_status_counts(df)
-        assert counts["captured"] == 2
-        assert counts["empty_confirmed"] == 0
-        assert counts["attempted_failed"] == 0
+        assert counts.captured == 2
+        assert counts.empty_confirmed == 0
+        assert counts.attempted_failed == 0
 
     def test_mixed_legacy_and_v5_rows_nan_coerces_to_captured(self) -> None:
         df = pd.DataFrame(
@@ -50,26 +51,28 @@ class TestComputeCaptureStatusCounts:
             ]
         )
         counts = _compute_capture_status_counts(df)
-        assert counts["captured"] == 2
-        assert counts["empty_confirmed"] == 1
-        assert counts["attempted_failed"] == 0
+        assert counts.captured == 2
+        assert counts.empty_confirmed == 1
+        assert counts.attempted_failed == 0
 
     def test_empty_frame_returns_zero_counts(self) -> None:
         df = pd.DataFrame()
         counts = _compute_capture_status_counts(df)
-        assert counts == {"captured": 0, "empty_confirmed": 0, "attempted_failed": 0}
+        assert counts.captured == 0
+        assert counts.empty_confirmed == 0
+        assert counts.attempted_failed == 0
 
     def test_unknown_status_value_coerces_to_captured(self) -> None:
         df = pd.DataFrame([{"capture_status": "bogus"}])
         counts = _compute_capture_status_counts(df)
-        assert counts["captured"] == 1
-        assert counts["empty_confirmed"] == 0
-        assert counts["attempted_failed"] == 0
+        assert counts.captured == 1
+        assert counts.empty_confirmed == 0
+        assert counts.attempted_failed == 0
 
 
 class TestDeriveCaptureStatusRates:
     def test_all_three_statuses_denominator_100(self) -> None:
-        counts = {"captured": 40, "empty_confirmed": 40, "attempted_failed": 20}
+        counts = CaptureStatusCounts(captured=40, empty_confirmed=40, attempted_failed=20)
         rates = _derive_capture_status_rates(counts, total_expected_cells=100)
         assert rates["attempted_total"] == 100
         assert rates["attempt_coverage_pct"] == 100.0
@@ -78,7 +81,7 @@ class TestDeriveCaptureStatusRates:
         assert rates["failure_rate"] == 0.2
 
     def test_attempt_coverage_equals_capture_when_only_captured_rows(self) -> None:
-        counts = {"captured": 50, "empty_confirmed": 0, "attempted_failed": 0}
+        counts = CaptureStatusCounts(captured=50, empty_confirmed=0, attempted_failed=0)
         rates = _derive_capture_status_rates(counts, total_expected_cells=100)
         assert rates["attempt_coverage_pct"] == 50.0
         assert rates["capture_coverage_pct"] == 50.0
@@ -86,7 +89,7 @@ class TestDeriveCaptureStatusRates:
         assert rates["failure_rate"] == 0.0
 
     def test_zero_denominator_returns_zero_rates(self) -> None:
-        counts = {"captured": 0, "empty_confirmed": 0, "attempted_failed": 0}
+        counts = CaptureStatusCounts(captured=0, empty_confirmed=0, attempted_failed=0)
         rates = _derive_capture_status_rates(counts, total_expected_cells=0)
         assert rates["attempt_coverage_pct"] == 0.0
         assert rates["capture_coverage_pct"] == 0.0

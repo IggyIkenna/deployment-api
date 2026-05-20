@@ -16,6 +16,7 @@ UI re-expands a venue or day.
 from __future__ import annotations
 
 import logging
+import re as _re
 import time
 from typing import cast
 
@@ -548,12 +549,27 @@ def _resolve_sports_instrument_type(asset_group: str, instrument_type: str, data
     return _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE.get(data_type, instrument_type)
 
 
-def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline with fallback chain; branching is inherent
+def get_schema_for_shard(
     *,
-    category: str,
+    asset_group: str,
     instrument_type: str,
     data_type: str,
     venue: str | None = None,
+    service: str | None = None,
+    bucket: str | None = None,
+    day: str | None = None,
+    chain: str | None = None,
+    instrument_id: str | None = None,
+    league_id: str | None = None,
+    fixture_id: str | None = None,
+    canonical_question_group: str | None = None,
+    job_id: str | None = None,
+    model_family: str | None = None,
+    training_period: str | None = None,
+    strategy_id: str | None = None,
+    instruction_type: str | None = None,
+    feature_group: str | None = None,
+    timeframe: str | None = None,
 ) -> dict[str, object]:
     """Return the SchemaContract columns for a shard tuple.
 
@@ -579,7 +595,19 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
     # from the manifest; UAC keys those as ``pool`` / ``dex_pool_state``.
-    cat_norm = category.lower()
+    cat_norm = asset_group.lower()
+
+    # instruments-service legacy v4 rows for cefi/tradfi/defi/prediction carry
+    # empty instrument_type and empty data_type. Synthesise the catalogue axes
+    # so the lookup resolves the registered INSTRUMENT_CATALOGUE contract.
+    if (
+        (service or "").lower() == "instruments-service"
+        and not (instrument_type or "").strip()
+        and not (data_type or "").strip()
+    ):
+        instrument_type = "instrument_catalogue"
+        data_type = "instrument_catalogue"
+
     dt_norm = _normalise_data_type(data_type)
     dt_lookup = (data_type or "").lower()
 
@@ -597,9 +625,7 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
                 "symbol_column": None,
                 "source": "none",
                 "columns": [],
-                "message": (
-                    f"No SchemaContract found for category={cat_norm} data_type={dt_lookup}"
-                ),
+                "message": (f"No SchemaContract found for category={cat_norm} data_type={dt_lookup}"),
                 "instrument_type_resolved_via": "none",
             }
         it_norm = picked
@@ -610,7 +636,7 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
     # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(
-            category=cat_norm,
+            asset_group=cat_norm,
             instrument_type=it_norm,
             data_type=dt_norm,
             venue=venue,
@@ -624,8 +650,12 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
             "venue": venue,
             "symbol_column": None,
             "source": "PARQUET_PROJECTION",
-            "columns": [{"name": c, "dtype": "", "nullable": True, "description": ""} for c in cols],
-            "projected_from": gs_uri,
+            "columns": [],
+            "projected_from": None,
+            "message": (
+                "No contract registered for this shard. The UI should fall back to projecting actual parquet columns."
+            ),
+            "instrument_type_resolved_via": resolved_via,
         }
 
     # Figure out whether we resolved via override or base registry.
@@ -637,7 +667,7 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
 
     return {
         "registered": True,
-        "category": contract.category,
+        "category": contract.asset_group,
         "instrument_type": contract.instrument_type,
         "data_type": contract.data_type,
         "venue": (venue or "").upper() if venue else None,
@@ -870,7 +900,7 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
     """
     svc = service.lower()
     if svc in _PER_VENUE_DAY_BUNDLE_SERVICES:
-        if category.lower() == "sports":
+        if asset_group.lower() == "sports":
             # Sports groups by league inside the per-day listing; the UI
             # passes the league label through ``instrument_type`` because
             # that is the axis the manifest uses upstream. A dedicated
@@ -881,13 +911,13 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
 
     if svc in {"market-tick-data-service", "market-data-processing-service"}:
         return (
-            f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+            f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
             f"venue={venue}/instrument_type={instrument_type.lower()}/"
             f"data_type={data_type.lower()}/"
         )
 
     return (
-        f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+        f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
         f"venue={venue}/instrument_type={instrument_type}/data_type={data_type}/"
     )
 
@@ -901,7 +931,7 @@ def _infer_symbol_column_for_shard(asset_group: str, instrument_type: str, data_
     """
     try:
         contract = lookup_contract(
-            category=category.lower(),
+            asset_group=asset_group.lower(),
             instrument_type=instrument_type,
             data_type=data_type,
             venue=venue,
@@ -1132,7 +1162,7 @@ def _list_instruments_full(
     bundling = _bundling_mode(venue, instrument_type, service)
 
     if bundling == "per_condition_id":
-        instruments = _expand_per_condition_id(parquet_files, asset_group, instrument_type, data_type, venue)
+        instruments = _expand_per_condition_id(parquet_files, category, instrument_type, data_type, venue)
     elif bundling == "per_venue_day_bundle":
         instruments = _expand_per_venue_day_bundle(parquet_files, service, instrument_type)
     else:
@@ -1162,7 +1192,7 @@ def _list_instruments_full(
 def list_instruments_for_shard(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1188,6 +1218,7 @@ def list_instruments_for_shard(
     The underlying listing is still cached in full so repeated pagination
     hits are cheap.
     """
+    category = asset_group
     # Clamp the page window defensively before doing any work.
     safe_limit = max(1, min(int(limit or DEFAULT_INSTRUMENT_LIMIT), MAX_INSTRUMENT_LIMIT))
     safe_offset = max(0, int(offset or 0))
@@ -1239,7 +1270,7 @@ def list_instruments_for_shard(
 def preview_bundle_symbols(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1254,6 +1285,7 @@ def preview_bundle_symbols(
     lets the user eyeball the contents of the bundle parquet before
     downloading it.
     """
+    category = asset_group
     bundling = _bundling_mode(venue, instrument_type)
     if bundling != "per_underlying":
         return {
@@ -1303,7 +1335,7 @@ def preview_bundle_symbols(
 def get_shard_info(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     data_type: str,
@@ -1320,6 +1352,7 @@ def get_shard_info(
     (venues with a named + OTHER split usually want named as the default)
     or ``OTHER`` / the single type otherwise.
     """
+    category = asset_group
     cache_key = f"shard_info:{service}:{category}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
@@ -1375,7 +1408,7 @@ def cast_dict(obj: object) -> dict[str, object]:
 def compute_bucket_counts(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     data_type: str,
@@ -1392,6 +1425,7 @@ def compute_bucket_counts(
     This performs one GCS list per venue/day and, if OTHER exists, one
     parquet read. Results cache 5 min.
     """
+    category = asset_group
     cache_key = f"bucket_counts:{service}:{category}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
@@ -1409,7 +1443,7 @@ def compute_bucket_counts(
 
     other_count = 0
     if any(it.upper() == "OTHER" for it in instrument_types):
-        other_count = _count_distinct_in_other_bucket(bucket, venue_prefix, asset_group, venue, data_type)
+        other_count = _count_distinct_in_other_bucket(bucket, venue_prefix, category, venue, data_type)
 
     result = {"named_market_count": named, "other_market_count": other_count}
     _cache_put(cache_key, result)
@@ -1439,9 +1473,7 @@ def _collect_instrument_types(bucket: str, venue_prefix: str) -> set[str]:
     return found
 
 
-def _count_distinct_in_other_bucket(
-    bucket: str, venue_prefix: str, category: str, venue: str, data_type: str
-) -> int:
+def _count_distinct_in_other_bucket(bucket: str, venue_prefix: str, category: str, venue: str, data_type: str) -> int:
     """Read the first OTHER-bucket parquet and return the distinct-symbol count."""
     symbol_col = _infer_symbol_column_for_shard(category, "OTHER", data_type, venue)
     other_prefix = f"{venue_prefix}instrument_type=OTHER/data_type={data_type}/"
@@ -1573,7 +1605,7 @@ def _distinct_values_in_parquet(gs_uri: str, column: str) -> list[str]:
 def build_csv_export(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1594,6 +1626,7 @@ def build_csv_export(
 
     Raises ``ValueError`` if row count would exceed ``max_rows``.
     """
+    category = asset_group
     # CSV export must see every instrument in the shard, not just the first
     # page — users select IDs that may live on any page.
     listing = _list_instruments_full(
@@ -2421,7 +2454,7 @@ MAX_SHARD_CSV_ROWS = 50_000
 def build_instruments_shard_csv_export(
     *,
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     date: str,
     project_id: str | None = None,
@@ -2441,6 +2474,7 @@ def build_instruments_shard_csv_export(
         ValueError: unsupported service, or row count exceeds ``max_rows``.
         FileNotFoundError: parquet does not exist (adapter never ran that day).
     """
+    category = asset_group
     svc = service.lower()
     if svc not in _PER_VENUE_DAY_BUNDLE_SERVICES:
         raise ValueError(
@@ -2448,7 +2482,7 @@ def build_instruments_shard_csv_export(
             f"Supported: {sorted(_PER_VENUE_DAY_BUNDLE_SERVICES)}"
         )
 
-    bucket = build_bucket_name(service, asset_group, project_id)
+    bucket = build_bucket_name(service, category, project_id)
     gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
 
     try:

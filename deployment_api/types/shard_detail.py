@@ -40,13 +40,14 @@ class ShardCoord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     service: str
-    category: str
+    asset_group: str
     instrument_type: str
     data_type: str
     day: str
     venue: str | None = None
     underlying: str | None = None
     instrument_id: str | None = None
+    feature_family: str | None = None
 
 
 class ShardSchemaColumn(BaseModel):

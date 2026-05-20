@@ -440,16 +440,9 @@ class TestResolveInstrumentTypeAuto:
         """Existing callers passing a concrete ``instrument_type`` are
         unchanged — ``instrument_type_resolved_via`` is ``"explicit"``.
         """
-        fake_df = pd.DataFrame({"underlying": ["BTC"]})
         with (
             patch.object(svc, "list_objects", return_value=[]),
-            patch.object(
-                svc,
-                "_read_parquet_columns",
-                return_value=fake_df,
-            ),
-            patch.object(svc, "_read_parquet_footer_row_count", return_value=1),
-            patch.object(svc, "get_object_metadata", return_value={"size": 1, "updated": None}),
+            patch.object(svc, "get_object_metadata", return_value=None),
             patch.object(svc, "_manifest_row_for_coord", return_value=None),
             patch.object(svc, "_parquet_signed_url", return_value=None),
         ):
@@ -462,12 +455,8 @@ class TestResolveInstrumentTypeAuto:
                 venue="DERIBIT",
                 underlying="BTC",
             )
-        assert resp.available is False
-        assert resp.gs_uri == "gs://bucket-x/path/parquet"
-        assert resp.error_reason is not None
-        assert "RuntimeError" in resp.error_reason
-        assert "simulated parquet corruption" in resp.error_reason
-        assert resp.file_size_bytes == 1234
+        assert resp.schema_.instrument_type_resolved_via == "explicit"
+        assert resp.coord.instrument_type == "options_chain"
 
     def test_successful_read_computes_per_column_stats(self) -> None:
         df = pd.DataFrame(

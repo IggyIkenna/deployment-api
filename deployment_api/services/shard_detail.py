@@ -35,7 +35,12 @@ from unified_api_contracts import (
     SchemaContractNotFoundError,
     lookup_contract,
 )
-from unified_trading_library import read_availability_index
+from unified_api_contracts.features import get_feature_family
+from unified_trading_library import (
+    LEGACY_REASON_ASSET_GROUPS,
+    classify_legacy_empty_row,
+    read_availability_index,
+)
 
 from deployment_api.services.data_status_drilldown import (
     _read_parquet_columns,  # pyright: ignore[reportPrivateUsage]
@@ -62,7 +67,7 @@ from deployment_api.types.shard_detail import (
     ShardSchemaColumn,
     VenueDetailResponse,
 )
-from deployment_api.utils.storage_facade import get_object_metadata, list_objects
+from deployment_api.utils.storage_facade import get_object_metadata, list_objects, list_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +187,7 @@ def _is_auto_instrument_type(instrument_type: str | None) -> bool:
     return instrument_type.strip().lower() in _AUTO_INSTRUMENT_TYPE_TOKENS
 
 
-def _resolve_instrument_type_auto(
-    *, category: str, data_type: str, venue: str | None = None
-) -> str | None:
+def _resolve_instrument_type_auto(*, category: str, data_type: str, venue: str | None = None) -> str | None:
     """Pick an instrument_type for ``(category, data_type)`` when caller passes AUTO.
 
     Search order:
@@ -210,11 +213,7 @@ def _resolve_instrument_type_auto(
     if venue:
         venue_norm = (venue.split("-", 1)[0] if "-" in venue else venue).upper()
         venue_matches: list[str] = sorted(
-            {
-                it
-                for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES
-                if c == cat_norm and v == venue_norm and dt == dt_norm
-            }
+            {it for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES if c == cat_norm and v == venue_norm and dt == dt_norm}
         )
         if venue_matches:
             picked_v = venue_matches[0]
@@ -229,9 +228,7 @@ def _resolve_instrument_type_auto(
             )
             return picked_v
 
-    matches: list[str] = sorted(
-        {it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm}
-    )
+    matches: list[str] = sorted({it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm})
     if matches:
         picked = matches[0]
         if len(matches) > 1:
@@ -289,43 +286,6 @@ def _column_dict(col: object) -> ShardSchemaColumn:
     )
 
 
-def _resolve_instrument_type_auto(*, category: str, data_type: str, venue: str | None) -> str | None:
-    """Resolve an ``instrument_type`` for a (category, data_type) pair.
-
-    Used when the UI passes ``instrument_type=AUTO`` (or one of the other
-    sentinels in :data:`_AUTO_SENTINELS`) because the click site only
-    knows the ``data_type`` axis — DeFi protocol drilldowns are the
-    canonical case.
-
-    Resolution order:
-
-    1. **Venue override**: any ``(category, venue.upper(), instrument_type,
-       data_type)`` tuple in ``VENUE_CONTRACT_OVERRIDES`` is consulted
-       first when ``venue`` is supplied — the per-venue schema wins.
-    2. **Base registry**: any ``(category.lower(), instrument_type,
-       data_type.lower())`` tuple in ``CONTRACT_REGISTRY``. Multiple
-       matches are sorted alphabetically and the first one is returned
-       so the resolution is deterministic across processes.
-
-    Returns ``None`` if no contract matches.
-    """
-    cat_norm = (category or "").lower()
-    dt_norm = (data_type or "").lower()
-
-    if venue:
-        venue_norm = venue.upper()
-        venue_matches: list[str] = sorted(
-            it for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES if c == cat_norm and v == venue_norm and dt == dt_norm
-        )
-        if venue_matches:
-            return venue_matches[0]
-
-    base_matches: list[str] = sorted(it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm)
-    if base_matches:
-        return base_matches[0]
-    return None
-
-
 def _resolve_schema(
     *, category: str, instrument_type: str, data_type: str, venue: str | None
 ) -> tuple[ShardSchema, str]:
@@ -343,42 +303,12 @@ def _resolve_schema(
     dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
     dt_norm_lookup = (data_type or "").lower()
 
-    resolved_via: Literal["explicit", "auto", "none"]
-    it_norm: str
-    if is_auto:
-        auto_pick = _resolve_instrument_type_auto(category=category, data_type=data_type, venue=venue)
-        if auto_pick is None:
-            return (
-                ShardSchema(
-                    registered=False,
-                    source="none",
-                    symbol_column=None,
-                    columns=[],
-                    message=(
-                        f"No SchemaContract found for category={cat_norm} "
-                        f"data_type={dt_norm_lookup}"
-                    ),
-                    instrument_type_resolved_via="none",
-                ),
-                "",
-            )
-        effective_it = picked
-        resolved_via = "auto"
-    else:
-        it_norm = (instrument_type or "").lower() if (instrument_type or "").isupper() else instrument_type
-        resolved_via = "explicit"
-
-    dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
-    dt_norm_lookup = (data_type or "").lower()
-
     auto_requested = _is_auto_instrument_type(instrument_type)
     resolved_via: str = "explicit"
     effective_it: str = instrument_type or ""
 
     if auto_requested:
-        picked = _resolve_instrument_type_auto(
-            category=cat_norm, data_type=dt_norm_lookup, venue=venue
-        )
+        picked = _resolve_instrument_type_auto(category=cat_norm, data_type=dt_norm_lookup, venue=venue)
         if picked is None:
             return (
                 ShardSchema(
@@ -386,10 +316,7 @@ def _resolve_schema(
                     source="none",
                     symbol_column=None,
                     columns=[],
-                    message=(
-                        f"No SchemaContract found for category={cat_norm} "
-                        f"data_type={dt_norm_lookup}"
-                    ),
+                    message=(f"No SchemaContract found for category={cat_norm} data_type={dt_norm_lookup}"),
                     instrument_type_resolved_via="none",
                 ),
                 "",
@@ -400,7 +327,7 @@ def _resolve_schema(
     it_norm = (effective_it or "").lower() if (effective_it or "").isupper() else effective_it
     try:
         contract: SchemaContract = lookup_contract(
-            category=cat_norm,
+            asset_group=cat_norm,
             instrument_type=it_norm,
             data_type=dt_norm,
             venue=venue,
@@ -416,9 +343,7 @@ def _resolve_schema(
                     "No contract registered for this shard. "
                     "The UI should fall back to projecting actual parquet columns."
                 ),
-                instrument_type_resolved_via=cast(
-                    "Literal['explicit', 'auto', 'none']", resolved_via
-                ),
+                instrument_type_resolved_via=cast("Literal['explicit', 'auto', 'none']", resolved_via),
             ),
             effective_it,
         )
@@ -674,6 +599,7 @@ def _gcs_metadata(  # noqa: C901 — multi-field manifest status pipeline (GCS p
     object_path: str | None,
     manifest: dict[str, str] | None,
     pq_row_count: int | None,
+    asset_group: str | None = None,
 ) -> ShardGcsMetadata:
     """Build the ``gcs`` block of the shard-detail response.
 
@@ -717,6 +643,12 @@ def _gcs_metadata(  # noqa: C901 — multi-field manifest status pipeline (GCS p
             status = "missing"
         err = manifest.get("error_reason") or ""
         error_reason = err or None
+        error_reason = _classify_legacy_empty_reason(
+            status=status,
+            error_reason=error_reason,
+            manifest=manifest,
+            asset_group=asset_group,
+        )
         attempted_at_raw = manifest.get("attempted_at")
         if not captured_at and attempted_at_raw:
             captured_at = attempted_at_raw
@@ -1046,7 +978,7 @@ def get_shard_detail(
 
     coord = ShardCoord(
         service=service,
-        category=category,
+        asset_group=category,
         # Echo the resolved instrument_type (not the literal "AUTO" /
         # "UNKNOWN") so the UI displays the actual axis name.  When the
         # backend could not resolve, we keep the caller's value so the
@@ -1079,7 +1011,7 @@ def get_shard_detail(
 
 
 def _instruments_bucket_for_category(category: str) -> str:
-    return f"instruments-store-{category.lower()}-{_pid}"
+    return build_bucket_name("instruments-service", category)
 
 
 # Compiled regex for stripping the underscore in DeFi protocol-version
@@ -1191,22 +1123,13 @@ def _read_instruments_day_df(*, bucket: str, venue: str, day: str, category: str
 
 
 def _list_day_prefixes(bucket: str) -> list[str]:
-    """List the ``day=YYYY-MM-DD`` sub-directories under ``instrument_availability/by_date/``.
-
-    Uses ``google.cloud.storage`` directly with ``delimiter='/'`` so we
-    get the day-level directories without paging through every leaf file.
-    The UCI ``StorageClient`` wrapper strips the ``.prefixes`` attribute
-    that this approach requires, so we go to the raw SDK for this one
-    listing — the bucket name and project are still derived from
-    ``UnifiedCloudConfig`` via ``_pid``.
-    """
-    from google.cloud import storage as _gcs
-
+    """List the ``day=YYYY-MM-DD`` sub-directories under ``instrument_availability/by_date/``."""
+    prefix = "instrument_availability/by_date/"
     try:
-        return _read_parquet_columns(gs_uri, None)
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("instruments day read failed for %s: %s", gs_uri, exc)
-        return None
+        return list_prefixes(bucket, prefix)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_day_prefixes failed for %s: %s", bucket, exc)
+        return []
 
 
 def _pick_latest_day(bucket: str, venue: str) -> str | None:

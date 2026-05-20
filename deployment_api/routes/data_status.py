@@ -823,88 +823,7 @@ async def get_data_status_turbo(
         logger.exception("Error in get_data_status_turbo")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
-
-
-@router.get("/manifest")
-async def get_data_status_manifest(
-    request: Request,
-    service: str = Query(..., description="Service name"),
-    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
-    category: list[str] | None = Query(None, description="Filter by category"),
-):
-    """Get data status from manifest availability indices (fastest path).
-
-    Reads consolidated availability_index.parquet files directly instead of
-    listing cloud storage blobs. Works with both GCS and S3.
-    Returns the same response shape as /turbo for UI compatibility.
-    """
-    if _cfg.is_mock_mode():
-        from datetime import datetime as _dt
-
-        _start = _dt.strptime(start_date, "%Y-%m-%d")
-        _end = _dt.strptime(end_date, "%Y-%m-%d")
-        _days = max(1, (_end - _start).days + 1)
-        _cats = category or ["CEFI", "TRADFI", "DEFI"]
-        _found = int(_days * 0.85)
-        return {
-            "service": service,
-            "date_range": {"start": start_date, "end": end_date},
-            "mode": "manifest",
-            "source": "manifest",
-            "overall_completion_pct": round(_found / _days * 100, 1),
-            "overall_dates_found": _found * len(_cats),
-            "overall_dates_expected": _days * len(_cats),
-            "total_missing": (_days - _found) * len(_cats),
-            "categories": {
-                cat: {
-                    "category": cat,
-                    "bucket": f"mock-bucket-{cat.lower()}",
-                    "dates_expected": _days,
-                    "dates_found": _found,
-                    "dates_missing": _days - _found,
-                    "completion_pct": round(_found / _days * 100, 1),
-                    "missing_dates": [],
-                    "source": "manifest",
-                }
-                for cat in _cats
-            },
-            "mock": True,
-        }
-
-    try:
-        import asyncio
-
-        from deployment_service.cli.utils.manifest_reader import ManifestReader
-
-        reader = ManifestReader()
-        result = await asyncio.to_thread(
-            reader.get_manifest_status,
-            service=service,
-            start_date=start_date,
-            end_date=end_date,
-            categories=category,
-        )
-
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=str(result["error"]))
-
-        return result
-
-    except ImportError as exc:
-        logger.warning("deployment_service not available for manifest reads")
-        raise HTTPException(
-            status_code=501,
-            detail="Manifest reader requires deployment-service package",
-        ) from exc
-    except Exception as e:
-        logger.exception("Error in get_data_status_manifest")
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail=f"Manifest read failed: {e}") from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/coverage-summary")
@@ -1047,9 +966,7 @@ async def get_venue_detail(
         logger.exception("Error in get_venue_detail")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/turbo/stats")
