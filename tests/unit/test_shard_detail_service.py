@@ -96,67 +96,6 @@ class TestDefiComposite:
         assert svc._defi_composite_parts(None) == (None, None)  # pyright: ignore[reportPrivateUsage]
 
 
-class TestInstrumentTypeAuto:
-    """``_resolve_instrument_type_auto`` + ``_resolve_schema`` AUTO branch.
-
-    Covers the deployment-ui DeFi click flow: the click site only knows
-    ``data_type`` (e.g. ``oracle_prices``) and the composite venue (e.g.
-    ``CHAINLINK-ETHEREUM``); the backend resolves ``instrument_type`` by
-    scanning ``CONTRACT_REGISTRY``.
-    """
-
-    def test_auto_resolves_known_data_type(self) -> None:
-        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", data_type="dex_pools", venue=None
-        )
-        assert result == "pool"
-
-    def test_auto_resolves_lending_data_type(self) -> None:
-        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", data_type="liquidation_events", venue=None
-        )
-        assert result == "lending"
-
-    def test_auto_returns_none_for_unknown_data_type(self) -> None:
-        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", data_type="not_a_real_data_type", venue=None
-        )
-        assert result is None
-
-    def test_resolve_schema_auto_mode_marks_resolution(self) -> None:
-        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", instrument_type="AUTO", data_type="dex_pools", venue=None
-        )
-        assert schema.registered is True
-        assert schema.instrument_type_resolved_via == "auto"
-        assert schema.instrument_type_resolved == "pool"
-        assert resolved == "pool"
-        # New ColumnSpec fields must be present in the response (set by UAC cf79d54).
-        assert any(col.required is True for col in schema.columns)
-
-    def test_resolve_schema_explicit_mode_unchanged(self) -> None:
-        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", instrument_type="pool", data_type="dex_pools", venue=None
-        )
-        assert schema.registered is True
-        assert schema.instrument_type_resolved_via == "explicit"
-        assert resolved == "pool"
-
-    def test_resolve_schema_auto_unresolved_returns_none_via(self) -> None:
-        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI",
-            instrument_type="AUTO",
-            data_type="not_a_real_data_type",
-            venue=None,
-        )
-        assert schema.registered is False
-        assert schema.instrument_type_resolved_via == "none"
-        assert schema.instrument_type_resolved is None
-        # The caller's literal value passes through when resolution fails so
-        # the response coord is honest about what was requested.
-        assert resolved == "AUTO"
-
-
 # ---------------------------------------------------------------------------
 # get_shard_detail — grouped branch
 # ---------------------------------------------------------------------------
@@ -186,7 +125,7 @@ class TestGetShardDetailGrouped:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="options_chain",
                 data_type="options_chain",
                 day="2026-04-18",
@@ -211,7 +150,7 @@ class TestGetShardDetailGrouped:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="options_chain",
                 data_type="options_chain",
                 day="2026-04-18",
@@ -232,19 +171,7 @@ class TestGetShardDetailGrouped:
 class TestGetShardDetailPerSymbol:
     def test_per_symbol_returns_time_series_head(self) -> None:
         fake_df = pd.DataFrame({"ts_event": ["2026-04-18T00:00:00Z"] * 3, "price": [1.0, 2.0, 3.0]})
-        # _mtds_shard_path lists the venue+data_type prefix and picks the
-        # parquet whose name ends with ``/{leaf}.parquet`` (dual-vocab fan-out
-        # introduced 2026-05-01).  We supply an ObjectInfo matching the leaf
-        # suffix so resolution returns a real path under either vocabulary.
-        objects: list[ObjectInfo] = [
-            ObjectInfo(
-                name=(
-                    "raw_tick_data/by_date/day=2026-04-18/asset_group=cefi/"
-                    "venue=DERIBIT/instrument_type=perpetual/data_type=trades/"
-                    "BTC-PERPETUAL.parquet"
-                )
-            )
-        ]
+        objects: list[ObjectInfo] = []  # path resolved via direct leaf
         with (
             patch.object(svc, "list_objects", return_value=objects),
             patch.object(svc, "_read_parquet_columns", return_value=fake_df),
@@ -255,7 +182,7 @@ class TestGetShardDetailPerSymbol:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="PERPETUAL",
                 data_type="trades",
                 day="2026-04-18",
@@ -291,7 +218,7 @@ class TestGetShardDetailReference:
         ):
             resp = svc.get_shard_detail(
                 service="instruments-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="OPTION",
                 data_type="instruments",
                 day="2026-04-18",
@@ -320,7 +247,7 @@ class TestGetShardDetailFixtures:
         ):
             resp = svc.get_shard_detail(
                 service="instruments-service",
-                asset_group="SPORTS",
+                category="SPORTS",
                 instrument_type="FIXTURE",
                 data_type="fixtures",
                 day="2026-04-12",
@@ -352,7 +279,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                asset_group="DEFI",
+                category="DEFI",
                 venue="ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -375,7 +302,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                asset_group="DEFI",
+                category="DEFI",
                 venue="AAVE_V3-ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -391,7 +318,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                asset_group="DEFI",
+                category="DEFI",
                 venue="ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -421,60 +348,119 @@ class TestFetchVenueDetailCefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                asset_group="CEFI",
+                category="CEFI",
                 venue="BINANCE",
             )
-        assert resp.asset_group == "CEFI"
+        assert resp.category == "CEFI"
         assert resp.venue == "BINANCE"
         assert resp.total_instruments == 2
         assert len(resp.instruments) == 2
 
 
 # ---------------------------------------------------------------------------
-# get_leaf_parquet_stats (writegate Phase 4.A.3)
+# instrument_type=AUTO resolution
 # ---------------------------------------------------------------------------
 
 
-class TestGetLeafParquetStats:
-    def test_unresolved_path_returns_unavailable_with_error_reason(self) -> None:
-        # Service whose name doesn't bind to any path resolver — the helper
-        # returns ``available=False`` rather than raising so the UI can
-        # render the diagnostic state.
-        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
-            resp = svc.get_leaf_parquet_stats(
-                service="unknown-service",
-                asset_group="CEFI",
-                instrument_type="PERPETUAL",
-                data_type="trades",
-                day="2026-04-18",
-                venue="BINANCE",
-            )
-        assert resp.available is False
-        assert resp.gs_uri is None
-        assert resp.error_reason is not None
-        assert "path_unresolved" in resp.error_reason
-        assert resp.row_count == 0
-        assert resp.columns == []
+class TestResolveInstrumentTypeAuto:
+    """AUTO-mode resolution from CONTRACT_REGISTRY.
 
-    def test_parquet_read_failure_returns_unavailable(self) -> None:
-        # Path resolves but pyarrow read raises — helper still returns a
-        # response with the error_reason populated, never re-raises.
+    The DataStatusTab DeFi click site does not have ``instrument_type`` in
+    scope (only ``data_type``).  Passing ``"AUTO"`` opts the caller into
+    backend resolution against the UAC registry.
+    """
+
+    def test_auto_resolves_defi_oracle_prices_to_first_match(self) -> None:
+        # ``(defi, *, oracle_prices)`` is registered in CONTRACT_REGISTRY for
+        # at least ``a_token`` and ``lst`` (legacy venue overrides).  The
+        # alphabetically-first match wins for determinism.
+        picked = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI",
+            data_type="oracle_prices",
+        )
+        assert picked is not None, "expected a registered match for (defi, oracle_prices)"
+        # ``a_token`` < ``lst`` alphabetically.
+        assert picked == "a_token"
+
+    def test_auto_returns_none_for_nonexistent_data_type(self) -> None:
+        picked = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI",
+            data_type="nonexistent_data_type_xyz",
+        )
+        assert picked is None
+
+    def test_get_shard_detail_auto_resolves_and_echoes_in_coord(self) -> None:
+        """Top-level ``get_shard_detail`` accepts ``"AUTO"`` and echoes the
+        resolved instrument_type back in the response coord.
+        """
         with (
-            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
-            patch.object(svc, "_file_size_via_metadata", return_value=1234),
+            patch.object(svc, "list_objects", return_value=[]),
+            patch.object(svc, "get_object_metadata", return_value=None),
+            patch.object(svc, "_manifest_row_for_coord", return_value=None),
+            patch.object(svc, "_parquet_signed_url", return_value=None),
+        ):
+            resp = svc.get_shard_detail(
+                service="market-tick-data-service",
+                category="DEFI",
+                instrument_type="AUTO",
+                data_type="oracle_prices",
+                day="2026-03-26",
+                venue="CHAINLINK",
+            )
+        # Resolved instrument_type should be echoed in the coord — never
+        # the literal "AUTO".
+        assert resp.coord.instrument_type != "AUTO"
+        assert resp.coord.instrument_type != ""
+        assert resp.schema_.registered is True
+        assert resp.schema_.instrument_type_resolved_via == "auto"
+
+    def test_get_shard_detail_auto_unresolved_returns_registered_false(self) -> None:
+        """When AUTO can't resolve, ``registered`` is False with an honest
+        message and ``instrument_type_resolved_via == "none"``.
+        """
+        with (
+            patch.object(svc, "list_objects", return_value=[]),
+            patch.object(svc, "get_object_metadata", return_value=None),
+            patch.object(svc, "_manifest_row_for_coord", return_value=None),
+            patch.object(svc, "_parquet_signed_url", return_value=None),
+        ):
+            resp = svc.get_shard_detail(
+                service="market-tick-data-service",
+                category="DEFI",
+                instrument_type="AUTO",
+                data_type="nonexistent_data_type_xyz",
+                day="2026-03-26",
+                venue="CHAINLINK",
+            )
+        assert resp.schema_.registered is False
+        assert resp.schema_.instrument_type_resolved_via == "none"
+        assert "No SchemaContract found" in resp.schema_.message
+
+    def test_get_shard_detail_explicit_instrument_type_preserved(self) -> None:
+        """Existing callers passing a concrete ``instrument_type`` are
+        unchanged — ``instrument_type_resolved_via`` is ``"explicit"``.
+        """
+        fake_df = pd.DataFrame({"underlying": ["BTC"]})
+        with (
+            patch.object(svc, "list_objects", return_value=[]),
             patch.object(
                 svc,
                 "_read_parquet_columns",
-                side_effect=RuntimeError("simulated parquet corruption"),
+                return_value=fake_df,
             ),
+            patch.object(svc, "_read_parquet_footer_row_count", return_value=1),
+            patch.object(svc, "get_object_metadata", return_value={"size": 1, "updated": None}),
+            patch.object(svc, "_manifest_row_for_coord", return_value=None),
+            patch.object(svc, "_parquet_signed_url", return_value=None),
         ):
-            resp = svc.get_leaf_parquet_stats(
+            resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
-                instrument_type="PERPETUAL",
-                data_type="trades",
+                category="CEFI",
+                instrument_type="options_chain",
+                data_type="options_chain",
                 day="2026-04-18",
-                venue="BINANCE",
+                venue="DERIBIT",
+                underlying="BTC",
             )
         assert resp.available is False
         assert resp.gs_uri == "gs://bucket-x/path/parquet"

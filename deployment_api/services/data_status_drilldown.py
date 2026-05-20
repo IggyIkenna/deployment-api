@@ -16,7 +16,6 @@ UI re-expands a venue or day.
 from __future__ import annotations
 
 import logging
-import re as _re
 import time
 from typing import cast
 
@@ -551,57 +550,23 @@ def _resolve_sports_instrument_type(asset_group: str, instrument_type: str, data
 
 def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline with fallback chain; branching is inherent
     *,
-    asset_group: str,
+    category: str,
     instrument_type: str,
     data_type: str,
     venue: str | None = None,
-    service: str | None = None,
-    bucket: str | None = None,
-    day: str | None = None,
-    chain: str | None = None,
-    instrument_id: str | None = None,
-    league_id: str | None = None,
-    fixture_id: str | None = None,
-    canonical_question_group: str | None = None,
-    job_id: str | None = None,
-    model_family: str | None = None,
-    training_period: str | None = None,
-    strategy_id: str | None = None,
-    instruction_type: str | None = None,
-    feature_group: str | None = None,
-    timeframe: str | None = None,
 ) -> dict[str, object]:
-    """Return the SchemaContract columns for a shard tuple — leaf-shard granularity.
+    """Return the SchemaContract columns for a shard tuple.
 
-    Phase 3 of data_status_multi_axis_shard_propagation_2026_05_06.md
-    — schema view ALWAYS at the deepest shard level. Each leaf parquet has
-    its own column shape (CeFi spot per-instrument vs DeFi options-chain
-    bundle vs sports per-league fixture parquet differ in column shape),
-    so the v7 multi-axis kwargs are threaded through to the parquet
-    projection fallback.
+    Falls back gracefully when no contract is registered — returns an empty
+    column list with ``registered: False`` so the UI can render a
+    "no schema registered — running raw projection" affordance instead of
+    raising.
 
-    Resolution order:
-
-    1. UAC contract registry — ``lookup_contract(asset_group,
-       instrument_type, data_type, venue)``. Honours
-       ``VENUE_CONTRACT_OVERRIDES``. Cleanest path.
-    2. Legacy v4 instruments-service catalogue synthesis: empty
-       instrument_type+data_type collapses to the
-       ``("instrument_catalogue", "instrument_catalogue")`` contract.
-    3. Parquet-projection fallback: when the registry has no entry
-       AND we have ``service`` + ``bucket`` + ``day`` + enough axis
-       kwargs to identify a leaf parquet, probe the actual parquet
-       on GCS via :func:`_parquet_schema_names` and return the real
-       column names. Distinguishes from #1 via ``source =
-       "PARQUET_PROJECTION"`` so the UI can flag it as inferred,
-       not contract-backed.
-    4. Honest absence — return ``registered: False`` with an empty
-       ``columns`` list and a non-confusing message. UI should
-       render "no schema yet" rather than blank or fake columns.
-
-    The honest-absence branch (#4) is correct for shards where the
-    writer hasn't shipped yet — we explicitly DO NOT make up columns
-    that aren't on disk and aren't in the registry.
+    When ``instrument_type`` is ``"AUTO"`` (case-insensitive) / ``"UNKNOWN"``
+    / empty, the registry is searched for any matching ``(category,
+    data_type)`` tuple and the resolved instrument_type is echoed in the
+    response.  ``instrument_type_resolved_via`` is one of ``explicit`` /
+    ``auto`` / ``none``.
     """
     # Local import to avoid an import cycle when shard_detail imports this
     # module's siblings.  The AUTO resolver lives in shard_detail.py as the
@@ -614,136 +579,73 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
     # from the manifest; UAC keys those as ``pool`` / ``dex_pool_state``.
-    cat_norm = asset_group.lower()
-    it_norm = _normalise_instrument_type(instrument_type)
+    cat_norm = category.lower()
     dt_norm = _normalise_data_type(data_type)
-    # Sports manifest carries no instrument_type axis — resolve from data_type.
-    it_norm = _resolve_sports_instrument_type(cat_norm, it_norm, dt_norm)
+    dt_lookup = (data_type or "").lower()
 
-    # instruments-service legacy v4 rows for cefi/tradfi/defi carry empty
-    # instrument_type and empty data_type. Synthesise the catalogue axes so
-    # the lookup resolves the registered INSTRUMENT_CATALOGUE contract
-    # instead of failing.
-    if (service or "").lower() == "instruments-service" and not it_norm and not dt_norm:
-        it_norm = "instrument_catalogue"
-        dt_norm = "instrument_catalogue"
+    auto_requested = _is_auto_instrument_type(instrument_type)
+    resolved_via = "explicit"
+    if auto_requested:
+        picked = _resolve_instrument_type_auto(category=cat_norm, data_type=dt_lookup, venue=venue)
+        if picked is None:
+            return {
+                "registered": False,
+                "category": cat_norm,
+                "instrument_type": "",
+                "data_type": dt_norm,
+                "venue": venue,
+                "symbol_column": None,
+                "source": "none",
+                "columns": [],
+                "message": (
+                    f"No SchemaContract found for category={cat_norm} data_type={dt_lookup}"
+                ),
+                "instrument_type_resolved_via": "none",
+            }
+        it_norm = picked
+        resolved_via = "auto"
+    else:
+        it_norm = _normalise_instrument_type(instrument_type)
 
-    # Step 1+2: Venue override takes priority, else base registry.
-    contract: SchemaContract | None
+    # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(
-            asset_group=cat_norm,
+            category=cat_norm,
             instrument_type=it_norm,
             data_type=dt_norm,
             venue=venue,
         )
     except SchemaContractNotFoundError:
-        contract = None
-
-    if contract is not None:
-        source = "CONTRACT_REGISTRY"
-        if venue is not None:
-            override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
-            if override_key in VENUE_CONTRACT_OVERRIDES:
-                source = "VENUE_CONTRACT_OVERRIDES"
-        return {
-            "registered": True,
-            "asset_group": contract.asset_group,
-            "instrument_type": contract.instrument_type,
-            "data_type": contract.data_type,
-            "venue": (venue or "").upper() if venue else None,
-            "symbol_column": contract.symbol_column,
-            "source": source,
-            "columns": _column_dicts(contract),
-            "required_row_count_min": contract.required_row_count_min,
-        }
-
-    # Step 3: Parquet-projection fallback. Build the leaf-shard kwargs
-    # dict from the multi-axis params + try every plausible parquet path
-    # for this (service, asset_group). When one resolves, project its
-    # column names from the parquet schema and return them as the
-    # leaf-shard schema. SHARD_AXIS_MATRIX-driven so per-asset-group
-    # path layouts are honoured (DEFI chain= partition, sports
-    # league= partition, ML model_family= / training_period= /
-    # job_id=, etc.).
-    axes: dict[str, str | None] = {
-        "venue": venue,
-        "instrument_type": instrument_type,
-        "data_type": data_type,
-        "instrument_id": instrument_id,
-        "chain": chain,
-        "league_id": league_id,
-        "fixture_id": fixture_id,
-        "canonical_question_group": canonical_question_group,
-        "job_id": job_id,
-        "model_family": model_family,
-        "training_period": training_period,
-        "strategy_id": strategy_id,
-        "instruction_type": instruction_type,
-        "feature_group": feature_group,
-        "timeframe": timeframe,
-    }
-    projected = _project_leaf_parquet_columns(
-        service=service,
-        asset_group=cat_norm,
-        bucket=bucket,
-        day=day,
-        axes=axes,
-    )
-    if projected is not None:
-        cols, gs_uri = projected
         return {
             "registered": False,
-            "asset_group": cat_norm,
+            "category": cat_norm,
             "instrument_type": it_norm,
             "data_type": dt_norm,
-            "venue": (venue or "").upper() if venue else None,
+            "venue": venue,
             "symbol_column": None,
             "source": "PARQUET_PROJECTION",
             "columns": [{"name": c, "dtype": "", "nullable": True, "description": ""} for c in cols],
             "projected_from": gs_uri,
         }
 
-    # Step 4: Honest absence. Surface the probed paths so a path-drift
-    # bug is actionable from the modal — operator can paste the URI into
-    # ``gcloud storage ls`` and see whether the parquet really doesn't
-    # exist or the projection template just doesn't match the on-disk
-    # layout.
-    probed_paths: list[str] = []
-    if service and bucket and day:
-        try:
-            probed_paths = _build_leaf_parquet_candidates(
-                service=service, asset_group=cat_norm, day=day, axes=axes, bucket=bucket
-            )
-        except (ValueError, RuntimeError):
-            probed_paths = []
-    contract_key = f"({cat_norm}, {it_norm or '∅'}, {dt_norm or '∅'})"
-    if venue:
-        contract_key += f" venue={venue.upper()}"
-    parts = [
-        f"No UAC schema contract registered for {contract_key}",
-        f"and no parquet found on disk for service '{service}' on day '{day}'.",
-    ]
-    if probed_paths:
-        parts.append("Paths probed (first-hit-wins):")
-        for p in probed_paths:
-            parts.append(f"  • {p}")
-    parts.append(
-        "Either the writer hasn't shipped this axis yet, or the "
-        "projection path-template doesn't match the on-disk layout — "
-        "file the latter as a path-drift bug."
-    )
+    # Figure out whether we resolved via override or base registry.
+    source = "CONTRACT_REGISTRY"
+    if venue is not None:
+        override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
+        if override_key in VENUE_CONTRACT_OVERRIDES:
+            source = "VENUE_CONTRACT_OVERRIDES"
+
     return {
-        "registered": False,
-        "asset_group": cat_norm,
-        "instrument_type": it_norm,
-        "data_type": dt_norm,
-        "venue": venue,
-        "symbol_column": None,
-        "source": "none",
-        "columns": [],
-        "message": "\n".join(parts),
-        "probed_paths": probed_paths,
+        "registered": True,
+        "category": contract.category,
+        "instrument_type": contract.instrument_type,
+        "data_type": contract.data_type,
+        "venue": (venue or "").upper() if venue else None,
+        "symbol_column": contract.symbol_column,
+        "source": source,
+        "columns": _column_dicts(contract),
+        "required_row_count_min": contract.required_row_count_min,
+        "instrument_type_resolved_via": resolved_via,
     }
 
 
@@ -968,7 +870,7 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
     """
     svc = service.lower()
     if svc in _PER_VENUE_DAY_BUNDLE_SERVICES:
-        if asset_group.lower() == "sports":
+        if category.lower() == "sports":
             # Sports groups by league inside the per-day listing; the UI
             # passes the league label through ``instrument_type`` because
             # that is the axis the manifest uses upstream. A dedicated
@@ -979,13 +881,13 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
 
     if svc in {"market-tick-data-service", "market-data-processing-service"}:
         return (
-            f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
+            f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
             f"venue={venue}/instrument_type={instrument_type.lower()}/"
             f"data_type={data_type.lower()}/"
         )
 
     return (
-        f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
+        f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
         f"venue={venue}/instrument_type={instrument_type}/data_type={data_type}/"
     )
 
@@ -999,7 +901,7 @@ def _infer_symbol_column_for_shard(asset_group: str, instrument_type: str, data_
     """
     try:
         contract = lookup_contract(
-            asset_group=asset_group.lower(),
+            category=category.lower(),
             instrument_type=instrument_type,
             data_type=data_type,
             venue=venue,
@@ -1051,7 +953,7 @@ def _bundling_mode(venue: str, instrument_type: str, service: str = "") -> str:
 
 def _expand_per_condition_id(
     parquet_files: list[dict[str, object]],
-    asset_group: str,
+    category: str,
     instrument_type: str,
     data_type: str,
     venue: str,
@@ -1059,7 +961,7 @@ def _expand_per_condition_id(
     if not parquet_files:
         return []
     pf = parquet_files[0]
-    symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
     try:
         distinct_ids = _distinct_values_in_parquet(str(pf["file_uri"]), symbol_col)
     except (OSError, ValueError, RuntimeError) as exc:
@@ -1206,7 +1108,7 @@ def _apply_search_and_pagination(
 def _list_instruments_full(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1219,13 +1121,13 @@ def _list_instruments_full(
     in the shard) and by ``list_instruments_for_shard`` which then applies
     search + pagination on top.
     """
-    cache_key = f"instruments:{service}:{asset_group}:{venue}:{day}:{instrument_type}:{data_type}"
+    cache_key = f"instruments:{service}:{category}:{venue}:{day}:{instrument_type}:{data_type}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cast_dict(cached)
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    prefix = _shard_prefix(service, asset_group, venue, day, instrument_type, data_type)
+    bucket = build_bucket_name(service, category, project_id)
+    prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type)
     parquet_files = _collect_parquet_files(bucket, prefix)
     bundling = _bundling_mode(venue, instrument_type, service)
 
@@ -1243,7 +1145,7 @@ def _list_instruments_full(
 
     full: dict[str, object] = {
         "service": service,
-        "asset_group": asset_group.lower(),
+        "category": category.lower(),
         "venue": venue,
         "day": day,
         "instrument_type": instrument_type,
@@ -1260,7 +1162,7 @@ def _list_instruments_full(
 def list_instruments_for_shard(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1292,7 +1194,7 @@ def list_instruments_for_shard(
 
     full = _list_instruments_full(
         service=service,
-        asset_group=asset_group,
+        category=category,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1317,7 +1219,7 @@ def list_instruments_for_shard(
 
     return {
         "service": full.get("service", service),
-        "asset_group": cast(str, full.get("asset_group", asset_group.lower())),
+        "category": full.get("category", category.lower()),
         "venue": full.get("venue", venue),
         "day": full.get("day", day),
         "instrument_type": full.get("instrument_type", instrument_type),
@@ -1337,7 +1239,7 @@ def list_instruments_for_shard(
 def preview_bundle_symbols(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1362,7 +1264,7 @@ def preview_bundle_symbols(
 
     listing = _list_instruments_full(
         service=service,
-        asset_group=asset_group,
+        category=category,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1382,7 +1284,7 @@ def preview_bundle_symbols(
         return {"bundling": bundling, "symbols": [], "message": "Bundle not found."}
     first = cast_dict(cast(dict[str, object], first_obj))
     uri = str(first.get("file_uri", ""))
-    symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
     try:
         symbols = _distinct_values_in_parquet(uri, symbol_col)[:limit]
     except (OSError, ValueError, RuntimeError) as exc:
@@ -1401,7 +1303,7 @@ def preview_bundle_symbols(
 def get_shard_info(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     data_type: str,
@@ -1418,13 +1320,13 @@ def get_shard_info(
     (venues with a named + OTHER split usually want named as the default)
     or ``OTHER`` / the single type otherwise.
     """
-    cache_key = f"shard_info:{service}:{asset_group}:{venue}:{day}:{data_type}"
+    cache_key = f"shard_info:{service}:{category}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         return cast_dict(cast(dict[str, object], cached))
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/venue={venue}/"
+    bucket = build_bucket_name(service, category, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
     instrument_types = sorted(_collect_instrument_types(bucket, venue_prefix))
 
     types_out: list[dict[str, str]] = []
@@ -1447,7 +1349,7 @@ def get_shard_info(
 
     result: dict[str, object] = {
         "service": service,
-        "asset_group": asset_group.lower(),
+        "category": category.lower(),
         "venue": venue,
         "day": day,
         "data_type": data_type,
@@ -1473,7 +1375,7 @@ def cast_dict(obj: object) -> dict[str, object]:
 def compute_bucket_counts(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     data_type: str,
@@ -1490,7 +1392,7 @@ def compute_bucket_counts(
     This performs one GCS list per venue/day and, if OTHER exists, one
     parquet read. Results cache 5 min.
     """
-    cache_key = f"bucket_counts:{service}:{asset_group}:{venue}:{day}:{data_type}"
+    cache_key = f"bucket_counts:{service}:{category}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         cached_typed: dict[str, int] = {}
@@ -1500,8 +1402,8 @@ def compute_bucket_counts(
             cached_typed[key_str] = val_int
         return cached_typed
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/venue={venue}/"
+    bucket = build_bucket_name(service, category, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
     instrument_types = _collect_instrument_types(bucket, venue_prefix)
     named = sum(1 for it in instrument_types if it.upper() != "OTHER")
 
@@ -1538,10 +1440,10 @@ def _collect_instrument_types(bucket: str, venue_prefix: str) -> set[str]:
 
 
 def _count_distinct_in_other_bucket(
-    bucket: str, venue_prefix: str, asset_group: str, venue: str, data_type: str
+    bucket: str, venue_prefix: str, category: str, venue: str, data_type: str
 ) -> int:
     """Read the first OTHER-bucket parquet and return the distinct-symbol count."""
-    symbol_col = _infer_symbol_column_for_shard(asset_group, "OTHER", data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(category, "OTHER", data_type, venue)
     other_prefix = f"{venue_prefix}instrument_type=OTHER/data_type={data_type}/"
     try:
         other_objects = list_objects(bucket, other_prefix, max_results=10)
@@ -1671,7 +1573,7 @@ def _distinct_values_in_parquet(gs_uri: str, column: str) -> list[str]:
 def build_csv_export(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1696,7 +1598,7 @@ def build_csv_export(
     # page — users select IDs that may live on any page.
     listing = _list_instruments_full(
         service=service,
-        asset_group=asset_group,
+        category=category,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1718,7 +1620,7 @@ def build_csv_export(
     if bundling == "per_condition_id" and all_instruments:
         # Single bundle parquet, filter by symbol column.
         pf_uri = str(all_instruments[0]["file_uri"])
-        symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
+        symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
         df = _read_parquet_columns(pf_uri)  # full parquet
         if selected and symbol_col in df.columns:
             df = df[df[symbol_col].astype(str).isin(selected)]
@@ -1808,6 +1710,10 @@ def build_fixtures_csv_export(
     if "af_league_id" not in df.columns:
         # Empty or malformed day file — return empty CSV rather than erroring.
         return "", 0, _fixtures_csv_filename(day, league_id)
+
+    # af_league_id column may be object/str/int — coerce at the boundary
+    # via pandas.to_numeric (keeps basedpyright strict-mode happy — the
+    # lambda+apply path surfaces reportUnknownLambdaType for the cell type).
     af_series = pd.to_numeric(df["af_league_id"], errors="coerce")
     filtered = df[af_series == af_id]
     if len(filtered) > max_rows:
@@ -2400,7 +2306,7 @@ def _filter_entity_rows_for_fixture(gs_uri: str, fixture_id: str) -> tuple[str, 
     if fid_col is None or df.empty:
         return ("empty_confirmed", None)
 
-    fid_series = df[fid_col].astype(str).str.split(".").str[0]  # strip float ".0" suffix
+    fid_series = df["fixture_id"].astype(str)
     filtered = df[fid_series == fixture_id]
     if filtered.empty:
         return ("missing", filtered)
@@ -2515,7 +2421,7 @@ MAX_SHARD_CSV_ROWS = 50_000
 def build_instruments_shard_csv_export(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     date: str,
     project_id: str | None = None,
@@ -2548,7 +2454,7 @@ def build_instruments_shard_csv_export(
     try:
         df = _read_parquet_columns(gs_uri)
     except (OSError, FileNotFoundError):
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     if len(df) > max_rows:
         raise ValueError(
@@ -2557,11 +2463,11 @@ def build_instruments_shard_csv_export(
         )
 
     csv_text = df.to_csv(index=False)
-    return csv_text, len(df), _shard_csv_filename(service, asset_group, venue, date)
+    return csv_text, len(df), _shard_csv_filename(service, category, venue, date)
 
 
-def _shard_csv_filename(service: str, asset_group: str, venue: str, date: str) -> str:
-    return f"{service}_{asset_group}_{venue}_{date}.csv"
+def _shard_csv_filename(service: str, category: str, venue: str, date: str) -> str:
+    return f"{service}_{category}_{venue}_{date}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -2588,7 +2494,7 @@ _MTDS_CATALOG_COLUMNS: list[str] = [
 def build_mtds_shard_csv_export(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     date: str,
     project_id: str | None = None,
@@ -2613,15 +2519,15 @@ def build_mtds_shard_csv_export(
     if svc not in MTDS_SHARD_SERVICES:
         raise ValueError(f"Service {service!r} is not an MTDS-family service. Supported: {sorted(MTDS_SHARD_SERVICES)}")
 
-    bucket = build_bucket_name(service, asset_group, project_id)
+    bucket = build_bucket_name(service, category, project_id)
     try:
         df = read_availability_index(bucket)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("MTDS catalog export: manifest read failed for %s: %s", bucket, exc)
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     if df.empty or "date" not in df.columns:
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     mask = df["date"] == date
     if "venue" in df.columns:
@@ -2629,7 +2535,7 @@ def build_mtds_shard_csv_export(
     scoped = df.loc[mask].copy()
 
     if scoped.empty:
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     # Keep only the catalog columns that exist; fill missing ones with "".
     out_cols = [c for c in _MTDS_CATALOG_COLUMNS if c in scoped.columns]
@@ -2640,4 +2546,4 @@ def build_mtds_shard_csv_export(
         scoped = scoped.sort_values(sort_cols)
 
     csv_text: str = scoped.to_csv(index=False)  # pyright: ignore[reportUnknownMemberType]
-    return csv_text, len(scoped), _shard_csv_filename(service, asset_group, venue, date)
+    return csv_text, len(scoped), _shard_csv_filename(service, category, venue, date)

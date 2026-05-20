@@ -2,7 +2,7 @@
 
 Derives every piece of a Data-Status shard-detail response (schema,
 GCS metadata, sample rows, branch-specific payload, download URLs) from a
-single ``(service, asset_group, instrument_type, data_type, venue, day, …)``
+single ``(service, category, instrument_type, data_type, venue, day, …)``
 coordinate.  The four ``shard_class`` branches (``grouped`` / ``per_symbol``
 / ``reference`` / ``fixtures``) are classified by
 :func:`_classify_shard` so the UI does not need to encode this routing
@@ -22,14 +22,10 @@ the other branches from rendering.
 
 from __future__ import annotations
 
-import datetime as _dt
 import logging
-import math as _math
-import re as _re
 from typing import Literal, cast
 from urllib.parse import urlencode
 
-import numpy as _np
 import pandas as pd
 from unified_api_contracts import (
     CONTRACT_REGISTRY,
@@ -38,14 +34,7 @@ from unified_api_contracts import (
     SchemaContractNotFoundError,
     lookup_contract,
 )
-from unified_api_contracts.features import get_feature_family
-from unified_api_contracts.internal.schemas.contracts import CONTRACT_REGISTRY
-from unified_trading_library import (
-    LEGACY_REASON_ASSET_GROUPS,
-    build_bucket,
-    classify_legacy_empty_row,
-    read_availability_index,
-)
+from unified_trading_library import read_availability_index
 
 from deployment_api.services.data_status_drilldown import (
     _read_parquet_columns,  # pyright: ignore[reportPrivateUsage]
@@ -73,19 +62,6 @@ from deployment_api.types.shard_detail import (
     VenueDetailResponse,
 )
 from deployment_api.utils.storage_facade import get_object_metadata, list_objects
-
-
-class _Sentinel:
-    """Marker class: unique singleton for "this branch did not match"."""
-
-
-_SENTINEL = _Sentinel()
-
-# UI sentinels passed when the click site doesn't have an instrument_type
-# axis in scope (DeFi protocol drilldown — only data_type and composite
-# venue are known). The resolver scans CONTRACT_REGISTRY for any
-# (asset_group, *, data_type) tuple and returns the first deterministic match.
-_AUTO_SENTINELS: frozenset[str] = frozenset({"AUTO", "UNKNOWN", "AUTO_DETECT_FAIL", ""})
 
 logger = logging.getLogger(__name__)
 
@@ -354,14 +330,17 @@ def _resolve_schema(
 ) -> tuple[ShardSchema, str]:
     """Resolve a ShardSchema from the UAC contract registry.
 
-    Returns ``(schema, resolved_instrument_type)``. The resolved
-    instrument_type echoes the caller value when ``instrument_type`` is
-    explicit; when the caller passes one of :data:`_AUTO_SENTINELS` the
-    registry-derived pick is returned so downstream branches (path
-    resolution, shard classification) operate on the concrete axis.
+    Returns ``(schema, resolved_instrument_type)``.  When the caller passes
+    ``"AUTO"`` / ``"UNKNOWN"`` / empty for ``instrument_type``, the registry
+    is searched for any matching ``(category, data_type)`` tuple and the
+    resolved instrument_type is returned alongside the schema (so the
+    response coord can echo the actual axis name rather than the literal
+    sentinel).  ``schema.instrument_type_resolved_via`` documents the path
+    taken: ``explicit`` / ``auto`` / ``none``.
     """
     cat_norm = (category or "").lower()
-    is_auto = (instrument_type or "").upper() in _AUTO_SENTINELS
+    dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
+    dt_norm_lookup = (data_type or "").lower()
 
     resolved_via: Literal["explicit", "auto", "none"]
     it_norm: str
@@ -375,17 +354,14 @@ def _resolve_schema(
                     symbol_column=None,
                     columns=[],
                     message=(
-                        f"No SchemaContract found in UAC registry for "
-                        f"category={cat_norm!r} data_type={data_type!r}. "
-                        "Caller passed instrument_type=AUTO and the registry "
-                        "scan returned no matches."
+                        f"No SchemaContract found for category={cat_norm} "
+                        f"data_type={dt_norm_lookup}"
                     ),
                     instrument_type_resolved_via="none",
-                    instrument_type_resolved=None,
                 ),
-                instrument_type,
+                "",
             )
-        it_norm = auto_pick
+        effective_it = picked
         resolved_via = "auto"
     else:
         it_norm = (instrument_type or "").lower() if (instrument_type or "").isupper() else instrument_type
@@ -423,7 +399,7 @@ def _resolve_schema(
     it_norm = (effective_it or "").lower() if (effective_it or "").isupper() else effective_it
     try:
         contract: SchemaContract = lookup_contract(
-            asset_group=cat_norm,
+            category=cat_norm,
             instrument_type=it_norm,
             data_type=dt_norm,
             venue=venue,
@@ -439,30 +415,40 @@ def _resolve_schema(
                     "No contract registered for this shard. "
                     "The UI should fall back to projecting actual parquet columns."
                 ),
-                instrument_type_resolved_via=resolved_via,
-                instrument_type_resolved=it_norm,
+                instrument_type_resolved_via=cast(
+                    "Literal['explicit', 'auto', 'none']", resolved_via
+                ),
             ),
-            it_norm,
+            effective_it,
         )
 
     override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
     is_override = venue is not None and override_key in VENUE_CONTRACT_OVERRIDES
 
     columns = [_column_dict(c) for c in contract.columns]
-    source: Literal["CONTRACT_REGISTRY", "VENUE_CONTRACT_OVERRIDES", "none"] = (
-        "VENUE_CONTRACT_OVERRIDES" if is_override else "CONTRACT_REGISTRY"
-    )
+    resolved_via_literal = cast("Literal['explicit', 'auto', 'none']", resolved_via)
+    if is_override:
+        return (
+            ShardSchema(
+                registered=True,
+                source="VENUE_CONTRACT_OVERRIDES",
+                symbol_column=contract.symbol_column,
+                columns=columns,
+                message="",
+                instrument_type_resolved_via=resolved_via_literal,
+            ),
+            effective_it,
+        )
     return (
         ShardSchema(
             registered=True,
-            source=source,
+            source="CONTRACT_REGISTRY",
             symbol_column=contract.symbol_column,
             columns=columns,
             message="",
-            instrument_type_resolved_via=resolved_via,
-            instrument_type_resolved=it_norm,
+            instrument_type_resolved_via=resolved_via_literal,
         ),
-        it_norm,
+        effective_it,
     )
 
 
@@ -510,17 +496,7 @@ def _mtds_shard_path(
     underlying: str | None,
     instrument_id: str | None,
 ) -> tuple[str, str] | None:
-    """MTDS-family parquet path resolution — isolated for complexity budget.
-
-    Builds a ``category={ag}/`` prefix; ``list_objects`` (via the dual-vocab
-    helper in ``storage_facade.list_objects``) transparently fans out to
-    both ``category=`` (legacy on-disk) and ``asset_group=`` (canonical
-    new writes).  Per CLAUDE.md SSOT the two coexist on disk without a
-    re-keying migration.  When ``leaf`` is supplied (full path known) we
-    list the venue+data_type level prefix and pick the parquet matching
-    the leaf — this makes the hot path correct under either vocabulary
-    rather than blindly returning a path that may not exist on disk.
-    """
+    """MTDS-family parquet path resolution — isolated for complexity budget."""
     it_disk = (instrument_type or "").lower()
     dt_disk = (data_type or "").lower()
     venue_disk = (venue or "").upper()
@@ -534,22 +510,10 @@ def _mtds_shard_path(
         "futures_chain",
     }
     if leaf and is_derivative_bundle:
-        # underlying= bundle: leaf is the underlying; pick the existing
-        # path under either hive vocabulary.
-        target_suffix = f"underlying={leaf}/ticks.parquet"
-        for o in list_objects(bucket, prefix, max_results=200):
-            n = getattr(o, "name", "")
-            if isinstance(n, str) and n.endswith(target_suffix):
-                return (bucket, n)
-        return None
+        return (bucket, f"{prefix}underlying={leaf}/ticks.parquet")
     if leaf:
-        target_suffix = f"/{leaf}.parquet"
-        for o in list_objects(bucket, prefix, max_results=200):
-            n = getattr(o, "name", "")
-            if isinstance(n, str) and n.endswith(target_suffix):
-                return (bucket, n)
-        return None
-    # No leaf: list the prefix and return the first parquet.
+        return (bucket, f"{prefix}{leaf}.parquet")
+    # No leaf: fall back to listing the prefix and returning the first parquet.
     name = _list_first_parquet(bucket, prefix)
     if name is None:
         return None
@@ -709,7 +673,6 @@ def _gcs_metadata(  # noqa: C901 — multi-field manifest status pipeline (GCS p
     object_path: str | None,
     manifest: dict[str, str] | None,
     pq_row_count: int | None,
-    asset_group: str | None = None,
 ) -> ShardGcsMetadata:
     """Build the ``gcs`` block of the shard-detail response.
 
@@ -753,12 +716,6 @@ def _gcs_metadata(  # noqa: C901 — multi-field manifest status pipeline (GCS p
             status = "missing"
         err = manifest.get("error_reason") or ""
         error_reason = err or None
-        error_reason = _classify_legacy_empty_reason(
-            status=status,
-            error_reason=error_reason,
-            manifest=manifest,
-            asset_group=asset_group,
-        )
         attempted_at_raw = manifest.get("attempted_at")
         if not captured_at and attempted_at_raw:
             captured_at = attempted_at_raw
@@ -953,7 +910,7 @@ def _csv_projection_url(
         return None
     params: dict[str, str] = {
         "service": service,
-        "asset_group": category,
+        "category": category,
         "venue": venue,
         "day": day,
         "instrument_type": instrument_type,
@@ -972,7 +929,7 @@ def _csv_projection_url(
 def get_shard_detail(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     instrument_type: str,
     data_type: str,
     day: str,
@@ -988,22 +945,24 @@ def get_shard_detail(
     the error state.  Programmer errors (unknown service bucket) do
     raise ``ValueError`` at the boundary.
     """
-    # Resolve schema first — when the UI passes instrument_type=AUTO the
-    # resolver scans the registry and returns the concrete instrument_type.
-    # Use the resolved value for downstream classification + path lookup
-    # so a single coordinate is consistent across all branches of the
-    # response.
-    schema, resolved_instrument_type = _resolve_schema(
-        category=asset_group,
+    schema, resolved_it = _resolve_schema(
+        category=category,
         instrument_type=instrument_type,
         data_type=data_type,
         venue=venue,
     )
 
+    # Use the resolved instrument_type for shard classification + path
+    # resolution downstream so AUTO callers land on the correct GCS layout.
+    # When auto resolution failed (resolved_it == ""), fall back to the
+    # caller's literal so classification still produces a deterministic
+    # shard_class and we surface the registered=False schema honestly.
+    effective_instrument_type = resolved_it or instrument_type
+
     shard_class = _classify_shard(
         service=service,
-        category=asset_group,
-        instrument_type=resolved_instrument_type,
+        category=category,
+        instrument_type=effective_instrument_type,
         data_type=data_type,
     )
 
@@ -1014,8 +973,8 @@ def get_shard_detail(
     if shard_class != "fixtures":
         resolved = _gcs_path_for_shard(
             service=service,
-            category=asset_group,
-            instrument_type=resolved_instrument_type,
+            category=category,
+            instrument_type=effective_instrument_type,
             data_type=data_type,
             venue=venue,
             day=day,
@@ -1049,14 +1008,13 @@ def get_shard_detail(
         object_path=object_path,
         manifest=manifest_row,
         pq_row_count=pq_row_count,
-        asset_group=asset_group,
     )
 
     download_urls = ShardDownloadUrls(
         parquet_signed_url=_parquet_signed_url(bucket, object_path),
         csv_projected=_csv_projection_url(
             service=service,
-            category=asset_group,
+            category=category,
             venue=venue,
             day=day,
             instrument_type=effective_instrument_type,
@@ -1087,8 +1045,12 @@ def get_shard_detail(
 
     coord = ShardCoord(
         service=service,
-        asset_group=asset_group,
-        instrument_type=instrument_type,
+        category=category,
+        # Echo the resolved instrument_type (not the literal "AUTO" /
+        # "UNKNOWN") so the UI displays the actual axis name.  When the
+        # backend could not resolve, we keep the caller's value so the
+        # response is honest about what was requested.
+        instrument_type=effective_instrument_type,
         data_type=data_type,
         day=day,
         venue=venue,
@@ -1116,7 +1078,7 @@ def get_shard_detail(
 
 
 def _instruments_bucket_for_category(category: str) -> str:
-    return build_bucket("instruments", project_id=_pid, asset_group=category.lower())
+    return f"instruments-store-{category.lower()}-{_pid}"
 
 
 # Compiled regex for stripping the underscore in DeFi protocol-version
@@ -1173,14 +1135,6 @@ def _partition_key_for_category(category: str) -> str:
 
 def _read_instruments_day_df(*, bucket: str, venue: str, day: str, category: str = "") -> pd.DataFrame | None:
     """Read the instruments-service per-(venue, day) parquet, or ``None``.
-
-    Tries every venue alias from :func:`_venue_aliases_for_bucket`. Falls
-    back to a nested-partition listing when the leaf doesn't exist —
-    SPORTS uses
-    ``day={day}/league={league}/venue={data_provider}/instruments.parquet``
-    where multiple data providers can publish the same league. We
-    enumerate every ``instruments.parquet`` under the league directory
-    and concat them so the caller sees the union.
 
     Shard-isolated: swallows every IO error and returns ``None``.
     """
@@ -1248,117 +1202,55 @@ def _list_day_prefixes(bucket: str) -> list[str]:
     from google.cloud import storage as _gcs
 
     try:
-        gcs_client = _gcs.Client(project=_pid)
-        prefix = "instrument_availability/by_date/"
-        it = gcs_client.list_blobs(bucket, prefix=prefix, delimiter="/")
-        list(it)  # consume to populate ``.prefixes``
-        raw_prefixes: object = getattr(it, "prefixes", set())
-        if not isinstance(raw_prefixes, (set, frozenset, list, tuple)):
-            return []
-        days: list[str] = []
-        for p in cast(list[object], list(raw_prefixes)):
-            if not isinstance(p, str):
-                continue
-            sub = p.removeprefix(prefix).rstrip("/")
-            if sub.startswith("day="):
-                days.append(sub.removeprefix("day="))
-        days.sort()
-        return days
-    except (OSError, RuntimeError) as exc:
-        logger.warning("list day prefixes failed for %s: %s", bucket, exc)
-        return []
-
-
-_RECENT_DAYS_PROBE_WINDOW: int = 120
-"""How many days backwards from today to probe directly before falling back
-to the full ``day=*`` prefix listing. 120 days covers the common case
-(latest data is within the last few months) without paying the cost of
-listing every day prefix in buckets that span years x dozens of leagues
-x multiple data providers.
-"""
-
-
-def _pick_latest_day(bucket: str, venue: str, category: str = "") -> str | None:
-    """Return the latest ``day=YYYY-MM-DD`` for which the venue partition exists.
-
-    Strategy:
-
-    1. **Recent-day probe (fast path)**: walk backwards from today over
-       the last :data:`_RECENT_DAYS_PROBE_WINDOW` days. For each candidate
-       day, probe ``day={D}/{partition_key}={alias}/`` directly via
-       ``list_objects(max_results=1)``. Return on first hit. This is the
-       common case (latest data is days-to-weeks old) and avoids the
-       cost of fully enumerating the bucket's day-prefix tree.
-
-    2. **Full-prefix fallback (slow path)**: only when the recent-day
-       probe finds nothing, enumerate every ``day=*`` sub-directory and
-       walk in reverse-chronological order. Useful for rarely-updated
-       venues whose latest day is older than the probe window.
-
-    Handles the DEFI ``AAVE_V3`` vs ``AAVEV3`` alias mismatch and the
-    SPORTS ``league=<NAME>`` partition key via
-    :func:`_venue_aliases_for_bucket` and
-    :func:`_partition_key_for_category`.
-    """
-    import datetime as _dt
-
-    aliases = _venue_aliases_for_bucket(category, venue)
-    partition_key = _partition_key_for_category(category)
-
-    def _probe(day: str) -> bool:
-        for alias in aliases:
-            test_prefix = f"instrument_availability/by_date/day={day}/{partition_key}={alias}/"
-            try:
-                if list_objects(bucket, test_prefix, max_results=1):
-                    return True
-            except (OSError, RuntimeError) as exc:
-                logger.debug("list_objects probe failed for %s/%s: %s", bucket, test_prefix, exc)
-                continue
-        return False
-
-    today = _dt.date.today()
-    # Sports fixture catalogs publish forward-dated entries (scheduled
-    # fixtures up to a month out), so walk forward 30 days first, then
-    # backwards through the probe window.
-    for delta in range(-30, _RECENT_DAYS_PROBE_WINDOW):
-        candidate = (today - _dt.timedelta(days=delta)).isoformat()
-        if _probe(candidate):
-            return candidate
-
-    # Fallback: scan the full prefix tree (may be slow for huge buckets).
-    days = _list_day_prefixes(bucket)
-    if not days:
+        return _read_parquet_columns(gs_uri, None)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("instruments day read failed for %s: %s", gs_uri, exc)
         return None
-    for day in reversed(days):
-        if _probe(day):
-            return day
-    return None
+
+
+def _pick_latest_day(bucket: str, venue: str) -> str | None:
+    """Return the latest ``day=YYYY-MM-DD`` directory seen for a venue."""
+    prefix = "instrument_availability/by_date/"
+    try:
+        objects = list_objects(bucket, prefix, max_results=5_000)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("list_objects latest-day failed for %s/%s: %s", bucket, prefix, exc)
+        return None
+    days: set[str] = set()
+    marker = "day="
+    venue_marker = f"venue={venue}"
+    for o in objects:
+        name = getattr(o, "name", None)
+        if not isinstance(name, str) or venue_marker not in name:
+            continue
+        idx = name.find(marker)
+        if idx < 0:
+            continue
+        tail = name[idx + len(marker) :]
+        days.add(tail.split("/", 1)[0])
+    return sorted(days)[-1] if days else None
 
 
 def _cefi_venue_detail(category: str, venue: str) -> VenueDetailResponse:
-    """CeFi / TradFi / Sports / Prediction branch — generic venue-detail.
-
-    Despite the name this handles every non-DEFI category. The ``category``
-    is passed through to the bucket-aware helpers so they can apply the
-    DEFI underscore aliasing or the SPORTS ``league=`` partition key when
-    needed.
-    """
+    """CeFi branch — mirrors the pre-existing venue-detail shape."""
     bucket = _instruments_bucket_for_category(category)
-    day = _pick_latest_day(bucket, venue, category=category)
+    day = _pick_latest_day(bucket, venue)
     instruments: list[dict[str, object]] = []
     total_before_cap = 0
     if day is not None:
-        df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day, category=category)
+        df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day)
         if df is not None and not df.empty:
             records_raw = df.to_dict(orient="records")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             records = cast(list[object], records_raw)
             total_before_cap = len(records)
             for r in records[:500]:
-                typed = _typed_row(r)
-                if typed is not None:
-                    instruments.append(typed)
+                if isinstance(r, dict):
+                    typed_r: dict[str, object] = {}
+                    for k, v in cast(dict[object, object], r).items():
+                        typed_r[str(k)] = v
+                    instruments.append(typed_r)
     return VenueDetailResponse(
-        asset_group=category.upper(),
+        category=category.upper(),
         venue=venue,
         day=day,
         total_instruments=len(instruments),
@@ -1372,85 +1264,13 @@ def _is_pool_row(row: dict[str, object]) -> bool:
     return bool(row.get("pool_address") or row.get("pool_id"))
 
 
-def _json_safe_numeric(v: object) -> object | _Sentinel:
-    """Coerce numpy/python numerics. Returns _SENTINEL when v is not numeric-shaped."""
-    if isinstance(v, float) and _math.isnan(v):
-        return None
-    if isinstance(v, _np.bool_):
-        return bool(v)
-    if isinstance(v, _np.integer):
-        return int(v)
-    if isinstance(v, _np.floating):
-        f = float(v)
-        return None if _math.isnan(f) else f
-    return _SENTINEL
-
-
-def _json_safe_temporal(v: object) -> object | _Sentinel:
-    """Coerce pandas/datetime values to ISO-8601. Returns _SENTINEL when not temporal."""
-    if isinstance(v, pd.Timestamp):
-        return None if pd.isna(v) else v.isoformat()
-    if isinstance(v, (_dt.datetime, _dt.date)):
-        return v.isoformat()
-    return _SENTINEL
-
-
-def _json_safe_container(v: object) -> object | _Sentinel:
-    """Recursively convert containers. Returns _SENTINEL when v is not a container."""
-    if isinstance(v, _np.ndarray):
-        return [_json_safe_value(x) for x in v.tolist()]
-    if isinstance(v, (list, tuple)):
-        return [_json_safe_value(x) for x in v]
-    if isinstance(v, dict):
-        return {str(k): _json_safe_value(val) for k, val in cast(dict[object, object], v).items()}
-    if isinstance(v, (set, frozenset)):
-        return [_json_safe_value(x) for x in v]
-    return _SENTINEL
-
-
-def _json_safe_value(v: object) -> object:
-    """Convert pandas / numpy / Timestamp scalars into JSON-serialisable Python primitives.
-
-    Pydantic-core's JSON serialiser refuses to encode ``numpy.int64``,
-    ``numpy.float64``, ``pandas.Timestamp``, ``pandas.NaT``, and bare ``float('nan')``
-    on ``int``-typed fields (raises ``TypeError: 'float' object cannot be interpreted
-    as an integer``). This helper normalises every value into a primitive that JSON
-    can carry losslessly.
-    """
-    if v is None:
-        return None
-    numeric = _json_safe_numeric(v)
-    if numeric is not _SENTINEL:
-        return numeric
-    temporal = _json_safe_temporal(v)
-    if temporal is not _SENTINEL:
-        return temporal
-    container = _json_safe_container(v)
-    if container is not _SENTINEL:
-        return container
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="replace")
-    # Generic pandas NA sentinel — covers Int64 / Float64 / boolean dtypes.
-    try:
-        if pd.isna(v):  # pyright: ignore[reportArgumentType]
-            return None
-    except (TypeError, ValueError):
-        pass
-    # Anything still exotic (custom numpy scalar subclass, decimal.Decimal, etc.)
-    # gets stringified as a last-resort fallback so pydantic-core never sees a
-    # type its JSON serialiser refuses.
-    if isinstance(v, (str, int, float, bool)):
-        return v
-    return str(v)
-
-
 def _typed_row(raw: object) -> dict[str, object] | None:
-    """Coerce a pandas-records raw row into a strictly typed JSON-safe ``dict[str, object]``."""
+    """Coerce a pandas-records raw row into a strictly typed ``dict[str, object]``."""
     if not isinstance(raw, dict):
         return None
     typed: dict[str, object] = {}
     for k, v in cast(dict[object, object], raw).items():
-        typed[str(k)] = _json_safe_value(v)
+        typed[str(k)] = v
     return typed
 
 
@@ -1468,7 +1288,7 @@ def _defi_composite_detail(df: pd.DataFrame, *, venue: str, chain: str, protocol
             continue
         (pools if _is_pool_row(typed) else tokens).append(typed)
     return VenueDetailResponse(
-        asset_group="DEFI",
+        category="DEFI",
         venue=venue,
         chain=chain,
         protocol=protocol,
@@ -1504,7 +1324,7 @@ def _defi_chain_only_detail(df: pd.DataFrame, *, venue: str, chain: str, day: st
         for name_, stats in sorted(protocols_agg.items())
     ]
     return VenueDetailResponse(
-        asset_group="DEFI",
+        category="DEFI",
         venue=venue,
         chain=chain,
         protocol=None,
@@ -1517,9 +1337,9 @@ def _defi_chain_only_detail(df: pd.DataFrame, *, venue: str, chain: str, day: st
 
 def _load_defi_df(bucket: str, *, venue: str, chain: str, protocol: str | None, day: str) -> pd.DataFrame | None:
     """Try the composite file first; fall back to the chain file for composite venues."""
-    df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day, category="DEFI")
+    df = _read_instruments_day_df(bucket=bucket, venue=venue, day=day)
     if (df is None or df.empty) and protocol is not None:
-        df = _read_instruments_day_df(bucket=bucket, venue=chain, day=day, category="DEFI")
+        df = _read_instruments_day_df(bucket=bucket, venue=chain, day=day)
     return df
 
 
@@ -1533,13 +1353,13 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     """
     protocol, chain = _defi_composite_parts(venue)
     if chain is None:
-        return VenueDetailResponse(asset_group="DEFI", venue=venue)
+        return VenueDetailResponse(category="DEFI", venue=venue)
 
     bucket = _instruments_bucket_for_category("defi")
-    day = _pick_latest_day(bucket, venue, category="DEFI")
+    day = _pick_latest_day(bucket, venue)
     if day is None:
         return VenueDetailResponse(
-            asset_group="DEFI",
+            category="DEFI",
             venue=venue,
             chain=chain,
             protocol=protocol,
@@ -1549,7 +1369,7 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     df = _load_defi_df(bucket, venue=venue, chain=chain, protocol=protocol, day=day)
     if df is None or df.empty:
         return VenueDetailResponse(
-            asset_group="DEFI",
+            category="DEFI",
             venue=venue,
             chain=chain,
             protocol=protocol,
@@ -1561,17 +1381,17 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     return _defi_chain_only_detail(df, venue=venue, chain=chain, day=day)
 
 
-def fetch_venue_detail(*, service: str, asset_group: str, venue: str) -> VenueDetailResponse:
+def fetch_venue_detail(*, service: str, category: str, venue: str) -> VenueDetailResponse:
     """Return venue-scoped detail for the Data Status drilldown.
 
-    ``asset_group == "DEFI"`` branches on whether ``venue`` is a bare chain
+    ``category == "DEFI"`` branches on whether ``venue`` is a bare chain
     (``ETHEREUM``) or a composite protocol-chain (``AAVE_V3-ETHEREUM``);
-    all other asset groups use the CeFi branch (latest-day instruments
+    all other categories use the CeFi branch (latest-day instruments
     listing for the venue).
     """
     _ = service  # Reserved for future per-service routing; keeps the signature
     # stable for the UI caller today.
-    cat_upper = (asset_group or "").upper()
+    cat_upper = (category or "").upper()
     if cat_upper == "DEFI":
         return _defi_venue_detail(venue)
     return _cefi_venue_detail(cat_upper.lower() if cat_upper else "cefi", venue)

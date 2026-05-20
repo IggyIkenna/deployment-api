@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 # ``shard_class`` drives UI rendering of the payload branch.  The mapping
-# from ``(service, asset_group, instrument_type, data_type)`` to one of these
+# from ``(service, category, instrument_type, data_type)`` to one of these
 # four values is owned by
 # ``deployment_api.services.shard_detail._classify_shard``.
 ShardClassLiteral = Literal["grouped", "per_symbol", "reference", "fixtures"]
@@ -34,31 +34,22 @@ ServiceEmissionStateLiteral = Literal[
 ]
 
 
-class ShardCoord(BaseModel):  # CORRECT-LOCAL — API response shape, no other consumer
-    """Echo of the request coordinates the response corresponds to.
-
-    ``feature_family`` is the parent classification of ``feature_group`` —
-    the closed-set UAC ``FeatureFamily`` enum (``calendar`` / ``commodity`` /
-    ``cross_instrument`` / ``delta_one`` / ``multi_timeframe`` / ``onchain`` /
-    ``sports`` / ``volatility``). Populated when the request resolves a
-    features-* shard; ``None`` for non-features services. Plan: features-repo
-    consolidation Phase 8B (deployment-api side).
-    """
+class ShardCoord(BaseModel):
+    """Echo of the request coordinates the response corresponds to."""
 
     model_config = ConfigDict(frozen=True)
 
     service: str
-    asset_group: str
+    category: str
     instrument_type: str
     data_type: str
     day: str
     venue: str | None = None
     underlying: str | None = None
     instrument_id: str | None = None
-    feature_family: str | None = None
 
 
-class ShardSchemaColumn(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardSchemaColumn(BaseModel):
     """One column in the declared ``SchemaContract`` for a shard."""
 
     model_config = ConfigDict(frozen=True)
@@ -71,7 +62,7 @@ class ShardSchemaColumn(BaseModel):  # CORRECT-LOCAL — API response shape
     description: str = ""
 
 
-class ShardSchema(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardSchema(BaseModel):
     """Schema block of a shard-detail response."""
 
     model_config = ConfigDict(frozen=True)
@@ -81,19 +72,13 @@ class ShardSchema(BaseModel):  # CORRECT-LOCAL — API response shape
     symbol_column: str | None
     columns: list[ShardSchemaColumn] = Field(default_factory=list)
     message: str = ""
+    # ``instrument_type_resolved_via`` documents how the response's
+    # instrument_type was chosen.  ``"explicit"`` — caller passed a concrete
+    # value; ``"auto"`` — caller passed ``"AUTO"`` / ``"UNKNOWN"`` / empty
+    # and the backend picked one from the registry; ``"none"`` — auto mode
+    # was requested but no matching registry tuple was found.  The UI uses
+    # this to display the resolved axis name in shard-detail headers.
     instrument_type_resolved_via: Literal["explicit", "auto", "none"] = "explicit"
-    """``explicit`` — caller passed a concrete instrument_type and the lookup
-    succeeded against it. ``auto`` — caller passed ``AUTO`` / ``UNKNOWN`` and
-    the backend resolved the instrument_type by scanning the registry for
-    any ``(asset_group, *, data_type)`` tuple. ``none`` — caller passed AUTO
-    but no contract matched the (asset_group, data_type) pair, so the schema
-    is unregistered."""
-
-    instrument_type_resolved: str | None = None
-    """The concrete instrument_type used for the lookup. Echoes the caller
-    value when ``explicit``; populated with the resolver's pick when
-    ``auto`` so the UI can display "resolved as <X>". ``None`` when
-    resolution failed."""
 
 
 class ShardGcsMetadata(BaseModel):  # CORRECT-LOCAL — API response shape
@@ -140,7 +125,7 @@ class ShardGcsMetadata(BaseModel):  # CORRECT-LOCAL — API response shape
     ``completeness_fraction`` envelope. ``None`` on pre-v8 rows."""
 
 
-class ShardDownloadUrls(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardDownloadUrls(BaseModel):
     """Links the UI can render for downloading a shard."""
 
     model_config = ConfigDict(frozen=True)
@@ -149,7 +134,7 @@ class ShardDownloadUrls(BaseModel):  # CORRECT-LOCAL — API response shape
     csv_projected: str | None
 
 
-class ShardPayloadGrouped(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardPayloadGrouped(BaseModel):
     """Payload branch for bundle shards (options_chain, dex_swaps, …)."""
 
     model_config = ConfigDict(frozen=True)
@@ -157,7 +142,7 @@ class ShardPayloadGrouped(BaseModel):  # CORRECT-LOCAL — API response shape
     instrument_list: list[dict[str, str]] = Field(default_factory=list)
 
 
-class ShardPayloadPerSymbol(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardPayloadPerSymbol(BaseModel):
     """Payload branch for per-symbol time-series shards (PERPETUAL / SPOT)."""
 
     model_config = ConfigDict(frozen=True)
@@ -165,7 +150,7 @@ class ShardPayloadPerSymbol(BaseModel):  # CORRECT-LOCAL — API response shape
     instrument_list: list[dict[str, str]] = Field(default_factory=list)
 
 
-class ShardPayloadReference(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardPayloadReference(BaseModel):
     """Payload branch for instruments-service reference-data shards."""
 
     model_config = ConfigDict(frozen=True)
@@ -173,7 +158,7 @@ class ShardPayloadReference(BaseModel):  # CORRECT-LOCAL — API response shape
     instrument_definitions: list[dict[str, object]] = Field(default_factory=list)
 
 
-class ShardPayloadFixtures(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardPayloadFixtures(BaseModel):
     """Payload branch for sports fixtures shards."""
 
     model_config = ConfigDict(frozen=True)
@@ -181,7 +166,7 @@ class ShardPayloadFixtures(BaseModel):  # CORRECT-LOCAL — API response shape
     fixtures: list[dict[str, object]] = Field(default_factory=list)
 
 
-class ShardDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
+class ShardDetailResponse(BaseModel):
     """Full response envelope for ``GET /api/data-status/shard-detail``.
 
     One of ``payload_grouped`` / ``payload_per_symbol`` / ``payload_reference``
@@ -337,13 +322,13 @@ class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
 
     DeFi responses may carry either chain-level aggregates (``protocols``,
     ``total_pools``, ``total_tokens``) or composite protocol-chain pool
-    listings (``pools``, ``tokens``).  ``asset_group`` is always echoed so the
+    listings (``pools``, ``tokens``).  ``category`` is always echoed so the
     UI can render the correct view without inferring from the venue string.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    asset_group: str
+    category: str
     venue: str
     chain: str | None = None
     protocol: str | None = None
