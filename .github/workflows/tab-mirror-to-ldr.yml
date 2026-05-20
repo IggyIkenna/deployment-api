@@ -97,3 +97,44 @@ jobs:
         run: |
           echo "[mirror:skip] ${GITHUB_REF} -> live-defi-rollout : ${{ steps.ff_check.outputs.reason }}"
           echo "decision: ${{ steps.ff_check.outputs.decision }}"
+
+      - name: Notify orchestrator (mirror event webhook)
+        if: always() # fire on success AND skip AND race-lost — orchestrator decides what to surface
+        env:
+          ORCHESTRATOR_URL: https://api.agent-orchestrator.odum-research.com
+          DECISION: ${{ steps.ff_check.outputs.decision }}
+          REASON: ${{ steps.ff_check.outputs.reason }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Best-effort webhook: never red-fail the workflow on notifier issues.
+          # The orchestrator persists every event (ff/noop/skip/race-lost) so the
+          # dashboard can surface alerts for skip/race-lost and a heartbeat for the
+          # rest. Added 2026-05-20 per
+          # plans/active/agent_reliability_mitigations_2026_05_20.md Phase 1.
+          set +e
+          SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          PAYLOAD=$(cat <<EOF
+          {
+            "repo": "${REPO}",
+            "branch": "${BRANCH}",
+            "sha": "${SHA}",
+            "decision": "${DECISION:-unknown}",
+            "reason": "${REASON:-no reason recorded}",
+            "workflow_run_url": "${RUN_URL}"
+          }
+          EOF
+          )
+          HTTP_CODE=$(curl -sS -o /tmp/notify.body -w "%{http_code}" \
+            -X POST "${ORCHESTRATOR_URL}/api/mirror-events" \
+            -H "Content-Type: application/json" \
+            --connect-timeout 5 --max-time 15 \
+            -d "${PAYLOAD}" || echo "000")
+          if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "201" ]; then
+            echo "[mirror-notify] ok (${HTTP_CODE}): $(cat /tmp/notify.body 2>/dev/null | head -c 200)"
+          else
+            echo "[mirror-notify] non-2xx (${HTTP_CODE}) — best-effort, ignoring"
+            cat /tmp/notify.body 2>/dev/null | head -c 200 || true
+          fi
+          exit 0
