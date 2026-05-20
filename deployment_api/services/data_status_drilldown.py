@@ -603,6 +603,14 @@ def get_schema_for_shard(  # noqa: C901 — 4-step schema resolution pipeline wi
     writer hasn't shipped yet — we explicitly DO NOT make up columns
     that aren't on disk and aren't in the registry.
     """
+    # Local import to avoid an import cycle when shard_detail imports this
+    # module's siblings.  The AUTO resolver lives in shard_detail.py as the
+    # canonical SSOT for AUTO mode.
+    from deployment_api.services.shard_detail import (
+        _is_auto_instrument_type,  # pyright: ignore[reportPrivateUsage]
+        _resolve_instrument_type_auto,  # pyright: ignore[reportPrivateUsage]
+    )
+
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
     # from the manifest; UAC keys those as ``pool`` / ``dex_pool_state``.

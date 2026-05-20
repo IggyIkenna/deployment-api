@@ -32,6 +32,7 @@ from urllib.parse import urlencode
 import numpy as _np
 import pandas as pd
 from unified_api_contracts import (
+    CONTRACT_REGISTRY,
     VENUE_CONTRACT_OVERRIDES,
     SchemaContract,
     SchemaContractNotFoundError,
@@ -189,6 +190,88 @@ def _classify_shard(
 
 
 # ---------------------------------------------------------------------------
+# instrument_type=AUTO resolution
+# ---------------------------------------------------------------------------
+
+# Sentinel values that opt the caller into automatic instrument_type
+# resolution from the UAC contract registry.  Matched case-insensitively.
+_AUTO_INSTRUMENT_TYPE_TOKENS: frozenset[str] = frozenset({"auto", "unknown", ""})
+
+
+def _is_auto_instrument_type(instrument_type: str | None) -> bool:
+    """Return True when ``instrument_type`` opts in to AUTO resolution."""
+    if instrument_type is None:
+        return True
+    return instrument_type.strip().lower() in _AUTO_INSTRUMENT_TYPE_TOKENS
+
+
+def _resolve_instrument_type_auto(
+    *, category: str, data_type: str, venue: str | None = None
+) -> str | None:
+    """Pick an instrument_type for ``(category, data_type)`` when caller passes AUTO.
+
+    Search order:
+
+    1. Venue override — any
+       ``(category.lower(), venue.upper(), instrument_type, data_type.lower())``
+       tuple in :data:`VENUE_CONTRACT_OVERRIDES` wins so DeFi protocol-chain
+       composites land on the legacy override row.
+    2. Base registry — any ``(category.lower(), instrument_type, data_type.lower())``
+       tuple in :data:`CONTRACT_REGISTRY`.  When several rows match, the
+       alphabetically-first ``instrument_type`` is returned for determinism.
+
+    Returns ``None`` when no contract is registered for the
+    ``(category, data_type)`` combination — callers should treat that as a
+    schema-not-registered response and let the UI render the honest
+    "no contract" message.
+    """
+    cat_norm = (category or "").lower()
+    dt_norm = (data_type or "").lower()
+
+    # Venue override first — DeFi composite venues (PROTOCOL-CHAIN) carry
+    # legacy schema overrides keyed by the protocol head.
+    if venue:
+        venue_norm = (venue.split("-", 1)[0] if "-" in venue else venue).upper()
+        venue_matches: list[str] = sorted(
+            {
+                it
+                for (c, v, it, dt) in VENUE_CONTRACT_OVERRIDES
+                if c == cat_norm and v == venue_norm and dt == dt_norm
+            }
+        )
+        if venue_matches:
+            picked_v = venue_matches[0]
+            logger.info(
+                "AUTO instrument_type resolved via venue override: "
+                "category=%s venue=%s data_type=%s -> %s (n_matches=%d)",
+                cat_norm,
+                venue_norm,
+                dt_norm,
+                picked_v,
+                len(venue_matches),
+            )
+            return picked_v
+
+    matches: list[str] = sorted(
+        {it for (c, it, dt) in CONTRACT_REGISTRY if c == cat_norm and dt == dt_norm}
+    )
+    if matches:
+        picked = matches[0]
+        if len(matches) > 1:
+            logger.info(
+                "AUTO instrument_type resolved via base registry (multi-match): "
+                "category=%s data_type=%s -> %s (n_matches=%d, all=%s)",
+                cat_norm,
+                dt_norm,
+                picked,
+                len(matches),
+                matches,
+            )
+        return picked
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Schema lookup (mirrors data_status_drilldown.get_schema_for_shard but
 # surfaces the new ColumnSpec fields — ``required`` and
 # ``provided_by_venues`` — into the response so the UI can split Core vs
@@ -309,6 +392,35 @@ def _resolve_schema(
         resolved_via = "explicit"
 
     dt_norm = (data_type or "").lower() if (data_type or "").isupper() else data_type
+    dt_norm_lookup = (data_type or "").lower()
+
+    auto_requested = _is_auto_instrument_type(instrument_type)
+    resolved_via: str = "explicit"
+    effective_it: str = instrument_type or ""
+
+    if auto_requested:
+        picked = _resolve_instrument_type_auto(
+            category=cat_norm, data_type=dt_norm_lookup, venue=venue
+        )
+        if picked is None:
+            return (
+                ShardSchema(
+                    registered=False,
+                    source="none",
+                    symbol_column=None,
+                    columns=[],
+                    message=(
+                        f"No SchemaContract found for category={cat_norm} "
+                        f"data_type={dt_norm_lookup}"
+                    ),
+                    instrument_type_resolved_via="none",
+                ),
+                "",
+            )
+        effective_it = picked
+        resolved_via = "auto"
+
+    it_norm = (effective_it or "").lower() if (effective_it or "").isupper() else effective_it
     try:
         contract: SchemaContract = lookup_contract(
             asset_group=cat_norm,
@@ -947,7 +1059,7 @@ def get_shard_detail(
             category=asset_group,
             venue=venue,
             day=day,
-            instrument_type=instrument_type,
+            instrument_type=effective_instrument_type,
             data_type=data_type,
             instrument_id=instrument_id,
         ),
