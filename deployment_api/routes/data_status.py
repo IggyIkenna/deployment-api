@@ -823,7 +823,233 @@ async def get_data_status_turbo(
         logger.exception("Error in get_data_status_turbo")
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
+
+
+@router.get("/manifest")
+async def get_data_status_manifest(
+    request: Request,
+    service: str = Query(..., description="Service name"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    category: list[str] | None = Query(None, description="Filter by category"),
+):
+    """Get data status from manifest availability indices (fastest path).
+
+    Reads consolidated availability_index.parquet files directly instead of
+    listing cloud storage blobs. Works with both GCS and S3.
+    Returns the same response shape as /turbo for UI compatibility.
+    """
+    if _cfg.is_mock_mode():
+        from datetime import datetime as _dt
+
+        _start = _dt.strptime(start_date, "%Y-%m-%d")
+        _end = _dt.strptime(end_date, "%Y-%m-%d")
+        _days = max(1, (_end - _start).days + 1)
+        _cats = category or ["CEFI", "TRADFI", "DEFI"]
+        _found = int(_days * 0.85)
+        return {
+            "service": service,
+            "date_range": {"start": start_date, "end": end_date},
+            "mode": "manifest",
+            "source": "manifest",
+            "overall_completion_pct": round(_found / _days * 100, 1),
+            "overall_dates_found": _found * len(_cats),
+            "overall_dates_expected": _days * len(_cats),
+            "total_missing": (_days - _found) * len(_cats),
+            "categories": {
+                cat: {
+                    "category": cat,
+                    "bucket": f"mock-bucket-{cat.lower()}",
+                    "dates_expected": _days,
+                    "dates_found": _found,
+                    "dates_missing": _days - _found,
+                    "completion_pct": round(_found / _days * 100, 1),
+                    "missing_dates": [],
+                    "source": "manifest",
+                }
+                for cat in _cats
+            },
+            "mock": True,
+        }
+
+    try:
+        import asyncio
+
+        from deployment_service.cli.utils.manifest_reader import ManifestReader
+
+        reader = ManifestReader()
+        result = await asyncio.to_thread(
+            reader.get_manifest_status,
+            service=service,
+            start_date=start_date,
+            end_date=end_date,
+            categories=category,
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=str(result["error"]))
+
+        return result
+
+    except ImportError as exc:
+        logger.warning("deployment_service not available for manifest reads")
+        raise HTTPException(
+            status_code=501,
+            detail="Manifest reader requires deployment-service package",
+        ) from exc
+    except Exception as e:
+        logger.exception("Error in get_data_status_manifest")
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"Manifest read failed: {e}") from e
+
+
+@router.get("/coverage-summary")
+async def get_data_coverage_summary(
+    service: str = Query("instruments-service", description="Service name"),
+    categories: str | None = Query(None, description="Comma-separated categories (default: all)"),
+):
+    """Return instrument coverage summary: manifest totals + latest-day unique counts.
+
+    Fast endpoint for the deployment UI data status overview card.
+    Reads manifest parquets (totals) + latest-day parquets (unique instruments by type).
+    """
+    if _cfg.is_mock_mode():
+        return {
+            "service": service,
+            "categories": {
+                "CEFI": {
+                    "total_shards": 25000,
+                    "total_instrument_rows": 12_500_000,
+                    "unique_dates": 2200,
+                    "unique_venues": 18,
+                    "date_range": {"start": "2019-01-01", "end": "2026-04-03"},
+                    "latest_day": "2026-04-03",
+                    "latest_day_instruments": {
+                        "SPOT": 1200,
+                        "PERPETUAL": 800,
+                        "FUTURE": 600,
+                        "OPTION": 1271,
+                    },
+                    "latest_day_total": 3871,
+                },
+                "TRADFI": {
+                    "total_shards": 40000,
+                    "total_instrument_rows": 22_000_000,
+                    "unique_dates": 1800,
+                    "unique_venues": 6,
+                    "date_range": {"start": "2019-01-01", "end": "2026-04-03"},
+                    "latest_day": "2026-04-03",
+                    "latest_day_instruments": {
+                        "EQUITY": 8000,
+                        "ETF": 3500,
+                        "INDEX": 200,
+                        "OPTION": 2500,
+                        "FUTURE": 514,
+                    },
+                    "latest_day_total": 14714,
+                },
+                "DEFI": {
+                    "total_shards": 10000,
+                    "total_instrument_rows": 3_500_000,
+                    "unique_dates": 250,
+                    "unique_venues": 35,
+                    "date_range": {"start": "2020-01-20", "end": "2026-04-03"},
+                    "latest_day": "2026-04-03",
+                    "latest_day_instruments": {"LP_POOL": 1200, "LENDING_POOL": 622},
+                    "latest_day_total": 1822,
+                },
+                "SPORTS": {
+                    "total_shards": 3800,
+                    "total_instrument_rows": 1_700_000,
+                    "unique_dates": 36,
+                    "unique_venues": 3,
+                    "date_range": {"start": "2026-03-01", "end": "2026-04-03"},
+                    "latest_day": "2026-04-03",
+                    "latest_day_instruments": {"FIXTURE": 450},
+                    "latest_day_total": 450,
+                },
+            },
+            "totals": {
+                "shards": 78800,
+                "instrument_rows": 39_700_000,
+                "dates_across_categories": 4286,
+                "latest_day_instruments": 20857,
+            },
+            "mock": True,
+        }
+
+    try:
+        import asyncio
+
+        from deployment_service.cli.utils.manifest_reader import ManifestReader
+
+        reader = ManifestReader()
+        cat_list = [c.strip().upper() for c in categories.split(",")] if categories else None
+        result = await asyncio.to_thread(
+            reader.get_coverage_summary,
+            service=service,
+            categories=cat_list,
+        )
+
+        return result
+
+    except ImportError as exc:
+        logger.warning("deployment_service not available for coverage summary")
+        raise HTTPException(
+            status_code=501,
+            detail="Coverage summary requires deployment-service package",
+        ) from exc
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_data_coverage_summary")
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"Coverage summary failed: {e}") from e
+
+
+@router.get("/venue-detail")
+async def get_venue_detail(
+    service: str = Query(..., description="Service name"),
+    category: str = Query(..., description="Category (CEFI/TRADFI/DEFI)"),
+    venue: str = Query(..., description="Venue name"),
+    date: str | None = Query(None, description="Date (YYYY-MM-DD), defaults to latest"),
+):
+    """Get instrument breakdown for a specific venue (drill-down)."""
+    try:
+        import asyncio
+
+        from deployment_service.cli.utils.manifest_reader import ManifestReader
+
+        reader = ManifestReader()
+        result = await asyncio.to_thread(
+            reader.get_venue_detail,
+            service=service,
+            category=category,
+            venue=venue,
+            date=date,
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=str(result["error"]))
+
+        return result
+
+    except ImportError as exc:
+        logger.warning("deployment_service not available for venue detail")
+        raise HTTPException(
+            status_code=501,
+            detail="Venue detail requires deployment-service package",
+        ) from exc
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.exception("Error in get_venue_detail")
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=500, detail="Internal server error. Check server logs."
+        ) from e
 
 
 @router.get("/turbo/stats")
