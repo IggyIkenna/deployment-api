@@ -388,7 +388,7 @@ def lookup_capture_status_for_shard(
         if raw_status is not None and not pd.isna(raw_status) and str(raw_status)
         else _DEFAULT_CAPTURE_STATUS
     )
-    if status not in ("captured", "empty_confirmed", "attempted_failed"):
+    if status not in ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted"):
         status = _DEFAULT_CAPTURE_STATUS
     error_reason = _classify_lookup_legacy_empty_reason(
         status=status,

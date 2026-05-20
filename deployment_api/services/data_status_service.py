@@ -19,7 +19,9 @@ from typing import ClassVar, Literal, cast
 
 import pandas as pd
 from unified_api_contracts import (
+    CaptureStatusCounts,
     VenueMapping,
+    compute_honest_coverage,
     get_expected_data_types_for_venue,
     get_expected_instruments_for_venue,
     get_raw_source_data_types,
@@ -538,11 +540,18 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
 
     expected_leagues = get_expected_leagues_for_source(source_key, classifications=list(classifications))
 
-    # ``capture_status in {captured, empty_confirmed}`` = this shard was
-    # attempted and either had data or was legitimately empty. v4 rows
-    # without capture_status are implicit ``captured`` (existence of row = success).
+    # skip-worthy = captured | empty_confirmed | expected_unattempted(EXPECTED_* reason).
+    # v4 rows without capture_status are implicit ``captured``.
     if "capture_status" in filtered.columns:
-        ok_mask = filtered["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
+        _status_s = filtered["capture_status"].fillna("captured").astype(str)
+        _reason_s = (
+            filtered["error_reason"].fillna("").astype(str)
+            if "error_reason" in filtered.columns
+            else pd.Series("", index=filtered.index)
+        )
+        ok_mask = _status_s.isin(["captured", "empty_confirmed"]) | (
+            (_status_s == "expected_unattempted") & _reason_s.str.startswith("EXPECTED_")
+        )
     else:
         ok_mask = pd.Series([True] * len(filtered), index=filtered.index)
     if axis == "per_feature_per_league_per_fixture_date":
@@ -1446,7 +1455,15 @@ def _mtds_honest_coverage_for_venue(
         venue_df = filtered[filtered["venue"] == venue]
 
     if "capture_status" in venue_df.columns:
-        ok_mask = venue_df["capture_status"].fillna("captured").isin(["captured", "empty_confirmed"])
+        _vst_s = venue_df["capture_status"].fillna("captured").astype(str)
+        _vreason_s = (
+            venue_df["error_reason"].fillna("").astype(str)
+            if "error_reason" in venue_df.columns
+            else pd.Series("", index=venue_df.index)
+        )
+        ok_mask = _vst_s.isin(["captured", "empty_confirmed"]) | (
+            (_vst_s == "expected_unattempted") & _vreason_s.str.startswith("EXPECTED_")
+        )
     else:
         ok_mask = pd.Series([True] * len(venue_df), index=venue_df.index)
     venue_df_ok = venue_df[ok_mask] if not venue_df.empty else venue_df
@@ -1550,41 +1567,46 @@ _CAPTURE_STATUS_COL = "capture_status"
 _CAPTURE_STATUS_CAPTURED = "captured"
 _CAPTURE_STATUS_EMPTY = "empty_confirmed"
 _CAPTURE_STATUS_FAILED = "attempted_failed"
+_EXPECTED_REASON_PREFIX = "EXPECTED_"
 
 
-def _compute_capture_status_counts(df: pd.DataFrame) -> dict[str, int]:
-    """Bucket manifest rows by ``capture_status`` (UTL v5 column).
+def _compute_capture_status_counts(df: pd.DataFrame) -> CaptureStatusCounts:
+    """Bucket manifest rows by ``capture_status`` (UTL v5 column) into a 5-field CaptureStatusCounts.
 
     Legacy rows (pre-Phase-A parquet, no ``capture_status`` column, or NaN
     values inside a mixed DataFrame) coerce to ``"captured"`` — matches the
     legacy-read semantics of ``ManifestWriter.lookup`` in UTL.
-    Returns ``{"captured": N, "empty_confirmed": M, "attempted_failed": K}``.
+    ``expected_unattempted`` rows are split by ``error_reason``:
+    - EXPECTED_* prefix → ``expected_unattempted_known_empty`` (skip-worthy)
+    - other → ``expected_unattempted_pending_fetch`` (retry)
     """
-    empty = {
-        _CAPTURE_STATUS_CAPTURED: 0,
-        _CAPTURE_STATUS_EMPTY: 0,
-        _CAPTURE_STATUS_FAILED: 0,
-    }
     if df.empty:
-        return empty
+        return CaptureStatusCounts()
     if _CAPTURE_STATUS_COL not in df.columns:
-        return {
-            _CAPTURE_STATUS_CAPTURED: len(df),
-            _CAPTURE_STATUS_EMPTY: 0,
-            _CAPTURE_STATUS_FAILED: 0,
-        }
+        return CaptureStatusCounts(captured=len(df))
     series = df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
-    # Any unrecognised value (defensive) also coerces to captured.
-    return {
-        _CAPTURE_STATUS_CAPTURED: int(
+    reason_col = df["error_reason"].astype(str) if "error_reason" in df.columns else pd.Series("", index=df.index)
+    eu_mask = series == "expected_unattempted"
+    known_empty = 0
+    pending_fetch = 0
+    if eu_mask.any():
+        eu_reasons = reason_col[eu_mask]
+        known_empty = int(eu_reasons.str.startswith(_EXPECTED_REASON_PREFIX).sum())
+        pending_fetch = int((~eu_reasons.str.startswith(_EXPECTED_REASON_PREFIX)).sum())
+    return CaptureStatusCounts(
+        captured=int(
             (
                 (series == _CAPTURE_STATUS_CAPTURED)
-                | ~series.isin([_CAPTURE_STATUS_CAPTURED, _CAPTURE_STATUS_EMPTY, _CAPTURE_STATUS_FAILED])
+                | ~series.isin(
+                    [_CAPTURE_STATUS_CAPTURED, _CAPTURE_STATUS_EMPTY, _CAPTURE_STATUS_FAILED, "expected_unattempted"]
+                )
             ).sum()
         ),
-        _CAPTURE_STATUS_EMPTY: int((series == _CAPTURE_STATUS_EMPTY).sum()),
-        _CAPTURE_STATUS_FAILED: int((series == _CAPTURE_STATUS_FAILED).sum()),
-    }
+        empty_confirmed=int((series == _CAPTURE_STATUS_EMPTY).sum()),
+        attempted_failed=int((series == _CAPTURE_STATUS_FAILED).sum()),
+        expected_unattempted_known_empty=known_empty,
+        expected_unattempted_pending_fetch=pending_fetch,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1765,7 +1787,7 @@ def _compute_failure_pillar_counts(df: pd.DataFrame) -> dict[str, int]:
 
 
 def _derive_capture_status_rates(
-    counts: dict[str, int],
+    counts: CaptureStatusCounts,
     total_expected_cells: int,
 ) -> dict[str, float | int]:
     """Turn capture_status counts + expected-cells denominator into rates.
@@ -1775,10 +1797,12 @@ def _derive_capture_status_rates(
     ``empty_rate`` / ``failure_rate`` are rounded to 4 dp and clamped to
     ``[0, 1]``.  Returns 0.0 for all rates when ``total_expected_cells`` is
     0 so callers always get a well-formed dict.
+    ``honest_coverage`` uses the canonical 5-field formula (numerator =
+    captured + empty_confirmed + expected_unattempted_known_empty).
     """
-    captured = int(counts.get(_CAPTURE_STATUS_CAPTURED, 0))
-    empty = int(counts.get(_CAPTURE_STATUS_EMPTY, 0))
-    failed = int(counts.get(_CAPTURE_STATUS_FAILED, 0))
+    captured = counts.captured
+    empty = counts.empty_confirmed
+    failed = counts.attempted_failed
     attempted = captured + empty + failed
     denom = max(1, int(total_expected_cells))
     attempted_denom = max(1, attempted)
@@ -1787,6 +1811,7 @@ def _derive_capture_status_rates(
         "empty_confirmed_count": empty,
         "attempted_failed_count": failed,
         "attempted_total": attempted,
+        "honest_coverage": round(compute_honest_coverage(counts), 6),
         "attempt_coverage_pct": min(round(attempted / denom * 100, 2), 100.0) if total_expected_cells > 0 else 0.0,
         "capture_coverage_pct": min(round(captured / denom * 100, 2), 100.0) if total_expected_cells > 0 else 0.0,
         "empty_rate": max(0.0, min(1.0, round(empty / attempted_denom, 4))),
@@ -1884,7 +1909,7 @@ def _build_coverage_metrics(
     coverage_semantics = COVERAGE_SEMANTICS.get(category.upper(), "dense")
     attempt_found, attempt_expected = _compute_attempt_coverage(filtered, category)
     capture_counts = _compute_capture_status_counts(filtered)
-    has_phase_b_rows = capture_counts[_CAPTURE_STATUS_EMPTY] + capture_counts[_CAPTURE_STATUS_FAILED] > 0
+    has_phase_b_rows = capture_counts.empty_confirmed + capture_counts.attempted_failed > 0
     capture_rates = _derive_capture_status_rates(capture_counts, total_expected_cells)
 
     if coverage_semantics == "event_driven" and attempt_expected > 0 and not has_phase_b_rows:
@@ -1921,9 +1946,11 @@ def _build_coverage_metrics(
         "failure_rate": failure_rate,
         "completion_pct": completion_pct,
         "capture_status_counts": {
-            "captured": capture_counts[_CAPTURE_STATUS_CAPTURED],
-            "empty_confirmed": capture_counts[_CAPTURE_STATUS_EMPTY],
-            "attempted_failed": capture_counts[_CAPTURE_STATUS_FAILED],
+            "captured": capture_counts.captured,
+            "empty_confirmed": capture_counts.empty_confirmed,
+            "attempted_failed": capture_counts.attempted_failed,
+            "expected_unattempted_known_empty": capture_counts.expected_unattempted_known_empty,
+            "expected_unattempted_pending_fetch": capture_counts.expected_unattempted_pending_fetch,
         },
     }
 
@@ -4228,14 +4255,17 @@ class DataStatusService:
             "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             "venue_start_date": venue_start,
             "capture_status_counts": {
-                "captured": v_capture_counts[_CAPTURE_STATUS_CAPTURED],
-                "empty_confirmed": v_capture_counts[_CAPTURE_STATUS_EMPTY],
-                "attempted_failed": v_capture_counts[_CAPTURE_STATUS_FAILED],
+                "captured": v_capture_counts.captured,
+                "empty_confirmed": v_capture_counts.empty_confirmed,
+                "attempted_failed": v_capture_counts.attempted_failed,
+                "expected_unattempted_known_empty": v_capture_counts.expected_unattempted_known_empty,
+                "expected_unattempted_pending_fetch": v_capture_counts.expected_unattempted_pending_fetch,
             },
             "failure_pillars": v_failure_pillars,
             "empty_reasons": v_empty_reasons,
             "attempt_coverage_pct": v_capture_rates["attempt_coverage_pct"],
             "capture_coverage_pct": v_capture_rates["capture_coverage_pct"],
+            "honest_coverage": v_capture_rates["honest_coverage"],
             "empty_rate": v_capture_rates["empty_rate"],
             "failure_rate": v_capture_rates["failure_rate"],
         }
