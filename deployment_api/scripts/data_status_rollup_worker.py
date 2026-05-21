@@ -68,8 +68,8 @@ _DEFAULT_SERVICES: tuple[str, ...] = (
     "features-multi-timeframe-service",
     "features-cross-instrument-service",
     "features-commodity-service",
-    "ml-training-service",
-    "ml-inference-service",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service",
     "strategy-service",
     "execution-service",
 )

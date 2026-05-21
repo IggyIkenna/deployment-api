@@ -35,7 +35,7 @@ _cfg = DeploymentApiConfig()
 _DEFAULT_ZONE = "asia-northeast1-c"
 _LAUNCHER_FILENAME = "launch-ml-training-vm.sh"
 _VM_PREFIX = "ml-train-"
-_SERVICE = "ml-training-service"
+_SERVICE = "ml-service"
 _SUBPROCESS_TIMEOUT_SECONDS = 600
 
 
@@ -58,7 +58,7 @@ class MlExperimentLaunchRequest(BaseModel):
     )
     timeframes: list[str] = Field(
         default_factory=lambda: ["1m"],
-        description="Feature timeframes passed to ml-training-service CLI (e.g. 1m, 5m, 1h).",
+        description="Feature timeframes passed to ml-service CLI (e.g. 1m, 5m, 1h).",
     )
     start_date: str | None = Field(
         default=None,
@@ -72,7 +72,7 @@ class MlExperimentLaunchRequest(BaseModel):
     )
     operation: str = Field(
         default="train",
-        description="ml-training-service operation: train | evaluate | grid-search | pipeline.",
+        description="ml-service operation: train | evaluate | grid-search | pipeline.",
         pattern=r"^(train|evaluate|grid-search|pipeline)$",
     )
     machine: str = Field(

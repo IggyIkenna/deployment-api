@@ -115,11 +115,9 @@ class TestGetConfigBuckets:
         )
         assert len(result["buckets"]) == 3
 
-    def test_ml_training_service_has_one_bucket(self):
+    def test_ml_service_has_one_bucket(self):
         mock_request = _make_request()
-        result = asyncio.get_event_loop().run_until_complete(
-            _svc_routes.get_config_buckets("ml-training-service", mock_request)
-        )
+        result = asyncio.get_event_loop().run_until_complete(_svc_routes.get_config_buckets("ml-service", mock_request))
         assert len(result["buckets"]) == 1
 
 

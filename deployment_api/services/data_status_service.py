@@ -2776,8 +2776,8 @@ class DataStatusService:
         "features-calendar-service": "features-calendar",
         "features-multi-timeframe-service": "features-multi-timeframe",
         "features-cross-instrument-service": "features-cross-instrument",
-        "ml-training-service": "ml-models-store",
-        "ml-inference-service": "ml-predictions-store",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service": "ml-models-store",
         "strategy-service": "strategy-store",
         "execution-service": "execution-store",
     }
@@ -2825,16 +2825,10 @@ class DataStatusService:
     _SHARED_BUCKET_SERVICES: ClassVar[frozenset[str]] = frozenset(
         {
             "features-calendar-service",
-            # ML training artefacts pool across all asset groups under one
-            # ``ml-training-artifacts-{pid}`` bucket — model checkpoints,
-            # training metrics, hyperparam sweeps. Experiment-based, not
-            # asset-group-based.
-            "ml-training-service",
-            # ML inference results — greenfield observability target. Currently
-            # streamed (no manifest) but the bucket name reservation is here
-            # so when batch-inference replays start writing to a manifest the
-            # endpoint surfaces them.
-            "ml-inference-service",
+            # ml-service pools all asset groups under shared ml-*-artifacts buckets
+            # (model checkpoints, training metrics, inference results). Consolidated
+            # from ml-training-service + ml-inference-service (2026-05-21).
+            "ml-service",
         }
     )
 
@@ -2845,8 +2839,8 @@ class DataStatusService:
     # Falls through to the default (venue/data_type) if the named column is
     # missing or empty across all rows.
     _SERVICE_GROUP_AXIS_OVERRIDE: ClassVar[dict[str, str]] = {
-        "ml-training-service": "model_family",
-        "ml-inference-service": "model_family",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service": "model_family",
         "strategy-service": "strategy_id",
         "execution-service": "instruction_type",
     }
@@ -3858,9 +3852,9 @@ class DataStatusService:
         "features-sports-service": "market-tick-data-service",
         "features-calendar-service": "instruments-service",
         "features-commodity-service": "market-data-processing-service",
-        "ml-training-service": "features-delta-one-service",
-        "ml-inference-service": "features-delta-one-service",
-        "strategy-service": "ml-inference-service",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service": "features-delta-one-service",
+        "strategy-service": "ml-service",
         "execution-service": "strategy-service",
     }
 
@@ -3878,8 +3872,8 @@ class DataStatusService:
             "features-multi-timeframe-service",
             "features-cross-instrument-service",
             "features-commodity-service",
-            "ml-training-service",
-            "ml-inference-service",
+            # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+            "ml-service",
             "strategy-service",
             "execution-service",
         }

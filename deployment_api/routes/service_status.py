@@ -273,8 +273,8 @@ VALID_SERVICES: frozenset[str] = frozenset(
         "features-sports-service",
         "features-multi-timeframe-service",
         "features-cross-instrument-service",
-        "ml-training-service",
-        "ml-inference-service",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service",
         "strategy-service",
         "execution-service",
         "alerting-service",

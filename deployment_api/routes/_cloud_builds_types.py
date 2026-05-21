@@ -89,8 +89,8 @@ SERVICES_WITH_TRIGGERS = [
     "features-volatility-service",
     "features-onchain-service",
     "features-calendar-service",
-    "ml-training-service",
-    "ml-inference-service",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service",
     "strategy-service",
     "execution-service",
     "alerting-service",

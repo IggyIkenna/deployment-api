@@ -48,8 +48,8 @@ _KNOWN_TARBALL_SERVICES = [
     "features-onchain-service",
     "strategy-service",
     "execution-service",
-    "ml-training-service",
-    "ml-inference-service",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service",
     "alerting-service",
     "deployment-service",
 ]

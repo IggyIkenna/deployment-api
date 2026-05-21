@@ -86,7 +86,7 @@ class TestBuildDeployEnvVars:
 
     def test_all_runtime_topology_vars_together(self):
         env = build_deploy_env_vars(
-            "ml-training-service",
+            "ml-service",
             "my-project",
             "dep-001",
             50,
@@ -99,7 +99,7 @@ class TestBuildDeployEnvVars:
         assert env["OPERATIONAL_MODE"] == "train_phase2"
         assert env["CLOUD_PROVIDER"] == "gcp"
         assert env["DEPLOYMENT_MODE"] == "vm"
-        assert env["SERVICE_NAME"] == "ml-training-service"
+        assert env["SERVICE_NAME"] == "ml-service"
 
 
 class TestRuntimeProfileFanout:

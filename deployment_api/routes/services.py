@@ -349,7 +349,8 @@ async def get_config_buckets(service_name: str, request: Request):
                 },
             ],
         },
-        "ml-training-service": {
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service": {
             "default_bucket": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",  # noqa: gs-uri
             "buckets": [
                 {

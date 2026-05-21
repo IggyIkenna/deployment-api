@@ -117,8 +117,8 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "features-cross-instrument-service-code.tar.gz",
         "features-multi-timeframe-service-code.tar.gz",
         "features-calendar-service-code.tar.gz",
-        "ml-training-service-code.tar.gz",
-        "ml-inference-service-code.tar.gz",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
     ),
@@ -131,8 +131,8 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "features-multi-timeframe-service-code.tar.gz",
         "features-calendar-service-code.tar.gz",
         "features-volatility-service-code.tar.gz",
-        "ml-training-service-code.tar.gz",
-        "ml-inference-service-code.tar.gz",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
     ),
@@ -150,8 +150,8 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
         "market-tick-data-service-code.tar.gz",
         "market-data-processing-service-code.tar.gz",
         "features-sports-service-code.tar.gz",
-        "ml-training-service-code.tar.gz",
-        "ml-inference-service-code.tar.gz",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service-code.tar.gz",
         "strategy-service-code.tar.gz",
         "execution-service-code.tar.gz",
     ),

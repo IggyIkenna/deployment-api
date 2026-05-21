@@ -56,8 +56,8 @@ _SERVICE_TO_KIND: dict[str, str] = {
     "features-calendar-service": "features-calendar",
     "features-multi-timeframe-service": "features-multi-timeframe",
     "features-cross-instrument-service": "features-cross-instrument",
-    "ml-training-service": "ml-models-store",
-    "ml-inference-service": "ml-predictions-store",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service": "ml-models-store",
     "strategy-service": "strategy-store",
     "execution-service": "execution-store",
 }
@@ -312,7 +312,7 @@ def lookup_capture_status_for_shard(
 
     Args:
         service: Service name (e.g. ``instruments-service``,
-            ``market-tick-data-service``, ``ml-training-service``).
+            ``market-tick-data-service``, ``ml-service``).
         asset_group: Asset group bucket key (cefi/tradfi/defi/sports/
             prediction/shared).
         day: ISO date (``YYYY-MM-DD``) to filter on.
@@ -841,7 +841,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routi
     job_id = axes.get("job_id") or ""
     strategy_id = axes.get("strategy_id") or ""
     instruction_type = (axes.get("instruction_type") or "").upper()
-    if svc in ("ml-training-service", "ml-inference-service") and model_family:
+    if svc == "ml-service" and model_family:
         base = f"gs://{bucket}/by_date/day={day}/model_family={model_family}"  # noqa: gs-uri  — URI composer, bucket already resolved
         if training_period:
             base += f"/training_period={training_period}"

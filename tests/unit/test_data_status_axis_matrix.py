@@ -151,7 +151,7 @@ class TestBuildBreakdowns:
 
     def test_empty_axis_column_emits_empty_dict_not_missing_key(self) -> None:
         # Phase 1 writers haven't yet populated ``job_id`` for the
-        # ml-training-service manifest. The breakdowns endpoint MUST
+        # ml-service manifest. The breakdowns endpoint MUST
         # still surface the axis so the UI can render the dropdown
         # (disabled / "no data yet" placeholder).
         dss = DataStatusService()
@@ -168,6 +168,7 @@ class TestBuildBreakdowns:
                 # caught up yet.
             ]
         )
+        # TODO(Phase 11c): update to "ml-service" once UAC SHARD_AXIS_MATRIX adds ml-service entry
         breakdowns = dss._build_breakdowns("ml-training-service", "shared", idx, "model_family")
         assert "job_id" in breakdowns
         assert breakdowns["job_id"] == {}
@@ -199,6 +200,7 @@ class TestBuildBreakdowns:
                 },
             ]
         )
+        # TODO(Phase 11c): update to "ml-service" once UAC SHARD_AXIS_MATRIX adds ml-service entry
         breakdowns = dss._build_breakdowns("ml-training-service", "shared", idx, "model_family")
         assert breakdowns["job_id"] == {
             "__legacy__": 3,

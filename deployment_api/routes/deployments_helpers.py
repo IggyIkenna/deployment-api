@@ -73,7 +73,7 @@ def build_deploy_env_vars(
     what the services expect. See: deployment env var standardization.
 
     Args:
-        service: Service name (e.g. "ml-training-service").
+        service: Service name (e.g. "ml-service").
         project_id: Cloud project / account ID.
         deployment_id: Unique deployment ID for correlation.
         max_concurrent: Maximum concurrent jobs / VMs.

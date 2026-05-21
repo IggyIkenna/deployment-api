@@ -1468,8 +1468,8 @@ _DEFAULT_DATA_TYPE_BY_SERVICE: dict[str, str] = {
     "features-cross-instrument-service": "cross_instrument",
     "features-commodity-service": "commodity",
     "features-calendar-service": "calendar",
-    "ml-training-service": "training",
-    "ml-inference-service": "inference",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service": "training",
     "strategy-service": "strategy",
     "execution-service": "execution",
 }

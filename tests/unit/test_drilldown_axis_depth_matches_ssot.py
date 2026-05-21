@@ -57,8 +57,8 @@ def _empty_manifest() -> pd.DataFrame:
 
 
 # Restrict to the canonical (service, asset_group) pairs we ship today.
-# ml-training-service is excluded: its ``training_period`` axis is
-# experimental and does not yet have a stable manifest layout.
+# ml-service (consolidated from ml-training-service + ml-inference-service, 2026-05-21)
+# is excluded: its ``training_period`` axis is experimental and does not yet have a stable manifest layout.
 # NOTE: features-* sub-family service names (features-delta-one-service,
 # features-volatility-service, features-onchain-service, features-sports-service)
 # were consolidated into ``features-service`` in UAC
@@ -91,6 +91,7 @@ _PUBLIC_SERVICE_PAIRS: tuple[tuple[str, str], ...] = (
     ("market-tick-data-service", "prediction"),
     ("market-tick-data-service", "sports"),
     ("market-tick-data-service", "tradfi"),
+    # TODO(Phase 11c): replace with ("ml-service", "shared") once UAC SHARD_AXIS_MATRIX adds ml-service entry
     ("ml-inference-service", "shared"),
     ("strategy-service", "cefi"),
     ("strategy-service", "defi"),
