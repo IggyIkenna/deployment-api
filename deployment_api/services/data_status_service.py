@@ -1942,6 +1942,13 @@ def _build_coverage_metrics(
         empty_rate_estimate = None
         completion_pct = capture_coverage_pct
         failure_rate = float(capture_rates["failure_rate"])
+    counts_dict = {
+        "captured": capture_counts.captured,
+        "empty_confirmed": capture_counts.empty_confirmed,
+        "attempted_failed": capture_counts.attempted_failed,
+        "expected_unattempted_known_empty": capture_counts.expected_unattempted_known_empty,
+        "expected_unattempted_pending_fetch": capture_counts.expected_unattempted_pending_fetch,
+    }
     return {
         "coverage_semantics": coverage_semantics,
         "capture_coverage_pct": capture_coverage_pct,
@@ -1949,13 +1956,9 @@ def _build_coverage_metrics(
         "empty_rate_estimate": empty_rate_estimate,
         "failure_rate": failure_rate,
         "completion_pct": completion_pct,
-        "capture_status_counts": {
-            "captured": capture_counts.captured,
-            "empty_confirmed": capture_counts.empty_confirmed,
-            "attempted_failed": capture_counts.attempted_failed,
-            "expected_unattempted_known_empty": capture_counts.expected_unattempted_known_empty,
-            "expected_unattempted_pending_fetch": capture_counts.expected_unattempted_pending_fetch,
-        },
+        "capture_status_counts": counts_dict,
+        "counts": counts_dict,
+        "coverage": float(capture_rates["honest_coverage"]),
     }
 
 
@@ -4081,16 +4084,21 @@ class DataStatusService:
                 # UAC-declared venue with zero manifest rows — materialise a
                 # zero-row placeholder so the UI shows it under
                 # ``missing_venues`` with 0% completion.
+                _zero_counts = {
+                    "captured": 0,
+                    "empty_confirmed": 0,
+                    "attempted_failed": 0,
+                    "expected_unattempted_known_empty": 0,
+                    "expected_unattempted_pending_fetch": 0,
+                }
                 venue_entry = {
                     "dates_found": 0,
                     "dates_expected": 0,
                     "completion_pct": 0.0,
                     "venue_start_date": venue_mapping.get_venue_start_date(venue),
-                    "capture_status_counts": {
-                        "captured": 0,
-                        "empty_confirmed": 0,
-                        "attempted_failed": 0,
-                    },
+                    "capture_status_counts": _zero_counts,
+                    "counts": _zero_counts,
+                    "coverage": 0.0,
                     "missing_dates": [],
                     "dates_found_list": [],
                     "dates_missing_list": [],
@@ -4265,6 +4273,14 @@ class DataStatusService:
                 "expected_unattempted_known_empty": v_capture_counts.expected_unattempted_known_empty,
                 "expected_unattempted_pending_fetch": v_capture_counts.expected_unattempted_pending_fetch,
             },
+            "counts": {
+                "captured": v_capture_counts.captured,
+                "empty_confirmed": v_capture_counts.empty_confirmed,
+                "attempted_failed": v_capture_counts.attempted_failed,
+                "expected_unattempted_known_empty": v_capture_counts.expected_unattempted_known_empty,
+                "expected_unattempted_pending_fetch": v_capture_counts.expected_unattempted_pending_fetch,
+            },
+            "coverage": v_capture_rates["honest_coverage"],
             "failure_pillars": v_failure_pillars,
             "empty_reasons": v_empty_reasons,
             "attempt_coverage_pct": v_capture_rates["attempt_coverage_pct"],
@@ -5817,6 +5833,8 @@ class DataStatusService:
         empty_rate_estimate = coverage["empty_rate_estimate"]
         failure_rate = coverage["failure_rate"]
         capture_status_counts = coverage["capture_status_counts"]
+        counts = coverage["counts"]
+        coverage_val = float(coverage["coverage"])
         cat_pct = coverage["completion_pct"]
 
         # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
@@ -5873,6 +5891,8 @@ class DataStatusService:
             "empty_rate_estimate": empty_rate_estimate,
             "failure_rate": failure_rate,
             "capture_status_counts": capture_status_counts,
+            "counts": counts,
+            "coverage": coverage_val,
             "venue_weighted": bool(venues_dict),
             "venue_dates_found": venue_found_total,
             "venue_dates_expected": venue_expected_total,

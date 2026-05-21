@@ -4,12 +4,17 @@ Phase C of the honest-coverage-metrics plan: deployment-api must surface
 attempt_coverage_pct / capture_coverage_pct / empty_rate / failure_rate
 computed from the manifest ``capture_status`` column, while staying
 backward-compatible with legacy parquet that predates the column.
+
+Phase 4 P1: every coverage endpoint exposes canonical ``counts`` (5-field dict)
+and ``coverage`` (float, honest-coverage formula) so the UI never re-derives.
 """
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pandas as pd
-from unified_api_contracts import CaptureStatusCounts
+from unified_api_contracts import CaptureStatusCounts, compute_honest_coverage
 
 from deployment_api.services.data_status_service import (
     _build_coverage_metrics,
@@ -148,3 +153,59 @@ class TestBuildCoverageMetricsHonestCoverage:
         assert metrics["empty_rate_estimate"] is None
         assert metrics["failure_rate"] == 0.0
         assert metrics["capture_status_counts"]["captured"] == 0
+
+
+class TestBuildCoverageMetricsCanonicalFields:
+    """Phase 4 P1 — every _build_coverage_metrics result exposes canonical counts + coverage."""
+
+    _COUNTS_KEYS: ClassVar[set[str]] = {
+        "captured",
+        "empty_confirmed",
+        "attempted_failed",
+        "expected_unattempted_known_empty",
+        "expected_unattempted_pending_fetch",
+    }
+
+    def test_counts_field_present_and_matches_capture_status_counts(self) -> None:
+        df = pd.DataFrame([{"capture_status": "captured"} for _ in range(10)])
+        metrics = _build_coverage_metrics(df, "CEFI", capture_coverage_pct=50.0, total_expected_cells=20)
+        assert "counts" in metrics
+        assert set(metrics["counts"].keys()) == self._COUNTS_KEYS  # type: ignore[arg-type]
+        assert metrics["counts"] == metrics["capture_status_counts"]
+
+    def test_coverage_field_present_and_is_float(self) -> None:
+        df = pd.DataFrame([{"capture_status": "captured"} for _ in range(10)])
+        metrics = _build_coverage_metrics(df, "CEFI", capture_coverage_pct=50.0, total_expected_cells=20)
+        assert "coverage" in metrics
+        assert isinstance(metrics["coverage"], float)
+
+    def test_coverage_matches_compute_honest_coverage(self) -> None:
+        rows = (
+            [{"capture_status": "captured"} for _ in range(40)]
+            + [{"capture_status": "empty_confirmed"} for _ in range(40)]
+            + [{"capture_status": "attempted_failed"} for _ in range(20)]
+        )
+        df = pd.DataFrame(rows)
+        metrics = _build_coverage_metrics(df, "CEFI", capture_coverage_pct=40.0, total_expected_cells=100)
+        expected_counts = CaptureStatusCounts(captured=40, empty_confirmed=40, attempted_failed=20)
+        expected_coverage = round(compute_honest_coverage(expected_counts), 6)
+        assert metrics["coverage"] == expected_coverage
+
+    def test_all_5_count_fields_present_with_unattempted_categories(self) -> None:
+        rows = [{"capture_status": "captured"} for _ in range(5)] + [
+            {"capture_status": "expected_unattempted"} for _ in range(3)
+        ]
+        df = pd.DataFrame(rows)
+        metrics = _build_coverage_metrics(df, "CEFI", capture_coverage_pct=50.0, total_expected_cells=10)
+        counts = metrics["counts"]
+        assert isinstance(counts, dict)
+        for key in self._COUNTS_KEYS:
+            assert key in counts, f"missing key: {key}"
+
+    def test_empty_frame_counts_all_zero_coverage_one(self) -> None:
+        # compute_honest_coverage returns 1.0 when denominator=0 (nothing expected = fully covered)
+        metrics = _build_coverage_metrics(pd.DataFrame(), "CEFI", capture_coverage_pct=0.0, total_expected_cells=0)
+        assert metrics["coverage"] == 1.0
+        counts = metrics["counts"]
+        assert isinstance(counts, dict)
+        assert all(counts[k] == 0 for k in self._COUNTS_KEYS)  # type: ignore[index]
