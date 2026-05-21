@@ -33,16 +33,16 @@ phases:
         GH_PAT_VAL=$(aws secretsmanager get-secret-value --secret-id github-pat --query SecretString --output text 2>/dev/null || echo "")
         if [ -n "$GH_PAT_VAL" ]; then
           for dep in unified-trading-pm unified-api-contracts deployment-service deployment-ui; do
-            if [ ! -d "$dep" ]; then
-              git clone --depth=1 --branch live-defi-rollout "https://$GH_PAT_VAL@github.com/IggyIkenna/$dep.git" $dep && echo "Cloned $dep" || echo "Warning: clone failed for $dep"
-            fi
+            [ ! -d "$dep" ] && git clone --depth=1 --branch live-defi-rollout "https://$GH_PAT_VAL@github.com/IggyIkenna/$dep.git" $dep && echo "Cloned $dep"
           done
           # Dockerfile expects _unified-api-contracts, _deployment-service, and ui/
           cp -r unified-api-contracts _unified-api-contracts || true
           cp -r deployment-service _deployment-service || true
           cp -r deployment-ui ui || true
         fi
-        # Placeholder dirs needed by Dockerfile COPY (content populated by PM in GCP Cloud Build)
+        # codex-data/pm-plans/pm-configs are repo symlinks pointing to ../unified-trading-pm/*
+        # They are dangling in CodeBuild — replace with empty placeholder dirs
+        rm -f codex-data pm-plans pm-configs 2>/dev/null || true
         mkdir -p codex-data pm-plans pm-configs
         touch codex-data/.gitkeep pm-plans/.gitkeep pm-configs/.gitkeep
 
