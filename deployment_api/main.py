@@ -93,6 +93,7 @@ from .routes import (
     sports_venues,
     strategy_backtest_launch,
     strategy_runs,
+    strategy_shard,
     subscriptions,
     treasury,
     treasury_routes,
@@ -196,6 +197,7 @@ _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos",
 _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(scenarios.router, prefix="/api/scenarios", tags=["Scenarios"])
 _authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
+_authenticated_router.include_router(strategy_shard.router)  # prefix=/api/strategy/shard (set on router)
 _authenticated_router.include_router(promote.router, prefix="/api", tags=["Promote Workflow"])
 _authenticated_router.include_router(manual_pending.router, prefix="/api", tags=["Manual Pending Queue"])
 _authenticated_router.include_router(monitor_backfill.router, prefix="/api", tags=["Monitor"])
