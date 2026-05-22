@@ -32,12 +32,13 @@ phases:
       - |
         GH_PAT_VAL=$(aws secretsmanager get-secret-value --secret-id github-pat --query SecretString --output text 2>/dev/null || echo "")
         if [ -n "$GH_PAT_VAL" ]; then
-          for dep in unified-trading-pm unified-api-contracts deployment-service deployment-ui; do
+          for dep in unified-trading-pm unified-api-contracts deployment-service deployment-ui strategy-service; do
             [ ! -d "$dep" ] && git clone --depth=1 --branch live-defi-rollout "https://$GH_PAT_VAL@github.com/IggyIkenna/$dep.git" $dep && echo "Cloned $dep"
           done
-          # Dockerfile expects _unified-api-contracts, _deployment-service, and ui/
+          # Dockerfile expects _unified-api-contracts, _deployment-service, _strategy-service, and ui/
           cp -r unified-api-contracts _unified-api-contracts || true
           cp -r deployment-service _deployment-service || true
+          cp -r strategy-service _strategy-service || true
           cp -r deployment-ui ui || true
         fi
         # codex-data/pm-plans/pm-configs are repo symlinks pointing to ../unified-trading-pm/*

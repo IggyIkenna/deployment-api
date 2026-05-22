@@ -95,6 +95,12 @@ COPY _deployment-service/ /tmp/deployment-service/
 RUN uv pip install --system --no-cache-dir --no-deps /tmp/deployment-service \
     && rm -rf /tmp/deployment-service
 
+# Install strategy-service — treasury_routes.py imports strategy_service.position.
+# buildspec.aws.yaml clones strategy-service@live-defi-rollout into _strategy-service/.
+COPY _strategy-service/ /tmp/strategy-service/
+RUN uv pip install --system --no-cache-dir --no-deps /tmp/strategy-service \
+    && rm -rf /tmp/strategy-service
+
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./
 # Bundled readiness data — populated by cloudbuild before docker build;
