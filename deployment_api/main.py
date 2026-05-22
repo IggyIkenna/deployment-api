@@ -17,8 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from unified_trading_library import (
+    CompositeEventSink,
     PubSubEventSink,
+    QueueEventSink,
     RequestAuditMiddleware,
+    S3EventSink,
     make_events_relay_router,
     setup_events,
     setup_tracing,
@@ -30,11 +33,20 @@ from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
 __all__ = ["PROCESSING_LATENCY", "RECORDS_PROCESSED"]
 
 _cfg = DeploymentApiConfig()
-_event_sink = PubSubEventSink(
-    project_id=_cfg.gcp_project_id,
-    topic="deployment-api-events",
-    service_name="deployment-api",
-)
+# Use lazy AWS sinks on AWS to avoid GCP DefaultCredentialsError at import time.
+if _cfg.cloud_provider == "aws":
+    _event_sink = CompositeEventSink(
+        sinks=[
+            QueueEventSink(topic="deployment-api-events", service_name="deployment-api"),
+            S3EventSink(bucket="", service_name="deployment-api"),
+        ]
+    )
+else:
+    _event_sink = PubSubEventSink(
+        project_id=_cfg.gcp_project_id,
+        topic="deployment-api-events",
+        service_name="deployment-api",
+    )
 # Event logging for UTD v2 observability (before any log_event)
 setup_events(service_name="deployment-api", mode="live", sink=_event_sink)
 setup_tracing("deployment-api")
