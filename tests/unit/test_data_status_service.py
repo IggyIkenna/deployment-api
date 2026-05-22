@@ -311,7 +311,7 @@ class TestCalculateMissingShards:
     async def test_returns_missing_analysis_structure(self):
         svc = _make_svc()
 
-        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             if "cefi" in cat.lower():
                 return {"missing": ["2024-01-01"], "days_checked": 2}
             return None
@@ -344,7 +344,7 @@ class TestCalculateMissingShards:
     async def test_counts_by_category(self):
         svc = _make_svc()
 
-        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             cat_l = cat.lower()
             if "cefi" in cat_l:
                 return {"missing": ["2024-01-01"], "days_checked": 1}
@@ -371,7 +371,7 @@ class TestCalculateMissingShards:
         svc = _make_svc()
         calls: list[str] = []
 
-        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             calls.append(cat)
             return None
 
@@ -389,7 +389,7 @@ class TestCalculateMissingShards:
     async def test_summary_contains_completion_rate(self):
         svc = _make_svc()
 
-        def _mock_scan(service: str, cat: str, start: str, end: str) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             if "cefi" in cat.lower():
                 return {"missing": ["2024-01-01"], "days_checked": 3}
             return None

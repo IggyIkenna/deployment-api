@@ -1064,6 +1064,7 @@ def _build_category_in_subprocess(
     end_date: str,
     all_date_strs: list[str],
     total_days: int,
+    cloud: str = "gcp",
 ) -> dict[str, object]:
     """ProcessPool worker — build one category's manifest entry in a forked child.
 
@@ -1092,6 +1093,7 @@ def _build_category_in_subprocess(
         all_date_strs,
         total_days,
         venue_mapping,
+        cloud=cloud,
     )
 
 
@@ -2882,7 +2884,7 @@ class DataStatusService:
         "perp-funding",
     ]
 
-    def _read_defi_merged_index(self, service: str, cat: str) -> pd.DataFrame:  # noqa: C901 — multi-bucket merge with per-sub-dimension iteration; branching inherent to MTDS DEFI sub-dimension fan-out
+    def _read_defi_merged_index(self, service: str, cat: str, cloud: str = "gcp") -> pd.DataFrame:  # noqa: C901 — multi-bucket merge with per-sub-dimension iteration; branching inherent to MTDS DEFI sub-dimension fan-out
         """Read availability index, merging sub-dimension buckets for MTDS DEFI.
 
         For market-tick-data-service + DEFI category, reads the main DEFI bucket
@@ -2913,9 +2915,9 @@ class DataStatusService:
             ag = cat.lower() or None
             if ag == "prediction":
                 pred_kind = self._PREDICTION_KIND_MAP.get(kind)
-                main_bucket = resolve_bucket_name(cloud="gcp", kind=pred_kind if pred_kind else kind)
+                main_bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else kind)
             else:
-                main_bucket = resolve_bucket_name(cloud="gcp", kind=kind, asset_group=ag)
+                main_bucket = resolve_bucket_name(cloud=cloud, kind=kind, asset_group=ag)
 
         frames: list[pd.DataFrame] = []
         try:
@@ -3023,6 +3025,7 @@ class DataStatusService:
         asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
         mode: str = "batch",
+        cloud: str = "gcp",
     ) -> dict[str, object]:
         """Calculate missing shards by reading manifest indices directly.
 
@@ -3037,6 +3040,7 @@ class DataStatusService:
             end_date,
             asset_groups,
             venues,
+            cloud,
         )
 
     def _calculate_missing_shards_sync(
@@ -3046,6 +3050,7 @@ class DataStatusService:
         end_date: str,
         asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
+        cloud: str = "gcp",
     ) -> dict[str, object]:
         """Synchronous implementation of missing shard calculation."""
         try:
@@ -3056,7 +3061,7 @@ class DataStatusService:
             total_days_checked = 0
 
             for cat in cat_list:
-                cat_result = self._scan_category_manifest(service, cat, start_date, end_date)
+                cat_result = self._scan_category_manifest(service, cat, start_date, end_date, cloud=cloud)
                 if not cat_result:
                     continue
                 for md in cat_result["missing"]:
@@ -3094,6 +3099,7 @@ class DataStatusService:
         cat: str,
         start_date: str,
         end_date: str,
+        cloud: str = "gcp",
     ) -> dict[str, list[str] | int] | None:
         """Read manifest index for one category and return missing dates."""
         # Skip categories that don't apply to this service
@@ -3101,7 +3107,7 @@ class DataStatusService:
         if allowed and cat.upper() not in allowed:
             return None
 
-        index = self._read_defi_merged_index(service, cat)
+        index = self._read_defi_merged_index(service, cat, cloud=cloud)
         if index.empty:
             return None
 
@@ -3166,6 +3172,7 @@ class DataStatusService:
         self,
         service: str = "instruments-service",
         asset_groups: list[str] | None = None,
+        cloud: str = "gcp",
     ) -> dict[str, object]:
         """Return shard counts and latest-day instrument totals per asset_group.
 
@@ -3183,7 +3190,7 @@ class DataStatusService:
         rollup = await asyncio.to_thread(_read_coverage_rollup_if_fresh, service)
         if rollup is not None:
             return _filter_coverage_to_asset_groups(rollup, asset_groups)
-        return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups)
+        return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups, cloud)
 
     def _resolve_coverage_cat_list(self, service: str, asset_groups: list[str] | None) -> list[str]:
         """Pick which asset_groups to iterate for this service's coverage summary.
@@ -3383,9 +3390,9 @@ class DataStatusService:
         )
         return index.loc[[not m for m in legacy_mask]].copy()
 
-    def _build_coverage_for_cat(self, service: str, cat: str) -> dict[str, object] | None:
+    def _build_coverage_for_cat(self, service: str, cat: str, cloud: str = "gcp") -> dict[str, object] | None:
         """Build one asset_group's coverage entry. Returns None if empty."""
-        index = self._read_defi_merged_index(service, cat)
+        index = self._read_defi_merged_index(service, cat, cloud=cloud)
         if index.empty:
             return None
         if "venue" in index.columns:
@@ -3431,6 +3438,7 @@ class DataStatusService:
         self,
         service: str,
         asset_groups: list[str] | None = None,
+        cloud: str = "gcp",
     ) -> dict[str, object]:
         """Synchronous coverage summary implementation."""
         cat_list = self._resolve_coverage_cat_list(service, asset_groups)
@@ -3441,7 +3449,7 @@ class DataStatusService:
         total_latest_day_instruments = 0
 
         for cat in cat_list:
-            entry = self._build_coverage_for_cat(service, cat)
+            entry = self._build_coverage_for_cat(service, cat, cloud=cloud)
             if entry is None:
                 continue
             unique_dates_list = entry.pop("_unique_dates_set", [])
@@ -3475,6 +3483,7 @@ class DataStatusService:
         end_date: str,
         asset_groups: list[str] | None = None,
         *,
+        cloud: str = "gcp",
         secondary_axis: str | None = None,
         league_id: str | None = None,
         fixture_id: str | None = None,
@@ -3523,6 +3532,7 @@ class DataStatusService:
             canonical_question_group,
             job_id,
             chain,
+            cloud,
         )
 
     def _get_manifest_status_sync(
@@ -3537,6 +3547,7 @@ class DataStatusService:
         canonical_question_group: str | None = None,
         job_id: str | None = None,
         chain: str | None = None,
+        cloud: str = "gcp",
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = asset_groups or [str(c) for c in MarketCategory]
@@ -3595,6 +3606,7 @@ class DataStatusService:
                     total_days,
                     venue_mapping,
                     row_filters=row_filters,
+                    cloud=cloud,
                 )
                 result_categories[cat] = cat_result
                 overall_found += int(cat_result.get("dates_found", 0))
@@ -3615,6 +3627,7 @@ class DataStatusService:
                         end_date,
                         all_date_strs,
                         total_days,
+                        cloud,
                     ): cat
                     for cat in cat_list
                 }
@@ -3787,6 +3800,7 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         service: str = "",
+        cloud: str = "gcp",
     ) -> dict[str, set[str]]:
         """Read upstream service availability index to get per-venue expected dates.
 
@@ -3813,9 +3827,9 @@ class DataStatusService:
             ag = category.lower() or None
             if ag == "prediction":
                 pred_kind = self._PREDICTION_KIND_MAP.get(upstream_kind)
-                bucket = resolve_bucket_name(cloud="gcp", kind=pred_kind if pred_kind else upstream_kind)
+                bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else upstream_kind)
             else:
-                bucket = resolve_bucket_name(cloud="gcp", kind=upstream_kind, asset_group=ag)
+                bucket = resolve_bucket_name(cloud=cloud, kind=upstream_kind, asset_group=ag)
 
         result: dict[str, set[str]] = {}
         try:
@@ -3915,6 +3929,7 @@ class DataStatusService:
         total_days: int,
         service: str = "",
         category: str = "",
+        cloud: str = "gcp",
     ) -> tuple[dict[str, object], int, int]:
         """Build per-venue stats from filtered index data.
 
@@ -3942,7 +3957,7 @@ class DataStatusService:
         use_ref_denominator = service in self._REFERENCE_DRIVEN_SERVICES and category
         ref_dates: dict[str, set[str]] = {}
         if use_ref_denominator:
-            ref_dates = self._get_reference_expected_dates(category, start_date, end_date, service=service)
+            ref_dates = self._get_reference_expected_dates(category, start_date, end_date, service=service, cloud=cloud)
 
         # Build fixture calendar — union of dates across all sports reference
         # venues in this category.  Used as the expected-date set for each
@@ -5626,6 +5641,7 @@ class DataStatusService:
         total_days: int,
         venue_mapping: VenueMapping,
         row_filters: dict[str, str] | None = None,
+        cloud: str = "gcp",
     ) -> dict[str, object]:
         """Build a single category entry for manifest status.
 
@@ -5669,11 +5685,11 @@ class DataStatusService:
             ag = cat.lower() or None
             if ag == "prediction":
                 pred_kind = self._PREDICTION_KIND_MAP.get(kind)
-                bucket = resolve_bucket_name(cloud="gcp", kind=pred_kind if pred_kind else kind)
+                bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else kind)
             else:
-                bucket = resolve_bucket_name(cloud="gcp", kind=kind, asset_group=ag)
+                bucket = resolve_bucket_name(cloud=cloud, kind=kind, asset_group=ag)
 
-        index = self._read_defi_merged_index(service, cat)
+        index = self._read_defi_merged_index(service, cat, cloud=cloud)
         if index.empty:
             return empty
 
@@ -5748,6 +5764,7 @@ class DataStatusService:
             cat_total_days,
             service=service,
             category=cat,
+            cloud=cloud,
         )
 
         # MTDS honest-coverage override (Phase 6c). For CEFI / TRADFI / DEFI /
