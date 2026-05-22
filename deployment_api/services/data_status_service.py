@@ -24,11 +24,8 @@ from unified_api_contracts import (
     compute_honest_coverage,
     get_expected_data_types_for_venue,
     get_expected_instruments_for_venue,
-    get_raw_source_data_types,
     get_venue_data_type_start_date,
-    is_expected,
     is_per_instrument_shard_data_type,
-    is_processed_data_type,
 )
 from unified_api_contracts.features import (
     EXPECTED_FEATURE_GROUPS_BY_SERVICE,
@@ -39,7 +36,10 @@ from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     get_coverage_windows,
     get_lst_venue_genesis,
+    get_raw_source_data_types,
+    is_expected,
     is_in_tradfi_tick_window,
+    is_processed_data_type,
     venue_has_no_expected_defi_coverage,
 )
 from unified_api_contracts.registry.data_status_axis_matrix import (
