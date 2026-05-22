@@ -97,6 +97,9 @@ RUN uv pip install --system --no-cache-dir --no-deps /tmp/deployment-service \
 
 # Install strategy-service — treasury_routes.py imports strategy_service.position.
 # buildspec.aws.yaml clones strategy-service@live-defi-rollout into _strategy-service/.
+# sqlalchemy is a direct dep of strategy_service.position.storage.database; install it first
+# so --no-deps on strategy-service doesn't leave it missing.
+RUN uv pip install --system --no-cache-dir 'sqlalchemy>=2.0.0,<3.0.0'
 COPY _strategy-service/ /tmp/strategy-service/
 RUN uv pip install --system --no-cache-dir --no-deps /tmp/strategy-service \
     && rm -rf /tmp/strategy-service
