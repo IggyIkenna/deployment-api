@@ -2,7 +2,6 @@
 Unit tests for DataQueryService.
 
 Tests cover:
-- build_bucket_name
 - list_files_in_path (mocked storage)
 - get_venue_filters (mocked storage)
 - get_instruments_list (mocked storage)
@@ -28,28 +27,6 @@ DataQueryService = _dqs_mod.DataQueryService
 def _load_dqs():
     """Return DataQueryService class."""
     return DataQueryService
-
-
-class TestBuildBucketName:
-    """Tests for DataQueryService.build_bucket_name."""
-
-    def test_standard_bucket_name(self):
-        dqs = _load_dqs()
-        svc = dqs(project_id="my-project")
-        result = svc.build_bucket_name("market-data", "CEFI")
-        assert result == "market-data-cefi-my-project"
-
-    def test_lowercase_category(self):
-        dqs = _load_dqs()
-        svc = dqs(project_id="proj")
-        result = svc.build_bucket_name("instruments", "TRADFI")
-        assert result == "instruments-tradfi-proj"
-
-    def test_uses_project_id_from_init(self):
-        dqs = _load_dqs()
-        svc = dqs(project_id="custom-project")
-        result = svc.build_bucket_name("prefix", "DEFI")
-        assert "custom-project" in result
 
 
 class TestListFilesInPath:
@@ -128,8 +105,9 @@ class TestGetVenueFilters:
     @pytest.mark.asyncio
     async def test_known_service_returns_venues(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_prefixes", return_value=["BINANCE/", "OKX/"]):
-            result = await svc.get_venue_filters("instruments-service")
+        with patch.object(_dqs_mod, "_drilldown_build_bucket_name", return_value="test-bucket"):
+            with patch.object(_dqs_mod, "list_prefixes", return_value=["BINANCE/", "OKX/"]):
+                result = await svc.get_venue_filters("instruments-service")
         assert "service" in result
         assert "asset_groups" in result
         # Should have cefi, tradfi, defi asset groups
@@ -138,8 +116,9 @@ class TestGetVenueFilters:
     @pytest.mark.asyncio
     async def test_exception_handled_per_category(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_prefixes", side_effect=OSError("bucket missing")):
-            result = await svc.get_venue_filters("instruments-service")
+        with patch.object(_dqs_mod, "_drilldown_build_bucket_name", return_value="test-bucket"):
+            with patch.object(_dqs_mod, "list_prefixes", side_effect=OSError("bucket missing")):
+                result = await svc.get_venue_filters("instruments-service")
         # Should still return a dict, each asset group gets an error key
         assert "asset_groups" in result
         for cat_data in result["asset_groups"].values():

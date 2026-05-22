@@ -10,8 +10,9 @@ from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import build_bucket, resolve_bucket_name
+from unified_trading_library import AssetGroup, build_bucket, resolve_bucket_name
 
+from deployment_api.services.data_status_drilldown import build_bucket_name as _drilldown_build_bucket_name
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import (
     ObjectInfo,
@@ -37,10 +38,6 @@ class DataQueryService:
     def __init__(self, project_id: str | None = None):
         """Initialize data query service."""
         self.project_id = project_id or _pid
-
-    def build_bucket_name(self, prefix: str, asset_group: str) -> str:
-        """Build a GCS bucket name: {prefix}-{asset_group_lower}-{project_id}."""
-        return f"{prefix}-{asset_group.lower()}-{self.project_id}"
 
     async def list_files_in_path(
         self,
@@ -131,37 +128,19 @@ class DataQueryService:
         Returns:
             Dictionary with ``service`` and ``asset_groups`` map (per-group venue lists).
         """
-        # Service to bucket mappings
+        # Per-service asset_group scope (bucket resolved via drilldown canonical mapping)
         _all_cats = [cat.value.lower() for cat in MarketCategory]
-        service_mappings = {
-            "market-tick-data-handler": {
-                "prefix": "market-data",
-                "asset_groups": _all_cats,
-            },
-            "market-data-processing-service": {
-                "prefix": "processed-market-data",
-                "asset_groups": _all_cats,
-            },
-            "instruments-service": {
-                "prefix": "instruments",
-                "asset_groups": _all_cats,
-            },
-            "features-equity-service": {
-                "prefix": "features-equity",
-                "asset_groups": ["tradfi"],
-            },
-            "features-derivatives-service": {
-                "prefix": "features-derivatives",
-                "asset_groups": ["cefi"],
-            },
-            "features-defi-service": {
-                "prefix": "features-defi",
-                "asset_groups": ["defi"],
-            },
+        service_asset_groups: dict[str, list[str]] = {
+            "market-tick-data-handler": _all_cats,
+            "market-data-processing-service": _all_cats,
+            "instruments-service": _all_cats,
+            "features-equity-service": ["tradfi"],
+            "features-derivatives-service": ["cefi"],
+            "features-defi-service": ["defi"],
         }
 
-        mapping = service_mappings.get(service)
-        if not mapping:
+        ag_list = service_asset_groups.get(service)
+        if not ag_list:
             return {"error": f"Unknown service: {service}"}
 
         by_asset_group: dict[str, dict[str, object]] = {}
@@ -170,9 +149,9 @@ class DataQueryService:
             "asset_groups": by_asset_group,
         }
 
-        for ag in cast(list[str], mapping.get("asset_groups") or []):
+        for ag in ag_list:
             try:
-                bucket_name = self.build_bucket_name(cast(str, mapping.get("prefix") or ""), ag)
+                bucket_name = _drilldown_build_bucket_name(service, ag)
                 venues: list[str] = []
 
                 # List prefixes to find venue directories
@@ -228,7 +207,9 @@ class DataQueryService:
         """
         try:
             # Map to instruments bucket
-            bucket_name = self.build_bucket_name("instruments", asset_group)
+            bucket_name = resolve_bucket_name(
+                cloud="gcp", kind="instruments-store", asset_group=cast(AssetGroup, asset_group)
+            )
 
             # Build path based on filters
             path = ""
@@ -740,7 +721,9 @@ class DataQueryService:
             if not asset_group:
                 return {"error": f"Could not determine asset group for venue: {venue}"}
 
-            bucket_name = self.build_bucket_name("market-data", asset_group.lower())
+            bucket_name = resolve_bucket_name(
+                cloud="gcp", kind="market-data", asset_group=cast(AssetGroup, asset_group.lower())
+            )
 
             try:
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)

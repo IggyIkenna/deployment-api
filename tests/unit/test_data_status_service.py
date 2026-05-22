@@ -1,7 +1,7 @@
 """
 Unit tests for data_status_service module.
 
-Tests cover pure methods: build_bucket_name, _calculate_completion_rate,
+Tests cover pure methods: _calculate_completion_rate,
 run_data_status_cli, calculate_missing_shards, get_last_updated_info,
 validate_data_completeness.
 """
@@ -33,25 +33,6 @@ def _mock_process(returncode: int = 0, stdout: bytes = b"{}", stderr: bytes = b"
     proc.returncode = returncode
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     return proc
-
-
-class TestBuildBucketName:
-    """Tests for DataStatusService.build_bucket_name."""
-
-    def test_format(self):
-        svc = DataStatusService(project_id="my-project")
-        assert svc.build_bucket_name("instruments", "CEFI") == "instruments-cefi-my-project"
-
-    def test_lowercases_category(self):
-        svc = DataStatusService(project_id="proj")
-        result = svc.build_bucket_name("market-data", "TRADFI")
-        assert "tradfi" in result
-        assert "TRADFI" not in result
-
-    def test_project_id_appended(self):
-        svc = DataStatusService(project_id="test-123")
-        result = svc.build_bucket_name("prefix", "DEFI")
-        assert result.endswith("test-123")
 
 
 class TestCalculateCompletionRate:

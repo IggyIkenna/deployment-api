@@ -66,9 +66,9 @@ from unified_api_contracts.sports import (
 from unified_trading_library import read_availability_index, resolve_bucket_name
 
 from deployment_api.services.data_status_drilldown import (
-    _COMMODITY_BUCKET_TEMPLATE,
-    _PREDICTION_KIND_MAP,
-    _SERVICE_TO_KIND,
+    COMMODITY_BUCKET_TEMPLATE,
+    PREDICTION_KIND_MAP,
+    SERVICE_TO_KIND,
 )
 from deployment_api.services.data_status_drilldown import (
     build_bucket_name as _drilldown_build_bucket_name,
@@ -2840,7 +2840,7 @@ class DataStatusService:
     # token_transfers, bridge_events, governance_events, mev_events) and
     # eigenlayer_rewards write into the main ``market-data-tick-defi-{pid}``
     # bucket (via ``get_tick_data_bucket(asset_group="defi")``) so they're
-    # picked up by the default ``_SERVICE_TO_KIND`` → ``resolve_bucket_name`` path — no override needed.
+    # picked up by the default ``SERVICE_TO_KIND`` → ``resolve_bucket_name`` path — no override needed.
     _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
         ("market-tick-data-service", "gas-fees"): "gas-fees-{pid}",
         ("market-tick-data-service", "evm-defi"): "evm-defi-{pid}",
@@ -2893,14 +2893,14 @@ class DataStatusService:
         if override:
             main_bucket = override.format(pid=self.project_id)
         elif service == "features-commodity-service":
-            main_bucket = _COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
+            main_bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
         else:
-            kind = _SERVICE_TO_KIND.get(service)
+            kind = SERVICE_TO_KIND.get(service)
             if kind is None:
                 return pd.DataFrame()
             ag = cat.lower() or None
             if ag == "prediction":
-                pred_kind = _PREDICTION_KIND_MAP.get(kind)
+                pred_kind = PREDICTION_KIND_MAP.get(kind)
                 main_bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else kind)
             else:
                 main_bucket = resolve_bucket_name(cloud=cloud, kind=kind, asset_group=ag)
@@ -3805,14 +3805,14 @@ class DataStatusService:
             return cached[1]
 
         if upstream == "features-commodity-service":
-            bucket = _COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
+            bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
         else:
-            upstream_kind = _SERVICE_TO_KIND.get(upstream, "")
+            upstream_kind = SERVICE_TO_KIND.get(upstream, "")
             if not upstream_kind:
                 return {}
             ag = category.lower() or None
             if ag == "prediction":
-                pred_kind = _PREDICTION_KIND_MAP.get(upstream_kind)
+                pred_kind = PREDICTION_KIND_MAP.get(upstream_kind)
                 bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else upstream_kind)
             else:
                 bucket = resolve_bucket_name(cloud=cloud, kind=upstream_kind, asset_group=ag)
@@ -5652,7 +5652,7 @@ class DataStatusService:
             "_venue_found": 0,
             "_venue_expected": 0,
         }
-        if service not in _SERVICE_TO_KIND and service != "features-commodity-service":
+        if service not in SERVICE_TO_KIND and service != "features-commodity-service":
             return empty
 
         # Skip categories that don't apply to this service (single-bucket services)
@@ -5665,12 +5665,12 @@ class DataStatusService:
         if override:
             bucket = override.format(pid=self.project_id)
         elif service == "features-commodity-service":
-            bucket = _COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
+            bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
         else:
-            kind = _SERVICE_TO_KIND[service]
+            kind = SERVICE_TO_KIND[service]
             ag = cat.lower() or None
             if ag == "prediction":
-                pred_kind = _PREDICTION_KIND_MAP.get(kind)
+                pred_kind = PREDICTION_KIND_MAP.get(kind)
                 bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else kind)
             else:
                 bucket = resolve_bucket_name(cloud=cloud, kind=kind, asset_group=ag)
@@ -6011,7 +6011,7 @@ class DataStatusService:
         Returns:
             Dictionary containing last updated information
         """
-        if service not in _SERVICE_TO_KIND and service != "features-commodity-service":
+        if service not in SERVICE_TO_KIND and service != "features-commodity-service":
             return {"error": f"Unknown service: {service}"}
 
         # Default asset_groups if none specified
