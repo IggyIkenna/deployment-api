@@ -2014,7 +2014,12 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
         return cached[1]
     idx = read_availability_index(bucket)
     if DEPRECATED_DEFI_GHOST_VENUE_NAMES and "venue" in idx.columns:
-        idx = idx[~idx["venue"].isin(DEPRECATED_DEFI_GHOST_VENUE_NAMES)].reset_index(drop=True)
+        # Match both bare form (AAVEV3) and hyphenated-chain form (AAVEV3-ETHEREUM)
+        venue_prefix = idx["venue"].str.split("-", n=1).str[0]
+        ghost_mask = venue_prefix.isin(DEPRECATED_DEFI_GHOST_VENUE_NAMES)
+        if ghost_mask.any():
+            logger.debug("_read_index_cached: dropping %d ghost venue rows from %s", int(ghost_mask.sum()), bucket)
+            idx = idx[~ghost_mask].reset_index(drop=True)
     _INDEX_CACHE[bucket] = (now, idx)
     return idx
 
