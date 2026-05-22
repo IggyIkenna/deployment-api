@@ -1305,17 +1305,17 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     return _defi_chain_only_detail(df, venue=venue, chain=chain, day=day)
 
 
-def fetch_venue_detail(*, service: str, category: str, venue: str) -> VenueDetailResponse:
+def fetch_venue_detail(*, service: str, asset_group: str, venue: str) -> VenueDetailResponse:
     """Return venue-scoped detail for the Data Status drilldown.
 
-    ``category == "DEFI"`` branches on whether ``venue`` is a bare chain
+    ``asset_group == "DEFI"`` branches on whether ``venue`` is a bare chain
     (``ETHEREUM``) or a composite protocol-chain (``AAVE_V3-ETHEREUM``);
-    all other categories use the CeFi branch (latest-day instruments
+    all other asset groups use the CeFi branch (latest-day instruments
     listing for the venue).
     """
     _ = service  # Reserved for future per-service routing; keeps the signature
     # stable for the UI caller today.
-    cat_upper = (category or "").upper()
+    cat_upper = (asset_group or "").upper()
     if cat_upper == "DEFI":
         return _defi_venue_detail(venue)
     return _cefi_venue_detail(cat_upper.lower() if cat_upper else "cefi", venue)

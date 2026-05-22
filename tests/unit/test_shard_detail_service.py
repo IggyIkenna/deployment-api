@@ -279,7 +279,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="DEFI",
+                asset_group="DEFI",
                 venue="ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -302,7 +302,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="DEFI",
+                asset_group="DEFI",
                 venue="AAVE_V3-ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -318,7 +318,7 @@ class TestFetchVenueDetailDefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="DEFI",
+                asset_group="DEFI",
                 venue="ETHEREUM",
             )
         assert resp.chain == "ETHEREUM"
@@ -348,7 +348,7 @@ class TestFetchVenueDetailCefi:
         ):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="CEFI",
+                asset_group="CEFI",
                 venue="BINANCE",
             )
         assert resp.category == "CEFI"

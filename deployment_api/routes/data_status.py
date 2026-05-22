@@ -935,46 +935,6 @@ async def get_data_coverage_summary(
         raise HTTPException(status_code=500, detail=f"Coverage summary failed: {e}") from e
 
 
-@router.get("/venue-detail")
-async def get_venue_detail(
-    service: str = Query(..., description="Service name"),
-    category: str = Query(..., description="Category (CEFI/TRADFI/DEFI)"),
-    venue: str = Query(..., description="Venue name"),
-    date: str | None = Query(None, description="Date (YYYY-MM-DD), defaults to latest"),
-):
-    """Get instrument breakdown for a specific venue (drill-down)."""
-    try:
-        import asyncio
-
-        from deployment_service.cli.utils.manifest_reader import ManifestReader
-
-        reader = ManifestReader()
-        result = await asyncio.to_thread(
-            reader.get_venue_detail,
-            service=service,
-            category=category,
-            venue=venue,
-            date=date,
-        )
-
-        if "error" in result:
-            raise HTTPException(status_code=404, detail=str(result["error"]))
-
-        return result
-
-    except ImportError as exc:
-        logger.warning("deployment_service not available for venue detail")
-        raise HTTPException(
-            status_code=501,
-            detail="Venue detail requires deployment-service package",
-        ) from exc
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.exception("Error in get_venue_detail")
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
-
-
 @router.get("/turbo/stats")
 async def get_turbo_cache_stats():
     """Get turbo mode cache statistics."""
