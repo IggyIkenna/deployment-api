@@ -16,7 +16,7 @@
 ARG PROJECT_ID
 
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
-FROM node:20-slim AS ui-builder
+FROM public.ecr.aws/docker/library/node:20-slim AS ui-builder
 WORKDIR /app/ui
 
 # Build context expects ./ui/ to be the deployment-ui repo root (populated
