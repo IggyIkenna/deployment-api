@@ -401,6 +401,7 @@ async def get_data_status_manifest(
         None,
         description="Filter DeFi manifest rows to one chain (e.g. 'ETHEREUM', 'ARBITRUM').",
     ),
+    cloud: Literal["gcp", "aws"] = Query("gcp", description="Cloud provider for bucket reads"),
 ):
     """Get data status from manifest availability indices (fastest path).
 
@@ -429,6 +430,7 @@ async def get_data_status_manifest(
             start_date=start_date,
             end_date=end_date,
             asset_groups=asset_group,
+            cloud=cloud,
             secondary_axis=secondary_axis,
             league_id=league_id,
             fixture_id=fixture_id,
@@ -450,6 +452,7 @@ async def get_data_status_manifest(
 async def get_coverage_summary(
     service: str = Query("instruments-service", description="Service name"),
     asset_groups: str | None = Query(None, description="Comma-separated asset groups (e.g. CEFI,DEFI)"),
+    cloud: Literal["gcp", "aws"] = Query("gcp", description="Cloud provider for bucket reads"),
 ):
     """Get coverage summary with shard counts and latest-day instrument totals."""
     if _cfg.is_mock_mode():
@@ -469,6 +472,7 @@ async def get_coverage_summary(
         result = await data_status_service.get_coverage_summary(
             service=service,
             asset_groups=ag_list,
+            cloud=cloud,
         )
         return result
     except (OSError, ValueError, RuntimeError) as e:
@@ -772,6 +776,7 @@ async def get_data_status_turbo(
     include_instrument_types: bool = Query(False, description="Include instrument type breakdown"),
     include_file_counts: bool = Query(False, description="Include per-date file counts"),
     include_dates_list: bool = Query(False, description="Include sorted list of dates found"),
+    cloud: Literal["gcp", "aws"] = Query("gcp", description="Cloud provider for bucket reads"),
 ):
     """Get data status with turbo mode caching (5-minute cache TTL)."""
     if _cfg.is_mock_mode():
@@ -803,6 +808,7 @@ async def get_data_status_turbo(
                 start_date=start_date,
                 end_date=end_date,
                 asset_groups=asset_groups,
+                cloud=cloud,
             )
 
         result = await data_analytics_service.get_data_status_turbo(
