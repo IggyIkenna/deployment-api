@@ -1056,6 +1056,9 @@ def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
     venues = getattr(venue_mapping, accessor, None)
     if venues is None:
         return []
+    # Filter out deprecated ghost venue names (prefix before first "-")
+    if DEPRECATED_DEFI_GHOST_VENUE_NAMES:
+        return [v for v in venues if v.split("-", 1)[0] not in DEPRECATED_DEFI_GHOST_VENUE_NAMES]
     return list(venues)
 
 
