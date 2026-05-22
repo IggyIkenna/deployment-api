@@ -2016,10 +2016,10 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
     if cached and (now - cached[0]) < _INDEX_CACHE_TTL:
         return cached[1]
     idx = read_availability_index(bucket)
-    if DEPRECATED_DEFI_GHOST_VENUE_NAMES and "venue" in idx.columns:
+    if _ALL_DEFI_GHOST_VENUES and "venue" in idx.columns:
         # Match both bare form (AAVEV3) and hyphenated-chain form (AAVEV3-ETHEREUM)
         venue_prefix = idx["venue"].str.split("-", n=1).str[0]
-        ghost_mask = venue_prefix.isin(DEPRECATED_DEFI_GHOST_VENUE_NAMES)
+        ghost_mask = venue_prefix.isin(_ALL_DEFI_GHOST_VENUES)
         if ghost_mask.any():
             logger.debug("_read_index_cached: dropping %d ghost venue rows from %s", int(ghost_mask.sum()), bucket)
             idx = idx[~ghost_mask].reset_index(drop=True)
@@ -2035,6 +2035,9 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 # 60s (refresh window inside one warm Cloud Run instance), and slice to the
 # user's date window. Falls through to the on-demand compute when the rollup
 # is missing or older than ``_ROLLUP_STALENESS_SEC``.
+
+# Full set of deprecated ghost DeFi venue names — now canonical in UAC.
+_ALL_DEFI_GHOST_VENUES: frozenset[str] = DEPRECATED_DEFI_GHOST_VENUE_NAMES
 
 _ROLLUP_BUCKET_TEMPLATE: str = "{pid}-data-status-rollups"
 _ROLLUP_STALENESS_SEC: int = 1800  # 30 min — cron fires every 5; 30 covers 6 missed cycles
@@ -2162,6 +2165,19 @@ def _slice_rollup_to_window(
         if not isinstance(cat_payload, dict):
             sliced_asset_groups[cat] = cat_payload  # pass-through unknown shapes
             continue
+        # Strip ghost DeFi venue names from the rollup before slicing.
+        # The rollup blob may have been computed before the ghost filter was added,
+        # so we defensively filter here to guarantee the serve path is always clean.
+        if cat.lower() == "defi" and _ALL_DEFI_GHOST_VENUES:
+            venues = cat_payload.get("venues")
+            if isinstance(venues, dict):
+                clean_venues = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}
+                if len(clean_venues) < len(venues):
+                    logger.debug(
+                        "_slice_rollup_to_window: stripped %d ghost venue(s) from defi rollup",
+                        len(venues) - len(clean_venues),
+                    )
+                    cat_payload = {**cat_payload, "venues": clean_venues}
         sliced_cat = _slice_asset_group(cat_payload, start_date, end_date)
         sliced_asset_groups[cat] = sliced_cat
         overall_found += int(cast(int, sliced_cat.get("dates_found", 0)))

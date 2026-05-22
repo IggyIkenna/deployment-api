@@ -38,6 +38,7 @@ from typing import cast
 
 import pandas as pd
 from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
+from unified_api_contracts.registry import DEPRECATED_DEFI_GHOST_VENUE_NAMES
 from unified_api_contracts.registry.data_status_axis_matrix import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
@@ -47,6 +48,8 @@ from unified_trading_library import read_availability_index
 from deployment_api.services.data_status_drilldown import build_bucket_name
 
 logger = logging.getLogger(__name__)
+
+_ALL_DEFI_GHOST_VENUES: frozenset[str] = DEPRECATED_DEFI_GHOST_VENUE_NAMES
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -364,6 +367,8 @@ def get_hierarchical_drilldown(
     # Same call shape as ``data_status_service.py``'s preflight skip path.
     manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
     df = read_availability_index(bucket)
+    if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:
+        df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
     if df is None or len(df) == 0:
         return {
             "axes": list(axes),
