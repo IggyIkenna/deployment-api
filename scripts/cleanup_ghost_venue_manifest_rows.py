@@ -4,9 +4,11 @@ Ghost venues are Era-2 capabilities-era names (no underscore, no chain suffix) t
 superseded by canonical underscore names (e.g. AAVEV3 → AAVE_V3). They appear in the manifest
 index as both bare form (AAVEV3) and hyphenated-chain form (AAVEV3-ETHEREUM).
 
-After running this script:
-  - All 10 DeFi MTDS bucket availability_index.parquet files are free of ghost rows.
-  - The rollup blob is deleted so the /manifest API regenerates clean on next call.
+This script cleans TWO layers:
+  1. Per-VM shard parquets under _index/per_vm/ — these are the SOURCE; the consolidator
+     merges them every minute, so leaving ghost rows here means they come back immediately.
+  2. Consolidated _index/availability_index.parquet — current merged view.
+  3. Rollup blob — so /manifest API regenerates clean on next call.
 
 Run with workspace .venv-workspace (which has UTL + UAC installed):
     source ${WORKSPACE_ROOT}/.venv-workspace/bin/activate
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ID = "central-element-323112"
 INDEX_BLOB = "_index/availability_index.parquet"
+PER_VM_PREFIX = "_index/per_vm/"
 ROLLUP_BUCKET = f"{PROJECT_ID}-data-status-rollups"
 ROLLUP_BLOB = "market-tick-data-service/full.json.gz"
 
@@ -43,58 +46,91 @@ DEFI_MTDS_BUCKETS: list[str] = [
 ]
 
 
+def _clean_parquet_blob(
+    client: object,
+    bucket: str,
+    blob_name: str,
+    ghost_names: frozenset[str],
+    dry_run: bool,
+) -> int:
+    """Download, filter, re-upload a single parquet blob. Returns rows dropped."""
+    from unified_trading_library.cloud_interface.factory import upload_to_storage
+
+    raw = client.download_bytes(bucket, blob_name)  # type: ignore[attr-defined]
+    df = pd.read_parquet(io.BytesIO(raw))
+    if "venue" not in df.columns:
+        return 0
+    venue_prefix = df["venue"].str.split("-", n=1).str[0]
+    ghost_mask = venue_prefix.isin(ghost_names)
+    n_ghost = int(ghost_mask.sum())
+    if n_ghost == 0:
+        return 0
+    ghost_venues = sorted(df.loc[ghost_mask, "venue"].unique().tolist())
+    logger.info(
+        "  DROP %s — %d ghost rows (%s) from %d total",
+        blob_name,
+        n_ghost,
+        ghost_venues,
+        len(df),
+    )
+    if not dry_run:
+        clean_df = df[~ghost_mask].reset_index(drop=True)
+        buf = io.BytesIO()
+        clean_df.to_parquet(buf, index=False)
+        upload_to_storage(bucket, blob_name, buf.getvalue(), "application/octet-stream")
+        logger.info("  WROTE %s — %d rows remaining", blob_name, len(clean_df))
+    return n_ghost
+
+
 def main(dry_run: bool = False) -> None:
     from unified_api_contracts import DEPRECATED_DEFI_GHOST_VENUE_NAMES
     from unified_trading_library.cloud_interface.factory import (
-        download_from_storage,
         storage_exists,
-        upload_to_storage,
     )
+    from unified_trading_library.cloud_interface.factory import get_storage_client
     from unified_trading_library.cloud_interface.gcs_blob_ops import gcs_delete_object
 
+    client = get_storage_client()
     total_dropped = 0
 
     for bucket in DEFI_MTDS_BUCKETS:
+        logger.info("=== %s ===", bucket)
+
+        # Step 1: clean per-VM shard parquets (the SOURCE — consolidator reads these every minute)
+        per_vm_blobs = list(client.list_blobs(bucket, prefix=PER_VM_PREFIX))
+        shard_dropped = 0
+        for blob in per_vm_blobs:
+            try:
+                dropped = _clean_parquet_blob(
+                    client, bucket, blob.name, DEPRECATED_DEFI_GHOST_VENUE_NAMES, dry_run
+                )
+                shard_dropped += dropped
+            except Exception as exc:
+                logger.warning("  ERROR %s: %s", blob.name, exc)
+        if per_vm_blobs:
+            logger.info(
+                "  per-vm: %d shards checked, %d ghost rows %s",
+                len(per_vm_blobs),
+                shard_dropped,
+                "would be dropped" if dry_run else "dropped",
+            )
+        total_dropped += shard_dropped
+
+        # Step 2: clean consolidated index
         if not storage_exists(bucket, INDEX_BLOB):
-            logger.info("SKIP %s — index blob not found", bucket)
+            logger.info("  SKIP consolidated index — blob not found")
             continue
+        try:
+            dropped = _clean_parquet_blob(
+                client, bucket, INDEX_BLOB, DEPRECATED_DEFI_GHOST_VENUE_NAMES, dry_run
+            )
+            if dropped == 0:
+                logger.info("  consolidated index — already clean")
+            total_dropped += dropped
+        except Exception as exc:
+            logger.warning("  ERROR consolidated index: %s", exc)
 
-        raw = download_from_storage(bucket, INDEX_BLOB)
-        df = pd.read_parquet(io.BytesIO(raw))
-        original_len = len(df)
-
-        if "venue" not in df.columns:
-            logger.info("SKIP %s — no venue column (%d rows)", bucket, original_len)
-            continue
-
-        # Match both bare form (AAVEV3) and hyphenated-chain form (AAVEV3-ETHEREUM)
-        venue_prefix = df["venue"].str.split("-", n=1).str[0]
-        ghost_mask = venue_prefix.isin(DEPRECATED_DEFI_GHOST_VENUE_NAMES)
-        n_ghost = int(ghost_mask.sum())
-
-        if n_ghost == 0:
-            logger.info("OK   %s — 0 ghost rows (%d total)", bucket, original_len)
-            continue
-
-        ghost_venues = sorted(df.loc[ghost_mask, "venue"].unique().tolist())
-        logger.info(
-            "DROP %s — removing %d ghost rows (venues: %s) from %d total",
-            bucket,
-            n_ghost,
-            ghost_venues,
-            original_len,
-        )
-
-        if not dry_run:
-            clean_df = df[~ghost_mask].reset_index(drop=True)
-            buf = io.BytesIO()
-            clean_df.to_parquet(buf, index=False)
-            upload_to_storage(bucket, INDEX_BLOB, buf.getvalue(), "application/octet-stream")
-            logger.info("WROTE %s — %d rows remaining", bucket, len(clean_df))
-
-        total_dropped += n_ghost
-
-    # Invalidate the rollup blob so the /manifest API regenerates clean
+    # Step 3: invalidate the rollup blob so /manifest API regenerates clean
     rollup_uri = f"gs://{ROLLUP_BUCKET}/{ROLLUP_BLOB}"
     if storage_exists(ROLLUP_BUCKET, ROLLUP_BLOB):
         if not dry_run:
@@ -103,7 +139,7 @@ def main(dry_run: bool = False) -> None:
         else:
             logger.info("DRY-RUN: would delete rollup blob %s", rollup_uri)
     else:
-        logger.info("rollup blob %s not found (already gone or never written)", rollup_uri)
+        logger.info("rollup blob %s — already gone", rollup_uri)
 
     logger.info(
         "Done. Total ghost rows %s: %d across %d buckets.",
