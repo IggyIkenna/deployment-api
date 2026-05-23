@@ -2808,7 +2808,9 @@ class DataStatusService:
         if chain_str and chain_str.lower() != "nan":
             return False
         head = venue.split("-", 1)[0]
-        # Strip an optional ``V<digits>`` tail: AAVE_V3 → AAVE, UNISWAP_V2 → UNISWAP
+        # Strip optional underscore + ``V<digits>`` tail so both canonical
+        # (``AAVE_V3`` → ``AAVE``) and ghost (``AAVEV3`` → ``AAVE``) forms
+        # normalise to the same root before the prefix lookup.
         root = re.sub(r"_?V\d+$", "", head)
         return root in cls._DEFI_LEGACY_PROTOCOL_PREFIXES
 

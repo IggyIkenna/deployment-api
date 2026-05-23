@@ -1015,10 +1015,12 @@ def _instruments_bucket_for_category(category: str) -> str:
 
 
 # Compiled regex for stripping the underscore in DeFi protocol-version
-# tokens, e.g. ``AAVE_V3`` → ``AAVE_V3``, ``UNISWAP_V3`` → ``UNISWAP_V3``.
-# This handles the convention mismatch between UAC composite venues
-# (``<PROTOCOL>_V<N>-<CHAIN>``) and the actual GCS partition layout
-# (``<PROTOCOL>V<N>-<CHAIN>``) that the instruments-service writers use.
+# tokens, e.g. ``AAVE_V3-ETHEREUM`` → ``AAVEV3-ETHEREUM``.
+# Instruments-service GCS partition keys historically used the no-underscore
+# ghost form (``AAVEV3-ETHEREUM``). Writers were updated to canonical
+# ``AAVE_V3-ETHEREUM`` in 2026-05-23, but old parquets on GCS may still live
+# under ghost-name paths until a full migration completes. The alias list
+# tries canonical first; ghost is a backward-compat fallback.
 _DEFI_VERSION_UNDERSCORE_RE = _re.compile(r"_V(\d+)")
 
 
@@ -1031,9 +1033,9 @@ def _venue_aliases_for_bucket(category: str, venue: str) -> list[str]:
 
     Conventions per category:
 
-    * **DEFI**: try the literal venue first, then strip the underscore
-      from version tokens (``AAVE_V3-ETHEREUM`` → ``AAVE_V3-ETHEREUM``),
-      and the reverse (``AAVE_V3-ETHEREUM`` → ``AAVE_V3-ETHEREUM``).
+    * **DEFI**: try the literal venue first (canonical ``AAVE_V3-ETHEREUM``),
+      then the ghost-name alias without underscore (``AAVEV3-ETHEREUM``) as a
+      backward-compat fallback for old GCS parquets written before 2026-05-23.
     * **SPORTS**: the partition key is ``league=<NAME>`` not ``venue=<NAME>``
       — handled by ``_partition_key_for_category`` rather than aliasing.
     * **CEFI / TRADFI / PREDICTION**: venue is canonical — single alias.
@@ -1041,12 +1043,13 @@ def _venue_aliases_for_bucket(category: str, venue: str) -> list[str]:
     aliases: list[str] = [venue]
     cat_upper = (category or "").upper()
     if cat_upper == "DEFI":
-        # Strip the underscore in _V<N>: "AAVE_V3-ETHEREUM" → "AAVE_V3-ETHEREUM"
+        # Strip the underscore in _V<N>: "AAVE_V3-ETHEREUM" → "AAVEV3-ETHEREUM"
         no_underscore = _DEFI_VERSION_UNDERSCORE_RE.sub(r"V\1", venue)
         if no_underscore != venue:
             aliases.append(no_underscore)
-        # And the reverse — if caller passed "AAVE_V3-ETHEREUM", try "AAVE_V3-ETHEREUM".
-        # Match an upper-case-letter prefix immediately followed by V<digits>.
+        # And the reverse — if caller passed "AAVEV3-ETHEREUM" (ghost name),
+        # try "AAVE_V3-ETHEREUM" (canonical). Match uppercase letter immediately
+        # followed by V<digits> (no preceding underscore).
         with_underscore = _re.sub(r"([A-Z])(V\d+)", r"\1_\2", venue)
         if with_underscore != venue and with_underscore not in aliases:
             aliases.append(with_underscore)
