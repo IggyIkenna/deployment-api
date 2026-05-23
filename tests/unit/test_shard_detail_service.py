@@ -358,6 +358,52 @@ class TestFetchVenueDetailCefi:
 
 
 # ---------------------------------------------------------------------------
+# Prediction venue detail
+# ---------------------------------------------------------------------------
+
+
+class TestFetchVenueDetailPrediction:
+    def test_prediction_returns_canonical_question_groups(self) -> None:
+        # Prediction manifest stores question groups in `underlying` column.
+        df = pd.DataFrame(
+            {
+                "venue": ["POLYMARKET", "POLYMARKET", "POLYMARKET"],
+                "data_type": [
+                    "prediction_canonical_question_group",
+                    "prediction_canonical_question_group",
+                    "prediction_canonical_question_group",
+                ],
+                "underlying": ["BTC_UP_DOWN_HOURLY", "ETH_UP_DOWN_HOURLY", "FOOTBALL"],
+                "instrument_count": [100, 80, 60],
+                "date": ["2026-05-22", "2026-05-22", "2026-05-22"],
+            }
+        )
+        with patch.object(svc, "read_availability_index", return_value=df):
+            resp = svc.fetch_venue_detail(
+                service="instruments-service",
+                asset_group="PREDICTION",
+                venue="POLYMARKET",
+            )
+        assert resp.category == "PREDICTION"
+        assert resp.venue == "POLYMARKET"
+        assert resp.total_instruments == 3
+        groups = [r["canonical_question_group"] for r in resp.instruments]
+        assert "BTC_UP_DOWN_HOURLY" in groups
+        assert "ETH_UP_DOWN_HOURLY" in groups
+        assert "FOOTBALL" in groups
+
+    def test_prediction_empty_manifest_returns_zero(self) -> None:
+        with patch.object(svc, "read_availability_index", return_value=pd.DataFrame()):
+            resp = svc.fetch_venue_detail(
+                service="instruments-service",
+                category="PREDICTION",
+                venue="POLYMARKET",
+            )
+        assert resp.total_instruments == 0
+        assert resp.instruments == []
+
+
+# ---------------------------------------------------------------------------
 # instrument_type=AUTO resolution
 # ---------------------------------------------------------------------------
 

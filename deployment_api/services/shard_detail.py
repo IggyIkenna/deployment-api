@@ -1305,11 +1305,62 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
     return _defi_chain_only_detail(df, venue=venue, chain=chain, day=day)
 
 
+def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
+    """Prediction branch — returns canonical_question_group breakdown for the venue.
+
+    Reads the instruments-service prediction manifest index and aggregates by
+    canonical_question_group on the latest available day for the given venue.
+    Shard axis per UAC SHARD_AXIS_MATRIX:
+    ("instruments-service", "prediction"): ("venue", "canonical_question_group").
+
+    The prediction manifest stores question group names in the ``underlying``
+    column (not a ``canonical_question_group`` column); ``data_type`` is always
+    ``prediction_canonical_question_group``.
+    """
+    bucket = _instruments_bucket_for_category("prediction")
+    try:
+        df = read_availability_index(bucket)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("prediction venue-detail: manifest read failed for %s: %s", bucket, exc)
+        return VenueDetailResponse(category="PREDICTION", venue=venue)
+
+    if df.empty or "venue" not in df.columns:
+        return VenueDetailResponse(category="PREDICTION", venue=venue)
+
+    venue_df = df[df["venue"].astype(str).str.upper() == venue.upper()].copy()
+    if venue_df.empty:
+        return VenueDetailResponse(category="PREDICTION", venue=venue)
+
+    day: str | None = None
+    if "date" in venue_df.columns:
+        dates = sorted(str(d) for d in venue_df["date"].dropna().unique() if str(d).strip())
+        if dates:
+            day = dates[-1]
+            venue_df = venue_df[venue_df["date"].astype(str) == day].copy()
+
+    instruments: list[dict[str, object]] = []
+    if "underlying" in venue_df.columns and "instrument_count" in venue_df.columns:
+        agg = venue_df.groupby("underlying")["instrument_count"].sum().sort_values(ascending=False)
+        for grp, count in agg.items():
+            if str(grp).strip():
+                instruments.append({"canonical_question_group": str(grp), "instrument_count": int(count)})
+
+    return VenueDetailResponse(
+        category="PREDICTION",
+        venue=venue,
+        day=day,
+        total_instruments=len(instruments),
+        total_instruments_unfiltered=len(instruments),
+        instruments=instruments[:500],
+    )
+
+
 def fetch_venue_detail(*, service: str, asset_group: str, venue: str) -> VenueDetailResponse:
     """Return venue-scoped detail for the Data Status drilldown.
 
     ``asset_group == "DEFI"`` branches on whether ``venue`` is a bare chain
     (``ETHEREUM``) or a composite protocol-chain (``AAVE_V3-ETHEREUM``);
+    ``asset_group == "PREDICTION"`` returns canonical_question_group breakdown;
     all other asset groups use the CeFi branch (latest-day instruments
     listing for the venue).
     """
@@ -1318,6 +1369,8 @@ def fetch_venue_detail(*, service: str, asset_group: str, venue: str) -> VenueDe
     cat_upper = (asset_group or "").upper()
     if cat_upper == "DEFI":
         return _defi_venue_detail(venue)
+    if cat_upper == "PREDICTION":
+        return _prediction_venue_detail(venue)
     return _cefi_venue_detail(cat_upper.lower() if cat_upper else "cefi", venue)
 
 
