@@ -1343,7 +1343,14 @@ def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
         agg = venue_df.groupby("underlying")["instrument_count"].sum().sort_values(ascending=False)
         for grp, count in agg.items():
             if str(grp).strip():
-                instruments.append({"canonical_question_group": str(grp), "instrument_count": int(count)})
+                instruments.append(
+                    {
+                        "key": str(grp),
+                        "type": f"{int(count):,} instruments",
+                        "canonical_question_group": str(grp),
+                        "instrument_count": int(count),
+                    }
+                )
 
     return VenueDetailResponse(
         category="PREDICTION",

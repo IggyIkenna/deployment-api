@@ -396,7 +396,7 @@ class TestFetchVenueDetailPrediction:
         with patch.object(svc, "read_availability_index", return_value=pd.DataFrame()):
             resp = svc.fetch_venue_detail(
                 service="instruments-service",
-                category="PREDICTION",
+                asset_group="PREDICTION",
                 venue="POLYMARKET",
             )
         assert resp.total_instruments == 0
