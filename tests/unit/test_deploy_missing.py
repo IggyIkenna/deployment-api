@@ -59,14 +59,14 @@ class TestBuildDeployMissingPreview:
             service="market-tick-data-service",
             asset_group="defi",
             row_key={
-                "venue": "AAVEV3-ARBITRUM",
+                "venue": "AAVE_V3-ARBITRUM",
                 "data_type": "lending_indices",
                 "instrument_type": "",
                 "instrument_id": "USDC",
                 "day": "2024-03-04",
             },
         )
-        assert preview.shard_key == "defi|AAVEV3-ARBITRUM|lending_indices||USDC|2024-03-04"
+        assert preview.shard_key == "defi|AAVE_V3-ARBITRUM|lending_indices||USDC|2024-03-04"
 
     def test_date_alias_accepted_for_day(self) -> None:
         preview = build_deploy_missing_preview(

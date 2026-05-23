@@ -2072,7 +2072,7 @@ def _defi_venue_chain_aliases(venue_chain: str) -> list[str]:
          (e.g. EIGENLAYER-ETHEREUM).
       2. Protocol-only ``venue={PROTOCOL}/`` for multi-chain protocols
          (e.g. AAVE_V3, UNISWAP_V3 — chain encoded in pool_id row).
-    Also tries underscore variants per UAC↔GCS naming drift (AAVE_V3 vs AAVEV3).
+    Also tries underscore variants per UAC↔GCS naming drift (AAVE_V3 vs AAVE_V3).
     """
 
     protocol_only = venue_chain.split("-")[0]
@@ -2146,7 +2146,7 @@ def _list_pool_entities_for_venue(
     ``DEFAULT_INSTRUMENT_LIMIT`` to keep the listing bounded.
 
     DeFi venue+chain aliasing: UI/UAC use ``AAVE_V3-ETHEREUM`` but the GCS
-    writer drops the underscore (``AAVEV3-ETHEREUM``). Tries the literal
+    writer drops the underscore (``AAVE_V3-ETHEREUM``). Tries the literal
     form first, then the underscore-stripped form (and reverse) — uses
     whichever the bucket actually has.
     """

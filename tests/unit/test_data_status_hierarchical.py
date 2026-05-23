@@ -23,10 +23,10 @@ def _mtds_defi_manifest() -> pd.DataFrame:
     """Realistic 2-chain x 2-venue x 2-data_type x 2-instrument x 3-day MTDS DEFI sample."""
     rows: list[dict[str, object]] = []
     for chain, venue in (
-        ("ARBITRUM", "AAVEV3-ARBITRUM"),
-        ("ARBITRUM", "UNISWAPV3-ARBITRUM"),
-        ("BASE", "AAVEV3-BASE"),
-        ("BASE", "UNISWAPV3-BASE"),
+        ("ARBITRUM", "AAVE_V3-ARBITRUM"),
+        ("ARBITRUM", "UNISWAP_V3-ARBITRUM"),
+        ("BASE", "AAVE_V3-BASE"),
+        ("BASE", "UNISWAP_V3-BASE"),
     ):
         for dt_name in ("lending_indices", "dex_swaps"):
             for inst in ("USDC", "WETH"):
@@ -76,7 +76,7 @@ class TestDrilldownNodeShape:
     def test_to_dict_marks_leaves(self) -> None:
         leaf = DrilldownNode(axis="date", value="2024-03-01", captured=1)
         assert leaf.to_dict()["is_leaf"] is True
-        parent = DrilldownNode(axis="venue", value="AAVEV3-ARBITRUM", children=[leaf])
+        parent = DrilldownNode(axis="venue", value="AAVE_V3-ARBITRUM", children=[leaf])
         d = parent.to_dict()
         assert d["is_leaf"] is False
         children = d["children"]
@@ -202,7 +202,7 @@ class TestHierarchicalDrilldown:
                 asset_group="defi",
                 window_start="2024-03-01",
                 window_end="2024-03-03",
-                filters={"chain": "ARBITRUM", "venue": "AAVEV3-ARBITRUM"},
+                filters={"chain": "ARBITRUM", "venue": "AAVE_V3-ARBITRUM"},
                 expand_to_depth=10,
             )
         totals = result["totals"]
@@ -219,7 +219,7 @@ class TestHierarchicalDrilldown:
                 rows.append(
                     {
                         "chain": "BASE",
-                        "venue": "AAVEV3-BASE",
+                        "venue": "AAVE_V3-BASE",
                         "data_type": "lending_indices",
                         "instrument_id": f"INST_{i}_{status}",
                         "date": "2024-03-01",
@@ -253,7 +253,7 @@ class TestHierarchicalDrilldown:
                 asset_group="defi",
                 window_start="2024-03-02",
                 window_end="2024-03-02",
-                filters={"chain": "ARBITRUM", "venue": "AAVEV3-ARBITRUM"},
+                filters={"chain": "ARBITRUM", "venue": "AAVE_V3-ARBITRUM"},
             )
         totals = result["totals"]
         assert isinstance(totals, dict)
@@ -717,7 +717,7 @@ def _features_onchain_manifest() -> pd.DataFrame:
             "error_reason": "",
         },
         {
-            "venue": "AAVEV3-ARBITRUM",
+            "venue": "AAVE_V3-ARBITRUM",
             "chain": "ARBITRUM",
             "feature_group": "aave_lending_rates",
             "feature_family": "",  # missing — fallback should fill via UAC.

@@ -1,8 +1,8 @@
 """One-shot script: strip ghost DeFi venue rows from all MTDS DeFi bucket manifest indexes.
 
 Ghost venues are Era-2 capabilities-era names (no underscore, no chain suffix) that have been
-superseded by canonical underscore names (e.g. AAVEV3 → AAVE_V3). They appear in the manifest
-index as both bare form (AAVEV3) and hyphenated-chain form (AAVEV3-ETHEREUM).
+superseded by canonical underscore names (e.g. AAVE_V3 → AAVE_V3). They appear in the manifest
+index as both bare form (AAVE_V3) and hyphenated-chain form (AAVE_V3-ETHEREUM).
 
 This script cleans TWO layers:
   1. Per-VM shard parquets under _index/per_vm/ — these are the SOURCE; the consolidator

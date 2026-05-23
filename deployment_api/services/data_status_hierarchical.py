@@ -327,7 +327,7 @@ def get_hierarchical_drilldown(
         window_start: ISO YYYY-MM-DD window lower bound.
         window_end: ISO YYYY-MM-DD window upper bound.
         filters: Per-axis filter dict for lazy-load (e.g.
-            ``{"chain": "ARBITRUM", "venue": "AAVEV3-ARBITRUM"}``); the
+            ``{"chain": "ARBITRUM", "venue": "AAVE_V3-ARBITRUM"}``); the
             tree returned is the subtree rooted at the deepest matched
             level. ``None`` returns the whole tree from the top axis.
         expand_to_depth: How many levels below the matched root to

@@ -38,7 +38,7 @@ def test_venue_to_category_tradfi_match() -> None:
 
 def test_venue_to_category_defi_match() -> None:
     svc = _svc()
-    assert svc._venue_to_category("UNISWAPV3-ARBITRUM") == "DEFI"
+    assert svc._venue_to_category("UNISWAP_V3-ARBITRUM") == "DEFI"
     assert svc._venue_to_category("aavev3-base") == "DEFI"
     assert svc._venue_to_category("CURVE-MAINNET") == "DEFI"
 

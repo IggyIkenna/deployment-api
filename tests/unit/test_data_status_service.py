@@ -1058,18 +1058,18 @@ class TestGetCoverageSummary:
     @pytest.mark.asyncio
     async def test_drops_legacy_defi_venue_aliases(self):
         """Regression from audit 2026-04-19 §2.A.1b -- legacy pre-canonicalisation
-        DeFi alias rows like ``venue='AAVEV3-ETHEREUM' chain=''`` were leaking into
+        DeFi alias rows like ``venue='AAVE_V3-ETHEREUM' chain=''`` were leaking into
         the Instrument Coverage Summary widget despite the per-shard rollup fix in
         22f0024/959bdab. Both paths now apply the same legacy-alias filter so the
         widget matches the rollup."""
         svc = _make_svc()
         # Mix of canonical rows (AAVE_V3 + ETHEREUM) and legacy alias rows
-        # (AAVEV3-ETHEREUM + empty chain). The filter must keep the canonical
+        # (AAVE_V3-ETHEREUM + empty chain). The filter must keep the canonical
         # ones and drop the legacy ones.
         index = pd.DataFrame(
             {
                 "date": ["2024-01-01", "2024-01-01", "2024-01-02"],
-                "venue": ["AAVE_V3", "AAVEV3-ETHEREUM", "AAVEV3-POLYGON"],
+                "venue": ["AAVE_V3", "AAVE_V3-ETHEREUM", "AAVE_V3-POLYGON"],
                 "chain": ["ETHEREUM", "", ""],
                 "service_name": [
                     "instruments-service",
@@ -1084,8 +1084,8 @@ class TestGetCoverageSummary:
         cat = result["asset_groups"]["DEFI"]
         # Only the canonical AAVE_V3 row should survive.
         assert cat["unique_venues"] == 1
-        assert "AAVEV3-ETHEREUM" not in cat["latest_day_instruments"]
-        assert "AAVEV3-POLYGON" not in cat["latest_day_instruments"]
+        assert "AAVE_V3-ETHEREUM" not in cat["latest_day_instruments"]
+        assert "AAVE_V3-POLYGON" not in cat["latest_day_instruments"]
         assert cat["total_shards"] == 1
 
 
@@ -1522,7 +1522,7 @@ class TestDefiLegacyVenueFilter:
     """Filter pre-canonicalisation DeFi venue aliases from DEFI aggregate.
 
     The DeFi availability indices contain BOTH:
-      - Legacy rows: ``venue='AAVEV3-ETHEREUM' chain=''`` (pre-migration)
+      - Legacy rows: ``venue='AAVE_V3-ETHEREUM' chain=''`` (pre-migration)
       - Canonical rows: ``venue='AAVE_V3' chain='ETHEREUM'`` (post-migration)
 
     The legacy rows have no matching shard paths post-migration, so they
@@ -1534,22 +1534,22 @@ class TestDefiLegacyVenueFilter:
     def test_is_legacy_defi_venue_row_detects_canonical_patterns(self):
         svc = _make_svc()
         # Known legacy patterns -- chain empty, venue is PROTOCOL[V<N>]-CHAIN
-        assert svc._is_legacy_defi_venue_row("AAVEV3-ETHEREUM", "")
-        assert svc._is_legacy_defi_venue_row("UNISWAPV2-ETHEREUM", "")
-        assert svc._is_legacy_defi_venue_row("UNISWAPV3-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("AAVE_V3-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("UNISWAP_V2-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("UNISWAP_V3-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("CURVE-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("LIDO-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("BALANCER-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("COMPOUND-ETHEREUM", None)
         # NaN chain also counts as empty
-        assert svc._is_legacy_defi_venue_row("AAVEV3-POLYGON", float("nan"))
+        assert svc._is_legacy_defi_venue_row("AAVE_V3-POLYGON", float("nan"))
 
     def test_is_legacy_defi_venue_row_covers_extended_protocol_set(self):
         """Second-tier DeFi protocols observed in the real manifest:
         Camelot, GMX, Jito, Orca, Marinade, Kamino, Morpho, Fluid,
         Ethena, Ether.fi, EigenLayer. All must be caught."""
         svc = _make_svc()
-        assert svc._is_legacy_defi_venue_row("CAMELOTV3-ARBITRUM", "")
+        assert svc._is_legacy_defi_venue_row("CAMELOT_V3-ARBITRUM", "")
         assert svc._is_legacy_defi_venue_row("GMX-ARBITRUM", "")
         assert svc._is_legacy_defi_venue_row("JITO-SOLANA", "")
         assert svc._is_legacy_defi_venue_row("ORCA-SOLANA", "")
@@ -1603,8 +1603,8 @@ class TestDefiLegacyVenueFilter:
                 "venue": [
                     "AAVE_V3",
                     "UNISWAP_V2",
-                    "AAVEV3-ETHEREUM",
-                    "UNISWAPV2-ETHEREUM",
+                    "AAVE_V3-ETHEREUM",
+                    "UNISWAP_V2-ETHEREUM",
                 ],
                 "chain": ["ETHEREUM", "ETHEREUM", "", ""],
                 "service_name": ["instruments-service"] * 4,
@@ -1639,8 +1639,8 @@ class TestDefiLegacyVenueFilter:
         # Breakdown should have received only canonical rows (no legacy aliases).
         seen = captured_filtered_df["df"]
         venues_seen = set(seen["venue"].tolist())
-        assert "AAVEV3-ETHEREUM" not in venues_seen
-        assert "UNISWAPV2-ETHEREUM" not in venues_seen
+        assert "AAVE_V3-ETHEREUM" not in venues_seen
+        assert "UNISWAP_V2-ETHEREUM" not in venues_seen
         assert "AAVE_V3" in venues_seen
         assert "UNISWAP_V2" in venues_seen
         # Category-level completion reflects only canonical rows (100%),
@@ -1923,13 +1923,13 @@ class TestMTDSHonestCoverage:
     def test_defi_per_venue_scope(self):
         """DEFI uses ``all_defi_venues`` (11 PROTOCOL-ETHEREUM entries)."""
         svc = _make_svc()
-        # AAVEV3-ETHEREUM start = 2023-01-27; 4 dts declared.
+        # AAVE_V3-ETHEREUM start = 2023-01-27; 4 dts declared.
         # Window 2023-01-27..2023-01-28 = 2 days x 4 dts = 8 expected.
         df = self._mtds_df(
             [
                 [
                     "2023-01-27",
-                    "AAVEV3-ETHEREUM",
+                    "AAVE_V3-ETHEREUM",
                     "lending_indices",
                     "market-tick-data-service",
                     "captured",
@@ -1940,7 +1940,7 @@ class TestMTDSHonestCoverage:
                 ],
                 [
                     "2023-01-28",
-                    "AAVEV3-ETHEREUM",
+                    "AAVE_V3-ETHEREUM",
                     "lending_indices",
                     "market-tick-data-service",
                     "captured",
@@ -1967,8 +1967,8 @@ class TestMTDSHonestCoverage:
                 total_days=2,
                 venue_mapping=VenueMapping(),
             )
-        aave = result["venues"]["AAVEV3-ETHEREUM"]
-        # Post-Phase-1 (2026-04-24 DeFi data types completeness): AAVEV3-ETHEREUM
+        aave = result["venues"]["AAVE_V3-ETHEREUM"]
+        # Post-Phase-1 (2026-04-24 DeFi data types completeness): AAVE_V3-ETHEREUM
         # declares 7 dts in VENUE_DATA_TYPE_CAPABILITIES.
         #   - Per-instrument dts (Tier-3, 10-reserve seed x 2 days = 20):
         #     ``oracle_prices``, ``rewards``, ``risk_params`` -> 20 expected each.
@@ -2307,7 +2307,7 @@ class TestMTDSPerInstrumentHonestCoverage:
 
     def test_defi_dex_swaps_empty_seed(self):
         """DEFI ``dex_swaps`` on a PROTOCOL-CHAIN venue (e.g.
-        UNISWAPV3-ETHEREUM) -- Wave 8G seeded 20 top-TVL pools. With 0 rows in
+        UNISWAP_V3-ETHEREUM) -- Wave 8G seeded 20 top-TVL pools. With 0 rows in
         the fixture, the aggregator returns a Tier-3 denominator of
         ``n_instruments x n_dates`` with ``found_shards == 0`` and the
         full ``missing_instruments`` list.
@@ -2319,7 +2319,7 @@ class TestMTDSPerInstrumentHonestCoverage:
         df = self._mtds_df([])
         honest = _dss_mod._mtds_honest_coverage_for_venue(
             df,
-            "UNISWAPV3-ETHEREUM",
+            "UNISWAP_V3-ETHEREUM",
             "DEFI",
             "2026-04-17",
             "2026-04-17",
@@ -2436,7 +2436,7 @@ class TestBuildChainBreakdownShardMath:
             [
                 {
                     "chain": "ARBITRUM",
-                    "venue": "AAVEV3-ARBITRUM",
+                    "venue": "AAVE_V3-ARBITRUM",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-01",
@@ -2460,7 +2460,7 @@ class TestBuildChainBreakdownShardMath:
         For the 2026-05-07 ARBITRUM screenshot, the old math reported
         ``32/54 dates``; the new math reports thousands of shards."""
         svc = _make_svc()
-        # 1 venue (AAVEV3-ARBITRUM) x 3 data_types x 2 instruments
+        # 1 venue (AAVE_V3-ARBITRUM) x 3 data_types x 2 instruments
         # captured across 5 expected dates -> expected = 5 x 6 = 30 shards
         # vs dates_expected = 5.
         rows: list[dict[str, object]] = []
@@ -2469,7 +2469,7 @@ class TestBuildChainBreakdownShardMath:
                 rows.append(
                     {
                         "chain": "ARBITRUM",
-                        "venue": "AAVEV3-ARBITRUM",
+                        "venue": "AAVE_V3-ARBITRUM",
                         "data_type": dt_name,
                         "instrument_id": inst,
                         "date": "2024-01-01",
@@ -2496,7 +2496,7 @@ class TestBuildChainBreakdownShardMath:
             [
                 {
                     "chain": "BASE",
-                    "venue": "AAVEV3-BASE",
+                    "venue": "AAVE_V3-BASE",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-01",
@@ -2504,7 +2504,7 @@ class TestBuildChainBreakdownShardMath:
                 },
                 {
                     "chain": "BASE",
-                    "venue": "AAVEV3-BASE",
+                    "venue": "AAVE_V3-BASE",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-02",
@@ -2512,7 +2512,7 @@ class TestBuildChainBreakdownShardMath:
                 },
                 {
                     "chain": "BASE",
-                    "venue": "AAVEV3-BASE",
+                    "venue": "AAVE_V3-BASE",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-03",
@@ -2543,7 +2543,7 @@ class TestBuildChainBreakdownShardMath:
                     rows.append(
                         {
                             "chain": "BASE",
-                            "venue": "AAVEV3-BASE",
+                            "venue": "AAVE_V3-BASE",
                             "data_type": dt_name,
                             "instrument_id": inst,
                             "date": d,

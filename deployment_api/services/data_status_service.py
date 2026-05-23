@@ -1152,11 +1152,11 @@ def _mtds_expected_dates_cached(
             dt_start = max(dt_start, lst_genesis)
 
     # P1-C: per-chain + per-protocol pre-launch clipping for DEFI venues.
-    # Canonical DEFI venues are ``PROTOCOL-CHAIN`` (e.g. ``AAVEV3-ARBITRUM``);
+    # Canonical DEFI venues are ``PROTOCOL-CHAIN`` (e.g. ``AAVE_V3-ARBITRUM``);
     # extract both halves and clip ``effective_start`` to whichever launch
     # date is later — the chain genesis (e.g. ARBITRUM 2021-08-31) OR the
-    # protocol-on-chain deploy date (e.g. AAVEV3 on Arbitrum 2022-03-16).
-    # Without the protocol-launch clip, AAVEV3-ARBITRUM expected dates
+    # protocol-on-chain deploy date (e.g. AAVE_V3 on Arbitrum 2022-03-16).
+    # Without the protocol-launch clip, AAVE_V3-ARBITRUM expected dates
     # stretch back to ARBITRUM genesis and the leaf-shard denominator
     # inflates with ~6 months of always-empty days, producing the
     # "ARBITRUM 32/54" misleading panel headline (2026-05-07 incident).
@@ -2017,7 +2017,7 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
         return cached[1]
     idx = read_availability_index(bucket)
     if _ALL_DEFI_GHOST_VENUES and "venue" in idx.columns:
-        # Match both bare form (AAVEV3) and hyphenated-chain form (AAVEV3-ETHEREUM)
+        # Match both bare form (AAVE_V3) and hyphenated-chain form (AAVE_V3-ETHEREUM)
         venue_prefix = idx["venue"].str.split("-", n=1).str[0]
         ghost_mask = venue_prefix.isin(_ALL_DEFI_GHOST_VENUES)
         if ghost_mask.any():
@@ -2732,7 +2732,7 @@ class DataStatusService:
     # ── Pre-canonicalisation DeFi venue aliases to drop from aggregation ──
     # The DeFi availability indices contain BOTH post-migration canonical rows
     # (``venue=AAVE_V3`` + ``chain=ETHEREUM``) AND pre-canonicalisation rows
-    # (``venue=AAVEV3-ETHEREUM`` + ``chain=""``) where the legacy format
+    # (``venue=AAVE_V3-ETHEREUM`` + ``chain=""``) where the legacy format
     # combined protocol and chain into a single ``venue`` field. The legacy
     # rows inflate ``venue_dates_expected`` but have no matching shard data
     # under canonical paths, which drives DEFI category completion from ~99%
@@ -2771,9 +2771,9 @@ class DataStatusService:
         "ETHENA",
         "ETHERFI",
         "EIGENLAYER",
-        # Added 2026-04-19 after Playwright audit flagged AERODROMEV3-BASE
+        # Added 2026-04-19 after Playwright audit flagged AERODROME_V3-BASE
         # leaking into DeFi venue summary. Canonical form is
-        # `AERODROME-BASE` + `chain='base'`; legacy is `AERODROMEV3-BASE` +
+        # `AERODROME-BASE` + `chain='base'`; legacy is `AERODROME_V3-BASE` +
         # `chain=''`. Filter keys on empty chain so canonical rows survive.
         "AERODROME",
         # Velodrome mirrors Aerodrome (same Solidly v3 fork on Optimism).
@@ -2786,7 +2786,7 @@ class DataStatusService:
     def _is_legacy_defi_venue_row(cls, venue: object, chain: object) -> bool:
         """Detect pre-canonicalisation DeFi venue alias row.
 
-        Legacy rows look like ``venue='AAVEV3-ETHEREUM' chain=''`` — the
+        Legacy rows look like ``venue='AAVE_V3-ETHEREUM' chain=''`` — the
         protocol+chain pair was squashed into a single field before the
         canonical migration. New canonical rows are
         ``venue='AAVE_V3' chain='ETHEREUM'``.
@@ -2807,7 +2807,7 @@ class DataStatusService:
         if chain_str and chain_str.lower() != "nan":
             return False
         head = venue.split("-", 1)[0]
-        # Strip an optional ``V<digits>`` tail: AAVEV3 → AAVE, UNISWAPV2 → UNISWAP
+        # Strip an optional ``V<digits>`` tail: AAVE_V3 → AAVE, UNISWAP_V2 → UNISWAP
         root = re.sub(r"V\d+$", "", head)
         return root in cls._DEFI_LEGACY_PROTOCOL_PREFIXES
 
@@ -3387,7 +3387,7 @@ class DataStatusService:
     def _filter_legacy_defi_rows(self, index: pd.DataFrame, cat: str) -> pd.DataFrame:
         """Drop pre-canonicalisation DeFi venue-alias rows.
 
-        Rows like ``venue='AAVEV3-ETHEREUM' chain=''`` predate the venue/chain
+        Rows like ``venue='AAVE_V3-ETHEREUM' chain=''`` predate the venue/chain
         split; same filter the per-shard rollup already applies.
         """
         if cat.lower() != "defi" or "venue" not in index.columns or index.empty:
@@ -5733,7 +5733,7 @@ class DataStatusService:
             filtered["venue"] = filtered["venue"].replace(self._VENUE_ALIASES)
 
         # Drop pre-canonicalisation DeFi venue-alias rows (e.g.
-        # ``venue='AAVEV3-ETHEREUM' chain=''``) so they don't inflate
+        # ``venue='AAVE_V3-ETHEREUM' chain=''``) so they don't inflate
         # ``venue_dates_expected`` against canonical rows
         # (``venue='AAVE_V3' chain='ETHEREUM'``). DEFI-scoped only —
         # CeFi hyphenated venues (BINANCE-FUTURES, OKX-SWAP, ...) are

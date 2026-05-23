@@ -2,11 +2,11 @@
 
 Plan: ``data_status_comprehensive_test_coverage_2026_05_07.md`` Phase 2.
 
-For DEFI venues canonically named ``PROTOCOL-CHAIN`` (e.g. ``AAVEV3-ARBITRUM``),
+For DEFI venues canonically named ``PROTOCOL-CHAIN`` (e.g. ``AAVE_V3-ARBITRUM``),
 ``_mtds_expected_dates_cached`` clips the expected-date window to
 ``max(chain_genesis, protocol_launch)`` per the codex SSOT. Without the
 protocol-launch clip, the panel inflates the leaf-shard denominator with
-weeks-to-months of always-empty days (e.g. AAVEV3-ARBITRUM stretched back
+weeks-to-months of always-empty days (e.g. AAVE_V3-ARBITRUM stretched back
 to ARBITRUM genesis 2021-08-31 even though the protocol didn't deploy on
 Arbitrum until 2022-03-16, framed as the 2026-05-07 "ARBITRUM 32/54"
 incident in
@@ -83,14 +83,14 @@ _PAIRS = _all_chain_protocol_pairs()
 
 # Pairs we KNOW return non-empty post-floor windows for ``lending_indices``.
 # This is the protocol-set covered by lending-indices instruments-service +
-# MTDS (AAVEV3 + COMPOUNDV3 + SPARK lending markets). UNISWAPV*/CURVE/
+# MTDS (AAVE_V3 + COMPOUND_V3 + SPARK lending markets). UNISWAPV*/CURVE/
 # SUSHISWAP/GMX/JITO/MARINADE are dex/staking protocols with different
 # expected data_types — the helper legitimately returns empty when probed
 # with ``lending_indices``. Restricting the post-floor non-empty assertion
 # to these protocols catches the protocol-launch-clip regression on every
 # pair the panel actively renders without false-flapping on adjacent
 # protocols whose data_type universe differs.
-_LENDING_PROTOCOLS: frozenset[str] = frozenset({"AAVEV3", "COMPOUNDV3"})
+_LENDING_PROTOCOLS: frozenset[str] = frozenset({"AAVE_V3", "COMPOUND_V3"})
 
 
 def _post_floor_assertable_pairs() -> list[tuple[str, str]]:

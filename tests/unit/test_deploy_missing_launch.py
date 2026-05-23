@@ -73,7 +73,7 @@ from deployment_api.services.deploy_missing_launch import (
 pytestmark = [pytest.mark.timeout(30)]
 
 _VALID_ROW_KEY = {
-    "venue": "AAVEV3-ARBITRUM",
+    "venue": "AAVE_V3-ARBITRUM",
     "data_type": "lending_indices",
     "instrument_id": "USDC",
     "day": "2024-03-04",
@@ -93,7 +93,7 @@ def _fresh_limiter(per_op_hour: int = 30, per_op_day: int = 200, per_proj_hour: 
 
 
 def test_shard_key_hash_deterministic() -> None:
-    key = "defi|AAVEV3-ARBITRUM|lending_indices||USDC|2024-03-04"
+    key = "defi|AAVE_V3-ARBITRUM|lending_indices||USDC|2024-03-04"
     h1 = _build_shard_key_hash(key)
     h2 = _build_shard_key_hash(key)
     assert h1 == h2
@@ -102,7 +102,7 @@ def test_shard_key_hash_deterministic() -> None:
 
 
 def test_shard_key_hash_matches_sha256() -> None:
-    key = "defi|AAVEV3-ARBITRUM|lending_indices||USDC|2024-03-04"
+    key = "defi|AAVE_V3-ARBITRUM|lending_indices||USDC|2024-03-04"
     expected = hashlib.sha256(key.encode()).hexdigest()[:16]
     assert _build_shard_key_hash(key) == expected
 
@@ -180,7 +180,7 @@ def test_launch_missing_data_type() -> None:
         launch_deploy_missing_vm(
             service=_VALID_SERVICE,
             asset_group=_VALID_ASSET_GROUP,
-            row_key={"venue": "AAVEV3-ARBITRUM", "day": "2024-03-04"},
+            row_key={"venue": "AAVE_V3-ARBITRUM", "day": "2024-03-04"},
             operator_id="op1",
         )
 
@@ -190,7 +190,7 @@ def test_launch_missing_day() -> None:
         launch_deploy_missing_vm(
             service=_VALID_SERVICE,
             asset_group=_VALID_ASSET_GROUP,
-            row_key={"venue": "AAVEV3-ARBITRUM", "data_type": "lending_indices"},
+            row_key={"venue": "AAVE_V3-ARBITRUM", "data_type": "lending_indices"},
             operator_id="op1",
         )
 

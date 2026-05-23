@@ -60,7 +60,7 @@ _SERVICE_REPRESENTATIVE_ROW_KEYS: dict[str, tuple[str, dict[str, str]]] = {
     "features-onchain-service": (
         "defi",
         {
-            "venue": "AAVEV3-ARBITRUM",
+            "venue": "AAVE_V3-ARBITRUM",
             "chain": "ARBITRUM",
             "data_type": "lending_indices",
             "feature_group": "lst_yields",

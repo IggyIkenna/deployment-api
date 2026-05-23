@@ -179,7 +179,7 @@ class TestGetInstrumentsForShardMock:
             params={
                 "service": "market-tick-data-service",
                 "asset_group": "defi",
-                "venue": "AAVEV3-MAINNET",
+                "venue": "AAVE_V3-MAINNET",
                 "day": "2026-05-01",
                 "instrument_type": "lending",
                 "data_type": "lending_indices",

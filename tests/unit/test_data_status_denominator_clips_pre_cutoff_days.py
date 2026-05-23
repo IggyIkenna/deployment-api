@@ -15,7 +15,7 @@ This test pins the math at the helper layer
 every downstream rollup (per-day, per-instrument, per-chain breakdown
 math in ``_build_chain_breakdown``).
 
-Reference incident 2026-05-07: AAVEV3-ARBITRUM denominator stretched
+Reference incident 2026-05-07: AAVE_V3-ARBITRUM denominator stretched
 back to ARBITRUM genesis 2021-08-31 even though the protocol didn't
 deploy on Arbitrum until 2022-03-16, inflating the leaf-shard
 denominator with ~6 months of always-empty days. Surfaced as the
@@ -55,9 +55,9 @@ class TestDenominatorClipsPreCutoffDays:
     def test_arbitrum_aavev3_denominator_excludes_pre_protocol_days(self) -> None:
         """The 2026-05-07 reference incident reproduced as a unit test.
 
-        AAVEV3-ARBITRUM:
+        AAVE_V3-ARBITRUM:
           - ARBITRUM genesis = 2021-08-31
-          - AAVEV3 launch on ARBITRUM = 2022-03-16
+          - AAVE_V3 launch on ARBITRUM = 2022-03-16
           - effective floor = max(2021-08-31, 2022-03-16) = 2022-03-16
 
         Asking for a wide window that spans ARBITRUM genesis through
@@ -66,7 +66,7 @@ class TestDenominatorClipsPreCutoffDays:
         198 days that MUST be clipped from the denominator.
         """
         chain = "ARBITRUM"
-        protocol = "AAVEV3"
+        protocol = "AAVE_V3"
         chain_genesis = CHAIN_GENESIS_DATES[chain]
         protocol_launch = PROTOCOL_LAUNCH_DATES[(chain, protocol)]
         # Sanity-check the SSOT shape — if these flip, the assertion
@@ -110,12 +110,12 @@ class TestDenominatorClipsPreCutoffDays:
         """BASE chain genesis 2023-08-09 — every day before that is
         impossible regardless of protocol launch.
 
-        AAVEV3 on BASE launched 2023-08-22 → effective floor 2023-08-22.
+        AAVE_V3 on BASE launched 2023-08-22 → effective floor 2023-08-22.
         Asking for 2023-01-01 → 2023-09-30 should return ONLY days
         >= 2023-08-22.
         """
         chain = "BASE"
-        protocol = "AAVEV3"
+        protocol = "AAVE_V3"
         protocol_launch = PROTOCOL_LAUNCH_DATES[(chain, protocol)]
         venue = f"{protocol}-{chain}"
         window_start = "2023-01-01"
@@ -136,7 +136,7 @@ class TestDenominatorClipsPreCutoffDays:
         downstream by hiding the row), NOT 0/N where N is days that
         couldn't possibly have data."""
         chain = "ARBITRUM"
-        protocol = "AAVEV3"
+        protocol = "AAVE_V3"
         venue = f"{protocol}-{chain}"
         # Pre-2021 — entirely before ARBITRUM genesis.
         window_start = "2020-01-01"
@@ -156,7 +156,7 @@ class TestDenominatorClipsPreCutoffDays:
         clip). Bounds are loose (15..30) to absorb future calendar
         plumbing changes without flapping."""
         chain = "ARBITRUM"
-        protocol = "AAVEV3"
+        protocol = "AAVE_V3"
         protocol_launch = PROTOCOL_LAUNCH_DATES[(chain, protocol)]
         floor_d = date.fromisoformat(protocol_launch)
         window_start = (floor_d + timedelta(days=7)).isoformat()
@@ -177,21 +177,21 @@ class TestDenominatorClipsPreCutoffDays:
         edge — currently no such pair, but the math must still hold),
         the floor is still ``max(...)``.
 
-        We synthesize the test by picking BSC-AAVEV3: BSC genesis
-        2020-08-29, AAVEV3-BSC launch 2024-01-23. Floor = 2024-01-23
+        We synthesize the test by picking BSC-AAVE_V3: BSC genesis
+        2020-08-29, AAVE_V3-BSC launch 2024-01-23. Floor = 2024-01-23
         (protocol-launch dominates, the common case). Window opening
         before BSC genesis but ending after launch yields a clipped
         denominator equal to days >= launch."""
         chain = "BSC"
-        protocol = "AAVEV3"
+        protocol = "AAVE_V3"
         chain_genesis = CHAIN_GENESIS_DATES[chain]
         protocol_launch = PROTOCOL_LAUNCH_DATES[(chain, protocol)]
         # Verify the SSOT relation we are testing.
         assert protocol_launch > chain_genesis, (
-            f"Test premise broken: BSC genesis {chain_genesis} must be earlier than AAVEV3-BSC launch {protocol_launch}"
+            f"Test premise broken: BSC genesis {chain_genesis} must be earlier than AAVE_V3-BSC launch {protocol_launch}"
         )
         venue = f"{protocol}-{chain}"
-        # Window: pre-BSC-genesis through post-AAVEV3-launch.
+        # Window: pre-BSC-genesis through post-AAVE_V3-launch.
         window_start = "2020-01-01"
         window_end = (date.fromisoformat(protocol_launch) + timedelta(days=10)).isoformat()
         result = _mtds_expected_dates_cached(
@@ -206,7 +206,7 @@ class TestDenominatorClipsPreCutoffDays:
 
     def test_today_is_late_2026(self) -> None:
         """Sanity: this suite assumes the workspace clock is ~2026-05;
-        if the test ever runs in a far-future where AAVEV3 has shut
+        if the test ever runs in a far-future where AAVE_V3 has shut
         down or restructured, the assumption that 2022-03-16 is in
         the past breaks. Fail loud if the clock drifts by years."""
         today = datetime.now(UTC).date()

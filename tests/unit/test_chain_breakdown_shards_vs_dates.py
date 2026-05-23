@@ -71,7 +71,7 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
         right magnitude.
         """
         rows: list[dict[str, object]] = []
-        for venue in ("AAVEV3-ARBITRUM", "BALANCER-ARBITRUM"):
+        for venue in ("AAVE_V3-ARBITRUM", "BALANCER-ARBITRUM"):
             for data_type in ("lending_indices", "dex_swaps", "dex_pools"):
                 for inst in ("USDC", "USDT", "WETH", "WBTC"):
                     for day in (
@@ -129,7 +129,7 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
         for i in range(5):
             rows.append(
                 _row(
-                    venue="AAVEV3-BASE",
+                    venue="AAVE_V3-BASE",
                     chain="BASE",
                     data_type="lending_indices",
                     instrument_id="USDC",
@@ -140,7 +140,7 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
         for i in range(3):
             rows.append(
                 _row(
-                    venue="AAVEV3-BASE",
+                    venue="AAVE_V3-BASE",
                     chain="BASE",
                     data_type="lending_indices",
                     instrument_id="USDC",
@@ -151,7 +151,7 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
         for i in range(2):
             rows.append(
                 _row(
-                    venue="AAVEV3-BASE",
+                    venue="AAVE_V3-BASE",
                     chain="BASE",
                     data_type="lending_indices",
                     instrument_id="USDC",

@@ -592,7 +592,7 @@ async def post_deploy_missing_preview(
         {
             "service": "market-tick-data-service",
             "asset_group": "defi",
-            "row_key": {"venue": "AAVEV3-ARBITRUM",
+            "row_key": {"venue": "AAVE_V3-ARBITRUM",
                         "data_type": "lending_indices",
                         "instrument_id": "USDC",
                         "day": "2024-03-04"}
@@ -637,7 +637,7 @@ async def post_deploy_missing_launch(
         {
             "service":    "market-tick-data-service",
             "asset_group": "defi",
-            "row_key":    {"venue": "AAVEV3-ARBITRUM",
+            "row_key":    {"venue": "AAVE_V3-ARBITRUM",
                            "data_type": "lending_indices",
                            "instrument_id": "USDC",
                            "day": "2024-03-04"},
