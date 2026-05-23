@@ -4690,7 +4690,7 @@
       "post": {
         "tags": ["Data Status"],
         "summary": "Post Deploy Missing Preview",
-        "description": "Build the surgical-recovery shell command for ONE leaf shard.\n\nPhase 3 ships preview-mode (operator copies + runs the command from\ntheir authenticated terminal); auto-launch is a follow-up plan\npending security review of the deployment-api -> gcloud perm\nboundary. Body shape::\n\n    {\n        \"service\": \"market-tick-data-service\",\n        \"asset_group\": \"defi\",\n        \"row_key\": {\"venue\": \"AAVEV3-ARBITRUM\",\n                    \"data_type\": \"lending_indices\",\n                    \"instrument_id\": \"USDC\",\n                    \"day\": \"2024-03-04\"}\n    }",
+        "description": "Build the surgical-recovery shell command for ONE leaf shard.\n\nPhase 3 ships preview-mode (operator copies + runs the command from\ntheir authenticated terminal); auto-launch is a follow-up plan\npending security review of the deployment-api -> gcloud perm\nboundary. Body shape::\n\n    {\n        \"service\": \"market-tick-data-service\",\n        \"asset_group\": \"defi\",\n        \"row_key\": {\"venue\": \"AAVE_V3-ARBITRUM\",\n                    \"data_type\": \"lending_indices\",\n                    \"instrument_id\": \"USDC\",\n                    \"day\": \"2024-03-04\"}\n    }",
         "operationId": "post_deploy_missing_preview_api_data_status_deploy_missing_preview_post",
         "parameters": [
           {
@@ -4764,7 +4764,7 @@
       "post": {
         "tags": ["Data Status"],
         "summary": "Post Deploy Missing Launch",
-        "description": "Auto-launch a backfill VM for ONE leaf shard (Phase 2 auto-launch).\n\nPhase 0 Decision 3 rate limits: 30/op/hr \u00b7 200/op/day \u00b7 100/proj/hr.\nPer-shard idempotency: returns existing running VM if shard already in-flight.\nBlocks up to 90s waiting for the VM to emit STARTED.\n\nBody shape::\n\n    {\n        \"service\":    \"market-tick-data-service\",\n        \"asset_group\": \"defi\",\n        \"row_key\":    {\"venue\": \"AAVEV3-ARBITRUM\",\n                       \"data_type\": \"lending_indices\",\n                       \"instrument_id\": \"USDC\",\n                       \"day\": \"2024-03-04\"},\n        \"operator_id\":         \"operator@example.com\",  // required\n        \"dry_run\":             false,                   // optional\n        \"skip_tarball_check\":  false                    // optional\n    }",
+        "description": "Auto-launch a backfill VM for ONE leaf shard (Phase 2 auto-launch).\n\nPhase 0 Decision 3 rate limits: 30/op/hr \u00b7 200/op/day \u00b7 100/proj/hr.\nPer-shard idempotency: returns existing running VM if shard already in-flight.\nBlocks up to 90s waiting for the VM to emit STARTED.\n\nBody shape::\n\n    {\n        \"service\":    \"market-tick-data-service\",\n        \"asset_group\": \"defi\",\n        \"row_key\":    {\"venue\": \"AAVE_V3-ARBITRUM\",\n                       \"data_type\": \"lending_indices\",\n                       \"instrument_id\": \"USDC\",\n                       \"day\": \"2024-03-04\"},\n        \"operator_id\":         \"operator@example.com\",  // required\n        \"dry_run\":             false,                   // optional\n        \"skip_tarball_check\":  false                    // optional\n    }",
         "operationId": "post_deploy_missing_launch_api_data_status_deploy_missing_launch_post",
         "parameters": [
           {
