@@ -2126,6 +2126,32 @@ def _filter_dates_in_window(dates: list[str] | None, start_date: str, end_date: 
     return [d for d in dates if start_date <= d <= end_date]
 
 
+def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object]:
+    """Remove era-2 no-underscore venue names from a DEFI asset-group payload."""
+    if not _ALL_DEFI_GHOST_VENUES:
+        return cat_payload
+    venues = cat_payload.get("venues")
+    if isinstance(venues, dict):
+        clean = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}
+        if len(clean) < len(venues):
+            cat_payload = {**cat_payload, "venues": clean}
+    chains_data = cat_payload.get("chains")
+    if not isinstance(chains_data, dict):
+        return cat_payload
+    cleaned: dict[str, object] = {}
+    for chain_name, chain_data in chains_data.items():
+        if isinstance(chain_data, dict):
+            chain_venues = chain_data.get("venues")
+            if isinstance(chain_venues, list):
+                cv = [v for v in chain_venues if v not in _ALL_DEFI_GHOST_VENUES]
+                chain_data = {**chain_data, "venues": cv, "venue_count": len(cv)}
+            elif isinstance(chain_venues, dict):
+                cv2 = {v: p for v, p in chain_venues.items() if v not in _ALL_DEFI_GHOST_VENUES}
+                chain_data = {**chain_data, "venues": cv2, "venue_count": len(cv2)}
+        cleaned[chain_name] = chain_data
+    return {**cat_payload, "chains": cleaned}
+
+
 def _slice_rollup_to_window(
     rollup: dict[str, object],
     start_date: str,
@@ -2165,19 +2191,8 @@ def _slice_rollup_to_window(
         if not isinstance(cat_payload, dict):
             sliced_asset_groups[cat] = cat_payload  # pass-through unknown shapes
             continue
-        # Strip ghost DeFi venue names from the rollup before slicing.
-        # The rollup blob may have been computed before the ghost filter was added,
-        # so we defensively filter here to guarantee the serve path is always clean.
-        if cat.lower() == "defi" and _ALL_DEFI_GHOST_VENUES:
-            venues = cat_payload.get("venues")
-            if isinstance(venues, dict):
-                clean_venues = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}
-                if len(clean_venues) < len(venues):
-                    logger.debug(
-                        "_slice_rollup_to_window: stripped %d ghost venue(s) from defi rollup",
-                        len(venues) - len(clean_venues),
-                    )
-                    cat_payload = {**cat_payload, "venues": clean_venues}
+        if cat.lower() == "defi":
+            cat_payload = _strip_defi_ghost_venues(cat_payload)
         sliced_cat = _slice_asset_group(cat_payload, start_date, end_date)
         sliced_asset_groups[cat] = sliced_cat
         overall_found += int(cast(int, sliced_cat.get("dates_found", 0)))
