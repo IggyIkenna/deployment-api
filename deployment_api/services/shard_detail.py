@@ -422,28 +422,47 @@ def _mtds_shard_path(
     underlying: str | None,
     instrument_id: str | None,
 ) -> tuple[str, str] | None:
-    """MTDS-family parquet path resolution — isolated for complexity budget."""
+    """MTDS-family parquet path resolution — isolated for complexity budget.
+
+    Tries canonical ``asset_group=`` hive key first; falls back to legacy
+    ``category=`` for parquets written before the asset_group vocabulary
+    migration (UAC partition_paths.py: "Legacy on-disk objects use
+    ``category=`` — readers that need both should try canonical first then
+    fall back").
+    """
     it_disk = (instrument_type or "").lower()
     dt_disk = (data_type or "").lower()
     venue_disk = (venue or "").upper()
-    prefix = (
-        f"raw_tick_data/by_date/day={day}/category={cat_lower}/"
-        f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"
-    )
     leaf = instrument_id or underlying
     is_derivative_bundle = dt_disk in _GROUPED_DATA_TYPES and it_disk in {
         "options_chain",
         "futures_chain",
     }
-    if leaf and is_derivative_bundle:
-        return (bucket, f"{prefix}underlying={leaf}/ticks.parquet")
-    if leaf:
-        return (bucket, f"{prefix}{leaf}.parquet")
-    # No leaf: fall back to listing the prefix and returning the first parquet.
-    name = _list_first_parquet(bucket, prefix)
-    if name is None:
-        return None
-    return (bucket, name)
+
+    for hive_key in (f"asset_group={cat_lower}", f"category={cat_lower}"):
+        prefix = (
+            f"raw_tick_data/by_date/day={day}/{hive_key}/"
+            f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"
+        )
+        if leaf and is_derivative_bundle:
+            obj = f"{prefix}underlying={leaf}/ticks.parquet"
+            try:
+                if get_object_metadata(bucket, obj) is not None:
+                    return (bucket, obj)
+            except (OSError, RuntimeError):
+                pass
+        elif leaf:
+            obj = f"{prefix}{leaf}.parquet"
+            try:
+                if get_object_metadata(bucket, obj) is not None:
+                    return (bucket, obj)
+            except (OSError, RuntimeError):
+                pass
+        else:
+            name = _list_first_parquet(bucket, prefix)
+            if name is not None:
+                return (bucket, name)
+    return None
 
 
 def _gcs_path_for_shard(
