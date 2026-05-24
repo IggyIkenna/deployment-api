@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 
-from ._cloud_builds_types import BuildInfoDict, _cloudbuild_v1, _get_gcp_build_client
+from ._cloud_builds_types import (  # pyright: ignore[reportPrivateUsage]
+    BuildInfoDict,
+    _cloudbuild_v1,
+    _get_gcp_build_client,
+)
 
 if TYPE_CHECKING:
     from google.cloud.devtools import cloudbuild_v1

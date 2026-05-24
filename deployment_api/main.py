@@ -9,7 +9,7 @@ Includes background task for auto-syncing running deployment statuses.
 import logging
 import uuid
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -146,8 +146,8 @@ app.add_middleware(RateLimitMiddleware, requests_per_minute=60)  # pyright: igno
 async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
     request_id: str = getattr(request.state, "request_id", str(uuid.uuid4()))
-    raw_detail: str | dict[str, str] = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-    message = raw_detail.get("message", str(exc.detail)) if isinstance(raw_detail, dict) else str(raw_detail)
+    raw_detail: str | dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+    message: str = raw_detail.get("message", str(exc.detail)) if isinstance(raw_detail, dict) else str(raw_detail)
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -330,7 +330,8 @@ if _ui_dist:
             or full_path in {"metrics", "docs", "redoc", "openapi.json", "ws"}
         ):
             raise HTTPException(status_code=404, detail="Not Found")
-        candidate = _ui_dist / full_path
-        if candidate.is_file():
-            return FileResponse(candidate)
+        if _ui_dist is not None:
+            candidate = _ui_dist / full_path
+            if candidate.is_file():
+                return FileResponse(candidate)
         return FileResponse(_ui_index)

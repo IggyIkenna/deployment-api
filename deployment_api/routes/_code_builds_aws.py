@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from mypy_boto3_codebuild import CodeBuildClient
+    from mypy_boto3_sts import STSClient
 
 from deployment_api.settings import CLOUD_PROVIDER
 
@@ -30,7 +34,7 @@ logger = logging.getLogger(__name__)
 _AWS_REGION = "ap-northeast-1"
 
 
-def _get_codebuild_client():
+def _get_codebuild_client() -> CodeBuildClient:
     """Return a boto3 CodeBuild client for ap-northeast-1."""
     import boto3  # Deferred — AWS SDK boundary
 
@@ -41,8 +45,8 @@ def _get_aws_account_id() -> str:
     """Get AWS account ID from STS."""
     import boto3  # Deferred — AWS SDK boundary
 
-    sts = boto3.client("sts", region_name=_AWS_REGION)
-    identity: dict[str, str] = cast(dict[str, str], sts.get_caller_identity())
+    sts: STSClient = boto3.client("sts", region_name=_AWS_REGION)
+    identity: dict[str, Any] = cast(dict[str, Any], sts.get_caller_identity())
     return identity["Account"]
 
 
@@ -82,10 +86,10 @@ def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
     )
 
     # Build log URL
-    logs = build.get("logs", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+    logs: dict[str, Any] = cast(dict[str, Any], build.get("logs", {}))  # noqa: qg-empty-fallback — AWS SDK boundary
     log_url: str | None = None
     if isinstance(logs, dict):
-        deep_link = logs.get("deepLink")
+        deep_link: Any = logs.get("deepLink")
         if isinstance(deep_link, str):
             log_url = deep_link
     if not log_url:
@@ -110,13 +114,13 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
     CodeBuild projects are the AWS equivalent of Cloud Build triggers.
     Convention: project name = "{service}-build" (same as GCP trigger names).
     """
-    client = _get_codebuild_client()
+    client: CodeBuildClient = _get_codebuild_client()
     all_projects: list[str] = []
 
     # List all projects (paginated)
     paginator = client.get_paginator("list_projects")
     for page in paginator.paginate():
-        project_names: list[str] = page.get("projects", [])  # noqa: qg-empty-fallback — AWS SDK boundary
+        project_names: list[str] = cast(list[str], page.get("projects", []))  # noqa: qg-empty-fallback — AWS SDK boundary
         all_projects.extend(project_names)
 
     # Filter to known services
