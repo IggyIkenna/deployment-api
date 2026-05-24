@@ -54,7 +54,7 @@ def _clean_parquet_blob(
     dry_run: bool,
 ) -> int:
     """Download, filter, re-upload a single parquet blob. Returns rows dropped."""
-    from unified_trading_library.cloud_interface.factory import upload_to_storage
+    from unified_trading_library import upload_to_storage
 
     raw = client.download_bytes(bucket, blob_name)  # type: ignore[attr-defined]
     df = pd.read_parquet(io.BytesIO(raw))
@@ -84,8 +84,8 @@ def _clean_parquet_blob(
 
 def main(dry_run: bool = False) -> None:
     from unified_api_contracts import DEPRECATED_DEFI_GHOST_VENUE_NAMES
-    from unified_trading_library.cloud_interface.factory import get_storage_client, storage_exists
-    from unified_trading_library.cloud_interface.gcs_blob_ops import gcs_delete_object
+    from unified_trading_library import get_storage_client, storage_exists
+    from unified_trading_library.cloud_interface.gcs_blob_ops import gcs_delete_object  # noqa: qg-deep-import
 
     client = get_storage_client()
     total_dropped = 0
