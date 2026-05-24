@@ -163,7 +163,7 @@ async def _get_quota_manager_status(service: str) -> dict[str, object]:
             from google.auth.transport.requests import Request as AuthRequest
             from google.oauth2 import id_token
 
-            token = id_token.fetch_id_token(AuthRequest(), broker_url)  # pyright: ignore[reportUnknownMemberType]  # google-auth stubs
+            token: str = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]  # google-auth stubs
             req = urllib.request.Request(
                 f"{broker_url}/health",
                 method="GET",

@@ -91,7 +91,7 @@ def _parse_blob(blob_bytes: bytes, blob_name: str) -> VmCostRow | None:
         text = blob_bytes.decode().strip()
         if not text:
             return None
-        row_obj: object = json.loads(text.split("\n", 1)[0])
+        row_obj: object = json.loads(text.split("\n", 1)[0])  # type: ignore[reportAny]
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         log_event(
             "COST_PARSE_FAILED",

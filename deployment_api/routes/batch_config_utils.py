@@ -14,6 +14,7 @@ from typing import cast
 import yaml
 from unified_api_contracts.internal import MarketCategory
 from unified_trading_library import resolve_bucket_name
+from unified_trading_library.cloud_interface.bucket_naming import AssetGroup
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ _instruments_buckets = {
     cat.value: (
         resolve_bucket_name(cloud="gcp", kind="instruments-store-prediction")
         if cat.value == "PREDICTION"
-        else resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group=cat.value.lower())
+        else resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group=cast(AssetGroup, cat.value.lower()))
     )
     for cat in MarketCategory
 }
@@ -36,7 +37,7 @@ _tick_buckets = {
     cat.value: (
         resolve_bucket_name(cloud="gcp", kind="market-data-tick-prediction")
         if cat.value == "PREDICTION"
-        else resolve_bucket_name(cloud="gcp", kind="market-data", asset_group=cat.value.lower())
+        else resolve_bucket_name(cloud="gcp", kind="market-data", asset_group=cast(AssetGroup, cat.value.lower()))
     )
     for cat in MarketCategory
 }
