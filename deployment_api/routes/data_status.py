@@ -1641,7 +1641,7 @@ async def download_shard_csv(
         if svc in MTDS_SHARD_SERVICES:
             csv_text, row_count, filename = build_mtds_shard_csv_export(
                 service=service,
-                asset_group=asset_group,
+                category=asset_group,
                 venue=venue,
                 date=date,
             )

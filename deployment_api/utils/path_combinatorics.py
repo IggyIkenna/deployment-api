@@ -190,7 +190,7 @@ class PathCombinatorics:
 
     def _load_config(self) -> None:
         """Load venue_data_types.yaml configuration."""
-        config_path = Path(__file__).parent.parent.parent / "configs" / "venue_data_types.yaml"
+        config_path = Path(__file__).parent.parent.parent / "pm-configs" / "venue_data_types.yaml"
         if not config_path.exists():
             logger.warning("venue_data_types.yaml not found at %s", config_path)
             return
