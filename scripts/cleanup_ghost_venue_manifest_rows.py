@@ -84,10 +84,7 @@ def _clean_parquet_blob(
 
 def main(dry_run: bool = False) -> None:
     from unified_api_contracts import DEPRECATED_DEFI_GHOST_VENUE_NAMES
-    from unified_trading_library.cloud_interface.factory import (
-        storage_exists,
-    )
-    from unified_trading_library.cloud_interface.factory import get_storage_client
+    from unified_trading_library.cloud_interface.factory import get_storage_client, storage_exists
     from unified_trading_library.cloud_interface.gcs_blob_ops import gcs_delete_object
 
     client = get_storage_client()

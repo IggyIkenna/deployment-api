@@ -2807,8 +2807,8 @@ class DataStatusService:
         if chain_str and chain_str.lower() != "nan":
             return False
         head = venue.split("-", 1)[0]
-        # Strip an optional ``V<digits>`` tail: AAVE_V3 → AAVE, UNISWAP_V2 → UNISWAP
-        root = re.sub(r"V\d+$", "", head)
+        # Strip optional ``_V<digits>`` or ``V<digits>`` tail: AAVE_V3 → AAVE, UNISWAP_V2 → UNISWAP
+        root = re.sub(r"_?V\d+$", "", head)
         return root in cls._DEFI_LEGACY_PROTOCOL_PREFIXES
 
     # Per-service category scope (SSOT: deployment-ui-playwright-audit-checklist
