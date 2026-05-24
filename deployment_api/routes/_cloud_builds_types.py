@@ -55,9 +55,10 @@ def _build_op_meta_cls():
 def _get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     """Return the underlying GCP CloudBuildClient via UCI factory."""
     uci_client = get_cloud_build_client(project_id=default_project_id)
-    if hasattr(uci_client, "_client"):
-        _native: object = uci_client._client()  # pyright: ignore[reportUnknownMemberType, reportPrivateUsage]  # UCI internal accessor
-        return cast("cloudbuild_v1.CloudBuildClient", _native)
+    client_method = getattr(uci_client, "_client", None)
+    if callable(client_method):
+        native_client: object = client_method()  # pyright: ignore[reportUnknownMemberType, reportPrivateUsage]  # UCI internal accessor
+        return cast("cloudbuild_v1.CloudBuildClient", native_client)
     # Fallback: direct construction (should not be reached in production)
     return _cloudbuild_v1().CloudBuildClient()
 

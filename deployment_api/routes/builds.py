@@ -148,19 +148,19 @@ def _get_ar_repo_name(service: str) -> str:
 async def _list_ar_tags_from_repo(service: str, project: str, ar_repo: str) -> list[str]:
     """List image tags from a single Artifact Registry repo."""
     from google.cloud import (  # noqa: cloud-sdk-direct
-        artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs]  # no stubs for artifactregistry
+        artifactregistry_v1,  # type: ignore[reportAttributeAccessIssue, reportUnknownVariableType]  # no stubs for artifactregistry
     )
 
-    ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # pyright: ignore[reportUnknownMemberType]
+    ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
     repo = f"projects/{project}/locations/asia-northeast1/repositories/{ar_repo}"
     parent = f"{repo}/packages/{service}"
     tags: list[str] = []
-    ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # pyright: ignore[reportUnknownMemberType]
-    _list_tags_fn: object = getattr(ar_client, "list_tags", None)
-    _pager: object = await _list_tags_fn(ar_request) if callable(_list_tags_fn) else None
+    ar_request: object = artifactregistry_v1.ListTagsRequest(parent=parent, page_size=100)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    _list_tags_fn: object = getattr(ar_client, "list_tags", None)  # type: ignore[reportUnknownArgumentType]
+    _pager: object = await _list_tags_fn(ar_request) if callable(_list_tags_fn) else None  # type: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
     if _pager is None:
         return tags
-    async for tag in _pager:  # pyright: ignore[reportUnknownVariableType]
+    async for tag in _pager:  # type: ignore[reportUnknownVariableType]
         tag_name: str = str(getattr(cast(object, tag), "name", "")).split("/")[-1]
         tags.append(tag_name)
     return tags
@@ -194,13 +194,17 @@ async def _list_ecr_tags(service: str) -> list[str]:
     """List image tags from AWS ECR for a service."""
     import boto3  # Deferred — AWS SDK boundary
 
-    ecr = boto3.client("ecr", region_name=_ECR_REGION)
+    ecr = boto3.client("ecr", region_name=_ECR_REGION)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
     tags: list[str] = []
     try:
-        paginator = ecr.get_paginator("list_images")
-        for page in paginator.paginate(repositoryName=service, filter={"tagStatus": "TAGGED"}):
-            for image_id in page.get("imageIds", []):  # noqa: qg-empty-fallback — AWS ECR pagination
-                tag = image_id.get("imageTag")
+        paginator = ecr.get_paginator("list_images")  # type: ignore[reportUnknownMemberType]
+        for page in paginator.paginate(repositoryName=service, filter={"tagStatus": "TAGGED"}):  # type: ignore[reportUnknownMemberType]
+            page_dict = cast(dict[str, object], page)
+            image_ids_raw = page_dict.get("imageIds", [])  # noqa: qg-empty-fallback — AWS ECR pagination
+            image_ids = cast(list[object], image_ids_raw) if image_ids_raw else []
+            for image_id in image_ids:  # type: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
+                image_dict = cast(dict[str, object], image_id)
+                tag = image_dict.get("imageTag")
                 if tag:
                     tags.append(str(tag))
     except Exception as e:
@@ -287,8 +291,10 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
         import boto3  # Deferred — AWS SDK boundary
 
         try:
-            sts = boto3.client("sts", region_name=_ECR_REGION)
-            account_id: str = sts.get_caller_identity()["Account"]
+            sts = boto3.client("sts", region_name=_ECR_REGION)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+            caller_identity = sts.get_caller_identity()  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+            caller_identity_dict = cast(dict[str, object], caller_identity)
+            account_id: str = str(caller_identity_dict["Account"])
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"AWS credentials error: {e}") from e
 

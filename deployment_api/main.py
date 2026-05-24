@@ -9,7 +9,7 @@ Includes background task for auto-syncing running deployment statuses.
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -146,8 +146,14 @@ app.add_middleware(RateLimitMiddleware, requests_per_minute=60)  # pyright: igno
 async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
     request_id: str = getattr(request.state, "request_id", str(uuid.uuid4()))
-    raw_detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-    message: str = raw_detail.get("message", str(exc.detail))
+
+    if isinstance(exc.detail, dict):
+        raw_detail: dict[str, object] = cast(dict[str, object], exc.detail)
+        message_value = raw_detail.get("message", str(exc.detail))
+        message: str = str(message_value)
+    else:
+        raw_detail = {"message": str(exc.detail)}
+        message = str(exc.detail)
     return JSONResponse(
         status_code=exc.status_code,
         content={

@@ -29,35 +29,35 @@ from typing import cast
 
 from deployment_api import settings
 
-from ._deployment_processor_cloud_run import (
-    _get_cloud_run_status_batch_sync as _get_cloud_run_status_batch_sync,
+from ._deployment_processor_cloud_run import (  # pyright: ignore[reportPrivateUsage]
+    _get_cloud_run_status_batch_sync as _get_cloud_run_status_batch_sync,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_cloud_run import (
-    _process_cloud_run_status,
+from ._deployment_processor_cloud_run import (  # pyright: ignore[reportPrivateUsage]
+    _process_cloud_run_status,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_helpers import (
+from ._deployment_processor_helpers import (  # pyright: ignore[reportPrivateUsage]
     STATE_BUCKET,
-    _apply_shard_status_updates,
-    _QuotaBrokerProtocol,
-    _resolve_gcs_shard_statuses,
+    _apply_shard_status_updates,  # pyright: ignore[reportPrivateUsage]
+    _QuotaBrokerProtocol,  # pyright: ignore[reportPrivateUsage]
+    _resolve_gcs_shard_statuses,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_helpers import (
-    _cancel_vm_jobs_sync as _cancel_vm_jobs_sync,
+from ._deployment_processor_helpers import (  # pyright: ignore[reportPrivateUsage]
+    _cancel_vm_jobs_sync as _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_vm import (
-    _build_vm_map_for_service,
-    _process_vm_health_and_status,
+from ._deployment_processor_vm import (  # pyright: ignore[reportPrivateUsage]
+    _build_vm_map_for_service,  # pyright: ignore[reportPrivateUsage]
+    _process_vm_health_and_status,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Re-export symbols so tests can import from this module.
-from ._deployment_processor_vm_cleanup import (
-    _handle_completed_pending_delete as _handle_completed_pending_delete,
+from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _handle_completed_pending_delete as _handle_completed_pending_delete,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_vm_cleanup import (
-    _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,
+from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_vm_cleanup import (
-    _terminate_stuck_vm as _terminate_stuck_vm,
+from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _terminate_stuck_vm as _terminate_stuck_vm,  # pyright: ignore[reportPrivateUsage]
 )
 from .auto_sync import pending_vm_deletes
 
@@ -80,7 +80,7 @@ def _process_stuck_shards(
     updated: bool,
 ) -> bool:
     """Process detection and handling of stuck shards."""
-    from ._deployment_processor_helpers import _parse_shard_elapsed_seconds
+    from ._deployment_processor_helpers import _parse_shard_elapsed_seconds  # pyright: ignore[reportPrivateUsage]
 
     try:
         if compute_type != "vm":

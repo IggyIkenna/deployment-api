@@ -66,8 +66,8 @@ def _read_fixtures_parquet(bucket: str, object_path: str) -> pd.DataFrame:
 
     client = get_storage_client()
     blob = client.download_bytes(bucket, object_path)
-    table = pq.read_table(BytesIO(blob), columns=None)  # pyright: ignore[reportUnknownMemberType]
-    to_pandas = getattr(table, "to_pandas", None)
+    table = pq.read_table(BytesIO(blob), columns=None)  # type: ignore[reportUnknownVariableType]
+    to_pandas = getattr(table, "to_pandas", None)  # type: ignore[reportUnknownArgumentType]
     if not callable(to_pandas):
         raise RuntimeError("pyarrow table missing to_pandas()")
     df_obj: object = to_pandas()
@@ -80,7 +80,7 @@ def _pandas_scalar_missing(val: object) -> bool:
     if val is None:
         return True
     try:
-        return bool(pd.isna(val))  # pyright: ignore[reportUnknownMemberType]
+        return bool(pd.isna(val))  # type: ignore[reportCallIssue,reportUnknownArgumentType]
     except (TypeError, ValueError):
         return False
 

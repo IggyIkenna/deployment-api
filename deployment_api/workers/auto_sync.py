@@ -332,11 +332,11 @@ def _fire_orphan_vm_deletes(
             else None
         )
         if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-            _cancel_fn = backend.cancel_job_fire_and_forget
+            _cancel_fn = backend.cancel_job_fire_and_forget  # type: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
             with ThreadPoolExecutor(max_workers=min(len(to_fire), orphan_max)) as pool:
                 for job_id, zone in to_fire:
-                    pool.submit(
-                        _cancel_fn,
+                    pool.submit(  # type: ignore[reportUnknownArgumentType]
+                        _cancel_fn,  # type: ignore[reportUnknownArgumentType]
                         job_id,
                         zone,
                     )

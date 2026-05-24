@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 def _format_build_info(build: object) -> BuildInfoDict:
     """Format a Cloud Build object into a serializable dict."""
     build_id = str(getattr(build, "id", "") or "")
-    status_obj = getattr(build, "status", None)
+    status_obj: object = getattr(build, "status", None)
     status_name = str(getattr(status_obj, "name", "") or "")
-    create_time = getattr(build, "create_time", None)
-    finish_time = getattr(build, "finish_time", None)
+    create_time: object = getattr(build, "create_time", None)
+    finish_time: object = getattr(build, "finish_time", None)
     substitutions: object = getattr(build, "substitutions", None)
     log_url_raw: object = getattr(build, "log_url", None)
     log_url = str(log_url_raw) if log_url_raw is not None else None
@@ -48,9 +48,15 @@ def _format_build_info(build: object) -> BuildInfoDict:
     duration_seconds: float | None = None
     if finish_time is not None and create_time is not None:
         with suppress(TypeError, AttributeError):
-            delta: object = getattr(finish_time, "__sub__", lambda _: None)(create_time)
-            if delta is not None and hasattr(delta, "total_seconds"):
-                duration_seconds = float(delta.total_seconds())
+            sub_method = getattr(finish_time, "__sub__", None)
+            if callable(sub_method):
+                delta: object = sub_method(create_time)
+                if delta is not None:
+                    total_seconds_attr = getattr(delta, "total_seconds", None)
+                    if callable(total_seconds_attr):
+                        total_seconds_result = total_seconds_attr()
+                        if isinstance(total_seconds_result, (int, float)):
+                            duration_seconds = float(total_seconds_result)
 
     commit_sha: str | None = None
     branch: str | None = None

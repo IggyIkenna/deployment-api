@@ -21,9 +21,9 @@ from ._deployment_processor_helpers import (
     DEPLOYMENT_ENV,
     PROJECT_ID,
     STATE_BUCKET,
-    _cancel_vm_jobs_sync,
-    _vm_status_from_map,
-    _vm_zone_from_map,
+    _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
+    _vm_status_from_map,  # pyright: ignore[reportPrivateUsage]
+    _vm_zone_from_map,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Import shared pending VM deletes dict from auto_sync.
@@ -311,7 +311,9 @@ def _handle_completed_pending_delete(
 
     from deployment_api.utils.storage_facade import write_object_text
 
-    from ._deployment_processor_helpers import _is_deployment_completed_pending_delete
+    from ._deployment_processor_helpers import (
+        _is_deployment_completed_pending_delete,  # pyright: ignore[reportPrivateUsage]
+    )
 
     _release_lock = cast(Callable[[str], bool], release_deployment_lock)
 

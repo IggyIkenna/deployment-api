@@ -60,15 +60,15 @@ class VmDeploymentEntryModel(BaseModel):  # CORRECT-LOCAL: FastAPI API contract 
 class VmDeploymentsListModel(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Combined list of active + recent-archive VM deployments."""
 
-    active: list[VmDeploymentEntryModel] = Field(default_factory=list)
-    recent: list[VmDeploymentEntryModel] = Field(default_factory=list)
+    active: list[VmDeploymentEntryModel] = Field(default_factory=list)  # type: ignore[reportUnknownVariableType]
+    recent: list[VmDeploymentEntryModel] = Field(default_factory=list)  # type: ignore[reportUnknownVariableType]
     archive_days: int
 
 
 def _to_model(entry: DeploymentRegistryEntry) -> VmDeploymentEntryModel:
     data = asdict(entry)
     data.pop("extras", None)
-    return VmDeploymentEntryModel(**cast(dict[str, object], data))
+    return VmDeploymentEntryModel(**cast(dict[str, object], data))  # type: ignore[reportArgumentType]
 
 
 def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:

@@ -33,8 +33,11 @@ from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 
-from ._cloud_builds_history import _format_build_info, _get_recent_builds_for_triggers
-from ._cloud_builds_trigger import (
+from ._cloud_builds_history import (  # type: ignore[reportPrivateUsage]
+    _format_build_info,
+    _get_recent_builds_for_triggers,
+)
+from ._cloud_builds_trigger import (  # type: ignore[reportPrivateUsage]
     _build_trigger_list_sync,
     _find_recent_build_sync,
     _get_cached_trigger_id,
@@ -54,7 +57,7 @@ from ._cloud_builds_types import (
     TriggerBuildRequest,
     TriggerBuildResponse,
     TriggersResponseDict,
-    _ensure_gcp,
+    _ensure_gcp,  # type: ignore[reportPrivateUsage]
     get_cloudbuild_v1,
     get_gcp_build_client,
 )
