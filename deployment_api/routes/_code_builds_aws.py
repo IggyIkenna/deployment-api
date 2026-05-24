@@ -17,8 +17,15 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from mypy_boto3_codebuild import CodeBuildClient
-    from mypy_boto3_sts import STSClient
+    from typing import Any
+
+    # boto3 clients don't have complete typing, using Any for compatibility
+    CodeBuildClient = Any
+    STSClient = Any
+else:
+    # Runtime imports
+    CodeBuildClient = object
+    STSClient = object
 
 from deployment_api.settings import CLOUD_PROVIDER
 
@@ -34,7 +41,7 @@ logger = logging.getLogger(__name__)
 _AWS_REGION = "ap-northeast-1"
 
 
-def _get_codebuild_client() -> CodeBuildClient:
+def _get_codebuild_client() -> Any:
     """Return a boto3 CodeBuild client for ap-northeast-1."""
     import boto3  # Deferred — AWS SDK boundary
 
@@ -45,7 +52,7 @@ def _get_aws_account_id() -> str:
     """Get AWS account ID from STS."""
     import boto3  # Deferred — AWS SDK boundary
 
-    sts: STSClient = boto3.client("sts", region_name=_AWS_REGION)
+    sts: Any = boto3.client("sts", region_name=_AWS_REGION)
     identity: dict[str, Any] = cast(dict[str, Any], sts.get_caller_identity())
     return identity["Account"]
 
@@ -88,10 +95,9 @@ def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
     # Build log URL
     logs: dict[str, Any] = cast(dict[str, Any], build.get("logs", {}))  # noqa: qg-empty-fallback — AWS SDK boundary
     log_url: str | None = None
-    if isinstance(logs, dict):
-        deep_link: Any = logs.get("deepLink")
-        if isinstance(deep_link, str):
-            log_url = deep_link
+    deep_link: Any = logs.get("deepLink")
+    if isinstance(deep_link, str):
+        log_url = deep_link
     if not log_url:
         project_name = str(build.get("projectName", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
         log_url = f"https://{_AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id_full}"
@@ -114,7 +120,7 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
     CodeBuild projects are the AWS equivalent of Cloud Build triggers.
     Convention: project name = "{service}-build" (same as GCP trigger names).
     """
-    client: CodeBuildClient = _get_codebuild_client()
+    client: Any = _get_codebuild_client()
     all_projects: list[str] = []
 
     # List all projects (paginated)
@@ -170,7 +176,7 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
 
 def get_codebuild_history_sync(project_name: str, limit: int = 10) -> list[BuildInfoDict]:
     """Get build history for a CodeBuild project."""
-    client = _get_codebuild_client()
+    client: Any = _get_codebuild_client()
 
     # List build IDs for the project
     response = client.list_builds_for_project(
@@ -194,7 +200,7 @@ def get_recent_builds_for_projects_sync(
 ) -> dict[str, BuildInfoDict | None]:
     """Get the most recent build for each CodeBuild project."""
     result: dict[str, BuildInfoDict | None] = {}
-    client = _get_codebuild_client()
+    client: Any = _get_codebuild_client()
 
     for proj_name in project_names:
         try:
@@ -222,7 +228,7 @@ def start_codebuild_sync(project_name: str, branch: str = "live-defi-rollout") -
 
     Returns dict with build_id, log_url, status.
     """
-    client = _get_codebuild_client()
+    client: Any = _get_codebuild_client()
 
     response = client.start_build(
         projectName=project_name,

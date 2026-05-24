@@ -1954,7 +1954,7 @@ def _normalise_asset_groups(filter_values: list[str] | None) -> list[str]:
     return [ag for ag in _ASSET_GROUPS if ag in requested]
 
 
-def _coerce_value(row, column: str) -> object:
+def _coerce_value(row: dict[str, object], column: str) -> object:
     """Return ``row[column]`` or ``None`` for missing/NaN cells."""
     value = row.get(column)
     if value is None:
@@ -1969,7 +1969,7 @@ def _coerce_value(row, column: str) -> object:
     return value
 
 
-def _string_or_none(row, column: str) -> str | None:
+def _string_or_none(row: dict[str, object], column: str) -> str | None:
     """Coerce a manifest cell to ``str | None`` (empty string → None)."""
     value = _coerce_value(row, column)
     if value is None:
@@ -1978,7 +1978,7 @@ def _string_or_none(row, column: str) -> str | None:
     return out if out else None
 
 
-def _capture_status_from(row) -> LiveCaptureStatus:
+def _capture_status_from(row: dict[str, object]) -> LiveCaptureStatus:
     """Coerce manifest ``capture_status`` to the closed-set Literal.
 
     Defaults unknown / missing values to ``captured`` per the manifest
@@ -1992,7 +1992,7 @@ def _capture_status_from(row) -> LiveCaptureStatus:
 
 
 def _staleness_seconds_from(
-    row,
+    row: dict[str, object],
     *,
     now: datetime,
 ) -> float:
@@ -2032,7 +2032,7 @@ def _staleness_seconds_from(
     return max(delta.total_seconds(), 0.0)
 
 
-def _last_candle_emitted_at(row) -> datetime | None:
+def _last_candle_emitted_at(row: dict[str, object]) -> datetime | None:
     """Manifest ``attempted_at`` as the surrogate for last-emitted-candle.
 
     Strict Phase 8 contract says the Health-API
@@ -2053,7 +2053,7 @@ def _last_candle_emitted_at(row) -> datetime | None:
 
 def _build_live_row(
     *,
-    row,
+    row: dict[str, object],
     asset_group: str,
     now: datetime,
 ) -> LiveStatusRow:

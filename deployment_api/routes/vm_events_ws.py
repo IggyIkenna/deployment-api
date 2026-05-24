@@ -53,7 +53,8 @@ async def ws_vm_events(
     try:
         resolved_service = service or _infer_service_from_vm_name(vm_name)
     except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        # Extract message from detail if it's a dict, otherwise convert to string
+        detail = exc.detail["message"] if isinstance(exc.detail, dict) and "message" in exc.detail else str(exc.detail)
         await websocket.send_json({"error": detail, "code": "SERVICE_INFERENCE_FAILED"})
         await websocket.close(code=4000)
         return

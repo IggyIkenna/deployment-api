@@ -2287,7 +2287,7 @@ def _slice_venue(venue_payload: dict[str, object], start_date: str, end_date: st
     sliced["dates_found"] = len(found)
     sliced["dates_expected"] = len(expected) if expected else (len(found) + len(missing))
     sliced["dates_missing"] = sliced["dates_expected"] - sliced["dates_found"]
-    if isinstance(sliced["dates_expected"], int) and sliced["dates_expected"] > 0:
+    if sliced["dates_expected"] > 0:
         sliced["completion_pct"] = min(round(sliced["dates_found"] / sliced["dates_expected"] * 100, 2), 100.0)
     else:
         sliced["completion_pct"] = 0.0

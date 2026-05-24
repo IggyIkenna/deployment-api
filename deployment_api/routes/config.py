@@ -91,12 +91,11 @@ async def get_venues(request: Request):
 
     try:
         venues_config = await asyncio.to_thread(_load_venues_sync)
-        if isinstance(venues_config, dict):
-            out = dict(venues_config)
-            # YAML on disk may still use ``categories``; public API is ``asset_groups``.
-            if "categories" in out and "asset_groups" not in out:
-                out["asset_groups"] = out.pop("categories")
-            return out
+        out = dict(venues_config)
+        # YAML on disk may still use ``categories``; public API is ``asset_groups``.
+        if "categories" in out and "asset_groups" not in out:
+            out["asset_groups"] = out.pop("categories")
+        return out
         return venues_config
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues config")

@@ -10,6 +10,7 @@ Environment variables:
 """
 
 import os
+from typing import Any
 
 # Read directly from env to avoid triggering the full UTL→UAC import chain
 # during gunicorn config loading (before the WSGI app is initialised).
@@ -54,31 +55,31 @@ tmp_upload_dir = None
 preload_app = True
 
 
-def pre_fork(server, worker):
+def pre_fork(server: Any, worker: Any) -> None:
     """Called just before a worker is forked."""
     pass
 
 
-def post_fork(server, worker):
+def post_fork(server: Any, worker: Any) -> None:
     """Called just after a worker has been forked."""
     pass
 
 
-def pre_exec(server):
+def pre_exec(server: Any) -> None:
     """Called just before a new master process is forked."""
     server.log.info("Forked child, re-executing.")
 
 
-def when_ready(server):
+def when_ready(server: Any) -> None:
     """Called when the server is ready to accept connections."""
     server.log.info("Server is ready. Spawning workers")
 
 
-def worker_int(worker):
+def worker_int(worker: Any) -> None:
     """Called when a worker receives INT or QUIT signal."""
     worker.log.info("worker received INT or QUIT signal")
 
 
-def worker_abort(worker):
+def worker_abort(worker: Any) -> None:
     """Called when a worker receives SIGABRT signal."""
     worker.log.info("worker received SIGABRT signal")

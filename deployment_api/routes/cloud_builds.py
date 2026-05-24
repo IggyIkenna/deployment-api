@@ -54,9 +54,9 @@ from ._cloud_builds_types import (
     TriggerBuildRequest,
     TriggerBuildResponse,
     TriggersResponseDict,
-    _cloudbuild_v1,
     _ensure_gcp,
-    _get_gcp_build_client,
+    get_cloudbuild_v1,
+    get_gcp_build_client,
 )
 from ._code_builds_aws import (
     get_codebuild_history_sync,
@@ -87,9 +87,6 @@ __all__ = [
 ]
 
 # Public alias used by other modules in this package.
-from ._cloud_builds_types import (  # noqa: E402 — re-export alias after module init; intentional position
-    get_gcp_build_client,
-)
 
 # ---------------------------------------------------------------------------
 # Route: list triggers
@@ -363,8 +360,8 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
     try:
 
         def _get_history_sync() -> list[object]:
-            _cb = _cloudbuild_v1()
-            client = _get_gcp_build_client()
+            _cb = get_cloudbuild_v1()
+            client = get_gcp_build_client()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             from itertools import islice
 

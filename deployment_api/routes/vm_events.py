@@ -584,9 +584,9 @@ class VmLogTailResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 def _event_to_log_line(evt: VMLifecycleEvent) -> VmLogLine:
     ts = evt.timestamp.isoformat(timespec="seconds").replace("+00:00", "Z")
-    msg = evt.details.get("message", "") if isinstance(evt.details, dict) else ""
+    msg = evt.details.get("message", "")
     if not msg:
-        msg = ", ".join(f"{k}={v}" for k, v in evt.details.items()) if isinstance(evt.details, dict) else ""
+        msg = ", ".join(f"{k}={v}" for k, v in evt.details.items())
     return VmLogLine(timestamp=ts, event=evt.event, severity=evt.severity, message=msg)
 
 

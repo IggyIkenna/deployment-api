@@ -67,6 +67,11 @@ def get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     return _get_gcp_build_client()
 
 
+def get_cloudbuild_v1():
+    """Public alias for _cloudbuild_v1 — for use by other modules in this package."""
+    return _cloudbuild_v1()
+
+
 def _ensure_gcp() -> None:
     """Raise if CLOUD_PROVIDER is aws — CodeBuild integration placeholder."""
     if CLOUD_PROVIDER == "aws":

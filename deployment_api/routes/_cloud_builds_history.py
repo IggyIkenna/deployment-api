@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 
-from ._cloud_builds_types import (  # pyright: ignore[reportPrivateUsage]
+from ._cloud_builds_types import (
     BuildInfoDict,
-    _cloudbuild_v1,
-    _get_gcp_build_client,
+    get_cloudbuild_v1,  # Use public alias instead of private _cloudbuild_v1
+    get_gcp_build_client,  # Use public alias instead of private _get_gcp_build_client
 )
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ async def _get_recent_builds_for_triggers(
             client: cloudbuild_v1.CloudBuildClient, trigger_id: str
         ) -> tuple[str, BuildInfoDict] | None:
             """Fetch the latest build for a single trigger using API-level filter."""
-            _cb = _cloudbuild_v1()
+            _cb = get_cloudbuild_v1()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             request = _cb.ListBuildsRequest(
                 parent=parent,
@@ -106,8 +106,8 @@ async def _get_recent_builds_for_triggers(
             return (trigger_id, _format_build_info(build))
 
         def _fetch_all_sync() -> dict[str, BuildInfoDict]:
-            _cb = _cloudbuild_v1()
-            client = _get_gcp_build_client()
+            _cb = get_cloudbuild_v1()
+            client = get_gcp_build_client()
             results: dict[str, BuildInfoDict] = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent

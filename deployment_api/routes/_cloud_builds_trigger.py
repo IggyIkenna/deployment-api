@@ -29,8 +29,8 @@ from ._cloud_builds_types import (
     RecentBuildDict,
     TriggerDict,
     TriggerRunResultDict,
-    _cloudbuild_v1,
-    _get_gcp_build_client,
+    get_cloudbuild_v1,
+    get_gcp_build_client,
 )
 
 if TYPE_CHECKING:
@@ -115,8 +115,8 @@ def _extract_github_info(trigger: object) -> tuple[str | None, str | None]:
 
 def _build_trigger_list_sync() -> list[TriggerDict]:
     """Synchronously fetch and classify all Cloud Build triggers."""
-    _cb = _cloudbuild_v1()
-    client = _get_gcp_build_client()
+    _cb = get_cloudbuild_v1()
+    client = get_gcp_build_client()
     parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
     request = _cb.ListBuildTriggersRequest(parent=parent, page_size=50)
     triggers = list(client.list_build_triggers(request=request))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
@@ -155,8 +155,8 @@ def _get_trigger_id_sync(trigger_name: str) -> str | None:
     cached_id = _get_cached_trigger_id(trigger_name)
     if cached_id:
         return cached_id
-    _cb = _cloudbuild_v1()
-    client = _get_gcp_build_client()
+    _cb = get_cloudbuild_v1()
+    client = get_gcp_build_client()
     parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
     triggers_request = _cb.ListBuildTriggersRequest(parent=parent)
     triggers = list(client.list_build_triggers(request=triggers_request))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
@@ -171,8 +171,8 @@ def _get_trigger_id_sync(trigger_name: str) -> str | None:
 
 def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentBuildDict | None:
     """Find a build for trigger_id that started after the given time."""
-    _cb = _cloudbuild_v1()
-    client = _get_gcp_build_client()
+    _cb = get_cloudbuild_v1()
+    client = get_gcp_build_client()
     parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
     builds_request = _cb.ListBuildsRequest(
         parent=parent,
@@ -224,8 +224,8 @@ def _extract_build_id_from_op(op_name: str | None, operation: object) -> tuple[s
 
 def _run_trigger_operation_sync(trigger_name: str, branch: str) -> TriggerRunResultDict:
     """Run the Cloud Build trigger synchronously. Returns trigger result metadata."""
-    _cb = _cloudbuild_v1()
-    client = _get_gcp_build_client()
+    _cb = get_cloudbuild_v1()
+    client = get_gcp_build_client()
     trigger_id = _get_trigger_id_sync(trigger_name)
     if not trigger_id:
         logger.warning("Could not find trigger ID for %s", trigger_name)
