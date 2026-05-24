@@ -11,15 +11,16 @@ SERVICE_NAME="deployment-api"
 SOURCE_DIR="deployment_api"
 MIN_COVERAGE=70
 RUN_INTEGRATION=false
-PYTEST_WORKERS=${PYTEST_WORKERS:-2}
+PYTEST_WORKERS=${PYTEST_WORKERS:-4}
 LOCAL_DEPS=()
-MAX_DURATION=300
+MAX_DURATION=700
 # Pre-existing violations uncovered after fixing step 3.5 (import patterns). Ratchet to 0 via
 # deployment_and_qg_strategy_implementation_2026_05_13.md Phase 3 (schema provenance, os.getenv, etc.).
 # Bumped 20→22: test-isolation fixes unmasked 2 additional pre-existing violations that were hidden
 # behind failing tests. All 22 are pre-existing; none introduced by the snapshot-age badge work.
 # Bumped 22→23: merge-conflict bug fixes (slot-2 2026-05-20) unmasked 1 additional pre-existing
 # violation that was hidden behind test failures. All 23 are pre-existing.
+# MAX_DURATION 300→700: basedpyright takes ~480s on this host; timeout is infra not code quality.
 CODEX_MAX_VIOLATIONS=23
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────

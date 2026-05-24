@@ -54,7 +54,7 @@ def _clean_parquet_blob(
     dry_run: bool,
 ) -> int:
     """Download, filter, re-upload a single parquet blob. Returns rows dropped."""
-    from unified_trading_library.cloud_interface.factory import upload_to_storage
+    from unified_trading_library import upload_to_storage
 
     raw = client.download_bytes(bucket, blob_name)  # type: ignore[attr-defined]
     df = pd.read_parquet(io.BytesIO(raw))
@@ -83,12 +83,12 @@ def _clean_parquet_blob(
 
 
 def main(dry_run: bool = False) -> None:
-    from unified_api_contracts import DEPRECATED_DEFI_GHOST_VENUE_NAMES
-    from unified_trading_library.cloud_interface.factory import (
+    from unified_api_contracts.registry import EMPTY_OR_DEPRECATED_DEFI_VENUES
+    from unified_trading_library import (
+        gcs_delete_object,
         get_storage_client,
         storage_exists,
     )
-    from unified_trading_library.cloud_interface.gcs_blob_ops import gcs_delete_object
 
     client = get_storage_client()
     total_dropped = 0
@@ -101,7 +101,7 @@ def main(dry_run: bool = False) -> None:
         shard_dropped = 0
         for blob in per_vm_blobs:
             try:
-                dropped = _clean_parquet_blob(client, bucket, blob.name, DEPRECATED_DEFI_GHOST_VENUE_NAMES, dry_run)
+                dropped = _clean_parquet_blob(client, bucket, blob.name, EMPTY_OR_DEPRECATED_DEFI_VENUES, dry_run)
                 shard_dropped += dropped
             except Exception as exc:
                 logger.warning("  ERROR %s: %s", blob.name, exc)
@@ -119,7 +119,7 @@ def main(dry_run: bool = False) -> None:
             logger.info("  SKIP consolidated index — blob not found")
             continue
         try:
-            dropped = _clean_parquet_blob(client, bucket, INDEX_BLOB, DEPRECATED_DEFI_GHOST_VENUE_NAMES, dry_run)
+            dropped = _clean_parquet_blob(client, bucket, INDEX_BLOB, EMPTY_OR_DEPRECATED_DEFI_VENUES, dry_run)
             if dropped == 0:
                 logger.info("  consolidated index — already clean")
             total_dropped += dropped
