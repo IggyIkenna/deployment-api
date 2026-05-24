@@ -38,7 +38,7 @@ from typing import cast
 
 import pandas as pd
 from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
-from unified_api_contracts.registry import DEPRECATED_DEFI_GHOST_VENUE_NAMES
+from unified_api_contracts.registry import EMPTY_OR_DEPRECATED_DEFI_VENUES
 from unified_api_contracts.registry.data_status_axis_matrix import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
@@ -49,7 +49,7 @@ from deployment_api.services.data_status_drilldown import build_bucket_name
 
 logger = logging.getLogger(__name__)
 
-_ALL_DEFI_GHOST_VENUES: frozenset[str] = DEPRECATED_DEFI_GHOST_VENUE_NAMES
+_ALL_DEFI_GHOST_VENUES: frozenset[str] = EMPTY_OR_DEPRECATED_DEFI_VENUES
 
 # ---------------------------------------------------------------------------
 # Defaults

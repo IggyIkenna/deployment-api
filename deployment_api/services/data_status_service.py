@@ -34,7 +34,7 @@ from unified_api_contracts.features import (
 )
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
-    DEPRECATED_DEFI_GHOST_VENUE_NAMES,
+    EMPTY_OR_DEPRECATED_DEFI_VENUES,
     get_coverage_windows,
     get_lst_venue_genesis,
     get_raw_source_data_types,
@@ -1057,8 +1057,8 @@ def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
     if venues is None:
         return []
     # Filter out deprecated ghost venue names (prefix before first "-")
-    if DEPRECATED_DEFI_GHOST_VENUE_NAMES:
-        return [v for v in venues if v.split("-", 1)[0] not in DEPRECATED_DEFI_GHOST_VENUE_NAMES]
+    if EMPTY_OR_DEPRECATED_DEFI_VENUES:
+        return [v for v in venues if v.split("-", 1)[0] not in EMPTY_OR_DEPRECATED_DEFI_VENUES]
     return list(venues)
 
 
@@ -2037,7 +2037,7 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 # is missing or older than ``_ROLLUP_STALENESS_SEC``.
 
 # Full set of deprecated ghost DeFi venue names — now canonical in UAC.
-_ALL_DEFI_GHOST_VENUES: frozenset[str] = DEPRECATED_DEFI_GHOST_VENUE_NAMES
+_ALL_DEFI_GHOST_VENUES: frozenset[str] = EMPTY_OR_DEPRECATED_DEFI_VENUES
 
 _ROLLUP_BUCKET_TEMPLATE: str = "{pid}-data-status-rollups"
 _ROLLUP_STALENESS_SEC: int = 1800  # 30 min — cron fires every 5; 30 covers 6 missed cycles
@@ -2807,7 +2807,7 @@ class DataStatusService:
         if chain_str and chain_str.lower() != "nan":
             return False
         head = venue.split("-", 1)[0]
-        # Strip optional ``_V<digits>`` or ``V<digits>`` tail: AAVE_V3 → AAVE, UNISWAP_V2 → UNISWAP
+        # Strip an optional ``V<digits>`` tail: AAVE_V3 → AAVE, UNISWAP_V2 → UNISWAP
         root = re.sub(r"_?V\d+$", "", head)
         return root in cls._DEFI_LEGACY_PROTOCOL_PREFIXES
 
