@@ -13,8 +13,7 @@ from typing import cast
 
 import yaml
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import resolve_bucket_name
-from unified_trading_library.cloud_interface.bucket_naming import AssetGroup
+from unified_trading_library import AssetGroup, resolve_bucket_name
 
 logger = logging.getLogger(__name__)
 

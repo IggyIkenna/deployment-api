@@ -11,8 +11,7 @@ from typing import ClassVar, cast
 
 import pandas as pd
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import build_bucket, resolve_bucket_name
-from unified_trading_library.cloud_interface import AssetGroup
+from unified_trading_library import AssetGroup, build_bucket, resolve_bucket_name
 
 from deployment_api.services.data_status_drilldown import build_bucket_name as _drilldown_build_bucket_name
 from deployment_api.settings import gcp_project_id as _pid

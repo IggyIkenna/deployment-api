@@ -27,11 +27,11 @@ from unified_api_contracts.internal.schemas.contracts import (
 )
 from unified_trading_library import (
     LEGACY_REASON_ASSET_GROUPS,
+    AssetGroup,
     classify_legacy_empty_row,
     read_availability_index,
     resolve_bucket_name,
 )
-from unified_trading_library.cloud_interface import AssetGroup
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects

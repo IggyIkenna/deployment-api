@@ -35,6 +35,7 @@ from unified_api_contracts.features import (
 )
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
+    DEPRECATED_DEFI_GHOST_VENUE_NAMES,
     EMPTY_OR_DEPRECATED_DEFI_VENUES,
     get_coverage_windows,
     get_lst_venue_genesis,
@@ -2039,7 +2040,7 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 # is missing or older than ``_ROLLUP_STALENESS_SEC``.
 
 # Full set of deprecated ghost DeFi venue names — now canonical in UAC.
-_ALL_DEFI_GHOST_VENUES: frozenset[str] = EMPTY_OR_DEPRECATED_DEFI_VENUES
+_ALL_DEFI_GHOST_VENUES: frozenset[str] = DEPRECATED_DEFI_GHOST_VENUE_NAMES
 
 # Infrastructure/oracle entries that appear in DeFi sub-buckets but are NOT
 # DeFi protocols — they pollute the chain venue breakdown. Checked on the
@@ -2150,13 +2151,8 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
 
     venues = cat_payload.get("venues")
     if isinstance(venues, dict):
-<<<<<<< HEAD
         clean = {v: p for v, p in venues.items() if not _excluded(v)}
         if len(clean) < len(venues):
-=======
-        clean = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}  # pyright: ignore[reportUnknownVariableType]
-        if len(clean) < len(venues):  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
->>>>>>> 967a7e0 (fix: comprehensive type error fixes for deployment-api)
             cat_payload = {**cat_payload, "venues": clean}
     chains_data = cat_payload.get("chains")
     if not isinstance(chains_data, dict):
@@ -2166,19 +2162,11 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
         if isinstance(chain_data, dict):
             chain_venues = chain_data.get("venues")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             if isinstance(chain_venues, list):
-<<<<<<< HEAD
                 cv = [v for v in chain_venues if not _excluded(v)]
                 chain_data = {**chain_data, "venues": cv, "venue_count": len(cv)}
             elif isinstance(chain_venues, dict):
                 cv2 = {v: p for v, p in chain_venues.items() if not _excluded(v)}
                 chain_data = {**chain_data, "venues": cv2, "venue_count": len(cv2)}
-=======
-                cv = [v for v in chain_venues if v not in _ALL_DEFI_GHOST_VENUES]  # pyright: ignore[reportUnknownVariableType]
-                chain_data = {**chain_data, "venues": cv, "venue_count": len(cv)}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
-            elif isinstance(chain_venues, dict):
-                cv2 = {v: p for v, p in chain_venues.items() if v not in _ALL_DEFI_GHOST_VENUES}  # pyright: ignore[reportUnknownVariableType]
-                chain_data = {**chain_data, "venues": cv2, "venue_count": len(cv2)}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
->>>>>>> 967a7e0 (fix: comprehensive type error fixes for deployment-api)
         cleaned[chain_name] = chain_data
     return {**cat_payload, "chains": cleaned}
 
