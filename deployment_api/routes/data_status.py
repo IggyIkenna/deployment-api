@@ -14,6 +14,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from unified_api_contracts.registry.data_status_axis_matrix import SHARD_AXIS_MATRIX
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services import DataAnalyticsService, DataQueryService, DataStatusService
@@ -37,6 +38,7 @@ from deployment_api.services.data_status_drilldown import (
     lookup_capture_status_for_shard,
     preview_bundle_symbols,
 )
+from deployment_api.services.data_status_grid import build_coverage_grid
 from deployment_api.services.data_status_hierarchical import (
     get_hierarchical_drilldown,
     list_supported_pairs,
@@ -563,6 +565,55 @@ async def get_data_status_drilldown(
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)
         raise HTTPException(status_code=500, detail=f"hierarchical drilldown failed: {e!s}") from e
+
+
+# Fixed asset-group order — matches the redesigned UI's hero / tile layout.
+_GRID_ASSET_GROUP_ORDER: Final[tuple[str, ...]] = ("cefi", "tradfi", "defi", "sports", "prediction")
+
+
+def _asset_groups_for_service(service: str) -> list[str]:
+    """Asset groups a service covers per the SHARD_AXIS_MATRIX SSOT.
+
+    Returns them in the canonical hero/tile order, plus any extra groups (e.g.
+    ``shared``) the matrix declares for the service that aren't in the fixed
+    order, so feature/ML/strategy services still render.
+    """
+    matrix = cast("dict[tuple[str, str], object]", SHARD_AXIS_MATRIX)
+    present: set[str] = {ag for (svc, ag) in matrix if svc == service}
+    ordered: list[str] = [ag for ag in _GRID_ASSET_GROUP_ORDER if ag in present]
+    extra: list[str] = sorted(present - set(_GRID_ASSET_GROUP_ORDER))
+    return ordered + extra
+
+
+@router.get("/grid")
+async def get_data_status_grid(
+    service: str = Query(..., description="Service name"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    asset_group: list[str] | None = Query(None, description="Restrict to these asset groups"),
+) -> dict[str, object]:  # pyright: ignore[reportUnknownParameterType]
+    """Per-(primary-axis x date) coverage grid for every asset group of a service.
+
+    Powers the redesigned Data Status visuals (heatmap / stacked / matrix /
+    columns). One request returns the dense rollup for all of the service's
+    asset groups so the UI can render the hero + tiles + visuals from a single
+    fetch. Each asset_group block is the shape produced by
+    ``build_coverage_grid`` (see ``services/data_status_grid.py``).
+    """
+    requested = {ag.lower() for ag in asset_group} if asset_group else None
+    groups = [ag for ag in _asset_groups_for_service(service) if requested is None or ag in requested]
+    grids: dict[str, object] = {}
+    for ag in groups:
+        try:
+            grids[ag] = build_coverage_grid(service, ag, start_date, end_date)
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.exception("coverage grid(service=%s, asset_group=%s) failed", service, ag)
+            raise HTTPException(status_code=500, detail=f"coverage grid failed: {e!s}") from e
+    return {
+        "service": service,
+        "date_range": {"start": start_date, "end": end_date},
+        "asset_groups": grids,
+    }
 
 
 @router.post("/deploy-missing-preview")
