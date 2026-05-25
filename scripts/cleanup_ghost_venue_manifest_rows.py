@@ -83,7 +83,7 @@ def _clean_parquet_blob(
 
 
 def main(dry_run: bool = False) -> None:
-    from unified_api_contracts.registry import EMPTY_OR_DEPRECATED_DEFI_VENUES
+    from unified_api_contracts import DEPRECATED_DEFI_GHOST_VENUE_NAMES
     from unified_trading_library import (
         gcs_delete_object,
         get_storage_client,
@@ -101,7 +101,7 @@ def main(dry_run: bool = False) -> None:
         shard_dropped = 0
         for blob in per_vm_blobs:
             try:
-                dropped = _clean_parquet_blob(client, bucket, blob.name, EMPTY_OR_DEPRECATED_DEFI_VENUES, dry_run)
+                dropped = _clean_parquet_blob(client, bucket, blob.name, DEPRECATED_DEFI_GHOST_VENUE_NAMES, dry_run)
                 shard_dropped += dropped
             except Exception as exc:
                 logger.warning("  ERROR %s: %s", blob.name, exc)
@@ -119,7 +119,7 @@ def main(dry_run: bool = False) -> None:
             logger.info("  SKIP consolidated index — blob not found")
             continue
         try:
-            dropped = _clean_parquet_blob(client, bucket, INDEX_BLOB, EMPTY_OR_DEPRECATED_DEFI_VENUES, dry_run)
+            dropped = _clean_parquet_blob(client, bucket, INDEX_BLOB, DEPRECATED_DEFI_GHOST_VENUE_NAMES, dry_run)
             if dropped == 0:
                 logger.info("  consolidated index — already clean")
             total_dropped += dropped

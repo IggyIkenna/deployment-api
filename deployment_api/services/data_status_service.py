@@ -74,6 +74,7 @@ from deployment_api.services.data_status_drilldown import (
 from deployment_api.services.data_status_drilldown import (
     build_bucket_name as _drilldown_build_bucket_name,
 )
+from deployment_api.settings import deployment_env_short as _env_short
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
 
@@ -2040,6 +2041,18 @@ def _read_index_cached(bucket: str) -> pd.DataFrame:
 # Full set of deprecated ghost DeFi venue names — now canonical in UAC.
 _ALL_DEFI_GHOST_VENUES: frozenset[str] = EMPTY_OR_DEPRECATED_DEFI_VENUES
 
+# Infrastructure/oracle entries that appear in DeFi sub-buckets but are NOT
+# DeFi protocols — they pollute the chain venue breakdown. Checked on the
+# prefix (before the first "-") so both "ALCHEMY" and "ALCHEMY-ETHEREUM" match.
+_DEFI_NON_PROTOCOL_VENUE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "COINBASE",  # COINBASE-SPOT — CeFi oracle source leaking from oracle-prices bucket
+        "ALCHEMY",  # gas-fee RPC provider — data tracked in gas-fees sub-bucket
+        "ANKR",  # LST staking RPC provider — data tracked in lst-rates sub-bucket
+        "GAS_FEES",  # data_type string appearing as venue (defensive)
+    }
+)
+
 _ROLLUP_BUCKET_TEMPLATE: str = "{pid}-data-status-rollups"
 _ROLLUP_STALENESS_SEC: int = 1800  # 30 min — cron fires every 5; 30 covers 6 missed cycles
 _ROLLUP_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
@@ -2131,9 +2144,13 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
     """Remove era-2 no-underscore venue names from a DEFI asset-group payload."""
     if not _ALL_DEFI_GHOST_VENUES:
         return cat_payload
+
+    def _excluded(v: str) -> bool:
+        return v in _ALL_DEFI_GHOST_VENUES or v.split("-", 1)[0] in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
+
     venues = cat_payload.get("venues")
     if isinstance(venues, dict):
-        clean = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}  # type: ignore[reportUnknownVariableType]
+        clean = {v: p for v, p in venues.items() if not _excluded(v)}
         if len(clean) < len(venues):
             cat_payload = {**cat_payload, "venues": clean}
     chains_data = cat_payload.get("chains")
@@ -2144,10 +2161,10 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
         if isinstance(chain_data, dict):
             chain_venues = chain_data.get("venues")
             if isinstance(chain_venues, list):
-                cv = [v for v in chain_venues if v not in _ALL_DEFI_GHOST_VENUES]
+                cv = [v for v in chain_venues if not _excluded(v)]
                 chain_data = {**chain_data, "venues": cv, "venue_count": len(cv)}
             elif isinstance(chain_venues, dict):
-                cv2 = {v: p for v, p in chain_venues.items() if v not in _ALL_DEFI_GHOST_VENUES}
+                cv2 = {v: p for v, p in chain_venues.items() if not _excluded(v)}
                 chain_data = {**chain_data, "venues": cv2, "venue_count": len(cv2)}
         cleaned[chain_name] = chain_data
     return {**cat_payload, "chains": cleaned}
@@ -2584,9 +2601,10 @@ class DataStatusService:
     - Cross-service status aggregation
     """
 
-    def __init__(self, project_id: str | None = None):
+    def __init__(self, project_id: str | None = None, deployment_env_short: str | None = None):
         """Initialize data status service."""
         self.project_id = project_id or _pid
+        self.deployment_env_short = deployment_env_short or _env_short
 
     def _build_cli_cmd(
         self,
@@ -2876,16 +2894,16 @@ class DataStatusService:
     # bucket (via ``get_tick_data_bucket(asset_group="defi")``) so they're
     # picked up by the default ``SERVICE_TO_KIND`` → ``resolve_bucket_name`` path — no override needed.
     _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
-        ("market-tick-data-service", "gas-fees"): "gas-fees-{pid}",
-        ("market-tick-data-service", "evm-defi"): "evm-defi-{pid}",
-        ("market-tick-data-service", "solana-defi"): "solana-defi-{pid}",
-        ("market-tick-data-service", "dex-pools"): "dex-pools-{pid}",
-        ("market-tick-data-service", "dex-swaps"): "dex-swaps-{pid}",
-        ("market-tick-data-service", "lending-indices"): "lending-indices-{pid}",
-        ("market-tick-data-service", "liquidations"): "liquidations-{pid}",
-        ("market-tick-data-service", "lst-rates"): "lst-rates-{pid}",
-        ("market-tick-data-service", "oracle-prices"): "oracle-prices-{pid}",
-        ("market-tick-data-service", "perp-funding"): "perp-funding-{pid}",
+        ("market-tick-data-service", "gas-fees"): "gas-fees-{env}-{pid}",
+        ("market-tick-data-service", "evm-defi"): "evm-defi-{env}-{pid}",
+        ("market-tick-data-service", "solana-defi"): "solana-defi-{env}-{pid}",
+        ("market-tick-data-service", "dex-pools"): "dex-pools-{env}-{pid}",
+        ("market-tick-data-service", "dex-swaps"): "dex-swaps-{env}-{pid}",
+        ("market-tick-data-service", "lending-indices"): "lending-indices-{env}-{pid}",
+        ("market-tick-data-service", "liquidations"): "liquidations-{env}-{pid}",
+        ("market-tick-data-service", "lst-rates"): "lst-rates-{env}-{pid}",
+        ("market-tick-data-service", "oracle-prices"): "oracle-prices-{env}-{pid}",
+        ("market-tick-data-service", "perp-funding"): "perp-funding-{env}-{pid}",
     }
 
     # DeFi sub-dimension bucket keys for MTDS — merged into DEFI category.
@@ -2925,7 +2943,7 @@ class DataStatusService:
         """
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
         if override:
-            main_bucket = override.format(pid=self.project_id)
+            main_bucket = override.format(pid=self.project_id, env=self.deployment_env_short)
         elif service == "features-commodity-service":
             main_bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
         else:
@@ -2955,7 +2973,7 @@ class DataStatusService:
                 sub_override = self._BUCKET_CATEGORY_OVERRIDES.get((service, sub_dim))
                 if not sub_override:
                     continue
-                sub_bucket = sub_override.format(pid=self.project_id)
+                sub_bucket = sub_override.format(pid=self.project_id, env=self.deployment_env_short)
                 try:
                     sub_idx = _read_index_cached(sub_bucket)
                     if not sub_idx.empty:
@@ -5182,7 +5200,11 @@ class DataStatusService:
             chain_mask = filtered["chain"] == chain
             chain_df = filtered[chain_mask]
             chain_dates = {str(d) for d in chain_df["date"].unique()}
-            chain_venues = sorted(chain_df["venue"].unique()) if not chain_df.empty else []
+            chain_venues = [
+                v
+                for v in (sorted(chain_df["venue"].unique()) if not chain_df.empty else [])
+                if v not in _ALL_DEFI_GHOST_VENUES and str(v).split("-", 1)[0] not in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
+            ]
 
             venue_expected_dates = self._venue_expected_dates_for_chain(
                 chain_df, chain_venues, start_date, end_date, venue_mapping
@@ -5697,7 +5719,7 @@ class DataStatusService:
         # Resolve the main bucket name (for display in the response)
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
         if override:
-            bucket = override.format(pid=self.project_id)
+            bucket = override.format(pid=self.project_id, env=self.deployment_env_short)
         elif service == "features-commodity-service":
             bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
         else:
