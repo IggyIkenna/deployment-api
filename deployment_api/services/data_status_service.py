@@ -2147,7 +2147,12 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
         return cat_payload
 
     def _excluded(v: str) -> bool:
-        return v in _ALL_DEFI_GHOST_VENUES or v.split("-", 1)[0] in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
+        prefix = v.split("-", 1)[0]
+        return (
+            v in _ALL_DEFI_GHOST_VENUES
+            or prefix in _ALL_DEFI_GHOST_VENUES
+            or prefix in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
+        )
 
     venues = cat_payload.get("venues")
     if isinstance(venues, dict):
@@ -5206,7 +5211,9 @@ class DataStatusService:
             chain_venues = [
                 v
                 for v in (sorted(chain_df["venue"].unique()) if not chain_df.empty else [])
-                if v not in _ALL_DEFI_GHOST_VENUES and str(v).split("-", 1)[0] not in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
+                if v not in _ALL_DEFI_GHOST_VENUES
+                and str(v).split("-", 1)[0] not in _ALL_DEFI_GHOST_VENUES
+                and str(v).split("-", 1)[0] not in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
             ]
 
             venue_expected_dates = self._venue_expected_dates_for_chain(
