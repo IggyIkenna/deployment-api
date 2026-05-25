@@ -43,9 +43,12 @@ from unified_api_contracts.registry.data_status_axis_matrix import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
 )
-from unified_trading_library import read_availability_index
+from unified_trading_library import UnifiedCloudConfig, read_availability_index
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
+from deployment_api.services.data_status_mock_drilldown import build_mock_availability_index
+
+_CLOUD_CFG = UnifiedCloudConfig()
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +369,13 @@ def get_hierarchical_drilldown(
     # a ``gs://...`` URI — passing the URI silently returns an empty df.
     # Same call shape as ``data_status_service.py``'s preflight skip path.
     manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
-    df = read_availability_index(bucket)
+    # Local mock mode: no GCS manifest to read, so synthesise a per-shard
+    # availability frame with the same columns the real index returns. Lets
+    # the redesigned Data Status UI render against the local stack.
+    if _CLOUD_CFG.is_mock_mode():
+        df = build_mock_availability_index(service, asset_group, axes, window_start, window_end)
+    else:
+        df = read_availability_index(bucket)
     if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
         df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
     if df is None or len(df) == 0:  # pyright: ignore[reportUnnecessaryComparison]

@@ -533,22 +533,9 @@ async def get_data_status_drilldown(
     Lazy-load via filter query params: each progressively-deeper request
     returns only the matched subtree.
     """
-    if _cfg.is_mock_mode():
-        return {  # pyright: ignore[reportUnknownVariableType]
-            "service": service,
-            "asset_group": asset_group,
-            "axes": [],
-            "tree": [],
-            "totals": {
-                "captured": 0,
-                "empty_confirmed": 0,
-                "attempted_failed": 0,
-                "total": 0,
-                "completion_pct": 0.0,
-            },
-            "filtered_by": {},
-            "mock": True,
-        }
+    # Mock mode is handled inside get_hierarchical_drilldown (it synthesises a
+    # per-shard availability frame), so the tree is populated for local dev
+    # rather than returning an empty stub here.
     raw_filters: dict[str, str | None] = {
         "chain": chain,
         "venue": venue,
