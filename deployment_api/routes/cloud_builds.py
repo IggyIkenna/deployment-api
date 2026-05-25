@@ -33,17 +33,17 @@ from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 
-from ._cloud_builds_history import (  # type: ignore[reportPrivateUsage]
-    _format_build_info,
-    _get_recent_builds_for_triggers,
+from ._cloud_builds_history import (  # pyright: ignore[reportPrivateUsage]
+    _format_build_info,  # pyright: ignore[reportPrivateUsage]
+    _get_recent_builds_for_triggers,  # pyright: ignore[reportPrivateUsage]
 )
-from ._cloud_builds_trigger import (  # type: ignore[reportPrivateUsage]
-    _build_trigger_list_sync,
-    _find_recent_build_sync,
-    _get_cached_trigger_id,
-    _populate_trigger_cache,
-    _run_trigger_operation_sync,
-    _trigger_id_cache,
+from ._cloud_builds_trigger import (  # pyright: ignore[reportPrivateUsage]
+    _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
+    _find_recent_build_sync,  # pyright: ignore[reportPrivateUsage]
+    _get_cached_trigger_id,  # pyright: ignore[reportPrivateUsage]
+    _populate_trigger_cache,  # pyright: ignore[reportPrivateUsage]
+    _run_trigger_operation_sync,  # pyright: ignore[reportPrivateUsage]
+    _trigger_id_cache,  # pyright: ignore[reportPrivateUsage]
 )
 from ._cloud_builds_types import (
     ALL_REPOS_WITH_TRIGGERS,
@@ -201,7 +201,7 @@ async def _trigger_gcp_build(trigger_name: str, service: str, branch: str) -> Tr
         logger.info("Build ID not in operation response, querying recent builds...")
         await asyncio.sleep(2)
         for _attempt in range(3):
-            recent_build = await asyncio.to_thread(_find_recent_build_sync, trigger_id_result, trigger_time_result)
+            recent_build = await asyncio.to_thread(_find_recent_build_sync, trigger_id_result, trigger_time_result)  # pyright: ignore[reportArgumentType]
             if recent_build:
                 build_id = recent_build["build_id"]
                 log_url = recent_build.get("log_url")
@@ -392,7 +392,7 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
             # Use islice to stop after getting 'limit' results (avoids exhausting pager)
             builds = list(islice(client.list_builds(request=builds_request), limit))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
 
-            return builds
+            return builds  # pyright: ignore[reportReturnType]
 
         raw_builds = await asyncio.to_thread(_get_history_sync)
         history = [_format_build_info(b) for b in raw_builds]

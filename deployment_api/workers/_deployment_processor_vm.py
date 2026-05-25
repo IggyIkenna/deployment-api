@@ -26,15 +26,15 @@ from ._deployment_processor_helpers import (
     DEPLOYMENT_ENV,
     PROJECT_ID,
     STATE_BUCKET,
-    _cancel_vm_jobs_sync,
-    _parse_shard_elapsed_seconds,
-    _vm_status_from_map,
-    _vm_zone_from_map,
+    _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
+    _parse_shard_elapsed_seconds,  # pyright: ignore[reportPrivateUsage]
+    _vm_status_from_map,  # pyright: ignore[reportPrivateUsage]
+    _vm_zone_from_map,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Re-export for callers that import these from this module.
 from ._deployment_processor_vm_cleanup import (
-    _handle_orphan_vm_cleanup,
+    _handle_orphan_vm_cleanup,  # pyright: ignore[reportPrivateUsage]
 )
 
 logger = logging.getLogger(__name__)

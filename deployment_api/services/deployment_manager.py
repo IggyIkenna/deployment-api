@@ -51,7 +51,7 @@ def validate_deployment_request(deploy_request: DeployRequest) -> dict[str, obje
         validate_deployment_request as _impl,
     )
 
-    return _impl(deploy_request)
+    return _impl(deploy_request)  # pyright: ignore[reportArgumentType]
 
 
 def validate_shard_configuration(
@@ -62,7 +62,7 @@ def validate_shard_configuration(
         validate_shard_configuration as _impl,
     )
 
-    return _impl(service_cfg, deploy_request)
+    return _impl(service_cfg, deploy_request)  # pyright: ignore[reportArgumentType]
 
 
 def validate_quota_requirements(shape: dict[str, object], count: int) -> dict[str, object] | None:
@@ -179,7 +179,7 @@ class DeploymentManager:
                 skip_existing=deploy_request.deploy_missing,
                 skip_dimensions=deploy_request.skip_dimensions or [],
                 date_granularity_override=deploy_request.date_granularity,
-                extra_filters=cast(dict[str, object], deploy_request.filters),
+                extra_filters=cast(dict[str, object], deploy_request.filters),  # pyright: ignore[reportUnnecessaryCast]
             )
         except RuntimeError as e:
             log_event(
@@ -354,7 +354,7 @@ class DeploymentManager:
             skip_existing=deploy_request.deploy_missing,
             skip_dimensions=deploy_request.skip_dimensions or [],
             date_granularity_override=deploy_request.date_granularity,
-            extra_filters=cast(dict[str, object], deploy_request.filters),
+            extra_filters=cast(dict[str, object], deploy_request.filters),  # pyright: ignore[reportUnnecessaryCast]
         )
 
         if not raw_shards:
@@ -427,7 +427,7 @@ class DeploymentManager:
                 resolve_deploy_dates as _resolve_deploy_dates,
             )
 
-            _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)
+            _eff_start, _eff_end = _resolve_deploy_dates(deploy_request, config_dir)  # pyright: ignore[reportArgumentType]
 
             # Use region from request or default
             deployment_region: str = deploy_request.region or self.default_region

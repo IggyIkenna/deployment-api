@@ -128,13 +128,13 @@ def _load_snapshots_from_gcs(
             import pyarrow.parquet as pq
 
             raw = download_from_storage(bucket_name, blob.name)
-            table = pq.read_table(io.BytesIO(raw))
-            row = table.to_pydict()
-            qg_status = str((row.get("qg_status") or ["unknown"])[0] or "unknown")
-            failing_step_val = (row.get("failing_step") or [None])[0]
-            failing_step: object = str(failing_step_val) if failing_step_val else None
-            snapshot_at_val = (row.get("snapshot_at") or [None])[0]
-            snapshot_at: object = str(snapshot_at_val) if snapshot_at_val else None
+            table = pq.read_table(io.BytesIO(raw))  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            row = table.to_pydict()  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            qg_status = str((row.get("qg_status") or ["unknown"])[0] or "unknown")  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
+            failing_step_val = (row.get("failing_step") or [None])[0]  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            failing_step: object = str(failing_step_val) if failing_step_val else None  # pyright: ignore[reportUnknownArgumentType]
+            snapshot_at_val = (row.get("snapshot_at") or [None])[0]  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            snapshot_at: object = str(snapshot_at_val) if snapshot_at_val else None  # pyright: ignore[reportUnknownArgumentType]
             snapshots_by_repo[repo_name].append(
                 {"qg_status": qg_status, "failing_step": failing_step, "snapshot_at": snapshot_at}
             )

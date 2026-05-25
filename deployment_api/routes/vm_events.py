@@ -186,7 +186,7 @@ def _parse_event_jsonl(blob_bytes: bytes, blob_name: str) -> VMLifecycleEvent | 
         # Each blob holds ONE record (per GcsEventSink.write_event); but be
         # defensive — handle multi-line JSONL too. Take the first line.
         first_line = text.split("\n", 1)[0]
-        row: object = json.loads(first_line)
+        row: object = json.loads(first_line)  # pyright: ignore[reportAny]
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         log_event(
             "EVENT_PARSE_FAILED",
@@ -316,7 +316,8 @@ def _resolve_events_bucket() -> str:
 
 
 def _list_event_blobs_in_hour(
-    storage,  # StorageClient — typed as object to avoid imports leaking
+    storage: object,  # StorageClient — typed as object to avoid imports leaking
+    # pyright: ignore[reportUnknownParameterType,reportMissingParameterType]
     bucket: str,
     service: str,
     date: str,
@@ -326,10 +327,10 @@ def _list_event_blobs_in_hour(
     """List blob names under the (vm, hour) partition. Sorted asc by name
     (= chronological since `{ts_us}_{seq}` is lexicographically sortable)."""
     prefix = f"events/{service}/{date}/{vm_name}/hour={hour:02d}/"
-    blobs = list(storage.list_blobs(bucket=bucket, prefix=prefix))
-    names = [blob.name for blob in blobs if blob.name.endswith(".jsonl")]
-    names.sort()
-    return names
+    blobs = list(storage.list_blobs(bucket=bucket, prefix=prefix))  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType,reportAttributeAccessIssue]
+    names = [blob.name for blob in blobs if blob.name.endswith(".jsonl")]  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+    names.sort()  # pyright: ignore[reportUnknownMemberType]
+    return names  # pyright: ignore[reportUnknownVariableType]
 
 
 @router.get("/events", response_model=VMEventListResult)
@@ -509,7 +510,7 @@ def _fetch_and_parse_event(
     try:
         blob_bytes = cast(
             "bytes",
-            storage.download_bytes(bucket=bucket, blob_path=blob_name),  # pyright: ignore[reportAttributeAccessIssue]
+            storage.download_bytes(bucket=bucket, blob_path=blob_name),  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
         )
     except (OSError, ValueError) as exc:
         log_event(

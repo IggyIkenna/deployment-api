@@ -57,8 +57,8 @@ def _evaluate_repo_coverage(
         "all_above_target": False,
         "snapshot_at": snapshot_at,
         "worst_surface": str(worst.get("surface") or "unknown"),
-        "worst_actual_pct": float(worst.get("actual_pct") or 0.0),
-        "worst_target_pct": int(worst.get("target_pct") or 0),
+        "worst_actual_pct": float(worst.get("actual_pct") or 0.0),  # pyright: ignore[reportAny,reportArgumentType]
+        "worst_target_pct": int(worst.get("target_pct") or 0),  # pyright: ignore[reportAny,reportArgumentType]
     }
 
 
@@ -89,11 +89,11 @@ def _load_coverage_from_gcs(
             import pyarrow.parquet as pq
 
             raw = download_from_storage(bucket_name, blob.name)
-            table = pq.read_table(io.BytesIO(raw))
-            pydict = table.to_pydict()
-            n_rows = len(pydict.get("repo") or [])
+            table = pq.read_table(io.BytesIO(raw))  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            pydict = table.to_pydict()  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            n_rows = len(pydict.get("repo") or [])  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
             for i in range(n_rows):
-                row: dict[str, object] = {col: (vals[i] if vals else None) for col, vals in pydict.items()}
+                row: dict[str, object] = {col: (vals[i] if vals else None) for col, vals in pydict.items()}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
                 if repo_name not in rows_by_repo:
                     rows_by_repo[repo_name] = []
                     # Track which snapshot date we're reading for this repo

@@ -457,11 +457,11 @@ class EventProcessor:
         if not backend or not hasattr(backend, "cancel_job_fire_and_forget"):
             return 0
 
-        _cancel_fn = backend.cancel_job_fire_and_forget
+        _cancel_fn = backend.cancel_job_fire_and_forget  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
         max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
         with _Tpe(max_workers=max_parallel) as pool:
             for job_id, zone, _shard_id, _st in orphan_tuples:
-                pool.submit(_cancel_fn, job_id, zone)
+                pool.submit(_cancel_fn, job_id, zone)  # pyright: ignore[reportUnknownArgumentType]
                 pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
 
         logger.info("[EVENT_PROCESSOR] Fired %s orphan VM deletes", len(orphan_tuples))

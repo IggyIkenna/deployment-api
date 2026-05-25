@@ -139,7 +139,7 @@ def _mock_entries(project_id: str, services: list[str], limit: int) -> list[Buil
 async def _live_entries(project_id: str, services: list[str], limit: int) -> list[BuildLineageEntry]:
     """Fetch tarball metadata from GCS + image tags from AR per service."""
     from google.cloud import (  # noqa: cloud-sdk-direct
-        artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs]
+        artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs,reportAttributeAccessIssue,reportUnknownVariableType]
     )
     from google.cloud import storage as gcs_storage  # noqa: cloud-sdk-direct
 
@@ -151,7 +151,7 @@ async def _live_entries(project_id: str, services: list[str], limit: int) -> lis
         logger.exception("could not connect to GCS bucket %s", bucket_name)
         bucket_obj = None
 
-    ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # pyright: ignore[reportUnknownMemberType]
+    ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
     entries: list[BuildLineageEntry] = []
 
     for svc in services[:limit]:
@@ -161,7 +161,7 @@ async def _live_entries(project_id: str, services: list[str], limit: int) -> lis
             obj_path = _tarball_object_path(svc)
             try:
                 blob: object = bucket_obj.blob(obj_path)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
-                blob.reload()  # pyright: ignore[reportAttributeAccessIssue]
+                blob.reload()  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
                 tarball_info = TarballInfo(
                     bucket=bucket_name,
                     object_path=obj_path,
@@ -183,9 +183,9 @@ async def _live_entries(project_id: str, services: list[str], limit: int) -> lis
         try:
             repo = f"projects/{project_id}/locations/asia-northeast1/repositories/{_CB_REGISTRY_REPO}"
             parent = f"{repo}/packages/{svc}"
-            pager: object = await ar_client.list_tags(parent=parent)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
-            async for tag in pager:  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-                tag_name: str = str(getattr(tag, "name", "")).rsplit("/", 1)[-1]
+            pager: object = await ar_client.list_tags(parent=parent)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+            async for tag in pager:  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportGeneralTypeIssues]
+                tag_name: str = str(getattr(tag, "name", "")).rsplit("/", 1)[-1]  # pyright: ignore[reportAny, reportUnknownArgumentType]
                 if tag_name:
                     image_tags.append(tag_name)
         except Exception:
@@ -217,8 +217,8 @@ async def list_builds_history(
 
     log_event(
         "ADAPTER_FETCH_STARTED",
-        service="deployment-api",
         details={
+            "service": "deployment-api",
             "endpoint": "GET /api/builds/history",
             "service_filter": service,
             "limit": limit,
@@ -233,8 +233,8 @@ async def list_builds_history(
 
     log_event(
         "ADAPTER_FETCH_COMPLETED",
-        service="deployment-api",
         details={
+            "service": "deployment-api",
             "endpoint": "GET /api/builds/history",
             "total": len(entries),
             "dry_run": effective_dry_run,

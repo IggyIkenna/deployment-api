@@ -36,16 +36,19 @@ out = Path("docs/specs/openapi.json")
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(schema, indent=2))
 
-paths = schema.get("paths", {})
+paths: dict[str, object] = schema.get("paths", {})  # pyright: ignore[reportAny]
 endpoint_count = sum(
-    len([m for m in methods if m in {"get", "post", "put", "patch", "delete"}]) for methods in paths.values()
+    len([m for m in methods if m in {"get", "post", "put", "patch", "delete"}])
+    for methods in paths.values()  # pyright: ignore[reportAny]
+    if isinstance(methods, dict)
 )
 missing_summary = [
     f"{method.upper()} {path}"
-    for path, methods in paths.items()
-    for method, op in methods.items()
+    for path, methods in paths.items()  # pyright: ignore[reportAny]
+    if isinstance(methods, dict)
+    for method, op in methods.items()  # pyright: ignore[reportAny]
     if method in {"get", "post", "put", "patch", "delete"}
-    if not op.get("summary") and not op.get("description")
+    if isinstance(op, dict) and not op.get("summary") and not op.get("description")  # pyright: ignore[reportAny,reportUnknownMemberType]
 ]
 
 print(f"Written: {out} ({out.stat().st_size // 1024}KB)")

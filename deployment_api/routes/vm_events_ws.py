@@ -19,11 +19,11 @@ from unified_api_contracts.internal import VMLifecycleEvent
 from unified_trading_library import get_storage_client
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.routes.vm_events import (  # pyright: ignore[reportPrivateUsage]
-    _collect_blob_names,
-    _fetch_and_parse_event,
-    _infer_service_from_vm_name,
-    _resolve_events_bucket,
+from deployment_api.routes.vm_events import (
+    _collect_blob_names,  # pyright: ignore[reportPrivateUsage]
+    _fetch_and_parse_event,  # pyright: ignore[reportPrivateUsage]
+    _infer_service_from_vm_name,  # pyright: ignore[reportPrivateUsage]
+    _resolve_events_bucket,  # pyright: ignore[reportPrivateUsage]
 )
 
 router = APIRouter()
@@ -54,7 +54,7 @@ async def ws_vm_events(
         resolved_service = service or _infer_service_from_vm_name(vm_name)
     except HTTPException as exc:
         # Extract message from detail if it's a dict, otherwise convert to string
-        detail = exc.detail["message"] if isinstance(exc.detail, dict) and "message" in exc.detail else str(exc.detail)
+        detail = exc.detail["message"] if isinstance(exc.detail, dict) and "message" in exc.detail else str(exc.detail)  # pyright: ignore[reportArgumentType]
         await websocket.send_json({"error": detail, "code": "SERVICE_INFERENCE_FAILED"})
         await websocket.close(code=4000)
         return

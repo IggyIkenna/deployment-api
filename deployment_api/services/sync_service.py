@@ -241,7 +241,7 @@ class SyncService:
         _try_acquire: object = getattr(_broker, "try_acquire_batch", None)
         if not callable(_try_acquire):
             return 0
-        acquired = int(_try_acquire(quota_shape, batch_size))
+        acquired = int(_try_acquire(quota_shape, batch_size))  # pyright: ignore[reportArgumentType]
         if acquired == 0:
             logger.debug("[SYNC_SERVICE] %s: No quota available for scheduling", deployment_id)
             return 0

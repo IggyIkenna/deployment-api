@@ -107,7 +107,7 @@ def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: st
     vs fake placeholders" — a partial / errored rollup is worse than no
     rollup, since the slicer would silently slice garbage).
     """
-    return dss._get_manifest_status_sync(
+    return dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
         service=service,
         start_date=_ROLLUP_START_DATE,
         end_date=end_date,
@@ -124,7 +124,7 @@ def _build_one_service_coverage(dss: DataStatusService, service: str) -> dict[st
     existing blob (its own previous output, fresh by construction) and
     return it unchanged, freezing the rollup at the first written shape.
     """
-    return dss._get_coverage_summary_sync(service=service, asset_groups=None)
+    return dss._get_coverage_summary_sync(service=service, asset_groups=None)  # pyright: ignore[reportPrivateUsage]
 
 
 def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
@@ -139,7 +139,7 @@ def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
 def _write_rollup_to_gcs(storage_client: object, bucket: str, service: str, payload: dict[str, Any]) -> dict[str, int]:
     """Gzip + upload the manifest rollup via the unified cloud-interface API."""
     compressed, raw_size = _gzip_payload(payload)
-    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
+    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
         bucket=bucket,
         blob_path=_rollup_blob_path(service),
         data=compressed,
@@ -154,7 +154,7 @@ def _write_coverage_to_gcs(
 ) -> dict[str, int]:
     """Gzip + upload the coverage-summary blob (paired with manifest rollup)."""
     compressed, raw_size = _gzip_payload(payload)
-    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
+    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
         bucket=bucket,
         blob_path=_coverage_blob_path(service),
         data=compressed,
@@ -175,7 +175,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     # anyway — it runs once every 5 min and processes services sequentially.
     import deployment_api.services.data_status_service as _dss_mod
 
-    _dss_mod._PROCESS_POOL_DISABLED = True
+    _dss_mod._PROCESS_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
     # Production observability per CLAUDE.md "no fire-and-forget" rule —
     # write structured lifecycle events to ``gs://{pid}-events/...`` where
     # ``unified-events-interface`` UI ingests them. Schema:
@@ -211,7 +211,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
                     "elapsed_s": round(elapsed, 1),
                     "size_compressed": metrics["size_compressed"],
                     "size_uncompressed": metrics["size_uncompressed"],
-                    "asset_groups_n": len(payload.get("asset_groups", {})),
+                    "asset_groups_n": len(payload.get("asset_groups", {})),  # pyright: ignore[reportAny]
                 },
             )
             # Free the manifest payload before computing coverage — the MTDS
@@ -297,7 +297,7 @@ def main() -> int:
         help="Services to roll up (default: all DataStatusService-tracked)",
     )
     args = parser.parse_args()
-    return run_rollup(args.project, args.bucket, list(args.services))
+    return run_rollup(args.project, args.bucket, list(args.services))  # pyright: ignore[reportAny]
 
 
 if __name__ == "__main__":

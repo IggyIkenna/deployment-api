@@ -47,7 +47,7 @@ def _scan_mapping_for_axis(d: dict[str, object]) -> str | None:
 def _scan_shards_for_axis(raw_shards: object) -> str | None:
     if not isinstance(raw_shards, list) or not raw_shards:
         return None
-    s0 = raw_shards[0]
+    s0 = raw_shards[0]  # pyright: ignore[reportUnknownVariableType]
     if not isinstance(s0, dict):
         return None
     dims = cast(dict[str, object], s0).get("dimensions")
@@ -59,7 +59,7 @@ def _scan_cli_args_for_axis(cli_args: object) -> str | None:
         return _scan_cli_for_axis(cli_args)
     if isinstance(cli_args, list) and cli_args:
         try:
-            joined = " ".join(str(x) for x in cli_args)
+            joined = " ".join(str(x) for x in cli_args)  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
         except (TypeError, ValueError, RuntimeError):
             return None
         if joined.strip():

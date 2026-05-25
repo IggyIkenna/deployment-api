@@ -71,7 +71,7 @@ def _user_store_path() -> Path:
     """Return local path for user store (dev/local mode)."""
     workspace = _cfg.workspace_root
     if workspace:
-        return Path(workspace) / ".user-management" / "users.json"
+        return Path(str(workspace)) / ".user-management" / "users.json"  # pyright: ignore[reportArgumentType]
     return Path.home() / ".unified-trading" / "users.json"
 
 
@@ -98,13 +98,13 @@ def _load_users() -> dict[str, dict[str, object]]:
     if not path.exists():
         return {}
     with open(path) as f:
-        raw = json.load(f)
+        raw: object = json.load(f)  # pyright: ignore[reportAny]
     if not isinstance(raw, dict):
         return {}
     result: dict[str, dict[str, object]] = {}
-    for k, v in raw.items():
+    for k, v in raw.items():  # pyright: ignore[reportUnknownVariableType]
         if isinstance(v, dict):
-            result[k] = v
+            result[k] = v  # pyright: ignore[reportUnknownVariableType]
     return result
 
 

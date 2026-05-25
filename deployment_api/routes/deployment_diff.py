@@ -64,16 +64,16 @@ def _deployed_versions_at_sha(sha: str) -> dict[str, str]:
         )
         if result.returncode != 0:
             return {}
-        parsed: object = json.loads(result.stdout)
+        parsed: object = json.loads(result.stdout)  # pyright: ignore[reportAny]
         if not isinstance(parsed, dict):
             return {}
-        raw: dict[str, object] = parsed
+        raw: dict[str, object] = parsed  # pyright: ignore[reportUnknownVariableType]
         dv: object = raw.get("deployed_versions")
         if not isinstance(dv, dict):
             return {}
-        dv_typed: dict[str, object] = dv
+        dv_typed: dict[str, object] = dv  # pyright: ignore[reportUnknownVariableType]
         prod: object = dv_typed.get("production")
-        return dict(prod) if isinstance(prod, dict) else {}
+        return dict(prod) if isinstance(prod, dict) else {}  # pyright: ignore[reportUnknownArgumentType]
     except Exception:
         logger.warning("could not read manifest at sha %s", sha)
         return {}

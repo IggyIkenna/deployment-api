@@ -6,6 +6,7 @@ Endpoints for venues, expected start dates, dependencies, and region config.
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -352,7 +353,7 @@ async def get_shard_axis_matrix(
 
     target = service if isinstance(service, str) and service else None
 
-    def _filter(items: dict[tuple[str, str], object]) -> dict[str, dict[str, object]]:
+    def _filter(items: Mapping[tuple[str, str], object]) -> dict[str, dict[str, object]]:
         out: dict[str, dict[str, object]] = {}
         for (svc, asset_group), value in items.items():
             if target is not None and svc != target:

@@ -58,7 +58,7 @@ async def get_shard_detail_route(
         return await run_in_threadpool(
             get_shard_detail,
             service=service,
-            asset_group=asset_group,
+            category=asset_group,
             instrument_type=instrument_type,
             data_type=data_type,
             day=day.isoformat(),

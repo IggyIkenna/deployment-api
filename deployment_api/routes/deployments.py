@@ -423,16 +423,29 @@ async def _submit_missing_deployment(
         service=req.service,
         compute=req.compute,
         mode=req.mode,
+        cloud_provider=getattr(req, "cloud_provider", "gcp"),
+        operational_mode=getattr(req, "operational_mode", ""),
         start_date=req.start_date,
         end_date=req.end_date,
+        max_shards=getattr(req, "max_shards", 10000),
+        max_concurrent=getattr(req, "max_concurrent", None),
+        vm_zone=getattr(req, "vm_zone", None),
+        cloud_config_path=getattr(req, "cloud_config_path", None),
+        ignore_start_dates=getattr(req, "ignore_start_dates", False),
         deploy_missing=True,
         exclude_dates=exclude_dates,
+        skip_dimensions=getattr(req, "skip_dimensions", None),
+        max_workers=getattr(req, "max_workers", None),
         region=req.region,
         tag=req.tag,
         asset_group=req.asset_group,
         venue=req.venue,
+        feature_group=getattr(req, "feature_group", None),
+        data_type=getattr(req, "data_type", None),
         date_granularity=req.date_granularity,
         log_level=req.log_level,
+        runtime_profile=getattr(req, "runtime_profile", None),
+        client_id=getattr(req, "client_id", None),
     )
 
     def background_task_runner(
@@ -635,8 +648,8 @@ async def retry_failed_shards(
             "dry_run": dry_run,
         }
     try:
-        result = state_manager.retry_failed_shards(deployment_id, dry_run=dry_run)
-        return result
+        result = state_manager.retry_failed_shards(deployment_id, dry_run=dry_run)  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
+        return result  # pyright: ignore[reportUnknownVariableType]
     except (ValueError, AttributeError) as e:
         logger.exception("Deployment not found for retry: %s", deployment_id)
         raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e

@@ -104,7 +104,7 @@ def _parse_kickoff_from_timestamp(val: object) -> datetime | None:
     to_pd = getattr(val, "to_pydatetime", None)
     if callable(to_pd):
         try:
-            return _ensure_utc(to_pd())
+            return _ensure_utc(to_pd())  # pyright: ignore[reportArgumentType]
         except (ValueError, OSError, TypeError, AttributeError):
             return None
     return None
@@ -134,7 +134,7 @@ def _parse_kickoff(val: object) -> datetime | None:
 def _row_to_fixture(rec: object) -> UpcomingFixture | None:
     if not isinstance(rec, dict):
         return None
-    row: dict[str, object] = {str(k): v for k, v in rec.items()}
+    row: dict[str, object] = {str(k): v for k, v in rec.items()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
     kid = _norm_str(row.get("fixture_id"))
     if not kid:
         return None
@@ -189,7 +189,7 @@ def _read_frames_for_window(
 
     days = [start + timedelta(days=offset) for offset in range(0, inclusive_extra_days + 1)]
     with ThreadPoolExecutor(max_workers=min(len(days), 16)) as ex:
-        results = list(ex.map(lambda d: _read_one_day_frame(bucket, d), days))
+        results = list(ex.map(lambda d: _read_one_day_frame(bucket, d), days))  # pyright: ignore[reportUnknownArgumentType,reportUnknownLambdaType]
     return [df for df in results if df is not None]
 
 

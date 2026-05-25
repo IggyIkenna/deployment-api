@@ -212,7 +212,7 @@ def _children_for_axis(
         return []
     if rows.empty:
         return []
-    values = sorted(v for v in rows[axis].astype(str).unique() if v != "" and v != "nan")
+    values = sorted(v for v in rows[axis].astype(str).unique() if v != "" and v != "nan")  # pyright: ignore[reportAny]
     if len(values) > _MAX_CHILDREN_PER_NODE:
         logger.warning(
             "drilldown: axis %s has %d values, truncating to %d (caller should paginate)",
@@ -222,13 +222,13 @@ def _children_for_axis(
         )
         values = values[:_MAX_CHILDREN_PER_NODE]
     children: list[DrilldownNode] = []
-    for val in values:
-        sub = rows[rows[axis].astype(str) == val]
-        captured, empty_confirmed, attempted_failed = _aggregate_counts(sub)
+    for val in values:  # pyright: ignore[reportAny]
+        sub = rows[rows[axis].astype(str) == val]  # pyright: ignore[reportUnknownVariableType]
+        captured, empty_confirmed, attempted_failed = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
         node_row_key = {**parent_row_key, axis: val}
         node = DrilldownNode(
             axis=axis,
-            value=val,
+            value=val,  # pyright: ignore[reportAny]
             captured=captured,
             empty_confirmed=empty_confirmed,
             attempted_failed=attempted_failed,
@@ -237,7 +237,7 @@ def _children_for_axis(
         if deeper_axes and current_depth < expand_to_depth:
             next_axis, *rest = deeper_axes
             node.children = _children_for_axis(
-                sub,
+                sub,  # pyright: ignore[reportUnknownArgumentType]
                 next_axis,
                 tuple(rest),
                 node_row_key,
@@ -367,9 +367,9 @@ def get_hierarchical_drilldown(
     # Same call shape as ``data_status_service.py``'s preflight skip path.
     manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
     df = read_availability_index(bucket)
-    if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:
+    if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
         df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
-    if df is None or len(df) == 0:
+    if df is None or len(df) == 0:  # pyright: ignore[reportUnnecessaryComparison]
         return {
             "axes": list(axes),
             "tree": [],

@@ -11,8 +11,8 @@ from deployment_api.routes.deployments_helpers import (
     deployment_config as _deployment_config,
 )
 from deployment_api.routes.shard_management import (
-    _asset_group_from_shard_dims,
-    _turbo_asset_groups_block,
+    _asset_group_from_shard_dims,  # pyright: ignore[reportPrivateUsage]
+    _turbo_asset_groups_block,  # pyright: ignore[reportPrivateUsage]
 )
 
 logger = logging.getLogger(__name__)

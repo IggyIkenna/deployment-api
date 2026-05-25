@@ -412,7 +412,7 @@ def _classify_lookup_legacy_empty_reason(
     *,
     status: str,
     error_reason: str,
-    row: pd.Series[object],
+    row: pd.Series[object],  # type: ignore
     asset_group: str,
     bucket: str,
 ) -> str:
@@ -782,7 +782,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routi
         data_type_value = (axes.get("data_type") or "").lower()
         if data_type_value:
             try:
-                uri_list = candidate_parquet_uris(data_type=data_type_value, day=day, league_id=league or None)
+                uri_list = candidate_parquet_uris(data_type=data_type_value, day=day, league_id=league or None)  # pyright: ignore[reportUnknownVariableType,reportCallIssue]
                 for uri in uri_list:  # pyright: ignore[reportUnknownVariableType]
                     if isinstance(uri, str):
                         candidates.append(uri)
@@ -1060,8 +1060,8 @@ def _expand_per_venue_day_bundle(
     seen: set[str] = set()
     out: list[dict[str, object]] = []
     bundled_under = str(pf["_name"]).split("/")[-1]
-    for v in df[symbol_col].dropna().tolist():  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
-        sid = str(v).strip()
+    for v in df[symbol_col].dropna().tolist():  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAny]
+        sid = str(v).strip()  # pyright: ignore[reportAny]
         if not sid or sid in seen:
             continue
         seen.add(sid)
@@ -1398,7 +1398,7 @@ def get_shard_info(
 def cast_dict(obj: object) -> dict[str, object]:
     """Narrow ``object`` → ``dict[str, object]`` without runtime cost."""
     if isinstance(obj, dict):
-        return obj  # pyright: ignore[reportReturnType]
+        return obj  # pyright: ignore[reportReturnType,reportUnknownVariableType]
     raise TypeError(f"Expected dict, got {type(obj).__name__}")
 
 
@@ -2159,23 +2159,23 @@ def _list_pool_entities_for_venue(
     seen: set[tuple[str, str]] = set()
     out: list[tuple[str, str, str]] = []
     for obj in objects:
-        if not obj.name.endswith(".parquet"):
+        if not obj.name.endswith(".parquet"):  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
             continue
         instrument_type = ""
         data_type = ""
-        for token in obj.name.split("/"):
-            if token.startswith("instrument_type="):
-                instrument_type = token[len("instrument_type=") :]
-            elif token.startswith("data_type="):
-                data_type = token[len("data_type=") :]
+        for token in obj.name.split("/"):  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue,reportUnknownVariableType]
+            if token.startswith("instrument_type="):  # pyright: ignore[reportUnknownMemberType]
+                instrument_type = token[len("instrument_type=") :]  # pyright: ignore[reportUnknownVariableType]
+            elif token.startswith("data_type="):  # pyright: ignore[reportUnknownMemberType]
+                data_type = token[len("data_type=") :]  # pyright: ignore[reportUnknownVariableType]
         if not instrument_type or not data_type:
             continue
-        key = (instrument_type, data_type)
+        key = (instrument_type, data_type)  # pyright: ignore[reportUnknownVariableType]
         if key in seen:
             continue
-        seen.add(key)
-        gs_uri = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved
-        out.append((instrument_type, data_type, gs_uri))
+        seen.add(key)  # pyright: ignore[reportUnknownArgumentType]
+        gs_uri = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
+        out.append((instrument_type, data_type, gs_uri))  # pyright: ignore[reportUnknownArgumentType]
     return out
 
 

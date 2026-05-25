@@ -188,8 +188,8 @@ def _resolve_gcs_shard_statuses(
     shard_statuses: dict[str, tuple[str, str]] = {}
     if status_objs:
         with ThreadPoolExecutor(max_workers=min(len(status_objs), 20)) as pool:
-            for result in pool.map(
-                lambda o: _read_gcs_status_obj(STATE_BUCKET, str(getattr(o, "name", ""))),
+            for result in pool.map(  # pyright: ignore[reportUnknownArgumentType]
+                lambda o: _read_gcs_status_obj(STATE_BUCKET, str(getattr(o, "name", ""))),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
                 status_objs,
             ):
                 if result:

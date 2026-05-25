@@ -1102,7 +1102,7 @@ def _read_instruments_day_df(*, bucket: str, venue: str, day: str, category: str
         )
         try:
             df = _read_parquet_columns(leaf_uri, None)
-            if df is not None and not df.empty:
+            if df is not None and not df.empty:  # pyright: ignore[reportUnnecessaryComparison]
                 return df
         except (OSError, ValueError, RuntimeError) as exc:
             last_err = exc
@@ -1123,7 +1123,7 @@ def _read_instruments_day_df(*, bucket: str, venue: str, day: str, category: str
                 gs_uri = f"gs://{bucket}/{path}"  # noqa: gs-uri
                 try:
                     sub_df = _read_parquet_columns(gs_uri, None)
-                    if sub_df is not None and not sub_df.empty:
+                    if sub_df is not None and not sub_df.empty:  # pyright: ignore[reportUnnecessaryComparison]
                         frames.append(sub_df)
                 except (OSError, ValueError, RuntimeError) as exc:
                     last_err = exc
@@ -1355,7 +1355,7 @@ def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
 
     day: str | None = None
     if "date" in venue_df.columns:
-        dates = sorted(str(d) for d in venue_df["date"].dropna().unique() if str(d).strip())
+        dates = sorted(str(d) for d in venue_df["date"].dropna().unique() if str(d).strip())  # pyright: ignore[reportAny]
         if dates:
             day = dates[-1]
             venue_df = venue_df[venue_df["date"].astype(str) == day].copy()
@@ -1363,14 +1363,14 @@ def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
     instruments: list[dict[str, object]] = []
     if "underlying" in venue_df.columns and "instrument_count" in venue_df.columns:
         agg = venue_df.groupby("underlying")["instrument_count"].sum().sort_values(ascending=False)
-        for grp, count in agg.items():
+        for grp, count in agg.items():  # pyright: ignore[reportAny]
             if str(grp).strip():
                 instruments.append(
                     {
                         "key": str(grp),
-                        "type": f"{int(count):,} instruments",
+                        "type": f"{int(count):,} instruments",  # pyright: ignore[reportAny]
                         "canonical_question_group": str(grp),
-                        "instrument_count": int(count),
+                        "instrument_count": int(count),  # pyright: ignore[reportAny]
                     }
                 )
 
@@ -1430,7 +1430,7 @@ def _safe_iso_or_none(ts: object) -> str | None:
     if ts is None:
         return None
     try:
-        if pd.isna(ts):  # pyright: ignore[reportUnknownArgumentType]
+        if pd.isna(ts):  # pyright: ignore[reportCallIssue,reportArgumentType]
             return None
     except (TypeError, ValueError):
         pass
