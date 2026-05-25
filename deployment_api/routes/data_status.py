@@ -458,14 +458,25 @@ async def get_coverage_summary(
 ):
     """Get coverage summary with shard counts and latest-day instrument totals."""
     if _cfg.is_mock_mode():
+        # Sample inventory so the redesigned overview's volume cards render
+        # locally. Prod reads real manifest totals via data_status_service.
+        _mock_ag: dict[str, dict[str, object]] = {
+            "cefi": {"total_shards": 96000, "total_instrument_rows": 12_500_000, "unique_dates": 2611, "unique_venues": 15, "latest_day_instruments": {"all": 4800}},
+            "tradfi": {"total_shards": 31500, "total_instrument_rows": 6_300_000, "unique_dates": 2316, "unique_venues": 6, "latest_day_instruments": {"all": 16336}},
+            "defi": {"total_shards": 45000, "total_instrument_rows": 2_000_000, "unique_dates": 2309, "unique_venues": 27, "latest_day_instruments": {"all": 2984}},
+            "sports": {"total_shards": 2_643_741, "total_instrument_rows": 2_643_741, "unique_dates": 4163, "unique_venues": 25, "latest_day_instruments": {"all": 26}},
+            "prediction": {"total_shards": 1944, "total_instrument_rows": 16800, "unique_dates": 435, "unique_venues": 1, "latest_day_instruments": {"all": 7821}},
+        }
+        _ags = [a.strip().lower() for a in asset_groups.split(",")] if asset_groups else list(_mock_ag)
+        _selected = {ag: _mock_ag[ag] for ag in _ags if ag in _mock_ag}
         return {
             "service": service,
-            "asset_groups": {},
+            "asset_groups": _selected,
             "totals": {
-                "shards": 0,
-                "instrument_rows": 0,
-                "dates_across_asset_groups": 0,
-                "latest_day_instruments": 0,
+                "shards": sum(int(v["total_shards"]) for v in _selected.values()),  # pyright: ignore[reportArgumentType]
+                "instrument_rows": sum(int(v["total_instrument_rows"]) for v in _selected.values()),  # pyright: ignore[reportArgumentType]
+                "dates_across_asset_groups": max((int(v["unique_dates"]) for v in _selected.values()), default=0),  # pyright: ignore[reportArgumentType]
+                "latest_day_instruments": sum(int(v["latest_day_instruments"]["all"]) for v in _selected.values()),  # pyright: ignore[reportArgumentType, reportIndexIssue]
             },
             "mock": True,
         }
