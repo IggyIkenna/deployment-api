@@ -35,6 +35,11 @@ _CLOUD_CFG = UnifiedCloudConfig()
 
 _STATUSES = ("captured", "empty_confirmed", "attempted_failed")
 
+# Shard axes with at most this many distinct values are shipped to the UI
+# up-front (data_type, instrument_type, chain, league_id, feature_group,
+# timeframe, ...). Larger axes (instrument_id) stay lazy / drilldown-only.
+_SMALL_AXIS_CAP = 300
+
 
 def _counts(frame: pd.DataFrame) -> dict[str, int]:
     if "capture_status" not in frame.columns:
@@ -62,10 +67,12 @@ def build_coverage_grid(
         bucket = build_bucket_name(service, asset_group, project_id=project_id)
         df = read_availability_index(bucket)
 
+    sub_axes = [a for a in axes if a != primary and a != "date"]
     empty_result: dict[str, object] = {
         "primary": primary,
         "primary_values": [],
-        "sub_axes": [a for a in axes if a != primary and a != "date"],
+        "sub_axes": sub_axes,
+        "axis_values": {},
         "grid": {},
         "by_primary": {},
         "total": {s: 0 for s in _STATUSES},
@@ -89,13 +96,27 @@ def build_coverage_grid(
             per_date[str(dt)] = _counts(day_frame)  # pyright: ignore[reportUnknownArgumentType]
         grid[pv] = per_date
 
+    # Ship the SMALL shard axes' value lists up-front so the Columns view never
+    # shows empty data_type / instrument_type / chain / league_id / ... columns.
+    # instrument_id is excluded (too large — fetched lazily on drilldown); date
+    # is the leaf shard (fresh per request). Other axes only if their cardinality
+    # is small enough to be worth sending.
+    axis_values: dict[str, list[str]] = {}
+    for axis in sub_axes:
+        if axis == "instrument_id" or axis not in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
+            continue
+        vals = sorted(v for v in df[axis].astype(str).unique() if v not in ("", "nan"))  # pyright: ignore[reportAny]
+        if len(vals) <= _SMALL_AXIS_CAP:
+            axis_values[axis] = vals
+
     total = _counts(df)  # pyright: ignore[reportUnknownArgumentType]
     total_shards = sum(total.values())
     n_days = len(dates)
     return {
         "primary": primary,
         "primary_values": primary_values,
-        "sub_axes": [a for a in axes if a != primary and a != "date"],
+        "sub_axes": sub_axes,
+        "axis_values": axis_values,
         "grid": grid,
         "by_primary": by_primary,
         "total": total,
