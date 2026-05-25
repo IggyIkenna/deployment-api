@@ -153,7 +153,6 @@ def launch_ml_experiment(
 
     log_event(
         "ADAPTER_FETCH_STARTED",
-        service="deployment-api",
         details={
             "endpoint": "POST /api/ml/experiment/launch",
             "vm_name": vm_name,
@@ -192,7 +191,6 @@ def launch_ml_experiment(
 
     log_event(
         "ADAPTER_FETCH_COMPLETED",
-        service="deployment-api",
         details={
             "endpoint": "POST /api/ml/experiment/launch",
             "vm_name": vm_name,

@@ -135,7 +135,7 @@ def update_shard_state_from_event(
     _apply_stage_event(event_name, is_validation_failed, shard_state, stage_timings, _details_as_object, timestamp)
 
     # Parse progress counters from details (e.g., "BTC-USDT-SWAP (5/325)" or "2025-01-01 (1/30)")
-    details_str: str = str(details)
+    details_str: str = str(details)  # type: ignore[reportUnknownArgumentType]
     progress_match = re.search(r"\((\d+)/(\d+)\)", details_str)
     if progress_match:
         _grps = progress_match.groups()

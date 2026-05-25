@@ -138,7 +138,6 @@ def launch_execution_backtest(
 
     log_event(
         "ADAPTER_FETCH_STARTED",
-        service="deployment-api",
         details={
             "endpoint": "POST /api/execution/backtest/launch",
             "vm_name": vm_name,
@@ -176,7 +175,6 @@ def launch_execution_backtest(
 
     log_event(
         "ADAPTER_FETCH_COMPLETED",
-        service="deployment-api",
         details={
             "endpoint": "POST /api/execution/backtest/launch",
             "vm_name": vm_name,

@@ -148,7 +148,7 @@ async def list_pending_instructions() -> list[PendingInstruction]:
         _seed_mock_queue()
         now = datetime.now(UTC)
         with _QUEUE_LOCK:
-            active = []
+            active: list[PendingInstruction] = []
             for instr in _PENDING.values():
                 timeout_at = datetime.fromisoformat(instr.timeout_at)
                 remaining = max(0, int((timeout_at - now).total_seconds()))
