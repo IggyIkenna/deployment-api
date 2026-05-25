@@ -9,6 +9,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
+import pandas as pd
 from unified_api_contracts.internal import MarketCategory
 from unified_trading_library import build_bucket, resolve_bucket_name
 from unified_trading_library.cloud_interface import AssetGroup
@@ -451,15 +452,15 @@ class DataQueryService:
         if df is None or df.empty:
             return []
         # Empty league_id means a row that wasn't sports-canonical — skip.
-        df = df[df["league_id"].astype(str).str.len() > 0]
-        unique = df.drop_duplicates(subset=["league_id", "venue", "instrument_type"])
+        df = df[df["league_id"].astype(str).str.len() > 0]  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        unique = df.drop_duplicates(subset=["league_id", "venue", "instrument_type"])  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
         corpus: list[dict[str, str]] = []
-        for _, row in unique.iterrows():
+        for _, row in unique.iterrows():  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             corpus.append(
                 {
-                    "canonical_id": str(row["league_id"]),
-                    "venue": str(row["venue"] or ""),
-                    "instrument_type": str(row["instrument_type"] or ""),
+                    "canonical_id": str(row["league_id"]),  # type: ignore[reportUnknownArgumentType]
+                    "venue": str(row["venue"] or ""),  # type: ignore[reportUnknownArgumentType]
+                    "instrument_type": str(row["instrument_type"] or ""),  # type: ignore[reportUnknownArgumentType]
                 }
             )
         return corpus
@@ -561,7 +562,7 @@ class DataQueryService:
         return max(days)
 
     @staticmethod
-    def _read_parquet_columns_safe(gs_uri: str, columns: list[str]):  # pyright: ignore[reportMissingReturnType]
+    def _read_parquet_columns_safe(gs_uri: str, columns: list[str]) -> pd.DataFrame | None:
         """Read ``columns`` from a parquet at ``gs_uri``; return DataFrame or None.
 
         Uses pyarrow + gcsfs locally. Failures (network, schema mismatch,
@@ -575,15 +576,15 @@ class DataQueryService:
         bucket_key = gs_uri[len("gs://") :]
         try:
             fs = gcsfs.GCSFileSystem()
-            with fs.open(bucket_key, "rb") as fh:
+            with fs.open(bucket_key, "rb") as fh:  # type: ignore[reportUnknownMemberType]
                 pf = pq.ParquetFile(fh)
-                schema_names = set(pf.schema_arrow.names)
+                schema_names = set(pf.schema_arrow.names)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType, reportUnknownArgumentType]
                 # Only request columns that actually exist (graceful drift handling).
                 proj = [c for c in columns if c in schema_names]
                 if not proj:
                     return None
-                table = pf.read(columns=proj)
-                return table.to_pandas()
+                table = pf.read(columns=proj)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+                return table.to_pandas()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("search_instruments: parquet read failed for %s — %s", gs_uri, exc)
             return None

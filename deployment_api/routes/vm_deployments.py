@@ -92,7 +92,7 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
         "log_uri": "gs://deployment-scripts-${GCP_PROJECT_ID}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",
     }
     defaults.update(kwargs)
-    return VmDeploymentEntryModel(**cast(dict[str, object], defaults))
+    return VmDeploymentEntryModel(**defaults)  # type: ignore[reportArgumentType]
 
 
 @router.get("/vm-deployments", response_model=VmDeploymentsListModel)

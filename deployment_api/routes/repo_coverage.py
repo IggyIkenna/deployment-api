@@ -42,7 +42,7 @@ def _evaluate_repo_coverage(
         }
 
     snapshot_at: object = rows[0].get("snapshot_at")
-    below = [r for r in rows if (r.get("actual_pct") or 0.0) < (r.get("target_pct") or 0)]
+    below = [r for r in rows if (r.get("actual_pct") or 0.0) < (r.get("target_pct") or 0)]  # type: ignore[reportOperatorIssue]
     if not below:
         return {
             "all_above_target": True,
@@ -52,7 +52,7 @@ def _evaluate_repo_coverage(
             "worst_target_pct": None,
         }
 
-    worst = min(below, key=lambda r: float(r.get("actual_pct") or 0.0))
+    worst = min(below, key=lambda r: float(r.get("actual_pct") or 0.0))  # type: ignore[reportArgumentType]
     return {
         "all_above_target": False,
         "snapshot_at": snapshot_at,

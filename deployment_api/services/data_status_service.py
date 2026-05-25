@@ -13,9 +13,10 @@ import re
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
-from typing import ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 import pandas as pd
 from unified_api_contracts import (
@@ -430,7 +431,7 @@ def _expected_dates_for_upstream(
     league_id: str,
     start_date: str,
     end_date: str,
-    walk: object,
+    walk: Callable[[str, frozenset[str]], list[str] | None],
     visited: frozenset[str],
 ) -> list[str] | None:
     """Expected dates for a single ``UpstreamReq`` of a feature calculator.
@@ -442,7 +443,7 @@ def _expected_dates_for_upstream(
     if req.source == "derived":
         # walk(req.data_type, visited) — req.data_type carries the upstream
         # calculator's name when source="derived".
-        return walk(req.data_type, visited)  # pyright: ignore[reportOperatorIssue]
+        return walk(req.data_type, visited)
 
     # League may be out of coverage for this entity (e.g. understat XG
     # for MLS) — but in_coverage's league-check is league_id-only, not
@@ -542,10 +543,10 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
     if meta is None:
         return None
 
-    axis = str(meta["axis"])
-    cadence_days = int(meta.get("cadence_days") or 1)
-    source_key = str(meta["source"])
-    classifications = tuple(cast(tuple[str, ...], meta["classifications"]))
+    axis = str(cast(dict[str, Any], meta)["axis"])  # type: ignore[reportAny]
+    cadence_days = int(cast(dict[str, Any], meta).get("cadence_days") or 1)
+    source_key = str(cast(dict[str, Any], meta)["source"])  # type: ignore[reportAny]
+    classifications = tuple(cast(tuple[str, ...], cast(dict[str, Any], meta)["classifications"]))
 
     expected_leagues = get_expected_leagues_for_source(source_key, classifications=list(classifications))
 
@@ -600,7 +601,7 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
             expected_set_pf = set(expected_dates_pf)
             found_set_pf: set[str] = set()
             if ent_rows_by_league_pf is not None and lid in ent_rows_by_league_pf.groups:
-                found_set_pf = {str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()}
+                found_set_pf = {str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()}  # type: ignore[reportAny]
             covered_pf = expected_set_pf & found_set_pf
             missing_pf = sorted(expected_set_pf - found_set_pf)
             per_league_pf[lid] = {
@@ -636,7 +637,7 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
             except ValueError:
                 date_range = pd.DatetimeIndex([])
         expected_dates = 1 if axis == "global_season" else max(1, len(date_range) // max(1, cadence_days))
-        found_dates = len({str(d) for d in ent_rows["date"].unique()}) if not ent_rows.empty else 0
+        found_dates = len({str(d) for d in ent_rows["date"].unique()}) if not ent_rows.empty else 0  # type: ignore[reportAny]
         return {
             "axis": axis,
             "unit": str(meta["unit"]),
@@ -691,7 +692,7 @@ def _sports_honest_coverage(  # noqa: C901 — 3-axis honest-coverage dispatch s
         expected_set = set(expected_dates_for_l)
         found_set: set[str] = set()
         if ent_rows_by_league is not None and lid in ent_rows_by_league.groups:
-            found_set = {str(d) for d in ent_rows_by_league.get_group(lid)["date"].unique()}
+            found_set = {str(d) for d in ent_rows_by_league.get_group(lid)["date"].unique()}  # type: ignore[reportAny]
 
         if use_bucket_match:
             # Each expected date anchors a bucket of [d, d+cadence_days). A
@@ -1058,7 +1059,7 @@ def _mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
         return []
     # Filter out deprecated ghost venue names (prefix before first "-")
     if EMPTY_OR_DEPRECATED_DEFI_VENUES:
-        return [v for v in venues if v.split("-", 1)[0] not in EMPTY_OR_DEPRECATED_DEFI_VENUES]
+        return [v for v in venues if str(v).split("-", 1)[0] not in EMPTY_OR_DEPRECATED_DEFI_VENUES]  # type: ignore[reportAny]
     return list(venues)
 
 
@@ -1097,7 +1098,7 @@ def _build_category_in_subprocess(
     # parent's instance through the Pipe.
     dss = DataStatusService()
     venue_mapping = VenueMapping()
-    return dss._build_manifest_category(
+    return dss._build_manifest_category(  # type: ignore[reportPrivateUsage]
         service,
         cat,
         start_date,
@@ -1113,14 +1114,14 @@ def _build_category_in_subprocess(
 # UAC venue/calendar/coverage data is process-immutable (read once on import),
 # so a single shared instance is safe and avoids per-request VenueMapping
 # instantiation cost when fanning out across ~30-50 venues x ~8 data_types.
-_SHARED_VENUE_MAPPING: VenueMapping | None = None
+_shared_venue_mapping_instance: VenueMapping | None = None
 
 
 def _shared_venue_mapping() -> VenueMapping:
-    global _SHARED_VENUE_MAPPING
-    if _SHARED_VENUE_MAPPING is None:
-        _SHARED_VENUE_MAPPING = VenueMapping()
-    return _SHARED_VENUE_MAPPING
+    global _shared_venue_mapping_instance
+    if _shared_venue_mapping_instance is None:
+        _shared_venue_mapping_instance = VenueMapping()
+    return _shared_venue_mapping_instance
 
 
 @lru_cache(maxsize=8192)
@@ -1323,7 +1324,7 @@ def _per_instrument_coverage(
     # for this (venue, dt) yet -- preserve the prior per-(venue, dt, date)
     # denominator so historical backfills don't regress in the UI.
     if legacy_row_count > 0 and len(non_legacy_instr) == 0:
-        found_dates_set = {str(d) for d in date_series.unique() if str(d)}
+        found_dates_set = {str(d) for d in date_series.unique() if str(d)}  # type: ignore[reportAny]
         found_in_expected = found_dates_set & expected_dates
         missing_dates = sorted(expected_dates - found_dates_set)
         expected_count = len(expected_dates)
@@ -1508,7 +1509,7 @@ def _mtds_honest_coverage_for_venue(
             # denominator.
             if "data_type" in venue_df_ok.columns:
                 dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
-                found_dates_set = {str(d) for d in dt_rows["date"].unique()}
+                found_dates_set = {str(d) for d in dt_rows["date"].unique()}  # type: ignore[reportAny]
             else:
                 found_dates_set = set()
             # Only count dates that fall inside the expected window — a
@@ -1550,7 +1551,7 @@ def _distinct_pairs(df: pd.DataFrame, col_a: str, col_b: str) -> int:
         return 0
     pairs = {
         (str(a), str(b))
-        for a, b in zip(df[col_a].tolist(), df[col_b].tolist(), strict=True)
+        for a, b in zip(df[col_a].tolist(), df[col_b].tolist(), strict=True)  # type: ignore[reportAny]
         if a and b and str(a).strip() and str(b).strip()
     }
     return len(pairs)
@@ -1560,7 +1561,7 @@ def _distinct_values(df: pd.DataFrame, col: str) -> int:
     """Return count of distinct non-empty values in col. 0 if col missing."""
     if col not in df.columns:
         return 0
-    return len({str(v) for v in df[col].tolist() if v and str(v).strip()})
+    return len({str(v) for v in df[col].tolist() if v and str(v).strip()})  # type: ignore[reportAny]
 
 
 def _sports_attempt_count(filtered: pd.DataFrame) -> int:
@@ -2091,7 +2092,7 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
         # on backend). Treat missing/parse-errors as "fresh enough" to read.
         if meta is not None and getattr(meta, "updated", None) is not None:
-            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
                     "rollup for %s is stale (%.0fs > %ds threshold) — falling through to on-demand",
@@ -2109,7 +2110,7 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         import gzip
 
         payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
-        payload = json.loads(payload_bytes.decode("utf-8"))
+        payload = json.loads(payload_bytes.decode("utf-8"))  # type: ignore[reportAny]
         if not isinstance(payload, dict):
             logger.warning("rollup for %s is not a dict — ignoring", service)
             return None
@@ -2132,7 +2133,7 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
         return cat_payload
     venues = cat_payload.get("venues")
     if isinstance(venues, dict):
-        clean = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}
+        clean = {v: p for v, p in venues.items() if v not in _ALL_DEFI_GHOST_VENUES}  # type: ignore[reportUnknownVariableType]
         if len(clean) < len(venues):
             cat_payload = {**cat_payload, "venues": clean}
     chains_data = cat_payload.get("chains")
@@ -2326,7 +2327,7 @@ def _read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         if meta is not None and getattr(meta, "updated", None) is not None:
-            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
                     "coverage rollup for %s is stale (%.0fs > %ds threshold) — falling through",
@@ -2339,7 +2340,7 @@ def _read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
         import gzip
 
         payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
-        payload = json.loads(payload_bytes.decode("utf-8"))
+        payload = json.loads(payload_bytes.decode("utf-8"))  # type: ignore[reportAny]
         if not isinstance(payload, dict):
             logger.warning("coverage rollup for %s is not a dict — ignoring", service)
             return None

@@ -31,6 +31,7 @@ from unified_trading_library import (
     read_availability_index,
     resolve_bucket_name,
 )
+from unified_trading_library.cloud_interface import AssetGroup
 
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -111,7 +112,7 @@ def build_bucket_name(service: str, asset_group: str, project_id: str | None = N
         pred_kind = PREDICTION_KIND_MAP.get(kind)
         if pred_kind:
             return resolve_bucket_name(cloud="gcp", kind=pred_kind)
-    return resolve_bucket_name(cloud="gcp", kind=kind, asset_group=ag)
+    return resolve_bucket_name(cloud="gcp", kind=kind, asset_group=cast(AssetGroup, ag))
 
 
 # ---------------------------------------------------------------------------
@@ -386,8 +387,8 @@ def lookup_capture_status_for_shard(
     row = matched.iloc[0]
     raw_status = row.get("capture_status") if "capture_status" in matched.columns else None
     status = (
-        str(raw_status).lower()
-        if raw_status is not None and not pd.isna(raw_status) and str(raw_status)
+        str(raw_status).lower()  # type: ignore[reportAny]
+        if raw_status is not None and not pd.isna(raw_status) and str(raw_status)  # type: ignore[reportAny]
         else _DEFAULT_CAPTURE_STATUS
     )
     if status not in ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted"):
