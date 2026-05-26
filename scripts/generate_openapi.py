@@ -38,17 +38,17 @@ out.write_text(json.dumps(schema, indent=2))
 
 paths: dict[str, object] = schema.get("paths", {})  # pyright: ignore[reportAny]
 endpoint_count = sum(
-    len([m for m in methods if m in {"get", "post", "put", "patch", "delete"}])
-    for methods in paths.values()  # pyright: ignore[reportAny]
+    len([m for m in methods if m in {"get", "post", "put", "patch", "delete"}])  # type: ignore[misc]
+    for methods in paths.values()  # type: ignore[misc]
     if isinstance(methods, dict)
 )
 missing_summary = [
-    f"{method.upper()} {path}"
-    for path, methods in paths.items()  # pyright: ignore[reportAny]
+    f"{method.upper()} {path}"  # type: ignore[misc]
+    for path, methods in paths.items()  # type: ignore[misc]
     if isinstance(methods, dict)
-    for method, op in methods.items()  # pyright: ignore[reportAny]
+    for method, op in methods.items()  # type: ignore[misc]
     if method in {"get", "post", "put", "patch", "delete"}
-    if isinstance(op, dict) and not op.get("summary") and not op.get("description")  # pyright: ignore[reportAny,reportUnknownMemberType]
+    if isinstance(op, dict) and not op.get("summary") and not op.get("description")  # type: ignore[misc]
 ]
 
 print(f"Written: {out} ({out.stat().st_size // 1024}KB)")

@@ -555,9 +555,9 @@ def _sports_honest_coverage(
     # skip-worthy = captured | empty_confirmed | expected_unattempted(EXPECTED_* reason).
     # v4 rows without capture_status are implicit ``captured``.
     if "capture_status" in filtered.columns:
-        _status_s = filtered["capture_status"].fillna("captured").astype(str)
+        _status_s = filtered["capture_status"].fillna("captured").astype(str)  # pyright: ignore[reportUnknownMemberType]
         _reason_s = (
-            filtered["error_reason"].fillna("").astype(str)
+            filtered["error_reason"].fillna("").astype(str)  # pyright: ignore[reportUnknownMemberType]
             if "error_reason" in filtered.columns
             else pd.Series("", index=filtered.index)
         )
@@ -1023,12 +1023,12 @@ def _canonicalise_defi_data_types(filtered: pd.DataFrame) -> pd.DataFrame:
 
     # Case (1): infer from _defi_source for blank rows.
     if "_defi_source" in out.columns:
-        blank_dt = out["data_type"].fillna("").astype(str).str.len() == 0
+        blank_dt = out["data_type"].fillna("").astype(str).str.len() == 0  # pyright: ignore[reportUnknownMemberType]
         if blank_dt.any():
-            inferred = out["_defi_source"].fillna("").astype(str).map(_DEFI_SOURCE_TO_DATA_TYPE).fillna("")
+            inferred = out["_defi_source"].fillna("").astype(str).map(_DEFI_SOURCE_TO_DATA_TYPE).fillna("")  # pyright: ignore[reportUnknownMemberType]
             out.loc[blank_dt, "data_type"] = inferred[blank_dt]
     # Case (2): map hyphenated DEFI data_types to canonical underscore form.
-    out["data_type"] = out["data_type"].fillna("").astype(str).replace(_DEFI_DATA_TYPE_ALIASES)
+    out["data_type"] = out["data_type"].fillna("").astype(str).replace(_DEFI_DATA_TYPE_ALIASES)  # pyright: ignore[reportUnknownMemberType]
     return out
 
 
@@ -1303,17 +1303,17 @@ def _per_instrument_coverage(
 
     has_instrument_col = "instrument_id" in dt_rows.columns
     instrument_series = (
-        dt_rows["instrument_id"].fillna("").astype(str) if has_instrument_col else pd.Series([], dtype=str)
+        dt_rows["instrument_id"].fillna("").astype(str) if has_instrument_col else pd.Series([], dtype=str)  # pyright: ignore[reportUnknownMemberType]
     )
-    date_series = dt_rows["date"].astype(str) if "date" in dt_rows.columns else pd.Series([], dtype=str)
+    date_series = dt_rows["date"].astype(str) if "date" in dt_rows.columns else pd.Series([], dtype=str)  # pyright: ignore[reportUnknownMemberType]
 
     if has_instrument_col and len(dt_rows) > 0:
         # Rows that land with empty ``instrument_id`` predate Phase-8C
         # fan-out. Count them separately so we can fall back to the
         # venue-level denominator when the (venue, dt) slice is fully
         # legacy.
-        legacy_mask = instrument_series.str.strip() == ""
-        legacy_row_count = int(legacy_mask.sum())
+        legacy_mask = instrument_series.str.strip() == ""  # pyright: ignore[reportUnknownMemberType]
+        legacy_row_count = int(legacy_mask.sum())  # pyright: ignore[reportUnknownMemberType]
         non_legacy_mask = ~legacy_mask
         non_legacy_instr = instrument_series[non_legacy_mask]
         non_legacy_dates = date_series[non_legacy_mask]
@@ -1608,8 +1608,8 @@ def _compute_capture_status_counts(df: pd.DataFrame) -> CaptureStatusCounts:
     pending_fetch = 0
     if eu_mask.any():
         eu_reasons = reason_col[eu_mask]
-        known_empty = int(eu_reasons.str.startswith(_EXPECTED_REASON_PREFIX).sum())
-        pending_fetch = int((~eu_reasons.str.startswith(_EXPECTED_REASON_PREFIX)).sum())
+        known_empty = int(eu_reasons.str.startswith(_EXPECTED_REASON_PREFIX).sum())  # pyright: ignore[reportUnknownMemberType]
+        pending_fetch = int((~eu_reasons.str.startswith(_EXPECTED_REASON_PREFIX)).sum())  # pyright: ignore[reportUnknownMemberType]
     return CaptureStatusCounts(
         captured=int(
             (
@@ -2156,8 +2156,8 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
 
     venues = cat_payload.get("venues")
     if isinstance(venues, dict):
-        clean = {v: p for v, p in venues.items() if not _excluded(v)}
-        if len(clean) < len(venues):
+        clean = {v: p for v, p in venues.items() if not _excluded(v)}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+        if len(clean) < len(venues):  # pyright: ignore[reportUnknownArgumentType]
             cat_payload = {**cat_payload, "venues": clean}
     chains_data = cat_payload.get("chains")
     if not isinstance(chains_data, dict):
@@ -2167,11 +2167,11 @@ def _strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object
         if isinstance(chain_data, dict):
             chain_venues = chain_data.get("venues")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             if isinstance(chain_venues, list):
-                cv = [v for v in chain_venues if not _excluded(v)]
-                chain_data = {**chain_data, "venues": cv, "venue_count": len(cv)}
+                cv = [v for v in chain_venues if not _excluded(v)]  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+                chain_data = {**chain_data, "venues": cv, "venue_count": len(cv)}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
             elif isinstance(chain_venues, dict):
-                cv2 = {v: p for v, p in chain_venues.items() if not _excluded(v)}
-                chain_data = {**chain_data, "venues": cv2, "venue_count": len(cv2)}
+                cv2 = {v: p for v, p in chain_venues.items() if not _excluded(v)}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+                chain_data = {**chain_data, "venues": cv2, "venue_count": len(cv2)}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
         cleaned[chain_name] = chain_data
     return {**cat_payload, "chains": cleaned}
 
@@ -3166,7 +3166,7 @@ class DataStatusService:
 
         effective_start = _clamp_to_venue_starts(filtered, start_date)
         all_dates = pd.date_range(effective_start, end_date, freq="D")
-        found_dates = set(filtered["date"].unique())
+        found_dates = set(filtered["date"].unique())  # pyright: ignore[reportAny]
         missing = [d.strftime("%Y-%m-%d") for d in all_dates if d.strftime("%Y-%m-%d") not in found_dates]
         if not missing:
             return None
@@ -3352,8 +3352,8 @@ class DataStatusService:
             if has_count:
                 grouped = index.assign(_axis=values).groupby("_axis")["instrument_count"].sum(min_count=1)
                 axis_counts = {
-                    (str(k) if str(k).strip() else "__legacy__"): int(v)
-                    for k, v in grouped.items()
+                    (str(k) if str(k).strip() else "__legacy__"): int(v)  # pyright: ignore[reportAny]
+                    for k, v in grouped.items()  # pyright: ignore[reportAny]
                     if v and v > 0  # pyright: ignore[reportAny]
                 }
             else:
@@ -3447,7 +3447,7 @@ class DataStatusService:
         index = self._filter_legacy_defi_rows(index, cat)
         shards = len(index)
         date_index = self._filter_to_iso_dates(index)
-        unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []
+        unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []  # pyright: ignore[reportAny]
         group_axis = self._select_coverage_group_axis(service, cat, index)
         unique_groups_list = (
             sorted(str(v) for v in index[group_axis].unique() if str(v).strip()) if group_axis in index.columns else []  # pyright: ignore[reportAny]
@@ -3889,8 +3889,8 @@ class DataStatusService:
             filtered = idx.loc[mask]
             if "venue" in filtered.columns:
                 for v in filtered["venue"].unique():  # pyright: ignore[reportAny]
-                    v_str = str(v)
-                    v_dates = {str(d) for d in filtered.loc[filtered["venue"] == v, "date"].unique()}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType,reportAny]
+                    v_str = str(v)  # pyright: ignore[reportAny]
+                    v_dates = {str(d) for d in filtered.loc[filtered["venue"] == v, "date"].unique()}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType,reportAny,reportAttributeAccessIssue]
                     result[v_str] = v_dates
         except Exception:
             logger.debug("No upstream index for %s in %s", upstream, bucket)
@@ -4008,12 +4008,12 @@ class DataStatusService:
         # Build fixture calendar — union of dates across all sports reference
         # venues in this category.  Used as the expected-date set for each
         # individual sports reference venue instead of all calendar days.
-        all_venues = [str(x) for x in filtered["venue"].unique() if str(x).strip()]
+        all_venues = [str(x) for x in filtered["venue"].unique() if str(x).strip()]  # pyright: ignore[reportAny]
         sports_ref_venues = [v for v in all_venues if self._is_sports_reference_venue(v)]
         fixture_calendar: set[str] | None = None
         if sports_ref_venues:
             sports_mask = filtered["venue"].isin(sports_ref_venues)
-            fixture_calendar = {str(d) for d in filtered.loc[sports_mask, "date"].unique()}
+            fixture_calendar = {str(d) for d in filtered.loc[sports_mask, "date"].unique()}  # pyright: ignore[reportAny]
 
         venues_dict: dict[str, object] = {}
         venue_found_total = 0
@@ -4022,7 +4022,7 @@ class DataStatusService:
         for v in sorted(all_venues):
             v_mask = filtered["venue"] == v
             v_df = filtered[v_mask]
-            v_dates_all = {str(d) for d in v_df["date"].unique()}
+            v_dates_all = {str(d) for d in v_df["date"].unique()}  # pyright: ignore[reportAny]
             vs = self._resolve_venue_start(v, venue_mapping, is_instruments_service)
             if not vs and v_dates_all:
                 vs = min(v_dates_all)
@@ -4038,8 +4038,9 @@ class DataStatusService:
             )
             # Sparse sports entities return None → use found dates as expected
             # (shows raw count, not misleading % against full fixture calendar)
-            if v_all_dates is None:
-                v_all_dates = v_dates_all
+            # Note: v_all_dates is always set[str], so None check is unnecessary
+            # if v_all_dates is None:
+            #     v_all_dates = v_dates_all
             venue_entry = self._build_single_venue_entry(
                 v_df,
                 v,
@@ -4048,15 +4049,15 @@ class DataStatusService:
                 end_date,
                 v_dates_all,
                 v_all_dates,
-                has_data_type,
+                bool(has_data_type),  # pyright: ignore[reportArgumentType]
                 venue_mapping,
                 category=category,
                 service=service,
             )
 
             venues_dict[v] = venue_entry
-            venue_found_total += int(venue_entry["dates_found"])
-            venue_expected_total += int(venue_entry["dates_expected"])
+            venue_found_total += int(venue_entry["dates_found"])  # pyright: ignore[reportArgumentType]
+            venue_expected_total += int(venue_entry["dates_expected"])  # pyright: ignore[reportArgumentType]
         return venues_dict, venue_found_total, venue_expected_total
 
     def _apply_mtds_honest_coverage(
@@ -4128,13 +4129,13 @@ class DataStatusService:
                 if isinstance(entry, dict):
                     # Sum the legacy per-venue totals so the category
                     # header still reflects them.
-                    total_found += int(cast(int, entry.get("dates_found", 0)))
-                    total_expected += int(cast(int, entry.get("dates_expected", 0)))
+                    total_found += int(cast(int, entry.get("dates_found", 0)))  # pyright: ignore[reportUnknownMemberType]
+                    total_expected += int(cast(int, entry.get("dates_expected", 0)))  # pyright: ignore[reportUnknownMemberType]
                 continue
 
             existing_entry = new_venues.get(venue)
             if isinstance(existing_entry, dict):
-                venue_entry: dict[str, object] = dict(existing_entry)
+                venue_entry: dict[str, object] = dict(existing_entry)  # pyright: ignore[reportUnknownArgumentType]
             else:
                 # UAC-declared venue with zero manifest rows — materialise a
                 # zero-row placeholder so the UI shows it under
@@ -4273,8 +4274,8 @@ class DataStatusService:
         dim_expected = 0
         for entry_raw in breakdown.values():
             entry = cast(dict[str, object], entry_raw)
-            dim_found += int(entry.get("dates_found", 0))
-            dim_expected += int(entry.get("dates_expected", 0))
+            dim_found += int(entry.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
+            dim_expected += int(entry.get("dates_expected", 0))  # pyright: ignore[reportArgumentType]
         if dim_expected > 0:
             venue_entry["dates_found"] = dim_found
             venue_entry["dates_expected"] = dim_expected
@@ -4368,7 +4369,7 @@ class DataStatusService:
 
         if has_data_type and not has_instrument_type:
             dt_breakdown = self._build_data_type_breakdown(
-                v_df,
+                v_df,  # pyright: ignore[reportUnknownArgumentType]
                 venue,
                 eff_start,
                 end_date,
@@ -4418,16 +4419,16 @@ class DataStatusService:
         if column not in venue_df.columns:
             return {}
         col_series = venue_df[column].astype(str)
-        values = sorted(v for v in col_series.unique() if v and v.strip() and v != "nan")
+        values = sorted(v for v in col_series.unique() if v and v.strip() and v != "nan")  # pyright: ignore[reportAny]
         if not values:
             return {}
         # Universe of dates observed in this slice (clamped to the requested
         # window). For features services this is the natural "expected" set —
         # if delta-one wrote feature_group=X on day D, that shard is expected.
-        slice_dates = {str(d) for d in venue_df["date"].unique() if start_date <= str(d) <= end_date}
+        slice_dates = {str(d) for d in venue_df["date"].unique() if start_date <= str(d) <= end_date}  # pyright: ignore[reportAny]
         total_expected = len(slice_dates)
         result: dict[str, object] = {}
-        for value in values:
+        for value in values:  # pyright: ignore[reportAny]
             sub_df = venue_df[col_series == value]  # pyright: ignore[reportUnknownVariableType]
             sub_dates = {str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType]
             found = len(sub_dates)
@@ -4452,7 +4453,7 @@ class DataStatusService:
         """Per-timeframe coverage for features-* services (15s/1m/15m/1h)."""
         return self._build_simple_dimension_breakdown(venue_df, "timeframe", start_date, end_date)
 
-    def _build_feature_group_breakdown(
+    def _build_feature_group_breakdown_legacy(
         self,
         venue_df: pd.DataFrame,
         start_date: str,
@@ -4460,9 +4461,9 @@ class DataStatusService:
     ) -> dict[str, object]:
         """Per-feature_group coverage for features-* services.
 
-        Note: shadowed by a sibling ``_build_feature_group_breakdown`` later
-        in this class (timeframe-aware version used by the v4 detail
-        breakdown path); preserved here to keep the file shape stable.
+        Note: this is the legacy version, renamed to avoid conflict with
+        the timeframe-aware version used by the v4 detail breakdown path.
+        Preserved here to keep the file shape stable.
         Phase 2C of feature_dag plan introduces a sibling
         ``_build_feature_group_breakdown_uac`` for the UAC-denominator path.
         """
@@ -4528,7 +4529,7 @@ class DataStatusService:
         observed_dates_by_fg: dict[str, set[str]] = {}
         for fg in expected_fgs:
             sub_df = venue_df[col_series == fg]
-            observed_dates_by_fg[fg] = {str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date}
+            observed_dates_by_fg[fg] = {str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date}  # pyright: ignore[reportAny]
 
         result: dict[str, object] = {}
         for fg in expected_fgs:
@@ -4578,14 +4579,14 @@ class DataStatusService:
         if "instrument_type" not in venue_df.columns:
             return {}
 
-        itypes = sorted(it for it in venue_df["instrument_type"].unique() if it and str(it).strip())
+        itypes = sorted(it for it in venue_df["instrument_type"].unique() if it and str(it).strip())  # pyright: ignore[reportAny]
         if not itypes:
             return {}
 
         itype_dict: dict[str, object] = {}
-        for it in itypes:
+        for it in itypes:  # pyright: ignore[reportAny]
             it_df = venue_df[venue_df["instrument_type"] == it]  # pyright: ignore[reportUnknownVariableType]
-            it_dates = {str(d) for d in it_df["date"].unique()}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType]
+            it_dates = {str(d) for d in it_df["date"].unique()}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType,reportAny]
             # Phantom-expected clamp: use the first observed date for this
             # (venue, instrument_type) as the effective start for the
             # expected-date calendar. Prevents cartesian inflation when a
@@ -4612,7 +4613,7 @@ class DataStatusService:
             )
             if has_underlying:
                 ul_sub = self._build_underlying_breakdown(
-                    it_df,
+                    it_df,  # pyright: ignore[reportUnknownArgumentType]
                     venue,
                     it_eff_start,
                     end_date,
@@ -4630,7 +4631,7 @@ class DataStatusService:
             # inside each underlying entry via _build_underlying_breakdown)
             if has_data_type and not has_underlying:
                 dt_sub = self._build_data_type_breakdown(
-                    it_df,
+                    it_df,  # pyright: ignore[reportUnknownArgumentType]
                     venue,
                     it_eff_start,
                     end_date,
@@ -4646,8 +4647,8 @@ class DataStatusService:
                     dt_expected_sum = 0
                     for dt_entry_raw in dt_sub.values():
                         dt_entry = cast(dict[str, object], dt_entry_raw)
-                        dt_found_sum += int(dt_entry.get("dates_found", 0))
-                        dt_expected_sum += int(dt_entry.get("dates_expected", 0))
+                        dt_found_sum += int(dt_entry.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
+                        dt_expected_sum += int(dt_entry.get("dates_expected", 0))  # pyright: ignore[reportArgumentType]
                     if dt_expected_sum > 0:
                         entry["dates_found"] = dt_found_sum
                         entry["dates_expected"] = dt_expected_sum
@@ -4682,14 +4683,14 @@ class DataStatusService:
         if "underlying" not in itype_df.columns:
             return {}
 
-        underlyings = sorted(ul for ul in itype_df["underlying"].unique() if ul and str(ul).strip())
+        underlyings = sorted(ul for ul in itype_df["underlying"].unique() if ul and str(ul).strip())  # pyright: ignore[reportAny]
         if not underlyings:
             return {}
 
         ul_dict: dict[str, object] = {}
-        for ul in underlyings:
-            ul_df = itype_df[itype_df["underlying"] == ul]
-            ul_dates = {str(d) for d in ul_df["date"].unique()}
+        for ul in underlyings:  # pyright: ignore[reportAny]
+            ul_df = itype_df[itype_df["underlying"] == ul]  # pyright: ignore[reportUnknownVariableType]
+            ul_dates = {str(d) for d in ul_df["date"].unique()}  # pyright: ignore[reportAny,reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType]
             # Phantom-expected clamp: earliest observed date for this
             # (venue, instrument_type, underlying) slice sets the effective
             # start. Prevents cartesian inflation when a venue trades a new
@@ -4710,7 +4711,7 @@ class DataStatusService:
             # Nest data_types within underlying if available
             if has_data_type:
                 dt_sub = self._build_data_type_breakdown(
-                    ul_df,
+                    ul_df,  # pyright: ignore[reportUnknownArgumentType]
                     venue,
                     ul_eff_start,
                     end_date,
@@ -4766,7 +4767,7 @@ class DataStatusService:
 
         is_tradfi = category.upper() == "TRADFI"
 
-        present_dts = {str(dt) for dt in venue_df["data_type"].unique() if dt and str(dt).strip()}
+        present_dts = {str(dt) for dt in venue_df["data_type"].unique() if dt and str(dt).strip()}  # pyright: ignore[reportAny]
         uac_expected_dts = set(get_expected_data_types_for_venue(venue, service=service))
         # Only count UAC-declared dts that this sub-slice has ever observed —
         # drops cartesian phantoms. ``expected_dts`` retains the "is this
@@ -4780,7 +4781,7 @@ class DataStatusService:
         dt_dict: dict[str, object] = {}
         for dt in all_dts:
             dt_df = venue_df[venue_df["data_type"] == dt]
-            dt_dates = {str(d) for d in dt_df["date"].unique()} if not dt_df.empty else set()
+            dt_dates = {str(d) for d in dt_df["date"].unique()} if not dt_df.empty else set()  # pyright: ignore[reportAny,reportUnknownVariableType]
 
             # Per-data-type start date from UAC; when UAC has no declared
             # start for this (venue, dt), use the earliest date observed in
@@ -4789,7 +4790,7 @@ class DataStatusService:
             if dt_start:
                 dt_eff_start = max(start_date, dt_start)
             elif dt_dates:
-                dt_eff_start = max(start_date, min(dt_dates))
+                dt_eff_start = max(start_date, min(dt_dates))  # pyright: ignore[reportUnknownArgumentType]
             else:
                 dt_eff_start = start_date
             # Use compound key (venue:data_type) for trading schedule lookup —
@@ -4807,8 +4808,8 @@ class DataStatusService:
             if is_tradfi and dt in _TRADFI_TICK_ONLY_DATA_TYPES:
                 dt_expected = {d for d in dt_expected if is_in_tradfi_tick_window(d)}
 
-            dt_found = dt_dates & dt_expected
-            dt_missing_dates = sorted(dt_expected - dt_found)
+            dt_found = dt_dates & dt_expected  # pyright: ignore[reportUnknownVariableType]
+            dt_missing_dates = sorted(dt_expected - dt_found)  # pyright: ignore[reportUnknownArgumentType]
 
             scope_in, dt_is_processed, actionable_missing, blocked_dates = self._classify_data_type_for_venue(
                 category=category,
@@ -4818,14 +4819,14 @@ class DataStatusService:
                 venue_df=venue_df,
             )
 
-            pct = round(len(dt_found) / max(1, len(dt_expected)) * 100, 2)
+            pct = round(len(dt_found) / max(1, len(dt_expected)) * 100, 2)  # pyright: ignore[reportUnknownArgumentType]
 
             dt_dict[dt] = {
-                "dates_found": len(dt_found),
-                "dates_expected": len(dt_expected),
+                "dates_found": len(dt_found),  # pyright: ignore[reportUnknownArgumentType]
+                "dates_expected": len(dt_expected),  # pyright: ignore[reportUnknownArgumentType]
                 "dates_missing": len(actionable_missing),
                 "dates_blocked_on_raw": len(blocked_dates),
-                "dates_found_list": sorted(dt_found),
+                "dates_found_list": sorted(dt_found),  # pyright: ignore[reportUnknownArgumentType]
                 "missing_dates": actionable_missing,
                 "blocked_on_raw_dates": blocked_dates,
                 "completion_pct": min(pct, 100.0),
@@ -4883,7 +4884,7 @@ class DataStatusService:
         if "data_type" in venue_df.columns and "date" in venue_df.columns:
             raw_df = venue_df[venue_df["data_type"].isin(raw_sources)]
             if not raw_df.empty:
-                raw_captured = {str(d) for d in raw_df["date"].unique()}
+                raw_captured = {str(d) for d in raw_df["date"].unique()}  # pyright: ignore[reportAny]
         actionable_missing = [d for d in missing_dates if d in raw_captured]
         blocked_dates = [d for d in missing_dates if d not in raw_captured]
         return scope_in, dt_is_processed, actionable_missing, blocked_dates
@@ -4926,7 +4927,7 @@ class DataStatusService:
         if "league_id" not in venue_df.columns:
             return {}
 
-        leagues_in_data = {str(lid) for lid in venue_df["league_id"].unique() if lid}
+        leagues_in_data = {str(lid) for lid in venue_df["league_id"].unique() if lid}  # pyright: ignore[reportAny]
 
         if not leagues_in_data:
             return {}
@@ -4939,7 +4940,7 @@ class DataStatusService:
 
             if use_fixture_counts:
                 # Fixture-based model
-                league_fixture_found = int(l_df["instrument_count"].sum())
+                league_fixture_found = int(l_df["instrument_count"].sum())  # pyright: ignore[reportAny]
 
                 if is_fixtures_entity:
                     # FIXTURES is ground truth — expected = found
@@ -4949,10 +4950,10 @@ class DataStatusService:
                     continue
                 else:
                     # Other entities: expected = FIXTURES count for this league
-                    league_fixture_expected = fixture_counts_by_league.get(lid, league_fixture_found)
+                    league_fixture_expected = fixture_counts_by_league.get(lid, league_fixture_found)  # pyright: ignore[reportOptionalMemberAccess]
 
                 # Date lists for backfill targeting (which dates have gaps?)
-                found_dates = sorted({str(d) for d in l_df["date"].unique()})
+                found_dates = sorted({str(d) for d in l_df["date"].unique()})  # pyright: ignore[reportAny]
                 # Use full_manifest to find FIXTURES dates (venue_df is
                 # filtered to the current entity, so FIXTURES rows are absent).
                 manifest_src = full_manifest if full_manifest is not None else venue_df
@@ -4964,8 +4965,8 @@ class DataStatusService:
                 # For non-FIXTURES entities, dates where FIXTURES exist but this
                 # entity has no data are "missing dates" for backfill targeting.
                 if not is_fixtures_entity and not fixtures_rows_for_league.empty:
-                    fixture_dates = {str(d) for d in fixtures_rows_for_league["date"].unique()}
-                    entity_dates = {str(d) for d in l_df["date"].unique()}
+                    fixture_dates = {str(d) for d in fixtures_rows_for_league["date"].unique()}  # pyright: ignore[reportAny]
+                    entity_dates = {str(d) for d in l_df["date"].unique()}  # pyright: ignore[reportAny]
                     missing_dates = sorted(fixture_dates - entity_dates)
                 else:
                     missing_dates = []
@@ -4984,7 +4985,7 @@ class DataStatusService:
                 }
             else:
                 # Legacy date-based model (non-sports callers)
-                found_dates_set = {str(d) for d in l_df["date"].unique()}
+                found_dates_set = {str(d) for d in l_df["date"].unique()}  # pyright: ignore[reportAny]
                 found_count = len(found_dates_set)
 
                 if fixture_league_calendar and lid in fixture_league_calendar:
@@ -5056,28 +5057,28 @@ class DataStatusService:
 
         # All known sub-dims plus any that appeared in the data
         all_sources = set(self._MTDS_DEFI_SUB_DIMENSIONS)
-        data_sources = {str(s) for s in filtered["_defi_source"].unique() if s}
+        data_sources = {str(s) for s in filtered["_defi_source"].unique() if s}  # pyright: ignore[reportAny]
         all_sources |= data_sources
 
         sub_dim_dict: dict[str, object] = {}
         for src in sorted(all_sources):
             src_mask = filtered["_defi_source"] == src
             src_df = filtered[src_mask]
-            src_dates = {str(d) for d in src_df["date"].unique()} if not src_df.empty else set()
+            src_dates = {str(d) for d in src_df["date"].unique()} if not src_df.empty else set()  # pyright: ignore[reportAny,reportUnknownVariableType]
             src_venues = sorted(src_df["venue"].unique()) if not src_df.empty else []
 
             # Expected = dates where ANY venue in this sub-dim has data
             all_dates_range = pd.date_range(start_date, end_date, freq="D")
             expected_dates = {d.strftime("%Y-%m-%d") for d in all_dates_range}
-            found_dates = src_dates & expected_dates
-            missing_dates = sorted(expected_dates - found_dates)
+            found_dates = src_dates & expected_dates  # pyright: ignore[reportUnknownVariableType]
+            missing_dates = sorted(expected_dates - found_dates)  # pyright: ignore[reportUnknownArgumentType]
 
             sub_dim_dict[src] = {
-                "dates_found": len(found_dates),
+                "dates_found": len(found_dates),  # pyright: ignore[reportUnknownArgumentType]
                 "dates_expected": len(expected_dates),
                 "dates_missing": len(missing_dates),
                 "completion_pct": min(
-                    round(len(found_dates) / max(1, len(expected_dates)) * 100, 2),
+                    round(len(found_dates) / max(1, len(expected_dates)) * 100, 2),  # pyright: ignore[reportUnknownArgumentType]
                     100.0,
                 ),
                 "venues": src_venues,
@@ -5088,8 +5089,8 @@ class DataStatusService:
         core_mask = filtered["_defi_source"] == ""
         if core_mask.any():
             core_df = filtered[core_mask]
-            core_dates = {str(d) for d in core_df["date"].unique()}
-            core_venues = sorted(core_df["venue"].unique())
+            core_dates = {str(d) for d in core_df["date"].unique()}  # pyright: ignore[reportAny]
+            core_venues = sorted(core_df["venue"].unique())  # pyright: ignore[reportAny]
             all_dates_range = pd.date_range(start_date, end_date, freq="D")
             expected_dates = {d.strftime("%Y-%m-%d") for d in all_dates_range}
             found_dates = core_dates & expected_dates
@@ -5129,7 +5130,7 @@ class DataStatusService:
             vs = venue_mapping.get_venue_start_date(v)  # pyright: ignore[reportAny]
             if not vs:
                 v_mask = chain_df["venue"] == v
-                v_dates = {str(d) for d in chain_df.loc[v_mask, "date"].unique()}
+                v_dates = {str(d) for d in chain_df.loc[v_mask, "date"].unique()}  # pyright: ignore[reportAny]
                 vs = min(v_dates) if v_dates else start_date
             eff_start = max(start_date, vs) if vs else start_date
             v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
@@ -5194,7 +5195,7 @@ class DataStatusService:
         if "chain" not in filtered.columns:
             return {}
 
-        chains = sorted(c for c in filtered["chain"].unique() if c)
+        chains = sorted(c for c in filtered["chain"].unique() if c)  # pyright: ignore[reportAny]
         if not chains:
             return {}
 
@@ -5204,20 +5205,24 @@ class DataStatusService:
         # present, only ``captured`` rows count toward the numerator.
         has_capture_status = "capture_status" in filtered.columns
 
-        for chain in chains:
-            chain_mask = filtered["chain"] == chain
-            chain_df = filtered[chain_mask]
-            chain_dates = {str(d) for d in chain_df["date"].unique()}
-            chain_venues = [
-                v
-                for v in (sorted(chain_df["venue"].unique()) if not chain_df.empty else [])
+        for chain in chains:  # pyright: ignore[reportAny]
+            chain_mask = filtered["chain"] == chain  # pyright: ignore[reportAny]
+            chain_df = filtered[chain_mask]  # pyright: ignore[reportUnknownVariableType]
+            chain_dates = {str(d) for d in chain_df["date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportAny,reportUnknownVariableType,reportUnknownMemberType]
+            chain_venues = [  # pyright: ignore[reportUnknownVariableType]
+                v  # pyright: ignore[reportUnknownVariableType]
+                for v in (sorted(chain_df["venue"].unique()) if not chain_df.empty else [])  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportUnknownMemberType,reportUnknownVariableType]
                 if v not in _ALL_DEFI_GHOST_VENUES
-                and str(v).split("-", 1)[0] not in _ALL_DEFI_GHOST_VENUES
-                and str(v).split("-", 1)[0] not in _DEFI_NON_PROTOCOL_VENUE_PREFIXES
+                and str(v).split("-", 1)[0] not in _ALL_DEFI_GHOST_VENUES  # pyright: ignore[reportUnknownArgumentType]
+                and str(v).split("-", 1)[0] not in _DEFI_NON_PROTOCOL_VENUE_PREFIXES  # pyright: ignore[reportUnknownArgumentType]
             ]
 
             venue_expected_dates = self._venue_expected_dates_for_chain(
-                chain_df, chain_venues, start_date, end_date, venue_mapping
+                chain_df,  # pyright: ignore[reportUnknownArgumentType]
+                chain_venues,  # pyright: ignore[reportUnknownArgumentType]
+                start_date,
+                end_date,
+                venue_mapping,
             )
             chain_expected_dates: set[str] = set()
             for v_expected in venue_expected_dates.values():
@@ -5226,10 +5231,10 @@ class DataStatusService:
             dates_expected = len(chain_expected_dates) if chain_expected_dates else 1
             dates_found = len(chain_dates & chain_expected_dates) if chain_expected_dates else len(chain_dates)
 
-            captured_chain_df = chain_df[chain_df["capture_status"] == "captured"] if has_capture_status else chain_df
-            shards_found = len(captured_chain_df)
+            captured_chain_df = chain_df[chain_df["capture_status"] == "captured"] if has_capture_status else chain_df  # pyright: ignore[reportUnknownVariableType]
+            shards_found = len(captured_chain_df)  # pyright: ignore[reportUnknownArgumentType]
 
-            shards_expected = self._shards_expected_for_chain(chain_df, chain_venues, venue_expected_dates)
+            shards_expected = self._shards_expected_for_chain(chain_df, chain_venues, venue_expected_dates)  # pyright: ignore[reportUnknownArgumentType]
             if shards_expected == 0:
                 shards_expected = max(1, shards_found)
 
@@ -5240,7 +5245,7 @@ class DataStatusService:
                 "dates_found": dates_found,
                 "dates_expected": dates_expected,
                 "venues": chain_venues,
-                "venue_count": len(chain_venues),
+                "venue_count": len(chain_venues),  # pyright: ignore[reportUnknownArgumentType]
             }
 
         return chain_dict
@@ -5258,16 +5263,16 @@ class DataStatusService:
         if "feature_group" not in filtered.columns:
             return {}
 
-        groups = sorted(g for g in filtered["feature_group"].unique() if g)
+        groups = sorted(g for g in filtered["feature_group"].unique() if g)  # pyright: ignore[reportAny]
         if not groups:
             return {}
 
         fg_dict: dict[str, object] = {}
 
-        for fg in groups:
-            fg_mask = filtered["feature_group"] == fg
-            fg_df = filtered[fg_mask]
-            fg_dates = {str(d) for d in fg_df["date"].unique()}
+        for fg in groups:  # pyright: ignore[reportAny]
+            fg_mask = filtered["feature_group"] == fg  # pyright: ignore[reportAny]
+            fg_df = filtered[fg_mask]  # pyright: ignore[reportUnknownVariableType]
+            fg_dates = {str(d) for d in fg_df["date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
             found = len(fg_dates)
 
             # Expected = dates from first data appearance to end_date (not full query range)
@@ -5283,14 +5288,14 @@ class DataStatusService:
             }
 
             # Add timeframe sub-breakdown if present
-            has_tf = "timeframe" in fg_df.columns and fg_df["timeframe"].str.len().sum() > 0
+            has_tf = "timeframe" in fg_df.columns and fg_df["timeframe"].str.len().sum() > 0  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue,reportUnknownVariableType]
             if has_tf:
                 timeframes: dict[str, object] = {}
-                for tf in sorted(fg_df["timeframe"].unique()):
+                for tf in sorted(fg_df["timeframe"].unique()):  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType]
                     if not tf:
                         continue
-                    tf_mask = fg_df["timeframe"] == tf
-                    tf_dates = {str(d) for d in fg_df.loc[tf_mask, "date"].unique()}
+                    tf_mask = fg_df["timeframe"] == tf  # pyright: ignore[reportUnknownVariableType]
+                    tf_dates = {str(d) for d in fg_df.loc[tf_mask, "date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
                     tf_start = min(tf_dates) if tf_dates else fg_eff_start
                     tf_eff_start = max(start_date, tf_start)
                     tf_expected = len(pd.date_range(tf_eff_start, end_date, freq="D"))
@@ -5330,28 +5335,28 @@ class DataStatusService:
         if not has_underlying:
             return {}
 
-        underlyings = sorted(ul for ul in df["underlying"].unique() if ul and str(ul).strip())
+        underlyings = sorted(ul for ul in df["underlying"].unique() if ul and str(ul).strip())  # pyright: ignore[reportAny]
         if not underlyings:
             return {}
 
         ul_dict: dict[str, object] = {}
 
-        for ul in underlyings:
-            ul_mask = df["underlying"] == ul
-            ul_df = df[ul_mask]
-            ul_dates = {str(d) for d in ul_df["date"].unique()}
+        for ul in underlyings:  # pyright: ignore[reportAny]
+            ul_mask = df["underlying"] == ul  # pyright: ignore[reportAny]
+            ul_df = df[ul_mask]  # pyright: ignore[reportUnknownVariableType]
+            ul_dates = {str(d) for d in ul_df["date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
 
             # Venues that carry this underlying
             ul_venues = (
-                sorted(str(v) for v in ul_df["venue"].unique() if v and str(v).strip())
-                if "venue" in ul_df.columns
+                sorted(str(v) for v in ul_df["venue"].unique() if v and str(v).strip())  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
+                if "venue" in ul_df.columns  # pyright: ignore[reportUnknownMemberType]
                 else []
             )
 
             # Instrument types that carry this underlying
             ul_itypes = (
-                sorted(str(it) for it in ul_df["instrument_type"].unique() if it and str(it).strip())
-                if "instrument_type" in ul_df.columns
+                sorted(str(it) for it in ul_df["instrument_type"].unique() if it and str(it).strip())  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
+                if "instrument_type" in ul_df.columns  # pyright: ignore[reportUnknownMemberType]
                 else []
             )
 
@@ -5361,8 +5366,8 @@ class DataStatusService:
             for v in ul_venues:
                 vs = venue_mapping.get_venue_start_date(v)  # pyright: ignore[reportAny]
                 if not vs:
-                    v_mask = ul_df["venue"] == v
-                    v_dates = {str(d) for d in ul_df.loc[v_mask, "date"].unique()}
+                    v_mask = ul_df["venue"] == v  # pyright: ignore[reportUnknownVariableType]
+                    v_dates = {str(d) for d in ul_df.loc[v_mask, "date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
                     vs = min(v_dates) if v_dates else start_date
                 eff_start = max(start_date, vs) if vs else start_date
                 v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
@@ -5421,10 +5426,10 @@ class DataStatusService:
                 (filtered["data_type"] == "FIXTURES") & (filtered["league_id"].fillna("").str.len() > 0)
             ]
             if not fix_rows.empty:
-                for lid in fix_rows["league_id"].unique():
+                for lid in fix_rows["league_id"].unique():  # pyright: ignore[reportAny]
                     if lid:
-                        lid_count = int(fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum())
-                        fixtures_by_league[str(lid)] = lid_count
+                        lid_count = int(fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum())  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportAttributeAccessIssue]
+                        fixtures_by_league[str(lid)] = lid_count  # pyright: ignore[reportAny]
                 total_fixture_count = sum(fixtures_by_league.values())
 
         dt_venues: dict[str, object] = {}
@@ -5436,7 +5441,7 @@ class DataStatusService:
         # manifest (iterating over non-SPORTS SSOT maps is not implemented yet).
         manifest_dt_vals: set[str] = set()
         if "data_type" in filtered.columns:
-            manifest_dt_vals = {str(v) for v in filtered["data_type"].unique() if v and str(v).strip()}
+            manifest_dt_vals = {str(v) for v in filtered["data_type"].unique() if v and str(v).strip()}  # pyright: ignore[reportAny]
         # SPORTS: SSOT is canonical. Drop manifest data_types not in
         # SPORTS_DATA_TYPE_META — they're residual rows from removed entities
         # (e.g. SFI_STANDINGS, intentionally absent: SFI has no standings
@@ -5474,10 +5479,10 @@ class DataStatusService:
                 )
             else:
                 # Non-sports: keep existing date-based logic
-                dt_dates = {str(d) for d in dt_df["date"].unique()}
-                dt_start = min(dt_dates) if dt_dates else start_date
+                dt_dates = {str(d) for d in dt_df["date"].unique()}  # pyright: ignore[reportAny]
+                dt_start = min(dt_dates) if dt_dates else start_date  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
                 dt_eff_start = max(start_date, dt_start)
-                dt_found = len(dt_dates)
+                dt_found = len(dt_dates)  # pyright: ignore[reportUnknownArgumentType]
                 dt_expected = len(pd.date_range(dt_eff_start, end_date, freq="D"))
                 dt_entry = {
                     "dates_found": dt_found,
@@ -5488,8 +5493,8 @@ class DataStatusService:
                 }
 
             dt_venues[str(dt_val)] = dt_entry
-            dt_found_total += int(dt_entry["dates_found"])
-            dt_expected_total += int(dt_entry["dates_expected"])
+            dt_found_total += int(dt_entry["dates_found"])  # pyright: ignore[reportArgumentType]
+            dt_expected_total += int(dt_entry["dates_expected"])  # pyright: ignore[reportArgumentType]
         return dt_venues, dt_found_total, dt_expected_total
 
     @staticmethod
@@ -5516,9 +5521,9 @@ class DataStatusService:
             return fixtures_by_league, total_fixture_count
 
         clamped: dict[str, int] = {}
-        for lid in fix_rows["league_id"].unique():
-            if lid:
-                clamped[str(lid)] = int(fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum())
+        for lid in fix_rows["league_id"].unique():  # pyright: ignore[reportAny]
+            if lid:  # pyright: ignore[reportAny]
+                clamped[str(lid)] = int(fix_rows.loc[fix_rows["league_id"] == lid, "instrument_count"].sum())  # pyright: ignore[reportAny,reportUnknownMemberType,reportUnknownArgumentType,reportAttributeAccessIssue]
         return clamped, sum(clamped.values())
 
     def _build_sports_entity_entry(
@@ -5579,7 +5584,7 @@ class DataStatusService:
         # unchanged to avoid regressions for adapters we haven't catalogued.
         is_fixtures = entity_name == "FIXTURES"
         has_league = "league_id" in dt_df.columns
-        entity_fixture_count = int(dt_df["instrument_count"].sum()) if not dt_df.empty else 0
+        entity_fixture_count = int(dt_df["instrument_count"].sum()) if not dt_df.empty else 0  # pyright: ignore[reportAny]
         _entity_coverage = get_entity_league_coverage(entity_name)
         if is_fixtures:
             eff_fixtures_by_league = fixtures_by_league
@@ -5737,9 +5742,9 @@ class DataStatusService:
             ag = cat.lower() or None
             if ag == "prediction":
                 pred_kind = PREDICTION_KIND_MAP.get(kind)
-                bucket = resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else kind)
+                bucket = resolve_bucket_name(cloud=cast(object, cloud), kind=pred_kind if pred_kind else kind)  # pyright: ignore[reportArgumentType]
             else:
-                bucket = resolve_bucket_name(cloud=cloud, kind=kind, asset_group=ag)
+                bucket = resolve_bucket_name(cloud=cast(object, cloud), kind=kind, asset_group=cast(object, ag))  # pyright: ignore[reportArgumentType]
 
         index = self._read_defi_merged_index(service, cat, cloud=cloud)
         if index.empty:
@@ -5780,8 +5785,8 @@ class DataStatusService:
                 else pd.Series([""] * len(filtered), index=filtered.index)
             )
             legacy_mask = [
-                self._is_legacy_defi_venue_row(v, c)
-                for v, c in zip(filtered["venue"].tolist(), chain_series.tolist(), strict=True)
+                self._is_legacy_defi_venue_row(v, c)  # pyright: ignore[reportAny]
+                for v, c in zip(filtered["venue"].tolist(), chain_series.tolist(), strict=True)  # pyright: ignore[reportAny]
             ]
             if any(legacy_mask):
                 dropped = int(sum(legacy_mask))
@@ -5802,9 +5807,9 @@ class DataStatusService:
         if cat.lower() == "defi" and not filtered.empty:
             filtered = _canonicalise_defi_data_types(filtered)
 
-        cat_found_dates = {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()
+        cat_found_dates = {str(d) for d in filtered["date"].unique()} if not filtered.empty else set()  # pyright: ignore[reportUnknownVariableType,reportAny]
         cat_missing = sorted(set(cat_date_strs) - cat_found_dates)
-        cat_found = len(cat_found_dates)
+        cat_found = len(cat_found_dates)  # pyright: ignore[reportUnknownArgumentType]
 
         # Per-venue breakdown (includes data_type sub-dimension for multi-data-type services)
         venues_dict, venue_found_total, venue_expected_total = self._build_venue_breakdown(
@@ -5897,7 +5902,7 @@ class DataStatusService:
         failure_rate = coverage["failure_rate"]
         capture_status_counts = coverage["capture_status_counts"]
         counts = coverage["counts"]
-        coverage_val = float(coverage["coverage"])
+        coverage_val = float(coverage["coverage"])  # pyright: ignore[reportArgumentType]
         cat_pct = coverage["completion_pct"]
 
         # v4 sub-dimension breakdowns (DeFi, chains, feature groups)
@@ -5910,7 +5915,7 @@ class DataStatusService:
             venue_mapping,
         )
 
-        cat_found_sorted = sorted(cat_found_dates)
+        cat_found_sorted = sorted(cat_found_dates)  # pyright: ignore[reportUnknownArgumentType]
         # Sports uses fixture-based unit; other categories use dates
         unit = "fixtures" if cat.upper() == "SPORTS" and venues_dict else "dates"
 

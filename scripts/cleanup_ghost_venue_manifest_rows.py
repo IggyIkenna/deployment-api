@@ -57,7 +57,7 @@ def _clean_parquet_blob(
     from unified_trading_library import upload_to_storage
 
     raw = client.download_bytes(bucket, blob_name)  # type: ignore[attr-defined]
-    df = pd.read_parquet(io.BytesIO(raw))
+    df = pd.read_parquet(io.BytesIO(raw))  # type: ignore[misc]
     if "venue" not in df.columns:
         return 0
     venue_prefix = df["venue"].str.split("-", n=1).str[0]
