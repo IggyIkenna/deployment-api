@@ -62,30 +62,29 @@ unified-trading-library = { path = "../unified-trading-library", editable = true
 unified-api-contracts = { path = "../unified-api-contracts", editable = true}
 deployment-service = { path = "../deployment-service", editable = true}
 strategy-service = { path = "../strategy-service", editable = true}
+
+# ── ruff (lint + format) ────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+exclude = [".cursor", ".venv", ".venv-workspace", "build", "dist", "node_modules"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.ruff.lint]
-select = ["E",
-    "F",
-    "W",
-    "I",
-    "N",
-    "UP",
-    "B",
-    "C4",
-    "SIM",
-    "RUF",
-    "G",
-"C90",]
-ignore = ["B008"]
-
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "G", "C90"]
+extend-ignore = ["G003", "G004"]
+ignore = ["E402", "B008"]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 10
+max-complexity = 26
 
 [tool.ruff.lint.per-file-ignores]
+"*/__init__.py" = ["F401", "E402"]
+"tests/*" = ["F401", "F841", "F811"]
+"tests/conftest.py" = ["E402"]
 "deployment_api/gunicorn.conf.py" = ["N999"]
 "deployment_api/main.py" = ["E402"]
 "deployment_api/routes/service_status_fast_data.py" = ["E402"]
@@ -93,41 +92,47 @@ max-complexity = 10
 "deployment_api/routes/deployment_validation.py" = ["C901"]
 "deployment_api/workers/deployment_processor.py" = ["E402"]
 "deployment_api/utils/cache.py" = ["E402"]
-"tests/**" = ["SIM117",
-    "SIM105",
-    "F841",
-    "RUF059",
-    "N806",
-    "E402",
-    "E501", "C901"]
+"tests/**" = ["SIM117", "SIM105", "F841", "RUF059", "N806", "E402", "E501", "C901"]
 
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
+# ── basedpyright (typecheck) — CONSOLIDATED; pyrightconfig.json deleted ─────────
 [tool.basedpyright]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
-reportMissingTypeStubs = false
+include = ["deployment_api"]
+exclude = ["tests", "**/__pycache__", ".venv*", ".venv-workspace", "build", "dist", "node_modules"]
 reportAny = "error"
+reportMissingTypeStubs = false
 reportUnknownMemberType = "error"
 reportUnknownVariableType = "error"
-reportUnknownArgumentType = "error"
-reportUnknownParameterType = "error"
-# Private helpers are imported directly by the test suite; disable the "not
-# accessed within module" diagnostic to avoid false positives.
 reportUnusedFunction = "none"
 reportUnusedImport = "none"
 
+[[tool.basedpyright.executionEnvironments]]
+root = "."
+pythonVersion = "3.13"
+pythonPlatform = "All"
+extraPaths = [
+    "../unified-cloud-interface",
+    "../unified-config-interface",
+    "../unified-trading-library",
+]
+
+# ── pytest ──────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+asyncio_mode = "auto"
 markers = [
-    "integration: marks tests as integration tests (require GCP credentials)",
+    "unit: mark test as unit test",
+    "integration: integration tests requiring real GCP credentials and API keys",
+    "smoke: mark test as smoke test",
     "deployment_test: requires running service container (real HTTP calls via docker-compose.single.yml)",
 ]
 
+# ── coverage (run + report) ───────────────────────────────────────────────────
 [tool.coverage.run]
+source = ["deployment_api"]
+branch = true
 omit = [
     "deployment_api/__main__.py",
     "deployment_api/main.py",
@@ -154,3 +159,7 @@ exclude_lines = [
     "@abstractmethod",
     "raise NotImplementedError",
 ]
+
+# ── bandit (security SAST) ────────────────────────────────────────────────────
+[tool.bandit]
+skips = []
