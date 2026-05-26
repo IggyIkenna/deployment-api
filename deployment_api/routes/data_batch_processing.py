@@ -471,7 +471,7 @@ async def get_data_status_turbo_impl(
     """
     if mode not in ("batch", "live"):
         return {"error": f"Invalid mode: {mode}. Use 'batch' or 'live'."}
-    path_prefix = LIVE_PATH_PREFIX if mode == "live" else ""
+    path_prefix = LIVE_PATH_PREFIX if mode == "live" else ""  # noqa: L2-mode-seam
 
     # Pre-validate freshness_date format (result not yet consumed by _check_asset_group callers)
     if freshness_date:

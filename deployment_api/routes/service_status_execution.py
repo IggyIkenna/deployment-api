@@ -11,6 +11,8 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
+from unified_api_contracts import CaptureStatusCounts, compute_honest_coverage
+
 logger = logging.getLogger(__name__)
 
 # Module-level type aliases for execution service status structures
@@ -338,13 +340,17 @@ async def get_execution_service_data_status(
             hierarchy = _build_hierarchy_from_configs(configs, existing_ids, dates_by_strategy)
             strategies, total_configs, total_with_results, bd_mode, bd_tf, bd_algo = _summarize_hierarchy(hierarchy)
 
+            _counts = CaptureStatusCounts(
+                captured=total_with_results,
+                expected_unattempted_pending_fetch=total_configs - total_with_results,
+            )
             return {
                 "config_path": config_path,
                 "version": version,
                 "total_configs": total_configs,
                 "configs_with_results": total_with_results,
                 "missing_count": total_configs - total_with_results,
-                "completion_pct": (round(total_with_results / total_configs * 100, 1) if total_configs > 0 else 0),
+                "completion_pct": round(compute_honest_coverage(_counts) * 100, 1),
                 "strategy_count": len(strategies),
                 "strategies": strategies,
                 "breakdown_by_mode": bd_mode,

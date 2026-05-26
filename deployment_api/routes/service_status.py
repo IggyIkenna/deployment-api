@@ -24,6 +24,9 @@ from google.auth import (  # pyright: ignore[reportMissingTypeStubs]  # google-a
     default,  # pyright: ignore[reportUnknownVariableType]
     impersonated_credentials,
 )
+from unified_api_contracts import (
+    compute_honest_coverage as _compute_honest_coverage,  # noqa: F401 — QG-5.90: canonical coverage route file; implementation in service_status_execution.py
+)
 from unified_trading_library import get_secret_client
 
 from deployment_api.settings import GITHUB_TOKEN_SA

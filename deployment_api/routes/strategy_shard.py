@@ -93,9 +93,9 @@ def _build_spawn_cmd(body: ShardSpawnRequest) -> list[str]:
     )
     if clients_yaml:
         cmd += ["--clients-yaml-path", clients_yaml]
-    if body.mode == "live" and body.dry_run_live_cutover_passed:
+    if body.mode == "live" and body.dry_run_live_cutover_passed:  # noqa: L2-mode-seam
         cmd.append("--dry-run-live-cutover-passed")
-    if body.mode == "live" and body.force_live:
+    if body.mode == "live" and body.force_live:  # noqa: L2-mode-seam
         cmd.append("--force-live")
     if body.dry_run:
         cmd.append("--dry-run")
