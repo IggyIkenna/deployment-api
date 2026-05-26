@@ -756,7 +756,7 @@ def _first_parquet_under_prefix(gs_prefix: str) -> str | None:
     return None
 
 
-def _build_leaf_parquet_candidates(  # noqa: C901 — per-service GCS path routing dispatch; branching inherent to multi-service layout
+def _build_leaf_parquet_candidates(
     *,
     service: str,
     asset_group: str,

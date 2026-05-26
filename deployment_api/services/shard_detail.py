@@ -612,7 +612,7 @@ def _classify_legacy_empty_reason(
         return error_reason
 
 
-def _gcs_metadata(  # noqa: C901 — multi-field manifest status pipeline (GCS probe + status classify + v8 field decode); fields are independent but all belong to the same gcs block
+def _gcs_metadata(
     *,
     bucket: str | None,
     object_path: str | None,

@@ -473,7 +473,7 @@ class LiveClusterLaunchPreview:
         }
 
 
-def build_live_cluster_launch_preview(  # noqa: C901 — role validation + command assembly pipeline; multiple guard clauses inherent to launcher-script contract
+def build_live_cluster_launch_preview(
     *,
     role: str,
     asset_group: str | None,

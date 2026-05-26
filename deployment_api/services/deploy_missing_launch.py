@@ -284,7 +284,7 @@ class DeployMissingLaunchResult:
 # ── Main launch function ───────────────────────────────────────────────────────
 
 
-def launch_deploy_missing_vm(  # noqa: C901 — sequential launch pipeline: rate-limit → inflight → tarball → subprocess → poll; guard clauses are inherent
+def launch_deploy_missing_vm(
     *,
     service: str,
     asset_group: str,
