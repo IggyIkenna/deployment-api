@@ -236,7 +236,9 @@ class TestRunRollup:
 
         assert result == 0
 
-    def test_started_and_stopped_events_emitted(self) -> None:
+    def test_service_processed_event_emitted(self) -> None:
+        # Lifecycle STARTED/STOPPED now come from run_lifecycle in main(); run_rollup
+        # emits SERVICE_PROCESSED per-service. Verify that per-service event fires.
         from deployment_api.scripts.data_status_rollup_worker import run_rollup
 
         mock_storage, mock_dss_instance = self._make_mocks()
@@ -255,10 +257,11 @@ class TestRunRollup:
             run_rollup("test-project", "test-bucket", ["instruments-service"])
 
         event_types = [e[0] for e in log_calls]
-        assert "STARTED" in event_types
-        assert "STOPPED" in event_types
+        assert "SERVICE_PROCESSED" in event_types
 
-    def test_failed_event_on_all_failures(self) -> None:
+    def test_service_failed_event_on_all_failures(self) -> None:
+        # Lifecycle FAILED now comes from run_lifecycle in main() on unhandled exception;
+        # run_rollup emits SERVICE_FAILED per-service when individual service fails.
         from deployment_api.scripts.data_status_rollup_worker import run_rollup
 
         mock_storage = MagicMock()
@@ -281,7 +284,7 @@ class TestRunRollup:
             run_rollup("test-project", "test-bucket", ["instruments-service"])
 
         event_types = [e[0] for e in log_calls]
-        assert "FAILED" in event_types
+        assert "SERVICE_FAILED" in event_types
 
     def test_coverage_failure_does_not_fail_manifest(self) -> None:
         from deployment_api.scripts.data_status_rollup_worker import run_rollup

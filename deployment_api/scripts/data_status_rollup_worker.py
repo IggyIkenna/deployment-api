@@ -37,6 +37,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import gzip
 import io
@@ -46,7 +47,7 @@ import sys
 import time
 from typing import Any
 
-from unified_trading_library import GcsEventSink, get_storage_client, log_event, setup_events
+from unified_trading_library import GcsEventSink, get_storage_client, log_event, run_lifecycle, setup_events
 
 from deployment_api.services.data_status_service import DataStatusService
 
@@ -176,19 +177,6 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     import deployment_api.services.data_status_service as _dss_mod
 
     _dss_mod._PROCESS_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
-    # Production observability per CLAUDE.md "no fire-and-forget" rule —
-    # write structured lifecycle events to ``gs://{pid}-events/...`` where
-    # ``unified-events-interface`` UI ingests them. Schema:
-    # ``events/{service}/{YYYY-MM-DD}/{instance}/hour={H}/*.jsonl``.
-    import contextlib
-
-    # RuntimeError = already initialised by an outer bootstrap — acceptable.
-    with contextlib.suppress(RuntimeError):
-        _sink = GcsEventSink(
-            project_id=project_id, bucket=f"{project_id}-events", service_name="data-status-rollup-worker"
-        )
-        setup_events(service_name="data-status-rollup-worker", mode="batch", sink=_sink)
-    log_event("STARTED", details={"project_id": project_id, "bucket": bucket, "services": services})
 
     end_date = _today_iso()
     storage_client = get_storage_client(project_id=project_id)
@@ -267,14 +255,6 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
             )
             logger.exception("coverage rollup failed for service=%s", service)
 
-    log_event(
-        "STOPPED" if not failures else "FAILED",
-        details={
-            "successes": successes,
-            "failures": len(failures),
-            "failed_services": [s for s, _ in failures],
-        },
-    )
     # Non-zero exit if every service failed (cron fires next minute, idempotent
     # retry; no need to crash the job for partial successes).
     return 0 if successes > 0 else 1
@@ -297,7 +277,21 @@ def main() -> int:
         help="Services to roll up (default: all DataStatusService-tracked)",
     )
     args = parser.parse_args()
-    return run_rollup(args.project, args.bucket, list(args.services))  # pyright: ignore[reportAny]
+
+    # RuntimeError = already initialised by an outer bootstrap — acceptable.
+    with contextlib.suppress(RuntimeError):
+        _sink = GcsEventSink(
+            project_id=args.project,
+            bucket=f"{args.project}-events",
+            service_name="data-status-rollup-worker",
+        )
+        setup_events(service_name="data-status-rollup-worker", mode="batch", sink=_sink)
+
+    with run_lifecycle(
+        service_name="data-status-rollup-worker",
+        details={"project_id": args.project, "bucket": args.bucket},
+    ):
+        return run_rollup(args.project, args.bucket, list(args.services))  # pyright: ignore[reportAny]
 
 
 if __name__ == "__main__":
