@@ -461,11 +461,41 @@ async def get_coverage_summary(
         # Sample inventory so the redesigned overview's volume cards render
         # locally. Prod reads real manifest totals via data_status_service.
         _mock_ag: dict[str, dict[str, object]] = {
-            "cefi": {"total_shards": 96000, "total_instrument_rows": 12_500_000, "unique_dates": 2611, "unique_venues": 15, "latest_day_instruments": {"all": 4800}},
-            "tradfi": {"total_shards": 31500, "total_instrument_rows": 6_300_000, "unique_dates": 2316, "unique_venues": 6, "latest_day_instruments": {"all": 16336}},
-            "defi": {"total_shards": 45000, "total_instrument_rows": 2_000_000, "unique_dates": 2309, "unique_venues": 27, "latest_day_instruments": {"all": 2984}},
-            "sports": {"total_shards": 2_643_741, "total_instrument_rows": 2_643_741, "unique_dates": 4163, "unique_venues": 25, "latest_day_instruments": {"all": 26}},
-            "prediction": {"total_shards": 1944, "total_instrument_rows": 16800, "unique_dates": 435, "unique_venues": 1, "latest_day_instruments": {"all": 7821}},
+            "cefi": {
+                "total_shards": 96000,
+                "total_instrument_rows": 12_500_000,
+                "unique_dates": 2611,
+                "unique_venues": 15,
+                "latest_day_instruments": {"all": 4800},
+            },
+            "tradfi": {
+                "total_shards": 31500,
+                "total_instrument_rows": 6_300_000,
+                "unique_dates": 2316,
+                "unique_venues": 6,
+                "latest_day_instruments": {"all": 16336},
+            },
+            "defi": {
+                "total_shards": 45000,
+                "total_instrument_rows": 2_000_000,
+                "unique_dates": 2309,
+                "unique_venues": 27,
+                "latest_day_instruments": {"all": 2984},
+            },
+            "sports": {
+                "total_shards": 2_643_741,
+                "total_instrument_rows": 2_643_741,
+                "unique_dates": 4163,
+                "unique_venues": 25,
+                "latest_day_instruments": {"all": 26},
+            },
+            "prediction": {
+                "total_shards": 1944,
+                "total_instrument_rows": 16800,
+                "unique_dates": 435,
+                "unique_venues": 1,
+                "latest_day_instruments": {"all": 7821},
+            },
         }
         _ags = [a.strip().lower() for a in asset_groups.split(",")] if asset_groups else list(_mock_ag)
         _selected = {ag: _mock_ag[ag] for ag in _ags if ag in _mock_ag}
@@ -1014,8 +1044,12 @@ async def clear_turbo_cache():
             clear_index_cache,
             clear_rollup_cache,
         )
+        from deployment_api.services.index_cache import (
+            clear_index_cache as clear_ui_index_cache,
+        )
 
         clear_index_cache()
+        clear_ui_index_cache()  # the longer-lived (5-min) Data Status UI index cache
         clear_rollup_cache()
         clear_drilldown_cache()
         DataStatusService._REF_DATA_CACHE.clear()  # pyright: ignore[reportPrivateUsage]

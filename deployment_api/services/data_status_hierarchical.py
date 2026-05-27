@@ -43,10 +43,11 @@ from unified_api_contracts.registry.data_status_axis_matrix import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
 )
-from unified_trading_library import UnifiedCloudConfig, read_availability_index
+from unified_trading_library import UnifiedCloudConfig
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_mock_drilldown import build_mock_availability_index
+from deployment_api.services.index_cache import read_index_cached
 from deployment_api.services.reason_taxonomy import (
     ReasonCategory,
     classify_reason,
@@ -443,7 +444,7 @@ def get_hierarchical_drilldown(
     if _CLOUD_CFG.is_mock_mode():
         df = build_mock_availability_index(service, asset_group, axes, window_start, window_end)
     else:
-        df = read_availability_index(bucket)
+        df = read_index_cached(bucket)
     if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
         df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
     if df is None or len(df) == 0:  # pyright: ignore[reportUnnecessaryComparison]

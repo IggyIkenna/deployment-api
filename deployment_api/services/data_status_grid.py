@@ -26,10 +26,11 @@ from __future__ import annotations
 
 import pandas as pd
 from unified_api_contracts.registry.data_status_axis_matrix import get_primary_axis, get_shard_axes
-from unified_trading_library import UnifiedCloudConfig, read_availability_index
+from unified_trading_library import UnifiedCloudConfig
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_mock_drilldown import build_mock_availability_index
+from deployment_api.services.index_cache import read_index_cached
 
 _CLOUD_CFG = UnifiedCloudConfig()
 
@@ -80,7 +81,7 @@ def build_coverage_grid(
         df = build_mock_availability_index(service, asset_group, full_axes, window_start, window_end)
     else:
         bucket = build_bucket_name(service, asset_group, project_id=project_id)
-        df = read_availability_index(bucket)
+        df = read_index_cached(bucket)
 
     sub_axes = [a for a in axes if a != primary and a != "date"]
     empty_result: dict[str, object] = {
