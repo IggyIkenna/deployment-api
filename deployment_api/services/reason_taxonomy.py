@@ -24,6 +24,10 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from unified_api_contracts import EMPTY_CONFIRMED_REASONS as _UAC_EMPTY_CONFIRMED_REASONS
 
@@ -249,6 +253,11 @@ def classify_reason(capture_status: str | None, error_reason: str | None) -> Rea
     return ReasonCategory.FAIL_OTHER
 
 
+def empty_reason_grid() -> dict[str, int]:
+    """A zeroed full-grid dict (every category key present, count 0)."""
+    return {cat.value: 0 for cat in ReasonCategory}
+
+
 def rollup_reasons(
     pairs: Iterable[tuple[str | None, str | None]],
 ) -> dict[str, int]:
@@ -261,3 +270,63 @@ def rollup_reasons(
     for status, reason in pairs:
         counts[classify_reason(status, reason).value] += 1
     return {cat.value: int(counts.get(cat.value, 0)) for cat in ReasonCategory}
+
+
+def rollup_reasons_frame(status_series: pd.Series[object], reason_series: pd.Series[object]) -> dict[str, int]:
+    """Vectorised :func:`rollup_reasons` over two aligned pandas Series.
+
+    Equivalent result to ``rollup_reasons(zip(status, reason))`` but O(categories)
+    pandas passes instead of a per-row Python loop — required because a single
+    drilldown slice can be >1M rows (e.g. CeFi ``attempted_failed`` at the root).
+
+    Every :class:`ReasonCategory` key is present with count 0 when unmatched.
+    """
+    import pandas as pd
+
+    n = len(status_series)
+    out = empty_reason_grid()
+    if n == 0:
+        return out
+
+    status = status_series.fillna(_STATUS_CAPTURED).astype(str).str.strip().str.lower()
+    reason = reason_series.fillna("").astype(str).str.strip()
+    reason_lc = reason.str.lower()
+
+    # Start everyone as captured, then overwrite by status/reason. ``result`` holds
+    # the category value-string per row.
+    result = pd.Series(ReasonCategory.CAPTURED.value, index=status.index, dtype=object)
+
+    is_captured = status == _STATUS_CAPTURED
+    is_empty = status == _STATUS_EMPTY
+    is_failed = status == _STATUS_FAILED
+    is_unattempted = status == _STATUS_UNATTEMPTED
+    is_known_status = is_captured | is_empty | is_failed | is_unattempted
+
+    # empty_confirmed sub-split (set membership).
+    result = result.mask(is_empty, ReasonCategory.EMPTY_UNCLASSIFIED.value)
+    result = result.mask(is_empty & reason.isin(_EMPTY_COVERAGE_REASONS), ReasonCategory.EMPTY_COVERAGE.value)
+    result = result.mask(is_empty & reason.isin(_EMPTY_CALENDAR_REASONS), ReasonCategory.EMPTY_CALENDAR.value)
+    result = result.mask(is_empty & reason.isin(_EMPTY_SOURCE_ZERO_REASONS), ReasonCategory.EMPTY_SOURCE_ZERO.value)
+
+    # expected_unattempted: EXPECTED_* → coverage else pending.
+    eu_expected = is_unattempted & reason.str.startswith("EXPECTED_")
+    result = result.mask(is_unattempted, ReasonCategory.PENDING.value)
+    result = result.mask(eu_expected, ReasonCategory.EMPTY_COVERAGE.value)
+
+    # attempted_failed: first matching substring wins. Apply in REVERSE priority
+    # so earlier (higher-priority) fragments overwrite later ones.
+    result = result.mask(is_failed, ReasonCategory.FAIL_OTHER.value)
+    for fragment, category in reversed(_FAIL_SUBSTRINGS):
+        result = result.mask(is_failed & reason_lc.str.contains(fragment, regex=False), category.value)
+
+    # Unknown status string → fail_other (be honest).
+    result = result.mask(~is_known_status, ReasonCategory.FAIL_OTHER.value)
+
+    # Phantom wins over everything (captured row with no parquet is not captured).
+    phantom = reason_lc.str.contains(_PHANTOM_MARKER, regex=False)
+    result = result.mask(phantom, ReasonCategory.FAIL_PHANTOM.value)
+
+    counts = result.value_counts()
+    for key, val in counts.items():
+        out[str(key)] = int(val)
+    return out

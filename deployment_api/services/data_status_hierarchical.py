@@ -47,6 +47,11 @@ from unified_trading_library import UnifiedCloudConfig, read_availability_index
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_mock_drilldown import build_mock_availability_index
+from deployment_api.services.reason_taxonomy import (
+    ReasonCategory,
+    classify_reason,
+    rollup_reasons_frame,
+)
 
 _CLOUD_CFG = UnifiedCloudConfig()
 
@@ -103,6 +108,12 @@ class DrilldownNode:
     attempted_failed: int = 0
     children: list[DrilldownNode] = field(default_factory=list)
     row_key: dict[str, str] = field(default_factory=dict)
+    # Closed-set reason category (reason_taxonomy.ReasonCategory) for the
+    # WHOLE subtree below this node — answers "why isn't this captured?".
+    # ``""`` until populated (only the deepest/leaf axis sets it, to keep
+    # tree-build cheap; intermediate nodes rely on the response-level
+    # ``reason_summary``). Phantom > failed > empty > captured precedence.
+    reason_category: str = ""
 
     @property
     def total(self) -> int:
@@ -125,6 +136,7 @@ class DrilldownNode:
             "total": self.total,
             "completion_pct": self.completion_pct,
             "row_key": self.row_key,
+            "reason_category": self.reason_category,
             "children": [c.to_dict() for c in self.children],
             "is_leaf": not self.children,
         }
@@ -195,6 +207,59 @@ def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int]:
     return captured, empty_confirmed, attempted_failed
 
 
+# Above this row count we skip the (vectorised but still O(rows)) reason
+# rollup at the response root — only hit on an UNFILTERED whole-asset-group
+# drilldown, which is not the operator's normal path (they filter to a venue /
+# chain first). Filtered slices are far below this and always summarised.
+_REASON_SUMMARY_ROW_CAP: int = 600_000
+
+
+def _reason_summary_for_slice(rows: pd.DataFrame) -> dict[str, int]:
+    """Closed-set reason-category counts for a manifest slice (or ``{}`` when too big).
+
+    Returns the full category grid (every key present) so the UI renders a fixed
+    breakdown. Skipped (``{}``) above :data:`_REASON_SUMMARY_ROW_CAP` to bound the
+    cost of an unfiltered whole-AG drilldown; the UI shows "narrow the filter to
+    see the reason breakdown" in that case.
+    """
+    if rows.empty or "capture_status" not in rows.columns:
+        return {}
+    if len(rows) > _REASON_SUMMARY_ROW_CAP:
+        return {}
+    reason_col = rows["error_reason"] if "error_reason" in rows.columns else rows["capture_status"].map(lambda _v: "")  # pyright: ignore[reportUnknownMemberType,reportUnknownLambdaType,reportUnknownArgumentType]
+    return rollup_reasons_frame(rows["capture_status"], reason_col)
+
+
+def _dominant_reason_category(rows: pd.DataFrame) -> str:
+    """The single reason category that best describes a (small) leaf slice.
+
+    A leaf is one ``(shard_atom, day)`` — usually a single manifest row, but a
+    bundled / multi-row leaf is summarised by its dominant NON-captured category
+    (so a leaf that's mostly captured but has one failure still surfaces the
+    failure), falling back to ``captured`` when everything is captured.
+    """
+    if rows.empty:
+        return ""
+    if "capture_status" not in rows.columns:
+        return ReasonCategory.CAPTURED.value
+    if len(rows) == 1:
+        row = rows.iloc[0]
+        status = row.get("capture_status")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        reason = row.get("error_reason") if "error_reason" in rows.columns else ""  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        return classify_reason(
+            None if status is None else str(status),  # pyright: ignore[reportUnknownArgumentType]
+            None if reason is None else str(reason),  # pyright: ignore[reportUnknownArgumentType]
+        ).value
+    summary = rollup_reasons_frame(
+        rows["capture_status"],
+        rows["error_reason"] if "error_reason" in rows.columns else rows["capture_status"].map(lambda _v: ""),  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType,reportUnknownLambdaType]
+    )
+    non_captured = {k: v for k, v in summary.items() if k != ReasonCategory.CAPTURED.value and v > 0}
+    if non_captured:
+        return max(non_captured, key=lambda k: non_captured[k])
+    return ReasonCategory.CAPTURED.value
+
+
 def _children_for_axis(
     rows: pd.DataFrame,
     axis: str,
@@ -247,6 +312,9 @@ def _children_for_axis(
                 expand_to_depth,
                 current_depth + 1,
             )
+        if not deeper_axes:
+            # True leaf (deepest axis) — stamp the WHY badge from this slice.
+            node.reason_category = _dominant_reason_category(sub)  # pyright: ignore[reportUnknownArgumentType]
         children.append(node)
     return children
 
@@ -412,6 +480,8 @@ def get_hierarchical_drilldown(
     df = _stamp_feature_family(df)
     df = _filter_manifest(df, axes, filters)
 
+    reason_summary = _reason_summary_for_slice(df)
+
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)
     remaining_axes = axes[matched_depth:]
     if not remaining_axes:
@@ -420,6 +490,7 @@ def get_hierarchical_drilldown(
             "axes": list(axes),
             "tree": [],
             "totals": _totals_dict(captured, empty_confirmed, attempted_failed),
+            "reason_summary": reason_summary,
             "filtered_by": filters,
             "service": service,
             "asset_group": asset_group,
@@ -450,6 +521,7 @@ def get_hierarchical_drilldown(
         "axes": list(axes),
         "tree": [n.to_dict() for n in tree],
         "totals": _totals_dict(captured, empty_confirmed, attempted_failed),
+        "reason_summary": reason_summary,
         "filtered_by": filters,
         "service": service,
         "asset_group": asset_group,

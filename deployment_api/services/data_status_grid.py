@@ -33,7 +33,7 @@ from deployment_api.services.data_status_mock_drilldown import build_mock_availa
 
 _CLOUD_CFG = UnifiedCloudConfig()
 
-_STATUSES = ("captured", "empty_confirmed", "attempted_failed")
+_STATUSES = ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted")
 
 # Shard axes with at most this many distinct values are shipped to the UI
 # up-front (data_type, instrument_type, chain, league_id, feature_group,
@@ -42,10 +42,25 @@ _SMALL_AXIS_CAP = 300
 
 
 def _counts(frame: pd.DataFrame) -> dict[str, int]:
+    """Per-status counts for a slice, as a full 4-state grid.
+
+    NULL / blank ``capture_status`` (legacy instruments-store rows the Tier-3D
+    reconciler hasn't stamped — up to ~57k rows per bucket) coerce to
+    ``captured``, matching UTL legacy-read semantics + ``reason_taxonomy``. The
+    prior ``astype(str)`` turned NULL into the string ``"None"`` and silently
+    dropped those rows from every bucket — a real undercount.
+    """
+    base = dict.fromkeys(_STATUSES, 0)
     if "capture_status" not in frame.columns:
-        return {"captured": int(len(frame)), "empty_confirmed": 0, "attempted_failed": 0}
-    cs = frame["capture_status"].astype(str)
-    return {s: int((cs == s).sum()) for s in _STATUSES}
+        base["captured"] = len(frame)
+        return base
+    cs = frame["capture_status"].fillna("captured").astype(str)
+    cs = cs.where(cs.str.strip() != "", "captured")
+    counts = {s: int((cs == s).sum()) for s in _STATUSES}
+    # Anything not in the 4-state set (unexpected legacy value) → captured,
+    # so totals never silently shrink.
+    counts["captured"] += int((~cs.isin(_STATUSES)).sum())
+    return counts
 
 
 def build_coverage_grid(
@@ -75,7 +90,7 @@ def build_coverage_grid(
         "axis_values": {},
         "grid": {},
         "by_primary": {},
-        "total": {s: 0 for s in _STATUSES},
+        "total": dict.fromkeys(_STATUSES, 0),
         "meta": {"primary_count": 0, "days": 0, "shards_per_day": 0},
     }
     if df is None or len(df) == 0 or primary not in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
