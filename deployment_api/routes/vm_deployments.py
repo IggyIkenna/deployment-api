@@ -213,6 +213,65 @@ def list_vm_deployments(
     return VmDeploymentsListModel(active=active, recent=recent, archive_days=days)
 
 
+class VmReconcileResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Result of a registry reconcile sweep."""
+
+    reaped_count: int
+    reaped: list[str] = Field(default_factory=list, description="deployment_ids reaped")
+    running_vm_count: int
+    total_active_before: int
+
+
+@router.post("/vm-deployments/reconcile", response_model=VmReconcileResult, status_code=200)
+def reconcile_vm_deployments() -> VmReconcileResult:
+    """Reap stale active-registry entries: archive any whose VM is no longer RUNNING.
+
+    Compares the GCS active/ list against GCP's aggregated VM list.  Any entry
+    whose vm_name is absent from GCP (and whose heartbeat is older than 5 min
+    clock-skew tolerance) is archived with status=failed, exit_code=125,
+    reap_reason=vm_not_running.
+
+    Returns the count + ids of reaped entries so the caller can update the UI.
+    In mock mode returns a dry-run result without touching GCS.
+    """
+    if _cfg.is_mock_mode():
+        return VmReconcileResult(
+            reaped_count=0,
+            reaped=[],
+            running_vm_count=1,
+            total_active_before=1,
+        )
+
+    registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
+    project_id = _cfg.gcp_project_id or "central-element-323112"
+
+    try:
+        all_active = registry.list_active()
+        total_active_before = len(all_active)
+
+        vm_details = get_vm_instance_details(project_id)
+        running_vm_names = {name for name, details in vm_details.items() if details.get("status") == "RUNNING"}
+
+        reaped = registry.reap_stale(running_vm_names=running_vm_names)
+
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.exception("Registry reconcile failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Registry reconcile failed") from exc
+
+    logger.info(
+        "reconcile_vm_deployments: reaped %d of %d active entries (%d VMs running)",
+        len(reaped),
+        total_active_before,
+        len(running_vm_names),
+    )
+    return VmReconcileResult(
+        reaped_count=len(reaped),
+        reaped=[e.deployment_id for e in reaped],
+        running_vm_count=len(running_vm_names),
+        total_active_before=total_active_before,
+    )
+
+
 @router.get("/vm-deployments/{deployment_id}", response_model=VmDeploymentEntryModel)
 def get_vm_deployment(deployment_id: str) -> VmDeploymentEntryModel:
     """Return a single VM deployment by id (checks active + last 14 days archive)."""
