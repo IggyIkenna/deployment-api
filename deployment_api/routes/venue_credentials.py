@@ -129,3 +129,16 @@ async def _collect() -> list[VenueCredentialStatus]:
 async def get_venue_credentials() -> list[VenueCredentialStatus]:
     """Return per-venue API key status (name + status). Key values are never returned."""
     return await _collect()
+
+
+async def get_tardis_key_status() -> tuple[str, str]:
+    """Return (key_name, status) for the Tardis API key.
+
+    Shared helper used by venue-tardis-windows endpoint to avoid duplicating
+    the probe logic.
+    """
+    results = await _collect()
+    for r in results:
+        if r.venue == "tardis":
+            return r.name, r.status
+    return "tardis-api-key", "missing"
