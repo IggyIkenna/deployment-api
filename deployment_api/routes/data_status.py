@@ -774,6 +774,14 @@ async def get_data_status_turbo(
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
     asset_group: list[str] | None = Query(None, description="Filter by asset group"),
     venue: list[str] | None = Query(None, description="Filter by venue"),
+    pipeline_mode: list[str] | None = Query(
+        None,
+        description=(
+            "Filter by pipeline_mode (OR semantics). Accepts canonical PipelineMode values "
+            "e.g. 'batch_tardis', 'batch_databento', 'live_websocket'. "
+            "Bypasses rollup cache; forces on-demand manifest read."
+        ),
+    ),
     include_sub_dimensions: bool = Query(False, description="Include sub-dimension breakdown"),
     include_instrument_types: bool = Query(False, description="Include instrument type breakdown"),
     include_file_counts: bool = Query(False, description="Include per-date file counts"),
@@ -788,7 +796,7 @@ async def get_data_status_turbo(
         # /turbo or /manifest. Ignores venue/include_* filters in mock —
         # the seed data is enough to drive every UI flow.
         _ = (include_sub_dimensions, include_instrument_types, include_file_counts)
-        _ = (include_dates_list, venue)
+        _ = (include_dates_list, venue, pipeline_mode)
         return build_mock_turbo_response(
             service=service,
             start_date=start_date,
@@ -798,6 +806,8 @@ async def get_data_status_turbo(
     try:
         # Use manifest reader directly (faster, no CLI subprocess,
         # returns league breakdowns for sports venues).
+        _pipeline_modes = pipeline_mode or None
+
         async def _manifest_source(
             service: str,
             start_date: str,
@@ -811,6 +821,7 @@ async def get_data_status_turbo(
                 end_date=end_date,
                 asset_groups=asset_groups,
                 cloud=cloud,
+                pipeline_modes=_pipeline_modes,
             )
 
         result = await data_analytics_service.get_data_status_turbo(
@@ -820,6 +831,7 @@ async def get_data_status_turbo(
             from_data_status_service=_manifest_source,
             asset_groups=asset_group,
             venues=venue,
+            pipeline_modes=_pipeline_modes,
         )
 
         if "error" in result:
