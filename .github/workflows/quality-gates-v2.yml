@@ -1,0 +1,73 @@
+# quality-gates-v2.yml — UNIFIED quality-gates workflow template (v2, escapes GHA ghost cache)
+#
+# DESIGN: This is the v2 replacement for workspace-qg.yml. The v1 chain had
+# GitHub cache a BuildFailed state for check context "quality-gates". This template
+# calls python-quality-gates-v2.yml whose job key is "quality-gates-v2", registering
+# a fresh check context that bypasses the ghost cache (Option D).
+#
+# ## Trigger surface:
+#
+#  push to [main, staging] + pull_request to [main, staging] + workflow_dispatch
+#  (live-defi-rollout removed — already post-cutover scope)
+#
+# ## Substitution placeholders (rendered by rollout-workflow-templates.sh):
+#
+# - `unified-trading-library unified-api-contracts` — rendered from workspace-manifest.json
+# - `alerting-service` — repo name
+# - `alerting_service` — Python source dir
+
+name: quality-gates-v2
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+  workflow_dispatch:
+
+# Concurrency: cancel in-progress runs for the same ref on new push (saves Action minutes during
+# rapid push cadence). PR runs serialize per-PR.
+concurrency:
+  group: quality-gates-v2-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  quality-gates-v2:
+    name: Quality Gates (alerting-service)
+    uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates-v2.yml@live-defi-rollout
+    with:
+      dep_repos: "unified-trading-library unified-api-contracts"
+    secrets: inherit
+    # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
+    # are derived inside the reusable workflow from github.repository (caller's repo name)
+    # and the conventional `<repo>_<underscored>` source-dir layout per workspace SSOT.
+    # See `.github/workflows/python-quality-gates-v2.yml` in unified-trading-pm.
+
+  # Dispatch qg-passed to PM cloud-build-router on staging merge so Cloud Build runs the image build.
+  # cloud-build-router.yml in PM listens for this event and triggers the GCP Cloud Build pipeline.
+  dispatch-cloud-build:
+    name: Dispatch cloud-build trigger (staging only)
+    needs: quality-gates-v2
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch qg-passed → cloud-build-router
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_ORG: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Trigger cloud-build-router.yml in unified-trading-pm via repository_dispatch qg-passed
+          curl -s -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GH_ORG}/unified-trading-pm/dispatches" \
+            -d "{\"event_type\": \"qg-passed\", \"client_payload\": {\"repo\": \"${REPO}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\", \"repo_type\": \"service\"}}"
+          echo "Dispatched qg-passed for ${REPO}@${COMMIT_SHA} on ${BRANCH}"
