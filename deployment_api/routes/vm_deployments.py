@@ -24,6 +24,8 @@ from deployment_service.deployments_registry import (
     DEFAULT_BUCKET,
     DeploymentRegistryEntry,
     DeploymentsRegistry,
+    vm_run_log_rolling_uri,
+    vm_serial_rolling_uri,
 )
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -57,6 +59,8 @@ class VmDeploymentEntryModel(BaseModel):  # CORRECT-LOCAL: FastAPI API contract 
     rows_error: int = 0
     events_emitted: int = 0
     log_uri: str = ""
+    archive_run_log_uri: str = ""
+    archive_serial_uri: str = ""
     machine_type: str | None = None
     zone: str | None = None
     uptime_hours: float | None = None
@@ -116,6 +120,19 @@ def _to_model(
         is_running = details.get("status") == "RUNNING"
         data["health_status"] = _calculate_health_status(entry, is_running)
 
+    # Populate durable archive URIs for completed entries (rolling daily archive,
+    # no 14-day TTL unlike vm-logs/).
+    completed_at = data.get("completed_at")
+    if completed_at and isinstance(completed_at, str) and len(completed_at) >= 10:
+        try:
+            date_stamp = completed_at[:10].replace("-", "")  # YYYYMMDD
+            vm_name = str(data.get("vm_name", ""))
+            if vm_name and date_stamp.isdigit():
+                data["archive_run_log_uri"] = vm_run_log_rolling_uri(vm_name, date_stamp)
+                data["archive_serial_uri"] = vm_serial_rolling_uri(vm_name, date_stamp)
+        except Exception:
+            pass
+
     return VmDeploymentEntryModel(**cast(dict[str, object], data))  # type: ignore[reportArgumentType]
 
 
@@ -138,6 +155,8 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
         "rows_error": 13,
         "events_emitted": 42,
         "log_uri": "gs://deployment-scripts-${GCP_PROJECT_ID}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",
+        "archive_run_log_uri": "",
+        "archive_serial_uri": "",
     }
     defaults.update(kwargs)
     return VmDeploymentEntryModel(**defaults)  # type: ignore[reportArgumentType]
@@ -166,6 +185,8 @@ def list_vm_deployments(
                     rows_in=30_000,
                     rows_out=30_000,
                     rows_error=0,
+                    archive_run_log_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",
+                    archive_serial_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",
                 ),
                 _mock_entry(
                     deployment_id="dep-mock-3",
