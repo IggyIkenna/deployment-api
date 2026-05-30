@@ -88,6 +88,7 @@ from .routes import (
     treasury_routes,
     user_management,
     venue_credentials,
+    venue_date_ranges,
     vm_admin,
     vm_cost_estimate,
     vm_deployments,
@@ -183,6 +184,7 @@ _authenticated_router.include_router(
     execution_backtest_launch.router, prefix="/api/execution/backtest", tags=["Execution Backtest"]
 )
 _authenticated_router.include_router(venue_credentials.router, tags=["Venue Credentials"])
+_authenticated_router.include_router(venue_date_ranges.router, tags=["Venue Date Ranges"])
 _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM Admin"])
 _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
