@@ -3315,9 +3315,7 @@ class DataStatusService:
         return filtered
 
     @staticmethod
-    def _apply_pipeline_mode_filter(
-        filtered: pd.DataFrame, pipeline_modes: list[str]
-    ) -> pd.DataFrame:
+    def _apply_pipeline_mode_filter(filtered: pd.DataFrame, pipeline_modes: list[str]) -> pd.DataFrame:
         """Filter manifest slice to rows whose pipeline_mode is in pipeline_modes.
 
         OR semantics: any row matching at least one of the requested modes is kept.

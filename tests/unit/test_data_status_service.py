@@ -2562,3 +2562,59 @@ class TestBuildChainBreakdownShardMath:
         # Date math: 2 found / 5 expected.
         assert entry["dates_found"] == 2
         assert entry["dates_expected"] == 5
+
+
+class TestSportsRetiredDataTypeFiltering:
+    """Phase 3 smoke-test: retired sports data_types don't render in the data-status panel.
+
+    Regression guard for plans/active/sports_retired_data_types_code_cleanup_2026_05_13.md.
+    TRANSFERMARKT_LEAGUES / SFI_LEAGUES / SFI_STANDINGS were retired 2026-05-05 /
+    2026-04-24 and must not appear in the panel denominator. The 88,779 manifest rows
+    for these types were flipped to empty_confirmed/EXPECTED_DEPRECATED_DATA_TYPE at
+    instruments-service@a0a720e; the panel must clip them entirely from the denominator.
+    """
+
+    _RETIRED = frozenset({"TRANSFERMARKT_LEAGUES", "SFI_LEAGUES", "SFI_STANDINGS"})
+
+    def test_retired_types_absent_from_sports_data_type_meta(self):
+        """SPORTS_DATA_TYPE_META must not contain the three retired data types."""
+        ssot_keys = set(_dss_mod.SPORTS_DATA_TYPE_META.keys())
+        for dt in self._RETIRED:
+            assert dt not in ssot_keys, f"{dt} still present in SPORTS_DATA_TYPE_META — should be absent"
+
+    def test_panel_skips_retired_types_present_in_manifest(self):
+        """_build_data_type_grouping must not render retired types even when manifest rows exist.
+
+        Covers the filtering path: for SPORTS, all_dt_vals = sports_ssot_vals
+        (set(SPORTS_DATA_TYPE_META.keys())), so retired types that appear in the
+        manifest as empty_confirmed/EXPECTED_DEPRECATED_DATA_TYPE rows are never
+        iterated and never added to dt_venues.
+        """
+        svc = _make_svc()
+        rows = [
+            {
+                "date": "2024-01-01",
+                "venue": "",
+                "data_type": dt,
+                "league_id": "1",
+                "capture_status": "empty_confirmed",
+                "error_reason": "EXPECTED_DEPRECATED_DATA_TYPE",
+                "instrument_count": 0,
+            }
+            for dt in self._RETIRED
+        ]
+        df = pd.DataFrame(rows)
+        _stub_entry: dict[str, object] = {
+            "dates_found": 0,
+            "dates_expected": 0,
+            "dates_expected_venue": 0,
+            "dates_missing": 0,
+            "completion_pct": 0.0,
+        }
+        with patch.object(svc, "_build_sports_entity_entry", return_value=_stub_entry):
+            dt_venues, _found, _expected = svc._build_data_type_grouping(df, "2024-01-01", "2024-01-31", cat="SPORTS")
+        for dt in self._RETIRED:
+            assert dt not in dt_venues, (
+                f"Retired data_type {dt!r} was rendered in the data-status panel — "
+                "should be clipped from denominator (SPORTS_DATA_TYPE_META is the SSOT)"
+            )
