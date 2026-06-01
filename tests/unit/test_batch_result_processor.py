@@ -71,9 +71,7 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 28,
             }
         }
-        exp, found, missing, _unexpected = calculate_venue_weighted_totals(
-            results, set(), {}, "instruments-service"
-        )
+        exp, found, missing, _unexpected = calculate_venue_weighted_totals(results, set(), {}, "instruments-service")
         assert exp == 30
         assert found == 28
         assert missing == 2
@@ -93,17 +91,13 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 0,
             }
         }
-        exp, found, _missing, _ = calculate_venue_weighted_totals(
-            results, set(), {}, "instruments-service"
-        )
+        exp, found, _missing, _ = calculate_venue_weighted_totals(results, set(), {}, "instruments-service")
         assert exp == 0
         assert found == 0
 
     def test_skips_error_categories(self):
         results = {"CEFI": {"error": "Failed"}}
-        exp, found, _missing, _ = calculate_venue_weighted_totals(
-            results, set(), {}, "instruments-service"
-        )
+        exp, found, _missing, _ = calculate_venue_weighted_totals(results, set(), {}, "instruments-service")
         assert exp == 0
         assert found == 0
 
@@ -116,9 +110,7 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 18,
             }
         }
-        exp, found, missing, _ = calculate_venue_weighted_totals(
-            results, set(), {}, "instruments-service"
-        )
+        exp, found, missing, _ = calculate_venue_weighted_totals(results, set(), {}, "instruments-service")
         assert exp == 20
         assert found == 18
         assert missing == 2
@@ -140,9 +132,7 @@ class TestCalculateVenueWeightedTotals:
                 "dates_found": 0,
             }
         }
-        exp, _found, missing, _ = calculate_venue_weighted_totals(
-            results, set(), {}, "instruments-service"
-        )
+        exp, _found, missing, _ = calculate_venue_weighted_totals(results, set(), {}, "instruments-service")
         assert missing == 15
         assert exp == 25  # 10 from venue + 15 from missing_dim_expected
 

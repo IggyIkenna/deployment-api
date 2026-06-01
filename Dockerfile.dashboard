@@ -12,7 +12,7 @@
 ARG PROJECT_ID
 
 # ── Stage 0: build the Vite SPA ───────────────────────────────────────────
-FROM node:20-slim AS ui-builder
+FROM node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
 
 # Copy package manifests first for layer caching.

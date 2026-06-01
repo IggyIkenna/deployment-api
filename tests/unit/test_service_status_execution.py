@@ -181,9 +181,7 @@ class TestBuildBreakdownSummary:
     def test_empty_breakdown_returns_empty_dict(self):
         from deployment_api.routes.service_status_execution import _build_breakdown_summary
 
-        result = _build_breakdown_summary(
-            defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []})
-        )
+        result = _build_breakdown_summary(defaultdict(lambda: {"total": 0, "with_results": 0, "missing": []}))
         assert result == {}
 
     def test_zero_total_gives_zero_completion(self):

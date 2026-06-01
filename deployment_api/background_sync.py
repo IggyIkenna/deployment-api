@@ -47,9 +47,7 @@ async def _run_ttl_cleanup(loop: asyncio.AbstractEventLoop, current_interval: fl
         logger.debug("[AUTO_SYNC] State TTL cleanup error: %s", e)
 
 
-def _compute_next_interval(
-    num_active: int, sync_interval_active: int, sync_interval_idle: int
-) -> int:
+def _compute_next_interval(num_active: int, sync_interval_active: int, sync_interval_idle: int) -> int:
     """Return next sync interval based on number of active deployments."""
     if num_active > 0:
         logger.debug("[AUTO_SYNC] %s active → next cycle in %ss", num_active, sync_interval_active)
@@ -100,17 +98,13 @@ async def auto_sync_running_deployments():
 
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor(max_workers=1) as executor:
-                synced, num_active = await loop.run_in_executor(
-                    executor, _sync_service.sync_deployments
-                )
+                synced, num_active = await loop.run_in_executor(executor, _sync_service.sync_deployments)
 
             if synced > 0:
                 logger.info("[AUTO_SYNC] Synced %s deployment(s)", synced)
 
             await _run_ttl_cleanup(loop, current_interval)
-            current_interval = _compute_next_interval(
-                num_active, sync_interval_active, sync_interval_idle
-            )
+            current_interval = _compute_next_interval(num_active, sync_interval_active, sync_interval_idle)
 
         except asyncio.CancelledError:
             break

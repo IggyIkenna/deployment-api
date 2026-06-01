@@ -17,9 +17,7 @@ def config_dir(tmp_path):
     configs.mkdir()
 
     # Create venues.yaml
-    (configs / "venues.yaml").write_text(
-        "CEFI:\n  BINANCE: true\n  OKX: true\nDEFI:\n  UNISWAP: true\n"
-    )
+    (configs / "venues.yaml").write_text("CEFI:\n  BINANCE: true\n  OKX: true\nDEFI:\n  UNISWAP: true\n")
 
     # Create sharding config for instruments-service
     (configs / "sharding.instruments-service.yaml").write_text(
@@ -174,9 +172,7 @@ class TestGetScaledComputeConfig:
 
     def test_no_override_when_none(self, config_dir):
         loader = ConfigLoader(str(config_dir))
-        result = loader.get_scaled_compute_config(
-            "instruments-service", "default", max_workers=None
-        )
+        result = loader.get_scaled_compute_config("instruments-service", "default", max_workers=None)
         assert result["max_workers"] == 4
 
     def test_skip_venue_param_ignored(self, config_dir):

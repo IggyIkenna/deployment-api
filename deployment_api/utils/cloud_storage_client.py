@@ -36,7 +36,7 @@ def list_cloud_files(
         path_without_scheme = cloud_path[5:]
     else:
         raise ValueError(
-            f"Unsupported cloud path scheme. Must start with gs:// or s3://. Got: {cloud_path}"
+            f"Unsupported cloud path scheme. Must start with gs:// or s3://. Got: {cloud_path}"  # noqa: gs-uri (error message literal, not a URI formatter)
         )
 
     parts = path_without_scheme.split("/", 1)
@@ -49,9 +49,7 @@ def list_cloud_files(
     for obj in objects:
         blob_name: str = obj.name
         # Apply glob pattern matching against the blob name
-        if fnmatch.fnmatch(blob_name, pattern) or fnmatch.fnmatch(
-            blob_name.split("/")[-1], pattern
-        ):
+        if fnmatch.fnmatch(blob_name, pattern) or fnmatch.fnmatch(blob_name.split("/")[-1], pattern):
             if cloud_path.startswith("gs://"):  # noqa: gs-uri
                 results.append(f"gs://{bucket_name}/{blob_name}")  # noqa: gs-uri
             else:

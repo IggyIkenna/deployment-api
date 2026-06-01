@@ -1,6 +1,6 @@
 """Unit tests for the UAC-denominator feature_group breakdown (Phase 2C).
 
-Plan: ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.plan.md``.
+Plan: ``feature_dag_uac_ssot_and_features_coverage_2026_05_06.md``.
 
 Covers:
 
@@ -13,6 +13,11 @@ Covers:
 * When the service IS registered, the denominator becomes
   ``len(expected_feature_groups) * clipped_dates``: declared-not-yet-written
   feature_groups render as ``missing`` instead of being silently absent.
+
+NOTE (2026-05-14): features-* sub-family service names
+(features-onchain-service, features-volatility-service, features-delta-one-service,
+features-sports-service) were consolidated into ``features-service`` in UAC
+``EXPECTED_FEATURE_GROUPS_BY_SERVICE``. Tests updated to use ``features-service``.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ def test_clip_unregistered_pair_returns_input_unchanged() -> None:
 def test_clip_registered_aave_lending_rates_pushes_start_forward() -> None:
     """Aave V3 mainnet launched 2022-03-16; pre-launch dates drop out."""
     start, end = DataStatusService._clip_dates_to_feature_coverage(
-        "features-onchain-service", "aave_lending_rates", "2020-01-01", "2026-05-07"
+        "features-service", "aave_lending_rates", "2020-01-01", "2026-05-07"
     )
     assert start == "2022-03-16"
     assert end == "2026-05-07"
@@ -46,7 +51,7 @@ def test_clip_registered_aave_lending_rates_pushes_start_forward() -> None:
 def test_clip_does_not_push_end_forward() -> None:
     """Floor only clips start; end is preserved."""
     start, end = DataStatusService._clip_dates_to_feature_coverage(
-        "features-onchain-service", "aave_lending_rates", "2023-06-01", "2024-12-31"
+        "features-service", "aave_lending_rates", "2023-06-01", "2024-12-31"
     )
     assert start == "2023-06-01"  # already after the floor
     assert end == "2024-12-31"
@@ -98,22 +103,29 @@ def test_uac_breakdown_registered_service_uses_uac_denominator(
 ) -> None:
     """When registered, the denominator is len(expected_fgs) * clipped_dates.
 
-    features-onchain-service expects 12 feature_groups today. With 5 days
-    in the window for an Aave-derived fg (clipped post-2022-03-16), one
-    observed date for ``aave_lending_rates`` produces dates_found=1,
-    dates_expected=5 (the window), missing=4. Other fgs (e.g.
-    lst_staking_yields, defillama_tvl) get 0 found / 5 expected entries.
+    features-service (consolidated from all sub-family services 2026-05-14)
+    has all onchain + delta-one + sports feature_groups. With 5 days in the
+    window for an Aave-derived fg (clipped post-2022-03-16), one observed
+    date for ``aave_lending_rates`` produces dates_found=1, dates_expected=5
+    (the window), missing=4. Other fgs (e.g. lst_staking_yields, defillama_tvl)
+    get 0 found / 5 expected entries.
     """
+    from unified_api_contracts.canonical.domain.features.registry import (
+        EXPECTED_FEATURE_GROUPS_BY_SERVICE,
+    )
+
     df = _venue_df(
         [
             {"date": "2024-01-01", "feature_group": "aave_lending_rates"},
         ]
     )
     out = service_instance._build_feature_group_breakdown_uac(
-        df, "2024-01-01", "2024-01-05", service="features-onchain-service"
+        df, "2024-01-01", "2024-01-05", service="features-service"
     )
-    # All 12 onchain feature_groups are in the result.
-    assert len(out) == 12
+    # All feature_groups declared in EXPECTED_FEATURE_GROUPS_BY_SERVICE["features-service"]
+    # appear in the result. Use the UAC constant directly to avoid hardcoding a stale count.
+    expected_count = len(EXPECTED_FEATURE_GROUPS_BY_SERVICE["features-service"])
+    assert len(out) == expected_count
     aave_entry = out["aave_lending_rates"]
     assert isinstance(aave_entry, dict)
     assert aave_entry["dates_found"] == 1
@@ -139,7 +151,7 @@ def test_uac_breakdown_pre_floor_dates_clipped(
         ]
     )
     out = service_instance._build_feature_group_breakdown_uac(
-        df, "2022-01-01", "2022-03-17", service="features-onchain-service"
+        df, "2022-01-01", "2022-03-17", service="features-service"
     )
     aave_entry = out["aave_lending_rates"]
     assert isinstance(aave_entry, dict)
@@ -151,8 +163,13 @@ def test_uac_breakdown_pre_floor_dates_clipped(
 def test_uac_breakdown_empty_expected_list_falls_through(
     service_instance: DataStatusService,
 ) -> None:
-    """features-volatility-service has an empty EXPECTED list today (stub) —
-    must fall through to legacy behaviour, not produce an empty result."""
+    """An unregistered service falls through to legacy observed-dates path.
+
+    features-volatility-service is used intentionally here to represent a
+    service that is NOT in EXPECTED_FEATURE_GROUPS_BY_SERVICE (the sub-family
+    service names were consolidated into ``features-service`` in UAC 2026-05-14;
+    sub-family names are unregistered and always fall through to legacy path).
+    """
     df = _venue_df(
         [
             {"date": "2024-01-01", "feature_group": "iv_surface"},
@@ -170,6 +187,6 @@ def test_uac_breakdown_no_feature_group_column_returns_empty(
 ) -> None:
     df = _venue_df([{"date": "2024-01-01"}])
     out = service_instance._build_feature_group_breakdown_uac(
-        df, "2024-01-01", "2024-01-02", service="features-onchain-service"
+        df, "2024-01-01", "2024-01-02", service="features-service"
     )
     assert out == {}

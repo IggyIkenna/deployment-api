@@ -21,9 +21,9 @@ from ._deployment_processor_helpers import (
     DEPLOYMENT_ENV,
     PROJECT_ID,
     STATE_BUCKET,
-    _cancel_vm_jobs_sync,
-    _vm_status_from_map,
-    _vm_zone_from_map,
+    _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
+    _vm_status_from_map,  # pyright: ignore[reportPrivateUsage]
+    _vm_zone_from_map,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Import shared pending VM deletes dict from auto_sync.
@@ -140,13 +140,9 @@ def _handle_orphan_vm_cleanup(
     if to_fire:
         try:
             service_account_email = str(
-                ValidationUtils.get_required(
-                    config, "service_account_email", "bulk cancellation orchestrator"
-                )
+                ValidationUtils.get_required(config, "service_account_email", "bulk cancellation orchestrator")
             )
-            job_name = str(
-                ValidationUtils.get_required(config, "job_name", "bulk cancellation backend")
-            )
+            job_name = str(ValidationUtils.get_required(config, "job_name", "bulk cancellation backend"))
             _cancel_vm_jobs_sync(
                 deployment_id=deployment_id,
                 project_id=PROJECT_ID,
@@ -232,8 +228,7 @@ def _fire_cpd_running_vm_deletes(
             _vm_zone_from_map(vm_map_cpd, cast(str, s.get("job_id"))),
         )
         for s in shards
-        if s.get("job_id")
-        and _vm_status_from_map(vm_map_cpd, cast(str, s.get("job_id"))) == "RUNNING"
+        if s.get("job_id") and _vm_status_from_map(vm_map_cpd, cast(str, s.get("job_id"))) == "RUNNING"
     ]
     orphan_max_cpd = settings.ORPHAN_DELETE_MAX_PARALLEL
     to_fire_cpd = running_vms[:orphan_max_cpd]
@@ -316,7 +311,9 @@ def _handle_completed_pending_delete(
 
     from deployment_api.utils.storage_facade import write_object_text
 
-    from ._deployment_processor_helpers import _is_deployment_completed_pending_delete
+    from ._deployment_processor_helpers import (
+        _is_deployment_completed_pending_delete,  # pyright: ignore[reportPrivateUsage]
+    )
 
     _release_lock = cast(Callable[[str], bool], release_deployment_lock)
 
@@ -337,7 +334,7 @@ def _handle_completed_pending_delete(
 
     vm_map_cpd: dict[str, object] = {}
     try:
-        from unified_trading_library.cloud_interface import get_compute_engine_client
+        from unified_trading_library import get_compute_engine_client
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
         instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")

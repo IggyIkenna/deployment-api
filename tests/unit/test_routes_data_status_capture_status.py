@@ -95,9 +95,7 @@ class TestDrilldownCaptureStatus:
         assert by_id["ETH-USDT-PERP"]["error_reason"] == "RATE_LIMIT_HIT"
         assert by_id["ETH-USDT-PERP"]["attempted_at"] == "2025-06-01T00:12:00+00:00"
 
-    def test_legacy_manifest_no_capture_status_column_defaults_to_captured(
-        self, monkeypatch
-    ) -> None:
+    def test_legacy_manifest_no_capture_status_column_defaults_to_captured(self, monkeypatch) -> None:
         """Pre-v5 manifest parquet omits the capture_status column entirely."""
         parquet_objects = [
             _FakeObject("raw_tick_data/by_date/day=2025-06-01/.../BTC-USDT-PERP.parquet", 100),

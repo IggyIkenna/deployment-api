@@ -98,9 +98,7 @@ def _apply_stage_event(
         if new_status:
             shard_state["status"] = new_status
     elif event_name in _STAGE_COMPLETED_MAP:
-        _record_stage_duration(
-            shard_state, stage_timings, _STAGE_COMPLETED_MAP[event_name], timestamp
-        )
+        _record_stage_duration(shard_state, stage_timings, _STAGE_COMPLETED_MAP[event_name], timestamp)
         if event_name == "DATA_INGESTION_COMPLETED":
             shard_state["stage_details"] = details
     elif event_name == "VALIDATION_FAILED":
@@ -126,9 +124,7 @@ def _get_stage_timings(shard_state: dict[str, object]) -> dict[str, object]:
     return result
 
 
-def update_shard_state_from_event(
-    shard_state: dict[str, object], event: dict[str, object]
-) -> dict[str, object]:
+def update_shard_state_from_event(shard_state: dict[str, object], event: dict[str, object]) -> dict[str, object]:
     """Update shard state based on parsed event.
 
     Args:

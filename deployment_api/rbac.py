@@ -25,7 +25,7 @@ from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import â
     UserRole,
     has_role_permission,
 )
-from unified_trading_library.events import log_event
+from unified_trading_library import log_event
 
 from deployment_api.auth import DISABLE_AUTH
 from deployment_api.services.user_management import UserManagementService
@@ -57,7 +57,10 @@ async def get_current_user_role(
     if profile is None:
         return UserRole.VIEWER
 
-    return UserRole(profile.role)
+    try:
+        return UserRole(profile.role)
+    except ValueError:
+        return UserRole.VIEWER
 
 
 def require_permission(
@@ -125,9 +128,7 @@ def require_role(
         current_role = await get_current_user_role(request)
 
         current_level = role_hierarchy.index(current_role) if current_role in role_hierarchy else -1
-        required_level = (
-            role_hierarchy.index(minimum_role) if minimum_role in role_hierarchy else 999
-        )
+        required_level = role_hierarchy.index(minimum_role) if minimum_role in role_hierarchy else 999
 
         if current_level < required_level:
             log_event(

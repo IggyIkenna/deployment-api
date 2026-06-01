@@ -27,8 +27,10 @@ from unified_api_contracts.internal.schemas.contracts import (
 )
 from unified_trading_library import (
     LEGACY_REASON_ASSET_GROUPS,
+    AssetGroup,
     classify_legacy_empty_row,
     read_availability_index,
+    resolve_bucket_name,
 )
 
 from deployment_api.settings import gcp_project_id as _pid
@@ -38,27 +40,40 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Bucket naming (mirrors DataStatusService._BUCKET_TEMPLATES without the
-# circular dependency of importing the big service).
+# Bucket naming — delegates to cloud-providers.yaml via resolve_bucket_name().
+# Phase 2.6.4 delegate flip: ml-models-store / ml-predictions-store per yaml SSOT.
 # ---------------------------------------------------------------------------
 
-_BUCKET_TEMPLATES: dict[str, str] = {
-    "instruments-service": "instruments-store-{cat}-{pid}",
-    "corporate-actions": "instruments-store-{cat}-{pid}",
-    "market-tick-data-service": "market-data-tick-{cat}-{pid}",
-    "market-data-processing-service": "market-data-tick-{cat}-{pid}",
-    "features-delta-one-service": "features-delta-one-{cat}-{pid}",
-    "features-volatility-service": "features-volatility-{cat}-{pid}",
-    "features-onchain-service": "features-onchain-{pid}",
-    "features-sports-service": "features-sports-{pid}",
-    "features-calendar-service": "features-calendar-{pid}",
-    "features-multi-timeframe-service": "features-multi-timeframe-{cat}-{pid}",
-    "features-cross-instrument-service": "features-cross-instrument-{cat}-{pid}",
-    "features-commodity-service": "features-commodity-{pid}",
-    "ml-training-service": "ml-models-store-{pid}",
-    "ml-inference-service": "ml-predictions-{pid}",
-    "strategy-service": "strategy-store-{pid}",
-    "execution-service": "execution-store-{pid}",
+# Service → yaml kind mapping.
+SERVICE_TO_KIND: dict[str, str] = {
+    "instruments-service": "instruments-store",
+    "corporate-actions": "instruments-store",
+    "market-tick-data-service": "market-data",
+    "market-tick-data-handler": "market-data",  # API-layer alias
+    "market-data-processing-service": "market-data",
+    "features-delta-one-service": "features-delta-one",
+    "features-volatility-service": "features-volatility",
+    "features-onchain-service": "features-onchain",
+    "features-sports-service": "features-sports",
+    "features-calendar-service": "features-calendar",
+    "features-multi-timeframe-service": "features-multi-timeframe",
+    "features-cross-instrument-service": "features-cross-instrument",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service": "ml-models-store",
+    "strategy-service": "strategy-store",
+    "execution-service": "execution-store",
+}
+
+# CORRECT-LOCAL: features-commodity has no yaml kind; flat template retained until
+# cloud-providers.yaml gains the entry (bucket_name_ssot plan pending item).
+COMMODITY_BUCKET_TEMPLATE = "features-commodity-{pid}"
+
+# Kinds whose per-AG yaml dict omits PREDICTION — route to a flat prediction kind instead.
+PREDICTION_KIND_MAP: dict[str, str] = {
+    "instruments-store": "instruments-store-prediction",
+    "market-data": "market-data-tick-prediction",
+    "strategy-store": "strategy-store-prediction",
+    "execution-store": "execution-store-prediction",
 }
 
 
@@ -87,11 +102,17 @@ def _is_bundled(instrument_type: str) -> bool:
 
 def build_bucket_name(service: str, asset_group: str, project_id: str | None = None) -> str:
     """Resolve the GCS bucket for a (service, asset group) pair."""
-    pid = project_id or _pid
-    template = _BUCKET_TEMPLATES.get(service)
-    if template is None:
+    if service == "features-commodity-service":
+        return COMMODITY_BUCKET_TEMPLATE.format(pid=project_id or _pid)
+    kind = SERVICE_TO_KIND.get(service)
+    if kind is None:
         raise ValueError(f"Unknown service: {service}")
-    return template.format(cat=asset_group.lower(), pid=pid)
+    ag: str | None = asset_group.lower() if asset_group else None
+    if ag == "prediction":
+        pred_kind = PREDICTION_KIND_MAP.get(kind)
+        if pred_kind:
+            return resolve_bucket_name(cloud="gcp", kind=pred_kind)
+    return resolve_bucket_name(cloud="gcp", kind=kind, asset_group=cast(AssetGroup, ag))
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +179,7 @@ def _scoped_manifest_rows(bucket: str, venue: str, day: str) -> pd.DataFrame | N
     # Dedup by instrument_id — keep the latest written_at per key. When the
     # column is missing (very old parquet) we fall back to last-seen order.
     if "written_at" in scoped.columns:
-        scoped = scoped.sort_values("written_at").drop_duplicates(
-            subset=["instrument_id"], keep="last"
-        )
+        scoped = scoped.sort_values("written_at").drop_duplicates(subset=["instrument_id"], keep="last")
     else:
         scoped = scoped.drop_duplicates(subset=["instrument_id"], keep="last")
     return scoped
@@ -295,11 +314,11 @@ def lookup_capture_status_for_shard(
 
     Args:
         service: Service name (e.g. ``instruments-service``,
-            ``market-tick-data-service``, ``ml-training-service``).
+            ``market-tick-data-service``, ``ml-service``).
         asset_group: Asset group bucket key (cefi/tradfi/defi/sports/
             prediction/shared).
         day: ISO date (``YYYY-MM-DD``) to filter on.
-        **axes: Any of the v7 shard axes (venue, chain, league_id,
+        **axes: The v7 shard axes (venue, chain, league_id,
             fixture_id, canonical_question_group, job_id,
             model_family, training_period, strategy_id,
             instruction_type, feature_group, timeframe, instrument_id,
@@ -316,7 +335,7 @@ def lookup_capture_status_for_shard(
         ``attempted_at`` (ISO-8601 UTC timestamp or ``""``),
         ``written_at`` (manifest-write time or ``""``).
 
-    Plan: data_status_multi_axis_shard_propagation_2026_05_06.plan.md
+    Plan: data_status_multi_axis_shard_propagation_2026_05_06.md
     Phase 3 (drilldown polish — distinguish empty_confirmed from
     path-drift zero bytes in the download UX).
     """
@@ -332,9 +351,7 @@ def lookup_capture_status_for_shard(
     try:
         index = read_availability_index(bucket)
     except (OSError, RuntimeError, ValueError) as exc:
-        logger.warning(
-            "lookup_capture_status_for_shard manifest read failed for %s: %s", bucket, exc
-        )
+        logger.warning("lookup_capture_status_for_shard manifest read failed for %s: %s", bucket, exc)
         return {
             "status": "never_attempted",
             "error_reason": "",
@@ -370,11 +387,11 @@ def lookup_capture_status_for_shard(
     row = matched.iloc[0]
     raw_status = row.get("capture_status") if "capture_status" in matched.columns else None
     status = (
-        str(raw_status).lower()
-        if raw_status is not None and not pd.isna(raw_status) and str(raw_status)
+        str(raw_status).lower()  # type: ignore[reportAny]
+        if raw_status is not None and not pd.isna(raw_status) and str(raw_status)  # type: ignore[reportAny]
         else _DEFAULT_CAPTURE_STATUS
     )
-    if status not in ("captured", "empty_confirmed", "attempted_failed"):
+    if status not in ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted"):
         status = _DEFAULT_CAPTURE_STATUS
     error_reason = _classify_lookup_legacy_empty_reason(
         status=status,
@@ -395,7 +412,7 @@ def _classify_lookup_legacy_empty_reason(
     *,
     status: str,
     error_reason: str,
-    row: pd.Series[object],
+    row: pd.Series[object],  # type: ignore
     asset_group: str,
     bucket: str,
 ) -> str:
@@ -534,7 +551,7 @@ def _resolve_sports_instrument_type(asset_group: str, instrument_type: str, data
     return _SPORTS_DATA_TYPE_TO_INSTRUMENT_TYPE.get(data_type, instrument_type)
 
 
-def get_schema_for_shard(  # noqa: C901 — branchy by nature: 4-step resolution (registry → override → projection → honest-absence) + per-service synthesis + multi-axis kwarg threading
+def get_schema_for_shard(
     *,
     asset_group: str,
     instrument_type: str,
@@ -556,57 +573,69 @@ def get_schema_for_shard(  # noqa: C901 — branchy by nature: 4-step resolution
     feature_group: str | None = None,
     timeframe: str | None = None,
 ) -> dict[str, object]:
-    """Return the SchemaContract columns for a shard tuple — leaf-shard granularity.
+    """Return the SchemaContract columns for a shard tuple.
 
-    Phase 3 of data_status_multi_axis_shard_propagation_2026_05_06.plan.md
-    — schema view ALWAYS at the deepest shard level. Each leaf parquet has
-    its own column shape (CeFi spot per-instrument vs DeFi options-chain
-    bundle vs sports per-league fixture parquet differ in column shape),
-    so the v7 multi-axis kwargs are threaded through to the parquet
-    projection fallback.
+    Falls back gracefully when no contract is registered — returns an empty
+    column list with ``registered: False`` so the UI can render a
+    "no schema registered — running raw projection" affordance instead of
+    raising.
 
-    Resolution order:
-
-    1. UAC contract registry — ``lookup_contract(asset_group,
-       instrument_type, data_type, venue)``. Honours
-       ``VENUE_CONTRACT_OVERRIDES``. Cleanest path.
-    2. Legacy v4 instruments-service catalogue synthesis: empty
-       instrument_type+data_type collapses to the
-       ``("instrument_catalogue", "instrument_catalogue")`` contract.
-    3. Parquet-projection fallback: when the registry has no entry
-       AND we have ``service`` + ``bucket`` + ``day`` + enough axis
-       kwargs to identify a leaf parquet, probe the actual parquet
-       on GCS via :func:`_parquet_schema_names` and return the real
-       column names. Distinguishes from #1 via ``source =
-       "PARQUET_PROJECTION"`` so the UI can flag it as inferred,
-       not contract-backed.
-    4. Honest absence — return ``registered: False`` with an empty
-       ``columns`` list and a non-confusing message. UI should
-       render "no schema yet" rather than blank or fake columns.
-
-    The honest-absence branch (#4) is correct for shards where the
-    writer hasn't shipped yet — we explicitly DO NOT make up columns
-    that aren't on disk and aren't in the registry.
+    When ``instrument_type`` is ``"AUTO"`` (case-insensitive) / ``"UNKNOWN"``
+    / empty, the registry is searched for any matching ``(category,
+    data_type)`` tuple and the resolved instrument_type is echoed in the
+    response.  ``instrument_type_resolved_via`` is one of ``explicit`` /
+    ``auto`` / ``none``.
     """
+    # Local import to avoid an import cycle when shard_detail imports this
+    # module's siblings.  The AUTO resolver lives in shard_detail.py as the
+    # canonical SSOT for AUTO mode.
+    from deployment_api.services.shard_detail import (
+        _is_auto_instrument_type,  # pyright: ignore[reportPrivateUsage]
+        _resolve_instrument_type_auto,  # pyright: ignore[reportPrivateUsage]
+    )
+
     # Normalise UI inputs so the lookup hits the UAC registry keys
     # (lowercase snake_case). The UI passes ``POOL`` / ``POOL_DEFINITION``
     # from the manifest; UAC keys those as ``pool`` / ``dex_pool_state``.
     cat_norm = asset_group.lower()
-    it_norm = _normalise_instrument_type(instrument_type)
+
+    # instruments-service legacy v4 rows for cefi/tradfi/defi/prediction carry
+    # empty instrument_type and empty data_type. Synthesise the catalogue axes
+    # so the lookup resolves the registered INSTRUMENT_CATALOGUE contract.
+    if (
+        (service or "").lower() == "instruments-service"
+        and not (instrument_type or "").strip()
+        and not (data_type or "").strip()
+    ):
+        instrument_type = "instrument_catalogue"
+        data_type = "instrument_catalogue"
+
     dt_norm = _normalise_data_type(data_type)
-    # Sports manifest carries no instrument_type axis — resolve from data_type.
-    it_norm = _resolve_sports_instrument_type(cat_norm, it_norm, dt_norm)
+    dt_lookup = (data_type or "").lower()
 
-    # instruments-service legacy v4 rows for cefi/tradfi/defi carry empty
-    # instrument_type and empty data_type. Synthesise the catalogue axes so
-    # the lookup resolves the registered INSTRUMENT_CATALOGUE contract
-    # instead of failing.
-    if (service or "").lower() == "instruments-service" and not it_norm and not dt_norm:
-        it_norm = "instrument_catalogue"
-        dt_norm = "instrument_catalogue"
+    auto_requested = _is_auto_instrument_type(instrument_type)
+    resolved_via = "explicit"
+    if auto_requested:
+        picked = _resolve_instrument_type_auto(category=cat_norm, data_type=dt_lookup, venue=venue)
+        if picked is None:
+            return {
+                "registered": False,
+                "category": cat_norm,
+                "instrument_type": "",
+                "data_type": dt_norm,
+                "venue": venue,
+                "symbol_column": None,
+                "source": "none",
+                "columns": [],
+                "message": (f"No SchemaContract found for category={cat_norm} data_type={dt_lookup}"),
+                "instrument_type_resolved_via": "none",
+            }
+        it_norm = picked
+        resolved_via = "auto"
+    else:
+        it_norm = _normalise_instrument_type(instrument_type)
 
-    # Step 1+2: Venue override takes priority, else base registry.
-    contract: SchemaContract | None
+    # Venue override takes priority, else base registry, else fallback.
     try:
         contract = lookup_contract(
             asset_group=cat_norm,
@@ -615,114 +644,40 @@ def get_schema_for_shard(  # noqa: C901 — branchy by nature: 4-step resolution
             venue=venue,
         )
     except SchemaContractNotFoundError:
-        contract = None
-
-    if contract is not None:
-        source = "CONTRACT_REGISTRY"
-        if venue is not None:
-            override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
-            if override_key in VENUE_CONTRACT_OVERRIDES:
-                source = "VENUE_CONTRACT_OVERRIDES"
-        return {
-            "registered": True,
-            "asset_group": contract.asset_group,
-            "instrument_type": contract.instrument_type,
-            "data_type": contract.data_type,
-            "venue": (venue or "").upper() if venue else None,
-            "symbol_column": contract.symbol_column,
-            "source": source,
-            "columns": _column_dicts(contract),
-            "required_row_count_min": contract.required_row_count_min,
-        }
-
-    # Step 3: Parquet-projection fallback. Build the leaf-shard kwargs
-    # dict from the multi-axis params + try every plausible parquet path
-    # for this (service, asset_group). When one resolves, project its
-    # column names from the parquet schema and return them as the
-    # leaf-shard schema. SHARD_AXIS_MATRIX-driven so per-asset-group
-    # path layouts are honoured (DEFI chain= partition, sports
-    # league= partition, ML model_family= / training_period= /
-    # job_id=, etc.).
-    axes: dict[str, str | None] = {
-        "venue": venue,
-        "instrument_type": instrument_type,
-        "data_type": data_type,
-        "instrument_id": instrument_id,
-        "chain": chain,
-        "league_id": league_id,
-        "fixture_id": fixture_id,
-        "canonical_question_group": canonical_question_group,
-        "job_id": job_id,
-        "model_family": model_family,
-        "training_period": training_period,
-        "strategy_id": strategy_id,
-        "instruction_type": instruction_type,
-        "feature_group": feature_group,
-        "timeframe": timeframe,
-    }
-    projected = _project_leaf_parquet_columns(
-        service=service,
-        asset_group=cat_norm,
-        bucket=bucket,
-        day=day,
-        axes=axes,
-    )
-    if projected is not None:
-        cols, gs_uri = projected
         return {
             "registered": False,
-            "asset_group": cat_norm,
+            "category": cat_norm,
             "instrument_type": it_norm,
             "data_type": dt_norm,
-            "venue": (venue or "").upper() if venue else None,
+            "venue": venue,
             "symbol_column": None,
             "source": "PARQUET_PROJECTION",
-            "columns": [
-                {"name": c, "dtype": "", "nullable": True, "description": ""} for c in cols
-            ],
-            "projected_from": gs_uri,
+            "columns": [],
+            "projected_from": None,
+            "message": (
+                "No contract registered for this shard. The UI should fall back to projecting actual parquet columns."
+            ),
+            "instrument_type_resolved_via": resolved_via,
         }
 
-    # Step 4: Honest absence. Surface the probed paths so a path-drift
-    # bug is actionable from the modal — operator can paste the URI into
-    # ``gcloud storage ls`` and see whether the parquet really doesn't
-    # exist or the projection template just doesn't match the on-disk
-    # layout.
-    probed_paths: list[str] = []
-    if service and bucket and day:
-        try:
-            probed_paths = _build_leaf_parquet_candidates(
-                service=service, asset_group=cat_norm, day=day, axes=axes, bucket=bucket
-            )
-        except (ValueError, RuntimeError):
-            probed_paths = []
-    contract_key = f"({cat_norm}, {it_norm or '∅'}, {dt_norm or '∅'})"
-    if venue:
-        contract_key += f" venue={venue.upper()}"
-    parts = [
-        f"No UAC schema contract registered for {contract_key}",
-        f"and no parquet found on disk for service '{service}' on day '{day}'.",
-    ]
-    if probed_paths:
-        parts.append("Paths probed (first-hit-wins):")
-        for p in probed_paths:
-            parts.append(f"  • {p}")
-    parts.append(
-        "Either the writer hasn't shipped this axis yet, or the "
-        "projection path-template doesn't match the on-disk layout — "
-        "file the latter as a path-drift bug."
-    )
+    # Figure out whether we resolved via override or base registry.
+    source = "CONTRACT_REGISTRY"
+    if venue is not None:
+        override_key = (cat_norm, (venue or "").upper(), it_norm, dt_norm)
+        if override_key in VENUE_CONTRACT_OVERRIDES:
+            source = "VENUE_CONTRACT_OVERRIDES"
+
     return {
-        "registered": False,
-        "asset_group": cat_norm,
-        "instrument_type": it_norm,
-        "data_type": dt_norm,
-        "venue": venue,
-        "symbol_column": None,
-        "source": "none",
-        "columns": [],
-        "message": "\n".join(parts),
-        "probed_paths": probed_paths,
+        "registered": True,
+        "category": contract.asset_group,
+        "instrument_type": contract.instrument_type,
+        "data_type": contract.data_type,
+        "venue": (venue or "").upper() if venue else None,
+        "symbol_column": contract.symbol_column,
+        "source": source,
+        "columns": _column_dicts(contract),
+        "required_row_count_min": contract.required_row_count_min,
+        "instrument_type_resolved_via": resolved_via,
     }
 
 
@@ -770,9 +725,7 @@ def _project_leaf_parquet_columns(
             continue
         if names:
             # Stable order: alphabetic with the obvious anchors first.
-            anchors = [
-                c for c in ("date", "timestamp", "available_at", "instrument_id") if c in names
-            ]
+            anchors = [c for c in ("date", "timestamp", "available_at", "instrument_id") if c in names]
             rest = sorted(n for n in names if n not in anchors)
             return ([*anchors, *rest], gs_uri)
     return None
@@ -799,11 +752,11 @@ def _first_parquet_under_prefix(gs_prefix: str) -> str | None:
     for blob in blobs:
         name = getattr(blob, "name", None)
         if isinstance(name, str) and name.endswith(".parquet"):
-            return f"gs://{bucket}/{name}"
+            return f"gs://{bucket}/{name}"  # noqa: gs-uri  — URI composer, bucket already resolved
     return None
 
 
-def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-service path-template routing across 15 services)
+def _build_leaf_parquet_candidates(
     *,
     service: str,
     asset_group: str,
@@ -829,9 +782,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
         data_type_value = (axes.get("data_type") or "").lower()
         if data_type_value:
             try:
-                uri_list = candidate_parquet_uris(
-                    data_type=data_type_value, day=day, league_id=league or None
-                )
+                uri_list = candidate_parquet_uris(data_type=data_type_value, day=day, league_id=league or None)  # pyright: ignore[reportUnknownVariableType,reportCallIssue]
                 for uri in uri_list:  # pyright: ignore[reportUnknownVariableType]
                     if isinstance(uri, str):
                         candidates.append(uri)
@@ -842,9 +793,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
     # instruments-service / corporate-actions: per-(venue, day) bundle.
     venue = axes.get("venue") or ""
     if svc in ("instruments-service", "corporate-actions") and venue:
-        candidates.append(
-            f"gs://{bucket}/by_date/day={day}/venue={venue.upper()}/instruments.parquet"
-        )
+        candidates.append(f"gs://{bucket}/by_date/day={day}/venue={venue.upper()}/instruments.parquet")  # noqa: gs-uri  — URI composer, bucket already resolved
         return candidates
 
     # MTDS / MDPS / features-*: per-instrument (or bundle root for
@@ -861,7 +810,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
     timeframe = (axes.get("timeframe") or "").lower()
 
     if data_type_value and venue:
-        prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"
+        prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"  # noqa: gs-uri  — URI composer, bucket already resolved
         venue_partition = f"venue={venue.upper()}"
         if chain:
             venue_partition = f"venue={venue.upper()}-{chain}"
@@ -871,9 +820,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
                 f"/data_type={data_type_value}"
             )
             if instrument_id:
-                candidates.append(
-                    f"{prefix_root}/{partitions}/instrument_id={instrument_id}/{instrument_id}.parquet"
-                )
+                candidates.append(f"{prefix_root}/{partitions}/instrument_id={instrument_id}/{instrument_id}.parquet")
                 candidates.append(f"{prefix_root}/{partitions}/{instrument_id}.parquet")
             candidates.append(f"{prefix_root}/{partitions}/")
 
@@ -885,8 +832,8 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
         if venue:
             partitions += f"/venue={venue.upper()}"
         if instrument_id:
-            candidates.append(f"gs://{bucket}/{partitions}/{instrument_id}.parquet")
-        candidates.append(f"gs://{bucket}/{partitions}/")
+            candidates.append(f"gs://{bucket}/{partitions}/{instrument_id}.parquet")  # noqa: gs-uri  — URI composer, bucket already resolved
+        candidates.append(f"gs://{bucket}/{partitions}/")  # noqa: gs-uri  — URI composer, bucket already resolved
 
     # ML / strategy / execution: experiment-keyed partitions. The
     # writers may not yet emit job_id= (Phase 1B work) so we probe
@@ -896,15 +843,15 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
     job_id = axes.get("job_id") or ""
     strategy_id = axes.get("strategy_id") or ""
     instruction_type = (axes.get("instruction_type") or "").upper()
-    if svc in ("ml-training-service", "ml-inference-service") and model_family:
-        base = f"gs://{bucket}/by_date/day={day}/model_family={model_family}"
+    if svc == "ml-service" and model_family:
+        base = f"gs://{bucket}/by_date/day={day}/model_family={model_family}"  # noqa: gs-uri  — URI composer, bucket already resolved
         if training_period:
             base += f"/training_period={training_period}"
         if job_id:
             candidates.append(f"{base}/job_id={job_id}/")
         candidates.append(f"{base}/")
     if svc in ("strategy-service", "execution-service") and strategy_id:
-        base = f"gs://{bucket}/by_date/day={day}/strategy_id={strategy_id}"
+        base = f"gs://{bucket}/by_date/day={day}/strategy_id={strategy_id}"  # noqa: gs-uri  — URI composer, bucket already resolved
         if instruction_type:
             base += f"/instruction_type={instruction_type}"
         if job_id:
@@ -922,9 +869,7 @@ def _build_leaf_parquet_candidates(  # noqa: C901 — branchy by nature (per-ser
 # Services that bundle every instrument for a (venue, day) pair into one
 # parquet. The drill-down reads the parquet itself to surface the
 # instrument_ids because the file layout carries no per-symbol partitioning.
-_PER_VENUE_DAY_BUNDLE_SERVICES: frozenset[str] = frozenset(
-    {"instruments-service", "corporate-actions"}
-)
+_PER_VENUE_DAY_BUNDLE_SERVICES: frozenset[str] = frozenset({"instruments-service", "corporate-actions"})
 
 
 # Symbol column per service for the bundled-parquet case. instruments-service
@@ -935,9 +880,7 @@ _SERVICE_BUNDLE_SYMBOL_COLUMN: dict[str, str] = {
 }
 
 
-def _shard_prefix(
-    service: str, asset_group: str, venue: str, day: str, instrument_type: str, data_type: str
-) -> str:
+def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrument_type: str, data_type: str) -> str:
     """Build the GCS prefix for a shard, routed by service.
 
     Different services use different bucket layouts — the drill-down must
@@ -981,9 +924,7 @@ def _shard_prefix(
     )
 
 
-def _infer_symbol_column_for_shard(
-    asset_group: str, instrument_type: str, data_type: str, venue: str
-) -> str:
+def _infer_symbol_column_for_shard(asset_group: str, instrument_type: str, data_type: str, venue: str) -> str:
     """Best-effort symbol column when no contract is registered.
 
     Falls back to ``instrument_id`` (the canonical column since Phase 1.2);
@@ -1021,7 +962,7 @@ def _collect_parquet_files(bucket: str, prefix: str) -> list[dict[str, object]]:
         size = getattr(o, "size", None)
         files.append(
             {
-                "file_uri": f"gs://{bucket}/{name}",
+                "file_uri": f"gs://{bucket}/{name}",  # noqa: gs-uri  — URI composer, bucket already resolved
                 "size_bytes": int(size) if isinstance(size, int) else 0,
                 "_name": name,
             }
@@ -1044,7 +985,7 @@ def _bundling_mode(venue: str, instrument_type: str, service: str = "") -> str:
 
 def _expand_per_condition_id(
     parquet_files: list[dict[str, object]],
-    asset_group: str,
+    category: str,
     instrument_type: str,
     data_type: str,
     venue: str,
@@ -1052,7 +993,7 @@ def _expand_per_condition_id(
     if not parquet_files:
         return []
     pf = parquet_files[0]
-    symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
     try:
         distinct_ids = _distinct_values_in_parquet(str(pf["file_uri"]), symbol_col)
     except (OSError, ValueError, RuntimeError) as exc:
@@ -1119,8 +1060,8 @@ def _expand_per_venue_day_bundle(
     seen: set[str] = set()
     out: list[dict[str, object]] = []
     bundled_under = str(pf["_name"]).split("/")[-1]
-    for v in df[symbol_col].dropna().tolist():  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
-        sid = str(v).strip()
+    for v in df[symbol_col].dropna().tolist():  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAny]
+        sid = str(v).strip()  # pyright: ignore[reportAny]
         if not sid or sid in seen:
             continue
         seen.add(sid)
@@ -1185,9 +1126,9 @@ def _apply_search_and_pagination(
     filtered = instruments
     if search and bundling != "per_underlying":
         needle = search.strip().lower()
-        filtered = [
-            inst for inst in instruments if needle in str(inst.get("instrument_id", "")).lower()
-        ][:MAX_SEARCH_RESULTS]
+        filtered = [inst for inst in instruments if needle in str(inst.get("instrument_id", "")).lower()][
+            :MAX_SEARCH_RESULTS
+        ]
 
     total = len(filtered)
     start = max(0, offset)
@@ -1199,7 +1140,7 @@ def _apply_search_and_pagination(
 def _list_instruments_full(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -1212,20 +1153,18 @@ def _list_instruments_full(
     in the shard) and by ``list_instruments_for_shard`` which then applies
     search + pagination on top.
     """
-    cache_key = f"instruments:{service}:{asset_group}:{venue}:{day}:{instrument_type}:{data_type}"
+    cache_key = f"instruments:{service}:{category}:{venue}:{day}:{instrument_type}:{data_type}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cast_dict(cached)
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    prefix = _shard_prefix(service, asset_group, venue, day, instrument_type, data_type)
+    bucket = build_bucket_name(service, category, project_id)
+    prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type)
     parquet_files = _collect_parquet_files(bucket, prefix)
     bundling = _bundling_mode(venue, instrument_type, service)
 
     if bundling == "per_condition_id":
-        instruments = _expand_per_condition_id(
-            parquet_files, asset_group, instrument_type, data_type, venue
-        )
+        instruments = _expand_per_condition_id(parquet_files, category, instrument_type, data_type, venue)
     elif bundling == "per_venue_day_bundle":
         instruments = _expand_per_venue_day_bundle(parquet_files, service, instrument_type)
     else:
@@ -1238,7 +1177,7 @@ def _list_instruments_full(
 
     full: dict[str, object] = {
         "service": service,
-        "asset_group": asset_group.lower(),
+        "category": category.lower(),
         "venue": venue,
         "day": day,
         "instrument_type": instrument_type,
@@ -1281,13 +1220,14 @@ def list_instruments_for_shard(
     The underlying listing is still cached in full so repeated pagination
     hits are cheap.
     """
+    category = asset_group
     # Clamp the page window defensively before doing any work.
     safe_limit = max(1, min(int(limit or DEFAULT_INSTRUMENT_LIMIT), MAX_INSTRUMENT_LIMIT))
     safe_offset = max(0, int(offset or 0))
 
     full = _list_instruments_full(
         service=service,
-        asset_group=asset_group,
+        category=category,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1312,7 +1252,7 @@ def list_instruments_for_shard(
 
     return {
         "service": full.get("service", service),
-        "asset_group": cast(str, full.get("asset_group", asset_group.lower())),
+        "category": full.get("category", category.lower()),
         "venue": full.get("venue", venue),
         "day": full.get("day", day),
         "instrument_type": full.get("instrument_type", instrument_type),
@@ -1347,6 +1287,7 @@ def preview_bundle_symbols(
     lets the user eyeball the contents of the bundle parquet before
     downloading it.
     """
+    category = asset_group
     bundling = _bundling_mode(venue, instrument_type)
     if bundling != "per_underlying":
         return {
@@ -1357,7 +1298,7 @@ def preview_bundle_symbols(
 
     listing = _list_instruments_full(
         service=service,
-        asset_group=asset_group,
+        category=category,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1377,7 +1318,7 @@ def preview_bundle_symbols(
         return {"bundling": bundling, "symbols": [], "message": "Bundle not found."}
     first = cast_dict(cast(dict[str, object], first_obj))
     uri = str(first.get("file_uri", ""))
-    symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
     try:
         symbols = _distinct_values_in_parquet(uri, symbol_col)[:limit]
     except (OSError, ValueError, RuntimeError) as exc:
@@ -1413,13 +1354,14 @@ def get_shard_info(
     (venues with a named + OTHER split usually want named as the default)
     or ``OTHER`` / the single type otherwise.
     """
-    cache_key = f"shard_info:{service}:{asset_group}:{venue}:{day}:{data_type}"
+    category = asset_group
+    cache_key = f"shard_info:{service}:{category}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         return cast_dict(cast(dict[str, object], cached))
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/venue={venue}/"
+    bucket = build_bucket_name(service, category, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
     instrument_types = sorted(_collect_instrument_types(bucket, venue_prefix))
 
     types_out: list[dict[str, str]] = []
@@ -1442,7 +1384,7 @@ def get_shard_info(
 
     result: dict[str, object] = {
         "service": service,
-        "asset_group": asset_group.lower(),
+        "category": category.lower(),
         "venue": venue,
         "day": day,
         "data_type": data_type,
@@ -1456,7 +1398,7 @@ def get_shard_info(
 def cast_dict(obj: object) -> dict[str, object]:
     """Narrow ``object`` → ``dict[str, object]`` without runtime cost."""
     if isinstance(obj, dict):
-        return obj  # type: ignore[return-value]
+        return obj  # pyright: ignore[reportReturnType,reportUnknownVariableType]
     raise TypeError(f"Expected dict, got {type(obj).__name__}")
 
 
@@ -1485,7 +1427,8 @@ def compute_bucket_counts(
     This performs one GCS list per venue/day and, if OTHER exists, one
     parquet read. Results cache 5 min.
     """
-    cache_key = f"bucket_counts:{service}:{asset_group}:{venue}:{day}:{data_type}"
+    category = asset_group
+    cache_key = f"bucket_counts:{service}:{category}:{venue}:{day}:{data_type}"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
         cached_typed: dict[str, int] = {}
@@ -1495,16 +1438,14 @@ def compute_bucket_counts(
             cached_typed[key_str] = val_int
         return cached_typed
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/venue={venue}/"
+    bucket = build_bucket_name(service, category, project_id)
+    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
     instrument_types = _collect_instrument_types(bucket, venue_prefix)
     named = sum(1 for it in instrument_types if it.upper() != "OTHER")
 
     other_count = 0
     if any(it.upper() == "OTHER" for it in instrument_types):
-        other_count = _count_distinct_in_other_bucket(
-            bucket, venue_prefix, asset_group, venue, data_type
-        )
+        other_count = _count_distinct_in_other_bucket(bucket, venue_prefix, category, venue, data_type)
 
     result = {"named_market_count": named, "other_market_count": other_count}
     _cache_put(cache_key, result)
@@ -1534,11 +1475,9 @@ def _collect_instrument_types(bucket: str, venue_prefix: str) -> set[str]:
     return found
 
 
-def _count_distinct_in_other_bucket(
-    bucket: str, venue_prefix: str, asset_group: str, venue: str, data_type: str
-) -> int:
+def _count_distinct_in_other_bucket(bucket: str, venue_prefix: str, category: str, venue: str, data_type: str) -> int:
     """Read the first OTHER-bucket parquet and return the distinct-symbol count."""
-    symbol_col = _infer_symbol_column_for_shard(asset_group, "OTHER", data_type, venue)
+    symbol_col = _infer_symbol_column_for_shard(category, "OTHER", data_type, venue)
     other_prefix = f"{venue_prefix}instrument_type=OTHER/data_type={data_type}/"
     try:
         other_objects = list_objects(bucket, other_prefix, max_results=10)
@@ -1550,7 +1489,7 @@ def _count_distinct_in_other_bucket(
         if not isinstance(name, str) or not name.endswith(".parquet"):
             continue
         try:
-            return len(_distinct_values_in_parquet(f"gs://{bucket}/{name}", symbol_col))
+            return len(_distinct_values_in_parquet(f"gs://{bucket}/{name}", symbol_col))  # noqa: gs-uri  — URI composer, bucket already resolved
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Failed to read OTHER parquet %s: %s", name, exc)
     return 0
@@ -1579,7 +1518,7 @@ def _read_parquet_columns(gs_uri: str, columns: list[str] | None = None) -> pd.D
     import pyarrow.parquet as pq
 
     if not gs_uri.startswith("gs://"):
-        raise ValueError(f"Not a gs:// URI: {gs_uri}")
+        raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
     bucket_key = gs_uri[len("gs://") :]
     # gcsfs + pyarrow lack usable type stubs; we keep every cross-boundary
     # value narrowed to ``object`` and re-check at the DataFrame boundary.
@@ -1617,7 +1556,7 @@ def _parquet_schema_names(gs_uri: str) -> set[str]:
     import pyarrow.parquet as pq
 
     if not gs_uri.startswith("gs://"):
-        raise ValueError(f"Not a gs:// URI: {gs_uri}")
+        raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
     bucket_key = gs_uri[len("gs://") :]
     fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
     open_fn: object = getattr(fs_any, "open", None)
@@ -1689,11 +1628,12 @@ def build_csv_export(
 
     Raises ``ValueError`` if row count would exceed ``max_rows``.
     """
+    category = asset_group
     # CSV export must see every instrument in the shard, not just the first
     # page — users select IDs that may live on any page.
     listing = _list_instruments_full(
         service=service,
-        asset_group=asset_group,
+        category=category,
         venue=venue,
         day=day,
         instrument_type=instrument_type,
@@ -1702,9 +1642,7 @@ def build_csv_export(
     )
     bundling = str(listing["bundling"])
     raw_instruments_obj: object = listing["instruments"]
-    raw_list = cast(
-        list[object], raw_instruments_obj if isinstance(raw_instruments_obj, list) else []
-    )
+    raw_list = cast(list[object], raw_instruments_obj if isinstance(raw_instruments_obj, list) else [])
     all_instruments: list[dict[str, object]] = []
     for i in raw_list:
         if isinstance(i, dict):
@@ -1717,7 +1655,7 @@ def build_csv_export(
     if bundling == "per_condition_id" and all_instruments:
         # Single bundle parquet, filter by symbol column.
         pf_uri = str(all_instruments[0]["file_uri"])
-        symbol_col = _infer_symbol_column_for_shard(asset_group, instrument_type, data_type, venue)
+        symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
         df = _read_parquet_columns(pf_uri)  # full parquet
         if selected and symbol_col in df.columns:
             df = df[df[symbol_col].astype(str).isin(selected)]
@@ -1789,13 +1727,11 @@ def build_fixtures_csv_export(
     if league is None:
         raise ValueError(f"Unknown league_id: {league_id}")
     if league.api_football_id is None:
-        raise ValueError(
-            f"League {league_id} has no api_football_id — not sourced from API-Football"
-        )
+        raise ValueError(f"League {league_id} has no api_football_id — not sourced from API-Football")
     af_id = int(league.api_football_id)
 
-    pid = project_id or _pid
-    gs_uri = f"gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet"
+    _sports_bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+    gs_uri = f"gs://{_sports_bucket}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet"  # noqa: gs-uri  — URI composer, bucket resolved via resolve_bucket_name
 
     try:
         df = _read_parquet_columns(gs_uri)
@@ -1809,6 +1745,10 @@ def build_fixtures_csv_export(
     if "af_league_id" not in df.columns:
         # Empty or malformed day file — return empty CSV rather than erroring.
         return "", 0, _fixtures_csv_filename(day, league_id)
+
+    # af_league_id column may be object/str/int — coerce at the boundary
+    # via pandas.to_numeric (keeps basedpyright strict-mode happy — the
+    # lambda+apply path surfaces reportUnknownLambdaType for the cell type).
     af_series = pd.to_numeric(df["af_league_id"], errors="coerce")
     filtered = df[af_series == af_id]
     if len(filtered) > max_rows:
@@ -1858,14 +1798,9 @@ _FIXTURE_META_ALIASES: dict[str, list[str]] = {
 }
 
 
-def _entity_gs_uri(
-    *, day: str, path_suffix: str, filename: str, project_id: str | None = None
-) -> str:
-    pid = project_id or _pid
-    return (
-        f"gs://instruments-store-sports-{pid}/sports_reference/"
-        f"by_date/day={day}/{path_suffix}/{filename}"
-    )
+def _entity_gs_uri(*, day: str, path_suffix: str, filename: str, project_id: str | None = None) -> str:
+    _sports_bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+    return f"gs://{_sports_bucket}/sports_reference/by_date/day={day}/{path_suffix}/{filename}"  # noqa: gs-uri  — URI composer, bucket resolved via resolve_bucket_name
 
 
 def _probe_fid_column(gs_uri: str) -> tuple[str, str | None]:
@@ -1957,9 +1892,7 @@ def _load_fixture_meta(
     if league is None:
         raise ValueError(f"Unknown league_id: {league_id}")
     if league.api_football_id is None:
-        raise ValueError(
-            f"League {league_id} has no api_football_id — not sourced from API-Football"
-        )
+        raise ValueError(f"League {league_id} has no api_football_id — not sourced from API-Football")
     af_id = int(league.api_football_id)
 
     gs_uri = _entity_gs_uri(
@@ -2035,9 +1968,7 @@ def build_fixture_breakdown(
     "no schedule recorded" rather than red-missing fixtures.
     """
     try:
-        fixtures_meta, af_id = _load_fixture_meta(
-            day=day, league_id=league_id, project_id=project_id
-        )
+        fixtures_meta, af_id = _load_fixture_meta(day=day, league_id=league_id, project_id=project_id)
     except (OSError, FileNotFoundError):
         return {
             "day": day,
@@ -2051,9 +1982,7 @@ def build_fixture_breakdown(
     # Resolve per-entity fixture_id sets ONCE per entity (bounded by 8 reads).
     entity_status: dict[str, tuple[str, set[str]]] = {}
     for data_type, path_suffix, filename in _FIXTURE_ENTITIES:
-        gs_uri = _entity_gs_uri(
-            day=day, path_suffix=path_suffix, filename=filename, project_id=project_id
-        )
+        gs_uri = _entity_gs_uri(day=day, path_suffix=path_suffix, filename=filename, project_id=project_id)
         entity_status[data_type] = _read_entity_fixture_ids(gs_uri)
 
     fixture_rows: list[dict[str, object]] = []
@@ -2122,8 +2051,8 @@ _DEFI_POOL_ID_CANDIDATE_COLS: tuple[str, ...] = (
 
 
 def _defi_tick_bucket(project_id: str | None = None) -> str:
-    pid = project_id or _pid
-    return f"market-data-tick-defi-{pid}"
+    # project_id ignored — resolve_bucket_name resolves from SSOT (cloud-providers.yaml)
+    return resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="defi")
 
 
 def _venue_chain_partition(venue: str, chain: str) -> str:
@@ -2144,7 +2073,7 @@ def _defi_venue_chain_aliases(venue_chain: str) -> list[str]:
          (e.g. EIGENLAYER-ETHEREUM).
       2. Protocol-only ``venue={PROTOCOL}/`` for multi-chain protocols
          (e.g. AAVE_V3, UNISWAP_V3 — chain encoded in pool_id row).
-    Also tries underscore variants per UAC↔GCS naming drift (AAVE_V3 vs AAVEV3).
+    Also tries underscore variants per UAC↔GCS naming drift (AAVE_V3 vs AAVE_V3).
     """
 
     protocol_only = venue_chain.split("-")[0]
@@ -2193,8 +2122,7 @@ def _list_defi_objects_with_aliases(*, bucket: str, day: str, venue_chain: str) 
             # makes sense when we have a chain part to put under chain=.
             if chain_part:
                 candidates.append(
-                    f"raw_tick_data/by_date/day={day}/{hive_key}=defi/"
-                    f"venue={protocol_only}/chain={chain_part}/"
+                    f"raw_tick_data/by_date/day={day}/{hive_key}=defi/venue={protocol_only}/chain={chain_part}/"
                 )
     for prefix in candidates:
         try:
@@ -2219,7 +2147,7 @@ def _list_pool_entities_for_venue(
     ``DEFAULT_INSTRUMENT_LIMIT`` to keep the listing bounded.
 
     DeFi venue+chain aliasing: UI/UAC use ``AAVE_V3-ETHEREUM`` but the GCS
-    writer drops the underscore (``AAVEV3-ETHEREUM``). Tries the literal
+    writer drops the underscore (``AAVE_V3-ETHEREUM``). Tries the literal
     form first, then the underscore-stripped form (and reverse) — uses
     whichever the bucket actually has.
     """
@@ -2231,23 +2159,23 @@ def _list_pool_entities_for_venue(
     seen: set[tuple[str, str]] = set()
     out: list[tuple[str, str, str]] = []
     for obj in objects:
-        if not obj.name.endswith(".parquet"):
+        if not obj.name.endswith(".parquet"):  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
             continue
         instrument_type = ""
         data_type = ""
-        for token in obj.name.split("/"):
-            if token.startswith("instrument_type="):
-                instrument_type = token[len("instrument_type=") :]
-            elif token.startswith("data_type="):
-                data_type = token[len("data_type=") :]
+        for token in obj.name.split("/"):  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue,reportUnknownVariableType]
+            if token.startswith("instrument_type="):  # pyright: ignore[reportUnknownMemberType]
+                instrument_type = token[len("instrument_type=") :]  # pyright: ignore[reportUnknownVariableType]
+            elif token.startswith("data_type="):  # pyright: ignore[reportUnknownMemberType]
+                data_type = token[len("data_type=") :]  # pyright: ignore[reportUnknownVariableType]
         if not instrument_type or not data_type:
             continue
-        key = (instrument_type, data_type)
+        key = (instrument_type, data_type)  # pyright: ignore[reportUnknownVariableType]
         if key in seen:
             continue
-        seen.add(key)
-        gs_uri = f"gs://{bucket}/{obj.name}"
-        out.append((instrument_type, data_type, gs_uri))
+        seen.add(key)  # pyright: ignore[reportUnknownArgumentType]
+        gs_uri = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved  # pyright: ignore[reportUnknownMemberType,reportAttributeAccessIssue]
+        out.append((instrument_type, data_type, gs_uri))  # pyright: ignore[reportUnknownArgumentType]
     return out
 
 
@@ -2330,9 +2258,7 @@ def build_pool_breakdown(
     (same semantics as sports' ``"no_schedule"``).
     """
     venue_chain = _venue_chain_partition(venue, chain)
-    entities = _list_pool_entities_for_venue(
-        day=day, venue_chain=venue_chain, project_id=project_id
-    )
+    entities = _list_pool_entities_for_venue(day=day, venue_chain=venue_chain, project_id=project_id)
     if not entities:
         return {
             "day": day,
@@ -2391,9 +2317,7 @@ def build_pool_breakdown(
     }
 
 
-def _filter_entity_rows_for_fixture(
-    gs_uri: str, fixture_id: str
-) -> tuple[str, pd.DataFrame | None]:
+def _filter_entity_rows_for_fixture(gs_uri: str, fixture_id: str) -> tuple[str, pd.DataFrame | None]:
     """Read a per-day entity parquet and return ``(capture_status, rows_for_fixture_or_none)``.
 
     ``rows_for_fixture_or_none`` is ``None`` for ``attempted_failed`` /
@@ -2412,14 +2336,12 @@ def _filter_entity_rows_for_fixture(
     # (``fixture_id``); migrated parquets use ``af_fixture_id`` as the
     # canonical join key.
     fid_col = (
-        "af_fixture_id"
-        if "af_fixture_id" in df.columns
-        else ("fixture_id" if "fixture_id" in df.columns else None)
+        "af_fixture_id" if "af_fixture_id" in df.columns else ("fixture_id" if "fixture_id" in df.columns else None)
     )
     if fid_col is None or df.empty:
         return ("empty_confirmed", None)
 
-    fid_series = df[fid_col].astype(str).str.split(".").str[0]  # strip float ".0" suffix
+    fid_series = df["fixture_id"].astype(str)
     filtered = df[fid_series == fixture_id]
     if filtered.empty:
         return ("missing", filtered)
@@ -2477,16 +2399,12 @@ def build_fixture_download(
         per_entity[data_type] = _filter_entity_rows_for_fixture(gs_uri, fixture_id)
 
     coverage: dict[str, str] = {dt: status for dt, (status, _rows) in per_entity.items()}
-    total_captured_rows = sum(
-        (0 if rows is None else len(rows)) for _status, rows in per_entity.values()
-    )
+    total_captured_rows = sum((0 if rows is None else len(rows)) for _status, rows in per_entity.values())
 
     if total_captured_rows == 0:
         # Nothing found for this fixture across any entity — surface a 404
         # at the HTTP layer.
-        raise FileNotFoundError(
-            f"fixture_id {fixture_id!r} not found in any entity for day {day_resolved}"
-        )
+        raise FileNotFoundError(f"fixture_id {fixture_id!r} not found in any entity for day {day_resolved}")
 
     filename_out = _fixture_download_filename(fixture_id, fmt_lower)
 
@@ -2558,6 +2476,7 @@ def build_instruments_shard_csv_export(
         ValueError: unsupported service, or row count exceeds ``max_rows``.
         FileNotFoundError: parquet does not exist (adapter never ran that day).
     """
+    category = asset_group
     svc = service.lower()
     if svc not in _PER_VENUE_DAY_BUNDLE_SERVICES:
         raise ValueError(
@@ -2565,13 +2484,13 @@ def build_instruments_shard_csv_export(
             f"Supported: {sorted(_PER_VENUE_DAY_BUNDLE_SERVICES)}"
         )
 
-    bucket = build_bucket_name(service, asset_group, project_id)
-    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"
+    bucket = build_bucket_name(service, category, project_id)
+    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
 
     try:
         df = _read_parquet_columns(gs_uri)
     except (OSError, FileNotFoundError):
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     if len(df) > max_rows:
         raise ValueError(
@@ -2580,20 +2499,18 @@ def build_instruments_shard_csv_export(
         )
 
     csv_text = df.to_csv(index=False)
-    return csv_text, len(df), _shard_csv_filename(service, asset_group, venue, date)
+    return csv_text, len(df), _shard_csv_filename(service, category, venue, date)
 
 
-def _shard_csv_filename(service: str, asset_group: str, venue: str, date: str) -> str:
-    return f"{service}_{asset_group}_{venue}_{date}.csv"
+def _shard_csv_filename(service: str, category: str, venue: str, date: str) -> str:
+    return f"{service}_{category}_{venue}_{date}.csv"
 
 
 # ---------------------------------------------------------------------------
 # MTDS availability-catalog CSV export (market-tick-data-service)
 # ---------------------------------------------------------------------------
 
-MTDS_SHARD_SERVICES: frozenset[str] = frozenset(
-    {"market-tick-data-service", "market-data-processing-service"}
-)
+MTDS_SHARD_SERVICES: frozenset[str] = frozenset({"market-tick-data-service", "market-data-processing-service"})
 
 # Columns to include in the availability catalog CSV (in order).
 # These are the v5 manifest columns that operators care about.
@@ -2613,7 +2530,7 @@ _MTDS_CATALOG_COLUMNS: list[str] = [
 def build_mtds_shard_csv_export(
     *,
     service: str,
-    asset_group: str,
+    category: str,
     venue: str,
     date: str,
     project_id: str | None = None,
@@ -2636,20 +2553,17 @@ def build_mtds_shard_csv_export(
     """
     svc = service.lower()
     if svc not in MTDS_SHARD_SERVICES:
-        raise ValueError(
-            f"Service {service!r} is not an MTDS-family service. "
-            f"Supported: {sorted(MTDS_SHARD_SERVICES)}"
-        )
+        raise ValueError(f"Service {service!r} is not an MTDS-family service. Supported: {sorted(MTDS_SHARD_SERVICES)}")
 
-    bucket = build_bucket_name(service, asset_group, project_id)
+    bucket = build_bucket_name(service, category, project_id)
     try:
         df = read_availability_index(bucket)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("MTDS catalog export: manifest read failed for %s: %s", bucket, exc)
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     if df.empty or "date" not in df.columns:
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     mask = df["date"] == date
     if "venue" in df.columns:
@@ -2657,17 +2571,15 @@ def build_mtds_shard_csv_export(
     scoped = df.loc[mask].copy()
 
     if scoped.empty:
-        return "", 0, _shard_csv_filename(service, asset_group, venue, date)
+        return "", 0, _shard_csv_filename(service, category, venue, date)
 
     # Keep only the catalog columns that exist; fill missing ones with "".
     out_cols = [c for c in _MTDS_CATALOG_COLUMNS if c in scoped.columns]
     scoped = scoped[out_cols]
 
-    sort_cols = [
-        c for c in ("instrument_type", "data_type", "instrument_id") if c in scoped.columns
-    ]
+    sort_cols = [c for c in ("instrument_type", "data_type", "instrument_id") if c in scoped.columns]
     if sort_cols:
         scoped = scoped.sort_values(sort_cols)
 
     csv_text: str = scoped.to_csv(index=False)  # pyright: ignore[reportUnknownMemberType]
-    return csv_text, len(scoped), _shard_csv_filename(service, asset_group, venue, date)
+    return csv_text, len(scoped), _shard_csv_filename(service, category, venue, date)

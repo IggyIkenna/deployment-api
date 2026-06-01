@@ -29,31 +29,35 @@ from typing import cast
 
 from deployment_api import settings
 
-from ._deployment_processor_cloud_run import (
-    _get_cloud_run_status_batch_sync as _get_cloud_run_status_batch_sync,
+from ._deployment_processor_cloud_run import (  # pyright: ignore[reportPrivateUsage]
+    _get_cloud_run_status_batch_sync as _get_cloud_run_status_batch_sync,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_cloud_run import (
-    _process_cloud_run_status,
+from ._deployment_processor_cloud_run import (  # pyright: ignore[reportPrivateUsage]
+    _process_cloud_run_status,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_helpers import (
+from ._deployment_processor_helpers import (  # pyright: ignore[reportPrivateUsage]
     STATE_BUCKET,
-    _apply_shard_status_updates,
-    _QuotaBrokerProtocol,
-    _resolve_gcs_shard_statuses,
+    _apply_shard_status_updates,  # pyright: ignore[reportPrivateUsage]
+    _QuotaBrokerProtocol,  # pyright: ignore[reportPrivateUsage]
+    _resolve_gcs_shard_statuses,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_helpers import (
-    _cancel_vm_jobs_sync as _cancel_vm_jobs_sync,
+from ._deployment_processor_helpers import (  # pyright: ignore[reportPrivateUsage]
+    _cancel_vm_jobs_sync as _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
 )
-from ._deployment_processor_vm import (
-    _build_vm_map_for_service,
-    _handle_completed_pending_delete,
-    _process_vm_health_and_status,
-    _terminate_stuck_vm,
+from ._deployment_processor_vm import (  # pyright: ignore[reportPrivateUsage]
+    _build_vm_map_for_service,  # pyright: ignore[reportPrivateUsage]
+    _process_vm_health_and_status,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Re-export symbols so tests can import from this module.
-from ._deployment_processor_vm_cleanup import (
-    _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,
+from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _handle_completed_pending_delete as _handle_completed_pending_delete,  # pyright: ignore[reportPrivateUsage]
+)
+from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _handle_orphan_vm_cleanup as _handle_orphan_vm_cleanup,  # pyright: ignore[reportPrivateUsage]
+)
+from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
+    _terminate_stuck_vm as _terminate_stuck_vm,  # pyright: ignore[reportPrivateUsage]
 )
 from .auto_sync import pending_vm_deletes
 
@@ -76,7 +80,7 @@ def _process_stuck_shards(
     updated: bool,
 ) -> bool:
     """Process detection and handling of stuck shards."""
-    from ._deployment_processor_helpers import _parse_shard_elapsed_seconds
+    from ._deployment_processor_helpers import _parse_shard_elapsed_seconds  # pyright: ignore[reportPrivateUsage]
 
     try:
         if compute_type != "vm":
@@ -95,9 +99,7 @@ def _process_stuck_shards(
             if elapsed > (timeout_seconds + grace_seconds):
                 shard["status"] = "failed"
                 shard["end_time"] = now.isoformat()
-                shard["error_message"] = (
-                    f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"
-                )
+                shard["error_message"] = f"Stuck shard: exceeded timeout ({timeout_seconds}s + {grace_seconds}s grace)"
                 shard["failure_category"] = "timeout"
                 _terminate_stuck_vm(shard, config, deployment_id, now)
                 updated = True
@@ -210,9 +212,7 @@ def _process_active_deployment(
         service_name = cast(str, state.get("service") or "")
         if service_name:
             vm_map = _build_vm_map_for_service(service_name)
-        updated = _process_vm_health_and_status(
-            shards, vm_map, now, config, deployment_id, shard_statuses, updated
-        )
+        updated = _process_vm_health_and_status(shards, vm_map, now, config, deployment_id, shard_statuses, updated)
 
     # For Cloud Run: refresh running executions in batch.
     if compute_type == "cloud_run":
@@ -240,9 +240,7 @@ def _process_active_deployment(
         )
 
     if updated:
-        _finalise_updated_state(
-            state, state_path, deployment_id, compute_type, now, launched_this_tick
-        )
+        _finalise_updated_state(state, state_path, deployment_id, compute_type, now, launched_this_tick)
         return 1
     return 0
 
@@ -302,9 +300,7 @@ def _run_deployment_batch_concurrent(
 
     active_states.sort(
         key=lambda x: sum(
-            1
-            for s in cast(list[dict[str, object]], x[1].get("shards") or [])
-            if s.get("status") == "running"
+            1 for s in cast(list[dict[str, object]], x[1].get("shards") or []) if s.get("status") == "running"
         ),
         reverse=True,
     )

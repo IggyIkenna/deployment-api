@@ -27,9 +27,7 @@ sys.modules.setdefault(
     MagicMock(ConfigLoader=_mock_config_loader_cls),
 )
 # Mock unified_trading_library.cloud_interface to avoid RuntimeMode import chain
-sys.modules.setdefault(
-    "unified_trading_library.cloud_interface", MagicMock(AsyncRedisProvider=MagicMock())
-)
+sys.modules.setdefault("unified_trading_library.cloud_interface", MagicMock(AsyncRedisProvider=MagicMock()))
 
 # Mock the routes package so __init__ doesn't fire
 if "deployment_api.routes" not in sys.modules:
@@ -254,9 +252,7 @@ class TestGetServiceStartDates:
             with open(config_dir / "expected_start_dates.yaml", "w") as f:
                 yaml.dump(data, f)
             mock_request = _make_request(config_dir)
-            result = asyncio.run(
-                _cfg_routes.get_service_start_dates("instruments-service", mock_request)
-            )
+            result = asyncio.run(_cfg_routes.get_service_start_dates("instruments-service", mock_request))
         assert result["service"] == "instruments-service"
 
     def test_raises_404_when_service_not_found(self):
@@ -370,9 +366,7 @@ class TestGetServiceDependencies:
             mock_request = _make_request(config_dir)
             with patch.object(_cfg_routes, "cache") as mock_cache:
                 mock_cache.get_or_fetch = _pass_through
-                result = asyncio.run(
-                    _cfg_routes.get_service_dependencies("instruments-service", mock_request)
-                )
+                result = asyncio.run(_cfg_routes.get_service_dependencies("instruments-service", mock_request))
         assert result["service"] == "instruments-service"
         assert "upstream" in result
         assert "dag" in result
@@ -403,7 +397,5 @@ class TestGetServiceDependencies:
         with patch.object(_cfg_routes, "cache") as mock_cache:
             mock_cache.get_or_fetch = AsyncMock(side_effect=OSError("disk error"))
             with pytest.raises(HTTPException) as exc:
-                asyncio.run(
-                    _cfg_routes.get_service_dependencies("instruments-service", _make_request())
-                )
+                asyncio.run(_cfg_routes.get_service_dependencies("instruments-service", _make_request()))
         assert exc.value.status_code == 500

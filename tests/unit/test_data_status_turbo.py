@@ -181,8 +181,7 @@ class TestInstrumentTypeExtraction:
                     iterator.__iter__ = lambda self: iter([])
                 elif (
                     "data_type=options_chain/" in prefix
-                    and "instrument_type=options_chain/"
-                    not in prefix.split("data_type=options_chain/")[1]
+                    and "instrument_type=options_chain/" not in prefix.split("data_type=options_chain/")[1]
                 ):
                     iterator.prefixes = [f"{prefix}instrument_type=options_chain/"]
                     iterator.__iter__ = lambda self: iter([])
@@ -260,9 +259,7 @@ class TestVenueExtraction:
         for filename, expected_venue in test_cases:
             match = pattern.search(filename)
             assert match is not None, f"Pattern should match {filename}"
-            assert match.group(1) == expected_venue, (
-                f"Should extract {expected_venue} from {filename}"
-            )
+            assert match.group(1) == expected_venue, f"Should extract {expected_venue} from {filename}"
 
 
 class TestTimeframeExtraction:
@@ -300,11 +297,7 @@ class TestExpectedStartDatesFiltering:
             if not category_start:
                 return all_dates
             start_dt = datetime.strptime(category_start, "%Y-%m-%d").replace(tzinfo=UTC)
-            return {
-                d
-                for d in all_dates
-                if datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=UTC) >= start_dt
-            }
+            return {d for d in all_dates if datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=UTC) >= start_dt}
 
         # Generate all January dates
         all_dates = {f"2024-01-{d:02d}" for d in range(1, 32)}
@@ -327,11 +320,7 @@ class TestExpectedStartDatesFiltering:
             if not category_start:
                 return all_dates
             start_dt = datetime.strptime(category_start, "%Y-%m-%d").replace(tzinfo=UTC)
-            return {
-                d
-                for d in all_dates
-                if datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=UTC) >= start_dt
-            }
+            return {d for d in all_dates if datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=UTC) >= start_dt}
 
         all_dates = {f"2024-01-{d:02d}" for d in range(1, 32)}
 
@@ -413,7 +402,7 @@ class TestDimensionWeightedCompletion:
     def test_venue_completion_reflects_all_data_types(self):
         """Test that venue completion accounts for all expected data types.
 
-        Bug: UNISWAPV3-ETH showed 100% because liquidity had 30/30 dates,
+        Bug: UNISWAP_V3-ETH showed 100% because liquidity had 30/30 dates,
         but swaps only had 2/30 dates. The union was 30 dates → 100%.
         Fix: venue completion = (30 + 2) / (30 + 30) = 53.3%
         """
@@ -507,14 +496,14 @@ class TestDimensionWeightedCompletion:
     def test_category_aggregation_uses_dimension_weighted_values(self):
         """Test that category completion uses dimension-weighted venue values."""
         venues = {
-            "UNISWAPV2-ETH": {
+            "UNISWAP_V2-ETH": {
                 "dates_found": 30,  # Raw union (old)
                 "dates_expected_venue": 30,
                 "_dim_weighted_found": 60,  # Both data types complete
                 "_dim_weighted_expected": 60,
                 "is_expected": True,
             },
-            "UNISWAPV3-ETH": {
+            "UNISWAP_V3-ETH": {
                 "dates_found": 30,  # Raw union (old)
                 "dates_expected_venue": 30,
                 "_dim_weighted_found": 32,  # liquidity=30, swaps=2
@@ -531,9 +520,7 @@ class TestDimensionWeightedCompletion:
 
         # New (fixed) category calculation: uses dimension-weighted values
         new_found = sum(
-            v.get("_dim_weighted_found", v["dates_found"])
-            for v in venues.values()
-            if v.get("is_expected", True)
+            v.get("_dim_weighted_found", v["dates_found"]) for v in venues.values() if v.get("is_expected", True)
         )
         new_expected = sum(
             v.get("_dim_weighted_expected", v["dates_expected_venue"])
@@ -590,14 +577,8 @@ class TestDimensionWeightedCompletion:
             },
         }
 
-        total_found = sum(
-            v.get("_dim_weighted_found", 0) for v in venues.values() if v.get("is_expected", True)
-        )
-        total_expected = sum(
-            v.get("_dim_weighted_expected", 0)
-            for v in venues.values()
-            if v.get("is_expected", True)
-        )
+        total_found = sum(v.get("_dim_weighted_found", 0) for v in venues.values() if v.get("is_expected", True))
+        total_expected = sum(v.get("_dim_weighted_expected", 0) for v in venues.values() if v.get("is_expected", True))
         pct = round(total_found / total_expected * 100, 1)
 
         # Only EXPECTED-VENUE counts: 50/60 = 83.3%
@@ -943,8 +924,7 @@ class TestDateHandlingConsistency:
         bad_response = {"date_range": {"start": "2026-01-04", "end": "2026-02-02", "days": 30}}
         # Frontend validation should catch this mismatch
         has_mismatch = (
-            bad_response["date_range"]["start"] != request_start
-            or bad_response["date_range"]["end"] != request_end
+            bad_response["date_range"]["start"] != request_start or bad_response["date_range"]["end"] != request_end
         )
         assert has_mismatch, "Should detect date mismatch"
 
@@ -980,10 +960,7 @@ class TestMetricConsistency:
         }
 
         # Verify consistency
-        assert (
-            response["total_missing"]
-            == response["overall_dates_expected"] - response["overall_dates_found"]
-        )
+        assert response["total_missing"] == response["overall_dates_expected"] - response["overall_dates_found"]
 
         # If completion is not 100%, total_missing should be > 0
         if response["overall_completion_pct"] < 100:
@@ -1048,9 +1025,7 @@ class TestMetricConsistency:
 
         # The ratio gives approximate venue count
         if response["overall_dates_expected_category"] > 0:
-            approx_venues = (
-                response["overall_dates_expected"] / response["overall_dates_expected_category"]
-            )
+            approx_venues = response["overall_dates_expected"] / response["overall_dates_expected_category"]
             assert approx_venues >= 1  # At least 1 venue
 
 
@@ -1073,12 +1048,8 @@ class TestTotalMissingFallback:
         # Simulate the calculation from data_status.py
         def calculate_total_missing(results, total_venue_expected, total_venue_found):
             """Replicate the fixed logic from data_status.py."""
-            total_expected_asset_group = sum(
-                r.get("dates_expected", 0) for r in results.values() if "error" not in r
-            )
-            total_found_asset_group = sum(
-                r.get("dates_found", 0) for r in results.values() if "error" not in r
-            )
+            total_expected_asset_group = sum(r.get("dates_expected", 0) for r in results.values() if "error" not in r)
+            total_found_asset_group = sum(r.get("dates_found", 0) for r in results.values() if "error" not in r)
 
             if total_venue_expected > 0:
                 # Use venue-weighted
@@ -1171,9 +1142,7 @@ class TestExcludeDatesFiltering:
         assert len(filtered) == 2
 
         # Verify which shards remain
-        remaining_cats_dates = [
-            (s["dimensions"]["category"], s["dimensions"]["date"]["start"]) for s in filtered
-        ]
+        remaining_cats_dates = [(s["dimensions"]["category"], s["dimensions"]["date"]["start"]) for s in filtered]
         assert ("CEFI", "2024-01-03") in remaining_cats_dates
         assert ("DEFI", "2024-01-01") in remaining_cats_dates
         assert ("CEFI", "2024-01-01") not in remaining_cats_dates
@@ -1213,9 +1182,7 @@ class TestExcludeDatesFiltering:
                 dims = shard.get("dimensions", {})
                 cat = dims.get("category", "")
                 date_val = dims.get("date", {})
-                date_str = (
-                    date_val.get("start", "") if isinstance(date_val, dict) else str(date_val)
-                )
+                date_str = date_val.get("start", "") if isinstance(date_val, dict) else str(date_val)
 
                 if cat in exclude_sets and date_str in exclude_sets[cat]:
                     continue
@@ -1283,11 +1250,7 @@ class TestDatesFoundListIncluded:
     def test_dates_found_list_empty_when_no_data(self):
         """Test that dates_found_list is empty when no data exists."""
         # When a category has no data, dates_found_list should be []
-        sample_response = {
-            "asset_groups": {
-                "DEFI": {"dates_found": 0, "dates_expected": 3, "dates_found_list": []}
-            }
-        }
+        sample_response = {"asset_groups": {"DEFI": {"dates_found": 0, "dates_expected": 3, "dates_found_list": []}}}
 
         assert sample_response["asset_groups"]["DEFI"]["dates_found_list"] == []
         assert sample_response["asset_groups"]["DEFI"]["dates_found"] == 0
@@ -1304,19 +1267,19 @@ class TestDefiVenueExtraction:
 
     def test_venue_is_directory_in_defi_structure(self):
         """Test that DEFI venues are directories, not in filenames."""
-        # DEFI path: .../data_type=liquidity/instrument_type=pool/venue=UNISWAPV2-ETH/file.parquet
-        sample_path = "raw_tick_data/by_date/day=2026-01-01/data_type=liquidity/instrument_type=pool/venue=UNISWAPV2-ETH/UNISWAPV2-ETH:POOL:DAI-USDC@ETHEREUM.parquet"
+        # DEFI path: .../data_type=liquidity/instrument_type=pool/venue=UNISWAP_V2-ETH/file.parquet
+        sample_path = "raw_tick_data/by_date/day=2026-01-01/data_type=liquidity/instrument_type=pool/venue=UNISWAP_V2-ETH/UNISWAP_V2-ETH:POOL:DAI-USDC@ETHEREUM.parquet"
         parts = sample_path.split("/")
 
-        # Venue is in the 6th part (index 5): venue=UNISWAPV2-ETH
+        # Venue is in the 6th part (index 5): venue=UNISWAP_V2-ETH
         venue_part = parts[5]
         assert venue_part.startswith("venue=")
-        assert venue_part.split("=", 1)[1] == "UNISWAPV2-ETH"
+        assert venue_part.split("=", 1)[1] == "UNISWAP_V2-ETH"
 
     def test_venue_vs_underlying_detection(self):
         """Test distinguishing venues from underlyings in directory names.
 
-        Venues: UNISWAPV2-ETH, BINANCE-FUTURES, DERIBIT
+        Venues: UNISWAP_V2-ETH, BINANCE-FUTURES, DERIBIT
         Underlyings: BTC-USD, ETH-USDT (short asset-quote pairs)
         """
 
@@ -1338,7 +1301,7 @@ class TestDefiVenueExtraction:
             return is_underlying
 
         # Test venues (should NOT be underlyings)
-        assert not is_underlying("UNISWAPV2-ETH")
+        assert not is_underlying("UNISWAP_V2-ETH")
         assert not is_underlying("BINANCE-FUTURES")
         assert not is_underlying("DERIBIT")  # No dash
 
@@ -1349,7 +1312,7 @@ class TestDefiVenueExtraction:
 
         # Edge cases
         assert is_underlying("AAVE-USD")  # Looks like underlying
-        assert not is_underlying("UNISWAPV3-BASE")  # Chain suffix, not quote
+        assert not is_underlying("UNISWAP_V3-BASE")  # Chain suffix, not quote
 
     def test_three_level_depth_for_venue_extraction(self):
         """Test that venue extraction goes 3 levels deep for DEFI."""
@@ -1361,13 +1324,13 @@ class TestDefiVenueExtraction:
         structure = {
             "data_type=liquidity/": {
                 "pool/": {
-                    "UNISWAPV2-ETH/": ["file1.parquet"],
-                    "UNISWAPV3-ETH/": ["file2.parquet"],
+                    "UNISWAP_V2-ETH/": ["file1.parquet"],
+                    "UNISWAP_V3-ETH/": ["file2.parquet"],
                 }
             },
             "data_type=swaps/": {
                 "pool/": {
-                    "UNISWAPV2-ETH/": ["file3.parquet"],
+                    "UNISWAP_V2-ETH/": ["file3.parquet"],
                 }
             },
         }
@@ -1380,7 +1343,7 @@ class TestDefiVenueExtraction:
                     venue = l3.rstrip("/")
                     venues_found.add(venue)
 
-        assert venues_found == {"UNISWAPV2-ETH", "UNISWAPV3-ETH"}
+        assert venues_found == {"UNISWAP_V2-ETH", "UNISWAP_V3-ETH"}
 
 
 class TestExpectedMissingCalculation:
@@ -1417,9 +1380,7 @@ class TestExpectedMissingCalculation:
         expected_missing = 0
         venues = cat_result.get("venues", {})
         for _venue_name, venue_info in venues.items():
-            venue_expected = venue_info.get(
-                "dates_expected_venue", venue_info.get("dates_expected", 0)
-            )
+            venue_expected = venue_info.get("dates_expected_venue", venue_info.get("dates_expected", 0))
             venue_found = venue_info.get("dates_found", 0)
             is_expected = venue_info.get("is_expected", True)
             if is_expected:

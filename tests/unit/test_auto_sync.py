@@ -232,9 +232,7 @@ class TestAutoSyncShutdownBeforeSync:
 
         with (
             patch.object(auto_sync, "_shutdown_event", shutdown_event),
-            patch(
-                "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_sleep_then_shutdown
-            ),
+            patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_sleep_then_shutdown),
         ):
             task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
             await asyncio.wait_for(task, timeout=2.0)
@@ -255,9 +253,7 @@ class TestAutoSyncShutdownBeforeSync:
 class TestAutoSyncMainLoop:
     """Tests for the body of _auto_sync_running_deployments (lines 92-485)."""
 
-    def _prepare_modules(
-        self, list_prefixes_return=None, process_batch_return=(0, 0), list_prefixes_side_effect=None
-    ):
+    def _prepare_modules(self, list_prefixes_return=None, process_batch_return=(0, 0), list_prefixes_side_effect=None):
         """Inject sys.modules mocks and _importlib into auto_sync module. Returns restore dict."""
         import sys
         from types import ModuleType
@@ -330,9 +326,7 @@ class TestAutoSyncMainLoop:
 
             with (
                 patch.object(auto_sync, "_shutdown_event", shutdown_event),
-                patch(
-                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
-                ),
+                patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep),
                 patch(
                     "deployment_api.workers.auto_sync.get_storage_client_with_pool",
                     return_value=mock_storage_client,
@@ -374,9 +368,7 @@ class TestAutoSyncMainLoop:
 
             with (
                 patch.object(auto_sync, "_shutdown_event", shutdown_event),
-                patch(
-                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
-                ),
+                patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep),
                 patch(
                     "deployment_api.workers.auto_sync.get_storage_client_with_pool",
                     return_value=mock_storage_client,
@@ -423,9 +415,7 @@ class TestAutoSyncMainLoop:
 
             with (
                 patch.object(auto_sync, "_shutdown_event", shutdown_event),
-                patch(
-                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
-                ),
+                patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep),
                 patch(
                     "deployment_api.workers.auto_sync.get_storage_client_with_pool",
                     return_value=mock_storage_client,
@@ -473,9 +463,7 @@ class TestAutoSyncMainLoop:
 
             with (
                 patch.object(auto_sync, "_shutdown_event", shutdown_event),
-                patch(
-                    "deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep
-                ),
+                patch("deployment_api.workers.auto_sync.asyncio.sleep", side_effect=_controlled_sleep),
                 patch(
                     "deployment_api.workers.auto_sync.get_storage_client_with_pool",
                     return_value=mock_storage_client,
@@ -523,9 +511,7 @@ class TestAutoSyncMainLoop:
                 "deployment_api.workers.auto_sync.get_storage_client_with_pool",
                 return_value=mock_storage_client,
             ),
-            patch(
-                "deployment_api.workers.auto_sync.asyncio.get_event_loop", return_value=mock_loop
-            ),
+            patch("deployment_api.workers.auto_sync.asyncio.get_event_loop", return_value=mock_loop),
         ):
             task = asyncio.create_task(auto_sync._auto_sync_running_deployments())
             await asyncio.wait_for(task, timeout=5.0)

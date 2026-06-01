@@ -102,9 +102,7 @@ async def _compute_and_cache_verification(
     blob_timestamps = build_blob_timestamp_map(turbo_result)
 
     # Resolve per-shard blob data (existence + timestamp) from turbo data
-    blob_data = resolve_shard_blob_data(
-        state, existing_cat_dates, existing_venue_dates, blob_timestamps
-    )
+    blob_data = resolve_shard_blob_data(state, existing_cat_dates, existing_venue_dates, blob_timestamps)
 
     # Classify every shard using the full decision tree
     shard_classifications = classify_all_shards(state, log_analysis, blob_data)
@@ -190,9 +188,7 @@ def _get_service_earliest_start(service: str, config_dir: str) -> str:
         return _yesterday()
 
 
-def resolve_deploy_dates(
-    deploy_request: _DeployRequestProtocol, config_dir: str = "configs"
-) -> tuple[str, str]:
+def resolve_deploy_dates(deploy_request: _DeployRequestProtocol, config_dir: str = "configs") -> tuple[str, str]:
     """
     Resolve effective start and end dates for deployment.
 
@@ -271,17 +267,11 @@ def validate_deployment_request(deploy_request: _DeployRequestProtocol) -> dict[
         errors.append("Invalid log_level. Must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
 
     # Validate region format
-    if (
-        deploy_request.region
-        and not deploy_request.region.replace("-", "").replace("_", "").isalnum()
-    ):
+    if deploy_request.region and not deploy_request.region.replace("-", "").replace("_", "").isalnum():
         errors.append("Invalid region format")
 
     # Validate zone format
-    if (
-        deploy_request.vm_zone
-        and not deploy_request.vm_zone.replace("-", "").replace("_", "").isalnum()
-    ):
+    if deploy_request.vm_zone and not deploy_request.vm_zone.replace("-", "").replace("_", "").isalnum():
         errors.append("Invalid vm_zone format")
 
     if errors:
@@ -308,9 +298,7 @@ def validate_shard_configuration(
     # Validate sharding dimensions. The YAML SSOT uses ``dimensions:`` (list of
     # ``{name, type, ...}`` dicts); the legacy synthetic key ``sharding_dimensions``
     # (a flat list of names) is still accepted for unit-test fixtures.
-    raw_dims: object = (
-        service_config.get("dimensions") or service_config.get("sharding_dimensions") or []
-    )
+    raw_dims: object = service_config.get("dimensions") or service_config.get("sharding_dimensions") or []
     dim_names: list[str] = []
     if isinstance(raw_dims, list):
         for entry in cast(list[object], raw_dims):
@@ -347,9 +335,7 @@ def validate_shard_configuration(
     return None
 
 
-def validate_quota_requirements(
-    quota_shape: dict[str, object], shard_count: int
-) -> dict[str, object] | None:
+def validate_quota_requirements(quota_shape: dict[str, object], shard_count: int) -> dict[str, object] | None:
     """
     Validate that quota requirements can be satisfied.
 
@@ -370,14 +356,10 @@ def validate_quota_requirements(
 
         errors: list[str] = []
         if cpu_cores > max_cpu_cores:
-            errors.append(
-                f"Total CPU requirement ({cpu_cores} cores) exceeds limit ({max_cpu_cores})"
-            )
+            errors.append(f"Total CPU requirement ({cpu_cores} cores) exceeds limit ({max_cpu_cores})")
 
         if memory_gb > max_memory_gb:
-            errors.append(
-                f"Total memory requirement ({memory_gb} GB) exceeds limit ({max_memory_gb})"
-            )
+            errors.append(f"Total memory requirement ({memory_gb} GB) exceeds limit ({max_memory_gb})")
 
         if errors:
             return {"error": "quota_exceeded", "details": errors}
@@ -449,9 +431,7 @@ def generate_deployment_report(
 
     # Add verification summary
     if verification_data:
-        classification_counts = cast(
-            dict[str, int], verification_data.get("classification_counts") or {}
-        )
+        classification_counts = cast(dict[str, int], verification_data.get("classification_counts") or {})
         report["verification_summary"] = {
             "verified_clean": classification_counts.get("VERIFIED", 0),
             "data_missing": classification_counts.get("DATA_MISSING", 0),

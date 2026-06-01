@@ -73,7 +73,7 @@ def build_deploy_env_vars(
     what the services expect. See: deployment env var standardization.
 
     Args:
-        service: Service name (e.g. "ml-training-service").
+        service: Service name (e.g. "ml-service").
         project_id: Cloud project / account ID.
         deployment_id: Unique deployment ID for correlation.
         max_concurrent: Maximum concurrent jobs / VMs.
@@ -139,11 +139,7 @@ def _fanout_runtime_profile_env(runtime_profile: object) -> dict[str, str]:
     from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
     from unified_trading_library import get_runtime_profile_spec
 
-    profile_key = (
-        runtime_profile.value
-        if isinstance(runtime_profile, RuntimeProfile)
-        else str(runtime_profile)
-    )
+    profile_key = runtime_profile.value if isinstance(runtime_profile, RuntimeProfile) else str(runtime_profile)
     try:
         spec = get_runtime_profile_spec(profile_key)
     except ValueError:
@@ -217,9 +213,7 @@ def _check_deployment_for_conflicts(
         return conflicts
     active_shards_raw: object = get_shards_fn(dep_id_raw)
     active_shards: list[dict[str, object]] = (
-        cast(list[dict[str, object]], active_shards_raw)
-        if isinstance(active_shards_raw, list)
-        else []
+        cast(list[dict[str, object]], active_shards_raw) if isinstance(active_shards_raw, list) else []
     )
     for active_shard in active_shards:
         args_raw = active_shard.get("args")
@@ -253,18 +247,12 @@ def find_duplicate_running_shards(
         list_fn = getattr(state_manager, "list_deployments", None)
         if not callable(list_fn):
             return conflicts
-        active_deployments_raw: object = list_fn(
-            service=service, status=["running", "pending", "resuming"]
-        )
+        active_deployments_raw: object = list_fn(service=service, status=["running", "pending", "resuming"])
         active_deployments: list[dict[str, object]] = (
-            cast(list[dict[str, object]], active_deployments_raw)
-            if isinstance(active_deployments_raw, list)
-            else []
+            cast(list[dict[str, object]], active_deployments_raw) if isinstance(active_deployments_raw, list) else []
         )
         new_shard_signatures: set[str] = {
-            sig
-            for shard_args in shard_args_list
-            if (sig := _extract_shard_signature(service, shard_args)) is not None
+            sig for shard_args in shard_args_list if (sig := _extract_shard_signature(service, shard_args)) is not None
         }
         for active_deployment in active_deployments:
             conflicts.extend(
@@ -328,9 +316,7 @@ _SEVERITY_ALIASES: dict[str, str] = {
     "TRACE": "DEBUG",
 }
 
-_KNOWN_SEVERITIES = frozenset(
-    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "WARN", "ERR", "FATAL", "TRACE"}
-)
+_KNOWN_SEVERITIES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "WARN", "ERR", "FATAL", "TRACE"})
 
 
 def _extract_severity_and_logger(line: str) -> tuple[str, str]:
@@ -358,9 +344,7 @@ def _extract_severity_and_logger(line: str) -> tuple[str, str]:
                 severity = _SEVERITY_ALIASES.get(raw_level, raw_level)
                 if severity not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
                     severity = "INFO"
-                log_name = str(
-                    _data.get("logger") or _data.get("name") or _data.get("module") or ""
-                )
+                log_name = str(_data.get("logger") or _data.get("name") or _data.get("module") or "")
                 return severity, log_name
         except (ValueError, KeyError, TypeError):
             pass

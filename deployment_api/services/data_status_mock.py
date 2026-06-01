@@ -12,7 +12,7 @@ audits can exercise the full Phase-C UI surface. All numbers are
 deterministic per (service, start_date, end_date) so repeated runs render
 identically.
 
-See: unified-trading-pm/plans/active/honest_coverage_metrics_2026_04_19.plan.md
+See: unified-trading-pm/plans/active/honest_coverage_metrics_2026_04_19.md
 """
 
 from __future__ import annotations
@@ -82,14 +82,14 @@ def _mock_venue_entry(
 
 def _mock_category_entry(
     *,
-    category: str,
+    asset_group: str,
     dates_expected: int,
     captured_total: int,
     empty_total: int,
     failed_total: int,
 ) -> dict[str, object]:
     """Build a category entry carrying every field the UI expects."""
-    semantics = _COVERAGE_SEMANTICS.get(category, "dense")
+    semantics = _COVERAGE_SEMANTICS.get(asset_group, "dense")
     attempted_total = captured_total + empty_total + failed_total
     denom = max(1, dates_expected)
     attempted_denom = max(1, attempted_total)
@@ -98,10 +98,10 @@ def _mock_category_entry(
     empty_rate = round(empty_total / attempted_denom, 4) if attempted_total else None
     failure_rate = round(failed_total / attempted_denom, 4)
 
-    # Spread the counts across the category's venues. The first venue
+    # Spread the counts across the asset_group's venues. The first venue
     # soaks the failures so the "Show only failures" toggle has a clear
     # hit.
-    venues = _MOCK_VENUES_BY_ASSET_GROUP.get(category, [])
+    venues = _MOCK_VENUES_BY_ASSET_GROUP.get(asset_group, [])
     per_venue_expected = max(1, dates_expected // max(1, len(venues)))
     venues_dict: dict[str, object] = {}
     remaining_failed = failed_total
@@ -132,8 +132,8 @@ def _mock_category_entry(
     completion_pct = attempt_pct if semantics == "event_driven" else capture_pct
 
     return {
-        "asset_group": category,
-        "bucket": f"mock-bucket-{category.lower()}",
+        "asset_group": asset_group,
+        "bucket": f"mock-bucket-{asset_group.lower()}",
         "prefixes_queried": 0,
         "dates_found": captured_total,
         "dates_expected": dates_expected,
@@ -156,7 +156,7 @@ def _mock_category_entry(
         "venue_weighted": True,
         "venue_dates_found": captured_total,
         "venue_dates_expected": dates_expected,
-        "unit": "fixtures" if category == "SPORTS" else "dates",
+        "unit": "fixtures" if asset_group == "SPORTS" else "dates",
         "effective_start_date": "2024-01-01",
         "missing_dates": [],
         "dates_found_list": [],
@@ -247,7 +247,7 @@ def build_mock_turbo_response(
         if not seed:
             continue
         entry = _mock_category_entry(
-            category=cat,
+            asset_group=cat,
             dates_expected=int(seed["dates_expected"]),
             captured_total=int(seed["captured"]),
             empty_total=int(seed["empty"]),
@@ -257,11 +257,7 @@ def build_mock_turbo_response(
         total_captured += int(seed["captured"])
         total_expected += int(seed["dates_expected"])
 
-    overall_pct = (
-        min(round(total_captured / max(1, total_expected) * 100, 2), 100.0)
-        if total_expected > 0
-        else 0.0
-    )
+    overall_pct = min(round(total_captured / max(1, total_expected) * 100, 2), 100.0) if total_expected > 0 else 0.0
     return {
         "service": service,
         "date_range": {"start": start_date, "end": end_date, "days": 30},
@@ -283,7 +279,7 @@ def build_mock_turbo_response(
 
 def build_mock_shard_instruments(
     service: str,
-    category: str,
+    asset_group: str,
     venue: str,
     day: str,
     instrument_type: str,
@@ -324,16 +320,16 @@ def build_mock_shard_instruments(
         dict[str, object],
         {
             "service": service,
-            "category": category.lower(),
+            "asset_group": asset_group.lower(),
             "venue": venue,
             "day": day,
             "instrument_type": instrument_type,
             "data_type": data_type,
             "bundling": "per_symbol",
             "instruments": instruments,
-            "bucket": f"mock-bucket-{category.lower()}",
+            "bucket": f"mock-bucket-{asset_group.lower()}",
             "prefix": (
-                f"raw_tick_data/by_date/day={day}/category={category.lower()}/"
+                f"raw_tick_data/by_date/day={day}/asset_group={asset_group.lower()}/"
                 f"venue={venue}/instrument_type={instrument_type}/"
                 f"data_type={data_type}/"
             ),

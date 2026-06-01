@@ -63,20 +63,22 @@ jobs:
 
     steps:
       - name: Checkout repo at staging commit
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Checkout unified-trading-codex (readiness checklist)
-        uses: actions/checkout@v6
+      # codex/ is folded into unified-trading-pm at codex/ — clone it for the
+      # readiness checklist when this template is rolled out to a non-PM repo.
+      - name: Checkout unified-trading-pm (readiness checklist; codex/ lives inside PM)
+        uses: actions/checkout@v4
         with:
-          repository: ${{ env.GH_ORG }}/unified-trading-codex
-          path: ../unified-trading-codex
+          repository: ${{ env.GH_ORG }}/unified-trading-pm
+          path: ../unified-trading-pm
           token: ${{ secrets.GH_PAT }}
           sparse-checkout: |
-            10-audit/
+            codex/10-audit/
 
       - name: Compute next semver via diff analysis
         id: compute
@@ -364,7 +366,7 @@ jobs:
 
           echo "Opening MAJOR bump approval issue for deployment-api ($CURRENT → $NEXT)"
 
-          CHECKLIST_FILE="../unified-trading-codex/10-audit/repos/deployment-api.yaml"
+          CHECKLIST_FILE="../unified-trading-pm/codex/10-audit/repos/deployment-api.yaml"
           if [ -f "$CHECKLIST_FILE" ]; then
             CHECKLIST_BODY=$(head -80 "$CHECKLIST_FILE")
           else
@@ -395,7 +397,7 @@ jobs:
 
           ---
 
-          ## Current Readiness State (from unified-trading-codex)
+          ## Current Readiness State (from unified-trading-pm/codex/10-audit/)
 
           \`\`\`yaml
           $CHECKLIST_BODY
@@ -450,18 +452,70 @@ jobs:
             exit 1
           fi
 
+      - name: Dispatch schema-changed to PM (T0 libraries only)
+        if: steps.compute.outputs.skip != 'true' && steps.compute.outputs.bump != 'major_blocked'
+        run: |
+          set -euo pipefail
+
+          # Only dispatch for T0 library repos whose schema changes affect downstream consumers
+          T0_REPOS="unified-api-contracts unified-trading-library"
+          if ! echo "$T0_REPOS" | grep -qw "deployment-api"; then
+            echo "Not a T0 library repo — skipping schema-changed dispatch"
+            exit 0
+          fi
+
+          # Check if schema-relevant files changed (exports, models, schemas, types)
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            SCHEMA_FILES=$(git diff HEAD~1 --name-only | grep -E '(__init__|models|schemas|types)\.py$' || true)
+          else
+            SCHEMA_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD | grep -E '(__init__|models|schemas|types)\.py$' || true)
+          fi
+
+          if [ -z "$SCHEMA_FILES" ]; then
+            echo "No schema-relevant files changed — skipping schema-changed dispatch"
+            exit 0
+          fi
+
+          OWNER="${{ github.repository_owner }}"
+          VERSION="${{ steps.compute.outputs.new_version }}"
+          DIFF_SUMMARY=$(git diff HEAD~1 --stat -- $SCHEMA_FILES | tail -1)
+
+          # Comma-separate changed file list
+          CHANGED_LIST=$(echo "$SCHEMA_FILES" | tr '\n' ',' | sed 's/,$//')
+
+          echo "Dispatching schema-changed to PM: deployment-api v${VERSION}"
+          echo "  Changed schema files: $CHANGED_LIST"
+          echo "  Diff summary: $DIFF_SUMMARY"
+
+          HTTP_STATUS=$(curl -s -o /tmp/schema_dispatch_response.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
+            -d "{\"event_type\": \"schema-changed\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${VERSION}\", \"changed_files\": \"${CHANGED_LIST}\", \"diff_summary\": \"${DIFF_SUMMARY}\"}}")
+
+          if [ "$HTTP_STATUS" = "204" ]; then
+            echo "Dispatched schema-changed to unified-trading-pm"
+          else
+            echo "WARNING: HTTP $HTTP_STATUS dispatching schema-changed (non-fatal)"
+            cat /tmp/schema_dispatch_response.json 2>/dev/null || true
+          fi
+
       # ── TELEGRAM NOTIFY ─────────────────────────────────────────────────────
       - name: Notify Telegram
         if: always()
         env:
+          TELEGRAM_BOT_TOKEN_STAGING: ${{ secrets.TELEGRAM_BOT_TOKEN_STAGING }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID_STAGING: ${{ vars.TELEGRAM_CHAT_ID_STAGING || vars.TELEGRAM_CHAT_ID }}
           STATUS: ${{ job.status }}
         run: |
-          [ -z "$TELEGRAM_BOT_TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
-          [ -z "$TELEGRAM_CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
+          # semver-agent always runs on staging branch
+          TOKEN="${TELEGRAM_BOT_TOKEN_STAGING:-${TELEGRAM_BOT_TOKEN:-}}"
+          CHAT_ID="${TELEGRAM_CHAT_ID_STAGING:-}"
+          [ -z "$TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
+          [ -z "$CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
           TEXT="*semver-agent* | deployment-api | ${STATUS} | branch: staging | triggered by QG pass on staging (pre-SIT)"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
             -d text="${TEXT}" \
             -d parse_mode="Markdown" || true

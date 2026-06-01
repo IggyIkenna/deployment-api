@@ -1,6 +1,6 @@
 """Hierarchical shard-atom drill-down for the Data Status page.
 
-Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md`` Phase 1.
+Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.md`` Phase 1.
 
 The pre-2026-05-07 data-status panel collapsed the per-asset_group drill-down
 to ``venue -> instrument_type -> day``, which is the right depth for
@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from typing import cast
 
 import pandas as pd
+from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
+from unified_api_contracts.registry import EMPTY_OR_DEPRECATED_DEFI_VENUES
 from unified_api_contracts.registry.data_status_axis_matrix import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
@@ -47,6 +49,8 @@ from deployment_api.services.data_status_drilldown import build_bucket_name
 
 logger = logging.getLogger(__name__)
 
+_ALL_DEFI_GHOST_VENUES: frozenset[str] = EMPTY_OR_DEPRECATED_DEFI_VENUES
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
@@ -55,7 +59,7 @@ logger = logging.getLogger(__name__)
 # ``child_offset`` / ``child_limit`` params is the primary mechanism for
 # venues with thousands of instruments (BINANCE-FUTURES PERPETUAL,
 # DERIBIT options chains); this cap is an emergency bound.
-# Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md
+# Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.md
 # § Phase 6 (operator finding 2026-05-07: per-instrument drilldown was
 # silently truncated at the prior 500 default).
 _MAX_CHILDREN_PER_NODE: int = 10_000
@@ -144,11 +148,20 @@ def _resolve_axis_order(service: str, asset_group: str) -> tuple[str, ...]:
     return (*axes, "date")
 
 
-def _filter_manifest(
-    df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str, str]
-) -> pd.DataFrame:
+_NON_AXIS_FILTERS: frozenset[str] = frozenset({"feature_family"})
+"""Filter keys that are NOT in any service's SHARD_AXIS_MATRIX axes but
+are valid manifest columns (post-:func:`_stamp_feature_family`) and so
+get applied unconditionally if the caller supplies them. Plan:
+features-repo consolidation Phase 8B (deployment-api side)."""
+
+
+def _filter_manifest(df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str, str]) -> pd.DataFrame:
     """Apply level-by-level filters, narrowing the manifest to the
-    requested branch. Filters not in ``axes`` are ignored (defensive).
+    requested branch.
+
+    Filters in ``axes`` AND filters in :data:`_NON_AXIS_FILTERS` (e.g.
+    ``feature_family``, the parent classification of ``feature_group``)
+    both apply. Other filter keys are ignored (defensive).
     """
     out = df
     for axis in axes:
@@ -156,6 +169,11 @@ def _filter_manifest(
         if val is None or axis not in out.columns:
             continue
         out = out[out[axis].astype(str) == str(val)]
+    for non_axis_key in _NON_AXIS_FILTERS:
+        val = filters.get(non_axis_key)
+        if val is None or non_axis_key not in out.columns:
+            continue
+        out = out[out[non_axis_key].astype(str) == str(val)]
     return out
 
 
@@ -194,7 +212,7 @@ def _children_for_axis(
         return []
     if rows.empty:
         return []
-    values = sorted(v for v in rows[axis].astype(str).unique() if v != "" and v != "nan")
+    values = sorted(v for v in rows[axis].astype(str).unique() if v != "" and v != "nan")  # pyright: ignore[reportAny]
     if len(values) > _MAX_CHILDREN_PER_NODE:
         logger.warning(
             "drilldown: axis %s has %d values, truncating to %d (caller should paginate)",
@@ -204,13 +222,13 @@ def _children_for_axis(
         )
         values = values[:_MAX_CHILDREN_PER_NODE]
     children: list[DrilldownNode] = []
-    for val in values:
-        sub = rows[rows[axis].astype(str) == val]
-        captured, empty_confirmed, attempted_failed = _aggregate_counts(sub)
+    for val in values:  # pyright: ignore[reportAny]
+        sub = rows[rows[axis].astype(str) == val]  # pyright: ignore[reportUnknownVariableType]
+        captured, empty_confirmed, attempted_failed = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
         node_row_key = {**parent_row_key, axis: val}
         node = DrilldownNode(
             axis=axis,
-            value=val,
+            value=val,  # pyright: ignore[reportAny]
             captured=captured,
             empty_confirmed=empty_confirmed,
             attempted_failed=attempted_failed,
@@ -219,7 +237,7 @@ def _children_for_axis(
         if deeper_axes and current_depth < expand_to_depth:
             next_axis, *rest = deeper_axes
             node.children = _children_for_axis(
-                sub,
+                sub,  # pyright: ignore[reportUnknownArgumentType]
                 next_axis,
                 tuple(rest),
                 node_row_key,
@@ -228,6 +246,33 @@ def _children_for_axis(
             )
         children.append(node)
     return children
+
+
+def _stamp_feature_family(df: pd.DataFrame) -> pd.DataFrame:
+    """Add (or fill in) a ``feature_family`` column on a manifest df.
+
+    Read-side derivation of the parent classification of ``feature_group``
+    using the UAC ``FEATURE_GROUP_TO_FAMILY`` registry. Write-time stamps
+    win when present (writer-stamped per UTL :class:`MissingFeatureFamilyError`
+    enforcement); empty / missing rows are filled by the registry lookup,
+    so consumers can group / filter by feature_family even when the
+    manifest predates the column. Rows without a ``feature_group`` (e.g.
+    market-tick-data-service rows) keep ``feature_family`` empty.
+
+    Plan: features-repo consolidation Phase 8B (deployment-api side).
+    """
+    if "feature_group" not in df.columns:
+        return df
+    out = df.copy()
+    if "feature_family" not in out.columns:
+        out["feature_family"] = ""
+    fg = out["feature_group"].astype(str)
+    ff = out["feature_family"].astype(str)
+    needs_stamp = (ff == "") | (ff == "nan")
+    if needs_stamp.any():
+        derived = fg.map(lambda g: FEATURE_GROUP_TO_FAMILY[g].value if g in FEATURE_GROUP_TO_FAMILY else "")
+        out.loc[needs_stamp, "feature_family"] = derived[needs_stamp]
+    return out
 
 
 def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
@@ -248,7 +293,7 @@ def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
     the per-root level (BTC, ETH for Deribit options; ESH4, NQH4 for
     CME futures).
 
-    Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md
+    Plan: data_status_drilldown_shard_atom_alignment_2026_05_07.md
     § Phase 6 (operator finding 2026-05-07: bundled options/futures
     drilldown collapsed at empty ``instrument_id``).
     """
@@ -282,7 +327,7 @@ def get_hierarchical_drilldown(
         window_start: ISO YYYY-MM-DD window lower bound.
         window_end: ISO YYYY-MM-DD window upper bound.
         filters: Per-axis filter dict for lazy-load (e.g.
-            ``{"chain": "ARBITRUM", "venue": "AAVEV3-ARBITRUM"}``); the
+            ``{"chain": "ARBITRUM", "venue": "AAVE_V3-ARBITRUM"}``); the
             tree returned is the subtree rooted at the deepest matched
             level. ``None`` returns the whole tree from the top axis.
         expand_to_depth: How many levels below the matched root to
@@ -320,9 +365,11 @@ def get_hierarchical_drilldown(
     # ``read_availability_index`` takes the BUCKET NAME (no scheme), NOT
     # a ``gs://...`` URI — passing the URI silently returns an empty df.
     # Same call shape as ``data_status_service.py``'s preflight skip path.
-    manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"
+    manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
     df = read_availability_index(bucket)
-    if df is None or len(df) == 0:
+    if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
+        df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
+    if df is None or len(df) == 0:  # pyright: ignore[reportUnnecessaryComparison]
         return {
             "axes": list(axes),
             "tree": [],
@@ -349,6 +396,11 @@ def get_hierarchical_drilldown(
     # bundled-data_type rows respond to operator-supplied
     # ``instrument_id`` filters keyed by root (BTC, ESH4, …).
     df = _coalesce_instrument_id_from_underlying(df)
+    # Stamp ``feature_family`` (read-side) so callers can filter / group
+    # features-* manifests by the parent classification axis even when
+    # the manifest predates the column. Plan: features-repo consolidation
+    # Phase 8B (deployment-api side).
+    df = _stamp_feature_family(df)
     df = _filter_manifest(df, axes, filters)
 
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)

@@ -115,12 +115,12 @@ class TestOverrides:
         resp = await set_override(
             "client_alpha",
             ClientServiceOverride(
-                service_name="pnl-attribution-service",
+                service_name="strategy-service",
                 isolation=IsolationPolicy.ISOLATED,
             ),
         )
         assert len(resp.subscription.service_overrides) == 1
-        assert resp.subscription.service_overrides[0].service_name == "pnl-attribution-service"
+        assert resp.subscription.service_overrides[0].service_name == "strategy-service"
 
     @pytest.mark.asyncio
     async def test_set_override_replaces_existing_for_same_service(self) -> None:
@@ -128,14 +128,14 @@ class TestOverrides:
         await set_override(
             "client_alpha",
             ClientServiceOverride(
-                service_name="pnl-attribution-service",
+                service_name="strategy-service",
                 isolation=IsolationPolicy.ISOLATED,
             ),
         )
         resp = await set_override(
             "client_alpha",
             ClientServiceOverride(
-                service_name="pnl-attribution-service",
+                service_name="strategy-service",
                 isolation=IsolationPolicy.SHARED,
             ),
         )
@@ -148,11 +148,11 @@ class TestOverrides:
         await set_override(
             "client_alpha",
             ClientServiceOverride(
-                service_name="pnl-attribution-service",
+                service_name="strategy-service",
                 isolation=IsolationPolicy.ISOLATED,
             ),
         )
-        resp = await clear_override("client_alpha", "pnl-attribution-service")
+        resp = await clear_override("client_alpha", "strategy-service")
         assert resp.subscription.service_overrides == []
 
     @pytest.mark.asyncio

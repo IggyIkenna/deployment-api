@@ -81,7 +81,7 @@ def _subscription_path(client_id: str) -> Path:
 
 
 def _load_subscription(path: Path) -> ClientSubscription:
-    raw = yaml.safe_load(path.read_text())
+    raw = yaml.safe_load(path.read_text())  # type: ignore[reportAny]
     return ClientSubscription.model_validate(raw)
 
 

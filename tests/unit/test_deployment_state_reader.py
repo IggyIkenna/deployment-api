@@ -25,9 +25,7 @@ def _make_mock_client(prefixes=None, blob_exists=True, content=None):
     blob = MagicMock()
     blob.exists.return_value = blob_exists
     if content is not None:
-        blob.download_as_string.return_value = (
-            content.encode("utf-8") if isinstance(content, str) else content
-        )
+        blob.download_as_string.return_value = content.encode("utf-8") if isinstance(content, str) else content
     bucket.blob.return_value = blob
 
     return client
@@ -37,35 +35,27 @@ class TestListDeployments:
     """Tests for list_deployments function."""
 
     def test_returns_empty_on_storage_error(self):
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", side_effect=OSError("no gcs")
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", side_effect=OSError("no gcs")):
             result = dr.list_deployments("test-bucket")
         assert result == []
 
     def test_returns_empty_when_no_prefixes(self):
         mock_client = _make_mock_client(prefixes=[])
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
         assert result == []
 
     def test_filters_invalid_folder_names(self):
         # Folders without enough dashes are filtered out
         mock_client = _make_mock_client(prefixes=["deployments.development/badfolder/"])
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
         assert result == []
 
     def test_filters_d_prefix_folders(self):
         # Folders starting with 'd-' are filtered out
         mock_client = _make_mock_client(prefixes=["deployments.development/d-svc-2026-01-01-abc/"])
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
         assert result == []
 
@@ -86,9 +76,7 @@ class TestListDeployments:
             blob_exists=True,
             content=json.dumps(state),
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert len(result) == 1
@@ -101,9 +89,7 @@ class TestListDeployments:
             prefixes=["deployments.development/svc-20260101-120000-abc/"],
             blob_exists=False,
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert result == []
@@ -114,12 +100,8 @@ class TestListDeployments:
             blob_exists=True,
             content=None,
         )
-        mock_client.bucket.return_value.blob.return_value.download_as_string.side_effect = OSError(
-            "network error"
-        )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        mock_client.bucket.return_value.blob.return_value.download_as_string.side_effect = OSError("network error")
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert result == []
@@ -130,9 +112,7 @@ class TestListDeployments:
             blob_exists=True,
             content="not-valid-json",
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert result == []
@@ -172,9 +152,7 @@ class TestListDeployments:
 
         bucket.blob.side_effect = blob_for
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket", service="svc-a")
 
         assert all(r["service"] == "svc-a" for r in result)
@@ -191,9 +169,7 @@ class TestListDeployments:
             blob_exists=True,
             content=json.dumps(state),
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert result[0]["status"] == "pending"
@@ -210,9 +186,7 @@ class TestListDeployments:
             blob_exists=True,
             content=json.dumps(state),
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert result[0]["status"] == "failed"
@@ -229,9 +203,7 @@ class TestListDeployments:
             blob_exists=True,
             content=json.dumps(state),
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         assert result[0]["status"] == "completed"
@@ -267,9 +239,7 @@ class TestListDeployments:
 
         bucket.blob.side_effect = blob_for
 
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket", limit=3)
 
         assert len(result) <= 3
@@ -290,9 +260,7 @@ class TestListDeployments:
             blob_exists=True,
             content=json.dumps(state),
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket")
 
         r = result[0]
@@ -317,9 +285,7 @@ class TestListDeployments:
             blob_exists=True,
             content=json.dumps(state),
         )
-        with patch(
-            "deployment_api.utils.storage_client.get_storage_client", return_value=mock_client
-        ):
+        with patch("deployment_api.utils.storage_client.get_storage_client", return_value=mock_client):
             result = dr.list_deployments("test-bucket", service="svc-a")
 
         assert result == []

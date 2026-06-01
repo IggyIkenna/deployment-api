@@ -16,9 +16,7 @@ ROLE_RANK: dict[UserRole, int] = {
     UserRole.SUPER_ADMIN: 3,
 }
 
-_PRIVILEGED_DESTINATION_ROLES: frozenset[UserRole] = frozenset(
-    {UserRole.ADMIN, UserRole.SUPER_ADMIN}
-)
+_PRIVILEGED_DESTINATION_ROLES: frozenset[UserRole] = frozenset({UserRole.ADMIN, UserRole.SUPER_ADMIN})
 
 
 def normalize_email(value: str) -> str:
@@ -57,10 +55,7 @@ def ensure_role_mutation_allowed(
     if new_role in _PRIVILEGED_DESTINATION_ROLES and actor not in org_owner_emails:
         raise HTTPException(
             status_code=403,
-            detail=(
-                "Granting admin or super_admin requires the actor email to be "
-                "listed in ORG_OWNER_EMAILS"
-            ),
+            detail=("Granting admin or super_admin requires the actor email to be listed in ORG_OWNER_EMAILS"),
         )
 
     if actor == target and ROLE_RANK[new_role] > ROLE_RANK[old_role]:
@@ -69,8 +64,5 @@ def ensure_role_mutation_allowed(
     if actor not in org_owner_emails and ROLE_RANK[new_role] > ROLE_RANK[actor_role]:
         raise HTTPException(
             status_code=403,
-            detail=(
-                "Cannot grant a role above the actor's own role unless the "
-                "actor is in ORG_OWNER_EMAILS"
-            ),
+            detail=("Cannot grant a role above the actor's own role unless the actor is in ORG_OWNER_EMAILS"),
         )

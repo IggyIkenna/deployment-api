@@ -2,7 +2,6 @@
 Unit tests for DataQueryService.
 
 Tests cover:
-- build_bucket_name
 - list_files_in_path (mocked storage)
 - get_venue_filters (mocked storage)
 - get_instruments_list (mocked storage)
@@ -17,9 +16,7 @@ from unittest.mock import patch
 import pytest
 
 # Load data_query_service directly without triggering services/__init__.py circular import
-_path = os.path.join(
-    os.path.dirname(__file__), "../../deployment_api/services/data_query_service.py"
-)
+_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_query_service.py")
 _spec = importlib.util.spec_from_file_location("_dqs_standalone", os.path.abspath(_path))
 assert _spec is not None and _spec.loader is not None
 _dqs_mod = importlib.util.module_from_spec(_spec)
@@ -30,28 +27,6 @@ DataQueryService = _dqs_mod.DataQueryService
 def _load_dqs():
     """Return DataQueryService class."""
     return DataQueryService
-
-
-class TestBuildBucketName:
-    """Tests for DataQueryService.build_bucket_name."""
-
-    def test_standard_bucket_name(self):
-        dqs = _load_dqs()
-        svc = dqs(project_id="my-project")
-        result = svc.build_bucket_name("market-data", "CEFI")
-        assert result == "market-data-cefi-my-project"
-
-    def test_lowercase_category(self):
-        dqs = _load_dqs()
-        svc = dqs(project_id="proj")
-        result = svc.build_bucket_name("instruments", "TRADFI")
-        assert result == "instruments-tradfi-proj"
-
-    def test_uses_project_id_from_init(self):
-        dqs = _load_dqs()
-        svc = dqs(project_id="custom-project")
-        result = svc.build_bucket_name("prefix", "DEFI")
-        assert "custom-project" in result
 
 
 class TestListFilesInPath:
@@ -130,8 +105,9 @@ class TestGetVenueFilters:
     @pytest.mark.asyncio
     async def test_known_service_returns_venues(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_prefixes", return_value=["BINANCE/", "OKX/"]):
-            result = await svc.get_venue_filters("instruments-service")
+        with patch.object(_dqs_mod, "_drilldown_build_bucket_name", return_value="test-bucket"):
+            with patch.object(_dqs_mod, "list_prefixes", return_value=["BINANCE/", "OKX/"]):
+                result = await svc.get_venue_filters("instruments-service")
         assert "service" in result
         assert "asset_groups" in result
         # Should have cefi, tradfi, defi asset groups
@@ -140,8 +116,9 @@ class TestGetVenueFilters:
     @pytest.mark.asyncio
     async def test_exception_handled_per_category(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_prefixes", side_effect=OSError("bucket missing")):
-            result = await svc.get_venue_filters("instruments-service")
+        with patch.object(_dqs_mod, "_drilldown_build_bucket_name", return_value="test-bucket"):
+            with patch.object(_dqs_mod, "list_prefixes", side_effect=OSError("bucket missing")):
+                result = await svc.get_venue_filters("instruments-service")
         # Should still return a dict, each asset group gets an error key
         assert "asset_groups" in result
         for cat_data in result["asset_groups"].values():
@@ -224,9 +201,7 @@ class TestGetInstrumentAvailability:
     async def test_cefi_venue_returns_cefi_category(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
-            result = await svc.get_instrument_availability(
-                "BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
-            )
+            result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03")
         assert result["venue"] == "BINANCE"
         assert "daily_availability" in result
         assert "summary" in result
@@ -234,18 +209,14 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_unknown_venue_returns_error(self):
         svc = self._make_service()
-        result = await svc.get_instrument_availability(
-            "UNKNOWN_VENUE", "SPOT", "BTC", "2026-01-01", "2026-01-02"
-        )
+        result = await svc.get_instrument_availability("UNKNOWN_VENUE", "SPOT", "BTC", "2026-01-01", "2026-01-02")
         assert "error" in result
 
     @pytest.mark.asyncio
     async def test_tradfi_venue_category_detection(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=True):
-            result = await svc.get_instrument_availability(
-                "NYSE", "EQUITY", "AAPL", "2026-01-01", "2026-01-02"
-            )
+            result = await svc.get_instrument_availability("NYSE", "EQUITY", "AAPL", "2026-01-01", "2026-01-02")
         assert "error" not in result
         assert result["venue"] == "NYSE"
 
@@ -254,9 +225,7 @@ class TestGetInstrumentAvailability:
         svc = self._make_service()
         # All days available
         with patch.object(_dqs_mod, "object_exists", return_value=True):
-            result = await svc.get_instrument_availability(
-                "BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
-            )
+            result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03")
         summary = result["summary"]
         assert summary["total_days"] == 3
         assert summary["available_days"] == 3
@@ -266,9 +235,7 @@ class TestGetInstrumentAvailability:
     async def test_missing_days_counted_when_no_data(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
-            result = await svc.get_instrument_availability(
-                "BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
-            )
+            result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03")
         summary = result["summary"]
         assert summary["missing_days"] == 3
         assert summary["available_days"] == 0
@@ -276,9 +243,7 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_invalid_date_format_returns_error(self):
         svc = self._make_service()
-        result = await svc.get_instrument_availability(
-            "BINANCE", "SPOT", "BTC", "not-a-date", "2026-01-01"
-        )
+        result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC", "not-a-date", "2026-01-01")
         assert "error" in result
 
     @pytest.mark.asyncio
@@ -315,9 +280,7 @@ class TestGetInstrumentAvailability:
     async def test_defi_venue_returns_defi_category(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
-            result = await svc.get_instrument_availability(
-                "UNISWAP", "SWAP", "ETH-USDC", "2026-01-01", "2026-01-01"
-            )
+            result = await svc.get_instrument_availability("UNISWAP", "SWAP", "ETH-USDC", "2026-01-01", "2026-01-01")
         assert "error" not in result
 
 
@@ -383,10 +346,7 @@ class TestParseInstrumentObjectPath:
         # No venue partition AND no instrument_type — can't form a meaningful
         # match result, so reject.
         dqs = _load_dqs()
-        assert (
-            dqs._parse_instrument_object_path("instrument_availability/by_date/day=2026/x.parquet")
-            is None
-        )
+        assert dqs._parse_instrument_object_path("instrument_availability/by_date/day=2026/x.parquet") is None
 
 
 class TestSearchInstruments:
@@ -469,12 +429,8 @@ class TestSearchInstruments:
             },
         )
         svc = DataQueryService(project_id="p")
-        assert (await svc.search_instruments(query="btc-usdt", asset_group="cefi"))[
-            "total_matches"
-        ] == 1
-        assert (await svc.search_instruments(query="BTC-USDT", asset_group="cefi"))[
-            "total_matches"
-        ] == 1
+        assert (await svc.search_instruments(query="btc-usdt", asset_group="cefi"))["total_matches"] == 1
+        assert (await svc.search_instruments(query="BTC-USDT", asset_group="cefi"))["total_matches"] == 1
 
     @pytest.mark.asyncio
     async def test_multi_token_and_match(self, monkeypatch):

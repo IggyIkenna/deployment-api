@@ -14,7 +14,18 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    # boto3 clients don't have complete typing, using Any for compatibility
+    CodeBuildClient = Any
+    STSClient = Any
+else:
+    # Runtime imports
+    CodeBuildClient = object
+    STSClient = object
 
 from deployment_api.settings import CLOUD_PROVIDER
 
@@ -30,20 +41,21 @@ logger = logging.getLogger(__name__)
 _AWS_REGION = "ap-northeast-1"
 
 
-def _get_codebuild_client():
+def _get_codebuild_client() -> CodeBuildClient:  # type: ignore[reportAny]
     """Return a boto3 CodeBuild client for ap-northeast-1."""
     import boto3  # Deferred — AWS SDK boundary
 
-    return boto3.client("codebuild", region_name=_AWS_REGION)
+    return boto3.client("codebuild", region_name=_AWS_REGION)  # type: ignore[reportUnknownVariableType, reportAny]
 
 
 def _get_aws_account_id() -> str:
     """Get AWS account ID from STS."""
     import boto3  # Deferred — AWS SDK boundary
 
-    sts = boto3.client("sts", region_name=_AWS_REGION)
-    identity: dict[str, str] = cast(dict[str, str], sts.get_caller_identity())
-    return identity["Account"]
+    sts: STSClient = boto3.client("sts", region_name=_AWS_REGION)  # type: ignore[reportUnknownMemberType, reportAny]
+    identity: dict[str, object] = cast(dict[str, object], sts.get_caller_identity())  # type: ignore[reportUnknownMemberType]
+    account_id = identity.get("Account", "")
+    return str(account_id)
 
 
 def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
@@ -82,12 +94,11 @@ def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
     )
 
     # Build log URL
-    logs = build.get("logs", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+    logs: dict[str, Any] = cast(dict[str, Any], build.get("logs", {}))  # noqa: qg-empty-fallback — AWS SDK boundary
     log_url: str | None = None
-    if isinstance(logs, dict):
-        deep_link = logs.get("deepLink")
-        if isinstance(deep_link, str):
-            log_url = deep_link
+    deep_link: Any = logs.get("deepLink")
+    if isinstance(deep_link, str):
+        log_url = deep_link
     if not log_url:
         project_name = str(build.get("projectName", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
         log_url = f"https://{_AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/projects/{project_name}/build/{build_id_full}"
@@ -110,13 +121,14 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
     CodeBuild projects are the AWS equivalent of Cloud Build triggers.
     Convention: project name = "{service}-build" (same as GCP trigger names).
     """
-    client = _get_codebuild_client()
+    client: CodeBuildClient = _get_codebuild_client()  # type: ignore[reportAny]
     all_projects: list[str] = []
 
     # List all projects (paginated)
-    paginator = client.get_paginator("list_projects")
-    for page in paginator.paginate():
-        project_names: list[str] = page.get("projects", [])  # noqa: qg-empty-fallback — AWS SDK boundary
+    paginator = client.get_paginator("list_projects")  # type: ignore[reportAny, reportUnknownMemberType]
+    for page in paginator.paginate():  # type: ignore[reportAny, reportUnknownMemberType]
+        page_dict = cast(dict[str, object], page)
+        project_names: list[str] = cast(list[str], page_dict.get("projects", []))  # noqa: qg-empty-fallback — AWS SDK boundary
         all_projects.extend(project_names)
 
     # Filter to known services
@@ -131,15 +143,20 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
     triggers: list[TriggerDict] = []
     for i in range(0, len(matched_projects), 100):
         batch = matched_projects[i : i + 100]
-        response = client.batch_get_projects(names=batch)
-        for proj in response.get("projects", []):  # noqa: qg-empty-fallback — AWS SDK boundary
+        response = client.batch_get_projects(names=batch)  # type: ignore[reportAny, reportUnknownMemberType]
+        response_dict = cast(dict[str, object], response)
+        projects_raw = response_dict.get("projects", [])
+        projects = cast(list[dict[str, object]], projects_raw) if projects_raw else []
+
+        for proj in projects:  # noqa: qg-empty-fallback — AWS SDK boundary
             proj_name = str(proj.get("name", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
             service_name = proj_name.removesuffix("-build")
-            source = proj.get("source", {})  # noqa: qg-empty-fallback — AWS SDK boundary
-            source_type = str(source.get("type", "")) if isinstance(source, dict) else ""  # noqa: qg-empty-fallback — AWS SDK boundary
+            source_raw = proj.get("source", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+            source = cast(dict[str, object], source_raw) if isinstance(source_raw, dict) else {}
+            source_type = str(source.get("type", "")) if source else ""  # noqa: qg-empty-fallback — AWS SDK boundary
 
             github_repo: str | None = None
-            if isinstance(source, dict) and source_type in ("GITHUB", "GITHUB_ENTERPRISE"):
+            if source and source_type in ("GITHUB", "GITHUB_ENTERPRISE"):
                 location = str(source.get("location", ""))
                 # Extract org/repo from URL
                 if "github.com/" in location:
@@ -166,21 +183,25 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
 
 def get_codebuild_history_sync(project_name: str, limit: int = 10) -> list[BuildInfoDict]:
     """Get build history for a CodeBuild project."""
-    client = _get_codebuild_client()
+    client: CodeBuildClient = _get_codebuild_client()  # type: ignore[reportAny]
 
     # List build IDs for the project
-    response = client.list_builds_for_project(
+    response = client.list_builds_for_project(  # type: ignore[reportAny, reportUnknownMemberType]
         projectName=project_name,
         sortOrder="DESCENDING",
     )
-    build_ids: list[str] = response.get("ids", [])[:limit]  # noqa: qg-empty-fallback — AWS SDK boundary
+    response_dict = cast(dict[str, object], response)
+    build_ids_raw = response_dict.get("ids", [])
+    build_ids: list[str] = cast(list[str], build_ids_raw)[:limit] if build_ids_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
 
     if not build_ids:
         return []
 
     # Get build details
-    builds_response = client.batch_get_builds(ids=build_ids)
-    builds: list[dict[str, object]] = builds_response.get("builds", [])  # noqa: qg-empty-fallback — AWS SDK boundary
+    builds_response = client.batch_get_builds(ids=build_ids)  # type: ignore[reportAny, reportUnknownMemberType]
+    builds_response_dict = cast(dict[str, object], builds_response)
+    builds_raw = builds_response_dict.get("builds", [])
+    builds: list[dict[str, object]] = cast(list[dict[str, object]], builds_raw) if builds_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
 
     return [_format_codebuild_build(b) for b in builds]
 
@@ -190,18 +211,22 @@ def get_recent_builds_for_projects_sync(
 ) -> dict[str, BuildInfoDict | None]:
     """Get the most recent build for each CodeBuild project."""
     result: dict[str, BuildInfoDict | None] = {}
-    client = _get_codebuild_client()
+    client: CodeBuildClient = _get_codebuild_client()  # type: ignore[reportAny]
 
     for proj_name in project_names:
         try:
-            response = client.list_builds_for_project(
+            response = client.list_builds_for_project(  # type: ignore[reportAny, reportUnknownMemberType]
                 projectName=proj_name,
                 sortOrder="DESCENDING",
             )
-            build_ids: list[str] = response.get("ids", [])[:1]  # noqa: qg-empty-fallback — AWS SDK boundary
+            response_dict = cast(dict[str, object], response)
+            build_ids_raw = response_dict.get("ids", [])
+            build_ids: list[str] = cast(list[str], build_ids_raw)[:1] if build_ids_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
             if build_ids:
-                builds_response = client.batch_get_builds(ids=build_ids)
-                builds: list[dict[str, object]] = builds_response.get("builds", [])  # noqa: qg-empty-fallback — AWS SDK boundary
+                builds_response = client.batch_get_builds(ids=build_ids)  # type: ignore[reportAny, reportUnknownMemberType]
+                builds_response_dict = cast(dict[str, object], builds_response)
+                builds_raw = builds_response_dict.get("builds", [])
+                builds: list[dict[str, object]] = cast(list[dict[str, object]], builds_raw) if builds_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
                 if builds:
                     result[proj_name] = _format_codebuild_build(builds[0])
                     continue
@@ -213,20 +238,20 @@ def get_recent_builds_for_projects_sync(
     return result
 
 
-def start_codebuild_sync(
-    project_name: str, branch: str = "live-defi-rollout"
-) -> dict[str, str | None]:
+def start_codebuild_sync(project_name: str, branch: str = "live-defi-rollout") -> dict[str, str | None]:
     """Start a CodeBuild build for a project.
 
     Returns dict with build_id, log_url, status.
     """
-    client = _get_codebuild_client()
+    client: CodeBuildClient = _get_codebuild_client()  # type: ignore[reportAny]
 
-    response = client.start_build(
+    response = client.start_build(  # type: ignore[reportAny, reportUnknownMemberType]
         projectName=project_name,
         sourceVersion=branch,
     )
-    build = response.get("build", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+    response_dict = cast(dict[str, object], response)
+    build_raw = response_dict.get("build", {})  # noqa: qg-empty-fallback — AWS SDK boundary
+    build = cast(dict[str, object], build_raw) if isinstance(build_raw, dict) else {}
     build_id_full = str(build.get("id", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
     build_id = build_id_full.split(":")[-1] if ":" in build_id_full else build_id_full
 

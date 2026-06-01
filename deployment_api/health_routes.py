@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
-from unified_trading_library.config_interface import UnifiedCloudConfig
+from unified_trading_library import UnifiedCloudConfig
 
 from deployment_api import __version__ as _api_version
 from deployment_api.utils.service_utils import get_ui_dist_dir
@@ -20,6 +20,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _cloud_cfg = UnifiedCloudConfig()
+
+
+# --- Per-component health probes (isolated for testability) ---
+
+
+def _check_gcs() -> dict[str, object]:
+    """Probe GCS reachability by attempting to instantiate the storage client."""
+    try:
+        from unified_trading_library import get_storage_client
+
+        get_storage_client()
+        return {"status": "up", "detail": None}
+    except Exception as exc:
+        return {"status": "down", "detail": str(exc)[:200]}
+
+
+def _check_pubsub() -> dict[str, object]:
+    """Probe Pub/Sub reachability via the project subscription list."""
+    try:
+        from google.cloud import pubsub_v1  # pyright: ignore[reportMissingModuleSource]
+
+        project_id = _cloud_cfg.gcp_project_id
+        subscriber = pubsub_v1.SubscriberClient()
+        project_path = f"projects/{project_id}"
+        next(iter(subscriber.list_subscriptions(request={"project": project_path})), None)  # pyright: ignore[reportUnknownMemberType]
+        return {"status": "up", "detail": None}
+    except Exception as exc:
+        return {"status": "down", "detail": str(exc)[:200]}
+
+
+def _check_secret_manager() -> dict[str, object]:
+    """Probe Secret Manager by listing secrets (first page only)."""
+    try:
+        from google.cloud import secretmanager  # pyright: ignore[reportMissingModuleSource]
+
+        project_id = _cloud_cfg.gcp_project_id
+        client = secretmanager.SecretManagerServiceClient()
+        parent = f"projects/{project_id}"
+        next(iter(client.list_secrets(request={"parent": parent, "page_size": 1})), None)  # pyright: ignore[reportUnknownMemberType]
+        return {"status": "up", "detail": None}
+    except Exception as exc:
+        return {"status": "down", "detail": str(exc)[:200]}
+
+
+def _check_deployment_events() -> dict[str, object]:
+    """Probe the deployment-api-events Pub/Sub topic existence."""
+    try:
+        from google.cloud import pubsub_v1  # pyright: ignore[reportMissingModuleSource]
+
+        project_id = _cloud_cfg.gcp_project_id
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(project_id, "deployment-api-events")
+        publisher.get_topic(request={"topic": topic_path})  # pyright: ignore[reportUnknownMemberType]
+        return {"status": "up", "detail": None}
+    except Exception as exc:
+        return {"status": "down", "detail": str(exc)[:200]}
 
 
 def _data_freshness() -> dict[str, object]:
@@ -55,8 +111,50 @@ async def health() -> dict[str, object]:
     }
 
 
+@router.get("/api/health/detailed")
+async def detailed_health_check() -> dict[str, object]:
+    """Per-component health probe: GCS, Pub/Sub, Secret Manager, deployment-events topic.
+
+    In mock mode all components return "up" without real network calls.
+    Returns 200 always — callers inspect response body for component status.
+    """
+    if _cloud_cfg.is_mock_mode():
+        components: dict[str, object] = {
+            "gcs": {"status": "up", "detail": "mock mode"},
+            "pubsub": {"status": "up", "detail": "mock mode"},
+            "secret_manager": {"status": "up", "detail": "mock mode"},
+            "deployment_events": {"status": "up", "detail": "mock mode"},
+        }
+        return {
+            "status": "healthy",
+            "components": components,
+            "version": _api_version,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "mock_mode": True,
+        }
+
+    components = {
+        "gcs": _check_gcs(),
+        "pubsub": _check_pubsub(),
+        "secret_manager": _check_secret_manager(),
+        "deployment_events": _check_deployment_events(),
+    }
+    any_down: bool = False
+    for _v in components.values():
+        if isinstance(_v, dict) and _v.get("status") == "down":  # pyright: ignore[reportUnknownMemberType]
+            any_down = True
+            break
+    return {
+        "status": "degraded" if any_down else "healthy",
+        "components": components,
+        "version": _api_version,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "mock_mode": False,
+    }
+
+
 @router.get("/api/health")
-async def health_check():
+async def health_check() -> dict[str, object]:
     """Detailed health check. Includes GCS FUSE status + cloud-mode flags so
     the UI can render a live-vs-mock indicator chip + banner.
     """

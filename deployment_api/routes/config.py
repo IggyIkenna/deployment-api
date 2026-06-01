@@ -6,6 +6,7 @@ Endpoints for venues, expected start dates, dependencies, and region config.
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -45,6 +46,7 @@ async def get_region_config():
         "gcs_region": settings.GCS_REGION,
         "zones": [f"{settings.GCS_REGION}-{s}" for s in ["a", "b", "c"]],
         "enforce_single_region": settings.ENFORCE_SINGLE_REGION,
+        "deployment_env": settings.DEPLOYMENT_ENV,
     }
 
 
@@ -90,18 +92,15 @@ async def get_venues(request: Request):
 
     try:
         venues_config = await asyncio.to_thread(_load_venues_sync)
-        if isinstance(venues_config, dict):
-            out = dict(venues_config)
-            # YAML on disk may still use ``categories``; public API is ``asset_groups``.
-            if "categories" in out and "asset_groups" not in out:
-                out["asset_groups"] = out.pop("categories")
-            return out
+        out = dict(venues_config)
+        # YAML on disk may still use ``categories``; public API is ``asset_groups``.
+        if "categories" in out and "asset_groups" not in out:
+            out["asset_groups"] = out.pop("categories")
+        return out
         return venues_config
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues config")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/venues/{asset_group}")
@@ -121,17 +120,13 @@ async def get_venues_by_asset_group(asset_group: str, request: Request):
 
         loader = get_config_loader(request)
         venues_config = loader.load_venues_config()
-        groups_raw: object = (
-            venues_config.get("asset_groups") or venues_config.get("categories") or {}
-        )
+        groups_raw: object = venues_config.get("asset_groups") or venues_config.get("categories") or {}
         groups = cast(dict[str, object], groups_raw) if isinstance(groups_raw, dict) else {}
 
         # Case-insensitive lookup; YAML may use ``categories`` or ``asset_groups``.
         for ag_name, ag_data_raw in groups.items():
             if ag_name.upper() == asset_group.upper():
-                ag_data = (
-                    cast(dict[str, object], ag_data_raw) if isinstance(ag_data_raw, dict) else {}
-                )
+                ag_data = cast(dict[str, object], ag_data_raw) if isinstance(ag_data_raw, dict) else {}
                 return {
                     "asset_group": ag_name,
                     "venues": ag_data.get("venues") or [],
@@ -148,9 +143,7 @@ async def get_venues_by_asset_group(asset_group: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load venues by asset group")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/expected-start-dates")
@@ -176,9 +169,7 @@ async def get_expected_start_dates(request: Request):
         return data
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load expected start dates")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/expected-start-dates/{service_name}")
@@ -222,9 +213,7 @@ async def get_service_start_dates(service_name: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load service start dates for %s", service_name)
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/dependencies")
@@ -250,9 +239,7 @@ async def get_dependencies(request: Request):
         return data
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load dependencies")
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 def _load_service_deps_from_file(deps_path: Path, service_name: str) -> dict[str, object] | None:
@@ -329,9 +316,7 @@ async def get_service_dependencies(service_name: str, request: Request):
         raise
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to load service dependencies for %s", service_name)
-        raise HTTPException(
-            status_code=500, detail="Internal server error. Check server logs."
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from e
 
 
 @router.get("/shard-axis-matrix")
@@ -340,7 +325,7 @@ async def get_shard_axis_matrix(
 ):
     """Return the per-(service, asset_group) shard / display / primary axis SSOT.
 
-    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.plan.md`` Phase 2.
+    Plan: ``data_status_multi_axis_shard_propagation_2026_05_06.md`` Phase 2.
 
     SSOT lives in
     ``unified_api_contracts.registry.data_status_axis_matrix``. The
@@ -368,7 +353,7 @@ async def get_shard_axis_matrix(
 
     target = service if isinstance(service, str) and service else None
 
-    def _filter(items: dict[tuple[str, str], object]) -> dict[str, dict[str, object]]:
+    def _filter(items: Mapping[tuple[str, str], object]) -> dict[str, dict[str, object]]:
         out: dict[str, dict[str, object]] = {}
         for (svc, asset_group), value in items.items():
             if target is not None and svc != target:

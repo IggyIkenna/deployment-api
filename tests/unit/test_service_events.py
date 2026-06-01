@@ -28,9 +28,7 @@ class TestParseServiceEventFromServiceEvents:
         assert result["details"] == ""
 
     def test_event_with_details(self):
-        result = parse_service_event(
-            "SERVICE_EVENT: INSTRUMENT_PROCESSING_COMPLETED (BTC-USDT, 500)"
-        )
+        result = parse_service_event("SERVICE_EVENT: INSTRUMENT_PROCESSING_COMPLETED (BTC-USDT, 500)")
         assert result is not None
         assert result["event_name"] == "INSTRUMENT_PROCESSING_COMPLETED"
         assert "BTC-USDT" in result["details"]

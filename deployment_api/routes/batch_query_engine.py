@@ -49,9 +49,7 @@ def _accumulate_combo_result(
     venue_folders.setdefault(combo.venue, {}).setdefault(combo.folder, set()).add(date_str)
     if combo.timeframe:
         timeframe_data.setdefault(combo.timeframe, set()).add(date_str)
-        venue_timeframes.setdefault(combo.venue, {}).setdefault(combo.timeframe, set()).add(
-            date_str
-        )
+        venue_timeframes.setdefault(combo.venue, {}).setdefault(combo.timeframe, set()).add(date_str)
     if blob_updated is not None:
         existing_ts = venue_date_blob_timestamps.get(combo.venue, {}).get(date_str)
         if existing_ts is None or blob_updated < existing_ts:
@@ -71,9 +69,7 @@ def _build_prefixes_by_date(
     for date_str in dates_to_check:
         prefixes: list[tuple[str, CombinatoricEntry]] = []
         in_tick_window = bool(callable(is_in_tick_window_fn) and is_in_tick_window_fn(date_str))
-        base_prefix: str = (
-            cast(str, get_base_prefix_fn(service)) if callable(get_base_prefix_fn) else ""
-        )
+        base_prefix: str = cast(str, get_base_prefix_fn(service)) if callable(get_base_prefix_fn) else ""
         for combo in combos:
             if combo.start_date:
                 try:
@@ -168,9 +164,7 @@ def query_specific_prefixes_for_asset_group(
         all_futures: list[tuple[object, str]] = []
         for date_str, prefix_combos in prefixes_by_date.items():
             for prefix, combo in prefix_combos:
-                future = executor.submit(
-                    _check_specific_prefix, bucket_name, path_prefix, prefix, combo
-                )
+                future = executor.submit(_check_specific_prefix, bucket_name, path_prefix, prefix, combo)
                 all_futures.append((future, date_str))
 
         for future_obj, date_str in all_futures:
@@ -239,9 +233,7 @@ def _check_specific_prefix(
         return (False, combo, None)
 
 
-def _check_prefix_generic(
-    bucket_name: str, path_prefix: str, prefix: str
-) -> tuple[bool, datetime | None]:
+def _check_prefix_generic(bucket_name: str, path_prefix: str, prefix: str) -> tuple[bool, datetime | None]:
     """Quick existence check for a prefix, returns (has_data, oldest_blob_updated)."""
     try:
         effective_prefix = (path_prefix + prefix) if path_prefix else prefix

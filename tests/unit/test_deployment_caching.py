@@ -201,9 +201,7 @@ class TestGetCachedDeployments:
         with (
             patch.object(_cache_mod, "cache", mock_cache),
             patch.object(_cache_mod, "TTL_DEPLOYMENT_LIST", 60),
-            patch.object(
-                _cache_mod, "deployment_list_key", lambda svc, limit: f"deployments:{svc}:{limit}"
-            ),
+            patch.object(_cache_mod, "deployment_list_key", lambda svc, limit: f"deployments:{svc}:{limit}"),
         ):
             sm = MagicMock()
             result = await get_cached_deployments(sm, service="instruments-service", limit=10)
@@ -226,9 +224,7 @@ class TestGetCachedDeployments:
         with (
             patch.object(_cache_mod, "cache", mock_cache),
             patch.object(_cache_mod, "TTL_DEPLOYMENT_LIST", 60),
-            patch.object(
-                _cache_mod, "deployment_list_key", lambda svc, limit: f"deps:{svc}:{limit}"
-            ),
+            patch.object(_cache_mod, "deployment_list_key", lambda svc, limit: f"deps:{svc}:{limit}"),
         ):
             sm = MagicMock()
             sm.list_deployments = MagicMock(side_effect=TimeoutError())

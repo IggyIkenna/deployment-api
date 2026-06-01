@@ -160,11 +160,7 @@ def _try_acquire_deployment_lock_fallback(
             existing_payload = {}
 
         expires_at_raw2: object = existing_payload.get("expires_at", 0)
-        expires_at = (
-            float(cast(float, expires_at_raw2))
-            if isinstance(expires_at_raw2, (int, float))
-            else 0.0
-        )
+        expires_at = float(cast(float, expires_at_raw2)) if isinstance(expires_at_raw2, (int, float)) else 0.0
         owner_raw2: object = existing_payload.get("owner")
         owner = owner_raw2 if isinstance(owner_raw2, str) else None
 
@@ -275,7 +271,7 @@ def _build_vm_map(service_name: str, deployment_id: str) -> dict[str, object] | 
     """
     vm_map: dict[str, object] = {}
     try:
-        from unified_trading_library.cloud_interface import get_compute_engine_client
+        from unified_trading_library import get_compute_engine_client
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
         instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")
@@ -305,9 +301,7 @@ def _fire_orphan_vm_deletes(
     try:
         _orchestrator_cls = cast(
             type[object],
-            _importlib.import_module(
-                "deployment_service.deployment.orchestrator"
-            ).DeploymentOrchestrator,
+            _importlib.import_module("deployment_service.deployment.orchestrator").DeploymentOrchestrator,
         )
 
         try:
@@ -338,11 +332,11 @@ def _fire_orphan_vm_deletes(
             else None
         )
         if backend and hasattr(backend, "cancel_job_fire_and_forget"):
-            _cancel_fn = backend.cancel_job_fire_and_forget
+            _cancel_fn = backend.cancel_job_fire_and_forget  # type: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
             with ThreadPoolExecutor(max_workers=min(len(to_fire), orphan_max)) as pool:
                 for job_id, zone in to_fire:
-                    pool.submit(
-                        _cancel_fn,
+                    pool.submit(  # type: ignore[reportUnknownArgumentType]
+                        _cancel_fn,  # type: ignore[reportUnknownArgumentType]
                         job_id,
                         zone,
                     )
@@ -367,8 +361,7 @@ def _collect_shard_statuses(
     status_objs = [
         o
         for o in cast(list[object], list_objects(STATE_BUCKET, status_prefix))
-        if "/status" in getattr(o, "name", "")
-        and not str(getattr(o, "name", "")).endswith("/state.json")
+        if "/status" in getattr(o, "name", "") and not str(getattr(o, "name", "")).endswith("/state.json")
     ]
 
     shard_statuses: dict[str, tuple[str, str]] = {}
@@ -456,9 +449,7 @@ def _load_quota_broker() -> _QuotaBrokerProtocol | None:
     try:
         _quota_broker_client_cls = cast(
             type[_QuotaBrokerProtocol],
-            _importlib.import_module(
-                "deployment_service.deployment.quota_broker_client"
-            ).QuotaBrokerClient,
+            _importlib.import_module("deployment_service.deployment.quota_broker_client").QuotaBrokerClient,
         )
         quota_broker = _quota_broker_client_cls()
         logger.info("[AUTO_SYNC] Quota broker initialized")
@@ -478,9 +469,7 @@ def _parallel_scan_active_states(
     scan_start = _time.monotonic()
 
     with ThreadPoolExecutor(max_workers=20) as scan_pool:
-        futures = {
-            scan_pool.submit(_scan_one_state_path, p, read_object_text): p for p in state_paths
-        }
+        futures = {scan_pool.submit(_scan_one_state_path, p, read_object_text): p for p in state_paths}
         for future in as_completed(futures, timeout=30):
             try:
                 result = future.result(timeout=10)
@@ -682,14 +671,10 @@ async def auto_sync_running_deployments() -> None:
             # Adaptive interval: fast when active, slow when idle
             if num_active > 0:
                 current_interval = sync_interval_active
-                logger.debug(
-                    "[AUTO_SYNC] %s active → next cycle in %ss", num_active, current_interval
-                )
+                logger.debug("[AUTO_SYNC] %s active → next cycle in %ss", num_active, current_interval)
             else:
                 current_interval = sync_interval_idle
-                logger.debug(
-                    "[AUTO_SYNC] No active deployments → next cycle in %ss", current_interval
-                )
+                logger.debug("[AUTO_SYNC] No active deployments → next cycle in %ss", current_interval)
 
         except asyncio.CancelledError:
             break

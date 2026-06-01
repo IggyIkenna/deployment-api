@@ -136,14 +136,10 @@ def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
             if isinstance(_ct, datetime) and isinstance(_ft, datetime):
                 _dur = (_ft - _ct).total_seconds()
             _subs: object = getattr(build, "substitutions", {})
-            _subs_dict: dict[str, str] = (
-                cast(dict[str, str], _subs) if isinstance(_subs, dict) else {}
-            )
+            _subs_dict: dict[str, str] = cast(dict[str, str], _subs) if isinstance(_subs, dict) else {}
             _commit_sha: str | None = _subs_dict.get("COMMIT_SHA") or _subs_dict.get("SHORT_SHA")
             _status_obj: object = getattr(build, "status", None)
-            _status_name: str = (
-                getattr(_status_obj, "name", "UNKNOWN") if _status_obj is not None else "UNKNOWN"
-            )
+            _status_name: str = getattr(_status_obj, "name", "UNKNOWN") if _status_obj is not None else "UNKNOWN"
             result: BuildInfoDict = {
                 "build_id": cast(str, getattr(build, "id", "")),
                 "timestamp": _ct_iso,
@@ -248,9 +244,7 @@ def _get_asset_group_blob_timestamp(bucket_name: str, asset_group: str) -> Asset
     blobs = list_objects(bucket_name, prefix="", max_results=10)
     if not blobs:
         return {}
-    latest_blob = max(
-        blobs, key=lambda b: b.updated if b.updated else datetime.min.replace(tzinfo=UTC)
-    )
+    latest_blob = max(blobs, key=lambda b: b.updated if b.updated else datetime.min.replace(tzinfo=UTC))
     latest_ts = latest_blob.updated if latest_blob.updated else None
     if latest_ts and latest_ts.tzinfo is None:
         logger.warning("GCS blob timestamp is naive (missing timezone): %s", latest_blob.name)
@@ -273,9 +267,7 @@ def _get_service_timestamps_sync(service: str) -> DataTimestampResultDict:
                 logger.warning("Error checking %s bucket %s: %s", asset_group, bucket_name, e)
                 results[asset_group] = {"error": str(e)}
         valid_timestamps = [
-            datetime.fromisoformat(cast(str, r.get("timestamp")))
-            for r in results.values()
-            if r.get("timestamp")
+            datetime.fromisoformat(cast(str, r.get("timestamp"))) for r in results.values() if r.get("timestamp")
         ]
         return {
             "by_asset_group": results,
@@ -286,9 +278,7 @@ def _get_service_timestamps_sync(service: str) -> DataTimestampResultDict:
         return {"error": str(e)}
 
 
-async def get_latest_data_timestamp(
-    service: str, use_cache: bool = True
-) -> DataTimestampResultDict | None:
+async def get_latest_data_timestamp(service: str, use_cache: bool = True) -> DataTimestampResultDict | None:
     """
     Get the most recent data file timestamp from GCS for a service.
 
@@ -310,9 +300,7 @@ async def get_latest_data_timestamp(
                 cache_time = datetime.fromisoformat(_dts)
                 age = datetime.now(UTC) - cache_time
                 if age < timedelta(minutes=2):  # 2-minute cache
-                    logger.info(
-                        "Using cached data timestamps for %s (age: %ss)", service, age.seconds
-                    )
+                    logger.info("Using cached data timestamps for %s (age: %ss)", service, age.seconds)
                     return cast(DataTimestampResultDict | None, data_cache[service])
             except (ValueError, TypeError, KeyError) as e:
                 logger.debug("Cache invalid for %s: %s", service, e)
@@ -320,9 +308,7 @@ async def get_latest_data_timestamp(
     def _get_timestamps_sync() -> DataTimestampResultDict:
         return _get_service_timestamps_sync(service)
 
-    result = cast(
-        DataTimestampResultDict | None, cast(object, await asyncio.to_thread(_get_timestamps_sync))
-    )
+    result = cast(DataTimestampResultDict | None, cast(object, await asyncio.to_thread(_get_timestamps_sync)))
 
     # Cache the result
     cache = load_gcs_cache()
@@ -385,21 +371,13 @@ async def get_latest_deployment(service: str, use_cache: bool = True) -> Deploym
                 # Get shard counts
                 _progress_raw: object = latest.get("progress")
                 progress: dict[str, object] = (
-                    cast(dict[str, object], _progress_raw)
-                    if isinstance(_progress_raw, dict)
-                    else {}
+                    cast(dict[str, object], _progress_raw) if isinstance(_progress_raw, dict) else {}
                 )
-                _ts_raw: object = (
-                    progress.get("total_shards", 0) if progress else latest.get("total_shards", 0)
-                )
+                _ts_raw: object = progress.get("total_shards", 0) if progress else latest.get("total_shards", 0)
                 total_shards: int = _ts_raw if isinstance(_ts_raw, int) else 0
-                _comp_raw: object = (
-                    progress.get("completed", 0) if progress else latest.get("completed_shards", 0)
-                )
+                _comp_raw: object = progress.get("completed", 0) if progress else latest.get("completed_shards", 0)
                 completed: int = _comp_raw if isinstance(_comp_raw, int) else 0
-                _fail_raw: object = (
-                    progress.get("failed", 0) if progress else latest.get("failed_shards", 0)
-                )
+                _fail_raw: object = progress.get("failed", 0) if progress else latest.get("failed_shards", 0)
                 failed: int = _fail_raw if isinstance(_fail_raw, int) else 0
 
                 return {
@@ -457,9 +435,7 @@ async def get_latest_build(service: str, use_cache: bool = True) -> BuildInfoDic
     return await asyncio.to_thread(_fetch_build_from_api, service)
 
 
-async def get_latest_code_push(
-    service: str, github_token: str | None = None
-) -> CodePushInfoDict | None:
+async def get_latest_code_push(service: str, github_token: str | None = None) -> CodePushInfoDict | None:
     """
     Get the most recent code push (commit) from GitHub.
 

@@ -30,9 +30,7 @@ def _service_asset_groups_from_sharding(service: str) -> dict[str, object]:
     config_path = get_config_dir() / f"sharding.{service}.yaml"
 
     if not config_path.exists():
-        raise HTTPException(
-            status_code=404, detail=f"Sharding config not found for service: {service}"
-        )
+        raise HTTPException(status_code=404, detail=f"Sharding config not found for service: {service}")
 
     with open(config_path) as f:
         config = cast(dict[str, object], yaml.safe_load(f))
@@ -41,9 +39,7 @@ def _service_asset_groups_from_sharding(service: str) -> dict[str, object]:
     for dim in dimensions:
         if dim.get("name") in ("asset_group", "category"):
             values_raw: object = dim.get("values") or []
-            values: list[object] = (
-                cast(list[object], values_raw) if isinstance(values_raw, list) else []
-            )
+            values: list[object] = cast(list[object], values_raw) if isinstance(values_raw, list) else []
             return {"service": service, "asset_groups": values}
 
     no_ags: list[object] = []

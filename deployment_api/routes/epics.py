@@ -135,9 +135,7 @@ def _is_repo_complete(
     """Return (complete, reason) for a single required repo."""
     cr_section = repo_data.get("code_readiness")
     cr_current = (
-        cast(dict[str, object], cr_section).get("current_stage", "CR0")
-        if isinstance(cr_section, dict)
-        else "CR0"
+        cast(dict[str, object], cr_section).get("current_stage", "CR0") if isinstance(cr_section, dict) else "CR0"
     )
     if _cr_ordinal(str(cr_current)) < _cr_ordinal(min_cr):
         return False, f"CR stage: {cr_current} (need {min_cr.upper()})"
@@ -145,20 +143,14 @@ def _is_repo_complete(
     if min_br.lower() != "na":
         br_section = repo_data.get("business_readiness")
         br_current = (
-            cast(dict[str, object], br_section).get("current_stage", "BR0")
-            if isinstance(br_section, dict)
-            else "BR0"
+            cast(dict[str, object], br_section).get("current_stage", "BR0") if isinstance(br_section, dict) else "BR0"
         )
         if _br_ordinal(str(br_current)) < _br_ordinal(min_br):
             return False, f"BR stage: {br_current} (need {min_br.upper()})"
 
     branch_status = _get_branch_status(repo_data, asset_group)
     main_status = branch_status.get("main")
-    main_qm = (
-        cast(dict[str, object], main_status).get("quickmerged", False)
-        if isinstance(main_status, dict)
-        else False
-    )
+    main_qm = cast(dict[str, object], main_status).get("quickmerged", False) if isinstance(main_status, dict) else False
     if not main_qm:
         return False, "branch_status.main.quickmerged = false"
 
@@ -176,12 +168,8 @@ def _compute_epic(
 ) -> dict[str, object]:
     """Compute full epic status dict from definition + per-repo data."""
     epic_id = str(epic.get("epic_id", "unknown"))
-    required: list[dict[str, object]] = cast(
-        list[dict[str, object]], epic.get("required_repos") or []
-    )
-    optional: list[dict[str, object]] = cast(
-        list[dict[str, object]], epic.get("optional_repos") or []
-    )
+    required: list[dict[str, object]] = cast(list[dict[str, object]], epic.get("required_repos") or [])
+    optional: list[dict[str, object]] = cast(list[dict[str, object]], epic.get("optional_repos") or [])
 
     total_required = len(required)
     completed = 0
@@ -216,22 +204,16 @@ def _compute_epic(
 
         cr_section = repo_data.get("code_readiness")
         cr_current = (
-            cast(dict[str, object], cr_section).get("current_stage", "CR0")
-            if isinstance(cr_section, dict)
-            else "CR0"
+            cast(dict[str, object], cr_section).get("current_stage", "CR0") if isinstance(cr_section, dict) else "CR0"
         )
         br_section = repo_data.get("business_readiness")
         br_current = (
-            cast(dict[str, object], br_section).get("current_stage", "BR0")
-            if isinstance(br_section, dict)
-            else "BR0"
+            cast(dict[str, object], br_section).get("current_stage", "BR0") if isinstance(br_section, dict) else "BR0"
         )
         branch_status = _get_branch_status(repo_data, asset_group)
         main_status = branch_status.get("main")
         main_qm = (
-            cast(dict[str, object], main_status).get("quickmerged", False)
-            if isinstance(main_status, dict)
-            else False
+            cast(dict[str, object], main_status).get("quickmerged", False) if isinstance(main_status, dict) else False
         )
         ac_data = _get_asset_group_data(repo_data, asset_group)
 
@@ -274,9 +256,7 @@ def _compute_epic(
         "epic_id": epic_id,
         "display_name": str(epic.get("display_name", epic_id)),
         "mvp_priority": int(cast(int, epic.get("mvp_priority", 99))),
-        "business_requirement_minimum": str(
-            epic.get("business_requirement_minimum", "br5_pnl_backtest")
-        ),
+        "business_requirement_minimum": str(epic.get("business_requirement_minimum", "br5_pnl_backtest")),
         "epic_pct": epic_pct,
         "total_required": total_required,
         "completed": completed,
@@ -343,8 +323,7 @@ async def list_epics(request: Request) -> list[dict[str, object]]:
     if codex_dir is None:
         raise HTTPException(
             status_code=503,
-            detail="Codex directory not configured. "
-            "unified-trading-codex/10-audit/repos/ must be accessible.",
+            detail="Codex directory not configured. unified-trading-codex/10-audit/repos/ must be accessible.",
         )
 
     epics = _load_all_epics(epics_dir)

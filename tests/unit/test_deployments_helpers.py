@@ -81,14 +81,12 @@ class TestBuildDeployEnvVars:
         assert env["OPERATIONAL_MODE"] == "train_phase1"
 
     def test_operational_mode_execute(self):
-        env = build_deploy_env_vars(
-            "execution-service", "proj", "dep", 1, operational_mode="execute"
-        )
+        env = build_deploy_env_vars("execution-service", "proj", "dep", 1, operational_mode="execute")
         assert env["OPERATIONAL_MODE"] == "execute"
 
     def test_all_runtime_topology_vars_together(self):
         env = build_deploy_env_vars(
-            "ml-training-service",
+            "ml-service",
             "my-project",
             "dep-001",
             50,
@@ -101,7 +99,57 @@ class TestBuildDeployEnvVars:
         assert env["OPERATIONAL_MODE"] == "train_phase2"
         assert env["CLOUD_PROVIDER"] == "gcp"
         assert env["DEPLOYMENT_MODE"] == "vm"
-        assert env["SERVICE_NAME"] == "ml-training-service"
+        assert env["SERVICE_NAME"] == "ml-service"
+
+
+class TestRuntimeProfileFanout:
+    """Phase 4 — runtime_profile expansion into legacy mode env vars."""
+
+    def test_no_runtime_profile_leaves_legacy_vars_unset(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1)
+        for key in ("CLOUD_MOCK_MODE", "MOCK_STATE_MODE", "DISABLE_AUTH", "CLIENT_ID"):
+            assert key not in env
+
+    def test_backtest_profile_fans_out_all_five_env_vars(self):
+        from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
+
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, runtime_profile=RuntimeProfile.BACKTEST)
+        assert env["RUNTIME_PROFILE"] == "backtest"
+        assert env["CLOUD_MOCK_MODE"] == "false"
+        assert env["MOCK_STATE_MODE"] == "deterministic"
+        assert env["DISABLE_AUTH"] == "true"
+        assert env["VITE_MOCK_API"] == "false"
+        assert env["VITE_SKIP_AUTH"] == "true"
+        assert env["CHAOS_ALLOWED"] == "true"
+        assert env["STORAGE_NAMESPACE"].startswith("backtest/")
+
+    def test_prod_profile_forbids_chaos(self):
+        from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
+
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, runtime_profile=RuntimeProfile.PROD)
+        assert env["CHAOS_ALLOWED"] == "false"
+        assert env["ALLOW_REAL_VENUE_CALLS"] == "true"
+        assert env["DISABLE_AUTH"] == "false"
+
+    def test_mock_live_profile_enables_vite_mocks(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, runtime_profile="mock-live")
+        assert env["CLOUD_MOCK_MODE"] == "true"
+        assert env["VITE_MOCK_API"] == "true"
+        assert env["VITE_SKIP_AUTH"] == "true"
+
+    def test_unknown_profile_logs_and_leaves_env_unchanged(self, caplog):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, runtime_profile="nonsense")
+        assert "RUNTIME_PROFILE" not in env
+        assert "CLOUD_MOCK_MODE" not in env
+        assert any("Unknown runtime_profile" in rec.message for rec in caplog.records)
+
+    def test_client_id_injected_when_set(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, client_id="alpha")
+        assert env["CLIENT_ID"] == "alpha"
+
+    def test_client_id_omitted_when_none(self):
+        env = build_deploy_env_vars("svc", "proj", "dep", 1, client_id=None)
+        assert "CLIENT_ID" not in env
 
 
 class TestRuntimeProfileFanout:

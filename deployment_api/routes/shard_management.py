@@ -82,9 +82,7 @@ _CODE_FAILURE_CATEGORIES = {
 def _get_status_attr(val: object) -> object:
     """Retrieve the 'status' attribute via getattr to satisfy basedpyright (val: object)."""
     attr_name = "status"
-    return cast(
-        object, getattr(val, attr_name)
-    )  # attr_name is a variable, not a constant — avoids B009
+    return cast(object, getattr(val, attr_name))  # attr_name is a variable, not a constant — avoids B009
 
 
 def status_str(val: object) -> str:
@@ -180,9 +178,7 @@ def _extract_error_warning_shard_ids(
     warnings = cast(list[dict[str, object]], warnings_raw) if isinstance(warnings_raw, list) else []
 
     error_shard_ids: set[str] = {cast(str, e.get("shard_id")) for e in errors if e.get("shard_id")}
-    warning_shard_ids: set[str] = {
-        cast(str, w.get("shard_id")) for w in warnings if w.get("shard_id")
-    }
+    warning_shard_ids: set[str] = {cast(str, w.get("shard_id")) for w in warnings if w.get("shard_id")}
 
     return error_shard_ids, warning_shard_ids
 
@@ -370,13 +366,9 @@ def resolve_shard_blob_data(
         if not cat or not start_date:
             result[sid] = (False, None)
             continue
-        data_exists = _check_shard_data_exists(
-            cat, venue_val, start_date, existing_cat_dates, existing_venue_dates
-        )
+        data_exists = _check_shard_data_exists(cat, venue_val, start_date, existing_cat_dates, existing_venue_dates)
         blob_updated = (
-            _lookup_blob_timestamp(cat, venue_val, start_date, dims_dict, blob_timestamps)
-            if data_exists
-            else None
+            _lookup_blob_timestamp(cat, venue_val, start_date, dims_dict, blob_timestamps) if data_exists else None
         )
         result[sid] = (data_exists, blob_updated)
     return result
@@ -464,9 +456,7 @@ def build_existing_dates_sets(
 
         # Venue map
         venues_data_raw: object = cat_data.get("venues") or {}
-        venues_data = (
-            cast(dict[str, object], venues_data_raw) if isinstance(venues_data_raw, dict) else {}
-        )
+        venues_data = cast(dict[str, object], venues_data_raw) if isinstance(venues_data_raw, dict) else {}
         for venue_name, venue_data_raw in venues_data.items():
             if not isinstance(venue_data_raw, dict):
                 continue
@@ -536,9 +526,7 @@ def compute_completed_breakdown(
 
     verified_clean_ids: set[str] = set()
     if existing_cat_dates is not None and existing_venue_dates is not None:
-        verified_ids = _compute_verified_succeeded_shard_ids(
-            state, existing_cat_dates, existing_venue_dates
-        )
+        verified_ids = _compute_verified_succeeded_shard_ids(state, existing_cat_dates, existing_venue_dates)
         verified_clean_ids = verified_ids - shard_ids_with_errors - shard_ids_with_warnings
 
     verified_clean = len(verified_clean_ids)

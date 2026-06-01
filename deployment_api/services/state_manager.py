@@ -17,8 +17,8 @@ from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
+from unified_trading_library import StorageClient
 from unified_trading_library import get_storage_client as _get_storage_client
-from unified_trading_library.cloud_interface import StorageClient
 
 from deployment_api import settings
 from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
@@ -33,9 +33,7 @@ class _BackendProtocol(Protocol):
 class _OrchestratorProtocol(Protocol):
     """Minimal protocol for deployment orchestrator used in orphan cleanup."""
 
-    def get_backend(
-        self, backend_type: str, job_name: str, zone: str | None
-    ) -> _BackendProtocol | None: ...
+    def get_backend(self, backend_type: str, job_name: str, zone: str | None) -> _BackendProtocol | None: ...
 
 
 logger = logging.getLogger(__name__)
@@ -244,18 +242,12 @@ class StateManager:
             # Lock exists: read it and check expiry/ownership
             try:
                 raw_bytes = client.download_bytes(self.state_bucket, lock_blob_name)
-                existing_payload: dict[str, object] = cast(
-                    dict[str, object], json.loads(raw_bytes.decode("utf-8"))
-                )
+                existing_payload: dict[str, object] = cast(dict[str, object], json.loads(raw_bytes.decode("utf-8")))
             except (OSError, ValueError, RuntimeError):
                 existing_payload = {}
 
             expires_at_raw: object = existing_payload.get("expires_at", 0)
-            expires_at = (
-                float(cast(float, expires_at_raw))
-                if isinstance(expires_at_raw, (int, float))
-                else 0.0
-            )
+            expires_at = float(cast(float, expires_at_raw)) if isinstance(expires_at_raw, (int, float)) else 0.0
             owner_raw: object = existing_payload.get("owner")
             owner: str | None = owner_raw if isinstance(owner_raw, str) else None
 
@@ -339,19 +331,13 @@ class StateManager:
         deployment_id = cast(str, state.get("deployment_id") or "")
         try:
             vm_map = _read_vm_map(self.state_bucket, self.deployment_env, deployment_id)
-            shard_statuses = _read_shard_statuses(
-                self.state_bucket, self.deployment_env, deployment_id, shards
-            )
+            shard_statuses = _read_shard_statuses(self.state_bucket, self.deployment_env, deployment_id, shards)
             orphan_tuples = _find_orphan_vms(shards, shard_statuses, vm_map)
 
             if orphan_tuples:
                 try:
-                    _raw_module = _importlib.import_module(
-                        "deployment_service.deployment.orchestrator"
-                    )
-                    orch_cls = cast(
-                        Callable[..., _OrchestratorProtocol], _raw_module.DeploymentOrchestrator
-                    )
+                    _raw_module = _importlib.import_module("deployment_service.deployment.orchestrator")
+                    orch_cls = cast(Callable[..., _OrchestratorProtocol], _raw_module.DeploymentOrchestrator)
                     return _fire_orphan_deletes(
                         orphan_tuples,
                         config,
@@ -389,10 +375,7 @@ class StateManager:
         return [
             jid
             for jid, val in self._pending_vm_deletes.items()
-            if (
-                now_ts - pending_ts(val) >= retry_seconds
-                and _get_vm_field(vm_map, jid, "status") == "RUNNING"
-            )
+            if (now_ts - pending_ts(val) >= retry_seconds and _get_vm_field(vm_map, jid, "status") == "RUNNING")
         ]
 
     def cleanup_state_ttl(self) -> int:
@@ -439,18 +422,14 @@ class StateManager:
 
                             # Delete entire deployment directory
                             dep_prefix = "/".join(parts[:-1]) + "/"
-                            blobs_to_delete = list(
-                                client.list_blobs(self.state_bucket, prefix=dep_prefix)
-                            )
+                            blobs_to_delete = list(client.list_blobs(self.state_bucket, prefix=dep_prefix))
 
                             deleted_paths = [b.name for b in blobs_to_delete[:1000]]
                             client.delete_blobs(self.state_bucket, deleted_paths)
 
                             deleted_count += 1
                             age_days = (datetime.now(UTC) - blob_dt).days
-                            logger.info(
-                                "[STATE_TTL] Deleted %s (age: %sd)", deployment_id, age_days
-                            )
+                            logger.info("[STATE_TTL] Deleted %s (age: %sd)", deployment_id, age_days)
 
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.debug("[STATE_TTL] Error processing blob %s: %s", blob_meta.name, e)

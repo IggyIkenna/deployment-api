@@ -115,11 +115,9 @@ class TestGetConfigBuckets:
         )
         assert len(result["buckets"]) == 3
 
-    def test_ml_training_service_has_one_bucket(self):
+    def test_ml_service_has_one_bucket(self):
         mock_request = _make_request()
-        result = asyncio.get_event_loop().run_until_complete(
-            _svc_routes.get_config_buckets("ml-training-service", mock_request)
-        )
+        result = asyncio.get_event_loop().run_until_complete(_svc_routes.get_config_buckets("ml-service", mock_request))
         assert len(result["buckets"]) == 1
 
 
@@ -209,11 +207,7 @@ class TestListDirectories:
         with (
             patch.dict(
                 sys.modules,
-                {
-                    "deployment_api.utils.storage_facade": MagicMock(
-                        list_prefixes=mock_list_prefixes
-                    )
-                },
+                {"deployment_api.utils.storage_facade": MagicMock(list_prefixes=mock_list_prefixes)},
             ),
             pytest.raises(HTTPException) as exc_info,
         ):
@@ -310,9 +304,7 @@ class TestListServices:
             "dimensions": [],
         }
         with patch.object(_svc_routes, "get_config_loader", return_value=mock_loader):
-            result = asyncio.get_event_loop().run_until_complete(
-                _svc_routes.list_services(mock_request)
-            )
+            result = asyncio.get_event_loop().run_until_complete(_svc_routes.list_services(mock_request))
 
         assert "services" in result
         assert result["count"] == 2
@@ -323,9 +315,7 @@ class TestListServices:
         mock_loader.list_available_services.return_value = ["bad-svc"]
         mock_loader.load_service_config.side_effect = OSError("no file")
         with patch.object(_svc_routes, "get_config_loader", return_value=mock_loader):
-            result = asyncio.get_event_loop().run_until_complete(
-                _svc_routes.list_services(mock_request)
-            )
+            result = asyncio.get_event_loop().run_until_complete(_svc_routes.list_services(mock_request))
 
         assert result["count"] == 1
         assert "Error loading config" in result["services"][0]["description"]
@@ -348,9 +338,7 @@ class TestGetServiceConfig:
         mock_config = {"docker_image": "my-image", "cloud_run_job_name": "job"}
         mock_loader.load_service_config.return_value = mock_config
         with patch.object(_svc_routes, "get_config_loader", return_value=mock_loader):
-            result = asyncio.get_event_loop().run_until_complete(
-                _svc_routes.get_service_config("my-svc", mock_request)
-            )
+            result = asyncio.get_event_loop().run_until_complete(_svc_routes.get_service_config("my-svc", mock_request))
 
         assert result["service"] == "my-svc"
         assert result["config"] == mock_config
@@ -365,9 +353,7 @@ class TestGetServiceConfig:
             patch.object(_svc_routes, "get_config_loader", return_value=mock_loader),
             pytest.raises(HTTPException) as exc_info,
         ):
-            asyncio.get_event_loop().run_until_complete(
-                _svc_routes.get_service_config("missing-svc", mock_request)
-            )
+            asyncio.get_event_loop().run_until_complete(_svc_routes.get_service_config("missing-svc", mock_request))
         assert exc_info.value.status_code == 404
 
     def test_raises_500_on_oserror(self):
@@ -380,7 +366,5 @@ class TestGetServiceConfig:
             patch.object(_svc_routes, "get_config_loader", return_value=mock_loader),
             pytest.raises(HTTPException) as exc_info,
         ):
-            asyncio.get_event_loop().run_until_complete(
-                _svc_routes.get_service_config("svc", mock_request)
-            )
+            asyncio.get_event_loop().run_until_complete(_svc_routes.get_service_config("svc", mock_request))
         assert exc_info.value.status_code == 500

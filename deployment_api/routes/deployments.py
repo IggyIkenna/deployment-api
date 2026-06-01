@@ -17,6 +17,15 @@ from unified_api_contracts.internal.domain.deployment_service import RuntimeProf
 # Import service modules for business logic
 from deployment_api.app_config import get_config_dir
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.messages import (
+    CLOUD_SERVICE_UNAVAILABLE,
+    INTERNAL_ERROR,
+    INTERNAL_SERVER_ERROR,
+    INVALID_CONFIG,
+    INVALID_PARAMETERS,
+    SERVICE_CONFIG_NOT_FOUND,
+    SERVICE_TEMPORARILY_UNAVAILABLE,
+)
 from deployment_api.services import DataStatusService
 from deployment_api.services.deployment_manager import DeploymentManager
 from deployment_api.services.deployment_state import DeploymentStateManager
@@ -45,9 +54,7 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     compute: str = Field("cloud_run", description="Compute mode: cloud_run or vm")
     mode: str = Field("batch", description="Deployment mode: 'batch' or 'live'")
     cloud_provider: str = Field("gcp", description="Cloud provider: gcp, aws, or local")
-    operational_mode: str = Field(
-        "", description="Service-specific operational mode (e.g. train_phase1, execute)"
-    )
+    operational_mode: str = Field("", description="Service-specific operational mode (e.g. train_phase1, execute)")
 
     # Date range for data processing
     start_date: str | None = Field(None, description="Start date (YYYY-MM-DD)")
@@ -79,9 +86,7 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     # Exclude dates: mapping of asset group -> list of date strings to skip
     # Used by "Deploy Missing" to exclude dates that already have complete data
-    exclude_dates: dict[str, list[str]] | None = Field(
-        None, description="Dates to exclude per asset group"
-    )
+    exclude_dates: dict[str, list[str]] | None = Field(None, description="Dates to exclude per asset group")
 
     # Logging configuration
     log_level: str = Field("INFO", description="Log level for deployment jobs")
@@ -196,9 +201,7 @@ async def list_deployments(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     status: str | None = Query(None, description="Filter by status"),
     service: str | None = Query(None, description="Filter by service"),
-    asset_group: str | None = Query(
-        None, description="Filter by trading axis (CEFI, DEFI, SPORTS, …)"
-    ),
+    asset_group: str | None = Query(None, description="Filter by trading axis (CEFI, DEFI, SPORTS, …)"),
     category: str | None = Query(
         None,
         description="Deprecated — use asset_group",
@@ -239,13 +242,13 @@ async def list_deployments(
         return result
     except ValueError as e:
         logger.error("Invalid parameters for listing deployments: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid parameters — see server logs") from e
+        raise HTTPException(status_code=400, detail=INVALID_PARAMETERS) from e
     except ConnectionError as e:
         logger.error("Database connection failed while listing deployments: %s", e)
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=SERVICE_TEMPORARILY_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to list deployments: %s", e)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR) from e
 
 
 @router.get("/deployments/{deployment_id}")
@@ -259,22 +262,20 @@ async def get_deployment_status(
 
         item = get_store().get("deployments", deployment_id)
         if item is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return item
     try:
         result = state_manager.get_deployment_status(deployment_id, detailed=detailed)
         return result
     except ValueError as e:
         logger.exception("Deployment not found: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed for deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get deployment status for %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR) from e
 
 
 @router.get("/deployments/{deployment_id}/verify")
@@ -295,15 +296,13 @@ async def verify_deployment_completion(
         return result
     except ValueError as e:
         logger.exception("Deployment not found for verification: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed during verification for %s: %s", deployment_id, e
-        )
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        logger.error("Cloud provider connection failed during verification for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to verify deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR) from e
 
 
 @router.post("/deployments/quota-info")
@@ -317,16 +316,16 @@ async def quota_info(deploy_request: DeployRequest, request: Request) -> dict[st
         return result
     except ValueError as e:
         logger.exception("Invalid request for quota calculation")
-        raise HTTPException(status_code=400, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=400, detail=INTERNAL_ERROR) from e
     except FileNotFoundError as e:
         logger.error("Configuration file not found for quota calculation: %s", e)
-        raise HTTPException(status_code=400, detail="Service configuration not found") from e
+        raise HTTPException(status_code=400, detail=SERVICE_CONFIG_NOT_FOUND) from e
     except KeyError as e:
         logger.error("Missing configuration key for quota calculation: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid configuration — see logs") from e
+        raise HTTPException(status_code=400, detail=INVALID_CONFIG) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to calculate quota info: %s", e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments")
@@ -388,16 +387,16 @@ async def create_deployment(
         )
     except ValueError as e:
         logger.exception("Invalid request for deployment creation")
-        raise HTTPException(status_code=400, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=400, detail=INTERNAL_ERROR) from e
     except FileNotFoundError as e:
         logger.error("Configuration file not found for deployment creation: %s", e)
-        raise HTTPException(status_code=400, detail="Service configuration not found") from e
+        raise HTTPException(status_code=400, detail=SERVICE_CONFIG_NOT_FOUND) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during deployment creation: %s", e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to create deployment: %s", e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 async def _submit_missing_deployment(
@@ -424,16 +423,29 @@ async def _submit_missing_deployment(
         service=req.service,
         compute=req.compute,
         mode=req.mode,
+        cloud_provider=getattr(req, "cloud_provider", "gcp"),
+        operational_mode=getattr(req, "operational_mode", ""),
         start_date=req.start_date,
         end_date=req.end_date,
+        max_shards=getattr(req, "max_shards", 10000),
+        max_concurrent=getattr(req, "max_concurrent", None),
+        vm_zone=getattr(req, "vm_zone", None),
+        cloud_config_path=getattr(req, "cloud_config_path", None),
+        ignore_start_dates=getattr(req, "ignore_start_dates", False),
         deploy_missing=True,
         exclude_dates=exclude_dates,
+        skip_dimensions=getattr(req, "skip_dimensions", None),
+        max_workers=getattr(req, "max_workers", None),
         region=req.region,
         tag=req.tag,
         asset_group=req.asset_group,
         venue=req.venue,
+        feature_group=getattr(req, "feature_group", None),
+        data_type=getattr(req, "data_type", None),
         date_granularity=req.date_granularity,
         log_level=req.log_level,
+        runtime_profile=getattr(req, "runtime_profile", None),
+        client_id=getattr(req, "client_id", None),
     )
 
     def background_task_runner(
@@ -537,9 +549,7 @@ async def deploy_missing_shards(
                 "missing_analysis": missing_analysis,
                 "deployment": None,
                 "dry_run": True,
-                "message": (
-                    f"Found {total_missing} missing shard(s) — dry run, no deployment created"
-                ),
+                "message": (f"Found {total_missing} missing shard(s) — dry run, no deployment created"),
             }
 
         # Step 3: If no missing shards and not forcing, return early
@@ -552,22 +562,20 @@ async def deploy_missing_shards(
             }
 
         # Step 4-6: Build and submit the deployment
-        deploy_result = await _submit_missing_deployment(
-            req, missing_analysis, total_missing, background_tasks
-        )
+        deploy_result = await _submit_missing_deployment(req, missing_analysis, total_missing, background_tasks)
         return deploy_result
     except ValueError as e:
         logger.exception("Invalid request for deploy-missing")
-        raise HTTPException(status_code=400, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=400, detail=INTERNAL_ERROR) from e
     except FileNotFoundError as e:
         logger.error("Configuration file not found for deploy-missing: %s", e)
-        raise HTTPException(status_code=400, detail="Service configuration not found") from e
+        raise HTTPException(status_code=400, detail=SERVICE_CONFIG_NOT_FOUND) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during deploy-missing: %s", e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to deploy missing shards: %s", e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments/{deployment_id}/cancel")
@@ -578,24 +586,20 @@ async def cancel_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         updated = get_store().update("deployments", deployment_id, {"status": "cancelled"})
         if updated is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "cancelled"}
     try:
         result = state_manager.cancel_deployment(deployment_id)
         return result
     except ValueError as e:
         logger.exception("Deployment not found for cancellation: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed during cancellation for %s: %s", deployment_id, e
-        )
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        logger.error("Cloud provider connection failed during cancellation for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to cancel deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments/{deployment_id}/resume")
@@ -606,22 +610,20 @@ async def resume_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         updated = get_store().update("deployments", deployment_id, {"status": "running"})
         if updated is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "running"}
     try:
         result = state_manager.resume_deployment(deployment_id)
         return result
     except ValueError as e:
         logger.exception("Deployment not found for resume: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during resume for %s: %s", deployment_id, e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to resume deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments/{deployment_id}/retry-failed")
@@ -636,9 +638,7 @@ async def retry_failed_shards(
 
         item = get_store().get("deployments", deployment_id)
         if item is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         if not dry_run:
             get_store().update("deployments", deployment_id, {"status": "retrying"})
         return {
@@ -648,17 +648,17 @@ async def retry_failed_shards(
             "dry_run": dry_run,
         }
     try:
-        result = state_manager.retry_failed_shards(deployment_id, dry_run=dry_run)
-        return result
+        result = state_manager.retry_failed_shards(deployment_id, dry_run=dry_run)  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
+        return result  # pyright: ignore[reportUnknownVariableType]
     except (ValueError, AttributeError) as e:
         logger.exception("Deployment not found for retry: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during retry for %s: %s", deployment_id, e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to retry deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.patch("/deployments/{deployment_id}")
@@ -676,9 +676,7 @@ async def update_deployment(
             raise HTTPException(status_code=400, detail="No update parameters provided")
         updated = get_store().update("deployments", deployment_id, fields)
         if updated is None:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "updated"}
     try:
         if update_request.tag:
@@ -688,13 +686,13 @@ async def update_deployment(
             raise HTTPException(status_code=400, detail="No update parameters provided")
     except ValueError as e:
         logger.exception("Deployment not found for update: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during update for %s: %s", deployment_id, e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to update deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.delete("/deployments/{deployment_id}")
@@ -705,40 +703,34 @@ async def delete_deployment(deployment_id: str, request: Request) -> dict[str, s
 
         deleted = get_store().delete("deployments", deployment_id)
         if not deleted:
-            raise HTTPException(
-                status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)"
-            )
+            raise HTTPException(status_code=404, detail=f"Deployment '{deployment_id}' not found (mock)")
         return {"deployment_id": deployment_id, "status": "deleted"}
     try:
         result = state_manager.delete_deployment(deployment_id)
         return result
     except ValueError as e:
         logger.exception("Deployment not found for deletion: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed during deletion for %s: %s", deployment_id, e
-        )
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        logger.error("Cloud provider connection failed during deletion for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to delete deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments/bulk-delete")
-async def bulk_delete_deployments(
-    bulk_request: BulkDeleteRequest, request: Request
-) -> dict[str, object]:
+async def bulk_delete_deployments(bulk_request: BulkDeleteRequest, request: Request) -> dict[str, object]:
     """Delete multiple deployments."""
     try:
         result = state_manager.bulk_delete_deployments(bulk_request.deployment_ids)
         return result
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during bulk delete: %s", e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Failed to bulk delete deployments: %s", e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments/{deployment_id}/refresh")
@@ -749,13 +741,13 @@ async def refresh_deployment_status(deployment_id: str, request: Request) -> dic
         return result
     except ValueError as e:
         logger.exception("Deployment not found for refresh: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
         logger.error("Cloud provider connection failed during refresh for %s: %s", deployment_id, e)
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to refresh deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.get("/deployments/{deployment_id}/logs")
@@ -788,15 +780,13 @@ async def get_deployment_logs(
             return result
     except ValueError as e:
         logger.exception("Deployment not found for log retrieval: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed while getting logs for %s: %s", deployment_id, e
-        )
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        logger.error("Cloud provider connection failed while getting logs for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get logs for deployment %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.get("/deployments/{deployment_id}/report")
@@ -807,18 +797,16 @@ async def get_deployment_report(deployment_id: str, request: Request) -> dict[st
         return result
     except ValueError as e:
         logger.exception("Deployment not found for report: %s", deployment_id)
-        raise HTTPException(status_code=404, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=404, detail=INTERNAL_ERROR) from e
     except FileNotFoundError as e:
         logger.error("Report data not found for deployment %s: %s", deployment_id, e)
         raise HTTPException(status_code=404, detail="Report data not available") from e
     except ConnectionError as e:
-        logger.error(
-            "Cloud provider connection failed while generating report for %s: %s", deployment_id, e
-        )
-        raise HTTPException(status_code=503, detail="Cloud service temporarily unavailable") from e
+        logger.error("Cloud provider connection failed while generating report for %s: %s", deployment_id, e)
+        raise HTTPException(status_code=503, detail=CLOUD_SERVICE_UNAVAILABLE) from e
     except (OSError, RuntimeError) as e:
         logger.exception("Failed to get deployment report for %s: %s", deployment_id, e)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 # ── Live deployment & event stream endpoints ──────────────────────────────────
@@ -829,9 +817,7 @@ class RollbackRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     service: str = Field(..., description="Cloud Run Service name")
     region: str = Field(..., description="GCP region")
-    target_revision: str | None = Field(
-        None, description="Specific revision to roll back to (None = previous)"
-    )
+    target_revision: str | None = Field(None, description="Specific revision to roll back to (None = previous)")
 
 
 @router.get("/deployments/{deployment_id}/events")
@@ -873,7 +859,7 @@ async def get_deployment_events(
         raise HTTPException(status_code=502, detail="Event stream unavailable") from e
     except (OSError, ValueError) as e:
         logger.exception("Error fetching events for deployment %s", deployment_id)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.get("/deployments/{deployment_id}/vm-events")
@@ -901,13 +887,11 @@ async def get_deployment_vm_events(
         raise HTTPException(status_code=502, detail="Event stream unavailable") from e
     except (OSError, ValueError) as e:
         logger.exception("Error fetching VM events for deployment %s", deployment_id)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.post("/deployments/{deployment_id}/rollback")
-async def rollback_live_deployment(
-    deployment_id: str, rollback_request: RollbackRequest
-) -> dict[str, object]:
+async def rollback_live_deployment(deployment_id: str, rollback_request: RollbackRequest) -> dict[str, object]:
     """
     Roll back a live Cloud Run Service deployment to the previous revision.
 
@@ -938,7 +922,7 @@ async def rollback_live_deployment(
         raise HTTPException(status_code=502, detail="Rollback request failed") from e
     except (OSError, ValueError) as e:
         logger.exception("Error during rollback for deployment %s", deployment_id)
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e
 
 
 @router.get("/deployments/{deployment_id}/live-health")
@@ -980,7 +964,5 @@ async def get_live_deployment_health(
         )
         raise HTTPException(status_code=502, detail="Health check unavailable") from e
     except (OSError, ValueError) as e:
-        logger.exception(
-            "Error fetching live health for deployment %s service %s", deployment_id, service
-        )
-        raise HTTPException(status_code=500, detail="Internal error — see server logs") from e
+        logger.exception("Error fetching live health for deployment %s service %s", deployment_id, service)
+        raise HTTPException(status_code=500, detail=INTERNAL_ERROR) from e

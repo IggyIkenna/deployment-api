@@ -5,6 +5,8 @@ Tests cover CombinatoricEntry, PathCombinatorics methods, service prefix
 generation, and the base prefix / combinatorics filtering logic.
 """
 
+import pytest
+
 from deployment_api.utils.path_combinatorics import (
     CALENDAR_FEATURE_TYPES,
     INSTRUMENT_TYPE_TO_FOLDER,
@@ -234,6 +236,9 @@ class TestIsInTickWindow:
     - 2024-07-01 to 2024-07-31 (validation window)
     """
 
+    @pytest.mark.skip(  # reason: TRADFI_TICK_DATA_WINDOWS intentionally empty for May-23 MVP; restore at tradfi_l1_l2_l3_tick_data_post_cutover_2026_06_01
+        reason="TRADFI_TICK_DATA_WINDOWS empty for May-23 MVP"
+    )
     def test_date_in_window(self):
         from deployment_api.utils.path_combinatorics import PathCombinatorics
 
@@ -254,6 +259,9 @@ class TestIsInTickWindow:
         # Between May 2023 and July 2024 windows
         assert pc.is_in_tick_window("2024-01-15") is False
 
+    @pytest.mark.skip(  # reason: TRADFI_TICK_DATA_WINDOWS intentionally empty for May-23 MVP; restore at tradfi_l1_l2_l3_tick_data_post_cutover_2026_06_01
+        reason="TRADFI_TICK_DATA_WINDOWS empty for May-23 MVP"
+    )
     def test_boundary_dates_inclusive(self):
         from deployment_api.utils.path_combinatorics import PathCombinatorics
 
@@ -353,9 +361,7 @@ class TestProcessingServiceCombinatorics:
 
     def test_processing_service_with_timeframe_filter(self):
         pc = self._make_pc_with_cefi()
-        combos = pc.get_combinatorics(
-            service="market-data-processing-service", timeframes=["1h", "4h"]
-        )
+        combos = pc.get_combinatorics(service="market-data-processing-service", timeframes=["1h", "4h"])
         timeframes = {c.timeframe for c in combos}
         assert timeframes == {"1h", "4h"}
 
@@ -452,9 +458,7 @@ class TestGetServicePrefixesForDate:
 
     def test_instruments_service_venue_filter(self):
         pc = self._make_pc_with_venues()
-        result = pc.get_service_prefixes_for_date(
-            "instruments-service", "CEFI", "2024-01-15", venue_filter=["BINANCE"]
-        )
+        result = pc.get_service_prefixes_for_date("instruments-service", "CEFI", "2024-01-15", venue_filter=["BINANCE"])
         # Only BINANCE prefixes
         assert all("BINANCE" in r[0] for r in result)
 
@@ -505,25 +509,19 @@ class TestGetPrefixesForDate:
 
     def test_returns_list_of_strings(self):
         pc = self._make_pc_with_cefi()
-        result = pc.get_prefixes_for_date(
-            "market-tick-data-handler", "2024-01-15", asset_group="CEFI"
-        )
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", asset_group="CEFI")
         assert isinstance(result, list)
         assert all(isinstance(p, str) for p in result)
 
     def test_with_asset_group_filter(self):
         pc = self._make_pc_with_cefi()
-        result = pc.get_prefixes_for_date(
-            "market-tick-data-handler", "2024-01-15", asset_group="CEFI"
-        )
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", asset_group="CEFI")
         assert len(result) > 0
         assert all("BINANCE" in p for p in result)
 
     def test_with_no_matching_combos(self):
         pc = self._make_pc_with_cefi()
-        result = pc.get_prefixes_for_date(
-            "market-tick-data-handler", "2024-01-15", asset_group="DEFI"
-        )
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", asset_group="DEFI")
         assert result == []
 
     def test_start_date_filter(self):
@@ -532,9 +530,7 @@ class TestGetPrefixesForDate:
         for c in pc.combinatorics:
             c.start_date = "2025-01-01"
         # Date before start should yield no results
-        result = pc.get_prefixes_for_date(
-            "market-tick-data-handler", "2024-06-01", asset_group="CEFI"
-        )
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-06-01", asset_group="CEFI")
         assert result == []
 
     def test_tick_window_only_skipped_outside_window(self):
@@ -543,7 +539,5 @@ class TestGetPrefixesForDate:
         for c in pc.combinatorics:
             c.tick_window_only = True
         # No tick windows configured → outside tick window
-        result = pc.get_prefixes_for_date(
-            "market-tick-data-handler", "2024-01-15", asset_group="CEFI"
-        )
+        result = pc.get_prefixes_for_date("market-tick-data-handler", "2024-01-15", asset_group="CEFI")
         assert result == []

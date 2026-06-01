@@ -52,7 +52,7 @@ async def infra_health() -> dict[str, object]:
             "errors": mock_errors,
         }
     try:
-        from unified_trading_library.cloud_interface import get_secret_client, get_storage_client
+        from unified_trading_library import get_secret_client, get_storage_client
 
         from deployment_api.auth import auth_cfg as _config
 
@@ -90,9 +90,7 @@ async def infra_health() -> dict[str, object]:
                 )
         except (OSError, ValueError, RuntimeError) as e:
             err = str(e)
-            checks.append(
-                {"name": "gcs_state_bucket", "status": "error", "detail": "", "error": err}
-            )
+            checks.append({"name": "gcs_state_bucket", "status": "error", "detail": "", "error": err})
             errors.append(err)
 
         # Check Secret Manager connectivity

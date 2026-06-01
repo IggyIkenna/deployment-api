@@ -37,6 +37,16 @@ CLOUD_PROVIDER = _config.cloud_provider
 # STATE FILE ENVIRONMENT SEPARATION
 # =============================================================================
 DEPLOYMENT_ENV = _config.deployment_env
+_DEPLOYMENT_ENV_SHORT_MAP: dict[str, str] = {
+    "prod": "prd",
+    "prd": "prd",
+    "production": "prd",
+    "staging": "stg",
+    "stg": "stg",
+    "development": "dev",
+    "dev": "dev",
+}
+deployment_env_short: str = _DEPLOYMENT_ENV_SHORT_MAP.get((_config.deployment_env or "prod").strip().lower(), "prd")
 
 # =============================================================================
 # SERVER CONFIGURATION

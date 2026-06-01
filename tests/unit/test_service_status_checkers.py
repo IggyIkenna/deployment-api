@@ -423,3 +423,292 @@ class TestGetLatestBuild:
 
         assert result is not None
         assert result.get("build_id") == "direct-build"
+
+    def test_invalid_cache_time_falls_through_to_api(self):
+        from deployment_api.routes.service_status_checkers import get_latest_build
+
+        # Invalid ISO timestamp in cache triggers except (ValueError, ...) at lines 432-433
+        mock_cache: dict[str, object] = {
+            "builds": {"my-svc": {"build_id": "stale"}},
+            "build_times": {"my-svc": "NOT-A-DATE"},
+        }
+        fresh_result: dict[str, object] = {"build_id": "fresh-api-build"}
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers._fetch_build_from_api", return_value=fresh_result),
+        ):
+            result = asyncio.run(get_latest_build("my-svc", use_cache=True))
+
+        assert result is not None
+        assert result.get("build_id") == "fresh-api-build"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_trigger_id
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTriggerID:
+    def test_cached_trigger_returned_immediately(self):
+        from deployment_api.routes.service_status_checkers import _resolve_trigger_id
+
+        trigger_ids: dict[str, object] = {"my-svc": "trigger-abc-123"}
+        result = _resolve_trigger_id("my-svc", {}, trigger_ids)
+        assert result == "trigger-abc-123"
+
+    def test_non_string_cached_value_returns_empty_string(self):
+        from deployment_api.routes.service_status_checkers import _resolve_trigger_id
+
+        trigger_ids: dict[str, object] = {"svc": 99999}
+        result = _resolve_trigger_id("svc", {}, trigger_ids)
+        assert result == ""
+
+    def test_gcloud_success_fetches_and_caches(self):
+        from deployment_api.routes.service_status_checkers import _resolve_trigger_id
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "trigger-xyz-456\n"
+
+        with (
+            patch("subprocess.run", return_value=mock_proc),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+        ):
+            trigger_ids: dict[str, object] = {}
+            cache: dict[str, object] = {}
+            result = _resolve_trigger_id("new-svc", cache, trigger_ids)
+
+        assert result == "trigger-xyz-456"
+        assert trigger_ids["new-svc"] == "trigger-xyz-456"
+        assert cache["trigger_ids"] is trigger_ids
+
+    def test_gcloud_failure_returns_none(self):
+        from deployment_api.routes.service_status_checkers import _resolve_trigger_id
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+
+        with patch("subprocess.run", return_value=mock_proc):
+            result = _resolve_trigger_id("missing-svc", {}, {})
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _get_asset_group_blob_timestamp (naive-tz warning path)
+# ---------------------------------------------------------------------------
+
+
+class TestNaiveTimestampWarning:
+    def test_naive_datetime_triggers_warning(self) -> None:
+        from deployment_api.routes.service_status_checkers import _get_asset_group_blob_timestamp
+
+        # datetime without tzinfo = naive → triggers logger.warning at line 250
+        naive_dt = datetime(2026, 5, 15, 12, 0, 0)
+        blob = MagicMock()
+        blob.updated = naive_dt
+        blob.name = "file.parquet"
+        blob.size = 1024
+
+        with patch("deployment_api.routes.service_status_checkers.list_objects", return_value=[blob]):
+            result = _get_asset_group_blob_timestamp("test-bucket", "CEFI")
+
+        assert "timestamp" in result
+        assert result["file"] == "file.parquet"
+
+
+# ---------------------------------------------------------------------------
+# _get_service_timestamps_sync (outer except path)
+# ---------------------------------------------------------------------------
+
+
+class TestGetServiceTimestampsSyncOuterExcept:
+    def test_fromisoformat_failure_triggers_outer_except(self) -> None:
+        from deployment_api.routes.service_status_checkers import _get_service_timestamps_sync
+
+        # Returning {"timestamp": "NOT-ISO"} triggers datetime.fromisoformat() → ValueError
+        # in the valid_timestamps comprehension — caught by the outer except at lines 276-278.
+        bad_result: dict[str, object] = {"timestamp": "NOT-A-VALID-ISO-DATE", "file": "x", "size_mb": 0}
+
+        with patch(
+            "deployment_api.routes.service_status_checkers._get_asset_group_blob_timestamp",
+            return_value=bad_result,
+        ):
+            result = _get_service_timestamps_sync("instruments-service")
+
+        assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# get_latest_data_timestamp (cache invalid path)
+# ---------------------------------------------------------------------------
+
+
+class TestGetLatestDataTimestampCacheInvalid:
+    def test_invalid_cache_time_falls_through_to_fetch(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_data_timestamp
+
+        # Invalid cache time → ValueError in fromisoformat → falls through at lines 305-306
+        mock_cache: dict[str, object] = {
+            "data_timestamps": {"instruments-service": {"by_asset_group": {}}},
+            "data_timestamp_times": {"instruments-service": "BAD-TIMESTAMP"},
+        }
+        fresh_result: dict[str, object] = {"by_asset_group": {"CEFI": {}}}
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+            patch(
+                "deployment_api.routes.service_status_checkers._get_service_timestamps_sync",
+                return_value=fresh_result,
+            ),
+        ):
+            result = asyncio.run(get_latest_data_timestamp("instruments-service", use_cache=True))
+
+        assert result is not None
+        assert "by_asset_group" in result
+
+
+# ---------------------------------------------------------------------------
+# get_latest_deployment
+# ---------------------------------------------------------------------------
+
+
+class TestGetLatestDeployment:
+    def test_uses_cache_when_fresh(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_deployment
+
+        cached = {"deployment_id": "dep-123", "status": "COMPLETED"}
+        cache_time = datetime.now(UTC).isoformat()
+        mock_cache: dict[str, object] = {
+            "deployments": {"my-svc": cached},
+            "deployment_times": {"my-svc": cache_time},
+        }
+
+        with patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache):
+            result = asyncio.run(get_latest_deployment("my-svc", use_cache=True))
+
+        assert result is not None
+        assert result.get("deployment_id") == "dep-123"
+
+    def test_expired_cache_fetches_from_gcs(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_deployment
+
+        old_time = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+        mock_cache: dict[str, object] = {
+            "deployments": {"my-svc": {"deployment_id": "old-dep"}},
+            "deployment_times": {"my-svc": old_time},
+        }
+        gcs_deployment = {
+            "deployment_id": "fresh-dep-456",
+            "status": "RUNNING",
+            "cli_args": "",
+            "progress": {"total_shards": 10, "completed": 5, "failed": 0},
+            "created_at": "2026-05-18T10:00:00Z",
+            "compute_type": "vm",
+            "tag": "v1.2.3",
+        }
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+            patch(
+                "deployment_api.routes.service_status_checkers._list_deployments_from_gcs",
+                return_value=[gcs_deployment],
+            ),
+        ):
+            result = asyncio.run(get_latest_deployment("my-svc", use_cache=True))
+
+        assert result is not None
+        assert result.get("deployment_id") == "fresh-dep-456"
+        assert result.get("total_shards") == 10
+
+    def test_no_deployments_returns_none(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_deployment
+
+        mock_cache: dict[str, object] = {"deployments": {}, "deployment_times": {}}
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+            patch("deployment_api.routes.service_status_checkers._list_deployments_from_gcs", return_value=[]),
+        ):
+            result = asyncio.run(get_latest_deployment("no-svc", use_cache=False))
+
+        assert result is None
+
+    def test_force_flag_detected(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_deployment
+
+        mock_cache: dict[str, object] = {"deployments": {}, "deployment_times": {}}
+        gcs_deployment = {
+            "deployment_id": "forced-dep",
+            "status": "COMPLETED",
+            "cli_args": "--service my-svc --force --tag v1.0",
+            "created_at": "2026-05-18T10:00:00Z",
+            "compute_type": "vm",
+            "tag": "v1.0",
+        }
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+            patch(
+                "deployment_api.routes.service_status_checkers._list_deployments_from_gcs",
+                return_value=[gcs_deployment],
+            ),
+        ):
+            result = asyncio.run(get_latest_deployment("my-svc", use_cache=False))
+
+        assert result is not None
+        assert result.get("used_force") is True
+
+    def test_gcs_error_returns_error_dict(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_deployment
+
+        mock_cache: dict[str, object] = {"deployments": {}, "deployment_times": {}}
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+            patch(
+                "deployment_api.routes.service_status_checkers._list_deployments_from_gcs",
+                side_effect=OSError("GCS unavailable"),
+            ),
+        ):
+            result = asyncio.run(get_latest_deployment("my-svc", use_cache=False))
+
+        assert result is not None
+        assert "error" in result
+
+    def test_invalid_cache_time_falls_through_to_fetch(self) -> None:
+        from deployment_api.routes.service_status_checkers import get_latest_deployment
+
+        # Invalid ISO timestamp → except (ValueError, TypeError, KeyError) at lines 348-349
+        mock_cache: dict[str, object] = {
+            "deployments": {"my-svc": {"deployment_id": "stale"}},
+            "deployment_times": {"my-svc": "BAD-TIMESTAMP"},
+        }
+        fresh = {
+            "deployment_id": "fresh-dep",
+            "status": "COMPLETED",
+            "cli_args": "",
+            "created_at": "2026-05-18T10:00:00Z",
+            "compute_type": "vm",
+            "tag": "v1.1",
+        }
+
+        with (
+            patch("deployment_api.routes.service_status_checkers.load_gcs_cache", return_value=mock_cache),
+            patch("deployment_api.routes.service_status_checkers.save_gcs_cache"),
+            patch(
+                "deployment_api.routes.service_status_checkers._list_deployments_from_gcs",
+                return_value=[fresh],
+            ),
+        ):
+            result = asyncio.run(get_latest_deployment("my-svc", use_cache=True))
+
+        assert result is not None
+        assert result.get("deployment_id") == "fresh-dep"
