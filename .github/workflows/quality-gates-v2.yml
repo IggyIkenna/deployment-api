@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   quality-gates-v2:
-    name: Quality Gates (alerting-service)
+    name: Quality Gates (deployment-api)
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates-v2.yml@live-defi-rollout
     with:
       dep_repos: "unified-trading-library unified-api-contracts deployment-service strategy-service"
