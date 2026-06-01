@@ -13,9 +13,7 @@ from typing import cast
 
 import yaml
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import build_bucket
-
-from deployment_api.settings import gcp_project_id as _pid
+from unified_trading_library import AssetGroup, resolve_bucket_name
 
 logger = logging.getLogger(__name__)
 
@@ -24,43 +22,53 @@ logger = logging.getLogger(__name__)
 LIVE_PATH_PREFIX = "live/"
 
 # Build per-category bucket dicts from MarketCategory enum — SSOT in UAC.
+# PREDICTION uses dedicated flat kinds (instruments-store-prediction / market-data-tick-prediction)
+# because the yaml per-AG dicts for instruments-store / market-data omit PREDICTION.
 _instruments_buckets = {
-    cat.value: build_bucket("instruments", project_id=_pid, asset_group=cat.value.lower())
+    cat.value: (
+        resolve_bucket_name(cloud="gcp", kind="instruments-store-prediction")
+        if cat.value == "PREDICTION"
+        else resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group=cast(AssetGroup, cat.value.lower()))
+    )
     for cat in MarketCategory
 }
 _tick_buckets = {
-    cat.value: build_bucket("raw_tick_data", project_id=_pid, asset_group=cat.value.lower())
+    cat.value: (
+        resolve_bucket_name(cloud="gcp", kind="market-data-tick-prediction")
+        if cat.value == "PREDICTION"
+        else resolve_bucket_name(cloud="gcp", kind="market-data", asset_group=cast(AssetGroup, cat.value.lower()))
+    )
     for cat in MarketCategory
 }
 
-# Service -> bucket mapping (uses storage facade)  # CORRECT-LOCAL
-BUCKET_MAPPING = {  # CORRECT-LOCAL
+# Service -> bucket mapping — delegates to cloud-providers.yaml via resolve_bucket_name.
+BUCKET_MAPPING = {
     "instruments-service": _instruments_buckets,
     "market-tick-data-handler": _tick_buckets,
     # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
     "market-data-processing-service": _tick_buckets,
-    "features-delta-one-service": {  # CORRECT-LOCAL
-        "CEFI": f"features-delta-one-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"features-delta-one-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"features-delta-one-tradfi-{_pid}",  # CORRECT-LOCAL
+    "features-delta-one-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="tradfi"),
     },
-    "features-calendar-service": {  # CORRECT-LOCAL
-        # Calendar features are UNIVERSAL - use single bucket (CEFI)
-        # Temporal patterns, economic events, macro indicators don't vary by category
-        "CEFI": f"features-calendar-cefi-{_pid}",  # CORRECT-LOCAL
+    "features-calendar-service": {
+        # Calendar is a flat/universal bucket; routed under CEFI key since calendar
+        # features are cross-asset-group by design.
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-calendar"),
     },
-    "features-onchain-service": {  # CORRECT-LOCAL
-        "CEFI": f"features-onchain-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"features-onchain-defi-{_pid}",  # CORRECT-LOCAL
+    "features-onchain-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="defi"),
     },
-    "features-volatility-service": {  # CORRECT-LOCAL
-        "CEFI": f"features-volatility-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"features-volatility-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"features-volatility-tradfi-{_pid}",  # CORRECT-LOCAL
+    "features-volatility-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="tradfi"),
     },
-    "corporate-actions": {  # CORRECT-LOCAL
+    "corporate-actions": {
         # Corporate actions are TRADFI-only (uses instruments-store bucket)
-        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="tradfi"),
     },
 }
 
@@ -173,9 +181,7 @@ def _get_venues_dict(asset_group_config: Mapping[str, object]) -> dict[str, obje
     return cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
 
 
-def get_expected_venues_for_asset_group(
-    venue_config: Mapping[str, object], asset_group: str
-) -> set[str]:
+def get_expected_venues_for_asset_group(venue_config: Mapping[str, object], asset_group: str) -> set[str]:
     """Get the set of expected venues for an asset group from venue_data_types.yaml."""
     ag_config = _get_asset_group_section(venue_config, asset_group)
     venues = _get_venues_dict(ag_config)
@@ -188,16 +194,12 @@ def is_venue_expected(venue_config: Mapping[str, object], asset_group: str, venu
     return venue in expected_venues
 
 
-def get_expected_data_types_for_venue(
-    venue_config: Mapping[str, object], asset_group: str, venue: str
-) -> list[str]:
+def get_expected_data_types_for_venue(venue_config: Mapping[str, object], asset_group: str, venue: str) -> list[str]:
     """Get expected data_types for a specific venue from venue_data_types.yaml."""
     ag_config = _get_asset_group_section(venue_config, asset_group)
     venues = _get_venues_dict(ag_config)
     venue_val = venues.get(venue)
-    venue_cfg: dict[str, object] = (
-        cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
-    )
+    venue_cfg: dict[str, object] = cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
     dt_val = venue_cfg.get("data_types")
     return cast(list[str], dt_val) if isinstance(dt_val, list) else []
 
@@ -209,16 +211,12 @@ def get_expected_instrument_types_for_venue(
     ag_config = _get_asset_group_section(venue_config, asset_group)
     venues = _get_venues_dict(ag_config)
     venue_val = venues.get(venue)
-    venue_cfg: dict[str, object] = (
-        cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
-    )
+    venue_cfg: dict[str, object] = cast(dict[str, object], venue_val) if isinstance(venue_val, dict) else {}
     it_val = venue_cfg.get("instrument_types")
     return cast(list[str], it_val) if isinstance(it_val, list) else []
 
 
-def _get_service_config(
-    expected_dates_config: Mapping[str, object], service: str
-) -> dict[str, object]:
+def _get_service_config(expected_dates_config: Mapping[str, object], service: str) -> dict[str, object]:
     """Get service config dict safely."""
     svc_val = expected_dates_config.get(service)
     return cast(dict[str, object], svc_val) if isinstance(svc_val, dict) else {}
@@ -244,13 +242,9 @@ def get_data_type_start_date(
 
     # Check for data_type-specific start dates
     dt_start_val = asset_group_config.get("data_type_start_dates")
-    dt_start_dates: dict[str, object] = (
-        cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
-    )
+    dt_start_dates: dict[str, object] = cast(dict[str, object], dt_start_val) if isinstance(dt_start_val, dict) else {}
     venue_dt_val = dt_start_dates.get(venue)
-    venue_dt_config: dict[str, object] = (
-        cast(dict[str, object], venue_dt_val) if isinstance(venue_dt_val, dict) else {}
-    )
+    venue_dt_config: dict[str, object] = cast(dict[str, object], venue_dt_val) if isinstance(venue_dt_val, dict) else {}
     if data_type in venue_dt_config:
         # Explicit config for this data_type (could be null = not available)
         dt_val = venue_dt_config.get(data_type)
@@ -258,9 +252,7 @@ def get_data_type_start_date(
 
     # Fall back to venue start date
     venues_val = asset_group_config.get("venues")
-    venues: dict[str, object] = (
-        cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
-    )
+    venues: dict[str, object] = cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
     if venue in venues:
         v_val = venues[venue]
         return str(v_val) if isinstance(v_val, str) else None
@@ -324,9 +316,7 @@ def get_venue_start_date(
         return None
 
     venues_val = asset_group_config.get("venues")
-    venues: dict[str, object] = (
-        cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
-    )
+    venues: dict[str, object] = cast(dict[str, object], venues_val) if isinstance(venues_val, dict) else {}
     if venue in venues:
         v_val = venues[venue]
         return str(v_val) if isinstance(v_val, str) else None
@@ -399,8 +389,6 @@ def generate_date_range_and_year_months(
     if first_day_of_month_only:
         original_count = len(all_dates)
         all_dates = {d for d in all_dates if d.endswith("-01")}
-        logger.info(
-            "[TURBO] First-day-of-month filter: %s -> %s dates", original_count, len(all_dates)
-        )
+        logger.info("[TURBO] First-day-of-month filter: %s -> %s dates", original_count, len(all_dates))
 
     return all_dates, year_months

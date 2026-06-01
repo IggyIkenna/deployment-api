@@ -26,17 +26,15 @@ from ._deployment_processor_helpers import (
     DEPLOYMENT_ENV,
     PROJECT_ID,
     STATE_BUCKET,
-    _cancel_vm_jobs_sync,
-    _parse_shard_elapsed_seconds,
-    _vm_status_from_map,
-    _vm_zone_from_map,
+    _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
+    _parse_shard_elapsed_seconds,  # pyright: ignore[reportPrivateUsage]
+    _vm_status_from_map,  # pyright: ignore[reportPrivateUsage]
+    _vm_zone_from_map,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Re-export for callers that import these from this module.
-from ._deployment_processor_vm_cleanup import (  # noqa: F401 — re-exports
-    _handle_completed_pending_delete,
-    _handle_orphan_vm_cleanup,
-    _terminate_stuck_vm,
+from ._deployment_processor_vm_cleanup import (
+    _handle_orphan_vm_cleanup,  # pyright: ignore[reportPrivateUsage]
 )
 
 logger = logging.getLogger(__name__)
@@ -122,7 +120,7 @@ def _collect_unhealthy_vms(
     Returns a list of ``(job_id, zone, shard_id, reason, message)`` tuples for
     VMs that should be terminated.
     """
-    from unified_trading_library.cloud_interface import get_compute_engine_client
+    from unified_trading_library import get_compute_engine_client
 
     ce_client = get_compute_engine_client(project_id=PROJECT_ID)
     kills: list[tuple[str, str | None, str, str, str]] = []
@@ -241,7 +239,7 @@ def _parse_healthy_vm_serial_events(
 
     Returns *updated* (True if any shard was mutated).
     """
-    from unified_trading_library.cloud_interface import get_compute_engine_client
+    from unified_trading_library import get_compute_engine_client
 
     ce_client = get_compute_engine_client(project_id=PROJECT_ID)
     for shard in shards:
@@ -320,7 +318,7 @@ def _build_vm_map_for_service(service_name: str) -> dict[str, object]:
 
     Returns an empty dict on any error (caller logs the warning).
     """
-    from unified_trading_library.cloud_interface import get_compute_engine_client
+    from unified_trading_library import get_compute_engine_client
 
     vm_map: dict[str, object] = {}
     try:
@@ -366,9 +364,7 @@ def _process_vm_health_and_status(
             )
             # For healthy running VMs, parse serial log events.
             killed_shard_ids = {shard_id for _, _, shard_id, _, _ in vm_health_kills}
-            updated = _parse_healthy_vm_serial_events(
-                shards, vm_map, killed_shard_ids, now, updated
-            )
+            updated = _parse_healthy_vm_serial_events(shards, vm_map, killed_shard_ids, now, updated)
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[AUTO_SYNC] VM health check error: %s", e)
 

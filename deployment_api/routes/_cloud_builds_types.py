@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Required, TypedDict, cast
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
-from unified_trading_library.cloud_interface import get_cloud_build_client
+from unified_trading_library import get_cloud_build_client
 
 from deployment_api.settings import (
     CLOUD_PROVIDER,
@@ -55,9 +55,10 @@ def _build_op_meta_cls():
 def _get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     """Return the underlying GCP CloudBuildClient via UCI factory."""
     uci_client = get_cloud_build_client(project_id=default_project_id)
-    if hasattr(uci_client, "_client"):
-        _native: object = uci_client._client()  # pyright: ignore[reportUnknownMemberType, reportPrivateUsage]  # UCI internal accessor
-        return cast("cloudbuild_v1.CloudBuildClient", _native)
+    client_method = getattr(uci_client, "_client", None)
+    if callable(client_method):
+        native_client: object = client_method()  # pyright: ignore[reportUnknownMemberType, reportPrivateUsage]  # UCI internal accessor
+        return cast("cloudbuild_v1.CloudBuildClient", native_client)
     # Fallback: direct construction (should not be reached in production)
     return _cloudbuild_v1().CloudBuildClient()
 
@@ -65,6 +66,11 @@ def _get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
 def get_gcp_build_client() -> cloudbuild_v1.CloudBuildClient:
     """Public alias for _get_gcp_build_client — for use by other modules in this package."""
     return _get_gcp_build_client()
+
+
+def get_cloudbuild_v1():
+    """Public alias for _cloudbuild_v1 — for use by other modules in this package."""
+    return _cloudbuild_v1()
 
 
 def _ensure_gcp() -> None:
@@ -89,13 +95,10 @@ SERVICES_WITH_TRIGGERS = [
     "features-volatility-service",
     "features-onchain-service",
     "features-calendar-service",
-    "ml-training-service",
-    "ml-inference-service",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service",
     "strategy-service",
     "execution-service",
-    "pnl-attribution-service",
-    "position-balance-monitor-service",
-    "risk-and-exposure-service",
     "alerting-service",
     "execution-results-api",
     "market-data-api",
@@ -116,9 +119,7 @@ INFRASTRUCTURE_WITH_TRIGGERS = [
 ]
 
 # All trackable repos (services + libraries + infrastructure)
-ALL_REPOS_WITH_TRIGGERS = (
-    SERVICES_WITH_TRIGGERS + LIBRARIES_WITH_TRIGGERS + INFRASTRUCTURE_WITH_TRIGGERS
-)
+ALL_REPOS_WITH_TRIGGERS = SERVICES_WITH_TRIGGERS + LIBRARIES_WITH_TRIGGERS + INFRASTRUCTURE_WITH_TRIGGERS
 
 
 # ---------------------------------------------------------------------------

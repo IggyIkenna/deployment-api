@@ -114,9 +114,7 @@ def _classify_log_line(
 def _get_vm_name_from_shard(shard: dict[str, object]) -> str:
     """Extract VM name from shard compute_info, or return empty string."""
     _compute_raw: object = shard.get("compute_info")
-    compute_info: dict[str, object] = (
-        cast(dict[str, object], _compute_raw) if isinstance(_compute_raw, dict) else {}
-    )
+    compute_info: dict[str, object] = cast(dict[str, object], _compute_raw) if isinstance(_compute_raw, dict) else {}
     if not compute_info:
         return ""
     vm_name_raw = compute_info.get("vm_name")
@@ -159,9 +157,7 @@ def _analyze_shard_vm(
     state_manager: object,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]]:
     """Analyze logs for a single shard (VM-based deployment)."""
-    empty: tuple[
-        list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]
-    ] = ([], [], False, [])
+    empty: tuple[list[dict[str, object]], list[dict[str, object]], bool, list[dict[str, object]]] = ([], [], False, [])
 
     try:
         vm_name = _get_vm_name_from_shard(shard)
@@ -217,9 +213,7 @@ def _determine_status_detail(
     return "completed"  # No strong indicators either way
 
 
-def analyze_deployment_logs_sync(
-    state_manager: object, deployment_id: str, state: object
-) -> dict[str, object]:
+def analyze_deployment_logs_sync(state_manager: object, deployment_id: str, state: object) -> dict[str, object]:
     """
     Analyze deployment logs for errors and warnings.
 
@@ -284,17 +278,12 @@ def analyze_deployment_logs_sync(
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all shard analysis tasks
-            futures = {
-                executor.submit(_analyze_shard_vm, shard, state_manager): shard
-                for shard in shards_to_check
-            }
+            futures = {executor.submit(_analyze_shard_vm, shard, state_manager): shard for shard in shards_to_check}
 
             # Collect results as they complete
             for future in as_completed(futures, timeout=30):  # 30s timeout per shard
                 try:
-                    shard_errors, shard_warnings, shard_stack_traces, shard_success = (
-                        future.result()
-                    )
+                    shard_errors, shard_warnings, shard_stack_traces, shard_success = future.result()
 
                     all_errors.extend(shard_errors)
                     all_warnings.extend(shard_warnings)
@@ -343,13 +332,9 @@ def analyze_deployment_logs_sync(
         }
 
 
-async def analyze_deployment_logs(
-    state_manager: object, deployment_id: str, state: object
-) -> dict[str, object]:
+async def analyze_deployment_logs(state_manager: object, deployment_id: str, state: object) -> dict[str, object]:
     """Async wrapper for log analysis."""
-    return await asyncio.to_thread(
-        analyze_deployment_logs_sync, state_manager, deployment_id, state
-    )
+    return await asyncio.to_thread(analyze_deployment_logs_sync, state_manager, deployment_id, state)
 
 
 def invalidate_log_analysis_cache(deployment_id: str | None = None):

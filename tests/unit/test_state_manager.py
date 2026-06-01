@@ -207,9 +207,9 @@ class TestTryAcquireDeploymentLock:
         mock_client = _make_uci_mock_client()
         mock_client.blob_exists.return_value = True
         expired_ts = time.time() - 9999
-        mock_client.download_bytes.return_value = json.dumps(
-            {"owner": "old-owner", "expires_at": expired_ts}
-        ).encode("utf-8")
+        mock_client.download_bytes.return_value = json.dumps({"owner": "old-owner", "expires_at": expired_ts}).encode(
+            "utf-8"
+        )
 
         with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = sm.try_acquire_deployment_lock("dep-abc")
@@ -222,9 +222,9 @@ class TestTryAcquireDeploymentLock:
         mock_client = _make_uci_mock_client()
         mock_client.blob_exists.return_value = True
         future_ts = time.time() + 9999
-        mock_client.download_bytes.return_value = json.dumps(
-            {"owner": sm.owner_id, "expires_at": future_ts}
-        ).encode("utf-8")
+        mock_client.download_bytes.return_value = json.dumps({"owner": sm.owner_id, "expires_at": future_ts}).encode(
+            "utf-8"
+        )
 
         with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = sm.try_acquire_deployment_lock("dep-abc")
@@ -246,9 +246,9 @@ class TestTryAcquireDeploymentLock:
         mock_client = _make_uci_mock_client()
         mock_client.blob_exists.return_value = True
         expired_ts = time.time() - 100
-        mock_client.download_bytes.return_value = json.dumps(
-            {"owner": "other", "expires_at": expired_ts}
-        ).encode("utf-8")
+        mock_client.download_bytes.return_value = json.dumps({"owner": "other", "expires_at": expired_ts}).encode(
+            "utf-8"
+        )
         mock_client.upload_bytes.side_effect = OSError("always fails")
 
         with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
@@ -292,9 +292,7 @@ class TestReleaseDeploymentLock:
 
         mock_client = _make_uci_mock_client()
         mock_client.blob_exists.return_value = True
-        mock_client.download_bytes.return_value = json.dumps({"owner": "other-owner"}).encode(
-            "utf-8"
-        )
+        mock_client.download_bytes.return_value = json.dumps({"owner": "other-owner"}).encode("utf-8")
 
         with patch.object(_sm_mod, "_get_storage_client", return_value=mock_client):
             result = sm.release_deployment_lock("dep-2")
@@ -578,9 +576,7 @@ class TestReleaseAllLocks:
         sm = _make_state_manager()
         sm._held_deployment_locks = {"dep-7"}
 
-        with patch.object(
-            _sm_mod, "_get_storage_client", side_effect=RuntimeError("can't connect")
-        ):
+        with patch.object(_sm_mod, "_get_storage_client", side_effect=RuntimeError("can't connect")):
             count = sm.release_all_locks()
 
         assert count == 0

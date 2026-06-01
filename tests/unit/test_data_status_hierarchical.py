@@ -23,10 +23,10 @@ def _mtds_defi_manifest() -> pd.DataFrame:
     """Realistic 2-chain x 2-venue x 2-data_type x 2-instrument x 3-day MTDS DEFI sample."""
     rows: list[dict[str, object]] = []
     for chain, venue in (
-        ("ARBITRUM", "AAVEV3-ARBITRUM"),
-        ("ARBITRUM", "UNISWAPV3-ARBITRUM"),
-        ("BASE", "AAVEV3-BASE"),
-        ("BASE", "UNISWAPV3-BASE"),
+        ("ARBITRUM", "AAVE_V3-ARBITRUM"),
+        ("ARBITRUM", "UNISWAP_V3-ARBITRUM"),
+        ("BASE", "AAVE_V3-BASE"),
+        ("BASE", "UNISWAP_V3-BASE"),
     ):
         for dt_name in ("lending_indices", "dex_swaps"):
             for inst in ("USDC", "WETH"):
@@ -45,6 +45,22 @@ def _mtds_defi_manifest() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+_DRILLDOWN_NODE_GOLDEN_KEYS: frozenset[str] = frozenset(
+    {
+        "axis",
+        "value",
+        "captured",
+        "empty_confirmed",
+        "attempted_failed",
+        "total",
+        "completion_pct",
+        "row_key",
+        "children",
+        "is_leaf",
+    }
+)
+
+
 class TestDrilldownNodeShape:
     def test_completion_pct_is_captured_over_total(self) -> None:
         node = DrilldownNode(
@@ -60,12 +76,94 @@ class TestDrilldownNodeShape:
     def test_to_dict_marks_leaves(self) -> None:
         leaf = DrilldownNode(axis="date", value="2024-03-01", captured=1)
         assert leaf.to_dict()["is_leaf"] is True
-        parent = DrilldownNode(axis="venue", value="AAVEV3-ARBITRUM", children=[leaf])
+        parent = DrilldownNode(axis="venue", value="AAVE_V3-ARBITRUM", children=[leaf])
         d = parent.to_dict()
         assert d["is_leaf"] is False
         children = d["children"]
         assert isinstance(children, list)
         assert len(children) == 1
+
+    def test_to_dict_golden_schema_has_exactly_ten_keys(self) -> None:
+        node = DrilldownNode(axis="venue", value="BINANCE", captured=5)
+        d = node.to_dict()
+        assert set(d.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS, (
+            f"to_dict() key set drifted. Missing: {_DRILLDOWN_NODE_GOLDEN_KEYS - set(d.keys())}. "
+            f"Extra: {set(d.keys()) - _DRILLDOWN_NODE_GOLDEN_KEYS}."
+        )
+
+    def test_to_dict_axis_is_str(self) -> None:
+        d = DrilldownNode(axis="chain", value="ARBITRUM").to_dict()
+        assert isinstance(d["axis"], str)
+
+    def test_to_dict_value_is_str(self) -> None:
+        d = DrilldownNode(axis="chain", value="ARBITRUM").to_dict()
+        assert isinstance(d["value"], str)
+
+    def test_to_dict_captured_is_int(self) -> None:
+        d = DrilldownNode(axis="venue", value="X", captured=3).to_dict()
+        assert isinstance(d["captured"], int)
+
+    def test_to_dict_empty_confirmed_is_int(self) -> None:
+        d = DrilldownNode(axis="venue", value="X", empty_confirmed=2).to_dict()
+        assert isinstance(d["empty_confirmed"], int)
+
+    def test_to_dict_attempted_failed_is_int(self) -> None:
+        d = DrilldownNode(axis="venue", value="X", attempted_failed=1).to_dict()
+        assert isinstance(d["attempted_failed"], int)
+
+    def test_to_dict_total_is_int_and_sum(self) -> None:
+        node = DrilldownNode(axis="venue", value="X", captured=4, empty_confirmed=2, attempted_failed=1)
+        d = node.to_dict()
+        assert isinstance(d["total"], int)
+        assert d["total"] == 7
+
+    def test_to_dict_completion_pct_is_float(self) -> None:
+        node = DrilldownNode(axis="venue", value="X", captured=80, empty_confirmed=15, attempted_failed=5)
+        d = node.to_dict()
+        assert isinstance(d["completion_pct"], float)
+        assert d["completion_pct"] == 80.0
+
+    def test_to_dict_row_key_is_dict(self) -> None:
+        node = DrilldownNode(axis="venue", value="X", row_key={"venue": "X", "date": "2024-03-01"})
+        d = node.to_dict()
+        assert isinstance(d["row_key"], dict)
+
+    def test_to_dict_row_key_default_is_empty_dict(self) -> None:
+        d = DrilldownNode(axis="venue", value="X").to_dict()
+        assert d["row_key"] == {}
+
+    def test_to_dict_children_is_list(self) -> None:
+        d = DrilldownNode(axis="venue", value="X").to_dict()
+        assert isinstance(d["children"], list)
+
+    def test_to_dict_children_are_dicts(self) -> None:
+        child = DrilldownNode(axis="date", value="2024-03-01", captured=1)
+        parent = DrilldownNode(axis="venue", value="X", children=[child])
+        d = parent.to_dict()
+        for c in d["children"]:
+            assert isinstance(c, dict)
+
+    def test_to_dict_children_have_golden_keys(self) -> None:
+        child = DrilldownNode(axis="date", value="2024-03-01", captured=1)
+        parent = DrilldownNode(axis="venue", value="X", children=[child])
+        d = parent.to_dict()
+        assert len(d["children"]) == 1
+        child_dict = d["children"][0]
+        assert set(child_dict.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS
+
+    def test_to_dict_is_leaf_true_when_no_children(self) -> None:
+        d = DrilldownNode(axis="date", value="2024-03-01").to_dict()
+        assert d["is_leaf"] is True
+
+    def test_to_dict_is_leaf_false_when_has_children(self) -> None:
+        child = DrilldownNode(axis="date", value="2024-03-01")
+        parent = DrilldownNode(axis="venue", value="X", children=[child])
+        assert parent.to_dict()["is_leaf"] is False
+
+    def test_to_dict_completion_pct_zero_when_total_zero(self) -> None:
+        d = DrilldownNode(axis="venue", value="X").to_dict()
+        assert d["total"] == 0
+        assert d["completion_pct"] == 0.0
 
 
 class TestHierarchicalDrilldown:
@@ -104,7 +202,7 @@ class TestHierarchicalDrilldown:
                 asset_group="defi",
                 window_start="2024-03-01",
                 window_end="2024-03-03",
-                filters={"chain": "ARBITRUM", "venue": "AAVEV3-ARBITRUM"},
+                filters={"chain": "ARBITRUM", "venue": "AAVE_V3-ARBITRUM"},
                 expand_to_depth=10,
             )
         totals = result["totals"]
@@ -121,7 +219,7 @@ class TestHierarchicalDrilldown:
                 rows.append(
                     {
                         "chain": "BASE",
-                        "venue": "AAVEV3-BASE",
+                        "venue": "AAVE_V3-BASE",
                         "data_type": "lending_indices",
                         "instrument_id": f"INST_{i}_{status}",
                         "date": "2024-03-01",
@@ -155,7 +253,7 @@ class TestHierarchicalDrilldown:
                 asset_group="defi",
                 window_start="2024-03-02",
                 window_end="2024-03-02",
-                filters={"chain": "ARBITRUM", "venue": "AAVEV3-ARBITRUM"},
+                filters={"chain": "ARBITRUM", "venue": "AAVE_V3-ARBITRUM"},
             )
         totals = result["totals"]
         assert isinstance(totals, dict)
@@ -205,7 +303,7 @@ class TestHierarchicalDrilldown:
 class TestPaginationAndBundledRootVirtualisation:
     """Phase 6 (operator finding 2026-05-07): per-instrument pagination
     + bundled-data_type root virtualisation. Plan:
-    ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md``.
+    ``data_status_drilldown_shard_atom_alignment_2026_05_07.md``.
     """
 
     def _patch_manifest(self, df: pd.DataFrame):
@@ -361,9 +459,7 @@ class TestPaginationAndBundledRootVirtualisation:
         tree = result["tree"]
         assert isinstance(tree, list)
         # 3 distinct underlyings → 3 root nodes at the instrument_id axis.
-        values = sorted(
-            n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str)
-        )
+        values = sorted(n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str))
         assert values == ["BTC", "ETH", "SOL"]
 
     def test_per_instrument_rows_unchanged_by_virtualisation(self) -> None:
@@ -382,9 +478,7 @@ class TestPaginationAndBundledRootVirtualisation:
             )
         tree = result["tree"]
         assert isinstance(tree, list)
-        values = sorted(
-            n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str)
-        )
+        values = sorted(n["value"] for n in tree if isinstance(n, dict) and isinstance(n.get("value"), str))
         assert values == [f"INST{i:04d}USDT" for i in range(5)]
 
 
@@ -407,7 +501,9 @@ class TestListSupportedPairs:
         [
             ("market-tick-data-service", "defi"),
             ("instruments-service", "cefi"),
-            ("features-onchain-service", "defi"),
+            # features-onchain-service consolidated into features-service in UAC
+            # data_status_axis_matrix.py; use the canonical service name.
+            ("features-service", "defi"),
         ],
     )
     def test_known_pair_axes_sane(self, service: str, asset_group: str) -> None:
@@ -450,9 +546,7 @@ class TestReadAvailabilityIndexCallContract:
             captured_args.append((args, kwargs))
             return pd.DataFrame()
 
-        with patch.object(
-            _hier, "read_availability_index", side_effect=fake_read_availability_index
-        ):
+        with patch.object(_hier, "read_availability_index", side_effect=fake_read_availability_index):
             get_hierarchical_drilldown(
                 service="market-tick-data-service",
                 asset_group="defi",
@@ -464,9 +558,7 @@ class TestReadAvailabilityIndexCallContract:
         positional, _kw = captured_args[0]
         assert len(positional) >= 1, "read_availability_index expects a positional arg"
         bucket_arg = positional[0]
-        assert isinstance(bucket_arg, str), (
-            f"read_availability_index expects str, got {type(bucket_arg)}"
-        )
+        assert isinstance(bucket_arg, str), f"read_availability_index expects str, got {type(bucket_arg)}"
         # The bare bucket name has no scheme or slashes. A gs:// URI or a
         # path-suffixed bucket-and-prefix string both fail this check.
         assert "://" not in bucket_arg, (
@@ -474,8 +566,7 @@ class TestReadAvailabilityIndexCallContract:
             "expects bare bucket name (no scheme). 2026-05-07 incident."
         )
         assert "/" not in bucket_arg, (
-            f"read_availability_index called with path {bucket_arg!r}; "
-            "expects bare bucket name (no path)."
+            f"read_availability_index called with path {bucket_arg!r}; expects bare bucket name (no path)."
         )
 
     def test_passes_canonical_bucket_for_mtds_cefi(self) -> None:
@@ -595,3 +686,168 @@ class TestRowKeyShapeAtEachDepth:
         assert rk.get("venue"), f"leaf row_key missing venue: {rk}"
         assert rk.get("data_type"), f"leaf row_key missing data_type: {rk}"
         assert rk.get("day") or rk.get("date"), f"leaf row_key missing day/date: {rk}"
+
+
+# ---------------------------------------------------------------------------
+# feature_family axis (Phase 8B — features-repo consolidation)
+# ---------------------------------------------------------------------------
+
+
+def _features_onchain_manifest() -> pd.DataFrame:
+    """Mixed-family manifest exercising stamping + filter behaviour.
+
+    Two onchain rows (one pre-stamped, one blank → UAC-fill) plus two
+    volatility-family rows pre-stamped on disk. Volatility rows use a
+    placeholder ``feature_group`` that is NOT yet in
+    ``FEATURE_GROUP_TO_FAMILY`` — this is the realistic case for a
+    family the registry doesn't yet enumerate; pre-stamped values must
+    survive the read-side stamper unchanged.
+    """
+    rows: list[dict[str, object]] = [
+        # onchain rows — pre-stamped feature_family.
+        {
+            "venue": "LIDO",
+            "chain": "ETHEREUM",
+            "feature_group": "lst_staking_yields",
+            "feature_family": "onchain",
+            "timeframe": "1d",
+            "instrument_id": "stETH",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "AAVE_V3-ARBITRUM",
+            "chain": "ARBITRUM",
+            "feature_group": "aave_lending_rates",
+            "feature_family": "",  # missing — fallback should fill via UAC.
+            "timeframe": "1h",
+            "instrument_id": "USDC",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        # volatility-family rows — pre-stamped (writer-stamped). The
+        # placeholder feature_group is not in FEATURE_GROUP_TO_FAMILY,
+        # so the read-side stamper has nothing to fill — it must leave
+        # the pre-stamped value alone.
+        {
+            "venue": "DERIBIT",
+            "chain": "",
+            "feature_group": "placeholder_vol_group",
+            "feature_family": "volatility",
+            "timeframe": "1m",
+            "instrument_id": "BTC",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "DERIBIT",
+            "chain": "",
+            "feature_group": "placeholder_vol_group",
+            "feature_family": "volatility",
+            "timeframe": "1m",
+            "instrument_id": "ETH",
+            "date": "2024-03-02",
+            "capture_status": "empty_confirmed",
+            "error_reason": "EXPECTED_HOLIDAY",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestFeatureFamilyAxis:
+    def test_stamper_fills_blank_feature_family_via_uac(self) -> None:
+        df = _features_onchain_manifest()
+        stamped = _hier._stamp_feature_family(df)  # pyright: ignore[reportPrivateUsage]
+        # Pre-stamped rows preserve their write-time value (writer wins).
+        lst = stamped[stamped["feature_group"] == "lst_staking_yields"].iloc[0]
+        assert lst["feature_family"] == "onchain"
+        # Read-side UAC fallback fills the blank aave_lending_rates row.
+        aave = stamped[stamped["feature_group"] == "aave_lending_rates"].iloc[0]
+        assert aave["feature_family"] == "onchain"
+        # Pre-stamped volatility rows survive even though the placeholder
+        # feature_group has no UAC mapping (writer is the SSOT).
+        vol = stamped[stamped["instrument_id"] == "BTC"].iloc[0]
+        assert vol["feature_family"] == "volatility"
+
+    def test_stamper_handles_manifest_without_feature_group_column(self) -> None:
+        # MTDS / instruments-service manifests have no feature_group →
+        # stamper is a no-op.
+        df = pd.DataFrame(
+            {
+                "venue": ["BINANCE"],
+                "data_type": ["trades"],
+                "instrument_id": ["BTCUSDT"],
+                "date": ["2024-03-01"],
+                "capture_status": ["captured"],
+                "error_reason": [""],
+            }
+        )
+        stamped = _hier._stamp_feature_family(df)  # pyright: ignore[reportPrivateUsage]
+        assert "feature_family" not in stamped.columns
+
+    def test_filter_by_feature_family_narrows_to_one_family(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-onchain-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"feature_family": "onchain"},
+            )
+
+        # Only the 2 onchain rows should be counted (the 2 volatility
+        # rows were excluded by the feature_family filter).
+        totals = result["totals"]
+        assert totals["captured"] == 2
+        assert totals["empty_confirmed"] == 0
+        assert totals["attempted_failed"] == 0
+
+    def test_filter_by_feature_family_volatility(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-volatility-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"feature_family": "volatility"},
+            )
+        totals = result["totals"]
+        # 1 captured (BTC iv_surface day 1) + 1 empty_confirmed
+        # (ETH iv_surface day 2) — both volatility-family.
+        assert totals["captured"] == 1
+        assert totals["empty_confirmed"] == 1
+        assert totals["attempted_failed"] == 0
+
+    def test_no_feature_family_filter_returns_full_aggregate(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-onchain-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={},
+            )
+        # All 4 rows aggregated when filter omitted.
+        totals = result["totals"]
+        assert totals["captured"] + totals["empty_confirmed"] == 4
+
+    def test_filter_unknown_feature_family_yields_zero(self) -> None:
+        df = _features_onchain_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="features-onchain-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-02",
+                filters={"feature_family": "not_a_real_family"},
+            )
+        totals = result["totals"]
+        assert totals["captured"] == 0
+        assert totals["empty_confirmed"] == 0
+        assert totals["attempted_failed"] == 0

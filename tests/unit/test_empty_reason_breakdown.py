@@ -1,7 +1,7 @@
 """Unit tests for ``_compute_empty_reason_counts`` (writegate Phase 4.A
 empty_confirmed taxonomy rollup — companion to the failure-pillar work).
 
-Plan: ``writegate_honest_coverage_endtoend_2026_05_06.plan.md`` Phase 4.A.
+Plan: ``writegate_honest_coverage_endtoend_2026_05_06.md`` Phase 4.A.
 
 The helper rolls up ``capture_status=empty_confirmed`` rows by their
 ``error_reason`` per the closed taxonomy in

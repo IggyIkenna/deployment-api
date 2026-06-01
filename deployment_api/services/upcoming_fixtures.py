@@ -13,14 +13,13 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TypedDict
 
 import pandas as pd
+from unified_trading_library import resolve_bucket_name
 
-from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_client import get_storage_client
 from deployment_api.utils.storage_facade import object_exists
 
 logger = logging.getLogger(__name__)
 
-_SPORTS_BUCKET_TEMPLATE = "instruments-store-sports-{pid}"
 _MAX_DAYS = 31
 
 # In-process TTL cache for upcoming fixtures. Keyed on (days, league_id).
@@ -55,8 +54,8 @@ class UpcomingFixture(TypedDict):  # CORRECT-LOCAL — API response shape, no cr
     round: str
 
 
-def _sports_bucket(project_id: str | None = None) -> str:
-    return _SPORTS_BUCKET_TEMPLATE.format(pid=project_id or _pid)
+def _sports_bucket() -> str:
+    return resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
 
 
 def _read_fixtures_parquet(bucket: str, object_path: str) -> pd.DataFrame:
@@ -67,8 +66,8 @@ def _read_fixtures_parquet(bucket: str, object_path: str) -> pd.DataFrame:
 
     client = get_storage_client()
     blob = client.download_bytes(bucket, object_path)
-    table = pq.read_table(BytesIO(blob), columns=None)  # pyright: ignore[reportUnknownMemberType]
-    to_pandas = getattr(table, "to_pandas", None)
+    table = pq.read_table(BytesIO(blob), columns=None)  # type: ignore[reportUnknownVariableType]
+    to_pandas = getattr(table, "to_pandas", None)  # type: ignore[reportUnknownArgumentType]
     if not callable(to_pandas):
         raise RuntimeError("pyarrow table missing to_pandas()")
     df_obj: object = to_pandas()
@@ -81,7 +80,7 @@ def _pandas_scalar_missing(val: object) -> bool:
     if val is None:
         return True
     try:
-        return bool(pd.isna(val))  # pyright: ignore[reportUnknownMemberType]
+        return bool(pd.isna(val))  # type: ignore[reportCallIssue,reportUnknownArgumentType]
     except (TypeError, ValueError):
         return False
 
@@ -105,7 +104,7 @@ def _parse_kickoff_from_timestamp(val: object) -> datetime | None:
     to_pd = getattr(val, "to_pydatetime", None)
     if callable(to_pd):
         try:
-            return _ensure_utc(to_pd())
+            return _ensure_utc(to_pd())  # pyright: ignore[reportArgumentType]
         except (ValueError, OSError, TypeError, AttributeError):
             return None
     return None
@@ -135,7 +134,7 @@ def _parse_kickoff(val: object) -> datetime | None:
 def _row_to_fixture(rec: object) -> UpcomingFixture | None:
     if not isinstance(rec, dict):
         return None
-    row: dict[str, object] = {str(k): v for k, v in rec.items()}
+    row: dict[str, object] = {str(k): v for k, v in rec.items()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
     kid = _norm_str(row.get("fixture_id"))
     if not kid:
         return None
@@ -190,7 +189,7 @@ def _read_frames_for_window(
 
     days = [start + timedelta(days=offset) for offset in range(0, inclusive_extra_days + 1)]
     with ThreadPoolExecutor(max_workers=min(len(days), 16)) as ex:
-        results = list(ex.map(lambda d: _read_one_day_frame(bucket, d), days))
+        results = list(ex.map(lambda d: _read_one_day_frame(bucket, d), days))  # pyright: ignore[reportUnknownArgumentType,reportUnknownLambdaType]
     return [df for df in results if df is not None]
 
 
@@ -229,7 +228,7 @@ def list_upcoming_fixtures(
     if cached is not None and (now - cached[0]) < _FIXTURES_CACHE_TTL_SEC:
         return cached[1]
 
-    bucket = _sports_bucket(project_id)
+    bucket = _sports_bucket()
     today = datetime.now(UTC).date()
 
     frames = _read_frames_for_window(bucket, start=today, inclusive_extra_days=days)

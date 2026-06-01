@@ -62,9 +62,7 @@ async def test_run_pipeline_uat_enabled_calls_anthropic() -> None:
     request = _make_request()
 
     mock_text_block = MagicMock(spec=TextBlock)
-    mock_text_block.text = (
-        "Instruments coverage is at 95%. Feature null rate is within acceptable range."
-    )
+    mock_text_block.text = "Instruments coverage is at 95%. Feature null rate is within acceptable range."
 
     mock_message = MagicMock()
     mock_message.content = [mock_text_block]

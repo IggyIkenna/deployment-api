@@ -16,7 +16,7 @@
 ARG PROJECT_ID
 
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
-FROM node:20-slim AS ui-builder
+FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
 
 # Build context expects ./ui/ to be the deployment-ui repo root (populated
@@ -80,12 +80,29 @@ RUN uv pip install --system --no-cache-dir \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
 
+# Full UAC reinstall from LDR-cloned source. buildspec.aws.yaml pre_build clones
+# unified-api-contracts@live-defi-rollout into _unified-api-contracts/ before
+# submitting the build context. This ensures registry/, crosscutting/, and all
+# other modules (e.g. get_raw_source_data_types in registry/__init__.py) match
+# the current LDR state, overriding whatever was baked into the base image.
+COPY _unified-api-contracts/ /tmp/_uac/
+RUN uv pip install --system --no-cache-dir --no-deps /tmp/_uac && rm -rf /tmp/_uac
+
 # Install deployment-service from the pre-bundled sibling source. The
 # tier-3 deploy script rsyncs ../deployment-service/ into ./_deployment-service/
 # before submitting the build (Cloud Build context can't reach sibling repos).
 COPY _deployment-service/ /tmp/deployment-service/
 RUN uv pip install --system --no-cache-dir --no-deps /tmp/deployment-service \
     && rm -rf /tmp/deployment-service
+
+# Install strategy-service — treasury_routes.py imports strategy_service.position.
+# buildspec.aws.yaml clones strategy-service@live-defi-rollout into _strategy-service/.
+# sqlalchemy is a direct dep of strategy_service.position.storage.database; install it first
+# so --no-deps on strategy-service doesn't leave it missing.
+RUN uv pip install --system --no-cache-dir 'sqlalchemy>=2.0.0,<3.0.0'
+COPY _strategy-service/ /tmp/strategy-service/
+RUN uv pip install --system --no-cache-dir --no-deps /tmp/strategy-service \
+    && rm -rf /tmp/strategy-service
 
 COPY deployment_api/ ./deployment_api/
 COPY gunicorn.conf.py ./

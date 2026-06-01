@@ -78,9 +78,7 @@ for _rmod, _orig in _SAVED_ROUTES.items():
 # But keep deployment_api.services.deployment_manager as the real module we just imported.
 if _SAVED_SVC_PKG is not None:
     # Restore the services package mock but keep our imported sub-module
-    _SAVED_SVC_PKG.deployment_manager = sys.modules.get(
-        "deployment_api.services.deployment_manager"
-    )  # type: ignore[attr-defined]
+    _SAVED_SVC_PKG.deployment_manager = sys.modules.get("deployment_api.services.deployment_manager")  # type: ignore[attr-defined]
     sys.modules["deployment_api.services"] = _SAVED_SVC_PKG
 
 
@@ -182,9 +180,7 @@ class TestCalculateQuotaRequirements:
         mock_ds.calculate_shards = AsyncMock(return_value=[])
 
         with (
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
         ):
             result = asyncio.run(manager.calculate_quota_requirements(req))
@@ -215,9 +211,7 @@ class TestCalculateQuotaRequirements:
         mock_ds.calculate_shards = AsyncMock(return_value=raw_shards)
 
         with (
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
             patch(
                 "deployment_api.services.deployment_manager.vm_quota_shape_from_compute_config",
@@ -245,9 +239,7 @@ class TestCalculateQuotaRequirements:
         mock_ds.calculate_shards = AsyncMock(return_value=raw_shards)
 
         with (
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
         ):
             result = asyncio.run(manager.calculate_quota_requirements(req))
@@ -267,9 +259,7 @@ class TestCalculateQuotaRequirements:
         mock_ds.calculate_shards = AsyncMock(side_effect=RuntimeError("shard calc failed"))
 
         with (
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
@@ -327,9 +317,7 @@ class TestCreateDeployment:
                 "deployment_api.services.deployment_manager.validate_image_availability",
                 return_value=None,
             ),
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
@@ -370,13 +358,9 @@ class TestCreateDeployment:
                 "deployment_api.services.deployment_manager.validate_image_availability",
                 return_value=None,
             ),
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
-            patch(
-                "deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}
-            ),
+            patch("deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
             result = asyncio.run(manager.create_deployment(req))
@@ -403,9 +387,7 @@ class TestCreateDeployment:
                 "deployment_api.services.deployment_manager.validate_shard_configuration",
                 return_value={"error": "shard invalid"},
             ),
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager.log_event"),
             pytest.raises(ValueError),
         ):
@@ -444,13 +426,9 @@ class TestCreateDeployment:
                 "deployment_api.services.deployment_manager.validate_image_availability",
                 return_value=None,
             ),
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
-            patch(
-                "deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}
-            ),
+            patch("deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
             result = asyncio.run(manager.create_deployment(req))
@@ -494,13 +472,9 @@ class TestCreateDeployment:
                 "deployment_api.services.deployment_manager.validate_image_availability",
                 return_value=None,
             ),
-            patch(
-                "deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader
-            ),
+            patch("deployment_api.services.deployment_manager.ConfigLoader", return_value=mock_loader),
             patch("deployment_api.services.deployment_manager._ds_client", mock_ds),
-            patch(
-                "deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}
-            ),
+            patch("deployment_api.services.deployment_manager.build_deploy_env_vars", return_value={}),
             patch("deployment_api.services.deployment_manager.log_event"),
         ):
             asyncio.run(manager.create_deployment(req, background_task_func=background_fn))

@@ -259,9 +259,7 @@ class TestReleaseDeploymentLock:
         mgr = _make_mgr()
         mock_client = _make_uci_mock_client()
         mock_client.blob_exists.return_value = True
-        mock_client.download_bytes.return_value = json.dumps({"owner": "other-owner"}).encode(
-            "utf-8"
-        )
+        mock_client.download_bytes.return_value = json.dumps({"owner": "other-owner"}).encode("utf-8")
 
         with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.release_deployment_lock("dep-not-held")
@@ -275,9 +273,7 @@ class TestReleaseDeploymentLock:
 
         mock_client = _make_uci_mock_client()
         mock_client.blob_exists.return_value = True
-        mock_client.download_bytes.return_value = json.dumps({"owner": mgr.owner_id}).encode(
-            "utf-8"
-        )
+        mock_client.download_bytes.return_value = json.dumps({"owner": mgr.owner_id}).encode("utf-8")
 
         with patch.dict(_sm_globals, {"_get_storage_client": MagicMock(return_value=mock_client)}):
             result = mgr.release_deployment_lock("dep-held")

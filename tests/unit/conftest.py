@@ -79,6 +79,18 @@ def _ensure_services_mocked() -> None:
     # Loaded for the same reason as data_status_hierarchical above.
     real_deploy_missing = importlib.import_module("deployment_api.services.deploy_missing")
 
+    # tarball_staleness is a standalone helper (deploy-missing auto-launch
+    # plan Phase 1). Loaded as a real module so its unit tests can import
+    # the public surface (TarballStalenessChecker, RefreshResult, etc.)
+    # rather than colliding with the MagicMock services package below.
+    real_tarball_staleness = importlib.import_module("deployment_api.services.tarball_staleness")
+
+    # deploy_missing_launch is the Phase 2 auto-launch service
+    # (deploy_missing_auto_launch_2026_05_07.md Phase 2). Loaded as a real
+    # module so its unit tests can import DeployMissingRateLimiter etc.
+    # without hitting the fake services package's empty __path__.
+    real_deploy_missing_launch = importlib.import_module("deployment_api.services.deploy_missing_launch")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -121,6 +133,15 @@ def _ensure_services_mocked() -> None:
     # Re-register deploy_missing as a real module (drilldown plan Phase 3).
     sys.modules["deployment_api.services.deploy_missing"] = real_deploy_missing
     services_mod.deploy_missing = real_deploy_missing
+
+    # Re-register tarball_staleness as a real module (deploy-missing
+    # auto-launch plan Phase 1).
+    sys.modules["deployment_api.services.tarball_staleness"] = real_tarball_staleness
+    services_mod.tarball_staleness = real_tarball_staleness
+
+    # Re-register deploy_missing_launch as a real module (Phase 2 auto-launch).
+    sys.modules["deployment_api.services.deploy_missing_launch"] = real_deploy_missing_launch
+    services_mod.deploy_missing_launch = real_deploy_missing_launch
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
@@ -175,9 +196,7 @@ def _ensure_external_packages_mocked() -> None:
         sys.modules["backends"] = backends_mod
 
         for sub_name, attrs in {
-            "base": {
-                "JobStatus": MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")
-            },
+            "base": {"JobStatus": MagicMock(SUCCEEDED="SUCCEEDED", FAILED="FAILED", RUNNING="RUNNING")},
             "cloud_run": {"CloudRunBackend": MagicMock()},
             "vm": {"VMBackend": MagicMock()},
         }.items():
@@ -326,6 +345,11 @@ def _ensure_external_packages_mocked() -> None:
             },
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
             "deployment.quota_broker_client": {"QuotaBrokerClient": MagicMock()},
+            "deployments_registry": {
+                "DEFAULT_BUCKET": "test-deployments-bucket",
+                "DeploymentRegistryEntry": MagicMock(),
+                "DeploymentsRegistry": MagicMock(),
+            },
         }.items():
             full = f"deployment_service.{sub_name}"
             sub_mod = ModuleType(full)
@@ -338,7 +362,62 @@ def _ensure_external_packages_mocked() -> None:
             sys.modules[full] = sub_mod
 
 
+# Set required env vars before any routes are imported.  deployment_api/routes/__init__.py
+# eagerly imports ALL route modules, each creating a DeploymentApiConfig() singleton at
+# module level.  Any test file that imports a single route (e.g. kill_switch_routes) triggers
+# this chain.  These setdefaults ensure the configs are initialised with sane test defaults
+# regardless of which test file happens to be collected first in a given xdist worker.
+import os as _os
+
+_os.environ.setdefault("CLOUD_MOCK_MODE", "true")
+_os.environ.setdefault("CLOUD_PROVIDER", "local")
+_os.environ.setdefault("GCP_PROJECT_ID", "test-project")
+_os.environ.setdefault("DISABLE_AUTH", "true")
+_os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
+
 # Run immediately at import time (before pytest collects tests)
 _ensure_utl_mocked()
 _ensure_services_mocked()
 _ensure_external_packages_mocked()
+
+
+from collections.abc import Generator as _Generator
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _reset_rate_limit_windows() -> _Generator[None]:
+    """Reset sliding-window rate-limiter state before/after every test.
+
+    Two separate rate limiters share global/instance state across tests:
+    1. endpoint_rate_limit() — stores timestamps in module-level _ENDPOINT_WINDOWS.
+    2. RateLimitMiddleware — stores per-IP deques in self._windows on the main app
+       instance.  TestClient always presents as "testclient" IP, so after 60 requests
+       across any test files that share the main app the middleware returns 429.
+
+    Clearing both before each test prevents cross-file 429 failures.
+    """
+    import deployment_api.rate_limiting as _rl
+
+    _rl._ENDPOINT_WINDOWS.clear()
+
+    if "deployment_api.main" in sys.modules:
+        try:
+            from deployment_api.middleware import RateLimitMiddleware as _RateLimitMiddleware
+
+            _app = sys.modules["deployment_api.main"].app
+            node = _app.middleware_stack
+            depth = 0
+            while node is not None and depth < 20:
+                if isinstance(node, _RateLimitMiddleware):
+                    node._windows.clear()  # type: ignore[attr-defined]
+                    break
+                node = getattr(node, "app", None)
+                depth += 1
+        except Exception:
+            pass
+
+    yield
+
+    _rl._ENDPOINT_WINDOWS.clear()

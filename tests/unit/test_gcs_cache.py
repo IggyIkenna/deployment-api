@@ -43,18 +43,14 @@ class TestGCSCacheGetSet:
 
     async def test_set_stores_value(self):
         cache = _make_loaded_cache()
-        with patch.object(
-            asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())
-        ):
+        with patch.object(asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())):
             await cache.set("key1", {"data": "value"}, ttl=60)
         assert "key1" in cache._local_cache
         assert cache._local_cache["key1"]["value"] == {"data": "value"}
 
     async def test_set_respects_ttl(self):
         cache = _make_loaded_cache()
-        with patch.object(
-            asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())
-        ):
+        with patch.object(asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())):
             await cache.set("key1", "value", ttl=60)
         expires_at = cache._local_cache["key1"]["expires_at"]
         assert expires_at > time.time()
@@ -67,17 +63,13 @@ class TestGCSCacheDelete:
 
     async def test_delete_existing_key(self):
         cache = _make_loaded_cache(key1={"value": "v", "expires_at": time.time() + 60})
-        with patch.object(
-            asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())
-        ):
+        with patch.object(asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())):
             await cache.delete("key1")
         assert "key1" not in cache._local_cache
 
     async def test_delete_nonexistent_no_error(self):
         cache = _make_loaded_cache()
-        with patch.object(
-            asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())
-        ):
+        with patch.object(asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())):
             await cache.delete("nonexistent")  # Should not raise
 
 
@@ -93,9 +85,7 @@ class TestGCSCacheClearPattern:
                 "other": {"value": "v3", "expires_at": time.time() + 60},
             }
         )
-        with patch.object(
-            asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())
-        ):
+        with patch.object(asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())):
             count = await cache.clear_pattern("dep:*")
         assert count == 2
         assert "dep:1" not in cache._local_cache
@@ -104,9 +94,7 @@ class TestGCSCacheClearPattern:
 
     async def test_clear_nonmatching_returns_zero(self):
         cache = _make_loaded_cache(key1={"value": "v", "expires_at": time.time() + 60})
-        with patch.object(
-            asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())
-        ):
+        with patch.object(asyncio, "get_event_loop", return_value=MagicMock(run_in_executor=MagicMock())):
             count = await cache.clear_pattern("dep:*")
         assert count == 0
 

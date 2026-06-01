@@ -11,8 +11,8 @@ from deployment_api.routes.deployments_helpers import (
     deployment_config as _deployment_config,
 )
 from deployment_api.routes.shard_management import (
-    _asset_group_from_shard_dims,
-    _turbo_asset_groups_block,
+    _asset_group_from_shard_dims,  # pyright: ignore[reportPrivateUsage]
+    _turbo_asset_groups_block,  # pyright: ignore[reportPrivateUsage]
 )
 
 logger = logging.getLogger(__name__)
@@ -123,9 +123,7 @@ def _extract_error_warning_shard_ids(
     errors_raw = log_analysis.get("errors")
     warnings_raw = log_analysis.get("warnings")
     errors: list[object] = cast(list[object], errors_raw) if isinstance(errors_raw, list) else []
-    warnings: list[object] = (
-        cast(list[object], warnings_raw) if isinstance(warnings_raw, list) else []
-    )
+    warnings: list[object] = cast(list[object], warnings_raw) if isinstance(warnings_raw, list) else []
 
     shard_ids_with_errors: set[str] = set()
     for e in errors:
@@ -360,14 +358,8 @@ def _resolve_shard_blob_data(
         if not cat or not start_date:
             result[sid] = (False, None)
             continue
-        data_exists = _check_shard_data_exists(
-            cat, venue_val, start_date, existing_cat_dates, existing_venue_dates
-        )
-        blob_ts = (
-            _lookup_blob_ts(cat, venue_val, start_date, dims, blob_timestamps)
-            if data_exists
-            else None
-        )
+        data_exists = _check_shard_data_exists(cat, venue_val, start_date, existing_cat_dates, existing_venue_dates)
+        blob_ts = _lookup_blob_ts(cat, venue_val, start_date, dims, blob_timestamps) if data_exists else None
         result[sid] = (data_exists, blob_ts)
     return result
 
@@ -457,18 +449,14 @@ def _build_existing_dates_sets(
 
         # Venue map
         venues_raw = cat_data.get("venues")
-        venues_data: dict[str, object] = (
-            cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
-        )
+        venues_data: dict[str, object] = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
         for venue_name_raw, venue_data_raw in venues_data.items():
             venue_name = str(venue_name_raw)
             if not isinstance(venue_data_raw, dict):
                 continue
             venue_data = cast(dict[str, object], venue_data_raw)
             dfl_raw = venue_data.get("dates_found_list")
-            dates_found: list[object] = (
-                cast(list[object], dfl_raw) if isinstance(dfl_raw, list) else []
-            )
+            dates_found: list[object] = cast(list[object], dfl_raw) if isinstance(dfl_raw, list) else []
             venue_dates: set[str] = {str(d) for d in dates_found if d}
             existing_venue_dates[cat_name][venue_name] = venue_dates
             existing_cat_dates[cat_name].update(venue_dates)
@@ -501,11 +489,7 @@ def _compute_verified_succeeded_shard_ids(
 
         data_exists = False
         if cat2 in existing_cat_dates:
-            if (
-                venue_val2
-                and cat2 in existing_venue_dates
-                and venue_val2 in existing_venue_dates[cat2]
-            ):
+            if venue_val2 and cat2 in existing_venue_dates and venue_val2 in existing_venue_dates[cat2]:
                 if date_str in existing_venue_dates[cat2][venue_val2]:
                     data_exists = True
             else:
@@ -542,9 +526,7 @@ def _compute_completed_breakdown(
 
     verified_clean_ids: set[str] = set()
     if existing_cat_dates is not None and existing_venue_dates is not None:
-        verified_ids: set[str] = _compute_verified_succeeded_shard_ids(
-            state, existing_cat_dates, existing_venue_dates
-        )
+        verified_ids: set[str] = _compute_verified_succeeded_shard_ids(state, existing_cat_dates, existing_venue_dates)
         verified_clean_ids = verified_ids - shard_ids_with_errors - shard_ids_with_warnings
 
     completed_with_verification = len(succeeded_ids & verified_clean_ids)
@@ -655,26 +637,18 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     max_threads: int = Field(100, description="Max concurrent threads for launching")
     respect_start_dates: bool = Field(True, description="Filter shards by venue start dates")
     region: str | None = Field(None, description="GCP region (e.g., asia-northeast1)")
-    vm_zone: str | None = Field(
-        None, description="GCP zone for VM deployments (e.g., asia-northeast1-a)"
-    )
+    vm_zone: str | None = Field(None, description="GCP zone for VM deployments (e.g., asia-northeast1-a)")
     extra_args: str | None = Field(
         None,
         description="Additional CLI args to pass to service (e.g., '--data-types trades')",
     )
     tag: str | None = Field(
         None,
-        description=(
-            "Human-readable description/annotation for this deployment"
-            " (e.g., 'Fixed Curve adapter')"
-        ),
+        description=("Human-readable description/annotation for this deployment (e.g., 'Fixed Curve adapter')"),
     )
     cloud_config_path: str | None = Field(
         None,
-        description=(
-            "Cloud storage path to config directory (gs://... or s3://...)"
-            " for dynamic config discovery"
-        ),
+        description=("Cloud storage path to config directory (gs://... or s3://...) for dynamic config discovery"),
     )
     skip_venue_sharding: bool = Field(
         False,

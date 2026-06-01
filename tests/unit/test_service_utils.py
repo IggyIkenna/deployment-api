@@ -62,9 +62,7 @@ class TestIngestionEvents:
     def test_ingestion_completed_with_details(self):
         shard: dict = {}
         update_shard_state_from_event(shard, _make_event("DATA_INGESTION_STARTED"))
-        update_shard_state_from_event(
-            shard, _make_event("DATA_INGESTION_COMPLETED", "5000 records")
-        )
+        update_shard_state_from_event(shard, _make_event("DATA_INGESTION_COMPLETED", "5000 records"))
         assert "ingestion" in shard.get("stage_timings", {})
         assert shard["stage_details"] == "5000 records"
 
@@ -133,9 +131,7 @@ class TestProgressParsing:
 
     def test_progress_parsed_from_details(self):
         shard: dict = {}
-        update_shard_state_from_event(
-            shard, _make_event("DATE_PROCESSING_STARTED", "2024-01-15 (10/100)")
-        )
+        update_shard_state_from_event(shard, _make_event("DATE_PROCESSING_STARTED", "2024-01-15 (10/100)"))
         assert shard["progress_current"] == 10
         assert shard["progress_total"] == 100
         assert shard["progress"] == 10

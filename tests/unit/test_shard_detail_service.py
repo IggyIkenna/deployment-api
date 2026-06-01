@@ -96,67 +96,6 @@ class TestDefiComposite:
         assert svc._defi_composite_parts(None) == (None, None)  # pyright: ignore[reportPrivateUsage]
 
 
-class TestInstrumentTypeAuto:
-    """``_resolve_instrument_type_auto`` + ``_resolve_schema`` AUTO branch.
-
-    Covers the deployment-ui DeFi click flow: the click site only knows
-    ``data_type`` (e.g. ``oracle_prices``) and the composite venue (e.g.
-    ``CHAINLINK-ETHEREUM``); the backend resolves ``instrument_type`` by
-    scanning ``CONTRACT_REGISTRY``.
-    """
-
-    def test_auto_resolves_known_data_type(self) -> None:
-        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", data_type="dex_pools", venue=None
-        )
-        assert result == "pool"
-
-    def test_auto_resolves_lending_data_type(self) -> None:
-        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", data_type="liquidation_events", venue=None
-        )
-        assert result == "lending"
-
-    def test_auto_returns_none_for_unknown_data_type(self) -> None:
-        result = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", data_type="not_a_real_data_type", venue=None
-        )
-        assert result is None
-
-    def test_resolve_schema_auto_mode_marks_resolution(self) -> None:
-        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", instrument_type="AUTO", data_type="dex_pools", venue=None
-        )
-        assert schema.registered is True
-        assert schema.instrument_type_resolved_via == "auto"
-        assert schema.instrument_type_resolved == "pool"
-        assert resolved == "pool"
-        # New ColumnSpec fields must be present in the response (set by UAC cf79d54).
-        assert any(col.required is True for col in schema.columns)
-
-    def test_resolve_schema_explicit_mode_unchanged(self) -> None:
-        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI", instrument_type="pool", data_type="dex_pools", venue=None
-        )
-        assert schema.registered is True
-        assert schema.instrument_type_resolved_via == "explicit"
-        assert resolved == "pool"
-
-    def test_resolve_schema_auto_unresolved_returns_none_via(self) -> None:
-        schema, resolved = svc._resolve_schema(  # pyright: ignore[reportPrivateUsage]
-            category="DEFI",
-            instrument_type="AUTO",
-            data_type="not_a_real_data_type",
-            venue=None,
-        )
-        assert schema.registered is False
-        assert schema.instrument_type_resolved_via == "none"
-        assert schema.instrument_type_resolved is None
-        # The caller's literal value passes through when resolution fails so
-        # the response coord is honest about what was requested.
-        assert resolved == "AUTO"
-
-
 # ---------------------------------------------------------------------------
 # get_shard_detail — grouped branch
 # ---------------------------------------------------------------------------
@@ -186,7 +125,7 @@ class TestGetShardDetailGrouped:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="options_chain",
                 data_type="options_chain",
                 day="2026-04-18",
@@ -211,7 +150,7 @@ class TestGetShardDetailGrouped:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="options_chain",
                 data_type="options_chain",
                 day="2026-04-18",
@@ -232,19 +171,7 @@ class TestGetShardDetailGrouped:
 class TestGetShardDetailPerSymbol:
     def test_per_symbol_returns_time_series_head(self) -> None:
         fake_df = pd.DataFrame({"ts_event": ["2026-04-18T00:00:00Z"] * 3, "price": [1.0, 2.0, 3.0]})
-        # _mtds_shard_path lists the venue+data_type prefix and picks the
-        # parquet whose name ends with ``/{leaf}.parquet`` (dual-vocab fan-out
-        # introduced 2026-05-01).  We supply an ObjectInfo matching the leaf
-        # suffix so resolution returns a real path under either vocabulary.
-        objects: list[ObjectInfo] = [
-            ObjectInfo(
-                name=(
-                    "raw_tick_data/by_date/day=2026-04-18/asset_group=cefi/"
-                    "venue=DERIBIT/instrument_type=perpetual/data_type=trades/"
-                    "BTC-PERPETUAL.parquet"
-                )
-            )
-        ]
+        objects: list[ObjectInfo] = []  # path resolved via direct leaf
         with (
             patch.object(svc, "list_objects", return_value=objects),
             patch.object(svc, "_read_parquet_columns", return_value=fake_df),
@@ -255,7 +182,7 @@ class TestGetShardDetailPerSymbol:
         ):
             resp = svc.get_shard_detail(
                 service="market-tick-data-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="PERPETUAL",
                 data_type="trades",
                 day="2026-04-18",
@@ -265,9 +192,7 @@ class TestGetShardDetailPerSymbol:
         assert resp.shard_class == "per_symbol"
         assert len(resp.sample_rows) == 3
         assert resp.payload_per_symbol is not None
-        assert resp.payload_per_symbol.instrument_list == [
-            {"key": "BTC-PERPETUAL", "type": "symbol"}
-        ]
+        assert resp.payload_per_symbol.instrument_list == [{"key": "BTC-PERPETUAL", "type": "symbol"}]
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +218,7 @@ class TestGetShardDetailReference:
         ):
             resp = svc.get_shard_detail(
                 service="instruments-service",
-                asset_group="CEFI",
+                category="CEFI",
                 instrument_type="OPTION",
                 data_type="instruments",
                 day="2026-04-18",
@@ -322,7 +247,7 @@ class TestGetShardDetailFixtures:
         ):
             resp = svc.get_shard_detail(
                 service="instruments-service",
-                asset_group="SPORTS",
+                category="SPORTS",
                 instrument_type="FIXTURE",
                 data_type="fixtures",
                 day="2026-04-12",
@@ -426,7 +351,707 @@ class TestFetchVenueDetailCefi:
                 asset_group="CEFI",
                 venue="BINANCE",
             )
-        assert resp.asset_group == "CEFI"
+        assert resp.category == "CEFI"
         assert resp.venue == "BINANCE"
         assert resp.total_instruments == 2
         assert len(resp.instruments) == 2
+
+
+# ---------------------------------------------------------------------------
+# Prediction venue detail
+# ---------------------------------------------------------------------------
+
+
+class TestFetchVenueDetailPrediction:
+    def test_prediction_returns_canonical_question_groups(self) -> None:
+        # Prediction manifest stores question groups in `underlying` column.
+        df = pd.DataFrame(
+            {
+                "venue": ["POLYMARKET", "POLYMARKET", "POLYMARKET"],
+                "data_type": [
+                    "prediction_canonical_question_group",
+                    "prediction_canonical_question_group",
+                    "prediction_canonical_question_group",
+                ],
+                "underlying": ["BTC_UP_DOWN_HOURLY", "ETH_UP_DOWN_HOURLY", "FOOTBALL"],
+                "instrument_count": [100, 80, 60],
+                "date": ["2026-05-22", "2026-05-22", "2026-05-22"],
+            }
+        )
+        with patch.object(svc, "read_availability_index", return_value=df):
+            resp = svc.fetch_venue_detail(
+                service="instruments-service",
+                asset_group="PREDICTION",
+                venue="POLYMARKET",
+            )
+        assert resp.category == "PREDICTION"
+        assert resp.venue == "POLYMARKET"
+        assert resp.total_instruments == 3
+        groups = [r["canonical_question_group"] for r in resp.instruments]
+        assert "BTC_UP_DOWN_HOURLY" in groups
+        assert "ETH_UP_DOWN_HOURLY" in groups
+        assert "FOOTBALL" in groups
+
+    def test_prediction_empty_manifest_returns_zero(self) -> None:
+        with patch.object(svc, "read_availability_index", return_value=pd.DataFrame()):
+            resp = svc.fetch_venue_detail(
+                service="instruments-service",
+                asset_group="PREDICTION",
+                venue="POLYMARKET",
+            )
+        assert resp.total_instruments == 0
+        assert resp.instruments == []
+
+
+# ---------------------------------------------------------------------------
+# instrument_type=AUTO resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveInstrumentTypeAuto:
+    """AUTO-mode resolution from CONTRACT_REGISTRY.
+
+    The DataStatusTab DeFi click site does not have ``instrument_type`` in
+    scope (only ``data_type``).  Passing ``"AUTO"`` opts the caller into
+    backend resolution against the UAC registry.
+    """
+
+    def test_auto_resolves_defi_oracle_prices_to_first_match(self) -> None:
+        # ``(defi, *, oracle_prices)`` is registered in CONTRACT_REGISTRY for
+        # at least ``a_token`` and ``lst`` (legacy venue overrides).  The
+        # alphabetically-first match wins for determinism.
+        picked = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI",
+            data_type="oracle_prices",
+        )
+        assert picked is not None, "expected a registered match for (defi, oracle_prices)"
+        # ``a_token`` < ``lst`` alphabetically.
+        assert picked == "a_token"
+
+    def test_auto_returns_none_for_nonexistent_data_type(self) -> None:
+        picked = svc._resolve_instrument_type_auto(  # pyright: ignore[reportPrivateUsage]
+            category="DEFI",
+            data_type="nonexistent_data_type_xyz",
+        )
+        assert picked is None
+
+    def test_get_shard_detail_auto_resolves_and_echoes_in_coord(self) -> None:
+        """Top-level ``get_shard_detail`` accepts ``"AUTO"`` and echoes the
+        resolved instrument_type back in the response coord.
+        """
+        with (
+            patch.object(svc, "list_objects", return_value=[]),
+            patch.object(svc, "get_object_metadata", return_value=None),
+            patch.object(svc, "_manifest_row_for_coord", return_value=None),
+            patch.object(svc, "_parquet_signed_url", return_value=None),
+        ):
+            resp = svc.get_shard_detail(
+                service="market-tick-data-service",
+                category="DEFI",
+                instrument_type="AUTO",
+                data_type="oracle_prices",
+                day="2026-03-26",
+                venue="CHAINLINK",
+            )
+        # Resolved instrument_type should be echoed in the coord — never
+        # the literal "AUTO".
+        assert resp.coord.instrument_type != "AUTO"
+        assert resp.coord.instrument_type != ""
+        assert resp.schema_.registered is True
+        assert resp.schema_.instrument_type_resolved_via == "auto"
+
+    def test_get_shard_detail_auto_unresolved_returns_registered_false(self) -> None:
+        """When AUTO can't resolve, ``registered`` is False with an honest
+        message and ``instrument_type_resolved_via == "none"``.
+        """
+        with (
+            patch.object(svc, "list_objects", return_value=[]),
+            patch.object(svc, "get_object_metadata", return_value=None),
+            patch.object(svc, "_manifest_row_for_coord", return_value=None),
+            patch.object(svc, "_parquet_signed_url", return_value=None),
+        ):
+            resp = svc.get_shard_detail(
+                service="market-tick-data-service",
+                category="DEFI",
+                instrument_type="AUTO",
+                data_type="nonexistent_data_type_xyz",
+                day="2026-03-26",
+                venue="CHAINLINK",
+            )
+        assert resp.schema_.registered is False
+        assert resp.schema_.instrument_type_resolved_via == "none"
+        assert "No SchemaContract found" in resp.schema_.message
+
+    def test_get_shard_detail_explicit_instrument_type_preserved(self) -> None:
+        """Existing callers passing a concrete ``instrument_type`` are
+        unchanged — ``instrument_type_resolved_via`` is ``"explicit"``.
+        """
+        with (
+            patch.object(svc, "list_objects", return_value=[]),
+            patch.object(svc, "get_object_metadata", return_value=None),
+            patch.object(svc, "_manifest_row_for_coord", return_value=None),
+            patch.object(svc, "_parquet_signed_url", return_value=None),
+        ):
+            resp = svc.get_shard_detail(
+                service="market-tick-data-service",
+                category="CEFI",
+                instrument_type="options_chain",
+                data_type="options_chain",
+                day="2026-04-18",
+                venue="DERIBIT",
+                underlying="BTC",
+            )
+        assert resp.schema_.instrument_type_resolved_via == "explicit"
+        assert resp.coord.instrument_type == "options_chain"
+
+    def test_successful_read_computes_per_column_stats(self) -> None:
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-04-18T00:00:00Z"] * 4, utc=True),
+                "price": [1.0, 2.0, None, 4.0],  # 1 null
+                "size": [10, 20, 30, 40],  # 0 nulls
+                "available_at": pd.to_datetime(
+                    [
+                        "2026-04-18T00:00:01Z",
+                        "2026-04-18T00:00:02Z",
+                        None,
+                        "2026-04-18T00:00:04Z",
+                    ],
+                    utc=True,
+                ),
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=42),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.row_count == 4
+        assert resp.column_count == 4
+        assert resp.file_size_bytes == 42
+        assert resp.truncated is False
+
+        by_name = {c.name: c for c in resp.columns}
+        assert by_name["price"].non_null_count == 3
+        assert by_name["price"].null_count == 1
+        assert by_name["price"].nan_ratio == 0.25
+        assert by_name["size"].non_null_count == 4
+        assert by_name["size"].null_count == 0
+        assert by_name["size"].nan_ratio == 0.0
+        # available_at envelope present + min/max + null_count derived
+        assert resp.available_at.present is True
+        assert resp.available_at.null_count == 1
+        assert resp.available_at.min_iso is not None
+        assert resp.available_at.max_iso is not None
+        assert "2026-04-18" in resp.available_at.min_iso
+
+    def test_missing_available_at_column_marked_present_false(self) -> None:
+        # Writegate Phase 1A.future MissingAvailableAt failure mode.
+        df = pd.DataFrame({"price": [1.0, 2.0]})
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.available_at.present is False
+        assert resp.available_at.min_iso is None
+        assert resp.available_at.max_iso is None
+
+    def test_truncates_oversize_parquets(self) -> None:
+        # Spec the helper bounds compute time at _LEAF_STATS_ROW_LIMIT.
+        # Patch the limit down to a tractable number for the unit test,
+        # then verify the truncated flag + truncated_at_rows are set.
+        n_rows = 12
+        df = pd.DataFrame({"price": list(range(n_rows)), "available_at": [None] * n_rows})
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=99),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+            patch.object(svc, "_LEAF_STATS_ROW_LIMIT", 5),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.truncated is True
+        assert resp.truncated_at_rows == 5
+        assert resp.row_count == 5
+
+    def test_zero_row_parquet_handled_cleanly(self) -> None:
+        df = pd.DataFrame({"price": [], "available_at": []})
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=0),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.row_count == 0
+        assert resp.column_count == 2
+        # Every column has nan_ratio == 0.0 when row_count is 0.
+        for c in resp.columns:
+            assert c.nan_ratio == 0.0
+            assert c.non_null_count == 0
+            assert c.null_count == 0
+
+    def test_coord_echoed_in_response(self) -> None:
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="instruments-service",
+                asset_group="SPORTS",
+                instrument_type="FIXTURE",
+                data_type="fixtures",
+                day="2026-04-18",
+                venue=None,
+                instrument_id="abc-123",
+            )
+        assert resp.coord.service == "instruments-service"
+        assert resp.coord.asset_group == "SPORTS"
+        assert resp.coord.day == "2026-04-18"
+        assert resp.coord.instrument_id == "abc-123"
+
+    # -----------------------------------------------------------------
+    # feature_family resolution (Phase 8B — features-repo consolidation)
+    # -----------------------------------------------------------------
+    def test_feature_family_resolved_from_uac_when_path_unresolved(self) -> None:
+        # Path doesn't resolve, but feature_group → UAC mapping should
+        # still populate feature_family on the unavailable response so
+        # the UI can render the family badge even on missing parquets.
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                venue="LIDO",
+                feature_group="lst_staking_yields",
+            )
+        assert resp.available is False
+        assert resp.feature_family == "onchain"
+        assert resp.coord.feature_family == "onchain"
+
+    def test_feature_family_from_parquet_column_overrides_group_mapping(self) -> None:
+        # Writer-stamped feature_family wins over the read-side UAC
+        # mapping (writer is the SSOT per UTL MissingFeatureFamilyError).
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-04-18T00:00:00Z"] * 3, utc=True),
+                "value": [1.0, 2.0, 3.0],
+                "available_at": pd.to_datetime(["2026-04-18T00:00:01Z"] * 3, utc=True),
+                "feature_family": ["onchain", "onchain", "onchain"],
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                venue="LIDO",
+                # Operator passes a wrong / mismatched feature_group;
+                # the parquet column wins.
+                feature_group="aave_lending_rates",
+            )
+        assert resp.available is True
+        assert resp.feature_family == "onchain"
+        assert resp.coord.feature_family == "onchain"
+
+    def test_feature_family_none_for_non_features_service(self) -> None:
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-04-18T00:00:00Z"] * 2, utc=True),
+                "price": [1.0, 2.0],
+                "available_at": pd.to_datetime(["2026-04-18T00:00:01Z"] * 2, utc=True),
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-tick-data-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="trades",
+                day="2026-04-18",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.feature_family is None
+        assert resp.coord.feature_family is None
+
+    def test_feature_family_unknown_group_returns_none(self) -> None:
+        with patch.object(svc, "_gcs_path_for_shard", return_value=None):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                feature_group="not_a_real_feature_group",
+            )
+        assert resp.feature_family is None
+        assert resp.coord.feature_family is None
+
+    def test_feature_family_drift_in_parquet_logged_returns_none(self) -> None:
+        # Writer contract violation: multiple distinct feature_family
+        # values in one parquet. Helper logs a warning + falls back to
+        # the UAC group mapping rather than picking arbitrarily.
+        df = pd.DataFrame(
+            {
+                "value": [1.0, 2.0, 3.0],
+                "available_at": pd.to_datetime(["2026-04-18T00:00:01Z"] * 3, utc=True),
+                "feature_family": ["onchain", "volatility", "onchain"],
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="features-onchain-service",
+                asset_group="DEFI",
+                instrument_type="LST",
+                data_type="lst_yields",
+                day="2026-04-18",
+                feature_group="lst_staking_yields",
+            )
+        # Multi-value detected → falls back to UAC mapping for
+        # ``lst_staking_yields`` (onchain).
+        assert resp.available is True
+        assert resp.feature_family == "onchain"
+
+
+# ---------------------------------------------------------------------------
+# Completeness envelope (writegate slice (b) Phase 5.5; forward-compatible)
+# ---------------------------------------------------------------------------
+
+
+class TestCompletenessEnvelope:
+    """``_compute_completeness_envelope`` derives min/max/mean + null + incomplete-window counts.
+
+    Forward-compatible: when the parquet predates the writegate slice (c)
+    per-service rollout, the columns are absent → ``present=False``. When
+    present, the envelope computes the float stats + counts incomplete_window
+    rows where the JSON list is non-empty.
+    """
+
+    def test_absent_column_returns_present_false(self) -> None:
+        df = pd.DataFrame({"open": [100.0, 101.0], "close": [101.0, 102.0]})
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is False
+        assert env.min_fraction is None
+        assert env.max_fraction is None
+        assert env.mean_fraction is None
+        assert env.null_count == 0
+        assert env.incomplete_window_present_count == 0
+
+    def test_all_present_and_full_completeness(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0],
+                "completeness_fraction": [1.0, 1.0, 1.0],
+                "incomplete_window": ["[]", "[]", "[]"],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.min_fraction == 1.0
+        assert env.max_fraction == 1.0
+        assert env.mean_fraction == 1.0
+        assert env.null_count == 0
+        # All incomplete_window values are "[]" → none counted as present.
+        assert env.incomplete_window_present_count == 0
+
+    def test_mixed_completeness_and_populated_incomplete_window(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0, 103.0],
+                "completeness_fraction": [1.0, 0.95, 0.5, 1.0],
+                "incomplete_window": [
+                    "[]",
+                    '[{"venue": "BINANCE"}]',
+                    '[{"venue": "BINANCE"}, {"venue": "OKX"}]',
+                    "[]",
+                ],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.min_fraction == 0.5
+        assert env.max_fraction == 1.0
+        assert env.mean_fraction == round((1.0 + 0.95 + 0.5 + 1.0) / 4, 4)
+        # Two rows have non-empty incomplete_window lists.
+        assert env.incomplete_window_present_count == 2
+
+    def test_null_completeness_rows_counted_separately(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0],
+                "completeness_fraction": [1.0, None, 0.97],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.null_count == 1
+        assert env.min_fraction == 0.97
+        assert env.max_fraction == 1.0
+
+    def test_all_null_completeness_returns_no_stats(self) -> None:
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 101.0],
+                "completeness_fraction": [None, None],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.null_count == 2
+        assert env.min_fraction is None
+        assert env.max_fraction is None
+        assert env.mean_fraction is None
+
+    def test_incomplete_window_absent_when_completeness_present(self) -> None:
+        # Some emissions log incomplete rows via event payload only; the
+        # row-level column may not exist.
+        df = pd.DataFrame(
+            {
+                "open": [100.0],
+                "completeness_fraction": [0.92],
+            }
+        )
+        env = svc._compute_completeness_envelope(df)
+        assert env.present is True
+        assert env.incomplete_window_present_count == 0
+
+    def test_get_leaf_parquet_stats_threads_completeness_envelope(self) -> None:
+        # End-to-end: get_leaf_parquet_stats forwards the envelope on the
+        # response.
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-05-08T00:00:00Z"] * 2, utc=True),
+                "open": [100.0, 101.0],
+                "available_at": pd.to_datetime(["2026-05-08T00:00:01Z"] * 2, utc=True),
+                "completeness_fraction": [0.97, 1.0],
+                "incomplete_window": ['[{"venue": "BINANCE"}]', "[]"],
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=42),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-data-processing-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="ohlcv_1h",
+                day="2026-05-08",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.completeness.present is True
+        assert resp.completeness.min_fraction == 0.97
+        assert resp.completeness.max_fraction == 1.0
+        assert resp.completeness.incomplete_window_present_count == 1
+
+    def test_get_leaf_parquet_stats_absent_columns_returns_present_false(self) -> None:
+        # Legacy parquet predates the emission-policy rollout → present=False;
+        # endpoint stays backward-compatible.
+        df = pd.DataFrame(
+            {
+                "ts_event": pd.to_datetime(["2026-05-08T00:00:00Z"], utc=True),
+                "open": [100.0],
+                "available_at": pd.to_datetime(["2026-05-08T00:00:01Z"], utc=True),
+            }
+        )
+        with (
+            patch.object(svc, "_gcs_path_for_shard", return_value=("bucket-x", "path/parquet")),
+            patch.object(svc, "_file_size_via_metadata", return_value=10),
+            patch.object(svc, "_read_parquet_columns", return_value=df),
+        ):
+            resp = svc.get_leaf_parquet_stats(
+                service="market-data-processing-service",
+                asset_group="CEFI",
+                instrument_type="PERPETUAL",
+                data_type="ohlcv_1h",
+                day="2026-05-08",
+                venue="BINANCE",
+            )
+        assert resp.available is True
+        assert resp.completeness.present is False
+
+
+# ---------------------------------------------------------------------------
+# v8 manifest columns surfaced on ShardGcsMetadata
+# (writegate Phase 4 — pipeline_mode + service_emission_state +
+# last_emission_decision_at + expected_window_completeness_fraction)
+# ---------------------------------------------------------------------------
+
+
+class TestShardGcsMetadataV8Columns:
+    """``_gcs_metadata`` threads the 4 new v8 manifest columns when present.
+
+    Forward-compatibility check: pre-v8 manifest rows (column keys absent)
+    leave all four fields as ``None`` so the UI renders placeholder pills.
+    """
+
+    def test_v8_columns_threaded_from_manifest_row(self) -> None:
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+            "attempted_at": "2026-05-11T12:00:00Z",
+            "pipeline_mode": "batch_databento",
+            "service_emission_state": "PUBLISHED_DEGRADED",
+            "last_emission_decision_at": "2026-05-11T12:34:56Z",
+            "expected_window_completeness_fraction": "0.97",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=42,
+                asset_group="cefi",
+            )
+        assert result.pipeline_mode == "batch_databento"
+        assert result.service_emission_state == "PUBLISHED_DEGRADED"
+        assert result.last_emission_decision_at == "2026-05-11T12:34:56Z"
+        assert result.expected_window_completeness_fraction == pytest.approx(0.97)
+        # Existing fields still populated correctly.
+        assert result.capture_status == "captured"
+        assert result.row_count == 42
+
+    def test_v8_columns_absent_returns_none_for_forward_compat(self) -> None:
+        # Pre-v8 manifest row — no v8 keys present at all.
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=42,
+                asset_group="cefi",
+            )
+        assert result.pipeline_mode is None
+        assert result.service_emission_state is None
+        assert result.last_emission_decision_at is None
+        assert result.expected_window_completeness_fraction is None
+        # Capture status still passes through normally.
+        assert result.capture_status == "captured"
+
+    def test_v8_columns_none_when_no_manifest_row(self) -> None:
+        # No manifest row at all (e.g. shard not in manifest yet) — v8
+        # fields default to None; capture_status derives from GCS size only.
+        with patch.object(svc, "get_object_metadata", return_value={"size": 100, "updated": None}):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=None,
+                pq_row_count=10,
+                asset_group="cefi",
+            )
+        assert result.pipeline_mode is None
+        assert result.service_emission_state is None
+        assert result.last_emission_decision_at is None
+        assert result.expected_window_completeness_fraction is None
+        assert result.capture_status == "captured"
+
+    def test_off_closed_set_service_emission_state_dropped_silently(self) -> None:
+        # A garbage value on disk MUST NOT leak into the API response —
+        # the Literal type means we'd otherwise corrupt the OpenAPI schema.
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+            "service_emission_state": "UNKNOWN_GARBAGE",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=1,
+                asset_group="cefi",
+            )
+        assert result.service_emission_state is None
+
+    def test_unparseable_completeness_fraction_falls_back_to_none(self) -> None:
+        # Float parse failure on the completeness column logs a warning
+        # and falls back to None — never raises.
+        manifest = {
+            "capture_status": "captured",
+            "error_reason": "",
+            "expected_window_completeness_fraction": "not-a-float",
+        }
+        with patch.object(svc, "get_object_metadata", return_value=None):
+            result = svc._gcs_metadata(
+                bucket="bucket-x",
+                object_path="some/path.parquet",
+                manifest=manifest,
+                pq_row_count=1,
+                asset_group="cefi",
+            )
+        assert result.expected_window_completeness_fraction is None
+
+    def test_all_four_service_emission_states_accepted(self) -> None:
+        for state in (
+            "PUBLISHED_OK",
+            "PUBLISHED_DEGRADED",
+            "STALE_DATA_HEARTBEAT_ONLY",
+            "BLOCKED",
+        ):
+            manifest = {
+                "capture_status": "captured",
+                "error_reason": "",
+                "service_emission_state": state,
+            }
+            with patch.object(svc, "get_object_metadata", return_value=None):
+                result = svc._gcs_metadata(
+                    bucket="bucket-x",
+                    object_path="some/path.parquet",
+                    manifest=manifest,
+                    pq_row_count=1,
+                    asset_group="cefi",
+                )
+            assert result.service_emission_state == state

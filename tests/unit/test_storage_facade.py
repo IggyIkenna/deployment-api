@@ -264,9 +264,7 @@ class TestListObjectsFuse:
         mock_client.list_blobs.return_value = [mock_blob]
         mock_client_fn.return_value = mock_client
 
-        with patch(
-            "deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse broke")
-        ):
+        with patch("deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse broke")):
             result = list_objects("test-bucket", "prefix/")
 
         assert len(result) == 1
@@ -307,9 +305,7 @@ class TestObjectExistsFuse:
         mock_client.blob_exists.return_value = True
         mock_client_fn.return_value = mock_client
 
-        with patch(
-            "deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse broke")
-        ):
+        with patch("deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse broke")):
             result = object_exists("test-bucket", "obj.json")
 
         assert result is True
@@ -359,9 +355,7 @@ class TestListPrefixes:
         mock_client.list_blobs.return_value = [mock_blob]
         mock_client_fn.return_value = mock_client
 
-        with patch(
-            "deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse error")
-        ):
+        with patch("deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse error")):
             result = list_prefixes("test-bucket", "prefix/")
 
         assert "prefix/child/" in result
@@ -413,9 +407,7 @@ class TestReadObjectBytes:
         mock_client.download_bytes.return_value = b"api content"
         mock_client_fn.return_value = mock_client
 
-        with patch(
-            "deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse error")
-        ):
+        with patch("deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse error")):
             result = read_object_bytes("test-bucket", "file.json")
 
         assert result == b"api content"
@@ -466,9 +458,7 @@ class TestWriteObjectBytes:
         mock_client = MagicMock()
         mock_client_fn.return_value = mock_client
 
-        with patch(
-            "deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse error")
-        ):
+        with patch("deployment_api.utils.storage_facade._fuse_path", side_effect=OSError("fuse error")):
             write_object_bytes("test-bucket", "file.json", b"data")
 
         mock_client.upload_bytes.assert_called_once_with("test-bucket", "file.json", b"data")

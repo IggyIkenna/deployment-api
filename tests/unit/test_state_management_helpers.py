@@ -340,11 +340,7 @@ class TestBuildBlobTimestampMapInStateManagement:
     def test_extracts_timestamps(self):
         turbo = {
             "asset_groups": {
-                "CEFI": {
-                    "_venue_date_blob_timestamps": {
-                        "BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}
-                    }
-                }
+                "CEFI": {"_venue_date_blob_timestamps": {"BINANCE": {"2024-01-01": datetime(2024, 1, 1, tzinfo=UTC)}}}
             }
         }
         result = _build_blob_timestamp_map(turbo)

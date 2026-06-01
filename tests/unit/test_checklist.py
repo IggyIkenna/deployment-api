@@ -80,9 +80,7 @@ class TestParseChecklist:
         assert result["readiness_percent"] == 100
 
     def test_pending_items(self):
-        data = self._make_codex_data(
-            cr_statuses={"cr1_functionality": "pass", "cr2_unit_tests": "fail"}
-        )
+        data = self._make_codex_data(cr_statuses={"cr1_functionality": "pass", "cr2_unit_tests": "fail"})
         result = _parse_checklist(data)
         assert result["total_items"] == 5
         # cr2 is fail -> pending; remaining 4 are pass -> done
@@ -249,10 +247,7 @@ class TestGetWarnings:
         assert warnings == []
 
     def test_warnings_capped_at_10(self):
-        items = {
-            f"item_{i}": {"status": "pending", "description": f"Item {i}", "blocking": False}
-            for i in range(15)
-        }
+        items = {f"item_{i}": {"status": "pending", "description": f"Item {i}", "blocking": False} for i in range(15)}
         checklist = self._make_checklist(items)
         warnings = _get_warnings(checklist)
         assert len(warnings) == 10

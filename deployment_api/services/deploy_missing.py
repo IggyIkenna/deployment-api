@@ -1,6 +1,6 @@
 """Deploy-Missing surgical-recovery preview helper.
 
-Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan.md`` Phase 3.
+Plan: ``data_status_drilldown_shard_atom_alignment_2026_05_07.plan`` Phase 3.
 
 The deployment-ui Data Status panel's Deploy-Missing button on a single
 leaf shard needs to fire a backfill VM scoped to ONE shard via the
@@ -32,7 +32,17 @@ import shlex
 from dataclasses import dataclass, field
 from typing import cast
 
+from unified_trading_library import log_event
+
 logger = logging.getLogger(__name__)
+
+
+def _emit_deploy_event(event_name: str, details: dict[str, object]) -> None:
+    """Best-effort structured event emission for tarball deploy audit trail."""
+    try:
+        log_event(event_name, severity="WARNING", details=details)
+    except Exception:
+        logger.debug("Structured event emission skipped (events not initialized): %s", event_name)
 
 
 # Supported launch modes for the Deploy-Missing flow.
@@ -54,6 +64,57 @@ logger = logging.getLogger(__name__)
 #   confuse this with the prod path.
 SUPPORTED_LAUNCH_MODES: frozenset[str] = frozenset({"preview", "tarball-from-local"})
 
+# Environments where tarball-from-local is blocked. tarball-from-local copies the
+# operator's LOCAL working tree into GCS — meaningless and dangerous from a hosted
+# Cloud Run pod. Blocked in staging/prod so operators can't accidentally push
+# uncommitted dev code into non-dev environments.
+# SSOT: codex/05-infrastructure/vm-tarball-deployment.md
+_TARBALL_BLOCKED_ENVS: frozenset[str] = frozenset({"staging", "production", "prod"})
+
+
+def assert_tarball_not_blocked(deployment_env: str, *, override: bool = False) -> None:
+    """Raise DeployMissingError if tarball-from-local is blocked in this environment.
+
+    tarball-from-local copies the operator's local working tree into GCS before
+    launching the VM. This only makes sense from a developer workstation — it is
+    meaningless (and dangerous) from the deployment-api Cloud Run pod running in
+    staging or production. Blocked by default; overridable for emergency hotfixes
+    with an audit log entry.
+
+    Args:
+        deployment_env: The current server deployment environment (from DEPLOYMENT_ENV).
+        override: If True, bypass the block and emit an audit log warning instead.
+
+    Raises:
+        DeployMissingError: if ``deployment_env`` is staging/production and override is False.
+    """
+    if deployment_env.lower() not in _TARBALL_BLOCKED_ENVS:
+        _emit_deploy_event(
+            "TARBALL_DEPLOY_ATTEMPTED",
+            {"deployment_env": deployment_env, "outcome": "allowed"},
+        )
+        return
+    if not override:
+        _emit_deploy_event(
+            "TARBALL_DEPLOY_BLOCKED",
+            {"deployment_env": deployment_env, "outcome": "rejected"},
+        )
+        raise DeployMissingError(
+            f"tarball-from-local deploy is blocked in {deployment_env!r} environment. "
+            "Use the image deploy path (build + promote workflow). "
+            "For emergency hotfix override, set 'override_tarball_block': true in the request "
+            "body. SSOT: codex/05-infrastructure/vm-tarball-deployment.md"
+        )
+    _emit_deploy_event(
+        "TARBALL_DEPLOY_OVERRIDE",
+        {"deployment_env": deployment_env, "outcome": "override_allowed"},
+    )
+    logger.warning(
+        "AUDIT: tarball-block override used in %r environment — "
+        "operator bypassed env-locking guard. Review this action.",
+        deployment_env,
+    )
+
 
 # Service slug -> launch-script name in
 # ``deployment-service/scripts/vm/``. Operators copy + run the produced
@@ -63,12 +124,70 @@ _SERVICE_LAUNCHER_SCRIPTS: dict[str, str] = {
     "market-tick-data-service": f"{_VM_SCRIPT_DIR}/launch-mtds-backfill-vm.sh",
     "market-data-processing-service": f"{_VM_SCRIPT_DIR}/launch-mdps-backfill-vm.sh",
     "instruments-service": f"{_VM_SCRIPT_DIR}/launch-instruments-backfill-vm.sh",
-    "features-onchain-service": f"{_VM_SCRIPT_DIR}/launch-features-onchain-backfill-vm.sh",
-    "features-delta-one-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-volatility-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-cross-instrument-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-sports-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
-    "features-calendar-service": f"{_VM_SCRIPT_DIR}/launch-features-backfill-vm.sh",
+    # Consolidated features-service (Phase 8A of
+    # `unified-trading-pm/plans/active/features_repo_consolidation_2026_05_08.md`).
+    # The single `launch-features-vm.sh --feature-family <name>` entry-point
+    # supersedes the 8 per-family launchers. Each `features-<family>-service`
+    # legacy slug points at the same launcher; callers pass
+    # `--feature-family <family>` to dispatch.
+    "features-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-onchain-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-delta-one-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-volatility-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-cross-instrument-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-sports-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-calendar-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-commodity-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    "features-multi-timeframe-service": f"{_VM_SCRIPT_DIR}/launch-features-vm.sh",
+    # Cross-asset manifest rescan launcher (manifest_schema_final_gate_2026_05_09 Phase 3.A +
+    # manifest_cross_asset_rescan_design_2026_05_08 Phase 3.A). One singleton-locked VM walks
+    # all 5 asset_groups' availability manifests, auto-flips class-A drift rows (5 phantom-audit
+    # drift axes), and routes class-C ambiguous rows to operator triage. Service slug
+    # `cross-asset-rescan` is not a service repo — it's an operation the deployment-api
+    # Deploy-Missing UI button exposes for manifest hygiene. Singleton-lock + WORKERS=64 +
+    # HTTP_POOL_SIZE=128 + asia-northeast1-c default zone per the launcher itself.
+    "cross-asset-rescan": f"{_VM_SCRIPT_DIR}/launch-cross-asset-rescan-vm.sh",
+    # Strategy-service launchers (promote_workflow_may23_cli_path_2026_05_10.md Phase 1 +
+    # launcher_scripts_consolidation_into_deployment_service_2026_05_07.md Phase 2).
+    # "strategy-paper": paper-trade / backtest mode — Deploy-Missing recovery for strategy
+    # outputs; VM runs one tick of the strategy engine per archetype and writes signals.
+    # "strategy-live": live-trade mode — separate from _LIVE_CLUSTER_LAUNCHER_SCRIPTS because
+    # strategy is launched per-archetype (not per-asset_group cluster role). Both scripts
+    # exist under deployment-service/scripts/vm/ per promote_workflow Phase 1.
+    "strategy-paper": f"{_VM_SCRIPT_DIR}/launch-strategy-paper-vm.sh",
+    "strategy-live": f"{_VM_SCRIPT_DIR}/launch-strategy-live-vm.sh",
+}
+
+
+# Live-cluster launcher registry (Phase 11.2 of
+# `unified-trading-pm/plans/active/live_pipeline_mtds_mdps_features_2026_05_08.md`).
+# These are NOT keyed by service slug like ``_SERVICE_LAUNCHER_SCRIPTS`` above
+# (which serves per-shard Deploy-Missing); they're keyed by **live-cluster role**
+# because the live pipeline deploys as a fixed set of VM types per
+# ``unified-trading-pm/codex/05-infrastructure/live-pipeline-architecture.md``
+# § "VM topology + launchers":
+#   - 5 per-asset_group MTDS producers (one per cefi/defi/tradfi/sports/prediction)
+#   - 5 per-asset_group MDPS+features consumers
+#   - 1 singleton features-cross-cutting consumer
+#   - 1 singleton replay-cascade producer (one window at a time)
+#
+# The deployment-UI consumes this registry for the per-asset_group "Deploy live
+# cluster" action (Phase 11.4 — UI button). Operators pick (a) cluster role
+# from the closed set + (b) asset_group (where applicable) + (c) ``--env``;
+# UI renders the resulting launcher command for tarball-from-local or
+# preview-only execution.
+#
+# Codex SSOT for the topology:
+# ``unified-trading-pm/codex/05-infrastructure/runtime-tiers-and-deployment.md``
+# § "Live-pipeline VM topology (2026-05-08 cutover)".
+_LIVE_CLUSTER_LAUNCHER_SCRIPTS: dict[str, str] = {
+    # Per-asset_group launchers — caller appends ``--asset-group <ag> --env <env>``.
+    "mtds-live": f"{_VM_SCRIPT_DIR}/launch-mtds-live.sh",
+    "mdps-features-live": f"{_VM_SCRIPT_DIR}/launch-mdps-features-live.sh",
+    # Singletons — caller appends ``--env <env>`` only; no asset_group axis.
+    "features-cross-cutting": f"{_VM_SCRIPT_DIR}/launch-features-cross-cutting.sh",
+    # Replay-cascade also takes ``--start``/``--end``/``--shard-key`` per invocation.
+    "replay-cascade": f"{_VM_SCRIPT_DIR}/launch-replay-cascade.sh",
 }
 
 
@@ -187,9 +306,7 @@ def build_deploy_missing_preview(
         )
 
     if not row_key.get("venue") or not row_key.get("data_type"):
-        raise DeployMissingError(
-            f"row_key must include at least 'venue' and 'data_type'; got {row_key!r}"
-        )
+        raise DeployMissingError(f"row_key must include at least 'venue' and 'data_type'; got {row_key!r}")
 
     day = row_key.get("day") or row_key.get("date")
     if not day:
@@ -226,10 +343,7 @@ def build_deploy_missing_preview(
         # (uncommitted changes, branch toggles, hot-fixes). The combo
         # command chains the refresh + the launcher with ``&&`` so a
         # tarball-build failure aborts before launching the VM.
-        command = (
-            f"bash deployment-service/scripts/vm/create-code-tarballs.sh --all "
-            f"&& {launcher_invocation}"
-        )
+        command = f"bash deployment-service/scripts/vm/create-code-tarballs.sh --all && {launcher_invocation}"
         warnings_out.append(
             "LOCAL-ONLY: this mode copies code from your LOCAL working tree "
             "into the GCS tarball bucket. It only works when run from your "
@@ -296,10 +410,187 @@ def list_supported_services() -> list[str]:
     return sorted(_SERVICE_LAUNCHER_SCRIPTS.keys())
 
 
+def build_shard_key(asset_group: str, row_key: dict[str, str]) -> str:
+    """Public wrapper for the canonical 6-field pipe-delimited shard key."""
+    return _build_shard_key(asset_group, row_key)
+
+
+def get_launcher_script(service: str) -> str | None:
+    """Return the launcher script path for ``service``, or None if not registered."""
+    return _SERVICE_LAUNCHER_SCRIPTS.get(service)
+
+
+# ── Phase 11.4 — live-cluster launch (Deploy live cluster UI button) ──────────
+
+
+# Closed set of valid asset_groups for the per-asset_group live-cluster roles.
+_LIVE_ASSET_GROUPS: frozenset[str] = frozenset({"cefi", "defi", "tradfi", "sports", "prediction"})
+
+# Closed set of valid env tiers per bucket-name SSOT (b+).
+_LIVE_DEPLOYMENT_ENVS: frozenset[str] = frozenset({"prod", "staging", "dev"})
+
+# Live-cluster roles that take ``--asset-group <ag>``. Replay-cascade takes
+# it too — its VM-name prefix is ``replay-{asset_group}-{ts}`` per
+# ``codex/05-infrastructure/runtime-tiers-and-deployment.md`` topology table.
+_LIVE_ROLES_PER_ASSET_GROUP: frozenset[str] = frozenset(
+    {"mtds-live", "mdps-features-live", "replay-cascade"},
+)
+
+# Live-cluster roles that take additional window-parameterised flags
+# (``--start``/``--end``/``--shard-key``).
+_LIVE_ROLES_WINDOW_PARAMETERISED: frozenset[str] = frozenset({"replay-cascade"})
+
+
+@dataclass
+class LiveClusterLaunchPreview:
+    """Structured response for the UI's Deploy-live-cluster copy-to-clipboard widget.
+
+    Mirrors ``DeployMissingPreview`` shape but keyed by live-cluster ROLE instead
+    of service slug (per Phase 11.2 — :data:`_LIVE_CLUSTER_LAUNCHER_SCRIPTS`).
+
+    Codex SSOT for the topology:
+    ``unified-trading-pm/codex/05-infrastructure/runtime-tiers-and-deployment.md``
+    § "Live-pipeline VM topology (2026-05-08 cutover)".
+    """
+
+    role: str
+    asset_group: str | None
+    deployment_env: str
+    launcher_script: str
+    command: str
+    notes: list[str]
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "asset_group": self.asset_group,
+            "deployment_env": self.deployment_env,
+            "launcher_script": self.launcher_script,
+            "command": self.command,
+            "notes": list(self.notes),
+            "warnings": list(self.warnings),
+        }
+
+
+def build_live_cluster_launch_preview(
+    *,
+    role: str,
+    asset_group: str | None,
+    deployment_env: str,
+    replay_start: str | None = None,
+    replay_end: str | None = None,
+    replay_shard_key: str | None = None,
+) -> LiveClusterLaunchPreview:
+    """Assemble the launcher command for ONE live-cluster VM type.
+
+    Args:
+        role: Live-cluster role key from
+            :data:`_LIVE_CLUSTER_LAUNCHER_SCRIPTS` —
+            ``"mtds-live"`` / ``"mdps-features-live"`` /
+            ``"features-cross-cutting"`` / ``"replay-cascade"``.
+        asset_group: Lowercase asset_group (cefi/defi/tradfi/sports/prediction)
+            for per-asset_group roles; ``None`` for singleton roles.
+        deployment_env: Target env tier (prod/staging/dev) per bucket-name
+            SSOT (b+).
+        replay_start / replay_end / replay_shard_key: Window-parameterised
+            args required when ``role == "replay-cascade"``.
+
+    Raises:
+        DeployMissingError: invalid role, missing required arg for that role,
+            or asset_group passed for a singleton role.
+    """
+    if role not in _LIVE_CLUSTER_LAUNCHER_SCRIPTS:
+        raise DeployMissingError(
+            f"Unknown live-cluster role '{role}'. Valid roles: {sorted(_LIVE_CLUSTER_LAUNCHER_SCRIPTS.keys())}",
+        )
+    if deployment_env not in _LIVE_DEPLOYMENT_ENVS:
+        raise DeployMissingError(
+            f"Unknown deployment_env '{deployment_env}'. Valid envs: {sorted(_LIVE_DEPLOYMENT_ENVS)}",
+        )
+    if role in _LIVE_ROLES_PER_ASSET_GROUP:
+        if asset_group is None or asset_group not in _LIVE_ASSET_GROUPS:
+            raise DeployMissingError(
+                f"Role '{role}' requires --asset-group; valid: {sorted(_LIVE_ASSET_GROUPS)} (got: {asset_group!r})",
+            )
+    elif asset_group is not None:
+        raise DeployMissingError(
+            f"Role '{role}' is singleton; pass asset_group=None (got: {asset_group!r})",
+        )
+    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:  # noqa: SIM102 — guard clause for window-parameterised roles; separate if improves readability
+        if not (replay_start and replay_end and replay_shard_key):
+            raise DeployMissingError(
+                f"Role '{role}' requires --start, --end, --shard-key "
+                f"(got start={replay_start!r}, end={replay_end!r}, "
+                f"shard_key={replay_shard_key!r})",
+            )
+
+    launcher = _LIVE_CLUSTER_LAUNCHER_SCRIPTS[role]
+    cmd_parts: list[str] = [f"bash {launcher}"]
+    if asset_group is not None:
+        cmd_parts.append(f"--asset-group {asset_group}")
+    cmd_parts.append(f"--env {deployment_env}")
+    if role in _LIVE_ROLES_WINDOW_PARAMETERISED:
+        cmd_parts.append(f"--start {replay_start}")
+        cmd_parts.append(f"--end {replay_end}")
+        cmd_parts.append(f"--shard-key {replay_shard_key}")
+    command = " \\\n  ".join(cmd_parts)
+
+    notes: list[str] = [
+        f"Live-cluster role: {role}. Launcher: {launcher}.",
+        "Singleton-locked: launcher refuses duplicate-launch in the same zone "
+        "for the same (role, asset_group) — re-run with --force to bypass.",
+        "Bucket naming uses (b+) env-aware shape via UTL "
+        "``resolve_bucket_name(cloud=, kind=, asset_group=, env=)``. Resolver "
+        "falls back to flat names until Phase 2 physical migration provisions "
+        "env-tiered buckets (window 2026-05-15→05-19).",
+        "Operational launch boundary: Phase 15 of "
+        "``unified-trading-pm/plans/active/live_pipeline_mtds_mdps_features_2026_05_08.md`` "
+        "(7-day live smoke, ≥2026-05-15). Operational launch awaits "
+        "(a) Harsh slot 5 per-service consumer wiring, "
+        "(b) Phase 12 batch-vs-live reconciliation gate green, "
+        "(c) tarball refresh via ``create-code-tarballs.sh --all``.",
+    ]
+    warnings_out: list[str] = []
+    if deployment_env != "prod":
+        warnings_out.append(
+            f"--env {deployment_env}: ensure the {deployment_env}-tier buckets are "
+            "provisioned. Phase 2 physical migration (2026-05-15→05-19) provisions "
+            "~300-400 env-tiered buckets; until then resolver falls back to flat "
+            "(prod-tier) buckets.",
+        )
+
+    logger.info(
+        "live-cluster-launch preview built role=%s asset_group=%s env=%s",
+        role,
+        asset_group,
+        deployment_env,
+    )
+    return LiveClusterLaunchPreview(
+        role=role,
+        asset_group=asset_group,
+        deployment_env=deployment_env,
+        launcher_script=launcher,
+        command=command,
+        notes=notes,
+        warnings=warnings_out,
+    )
+
+
+def list_supported_live_cluster_roles() -> list[str]:
+    """Enumerate live-cluster roles registered in :data:`_LIVE_CLUSTER_LAUNCHER_SCRIPTS`."""
+    return sorted(_LIVE_CLUSTER_LAUNCHER_SCRIPTS.keys())
+
+
 __all__ = [
     "DeployMissingError",
     "DeployMissingPreview",
+    "LiveClusterLaunchPreview",
     "build_deploy_missing_preview",
+    "build_live_cluster_launch_preview",
+    "build_shard_key",
+    "get_launcher_script",
+    "list_supported_live_cluster_roles",
     "list_supported_services",
 ]
 

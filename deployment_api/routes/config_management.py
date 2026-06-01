@@ -123,7 +123,7 @@ def _validate_domain(domain: str) -> None:
 
 def _make_config_store(domain: str, schema_version: str = "1.0") -> _ConfigStoreProto:
     """Create a ConfigStore for the given domain."""
-    from unified_trading_library.config_interface import (
+    from unified_trading_library import (
         get_config_store,  # pyright: ignore[reportMissingTypeStubs]
     )
 
@@ -132,10 +132,10 @@ def _make_config_store(domain: str, schema_version: str = "1.0") -> _ConfigStore
 
 def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> None:
     """Publish config-domain-{domain} event to notify subscribing services."""
-    from unified_trading_library.cloud_interface import (
+    from unified_trading_library import (
         get_event_bus,  # pyright: ignore[reportMissingTypeStubs]
+        log_event,
     )
-    from unified_trading_library.events import log_event
 
     topic = f"{DOMAIN_TOPIC_PREFIX}{domain}"
     message_data = {
@@ -163,9 +163,7 @@ def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> Non
 
 @router.post("/{domain}", response_model=ConfigVersionResponse)
 async def write_domain_config(
-    domain: Annotated[
-        str, Path(description="Config domain: instruments, strategies, clients, venues")
-    ],
+    domain: Annotated[str, Path(description="Config domain: instruments, strategies, clients, venues")],
     request: ConfigWriteRequest,
 ) -> ConfigVersionResponse:
     """Write a new version of the domain config.
@@ -177,7 +175,7 @@ async def write_domain_config(
     _validate_domain(domain)
 
     def _write_sync() -> tuple[str, str]:
-        from unified_trading_library.config_interface import (
+        from unified_trading_library import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -222,7 +220,7 @@ async def read_domain_config(
     _validate_domain(domain)
 
     def _read_sync() -> tuple[dict[str, object], str | None]:
-        from unified_trading_library.config_interface import (
+        from unified_trading_library import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -286,7 +284,7 @@ async def diff_domain_config_versions(
     _validate_domain(domain)
 
     def _diff_sync() -> list[str]:
-        from unified_trading_library.config_interface import (
+        from unified_trading_library import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -344,7 +342,7 @@ async def rollback_domain_config(
     _validate_domain(domain)
 
     def _rollback_sync() -> tuple[str, str]:
-        from unified_trading_library.config_interface import (
+        from unified_trading_library import (
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 

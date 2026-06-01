@@ -130,9 +130,7 @@ def get_cached_result(
 
     with _cache_lock:
         if key not in _cache:
-            logger.debug(
-                "[DATA_STATUS_CACHE] MISS (not found): %s %s-%s", service, start_date, end_date
-            )
+            logger.debug("[DATA_STATUS_CACHE] MISS (not found): %s %s-%s", service, start_date, end_date)
             return None
 
         result, cached_at = _cache[key]
@@ -236,9 +234,7 @@ def _truncate_list_in_dict(
 
 def _truncate_found_missing(d: dict[str, object], max_items: int, half: int) -> None:
     """Truncate both dates_found_list and dates_missing_list in a dict."""
-    _truncate_list_in_dict(
-        d, "dates_found_list", "dates_found_list_tail", "dates_found_truncated", max_items, half
-    )
+    _truncate_list_in_dict(d, "dates_found_list", "dates_found_list_tail", "dates_found_truncated", max_items, half)
     _truncate_list_in_dict(
         d,
         "dates_missing_list",

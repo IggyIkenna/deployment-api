@@ -17,12 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from unified_trading_library import (
-    PubSubEventSink,
     RequestAuditMiddleware,
     make_events_relay_router,
-    setup_tracing,
 )
-from unified_trading_library.events import setup_events
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
@@ -30,49 +27,72 @@ from deployment_api.metrics import PROCESSING_LATENCY, RECORDS_PROCESSED
 __all__ = ["PROCESSING_LATENCY", "RECORDS_PROCESSED"]
 
 _cfg = DeploymentApiConfig()
-_event_sink = PubSubEventSink(
-    project_id=_cfg.gcp_project_id,
-    topic="deployment-api-events",
-    service_name="deployment-api",
-)
-# Event logging for UTD v2 observability (before any log_event)
-setup_events(service_name="deployment-api", mode="live", sink=_event_sink)
-setup_tracing("deployment-api")
 
 from deployment_api import __version__ as _api_version
 from deployment_api.auth import auth_cfg as _auth_cfg
-from deployment_api.auth import verify_api_key
+from deployment_api.firebase_auth import verify_any_auth
 from deployment_api.health_routes import router as health_router
 from deployment_api.lifespan import lifespan
 from deployment_api.middleware import (
     CorrelationIdMiddleware,
     PrometheusMiddleware,
+    RateLimitMiddleware,
     configure_middleware,
 )
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
+    backfill_launch,
     builds,
+    builds_history,
     capabilities,
     chaos_injections,
     checklist,
+    client_treasury,
     cloud_builds,
     commentary,
     config,
     config_management,
+    cost_daily,
     data_status,
     deploy_events_sse,
+    deployment_diff,
     deployments,
     epics,
+    execution_backtest_launch,
     fixtures,
     infra_health,
+    kill_switch_routes,
+    log_stream,
+    manual_pending,
+    ml_experiment_launch,
+    monitor_backfill,
+    monitor_experiments,
+    monitor_live,
+    monitor_scheduled,
+    promote,
+    recursive_borrow_coverage,
+    repo_coverage,
+    repo_readiness,
+    risk_routes,
+    scenarios,
     service_status,
     services,
     shard_detail,
     sports_venues,
+    strategy_backtest_launch,
+    strategy_runs,
+    strategy_shard,
     subscriptions,
+    treasury,
+    treasury_routes,
     user_management,
+    vm_admin,
+    vm_cost_estimate,
     vm_deployments,
+    vm_events,
+    vm_events_ws,
+    vm_health,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,6 +115,7 @@ configure_middleware(app)
 app.add_middleware(PrometheusMiddleware, service_name="deployment-api")  # pyright: ignore[reportArgumentType]
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(RequestAuditMiddleware)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=60)  # pyright: ignore[reportArgumentType]
 
 
 # --- Standard error handler ---
@@ -102,79 +123,119 @@ app.add_middleware(RequestAuditMiddleware)
 async def standard_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """Return errors in a standard envelope: {error: {code, message, details}, request_id}."""
     request_id: str = getattr(request.state, "request_id", str(uuid.uuid4()))
-    raw_detail: str | dict[str, str] = (
-        exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-    )
-    message = (
-        raw_detail.get("message", str(exc.detail))
-        if isinstance(raw_detail, dict)
-        else str(raw_detail)
-    )
+
+    if isinstance(exc.detail, dict):
+        raw_detail: dict[str, object] = cast(dict[str, object], exc.detail)
+        message_value = raw_detail.get("message", str(exc.detail))
+        message: str = str(message_value)
+    else:
+        raw_detail = {"message": str(exc.detail)}
+        message = str(exc.detail)
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": {
                 "code": f"HTTP_{exc.status_code}",
                 "message": message,
-                "details": raw_detail if isinstance(raw_detail, dict) else None,
+                "details": raw_detail,
             },
             "request_id": request_id,
         },
     )
 
 
-# --- Authenticated API routes (require API key) ---
-_authenticated_router = APIRouter(dependencies=[Depends(verify_api_key)])
+# --- Authenticated API routes (accept X-API-Key or Firebase Bearer token) ---
+_authenticated_router = APIRouter(dependencies=[Depends(verify_any_auth)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
 _authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
-_authenticated_router.include_router(
-    checklist.router, prefix="/api/checklists", tags=["Checklists"]
-)
+_authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
 _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])
+_authenticated_router.include_router(data_status.router, prefix="/api/data-status", tags=["Data Status"])
+_authenticated_router.include_router(shard_detail.router, prefix="/api/data-status", tags=["Data Status"])
 _authenticated_router.include_router(
-    data_status.router, prefix="/api/data-status", tags=["Data Status"]
-)
-_authenticated_router.include_router(
-    shard_detail.router, prefix="/api/data-status", tags=["Data Status"]
+    recursive_borrow_coverage.router,
+    prefix="/api/data-status",
+    tags=["Data Status"],
 )
 _authenticated_router.include_router(fixtures.router, prefix="/api")
-_authenticated_router.include_router(
-    service_status.router, prefix="/api/service-status", tags=["Service Status"]
-)
-_authenticated_router.include_router(
-    capabilities.router, prefix="/api/capabilities", tags=["Capabilities"]
-)
+_authenticated_router.include_router(service_status.router, prefix="/api/service-status", tags=["Service Status"])
+_authenticated_router.include_router(capabilities.router, prefix="/api/capabilities", tags=["Capabilities"])
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds
+_authenticated_router.include_router(subscriptions.router, prefix="/api", tags=["Client Subscriptions"])
+_authenticated_router.include_router(chaos_injections.router, prefix="/api", tags=["Chaos Injection"])
 _authenticated_router.include_router(
-    subscriptions.router, prefix="/api", tags=["Client Subscriptions"]
-)
-_authenticated_router.include_router(
-    chaos_injections.router, prefix="/api", tags=["Chaos Injection"]
-)
-_authenticated_router.include_router(
-    builds.router
-)  # /api/builds/{service} + /api/deployments/{service}/deploy
+    builds_history.router, prefix="/api/builds", tags=["Builds"]
+)  # must be registered BEFORE builds.router (static /history before /{service})
+_authenticated_router.include_router(builds.router)  # /api/builds/{service} + /api/deployments/{service}/deploy
 _authenticated_router.include_router(config_management.router, prefix="/api")
 _authenticated_router.include_router(commentary.router, prefix="/api", tags=["Commentary"])
 _authenticated_router.include_router(sports_venues.router)
-_authenticated_router.include_router(
-    user_management.router, prefix="/api/user-management", tags=["User Management"]
-)
+_authenticated_router.include_router(user_management.router, prefix="/api/user-management", tags=["User Management"])
 _authenticated_router.include_router(vm_deployments.router, prefix="/api", tags=["VM Deployments"])
+_authenticated_router.include_router(backfill_launch.router, prefix="/api/backfill", tags=["Backfill"])
+_authenticated_router.include_router(ml_experiment_launch.router, prefix="/api/ml/experiment", tags=["ML Experiment"])
+_authenticated_router.include_router(
+    strategy_backtest_launch.router, prefix="/api/strategy/backtest", tags=["Strategy Backtest"]
+)
+_authenticated_router.include_router(
+    execution_backtest_launch.router, prefix="/api/execution/backtest", tags=["Execution Backtest"]
+)
+_authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM Admin"])
+_authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
+_authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
+_authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM Health"])
+_authenticated_router.include_router(cost_daily.router, prefix="/api", tags=["Costs"])
+_authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
+_authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
+_authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
+_authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
+_authenticated_router.include_router(scenarios.router, prefix="/api/scenarios", tags=["Scenarios"])
+_authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
+_authenticated_router.include_router(strategy_shard.router)  # prefix=/api/strategy/shard (set on router)
+_authenticated_router.include_router(promote.router, prefix="/api", tags=["Promote Workflow"])
+_authenticated_router.include_router(manual_pending.router, prefix="/api", tags=["Manual Pending Queue"])
+_authenticated_router.include_router(monitor_backfill.router, prefix="/api", tags=["Monitor"])
+_authenticated_router.include_router(monitor_experiments.router, prefix="/api", tags=["Monitor"])
+_authenticated_router.include_router(monitor_live.router, prefix="/api", tags=["Monitor"])
+_authenticated_router.include_router(monitor_scheduled.router, prefix="/api", tags=["Monitor"])
+_authenticated_router.include_router(log_stream.router, tags=["Log Stream"])  # GET /api/logs/stream/{target_ref}
+_authenticated_router.include_router(treasury.router, prefix="/api", tags=["Treasury"])
+_authenticated_router.include_router(treasury_routes.router, prefix="/api/treasury", tags=["Treasury"])
+# /treasury/nav is intentionally also exposed without the /api prefix
+# (matches plan spec "/treasury/nav?client_id=<id>") so include on app directly too.
+app.include_router(treasury_routes.router, prefix="/treasury", tags=["Treasury"], dependencies=[])
+# Phase 6.A + 6.B: per-client attribution view + subscription list.
+# CONSUMER role — builds on /api/treasury/rollup (Phase 3.D canonical).
+_authenticated_router.include_router(client_treasury.router, prefix="/api", tags=["Treasury"])
+# Kill-switch router already declares /api/kill-switch prefix + verify_api_key
+# dependency internally; include directly on app so we don't double-gate.
+app.include_router(kill_switch_routes.router)
 app.include_router(_authenticated_router)
+
+
+# Register /metrics BEFORE health_router to avoid the health_router /{full_path:path}
+# catch-all intercepting it (routes are matched in registration order).
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    """Prometheus metrics endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# /api/openapi.json — convenience alias for the auto-generated FastAPI schema.
+# Registered before health_router to prevent the catch-all from intercepting it.
+@app.get("/api/openapi.json", include_in_schema=False)
+async def api_openapi_spec() -> JSONResponse:
+    """Return the auto-generated OpenAPI 3.x schema for this service."""
+    return JSONResponse(app.openapi())
+
 
 # --- Unauthenticated health / utility routes (no API key required) ---
 app.include_router(health_router)
 app.include_router(infra_health.router)  # GET /infra/health — Layer 2 infra verification
 app.include_router(make_events_relay_router())
 app.include_router(deploy_events_sse.router)  # GET /stream/deploy-events (SSE)
-
-
-@app.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
-    """Prometheus metrics endpoint."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+app.include_router(vm_events_ws.router)  # WS /ws/vm/{vm_name}/events — live event stream
 
 
 class PipelineTriggerRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -215,7 +276,7 @@ if _ui_dist:
 @app.get("/api/health")
 async def health_check_with_config() -> dict[str, object]:
     """Detailed health check. Includes GCS FUSE status for UI display."""
-    from unified_trading_library.config_interface import UnifiedCloudConfig
+    from unified_trading_library import UnifiedCloudConfig
 
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
@@ -223,9 +284,7 @@ async def health_check_with_config() -> dict[str, object]:
     return {
         "status": "healthy",
         "version": _api_version,
-        "config_dir": (
-            str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None
-        ),
+        "config_dir": (str(cast(Path, app.state.config_dir)) if hasattr(app.state, "config_dir") else None),
         "gcs_fuse": get_gcs_fuse_status(),
         "cloud_provider": _cloud_cfg.cloud_provider,
         "mock_mode": _cloud_cfg.is_mock_mode(),
@@ -251,10 +310,11 @@ if _ui_dist:
             or full_path.startswith("assets/")
             or full_path.startswith("stream/")
             or full_path.startswith("infra/")
-            or full_path in {"metrics", "docs", "redoc", "openapi.json"}
+            or full_path in {"metrics", "docs", "redoc", "openapi.json", "ws"}
         ):
             raise HTTPException(status_code=404, detail="Not Found")
-        candidate = _ui_dist / full_path
-        if candidate.is_file():
-            return FileResponse(candidate)
+        if _ui_dist is not None:
+            candidate = _ui_dist / full_path
+            if candidate.is_file():
+                return FileResponse(candidate)
         return FileResponse(_ui_index)

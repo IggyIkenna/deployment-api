@@ -1,7 +1,7 @@
 """
 Unit tests for data_status_service module.
 
-Tests cover pure methods: build_bucket_name, _calculate_completion_rate,
+Tests cover pure methods: _calculate_completion_rate,
 run_data_status_cli, calculate_missing_shards, get_last_updated_info,
 validate_data_completeness.
 """
@@ -15,9 +15,7 @@ import pandas as pd
 import pytest
 
 # Load directly to avoid circular import via services/__init__.py
-_path = os.path.join(
-    os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py"
-)
+_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py")
 _spec = importlib.util.spec_from_file_location("_dss_standalone", os.path.abspath(_path))
 assert _spec is not None and _spec.loader is not None
 _dss_mod = importlib.util.module_from_spec(_spec)
@@ -35,25 +33,6 @@ def _mock_process(returncode: int = 0, stdout: bytes = b"{}", stderr: bytes = b"
     proc.returncode = returncode
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     return proc
-
-
-class TestBuildBucketName:
-    """Tests for DataStatusService.build_bucket_name."""
-
-    def test_format(self):
-        svc = DataStatusService(project_id="my-project")
-        assert svc.build_bucket_name("instruments", "CEFI") == "instruments-cefi-my-project"
-
-    def test_lowercases_category(self):
-        svc = DataStatusService(project_id="proj")
-        result = svc.build_bucket_name("market-data", "TRADFI")
-        assert "tradfi" in result
-        assert "TRADFI" not in result
-
-    def test_project_id_appended(self):
-        svc = DataStatusService(project_id="test-123")
-        result = svc.build_bucket_name("prefix", "DEFI")
-        assert result.endswith("test-123")
 
 
 class TestCalculateCompletionRate:
@@ -175,9 +154,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "DEFI"]
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", asset_groups=["CEFI", "DEFI"])
 
         assert "-c" in captured["args"]
         assert "CEFI" in captured["args"]
@@ -193,9 +170,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", venues=["BINANCE", "OKX"]
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", venues=["BINANCE", "OKX"])
 
         assert "-v" in captured["args"]
         assert "BINANCE" in captured["args"]
@@ -252,9 +227,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "market-data-processing-service", "2024-01-01", "2024-01-31"
-            )
+            await svc.run_data_status_cli("market-data-processing-service", "2024-01-01", "2024-01-31")
 
         assert "--fast" in captured["args"]
 
@@ -268,9 +241,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", check_data_types=True
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", check_data_types=True)
 
         assert "--check-data-types" in captured["args"]
 
@@ -284,9 +255,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", check_feature_groups=True
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", check_feature_groups=True)
 
         assert "--check-feature-groups" in captured["args"]
 
@@ -300,9 +269,7 @@ class TestRunDataStatusCli:
             return _mock_process()
 
         with patch("asyncio.create_subprocess_exec", new=_capture):
-            await svc.run_data_status_cli(
-                "svc-a", "2024-01-01", "2024-01-31", check_timeframes=True
-            )
+            await svc.run_data_status_cli("svc-a", "2024-01-01", "2024-01-31", check_timeframes=True)
 
         assert "--check-timeframes" in captured["args"]
 
@@ -318,26 +285,20 @@ class TestCalculateMissingShards:
     async def test_returns_error_when_scan_raises(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", side_effect=RuntimeError("scan failed")):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert "error" in result
 
     @pytest.mark.asyncio
     async def test_returns_missing_analysis_structure(self):
         svc = _make_svc()
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             if "cefi" in cat.lower():
                 return {"missing": ["2024-01-01"], "days_checked": 2}
             return None
 
         with patch.object(svc, "_scan_category_manifest", side_effect=_mock_scan):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-02"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-02")
 
         assert result["service"] == "instruments-service"
         assert "total_missing" in result
@@ -349,18 +310,14 @@ class TestCalculateMissingShards:
     async def test_handles_no_missing(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", return_value=None):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert result["total_missing"] == 0
 
     @pytest.mark.asyncio
     async def test_handles_all_categories_empty(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", return_value=None):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert "total_missing" in result
         assert result["total_missing"] == 0
 
@@ -368,9 +325,7 @@ class TestCalculateMissingShards:
     async def test_counts_by_category(self):
         svc = _make_svc()
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             cat_l = cat.lower()
             if "cefi" in cat_l:
                 return {"missing": ["2024-01-01"], "days_checked": 1}
@@ -379,9 +334,7 @@ class TestCalculateMissingShards:
             return None
 
         with patch.object(svc, "_scan_category_manifest", side_effect=_mock_scan):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-01"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-01")
 
         mbc = result["missing_by_category"]
         assert isinstance(mbc, dict)
@@ -391,9 +344,7 @@ class TestCalculateMissingShards:
     async def test_returns_correct_date_range(self):
         svc = _make_svc()
         with patch.object(svc, "_scan_category_manifest", return_value=None):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-31"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-31")
         assert result["date_range"] == {"start": "2024-01-01", "end": "2024-01-31"}
 
     @pytest.mark.asyncio
@@ -401,9 +352,7 @@ class TestCalculateMissingShards:
         svc = _make_svc()
         calls: list[str] = []
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             calls.append(cat)
             return None
 
@@ -421,17 +370,13 @@ class TestCalculateMissingShards:
     async def test_summary_contains_completion_rate(self):
         svc = _make_svc()
 
-        def _mock_scan(
-            service: str, cat: str, start: str, end: str
-        ) -> dict[str, list[str] | int] | None:
+        def _mock_scan(service: str, cat: str, start: str, end: str, **_: object) -> dict[str, list[str] | int] | None:
             if "cefi" in cat.lower():
                 return {"missing": ["2024-01-01"], "days_checked": 3}
             return None
 
         with patch.object(svc, "_scan_category_manifest", side_effect=_mock_scan):
-            result = await svc.calculate_missing_shards(
-                "instruments-service", "2024-01-01", "2024-01-03"
-            )
+            result = await svc.calculate_missing_shards("instruments-service", "2024-01-01", "2024-01-03")
 
         summary = result["summary"]
         assert isinstance(summary, dict)
@@ -467,9 +412,7 @@ class TestGetLastUpdatedInfo:
         svc = _make_svc()
 
         with patch.object(_dss_mod, "list_objects", return_value=[]):
-            result = await svc.get_last_updated_info(
-                "market-tick-data-handler", asset_groups=["cefi"]
-            )
+            result = await svc.get_last_updated_info("market-tick-data-handler", asset_groups=["cefi"])
 
         assert result["asset_groups"]["cefi"]["status"] == "empty"
 
@@ -501,9 +444,7 @@ class TestValidateDataCompleteness:
     @pytest.mark.asyncio
     async def test_returns_error_when_cli_fails(self):
         svc = _make_svc()
-        with patch.object(
-            svc, "run_data_status_cli", new=AsyncMock(return_value={"error": "failed"})
-        ):
+        with patch.object(svc, "run_data_status_cli", new=AsyncMock(return_value={"error": "failed"})):
             result = await svc.validate_data_completeness("svc-a", "2024-01-01")
         assert "error" in result
 
@@ -571,9 +512,7 @@ class TestBuildDataTypeBreakdown:
     def test_returns_empty_when_no_data_type_column(self):
         df = pd.DataFrame({"date": ["2024-01-01"], "venue": ["BINANCE-SPOT"]})
         vm = MagicMock()
-        result = self.svc._build_data_type_breakdown(
-            df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
-        )
+        result = self.svc._build_data_type_breakdown(df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm)
         assert result == {}
 
     def test_returns_data_types_from_index(self):
@@ -591,12 +530,8 @@ class TestBuildDataTypeBreakdown:
             "get_expected_data_types_for_venue",
             return_value=["trades", "book_snapshot_5"],
         ):
-            with patch.object(
-                _dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"
-            ):
-                result = self.svc._build_data_type_breakdown(
-                    df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
-                )
+            with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"):
+                result = self.svc._build_data_type_breakdown(df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm)
 
         assert "trades" in result
         assert "book_snapshot_5" in result
@@ -615,9 +550,7 @@ class TestBuildDataTypeBreakdown:
         vm.get_expected_trading_dates.return_value = ["2024-01-01"]
         with patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["trades"]):
             with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
-                result = self.svc._build_data_type_breakdown(
-                    df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm
-                )
+                result = self.svc._build_data_type_breakdown(df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", vm)
 
         # Observed-but-not-UAC-declared dt is kept with is_expected=False
         assert "unexpected_type" in result
@@ -799,9 +732,7 @@ class TestPhantomExpectedClamp:
             return_value=["ODDS", "arbitrage_opportunity", "odds_movement", "odds_snapshot"],
         ):
             with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
-                result = self.svc._build_data_type_breakdown(
-                    df, "ODDS_API", "2024-01-01", "2024-01-03", vm
-                )
+                result = self.svc._build_data_type_breakdown(df, "ODDS_API", "2024-01-01", "2024-01-03", vm)
 
         # Only ODDS (observed) shows up. arbitrage_opportunity, odds_movement,
         # odds_snapshot are UAC-declared but never observed -> phantom -> dropped.
@@ -840,9 +771,7 @@ class TestPhantomExpectedClamp:
         btc_expected = int(result["BTC"]["dates_expected"])
         hype_expected = int(result["HYPE"]["dates_expected"])
         assert hype_expected == 1, f"HYPE should be clamped to 1 day, got {hype_expected}"
-        assert btc_expected > hype_expected, (
-            f"BTC ({btc_expected}) should span more days than HYPE ({hype_expected})"
-        )
+        assert btc_expected > hype_expected, f"BTC ({btc_expected}) should span more days than HYPE ({hype_expected})"
 
     def test_underlying_breakdown_clamps_to_observed_launch(self):
         """Underlying that launched mid-history does not get pre-launch phantom."""
@@ -875,9 +804,7 @@ class TestPhantomExpectedClamp:
         btc_expected = int(result["BTC"]["dates_expected"])
         sol_expected = int(result["SOL"]["dates_expected"])
         assert sol_expected == 1, f"SOL should be clamped to 1 day, got {sol_expected}"
-        assert btc_expected > sol_expected, (
-            f"BTC ({btc_expected}) should span more days than SOL ({sol_expected})"
-        )
+        assert btc_expected > sol_expected, f"BTC ({btc_expected}) should span more days than SOL ({sol_expected})"
 
     def test_data_type_breakdown_falls_back_to_observed_min_when_uac_unknown(self):
         """When UAC has no declared dt start, use earliest observed date."""
@@ -900,9 +827,7 @@ class TestPhantomExpectedClamp:
             return_value=["derivative_ticker"],
         ):
             with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None):
-                result = self.svc._build_data_type_breakdown(
-                    df, "DRIFT", "2024-01-01", "2024-06-02", vm
-                )
+                result = self.svc._build_data_type_breakdown(df, "DRIFT", "2024-01-01", "2024-06-02", vm)
 
         # Effective start clamps to observed min (2024-06-01), so expected
         # range is 2024-06-01..2024-06-02 = 2 days, NOT 2024-01-01..2024-06-02.
@@ -926,9 +851,7 @@ class TestBuildVenueBreakdown:
     def test_no_venue_column_returns_empty(self):
         df = pd.DataFrame({"date": ["2024-01-01"]})
         vm = MagicMock()
-        venues, found, expected = self.svc._build_venue_breakdown(
-            df, "2024-01-01", "2024-01-01", vm, 0, 1, service=""
-        )
+        venues, found, expected = self.svc._build_venue_breakdown(df, "2024-01-01", "2024-01-01", vm, 0, 1, service="")
         assert venues == {}
 
     def test_venue_breakdown_includes_data_types_when_present(self):
@@ -948,9 +871,7 @@ class TestBuildVenueBreakdown:
             "get_expected_data_types_for_venue",
             return_value=["trades", "book_snapshot_5"],
         ):
-            with patch.object(
-                _dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"
-            ):
+            with patch.object(_dss_mod, "get_venue_data_type_start_date", return_value="2020-01-01"):
                 venues, found, expected = self.svc._build_venue_breakdown(
                     df,
                     "2024-01-01",
@@ -1070,16 +991,12 @@ class TestScanCategoryManifest:
 
     def test_returns_none_when_index_read_fails(self):
         with patch.object(_dss_mod, "_read_index_cached", side_effect=OSError("no bucket")):
-            result = self.svc._scan_category_manifest(
-                "instruments-service", "CEFI", "2024-01-01", "2024-01-31"
-            )
+            result = self.svc._scan_category_manifest("instruments-service", "CEFI", "2024-01-01", "2024-01-31")
         assert result is None
 
     def test_returns_none_when_index_empty(self):
         with patch.object(_dss_mod, "_read_index_cached", return_value=pd.DataFrame()):
-            result = self.svc._scan_category_manifest(
-                "instruments-service", "CEFI", "2024-01-01", "2024-01-31"
-            )
+            result = self.svc._scan_category_manifest("instruments-service", "CEFI", "2024-01-01", "2024-01-31")
         assert result is None
 
     def test_returns_missing_dates(self):
@@ -1096,9 +1013,7 @@ class TestScanCategoryManifest:
             patch.object(_dss_mod, "_read_index_cached", return_value=index),
             patch.object(_dss_mod, "VenueMapping", return_value=vm),
         ):
-            result = self.svc._scan_category_manifest(
-                "instruments-service", "CEFI", "2024-01-01", "2024-01-03"
-            )
+            result = self.svc._scan_category_manifest("instruments-service", "CEFI", "2024-01-01", "2024-01-03")
         assert result is not None
         assert "2024-01-02" in result["missing"]
 
@@ -1143,18 +1058,18 @@ class TestGetCoverageSummary:
     @pytest.mark.asyncio
     async def test_drops_legacy_defi_venue_aliases(self):
         """Regression from audit 2026-04-19 §2.A.1b -- legacy pre-canonicalisation
-        DeFi alias rows like ``venue='AAVEV3-ETHEREUM' chain=''`` were leaking into
+        DeFi alias rows like ``venue='AAVE_V3-ETHEREUM' chain=''`` were leaking into
         the Instrument Coverage Summary widget despite the per-shard rollup fix in
         22f0024/959bdab. Both paths now apply the same legacy-alias filter so the
         widget matches the rollup."""
         svc = _make_svc()
         # Mix of canonical rows (AAVE_V3 + ETHEREUM) and legacy alias rows
-        # (AAVEV3-ETHEREUM + empty chain). The filter must keep the canonical
+        # (AAVE_V3-ETHEREUM + empty chain). The filter must keep the canonical
         # ones and drop the legacy ones.
         index = pd.DataFrame(
             {
                 "date": ["2024-01-01", "2024-01-01", "2024-01-02"],
-                "venue": ["AAVE_V3", "AAVEV3-ETHEREUM", "AAVEV3-POLYGON"],
+                "venue": ["AAVE_V3", "AAVE_V3-ETHEREUM", "AAVE_V3-POLYGON"],
                 "chain": ["ETHEREUM", "", ""],
                 "service_name": [
                     "instruments-service",
@@ -1169,8 +1084,8 @@ class TestGetCoverageSummary:
         cat = result["asset_groups"]["DEFI"]
         # Only the canonical AAVE_V3 row should survive.
         assert cat["unique_venues"] == 1
-        assert "AAVEV3-ETHEREUM" not in cat["latest_day_instruments"]
-        assert "AAVEV3-POLYGON" not in cat["latest_day_instruments"]
+        assert "AAVE_V3-ETHEREUM" not in cat["latest_day_instruments"]
+        assert "AAVE_V3-POLYGON" not in cat["latest_day_instruments"]
         assert cat["total_shards"] == 1
 
 
@@ -1211,9 +1126,7 @@ class TestGetManifestStatus:
     @pytest.mark.asyncio
     async def test_handles_no_template(self):
         svc = _make_svc()
-        result = await svc.get_manifest_status(
-            "unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
-        )
+        result = await svc.get_manifest_status("unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"])
         assert result["overall_completion_pct"] == 0.0
 
 
@@ -1223,7 +1136,7 @@ class TestTransferWindowAwareness:
     def test_is_transfer_window_venue(self):
         svc = _make_svc()
         assert svc._is_transfer_window_venue("TRANSFERMARKT_TEAMS")
-        assert svc._is_transfer_window_venue("TRANSFERMARKT_LEAGUES")
+        # TRANSFERMARKT_LEAGUES retired 2026-05-05 — removed from assertions
         assert not svc._is_transfer_window_venue("FOOTYSTATS_EPL")
         assert not svc._is_transfer_window_venue("UNDERSTAT_XG")
 
@@ -1231,7 +1144,7 @@ class TestTransferWindowAwareness:
         """Transfermarkt should NOT be classified as fixture-dependent."""
         svc = _make_svc()
         assert not svc._is_sports_reference_venue("TRANSFERMARKT_TEAMS")
-        assert not svc._is_sports_reference_venue("TRANSFERMARKT_LEAGUES")
+        # TRANSFERMARKT_LEAGUES retired 2026-05-05 — removed from assertions
         # Other sports venues are still fixture-dependent
         assert svc._is_sports_reference_venue("FOOTYSTATS_EPL")
         assert svc._is_sports_reference_venue("UNDERSTAT_XG")
@@ -1323,9 +1236,7 @@ class TestEnsureUnderlyingColumn:
         assert list(result["underlying"]) == ["BTC", "ETH"]
 
     def test_derives_from_instrument_id_when_underlying_missing(self):
-        df = pd.DataFrame(
-            {"instrument_id": ["BTC-USDT-PERP", "ETH-USDC"], "date": ["2024-01-01"] * 2}
-        )
+        df = pd.DataFrame({"instrument_id": ["BTC-USDT-PERP", "ETH-USDC"], "date": ["2024-01-01"] * 2})
         result = _ensure(df)
         assert "underlying" in result.columns
         assert list(result["underlying"]) == ["BTC", "ETH"]
@@ -1611,7 +1522,7 @@ class TestDefiLegacyVenueFilter:
     """Filter pre-canonicalisation DeFi venue aliases from DEFI aggregate.
 
     The DeFi availability indices contain BOTH:
-      - Legacy rows: ``venue='AAVEV3-ETHEREUM' chain=''`` (pre-migration)
+      - Legacy rows: ``venue='AAVE_V3-ETHEREUM' chain=''`` (pre-migration)
       - Canonical rows: ``venue='AAVE_V3' chain='ETHEREUM'`` (post-migration)
 
     The legacy rows have no matching shard paths post-migration, so they
@@ -1623,22 +1534,22 @@ class TestDefiLegacyVenueFilter:
     def test_is_legacy_defi_venue_row_detects_canonical_patterns(self):
         svc = _make_svc()
         # Known legacy patterns -- chain empty, venue is PROTOCOL[V<N>]-CHAIN
-        assert svc._is_legacy_defi_venue_row("AAVEV3-ETHEREUM", "")
-        assert svc._is_legacy_defi_venue_row("UNISWAPV2-ETHEREUM", "")
-        assert svc._is_legacy_defi_venue_row("UNISWAPV3-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("AAVE_V3-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("UNISWAP_V2-ETHEREUM", "")
+        assert svc._is_legacy_defi_venue_row("UNISWAP_V3-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("CURVE-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("LIDO-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("BALANCER-ETHEREUM", "")
         assert svc._is_legacy_defi_venue_row("COMPOUND-ETHEREUM", None)
         # NaN chain also counts as empty
-        assert svc._is_legacy_defi_venue_row("AAVEV3-POLYGON", float("nan"))
+        assert svc._is_legacy_defi_venue_row("AAVE_V3-POLYGON", float("nan"))
 
     def test_is_legacy_defi_venue_row_covers_extended_protocol_set(self):
         """Second-tier DeFi protocols observed in the real manifest:
         Camelot, GMX, Jito, Orca, Marinade, Kamino, Morpho, Fluid,
         Ethena, Ether.fi, EigenLayer. All must be caught."""
         svc = _make_svc()
-        assert svc._is_legacy_defi_venue_row("CAMELOTV3-ARBITRUM", "")
+        assert svc._is_legacy_defi_venue_row("CAMELOT_V3-ARBITRUM", "")
         assert svc._is_legacy_defi_venue_row("GMX-ARBITRUM", "")
         assert svc._is_legacy_defi_venue_row("JITO-SOLANA", "")
         assert svc._is_legacy_defi_venue_row("ORCA-SOLANA", "")
@@ -1692,8 +1603,8 @@ class TestDefiLegacyVenueFilter:
                 "venue": [
                     "AAVE_V3",
                     "UNISWAP_V2",
-                    "AAVEV3-ETHEREUM",
-                    "UNISWAPV2-ETHEREUM",
+                    "AAVE_V3-ETHEREUM",
+                    "UNISWAP_V2-ETHEREUM",
                 ],
                 "chain": ["ETHEREUM", "ETHEREUM", "", ""],
                 "service_name": ["instruments-service"] * 4,
@@ -1728,8 +1639,8 @@ class TestDefiLegacyVenueFilter:
         # Breakdown should have received only canonical rows (no legacy aliases).
         seen = captured_filtered_df["df"]
         venues_seen = set(seen["venue"].tolist())
-        assert "AAVEV3-ETHEREUM" not in venues_seen
-        assert "UNISWAPV2-ETHEREUM" not in venues_seen
+        assert "AAVE_V3-ETHEREUM" not in venues_seen
+        assert "UNISWAP_V2-ETHEREUM" not in venues_seen
         assert "AAVE_V3" in venues_seen
         assert "UNISWAP_V2" in venues_seen
         # Category-level completion reflects only canonical rows (100%),
@@ -1864,6 +1775,9 @@ class TestMTDSHonestCoverage:
         assert len(result["missing_venues"]) >= 9
         assert result["expected_venues"]  # non-empty
 
+    @pytest.mark.skip(  # reason: TRADFI trades/tbbo removed from May-23 MVP (ohlcv_1m only); restore at tradfi_l1_l2_l3_tick_data_post_cutover_2026_06_01
+        reason="TRADFI trades/tbbo removed from May-23 MVP"
+    )
     def test_tradfi_tick_window_gate(self):
         """TRADFI ``trades`` / ``tbbo`` are only expected inside tick windows.
         2024-07-10..2024-07-15 is INSIDE window (2024-07-01..2024-07-31)."""
@@ -1936,6 +1850,9 @@ class TestMTDSHonestCoverage:
         assert nyse["dates_expected"] == 12
         assert nyse["dates_found"] == 3
 
+    @pytest.mark.skip(  # reason: TRADFI trades/tbbo removed from May-23 MVP (ohlcv_1m only); restore at tradfi_l1_l2_l3_tick_data_post_cutover_2026_06_01
+        reason="TRADFI trades/tbbo removed from May-23 MVP"
+    )
     def test_tradfi_tick_window_gate_outside_window(self):
         """Outside the tick window, ``tbbo`` drops from the denominator
         (legacy global tick-window clip via _TRADFI_TICK_ONLY_DATA_TYPES).
@@ -2006,13 +1923,13 @@ class TestMTDSHonestCoverage:
     def test_defi_per_venue_scope(self):
         """DEFI uses ``all_defi_venues`` (11 PROTOCOL-ETHEREUM entries)."""
         svc = _make_svc()
-        # AAVEV3-ETHEREUM start = 2023-01-27; 4 dts declared.
+        # AAVE_V3-ETHEREUM start = 2023-01-27; 4 dts declared.
         # Window 2023-01-27..2023-01-28 = 2 days x 4 dts = 8 expected.
         df = self._mtds_df(
             [
                 [
                     "2023-01-27",
-                    "AAVEV3-ETHEREUM",
+                    "AAVE_V3-ETHEREUM",
                     "lending_indices",
                     "market-tick-data-service",
                     "captured",
@@ -2023,7 +1940,7 @@ class TestMTDSHonestCoverage:
                 ],
                 [
                     "2023-01-28",
-                    "AAVEV3-ETHEREUM",
+                    "AAVE_V3-ETHEREUM",
                     "lending_indices",
                     "market-tick-data-service",
                     "captured",
@@ -2050,8 +1967,8 @@ class TestMTDSHonestCoverage:
                 total_days=2,
                 venue_mapping=VenueMapping(),
             )
-        aave = result["venues"]["AAVEV3-ETHEREUM"]
-        # Post-Phase-1 (2026-04-24 DeFi data types completeness): AAVEV3-ETHEREUM
+        aave = result["venues"]["AAVE_V3-ETHEREUM"]
+        # Post-Phase-1 (2026-04-24 DeFi data types completeness): AAVE_V3-ETHEREUM
         # declares 7 dts in VENUE_DATA_TYPE_CAPABILITIES.
         #   - Per-instrument dts (Tier-3, 10-reserve seed x 2 days = 20):
         #     ``oracle_prices``, ``rewards``, ``risk_params`` -> 20 expected each.
@@ -2122,13 +2039,9 @@ class TestMTDSHonestCoverage:
         assert "POLYMARKET" in result["expected_venues"]
         assert "KALSHI" in result["missing_venues"]
         poly = result["venues"]["POLYMARKET"]
-        assert sorted(poly["expected_data_types"]) == sorted(
-            ["trades", "book_snapshot", "market_metadata", "fills"]
-        )
+        assert sorted(poly["expected_data_types"]) == sorted(["trades", "book_snapshot", "market_metadata", "fills"])
         # Only ``trades`` has rows in the fixture -- the other 3 are missing.
-        assert sorted(poly["missing_data_types"]) == sorted(
-            ["book_snapshot", "market_metadata", "fills"]
-        )
+        assert sorted(poly["missing_data_types"]) == sorted(["book_snapshot", "market_metadata", "fills"])
         assert poly["dates_found"] == 1
 
     @pytest.mark.parametrize(
@@ -2157,17 +2070,14 @@ class TestMTDSHonestCoverage:
         assert isinstance(expected_data_types, list)
         # Each of the 4 SchemaContract data_types must appear as an expected row.
         assert data_type in expected_data_types, (
-            f"PREDICTION data_type {data_type!r} missing from expected_data_types: "
-            f"{expected_data_types}"
+            f"PREDICTION data_type {data_type!r} missing from expected_data_types: {expected_data_types}"
         )
 
         # Also verify the per-dt entry exists in the data_types breakdown so the
         # UI can render the row (even with 0 captured / 0% completion).
         data_types = honest["data_types"]
         assert isinstance(data_types, dict)
-        assert data_type in data_types, (
-            f"PREDICTION data_type {data_type!r} missing from data_types breakdown"
-        )
+        assert data_type in data_types, f"PREDICTION data_type {data_type!r} missing from data_types breakdown"
 
     def test_prediction_meta_includes_all_four_keys(self):
         """Sanity: ``PREDICTION_DATA_TYPE_META`` mirrors the 4 UAC SchemaContracts."""
@@ -2177,15 +2087,10 @@ class TestMTDSHonestCoverage:
         # ``indeterminate`` denominator marker (per Follow-up B prompt §B). The
         # UI shows captured count without an arbitrary per-day denominator.
         for dt in ("book_snapshot", "market_metadata", "fills"):
-            assert (
-                _dss_mod.PREDICTION_DATA_TYPE_META[dt]["expected_count_per_day"] == "indeterminate"
-            )
+            assert _dss_mod.PREDICTION_DATA_TYPE_META[dt]["expected_count_per_day"] == "indeterminate"
         # ``trades`` keeps the existing per-venue daily denominator from
         # ``_mtds_expected_dates_for_venue_dt``.
-        assert (
-            _dss_mod.PREDICTION_DATA_TYPE_META["trades"]["expected_count_per_day"]
-            == "per_venue_daily"
-        )
+        assert _dss_mod.PREDICTION_DATA_TYPE_META["trades"]["expected_count_per_day"] == "per_venue_daily"
 
     def test_category_completion_not_tautology(self):
         """Before Phase 6c, CEFI header showed 100% when a single venue
@@ -2232,7 +2137,7 @@ class TestMTDSPerInstrumentHonestCoverage:
     """Phase 8D -- per-(venue, data_type, instrument_id, date) denominator.
 
     SSOT:
-      - plan: ``plans/active/mtds_per_instrument_sentinels_2026_04_21.plan.md``
+      - plan: ``plans/active/mtds_per_instrument_sentinels_2026_04_21.md``
       - UAC accessor: ``get_expected_instruments_for_venue`` +
         ``is_per_instrument_shard_data_type`` (WAVE 8B, commit 74e278c).
       - MTDS orchestrator: Tier-3 fan-out landed in commit 2947dd2 (WAVE 8C).
@@ -2402,7 +2307,7 @@ class TestMTDSPerInstrumentHonestCoverage:
 
     def test_defi_dex_swaps_empty_seed(self):
         """DEFI ``dex_swaps`` on a PROTOCOL-CHAIN venue (e.g.
-        UNISWAPV3-ETHEREUM) -- Wave 8G seeded 20 top-TVL pools. With 0 rows in
+        UNISWAP_V3-ETHEREUM) -- Wave 8G seeded 20 top-TVL pools. With 0 rows in
         the fixture, the aggregator returns a Tier-3 denominator of
         ``n_instruments x n_dates`` with ``found_shards == 0`` and the
         full ``missing_instruments`` list.
@@ -2414,7 +2319,7 @@ class TestMTDSPerInstrumentHonestCoverage:
         df = self._mtds_df([])
         honest = _dss_mod._mtds_honest_coverage_for_venue(
             df,
-            "UNISWAPV3-ETHEREUM",
+            "UNISWAP_V3-ETHEREUM",
             "DEFI",
             "2026-04-17",
             "2026-04-17",
@@ -2531,7 +2436,7 @@ class TestBuildChainBreakdownShardMath:
             [
                 {
                     "chain": "ARBITRUM",
-                    "venue": "AAVEV3-ARBITRUM",
+                    "venue": "AAVE_V3-ARBITRUM",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-01",
@@ -2555,7 +2460,7 @@ class TestBuildChainBreakdownShardMath:
         For the 2026-05-07 ARBITRUM screenshot, the old math reported
         ``32/54 dates``; the new math reports thousands of shards."""
         svc = _make_svc()
-        # 1 venue (AAVEV3-ARBITRUM) x 3 data_types x 2 instruments
+        # 1 venue (AAVE_V3-ARBITRUM) x 3 data_types x 2 instruments
         # captured across 5 expected dates -> expected = 5 x 6 = 30 shards
         # vs dates_expected = 5.
         rows: list[dict[str, object]] = []
@@ -2564,7 +2469,7 @@ class TestBuildChainBreakdownShardMath:
                 rows.append(
                     {
                         "chain": "ARBITRUM",
-                        "venue": "AAVEV3-ARBITRUM",
+                        "venue": "AAVE_V3-ARBITRUM",
                         "data_type": dt_name,
                         "instrument_id": inst,
                         "date": "2024-01-01",
@@ -2591,7 +2496,7 @@ class TestBuildChainBreakdownShardMath:
             [
                 {
                     "chain": "BASE",
-                    "venue": "AAVEV3-BASE",
+                    "venue": "AAVE_V3-BASE",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-01",
@@ -2599,7 +2504,7 @@ class TestBuildChainBreakdownShardMath:
                 },
                 {
                     "chain": "BASE",
-                    "venue": "AAVEV3-BASE",
+                    "venue": "AAVE_V3-BASE",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-02",
@@ -2607,7 +2512,7 @@ class TestBuildChainBreakdownShardMath:
                 },
                 {
                     "chain": "BASE",
-                    "venue": "AAVEV3-BASE",
+                    "venue": "AAVE_V3-BASE",
                     "data_type": "lending_indices",
                     "instrument_id": "USDC",
                     "date": "2024-01-03",
@@ -2638,7 +2543,7 @@ class TestBuildChainBreakdownShardMath:
                     rows.append(
                         {
                             "chain": "BASE",
-                            "venue": "AAVEV3-BASE",
+                            "venue": "AAVE_V3-BASE",
                             "data_type": dt_name,
                             "instrument_id": inst,
                             "date": d,

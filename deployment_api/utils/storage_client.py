@@ -9,8 +9,8 @@ of parallel directory queries), the connection pool size is configurable via
 GCS_POOL_SIZE env var.
 """
 
+from unified_trading_library import StorageClient
 from unified_trading_library import get_storage_client as _get_unified_storage_client
-from unified_trading_library.cloud_interface import StorageClient
 
 from deployment_api.settings import GCS_POOL_SIZE as DEFAULT_POOL_SIZE
 from deployment_api.settings import gcp_project_id as _default_project_id

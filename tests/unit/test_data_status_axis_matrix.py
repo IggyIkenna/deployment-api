@@ -1,4 +1,4 @@
-"""Phase 2 of data_status_multi_axis_shard_propagation_2026_05_06.plan.md.
+"""Phase 2 of data_status_multi_axis_shard_propagation_2026_05_06.md.
 
 deployment-api consumes the UAC ``data_status_axis_matrix`` SSOT for:
 
@@ -55,6 +55,9 @@ class TestSelectCoverageGroupAxisFromSSOT:
         assert axis == "instruction_type"
 
     def test_features_sports_uses_feature_group(self) -> None:
+        # features-sports-service was consolidated into features-service in
+        # UAC data_status_axis_matrix.py; PRIMARY_AXIS[("features-service", "sports")]
+        # = "feature_group".
         dss = DataStatusService()
         idx = _index(
             [
@@ -62,7 +65,7 @@ class TestSelectCoverageGroupAxisFromSSOT:
                 {"feature_group": "footystats_only", "instrument_count": 3},
             ]
         )
-        axis = dss._select_coverage_group_axis("features-sports-service", "SPORTS", idx)
+        axis = dss._select_coverage_group_axis("features-service", "SPORTS", idx)
         assert axis == "feature_group"
 
     def test_falls_back_to_venue_for_unmapped_service(self) -> None:
@@ -148,7 +151,7 @@ class TestBuildBreakdowns:
 
     def test_empty_axis_column_emits_empty_dict_not_missing_key(self) -> None:
         # Phase 1 writers haven't yet populated ``job_id`` for the
-        # ml-training-service manifest. The breakdowns endpoint MUST
+        # ml-service manifest. The breakdowns endpoint MUST
         # still surface the axis so the UI can render the dropdown
         # (disabled / "no data yet" placeholder).
         dss = DataStatusService()
@@ -165,6 +168,7 @@ class TestBuildBreakdowns:
                 # caught up yet.
             ]
         )
+        # TODO(Phase 11c): update to "ml-service" once UAC SHARD_AXIS_MATRIX adds ml-service entry
         breakdowns = dss._build_breakdowns("ml-training-service", "shared", idx, "model_family")
         assert "job_id" in breakdowns
         assert breakdowns["job_id"] == {}
@@ -196,6 +200,7 @@ class TestBuildBreakdowns:
                 },
             ]
         )
+        # TODO(Phase 11c): update to "ml-service" once UAC SHARD_AXIS_MATRIX adds ml-service entry
         breakdowns = dss._build_breakdowns("ml-training-service", "shared", idx, "model_family")
         assert breakdowns["job_id"] == {
             "__legacy__": 3,

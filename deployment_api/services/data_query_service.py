@@ -9,9 +9,11 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
+import pandas as pd
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import build_bucket
+from unified_trading_library import AssetGroup, build_bucket, resolve_bucket_name
 
+from deployment_api.services.data_status_drilldown import build_bucket_name as _drilldown_build_bucket_name
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import (
     ObjectInfo,
@@ -37,10 +39,6 @@ class DataQueryService:
     def __init__(self, project_id: str | None = None):
         """Initialize data query service."""
         self.project_id = project_id or _pid
-
-    def build_bucket_name(self, prefix: str, asset_group: str) -> str:
-        """Build a GCS bucket name: {prefix}-{asset_group_lower}-{project_id}."""
-        return f"{prefix}-{asset_group.lower()}-{self.project_id}"
 
     async def list_files_in_path(
         self,
@@ -131,37 +129,19 @@ class DataQueryService:
         Returns:
             Dictionary with ``service`` and ``asset_groups`` map (per-group venue lists).
         """
-        # Service to bucket mappings
+        # Per-service asset_group scope (bucket resolved via drilldown canonical mapping)
         _all_cats = [cat.value.lower() for cat in MarketCategory]
-        service_mappings = {
-            "market-tick-data-handler": {
-                "prefix": "market-data",
-                "asset_groups": _all_cats,
-            },
-            "market-data-processing-service": {
-                "prefix": "processed-market-data",
-                "asset_groups": _all_cats,
-            },
-            "instruments-service": {
-                "prefix": "instruments",
-                "asset_groups": _all_cats,
-            },
-            "features-equity-service": {
-                "prefix": "features-equity",
-                "asset_groups": ["tradfi"],
-            },
-            "features-derivatives-service": {
-                "prefix": "features-derivatives",
-                "asset_groups": ["cefi"],
-            },
-            "features-defi-service": {
-                "prefix": "features-defi",
-                "asset_groups": ["defi"],
-            },
+        service_asset_groups: dict[str, list[str]] = {
+            "market-tick-data-handler": _all_cats,
+            "market-data-processing-service": _all_cats,
+            "instruments-service": _all_cats,
+            "features-equity-service": ["tradfi"],
+            "features-derivatives-service": ["cefi"],
+            "features-defi-service": ["defi"],
         }
 
-        mapping = service_mappings.get(service)
-        if not mapping:
+        ag_list = service_asset_groups.get(service)
+        if not ag_list:
             return {"error": f"Unknown service: {service}"}
 
         by_asset_group: dict[str, dict[str, object]] = {}
@@ -170,9 +150,9 @@ class DataQueryService:
             "asset_groups": by_asset_group,
         }
 
-        for ag in cast(list[str], mapping.get("asset_groups") or []):
+        for ag in ag_list:
             try:
-                bucket_name = self.build_bucket_name(cast(str, mapping.get("prefix") or ""), ag)
+                bucket_name = _drilldown_build_bucket_name(service, ag)
                 venues: list[str] = []
 
                 # List prefixes to find venue directories
@@ -228,7 +208,9 @@ class DataQueryService:
         """
         try:
             # Map to instruments bucket
-            bucket_name = self.build_bucket_name("instruments", asset_group)
+            bucket_name = resolve_bucket_name(
+                cloud="gcp", kind="instruments-store", asset_group=cast(AssetGroup, asset_group)
+            )
 
             # Build path based on filters
             path = ""
@@ -348,9 +330,7 @@ class DataQueryService:
         query_tokens: list[str] = [t.lower() for t in query_normalised.split() if t.strip()]
 
         # Resolve category list to walk.
-        cats_to_walk: list[str] = (
-            [asset_group.lower()] if asset_group else list(self._SEARCH_CATEGORIES)
-        )
+        cats_to_walk: list[str] = [asset_group.lower()] if asset_group else list(self._SEARCH_CATEGORIES)
 
         all_matches: list[dict[str, str]] = []
         truncated = False
@@ -465,22 +445,21 @@ class DataQueryService:
         deduplicate to ``(league_id, venue, instrument_type)`` for the search
         return, treating ``league_id`` as the ``canonical_id``.
         """
-        gs_uri = (
-            f"gs://instruments-store-sports-{self.project_id}/_index/availability_index.parquet"
-        )
+        _sports_bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+        gs_uri = f"gs://{_sports_bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket resolved via resolve_bucket_name
         df = self._read_parquet_columns_safe(gs_uri, ["league_id", "venue", "instrument_type"])
         if df is None or df.empty:
             return []
         # Empty league_id means a row that wasn't sports-canonical — skip.
-        df = df[df["league_id"].astype(str).str.len() > 0]
-        unique = df.drop_duplicates(subset=["league_id", "venue", "instrument_type"])
+        df = df[df["league_id"].astype(str).str.len() > 0]  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        unique = df.drop_duplicates(subset=["league_id", "venue", "instrument_type"])  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
         corpus: list[dict[str, str]] = []
-        for _, row in unique.iterrows():
+        for _, row in unique.iterrows():  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             corpus.append(
                 {
-                    "canonical_id": str(row["league_id"]),
-                    "venue": str(row["venue"] or ""),
-                    "instrument_type": str(row["instrument_type"] or ""),
+                    "canonical_id": str(row["league_id"]),  # type: ignore[reportUnknownArgumentType]
+                    "venue": str(row["venue"] or ""),  # type: ignore[reportUnknownArgumentType]
+                    "instrument_type": str(row["instrument_type"] or ""),  # type: ignore[reportUnknownArgumentType]
                 }
             )
         return corpus
@@ -525,7 +504,7 @@ class DataQueryService:
                     venue = p[len("venue=") :]
                     break
             if venue:
-                per_venue[venue] = f"gs://{bucket}/{obj.name}"
+                per_venue[venue] = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved
         return per_venue
 
     def _extend_corpus_from_venue_parquet(
@@ -582,32 +561,29 @@ class DataQueryService:
         return max(days)
 
     @staticmethod
-    def _read_parquet_columns_safe(gs_uri: str, columns: list[str]):  # pyright: ignore[reportMissingReturnType]
+    def _read_parquet_columns_safe(gs_uri: str, columns: list[str]) -> pd.DataFrame | None:
         """Read ``columns`` from a parquet at ``gs_uri``; return DataFrame or None.
 
         Uses pyarrow + gcsfs locally. Failures (network, schema mismatch,
         missing column) return None so the caller can fall back gracefully.
         """
-        try:
-            import gcsfs  # type: ignore[import-untyped]
-            import pyarrow.parquet as pq  # type: ignore[import-untyped]
-        except ImportError:
-            logger.warning("search_instruments: pyarrow / gcsfs not installed")
-            return None
+        import gcsfs  # pyright: ignore[reportMissingModuleSource]
+        import pyarrow.parquet as pq  # pyright: ignore[reportMissingModuleSource]
+
         if not gs_uri.startswith("gs://"):
             return None
         bucket_key = gs_uri[len("gs://") :]
         try:
             fs = gcsfs.GCSFileSystem()
-            with fs.open(bucket_key, "rb") as fh:
+            with fs.open(bucket_key, "rb") as fh:  # type: ignore[reportUnknownMemberType]
                 pf = pq.ParquetFile(fh)
-                schema_names = set(pf.schema_arrow.names)
+                schema_names = set(pf.schema_arrow.names)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType, reportUnknownArgumentType]
                 # Only request columns that actually exist (graceful drift handling).
                 proj = [c for c in columns if c in schema_names]
                 if not proj:
                     return None
-                table = pf.read(columns=proj)
-                return table.to_pandas()
+                table = pf.read(columns=proj)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
+                return table.to_pandas()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("search_instruments: parquet read failed for %s — %s", gs_uri, exc)
             return None
@@ -746,7 +722,9 @@ class DataQueryService:
             if not asset_group:
                 return {"error": f"Could not determine asset group for venue: {venue}"}
 
-            bucket_name = self.build_bucket_name("market-data", asset_group.lower())
+            bucket_name = resolve_bucket_name(
+                cloud="gcp", kind="market-data", asset_group=cast(AssetGroup, asset_group.lower())
+            )
 
             try:
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
@@ -754,12 +732,8 @@ class DataQueryService:
             except ValueError as e:
                 return {"error": f"Invalid date format: {e}"}
 
-            avail_from = (
-                self._parse_avail_date(available_from, "available_from") if available_from else None
-            )
-            avail_to = (
-                self._parse_avail_date(available_to, "available_to") if available_to else None
-            )
+            avail_from = self._parse_avail_date(available_from, "available_from") if available_from else None
+            avail_to = self._parse_avail_date(available_to, "available_to") if available_to else None
 
             effective_start = max(start_dt, avail_from) if avail_from else start_dt
             effective_end = min(end_dt, avail_to) if avail_to else end_dt
@@ -794,9 +768,7 @@ class DataQueryService:
                     "total_days": total_days,
                     "available_days": available_days,
                     "missing_days": total_days - available_days,
-                    "availability_rate": (
-                        available_days / total_days * 100 if total_days > 0 else 0.0
-                    ),
+                    "availability_rate": (available_days / total_days * 100 if total_days > 0 else 0.0),
                 },
             }
 

@@ -18,14 +18,14 @@ def test_unified_trading_library_import() -> None:
 
 @pytest.mark.integration
 def test_unified_trading_library_config_interface_import() -> None:
-    from unified_trading_library.config_interface import BaseConfig
+    from unified_trading_library import BaseConfig
 
     assert BaseConfig is not None
 
 
 @pytest.mark.integration
 def test_unified_trading_library_events_interface_import() -> None:
-    from unified_trading_library.events import log_event, setup_events
+    from unified_trading_library import log_event, setup_events
 
     assert callable(log_event)
     assert callable(setup_events)
@@ -33,7 +33,7 @@ def test_unified_trading_library_events_interface_import() -> None:
 
 @pytest.mark.integration
 def test_unified_trading_library_cloud_interface_import() -> None:
-    from unified_trading_library.cloud_interface import get_storage_client
+    from unified_trading_library import get_storage_client
 
     assert callable(get_storage_client)
 

@@ -25,23 +25,12 @@ def test_trading_axis_from_first_shard_dimensions() -> None:
 
 
 def test_trading_axis_from_cli_command() -> None:
-    assert (
-        trading_axis_from_deployment_state(
-            {"cli_command": "python run.py --asset-group=CEFI --foo 1"}
-        )
-        == "CEFI"
-    )
-    assert (
-        trading_axis_from_deployment_state({"cli_command": "python run.py --category DEFI"})
-        == "DEFI"
-    )
+    assert trading_axis_from_deployment_state({"cli_command": "python run.py --asset-group=CEFI --foo 1"}) == "CEFI"
+    assert trading_axis_from_deployment_state({"cli_command": "python run.py --category DEFI"}) == "DEFI"
 
 
 def test_trading_axis_from_cli_args_list() -> None:
-    assert (
-        trading_axis_from_deployment_state({"cli_args": ["run.py", "--asset-group", "SPORTS"]})
-        == "SPORTS"
-    )
+    assert trading_axis_from_deployment_state({"cli_args": ["run.py", "--asset-group", "SPORTS"]}) == "SPORTS"
 
 
 def test_trading_axis_none_when_missing() -> None:

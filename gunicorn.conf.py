@@ -9,8 +9,12 @@ Environment variables:
     PORT: Port to bind to (default: 8080)
 """
 
-from deployment_api.settings import PORT as _PORT
-from deployment_api.settings import WORKERS as _WORKERS
+import os
+
+# Read directly from env to avoid triggering the full UTL→UAC import chain
+# during gunicorn config loading (before the WSGI app is initialised).
+_PORT = int(os.environ.get("PORT", 8080))
+_WORKERS = int(os.environ.get("WORKERS", 4))
 
 # Server socket
 bind = f"0.0.0.0:{_PORT}"
@@ -50,31 +54,31 @@ tmp_upload_dir = None
 preload_app = True
 
 
-def pre_fork(server, worker):
+def pre_fork(server: object, worker: object) -> None:  # pyright: ignore[reportAny]
     """Called just before a worker is forked."""
     pass
 
 
-def post_fork(server, worker):
+def post_fork(server: object, worker: object) -> None:  # pyright: ignore[reportAny]
     """Called just after a worker has been forked."""
     pass
 
 
-def pre_exec(server):
+def pre_exec(server: object) -> None:  # pyright: ignore[reportAny]
     """Called just before a new master process is forked."""
-    server.log.info("Forked child, re-executing.")
+    server.log.info("Forked child, re-executing.")  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
 
 
-def when_ready(server):
+def when_ready(server: object) -> None:  # pyright: ignore[reportAny]
     """Called when the server is ready to accept connections."""
-    server.log.info("Server is ready. Spawning workers")
+    server.log.info("Server is ready. Spawning workers")  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
 
 
-def worker_int(worker):
+def worker_int(worker: object) -> None:  # pyright: ignore[reportAny]
     """Called when a worker receives INT or QUIT signal."""
-    worker.log.info("worker received INT or QUIT signal")
+    worker.log.info("worker received INT or QUIT signal")  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
 
 
-def worker_abort(worker):
+def worker_abort(worker: object) -> None:  # pyright: ignore[reportAny]
     """Called when a worker receives SIGABRT signal."""
-    worker.log.info("worker received SIGABRT signal")
+    worker.log.info("worker received SIGABRT signal")  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]

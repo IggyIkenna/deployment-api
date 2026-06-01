@@ -9,7 +9,7 @@ All fields read from the same environment variables as before. No behaviour chan
 """
 
 from pydantic import AliasChoices, Field
-from unified_trading_library.config_interface import UnifiedCloudConfig
+from unified_trading_library import UnifiedCloudConfig
 
 
 class DeploymentApiConfig(UnifiedCloudConfig):
@@ -372,9 +372,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     cloud_mock_mode: bool = Field(  # DEPRECATED: use is_mock_mode() instead
         default=False,
         validation_alias=AliasChoices("CLOUD_MOCK_MODE"),
-        description=(
-            "DEPRECATED: Use is_mock_mode() instead. Legacy field kept for env var binding."
-        ),
+        description=("DEPRECATED: Use is_mock_mode() instead. Legacy field kept for env var binding."),
     )
 
     # =========================================================================
@@ -426,10 +424,59 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Base URL for the deployment-service HTTP API",
     )
 
+    execution_service_url: str = Field(
+        default="http://localhost:8018",
+        validation_alias=AliasChoices("EXECUTION_SERVICE_URL"),
+        description=(
+            "Base URL for the execution-service HTTP API. Used by the manual-pending "
+            "approve/reject endpoints to forward operator decisions to the execution queue."
+        ),
+    )
+
     deployment_service_timeout_seconds: float = Field(
         default=300.0,
         validation_alias=AliasChoices("DEPLOYMENT_SERVICE_TIMEOUT_SECONDS"),
         description="Timeout in seconds for deployment-service HTTP calls",
+    )
+
+    # =========================================================================
+    # LIVE-PIPELINE HEALTH-API REGISTRY (per-service URL → /health endpoint)
+    # =========================================================================
+    #
+    # Per ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11.1.
+    # The /api/data-status/live endpoint joins per-shard health from
+    # each consumer service's :func:`make_health_router(data_freshness=)`
+    # callback (Phase 8). Without a URL registry the endpoint serves
+    # only the manifest-derived staleness; with it serves precise
+    # ``last_event_age_seconds`` from each service's
+    # :class:`StreamingHealthSnapshot`.
+    #
+    # JSON-shape: ``{"<service-name>": "http://host:port", ...}``. Keys
+    # are the lowercase service names per workspace convention
+    # (``market-tick-data-service`` / ``market-data-processing-service`` /
+    # ``features-service``). Empty dict (default) → no HTTP join; the
+    # endpoint serves manifest-only data.
+
+    live_pipeline_service_urls: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("LIVE_PIPELINE_SERVICE_URLS"),
+        description=(
+            "Per-service base URLs for the live-pipeline Health-API HTTP "
+            "join. Each URL must serve GET /health returning JSON with a "
+            "`data_freshness` field per the UTL StreamingHealthSnapshot "
+            "contract. Empty dict (default) → manifest-only fallback."
+        ),
+    )
+
+    live_pipeline_health_timeout_seconds: float = Field(
+        default=2.0,
+        validation_alias=AliasChoices("LIVE_PIPELINE_HEALTH_TIMEOUT_SECONDS"),
+        description=(
+            "Timeout in seconds for each per-service Health-API call. "
+            "Short by design: the /api/data-status/live endpoint must "
+            "stay responsive; a slow service → manifest-only fallback "
+            "for that service's shards."
+        ),
     )
 
     # =========================================================================

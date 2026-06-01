@@ -99,8 +99,7 @@ async def get_last_updated_batch(
 
     with ThreadPoolExecutor(max_workers=min(15, len(tasks))) as executor:
         futures: dict[Future[dict[str, object]], tuple[str, str]] = {
-            executor.submit(check_bucket_latest, svc, ag, bucket): (svc, ag)
-            for svc, ag, bucket in tasks
+            executor.submit(check_bucket_latest, svc, ag, bucket): (svc, ag) for svc, ag, bucket in tasks
         }
         for future in as_completed(futures):
             result: dict[str, object] = future.result()
@@ -113,9 +112,7 @@ async def get_last_updated_batch(
                 cast(dict[str, object], svc_entry_raw) if isinstance(svc_entry_raw, dict) else {}
             )
             ag_raw = svc_entry.get("asset_groups")
-            ags: dict[str, object] = (
-                cast(dict[str, object], ag_raw) if isinstance(ag_raw, dict) else {}
-            )
+            ags: dict[str, object] = cast(dict[str, object], ag_raw) if isinstance(ag_raw, dict) else {}
             ag_val = result.get("asset_group")
             ag_key = str(ag_val) if isinstance(ag_val, str) else ""
             ags[ag_key] = {
@@ -154,9 +151,7 @@ def _check_instruments_request_size(
         return
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC)
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
-    total_venues = sum(
-        len(path_combinatorics.get_all_venues_for_asset_group(ag)) for ag in asset_groups
-    )
+    total_venues = sum(len(path_combinatorics.get_all_venues_for_asset_group(ag)) for ag in asset_groups)
     days = (end_dt - start_dt).days + 1
     estimated = days * total_venues
     if estimated > max_estimated_checks:
@@ -202,14 +197,8 @@ def _build_venue_entry(
         "dates_found": len(venue_dates),
         "dates_expected": len(venue_expected_dates),
         "dates_expected_venue": len(venue_expected_dates),
-        "is_expected": is_venue_expected(
-            cast(Mapping[str, object], venue_data_types_config), asset_group, venue_name
-        ),
-        "completion_pct": (
-            round(len(venue_dates) / len(venue_expected_dates) * 100, 1)
-            if venue_expected_dates
-            else 0
-        ),
+        "is_expected": is_venue_expected(cast(Mapping[str, object], venue_data_types_config), asset_group, venue_name),
+        "completion_pct": (round(len(venue_dates) / len(venue_expected_dates) * 100, 1) if venue_expected_dates else 0),
     }
     if include_dates_list:
         venue_dict["dates_found_list"] = sorted(venue_dates)
@@ -231,9 +220,7 @@ def _build_venues_result(
     venues_dict: dict[str, object] = {}
     for venue_name_raw, venue_dates_raw in venue_data.items():
         venue_name = str(venue_name_raw)
-        venue_dates: set[str] = (
-            cast(set[str], venue_dates_raw) if isinstance(venue_dates_raw, set) else set()
-        )
+        venue_dates: set[str] = cast(set[str], venue_dates_raw) if isinstance(venue_dates_raw, set) else set()
         venue_expected_dates = get_expected_dates_for_venue(
             all_dates,
             expected_start_dates_config,
@@ -299,10 +286,7 @@ def _check_asset_group(
     )
 
     try:
-        if (
-            service in ["market-tick-data-handler", "market-data-processing-service"]
-            and path_combinatorics
-        ):
+        if service in ["market-tick-data-handler", "market-data-processing-service"] and path_combinatorics:
             query_result = query_specific_prefixes_for_asset_group(
                 service=service,
                 asset_group=asset_group,
@@ -328,18 +312,14 @@ def _check_asset_group(
             return query_result
 
         found_dates_raw = query_result.get("found_dates")
-        found_dates: set[str] = (
-            cast(set[str], found_dates_raw) if isinstance(found_dates_raw, set) else set()
-        )
+        found_dates: set[str] = cast(set[str], found_dates_raw) if isinstance(found_dates_raw, set) else set()
         venue_data_raw = query_result.get("venue_data")
         venue_data: dict[str, object] = (
             cast(dict[str, object], venue_data_raw) if isinstance(venue_data_raw, dict) else {}
         )
         sub_dimension_data_raw = query_result.get("sub_dimension_data")
         sub_dimension_data: dict[str, object] = (
-            cast(dict[str, object], sub_dimension_data_raw)
-            if isinstance(sub_dimension_data_raw, dict)
-            else {}
+            cast(dict[str, object], sub_dimension_data_raw) if isinstance(sub_dimension_data_raw, dict) else {}
         )
         # consume but discard unused fields from query result
         _ = query_result.get("inst_type_data")
@@ -372,9 +352,7 @@ def _check_asset_group(
             sub_dim_result: dict[str, object] = {}
             for sd_name_raw, sd_dates_raw in sub_dimension_data.items():
                 sd_name = str(sd_name_raw)
-                sd_dates: set[str] = (
-                    cast(set[str], sd_dates_raw) if isinstance(sd_dates_raw, set) else set()
-                )
+                sd_dates: set[str] = cast(set[str], sd_dates_raw) if isinstance(sd_dates_raw, set) else set()
                 sub_dim_result[sd_name] = {
                     "dates_found": len(sd_dates),
                     "dates_found_list": sorted(sd_dates) if include_dates_list else None,
@@ -409,9 +387,7 @@ def _parse_upstream_tick_result(
     upstream_dates: dict[str, dict[str, set[str]]] = {}
     tick_categories_raw = tick_result.get("asset_groups")
     tick_categories: dict[str, object] = (
-        cast(dict[str, object], tick_categories_raw)
-        if isinstance(tick_categories_raw, dict)
-        else {}
+        cast(dict[str, object], tick_categories_raw) if isinstance(tick_categories_raw, dict) else {}
     )
     for cat_name_raw, cat_data_raw in tick_categories.items():
         cat_name = str(cat_name_raw)
@@ -423,17 +399,13 @@ def _parse_upstream_tick_result(
         dfl: list[object] = cast(list[object], dfl_raw) if isinstance(dfl_raw, list) else []
         upstream_dates[cat_name]["__category__"] = {str(d) for d in dfl if d}
         venues_raw = cat_data.get("venues")
-        venues_dict: dict[str, object] = (
-            cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
-        )
+        venues_dict: dict[str, object] = cast(dict[str, object], venues_raw) if isinstance(venues_raw, dict) else {}
         for venue_name_raw, venue_data_raw in venues_dict.items():
             venue_name = str(venue_name_raw)
             if isinstance(venue_data_raw, dict):
                 venue_data = cast(dict[str, object], venue_data_raw)
                 vdfl_raw = venue_data.get("dates_found_list")
-                vdfl: list[object] = (
-                    cast(list[object], vdfl_raw) if isinstance(vdfl_raw, list) else []
-                )
+                vdfl: list[object] = cast(list[object], vdfl_raw) if isinstance(vdfl_raw, list) else []
                 upstream_dates[cat_name][venue_name] = {str(d) for d in vdfl if d}
     return upstream_dates
 
@@ -446,9 +418,7 @@ async def _fetch_upstream_dates(
     mode: str,
 ) -> dict[str, dict[str, set[str]]]:
     """Fetch upstream market-tick-data-handler dates for cascading expected-date calculation."""
-    logger.info(
-        "[TURBO] Fetching upstream market-tick-data-handler data for cascading expected dates"
-    )
+    logger.info("[TURBO] Fetching upstream market-tick-data-handler data for cascading expected dates")
     tick_result = await get_data_status_turbo_impl(
         service="market-tick-data-handler",
         start_date=start_date,
@@ -501,7 +471,7 @@ async def get_data_status_turbo_impl(
     """
     if mode not in ("batch", "live"):
         return {"error": f"Invalid mode: {mode}. Use 'batch' or 'live'."}
-    path_prefix = LIVE_PATH_PREFIX if mode == "live" else ""
+    path_prefix = LIVE_PATH_PREFIX if mode == "live" else ""  # noqa: L2-mode-seam
 
     # Pre-validate freshness_date format (result not yet consumed by _check_asset_group callers)
     if freshness_date:
@@ -533,11 +503,7 @@ async def get_data_status_turbo_impl(
     # For market-data-processing-service, fetch upstream (market-tick-data-handler) data
     # to determine which dates are actually available as candidates for processing.
     upstream_dates: dict[str, dict[str, set[str]]] | None = _upstream_dates  # May be pre-computed
-    if (
-        service == "market-data-processing-service"
-        and check_upstream_availability
-        and upstream_dates is None
-    ):
+    if service == "market-data-processing-service" and check_upstream_availability and upstream_dates is None:
         upstream_dates = await _fetch_upstream_dates(
             start_date=start_date,
             end_date=end_date,
@@ -547,12 +513,7 @@ async def get_data_status_turbo_impl(
         )
 
     if service not in BUCKET_MAPPING:
-        return {
-            "error": (
-                f"Service {service} not supported for turbo mode."
-                f" Supported: {list(BUCKET_MAPPING.keys())}"
-            )
-        }
+        return {"error": (f"Service {service} not supported for turbo mode. Supported: {list(BUCKET_MAPPING.keys())}")}
 
     ags = asset_groups if asset_groups else list(BUCKET_MAPPING[service].keys())
     config = SERVICE_CONFIG[service]
@@ -564,17 +525,13 @@ async def get_data_status_turbo_impl(
     venue_data_types_config = load_venue_data_types()
 
     # Generate ALL dates in range (before asset-group filtering) for year-month prefixes
-    all_dates, _year_months = generate_date_range_and_year_months(
-        start_date, end_date, first_day_of_month_only
-    )
+    all_dates, _year_months = generate_date_range_and_year_months(start_date, end_date, first_day_of_month_only)
 
     # Use PathCombinatorics for highly optimized parallel specific queries
     path_combinatorics = get_path_combinatorics()
 
     # Guard: prevent 503 timeout for very large requests
-    _check_instruments_request_size(
-        service, include_sub_dimensions, ags, start_date, end_date, path_combinatorics
-    )
+    _check_instruments_request_size(service, include_sub_dimensions, ags, start_date, end_date, path_combinatorics)
 
     sub_dimension_name = cast(str | None, config.get("sub_dimension"))
     results: dict[str, object] = {}
@@ -608,16 +565,12 @@ async def get_data_status_turbo_impl(
             results[ag_key] = result
 
     # Calculate overall totals using extracted functions
-    total_venue_expected, total_venue_found, expected_missing, unexpected_missing = (
-        calculate_venue_weighted_totals(
-            results, all_dates, expected_start_dates_config, service, upstream_dates
-        )
+    total_venue_expected, total_venue_found, expected_missing, unexpected_missing = calculate_venue_weighted_totals(
+        results, all_dates, expected_start_dates_config, service, upstream_dates
     )
 
     # Update per-asset-group completion percentages to be venue-weighted
-    update_asset_group_completion_percentages(
-        results, all_dates, expected_start_dates_config, service, upstream_dates
-    )
+    update_asset_group_completion_percentages(results, all_dates, expected_start_dates_config, service, upstream_dates)
 
     # Calculate asset-group-level totals for reference
     total_expected_asset_group, total_found_asset_group = _sum_asset_group_totals(results)

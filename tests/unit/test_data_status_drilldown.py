@@ -813,18 +813,21 @@ class TestBuildCsvExport:
 
 
 class TestBuildBucketName:
-    def test_mtds_cefi_bucket(self):
-        assert (
-            drilldown.build_bucket_name("market-tick-data-service", "CEFI", "proj")
-            == "market-data-tick-cefi-proj"
-        )
+    def test_mtds_cefi_routes_to_market_data_kind(self):
+        with patch(
+            "deployment_api.services.data_status_drilldown.resolve_bucket_name", return_value="bucket"
+        ) as mock_r:
+            drilldown.build_bucket_name("market-tick-data-service", "CEFI")
+        mock_r.assert_called_once_with(cloud="gcp", kind="market-data", asset_group="cefi")
 
-    def test_instruments_service_bucket(self):
-        assert (
-            drilldown.build_bucket_name("instruments-service", "PREDICTION", "proj")
-            == "instruments-store-prediction-proj"
-        )
+    def test_instruments_service_prediction_routes_to_prediction_kind(self):
+        # PREDICTION routes to the flat instruments-store-prediction kind (no per-AG entry).
+        with patch(
+            "deployment_api.services.data_status_drilldown.resolve_bucket_name", return_value="bucket"
+        ) as mock_r:
+            drilldown.build_bucket_name("instruments-service", "PREDICTION")
+        mock_r.assert_called_once_with(cloud="gcp", kind="instruments-store-prediction")
 
     def test_unknown_service_raises(self):
         with pytest.raises(ValueError, match="Unknown service"):
-            drilldown.build_bucket_name("foobar", "CEFI", "proj")
+            drilldown.build_bucket_name("foobar", "CEFI")

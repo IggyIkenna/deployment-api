@@ -150,9 +150,7 @@ def _parse_codex_checklist(data: dict[str, object]) -> dict[str, object]:
     cr_section = data.get("code_readiness")
     if isinstance(cr_section, dict):
         cr_dict = cast(dict[str, object], cr_section)
-        cat = _build_category(
-            "code_readiness", "Code Readiness (CR1\u2013CR5)", _CR_STAGES, cr_dict
-        )
+        cat = _build_category("code_readiness", "Code Readiness (CR1\u2013CR5)", _CR_STAGES, cr_dict)
         categories.append(cat)
         all_items.extend(cast(list[dict[str, object]], cat["items"]))
 
@@ -388,9 +386,7 @@ async def validate_service_checklist(service_name: str, request: Request) -> dic
         checklist = _load_checklist(codex_dir, service_name)
         blocking_items = cast(list[object], checklist.get("blocking_items") or [])
         readiness_pct_raw = checklist.get("readiness_percent", 0)
-        readiness_percent = (
-            int(readiness_pct_raw) if isinstance(readiness_pct_raw, (int, float)) else 0
-        )
+        readiness_percent = int(readiness_pct_raw) if isinstance(readiness_pct_raw, (int, float)) else 0
         warnings = _get_warnings(checklist)
         is_ready = len(blocking_items) == 0 and readiness_percent >= 95
         can_proceed = len(blocking_items) == 0

@@ -140,9 +140,7 @@ class DataAnalyticsService:
         self._cache_stats["entries"] = len(self._turbo_cache)
 
         # Update size estimate
-        total_size = sum(
-            cast(int, entry.get("size_estimate", 0)) for entry in self._turbo_cache.values()
-        )
+        total_size = sum(cast(int, entry.get("size_estimate", 0)) for entry in self._turbo_cache.values())
         self._cache_stats["total_size_estimate"] = total_size
 
         # Evict old entries if cache gets too large (> 100 entries)
@@ -380,9 +378,7 @@ class DataAnalyticsService:
         patterns["venue_reliability"] = venue_reliability
 
         if completion_rate_stats and cast(float, completion_rate_stats.get("average", 100)) < 90:
-            recommendations.append(
-                "Overall completion rate is below 90% - investigate data pipeline issues"
-            )
+            recommendations.append("Overall completion rate is below 90% - investigate data pipeline issues")
 
         problematic_venues = [
             venue
@@ -390,9 +386,7 @@ class DataAnalyticsService:
             if cast(float, vstats.get("reliability_percent", 100)) < 80
         ]
         if problematic_venues:
-            recommendations.append(
-                f"Low reliability venues detected: {', '.join(problematic_venues[:5])}"
-            )
+            recommendations.append(f"Low reliability venues detected: {', '.join(problematic_venues[:5])}")
 
         return analysis
 
@@ -479,9 +473,7 @@ class DataAnalyticsService:
                         "status": "error",
                         "error": result["error"],
                     }
-                    overall_summary["failed_services"] = (
-                        cast(int, overall_summary["failed_services"]) + 1
-                    )
+                    overall_summary["failed_services"] = cast(int, overall_summary["failed_services"]) + 1
                 else:
                     # Calculate service completion rate
                     service_rate = self._extract_completion_rate(result)
@@ -491,9 +483,7 @@ class DataAnalyticsService:
                         "data": result,
                     }
                     service_completion_rates.append(service_rate)
-                    overall_summary["successful_services"] = (
-                        cast(int, overall_summary["successful_services"]) + 1
-                    )
+                    overall_summary["successful_services"] = cast(int, overall_summary["successful_services"]) + 1
 
             except (OSError, ValueError, RuntimeError) as e:
                 logger.error("Error getting status for service %s: %s", service, e)
@@ -501,15 +491,11 @@ class DataAnalyticsService:
                     "status": "error",
                     "error": str(e),
                 }
-                overall_summary["failed_services"] = (
-                    cast(int, overall_summary["failed_services"]) + 1
-                )
+                overall_summary["failed_services"] = cast(int, overall_summary["failed_services"]) + 1
 
         # Calculate overall completion rate
         if service_completion_rates:
-            overall_summary["overall_completion_rate"] = sum(service_completion_rates) / len(
-                service_completion_rates
-            )
+            overall_summary["overall_completion_rate"] = sum(service_completion_rates) / len(service_completion_rates)
 
         return aggregated
 

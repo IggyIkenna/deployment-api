@@ -34,12 +34,8 @@ if not hasattr(sys.modules.get("deployment_api.services"), "__path__"):
 
 # Load the real deployment_state module with its canonical name so ..routes
 # relative imports resolve correctly via sys.modules lookups.
-_ds_path = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../deployment_api/services/deployment_state.py")
-)
-_ds_spec = importlib.util.spec_from_file_location(
-    "deployment_api.services.deployment_state", _ds_path
-)
+_ds_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../deployment_api/services/deployment_state.py"))
+_ds_spec = importlib.util.spec_from_file_location("deployment_api.services.deployment_state", _ds_path)
 assert _ds_spec is not None and _ds_spec.loader is not None
 _ds_mod = importlib.util.module_from_spec(_ds_spec)
 sys.modules["deployment_api.services.deployment_state"] = _ds_mod  # register before exec
@@ -135,10 +131,7 @@ class TestListDeployments:
 
     def test_returns_all_deployments_by_default(self):
         mgr = _make_mgr()
-        deps = [
-            {"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"}
-            for i in range(5)
-        ]
+        deps = [{"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"} for i in range(5)]
         with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments()
 
@@ -164,10 +157,7 @@ class TestListDeployments:
 
     def test_pagination_limit_and_offset(self):
         mgr = _make_mgr()
-        deps = [
-            {"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"}
-            for i in range(10)
-        ]
+        deps = [{"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"} for i in range(10)]
         with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments(limit=3, offset=2)
 
@@ -178,10 +168,7 @@ class TestListDeployments:
 
     def test_has_more_false_at_end(self):
         mgr = _make_mgr()
-        deps = [
-            {"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"}
-            for i in range(3)
-        ]
+        deps = [{"deployment_id": f"d{i}", "status": "running", "created_at": "2024-01-01"} for i in range(3)]
         with patch.object(_ds_mod, "_gcs_list_deployments", return_value=deps):
             result = mgr.list_deployments(limit=10, offset=0)
 

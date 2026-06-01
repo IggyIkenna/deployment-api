@@ -25,25 +25,38 @@ repos:
       - id: ruff-format
         name: Format with Ruff
 
-  # Prettier - TypeScript/JSON/Markdown/YAML formatter
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v4.0.0-alpha.8
+  # Prettier - auto-stage wrapper (see docs.pre-commit-config.yaml for rationale).
+  - repo: local
     hooks:
-      - id: prettier
-        name: Format with Prettier
+      - id: prettier-autostage
+        name: Format with Prettier (auto-stage)
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/prettier-autostage.sh"; [ -f "$HOOK" ] && bash "$HOOK" "$@" || exit 0'
+          --
+        language: system
         types_or: [ts, tsx, javascript, jsx, json, markdown, yaml]
-        additional_dependencies:
-          - prettier@3.6.2
 
   # Branch drift check - blocks commit if you're behind origin
   - repo: local
     hooks:
       - id: check-branch-drift
         name: Check branch drift (are you behind origin?)
-        entry: bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." && pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
         language: system
         always_run: true
         pass_filenames: false
+
+  # Secret scanning — gitleaks (catches GCP SA keys, GitHub PATs, API keys)
+  # Config SSOT: unified-trading-pm/.gitleaks.toml (propagated here at rollout)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.27.2
+    hooks:
+      - id: gitleaks
+        name: Detect secrets with gitleaks
+        args: ["--config", ".gitleaks.toml"]
 
   # Basic file checks
   - repo: https://github.com/pre-commit/pre-commit-hooks

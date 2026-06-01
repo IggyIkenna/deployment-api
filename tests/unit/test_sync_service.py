@@ -92,9 +92,7 @@ class TestScanDeploymentStates:
         mock_obj2 = MagicMock()
         mock_obj2.name = "deployments.development/dep-1/other.json"
 
-        with patch(
-            "deployment_api.services.sync_service.list_objects", return_value=[mock_obj1, mock_obj2]
-        ):
+        with patch("deployment_api.services.sync_service.list_objects", return_value=[mock_obj1, mock_obj2]):
             result = svc.scan_deployment_states()
 
         assert result == ["deployments.development/dep-1/state.json"]
@@ -191,9 +189,7 @@ class TestSaveDeploymentState:
         def capture_write(bucket, path, text):
             captured["text"] = text
 
-        with patch(
-            "deployment_api.services.sync_service.write_object_text", side_effect=capture_write
-        ):
+        with patch("deployment_api.services.sync_service.write_object_text", side_effect=capture_write):
             svc.save_deployment_state("path/state.json", state)
 
         saved = json.loads(captured["text"])
@@ -291,9 +287,7 @@ import types as _types
 
 import deployment_api.services.sync_service as _sync_service_mod
 
-_sync_globals_ns = _types.SimpleNamespace(
-    **{"__dict__": SyncService._initialize_quota_broker.__globals__}
-)
+_sync_globals_ns = _types.SimpleNamespace(**{"__dict__": SyncService._initialize_quota_broker.__globals__})
 
 
 class TestInitializeQuotaBroker:
@@ -302,9 +296,7 @@ class TestInitializeQuotaBroker:
     def _call_with_importlib(self, mock_import_module):
         """Helper: inject _importlib into module globals then call _initialize_quota_broker."""
         svc = _make_service()
-        with patch.dict(
-            SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_import_module}
-        ):
+        with patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_import_module}):
             return svc._initialize_quota_broker()
 
     def test_returns_quota_broker_when_import_succeeds(self):
@@ -633,9 +625,7 @@ class TestProcessScheduling:
         state = {"config": {}, "shards": [{"status": "pending"}]}
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=None,
@@ -655,9 +645,7 @@ class TestProcessScheduling:
         }
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=MagicMock(),
@@ -681,9 +669,7 @@ class TestProcessScheduling:
         mock_orch_cls = MagicMock(return_value=mock_orch_instance)
         mock_importlib, _ = self._make_mock_importlib(orch_cls=mock_orch_cls)
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch.object(_sync_service_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
@@ -711,9 +697,7 @@ class TestProcessScheduling:
         mock_importlib, _ = self._make_mock_importlib(orch_cls=mock_orch_cls)
         fake_shape = MagicMock()
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch.object(_sync_service_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
@@ -735,9 +719,7 @@ class TestProcessScheduling:
         }
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=MagicMock(),
@@ -757,9 +739,7 @@ class TestProcessScheduling:
         }
         mock_importlib, _ = self._make_mock_importlib()
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
                 return_value=MagicMock(),
@@ -783,9 +763,7 @@ class TestProcessScheduling:
         mock_orch_cls = MagicMock(return_value=mock_orch_instance)
         mock_importlib, _ = self._make_mock_importlib(orch_cls=mock_orch_cls)
         with (
-            patch.dict(
-                SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}
-            ),
+            patch.dict(SyncService._initialize_quota_broker.__globals__, {"_importlib": mock_importlib}),
             patch.object(_sync_service_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
             patch(
                 "deployment_api.utils.quota_requirements.vm_quota_shape_from_compute_config",
@@ -811,9 +789,7 @@ class TestSyncDeployments:
         state1 = {"deployment_id": "dep-1", "shards": [], "status": "running"}
         state2 = {"deployment_id": "dep-2", "shards": [], "status": "running"}
         active = [("path1/state.json", state1), ("path2/state.json", state2)]
-        with patch.object(
-            svc, "scan_deployment_states", return_value=["path1/state.json", "path2/state.json"]
-        ):
+        with patch.object(svc, "scan_deployment_states", return_value=["path1/state.json", "path2/state.json"]):
             with patch.object(svc, "filter_active_deployments", return_value=active):
                 with patch.object(svc, "process_deployment", return_value=True):
                     with patch.object(svc, "_cleanup_recent_orphans", return_value=0):
@@ -830,9 +806,7 @@ class TestSyncDeployments:
         def process_side_effect(path, state):
             return state["deployment_id"] == "dep-1"
 
-        with patch.object(
-            svc, "scan_deployment_states", return_value=["path1/state.json", "path2/state.json"]
-        ):
+        with patch.object(svc, "scan_deployment_states", return_value=["path1/state.json", "path2/state.json"]):
             with patch.object(svc, "filter_active_deployments", return_value=active):
                 with patch.object(svc, "process_deployment", side_effect=process_side_effect):
                     with patch.object(svc, "_cleanup_recent_orphans", return_value=0):
@@ -859,9 +833,7 @@ class TestSyncDeployments:
             processed_order.append(state["deployment_id"])
             return False
 
-        with patch.object(
-            svc, "scan_deployment_states", return_value=["few/state.json", "many/state.json"]
-        ):
+        with patch.object(svc, "scan_deployment_states", return_value=["few/state.json", "many/state.json"]):
             with patch.object(svc, "filter_active_deployments", return_value=active):
                 with patch.object(svc, "process_deployment", side_effect=record_order):
                     with patch.object(svc, "_cleanup_recent_orphans", return_value=0):
@@ -875,9 +847,7 @@ class TestSyncDeployments:
         with patch.object(svc, "scan_deployment_states", return_value=["path1/state.json"]):
             with patch.object(svc, "filter_active_deployments", return_value=active):
                 with patch.object(svc, "process_deployment", return_value=False):
-                    with patch.object(
-                        svc, "_cleanup_recent_orphans", return_value=3
-                    ) as mock_cleanup:
+                    with patch.object(svc, "_cleanup_recent_orphans", return_value=3) as mock_cleanup:
                         svc.sync_deployments()
         mock_cleanup.assert_called_once()
 

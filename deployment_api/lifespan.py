@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import cast
 
 from fastapi import FastAPI
+from unified_trading_library import fastapi_uei_lifespan
 
 from deployment_api.background_sync import (
     STATE_BUCKET,
@@ -101,62 +102,59 @@ async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     global _background_task, _shutdown_event, _events_drain_task
 
-    # Startup
-    app.state.config_dir = get_config_dir()
-    logger.info("Config directory: %s", app.state.config_dir)
+    async with fastapi_uei_lifespan("deployment-api", entrypoint="gunicorn/uvicorn"):
+        # Startup
+        app.state.config_dir = get_config_dir()
+        logger.info("Config directory: %s", app.state.config_dir)
 
-    app.state.codex_dir = get_codex_dir()
-    if app.state.codex_dir is not None:
-        logger.info("Codex readiness dir: %s", app.state.codex_dir)
-    else:
-        logger.warning(
-            "Codex readiness dir: not found — checklist endpoints will return 404 "
-            "(codex v3.0 is SSOT)"
-        )
+        app.state.codex_dir = get_codex_dir()
+        if app.state.codex_dir is not None:
+            logger.info("Codex readiness dir: %s", app.state.codex_dir)
+        else:
+            logger.warning("Codex readiness dir: not found — checklist endpoints will return 404 (codex v3.0 is SSOT)")
 
-    app.state.epics_dir = get_epics_dir()
-    if app.state.epics_dir is not None:
-        logger.info("Epics dir: %s", app.state.epics_dir)
-    else:
-        logger.warning(
-            "Epics dir: not found — /api/epics will return 503 "
-            "(codex 11-project-management/epics/ must be present)"
-        )
+        app.state.epics_dir = get_epics_dir()
+        if app.state.epics_dir is not None:
+            logger.info("Epics dir: %s", app.state.epics_dir)
+        else:
+            logger.warning(
+                "Epics dir: not found — /api/epics will return 503 (codex 11-project-management/epics/ must be present)"
+            )
 
-    app.state.plans_dir = get_plans_dir()
-    if app.state.plans_dir is not None:
-        logger.info("PM plans dir: %s", app.state.plans_dir)
-    else:
-        logger.info("PM plans dir: not found — plans visualization endpoints unavailable")
+        app.state.plans_dir = get_plans_dir()
+        if app.state.plans_dir is not None:
+            logger.info("PM plans dir: %s", app.state.plans_dir)
+        else:
+            logger.info("PM plans dir: not found — plans visualization endpoints unavailable")
 
-    # Initialize cache
-    from .utils.cache import cache
-
-    await cache.initialize()
-
-    # Start background sync task
-    _shutdown_event = asyncio.Event()
-    set_shutdown_event(_shutdown_event)
-    _background_task = asyncio.create_task(_auto_sync_running_deployments())
-    logger.info("Background auto-sync task started")
-
-    # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
-    from deployment_api.utils.deployment_events import drain_sync_queue
-
-    _events_drain_task = asyncio.create_task(drain_sync_queue())
-    logger.info("Deployment events drain task started")
-
-    yield
-
-    # Shutdown
-    logger.info("Shutting down API...")
-    _shutdown_event.set()
-    await _cancel_background_tasks()
-    _release_deployment_locks()
-
-    try:
+        # Initialize cache
         from .utils.cache import cache
 
-        await cache.shutdown()
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.warning("Cache shutdown failed: %s", e)
+        await cache.initialize()
+
+        # Start background sync task
+        _shutdown_event = asyncio.Event()
+        set_shutdown_event(_shutdown_event)
+        _background_task = asyncio.create_task(_auto_sync_running_deployments())
+        logger.info("Background auto-sync task started")
+
+        # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
+        from deployment_api.utils.deployment_events import drain_sync_queue
+
+        _events_drain_task = asyncio.create_task(drain_sync_queue())
+        logger.info("Deployment events drain task started")
+
+        yield
+
+        # Shutdown
+        logger.info("Shutting down API...")
+        _shutdown_event.set()
+        await _cancel_background_tasks()
+        _release_deployment_locks()
+
+        try:
+            from .utils.cache import cache
+
+            await cache.shutdown()
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.warning("Cache shutdown failed: %s", e)

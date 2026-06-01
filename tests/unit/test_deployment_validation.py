@@ -294,9 +294,7 @@ class TestGenerateDeploymentReport:
             "has_stack_traces": True,
             "shards_analyzed": 5,
         }
-        report = generate_deployment_report(
-            state, log_analysis=log_analysis, verification_data=None
-        )
+        report = generate_deployment_report(state, log_analysis=log_analysis, verification_data=None)
         assert "log_summary" in report
         assert report["log_summary"]["total_errors"] == 2
         assert report["log_summary"]["total_warnings"] == 1
@@ -314,9 +312,7 @@ class TestGenerateDeploymentReport:
                 "VM_DIED": 0,
             }
         }
-        report = generate_deployment_report(
-            state, log_analysis=None, verification_data=verification_data
-        )
+        report = generate_deployment_report(state, log_analysis=None, verification_data=verification_data)
         assert "verification_summary" in report
         assert report["verification_summary"]["verified_clean"] == 10
         assert report["verification_summary"]["data_missing"] == 2

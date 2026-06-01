@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 
-from ._cloud_builds_types import BuildInfoDict, _cloudbuild_v1, _get_gcp_build_client
+from ._cloud_builds_types import (
+    BuildInfoDict,
+    get_cloudbuild_v1,  # Use public alias instead of private _cloudbuild_v1
+    get_gcp_build_client,  # Use public alias instead of private _get_gcp_build_client
+)
 
 if TYPE_CHECKING:
     from google.cloud.devtools import cloudbuild_v1
@@ -28,10 +32,10 @@ logger = logging.getLogger(__name__)
 def _format_build_info(build: object) -> BuildInfoDict:
     """Format a Cloud Build object into a serializable dict."""
     build_id = str(getattr(build, "id", "") or "")
-    status_obj = getattr(build, "status", None)
+    status_obj: object = getattr(build, "status", None)
     status_name = str(getattr(status_obj, "name", "") or "")
-    create_time = getattr(build, "create_time", None)
-    finish_time = getattr(build, "finish_time", None)
+    create_time: object = getattr(build, "create_time", None)
+    finish_time: object = getattr(build, "finish_time", None)
     substitutions: object = getattr(build, "substitutions", None)
     log_url_raw: object = getattr(build, "log_url", None)
     log_url = str(log_url_raw) if log_url_raw is not None else None
@@ -44,9 +48,15 @@ def _format_build_info(build: object) -> BuildInfoDict:
     duration_seconds: float | None = None
     if finish_time is not None and create_time is not None:
         with suppress(TypeError, AttributeError):
-            delta: object = getattr(finish_time, "__sub__", lambda _: None)(create_time)
-            if delta is not None and hasattr(delta, "total_seconds"):
-                duration_seconds = float(delta.total_seconds())
+            sub_method = getattr(finish_time, "__sub__", None)
+            if callable(sub_method):
+                delta: object = sub_method(create_time)
+                if delta is not None:
+                    total_seconds_attr = getattr(delta, "total_seconds", None)
+                    if callable(total_seconds_attr):
+                        total_seconds_result = total_seconds_attr()
+                        if isinstance(total_seconds_result, (int, float)):
+                            duration_seconds = float(total_seconds_result)
 
     commit_sha: str | None = None
     branch: str | None = None
@@ -88,7 +98,7 @@ async def _get_recent_builds_for_triggers(
             client: cloudbuild_v1.CloudBuildClient, trigger_id: str
         ) -> tuple[str, BuildInfoDict] | None:
             """Fetch the latest build for a single trigger using API-level filter."""
-            _cb = _cloudbuild_v1()
+            _cb = get_cloudbuild_v1()
             parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
             request = _cb.ListBuildsRequest(
                 parent=parent,
@@ -102,17 +112,13 @@ async def _get_recent_builds_for_triggers(
             return (trigger_id, _format_build_info(build))
 
         def _fetch_all_sync() -> dict[str, BuildInfoDict]:
-            _cb = _cloudbuild_v1()
-            client = _get_gcp_build_client()
+            _cb = get_cloudbuild_v1()
+            client = get_gcp_build_client()
             results: dict[str, BuildInfoDict] = {}
 
             # Run parallel queries - one per trigger, max 8 concurrent
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(trigger_ids), 8)
-            ) as executor:
-                futures = {
-                    executor.submit(_fetch_latest_build, client, tid): tid for tid in trigger_ids
-                }
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(trigger_ids), 8)) as executor:
+                futures = {executor.submit(_fetch_latest_build, client, tid): tid for tid in trigger_ids}
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         result = future.result()

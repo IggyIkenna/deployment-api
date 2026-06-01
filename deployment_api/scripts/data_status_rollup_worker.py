@@ -13,7 +13,7 @@ rollup, slices by the user's date range in-memory (microseconds), and
 returns. **Latency drops from ~310-410s to <500ms** for the full range.
 
 Plan:
-    ``unified-trading-pm/plans/active/data_status_offline_rollup_2026_05_06.plan.md``
+    ``unified-trading-pm/plans/active/data_status_offline_rollup_2026_05_06.md``
 
 Why offline rollup vs on-demand:
     The honest-coverage compute is GIL-bound Python loops over 5 x
@@ -37,6 +37,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import gzip
 import io
@@ -46,9 +47,7 @@ import sys
 import time
 from typing import Any
 
-from unified_trading_library.cloud_interface import get_storage_client
-from unified_trading_library.event_sink import GcsEventSink
-from unified_trading_library.events import log_event, setup_events
+from unified_trading_library import GcsEventSink, get_storage_client, log_event, run_lifecycle, setup_events
 
 from deployment_api.services.data_status_service import DataStatusService
 
@@ -70,8 +69,8 @@ _DEFAULT_SERVICES: tuple[str, ...] = (
     "features-multi-timeframe-service",
     "features-cross-instrument-service",
     "features-commodity-service",
-    "ml-training-service",
-    "ml-inference-service",
+    # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+    "ml-service",
     "strategy-service",
     "execution-service",
 )
@@ -95,9 +94,7 @@ def _coverage_blob_path(service: str) -> str:
     return f"{service}/coverage.json.gz"
 
 
-def _build_one_service_rollup(
-    dss: DataStatusService, service: str, end_date: str
-) -> dict[str, Any]:
+def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: str) -> dict[str, Any]:
     """Compute the full-range manifest rollup for one service.
 
     Bypasses the rollup-cache fast-path in
@@ -111,7 +108,7 @@ def _build_one_service_rollup(
     vs fake placeholders" — a partial / errored rollup is worse than no
     rollup, since the slicer would silently slice garbage).
     """
-    return dss._get_manifest_status_sync(
+    return dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
         service=service,
         start_date=_ROLLUP_START_DATE,
         end_date=end_date,
@@ -128,7 +125,7 @@ def _build_one_service_coverage(dss: DataStatusService, service: str) -> dict[st
     existing blob (its own previous output, fresh by construction) and
     return it unchanged, freezing the rollup at the first written shape.
     """
-    return dss._get_coverage_summary_sync(service=service, asset_groups=None)
+    return dss._get_coverage_summary_sync(service=service, asset_groups=None)  # pyright: ignore[reportPrivateUsage]
 
 
 def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
@@ -140,12 +137,10 @@ def _gzip_payload(payload: dict[str, Any]) -> tuple[bytes, int]:
     return buf.getvalue(), len(raw)
 
 
-def _write_rollup_to_gcs(
-    storage_client: object, bucket: str, service: str, payload: dict[str, Any]
-) -> dict[str, int]:
+def _write_rollup_to_gcs(storage_client: object, bucket: str, service: str, payload: dict[str, Any]) -> dict[str, int]:
     """Gzip + upload the manifest rollup via the unified cloud-interface API."""
     compressed, raw_size = _gzip_payload(payload)
-    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
+    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
         bucket=bucket,
         blob_path=_rollup_blob_path(service),
         data=compressed,
@@ -160,7 +155,7 @@ def _write_coverage_to_gcs(
 ) -> dict[str, int]:
     """Gzip + upload the coverage-summary blob (paired with manifest rollup)."""
     compressed, raw_size = _gzip_payload(payload)
-    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue]
+    storage_client.upload_bytes(  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
         bucket=bucket,
         blob_path=_coverage_blob_path(service),
         data=compressed,
@@ -181,25 +176,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
     # anyway — it runs once every 5 min and processes services sequentially.
     import deployment_api.services.data_status_service as _dss_mod
 
-    _dss_mod._PROCESS_POOL_DISABLED = True
-    # Production observability per CLAUDE.md "no fire-and-forget" rule —
-    # write structured lifecycle events to ``gs://{pid}-events/...`` where
-    # ``unified-events-interface`` UI ingests them. Schema:
-    # ``events/{service}/{YYYY-MM-DD}/{instance}/hour={H}/*.jsonl``.
-    import contextlib
-
-    # RuntimeError = already initialised by an outer bootstrap — acceptable.
-    with contextlib.suppress(RuntimeError):
-        setup_events(
-            service_name="data-status-rollup-worker",
-            mode="batch",
-            sink=GcsEventSink(
-                project_id=project_id,
-                bucket=f"{project_id}-events",
-                service_name="data-status-rollup-worker",
-            ),
-        )
-    log_event("STARTED", details={"project_id": project_id, "bucket": bucket, "services": services})
+    _dss_mod._PROCESS_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
 
     end_date = _today_iso()
     storage_client = get_storage_client(project_id=project_id)
@@ -222,7 +199,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
                     "elapsed_s": round(elapsed, 1),
                     "size_compressed": metrics["size_compressed"],
                     "size_uncompressed": metrics["size_uncompressed"],
-                    "asset_groups_n": len(payload.get("asset_groups", {})),
+                    "asset_groups_n": len(payload.get("asset_groups", {})),  # pyright: ignore[reportAny]
                 },
             )
             # Free the manifest payload before computing coverage — the MTDS
@@ -278,14 +255,6 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
             )
             logger.exception("coverage rollup failed for service=%s", service)
 
-    log_event(
-        "STOPPED" if not failures else "FAILED",
-        details={
-            "successes": successes,
-            "failures": len(failures),
-            "failed_services": [s for s, _ in failures],
-        },
-    )
     # Non-zero exit if every service failed (cron fires next minute, idempotent
     # retry; no need to crash the job for partial successes).
     return 0 if successes > 0 else 1
@@ -293,8 +262,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Offline data-status rollup worker — see plan: "
-        "data_status_offline_rollup_2026_05_06"
+        description="Offline data-status rollup worker — see plan: data_status_offline_rollup_2026_05_06"
     )
     parser.add_argument("--project", required=True, help="GCP project ID")
     parser.add_argument(
@@ -309,7 +277,21 @@ def main() -> int:
         help="Services to roll up (default: all DataStatusService-tracked)",
     )
     args = parser.parse_args()
-    return run_rollup(args.project, args.bucket, list(args.services))
+
+    # RuntimeError = already initialised by an outer bootstrap — acceptable.
+    with contextlib.suppress(RuntimeError):
+        _sink = GcsEventSink(
+            project_id=args.project,
+            bucket=f"{args.project}-events",
+            service_name="data-status-rollup-worker",
+        )
+        setup_events(service_name="data-status-rollup-worker", mode="batch", sink=_sink)
+
+    with run_lifecycle(
+        service_name="data-status-rollup-worker",
+        details={"project_id": args.project, "bucket": args.bucket},
+    ):
+        return run_rollup(args.project, args.bucket, list(args.services))  # pyright: ignore[reportAny]
 
 
 if __name__ == "__main__":

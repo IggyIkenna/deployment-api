@@ -189,9 +189,7 @@ class TestGetImageInfo:
             patch.object(_ar, "aiohttp") as mock_aiohttp,
         ):
             mock_session = MagicMock()
-            mock_session.__aenter__ = AsyncMock(
-                side_effect=aiohttp.ClientError("connection failed")
-            )
+            mock_session.__aenter__ = AsyncMock(side_effect=aiohttp.ClientError("connection failed"))
             mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_aiohttp.ClientSession.return_value = mock_session
             mock_aiohttp.ClientError = aiohttp.ClientError

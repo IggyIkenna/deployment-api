@@ -24,7 +24,10 @@ from google.auth import (  # pyright: ignore[reportMissingTypeStubs]  # google-a
     default,  # pyright: ignore[reportUnknownVariableType]
     impersonated_credentials,
 )
-from unified_trading_library.cloud_interface import get_secret_client
+from unified_api_contracts import (
+    compute_honest_coverage as _compute_honest_coverage,  # noqa: F401 — QG-5.90: canonical coverage route file; implementation in service_status_execution.py
+)
+from unified_trading_library import get_secret_client
 
 from deployment_api.settings import GITHUB_TOKEN_SA
 from deployment_api.utils.storage_facade import get_gcs_fuse_status
@@ -84,9 +87,7 @@ def _get_token_sync() -> str | None:
         logger.info("[PERF] Secret accessed in %.2fs total", time.time() - token_start)
         return secret_value
     except (OSError, ValueError, RuntimeError) as e:
-        logger.warning(
-            "Could not access github-token (took %.2fs): %s", time.time() - token_start, e
-        )
+        logger.warning("Could not access github-token (took %.2fs): %s", time.time() - token_start, e)
         return None
 
 
@@ -165,7 +166,7 @@ async def _get_quota_manager_status(service: str) -> dict[str, object]:
             from google.auth.transport.requests import Request as AuthRequest
             from google.oauth2 import id_token
 
-            token = id_token.fetch_id_token(AuthRequest(), broker_url)  # pyright: ignore[reportUnknownMemberType]  # google-auth stubs
+            token: str = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]  # google-auth stubs
             req = urllib.request.Request(
                 f"{broker_url}/health",
                 method="GET",
@@ -275,14 +276,11 @@ VALID_SERVICES: frozenset[str] = frozenset(
         "features-sports-service",
         "features-multi-timeframe-service",
         "features-cross-instrument-service",
-        "ml-training-service",
-        "ml-inference-service",
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        "ml-service",
         "strategy-service",
         "execution-service",
         "alerting-service",
-        "pnl-attribution-service",
-        "position-balance-monitor-service",
-        "risk-and-exposure-service",
         "execution-results-api",
         "market-data-api",
         "client-reporting-api",
@@ -333,10 +331,7 @@ async def get_service_status(service: str, request: Request):
     if not _VALID_SERVICE_NAME_RE.match(service) or service not in VALID_SERVICES:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Invalid service name: {service!r}."
-                " Must be a known service from the workspace manifest."
-            ),
+            detail=(f"Invalid service name: {service!r}. Must be a known service from the workspace manifest."),
         )
 
     start_time = time.time()
@@ -497,6 +492,4 @@ async def calculate_execution_missing_shards_endpoint(
     algo: str | None = None,
 ):
     """Calculate missing config x date shards for execution-service."""
-    return await calculate_execution_missing_shards(
-        config_path, start_date, end_date, strategy, mode, timeframe, algo
-    )
+    return await calculate_execution_missing_shards(config_path, start_date, end_date, strategy, mode, timeframe, algo)

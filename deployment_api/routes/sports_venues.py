@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, Body, Path, Query
 from pydantic import BaseModel, Field
-from unified_trading_library.config_interface import UnifiedCloudConfig
+from unified_trading_library import UnifiedCloudConfig
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sports/venues", tags=["sports-venues"])
@@ -96,7 +96,7 @@ def list_sports_venues(
 @router.put("/{venue_key}/credentials")
 def update_venue_credentials(
     venue_key: str = Path(..., description="Venue identifier"),
-    body: VenueCredentialUpdate = ...,
+    body: VenueCredentialUpdate = Body(...),
 ) -> dict[str, object]:
     """Update venue credential reference in Secret Manager."""
     if _cloud_cfg.is_mock_mode():
@@ -123,9 +123,7 @@ def check_venue_health(
             notes="Mock mode — no real connectivity check",
         )
     logger.info("check_venue_health: venue=%s", venue_key)
-    return VenueHealthResponse(
-        venue_key=venue_key, reachable=False, notes="Live check not configured"
-    )
+    return VenueHealthResponse(venue_key=venue_key, reachable=False, notes="Live check not configured")
 
 
 @router.post("/{venue_key}/enable")

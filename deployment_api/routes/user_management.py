@@ -14,6 +14,7 @@ from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import â
     Permission,
     UserRole,
 )
+from unified_trading_library import log_event
 
 from deployment_api.rbac import require_permission
 from deployment_api.services.user_management import (
@@ -78,6 +79,11 @@ async def create_user(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
+    log_event(
+        "USER_CREATED",
+        severity="INFO",
+        details={"user_id": user.user_id, "role": user.role, "email": user.email},
+    )
     return {"user": user.model_dump(), "message": "User created successfully"}
 
 
@@ -103,6 +109,11 @@ async def update_user(
     if user is None:
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
 
+    log_event(
+        "USER_UPDATED",
+        severity="INFO",
+        details={"user_id": user_id, "role": user.role, "email": user.email},
+    )
     return {"user": user.model_dump(), "message": "User updated successfully"}
 
 
@@ -119,6 +130,11 @@ async def delete_user(
     if not found:
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
 
+    log_event(
+        "USER_DEACTIVATED",
+        severity="WARNING",
+        details={"user_id": user_id},
+    )
     return {"user_id": user_id, "deactivated": True, "message": "User deactivated successfully"}
 
 
@@ -143,6 +159,11 @@ async def assign_role(
     if user is None:
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
 
+    log_event(
+        "USER_ROLE_ASSIGNED",
+        severity="WARNING",
+        details={"user_id": user_id, "role": request.role, "email": user.email},
+    )
     return {"user": user.model_dump(), "message": f"Role assigned: {request.role}"}
 
 

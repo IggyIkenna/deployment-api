@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uvicorn
-from unified_trading_library.config_interface import UnifiedCloudConfig
+from unified_trading_library import UnifiedCloudConfig
 
 _cfg = UnifiedCloudConfig()
 _port: int = getattr(_cfg, "port", 8004)  # config-bootstrap: PORT for uvicorn dev server

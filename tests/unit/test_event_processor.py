@@ -129,48 +129,36 @@ class TestUpdateDeploymentStatus:
 
     def test_no_update_when_not_all_terminal(self):
         state: dict = {"status": "running", "compute_type": "cloud_run"}
-        updated = self.processor.update_deployment_status(
-            state, all_terminal=False, has_failures=False, now=self.now
-        )
+        updated = self.processor.update_deployment_status(state, all_terminal=False, has_failures=False, now=self.now)
         assert updated is False
         assert state["status"] == "running"
 
     def test_cloud_run_all_succeeded(self):
         state: dict = {"status": "running", "compute_type": "cloud_run"}
-        updated = self.processor.update_deployment_status(
-            state, all_terminal=True, has_failures=False, now=self.now
-        )
+        updated = self.processor.update_deployment_status(state, all_terminal=True, has_failures=False, now=self.now)
         assert updated is True
         assert state["status"] == "completed"
 
     def test_vm_all_succeeded_becomes_completed_pending_delete(self):
         state: dict = {"status": "running", "compute_type": "vm"}
-        updated = self.processor.update_deployment_status(
-            state, all_terminal=True, has_failures=False, now=self.now
-        )
+        updated = self.processor.update_deployment_status(state, all_terminal=True, has_failures=False, now=self.now)
         assert updated is True
         assert state["status"] == "completed_pending_delete"
 
     def test_has_failures_becomes_failed(self):
         state: dict = {"status": "running", "compute_type": "cloud_run"}
-        updated = self.processor.update_deployment_status(
-            state, all_terminal=True, has_failures=True, now=self.now
-        )
+        updated = self.processor.update_deployment_status(state, all_terminal=True, has_failures=True, now=self.now)
         assert updated is True
         assert state["status"] == "failed"
 
     def test_no_change_when_status_already_set(self):
         state: dict = {"status": "completed", "compute_type": "cloud_run"}
-        updated = self.processor.update_deployment_status(
-            state, all_terminal=True, has_failures=False, now=self.now
-        )
+        updated = self.processor.update_deployment_status(state, all_terminal=True, has_failures=False, now=self.now)
         assert updated is False
 
     def test_completed_at_set_on_update(self):
         state: dict = {"status": "running", "compute_type": "cloud_run"}
-        self.processor.update_deployment_status(
-            state, all_terminal=True, has_failures=False, now=self.now
-        )
+        self.processor.update_deployment_status(state, all_terminal=True, has_failures=False, now=self.now)
         assert "completed_at" in state
         assert "updated_at" in state
 
@@ -544,9 +532,7 @@ class TestProcessOrphanVmCleanup:
         state = self._base_state(shards=[shard])
         vm_map = {"vm-1": {"job_id": "j1", "status": "TERMINATED", "zone": "us-c1-a"}}
         shard_statuses = {"s1": ("succeeded", {})}
-        result = self.processor.process_orphan_vm_cleanup(
-            "dep-1", state, vm_map, shard_statuses, {}
-        )
+        result = self.processor.process_orphan_vm_cleanup("dep-1", state, vm_map, shard_statuses, {})
         assert result == 0
 
     def test_returns_zero_when_shard_not_in_terminal_status(self):
@@ -554,9 +540,7 @@ class TestProcessOrphanVmCleanup:
         state = self._base_state(shards=[shard])
         vm_map = {"vm-1": {"job_id": "j1", "status": "RUNNING", "zone": "us-c1-a"}}
         shard_statuses = {"s1": ("running", {})}  # not terminal
-        result = self.processor.process_orphan_vm_cleanup(
-            "dep-1", state, vm_map, shard_statuses, {}
-        )
+        result = self.processor.process_orphan_vm_cleanup("dep-1", state, vm_map, shard_statuses, {})
         assert result == 0
 
     def _make_orch_patch(self, mock_orch_cls):
@@ -590,9 +574,7 @@ class TestProcessOrphanVmCleanup:
             patch.dict("sys.modules", self._make_orch_patch(mock_orch_cls)),
             patch.object(_ep_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
         ):
-            result = self.processor.process_orphan_vm_cleanup(
-                "dep-1", state, vm_map, shard_statuses, pending
-            )
+            result = self.processor.process_orphan_vm_cleanup("dep-1", state, vm_map, shard_statuses, pending)
 
         assert result == 1
         assert "j1" in pending
@@ -609,9 +591,7 @@ class TestProcessOrphanVmCleanup:
 
         mock_orch_cls = MagicMock()
         with patch.dict("sys.modules", self._make_orch_patch(mock_orch_cls)):
-            result = self.processor.process_orphan_vm_cleanup(
-                "dep-1", state, vm_map, shard_statuses, {}
-            )
+            result = self.processor.process_orphan_vm_cleanup("dep-1", state, vm_map, shard_statuses, {})
 
         assert result == 0
 
@@ -631,9 +611,7 @@ class TestProcessOrphanVmCleanup:
             patch.dict("sys.modules", self._make_orch_patch(mock_orch_cls)),
             patch.object(_ep_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
         ):
-            result = self.processor.process_orphan_vm_cleanup(
-                "dep-1", state, vm_map, shard_statuses, {}
-            )
+            result = self.processor.process_orphan_vm_cleanup("dep-1", state, vm_map, shard_statuses, {})
 
         assert result == 0
 
@@ -653,9 +631,7 @@ class TestProcessOrphanVmCleanup:
             patch.dict("sys.modules", self._make_orch_patch(mock_orch_cls)),
             patch.object(_ep_mod, "DeploymentOrchestrator", mock_orch_cls, create=True),
         ):
-            result = self.processor.process_orphan_vm_cleanup(
-                "dep-1", state, vm_map, shard_statuses, {}
-            )
+            result = self.processor.process_orphan_vm_cleanup("dep-1", state, vm_map, shard_statuses, {})
 
         assert result == 0
 

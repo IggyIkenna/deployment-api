@@ -34,9 +34,7 @@ def _load_gcs_cache() -> dict[str, object]:
         from deployment_api.utils.storage_facade import object_exists, read_object_text
 
         if object_exists(CACHE_BUCKET, CACHE_BLOB_PATH):
-            data = cast(
-                dict[str, object], json.loads(read_object_text(CACHE_BUCKET, CACHE_BLOB_PATH))
-            )
+            data = cast(dict[str, object], json.loads(read_object_text(CACHE_BUCKET, CACHE_BLOB_PATH)))
             _local_cache = data
             logger.info(
                 "Loaded service status cache from GCS: %s triggers, %s deployments",
