@@ -136,7 +136,7 @@ class ShardDownloadUrls(BaseModel):
 
 
 class ShardPayloadGrouped(BaseModel):
-    """Payload branch for bundle shards (options_chain, dex_swaps, …)."""
+    """Payload branch for bundle shards (options_chain, dex_pool_swaps, …)."""
 
     model_config = ConfigDict(frozen=True)
 

@@ -945,12 +945,12 @@ def _is_mtds_honest_coverage_target(service: str, category: str) -> bool:
 # DEFI data_type canonicalisation maps. Sub-dim buckets write the hyphenated
 # form (``lending-indices``, ``dex-swaps``) but UAC
 # ``VENUE_DATA_TYPE_CAPABILITIES`` declares the underscore form
-# (``lending_indices``, ``dex_swaps``). The honest-coverage per-(venue, dt)
+# (``lending_indices``, ``dex_pool_swaps``). The honest-coverage per-(venue, dt)
 # filter needs the rows canonicalised before matching. Module-level
 # constants per ruff N806 — they're configuration, not per-call state.
 _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
-    "dex-swaps": "dex_swaps",
-    "dex-pools": "dex_pools",
+    "dex-swaps": "dex_pool_swaps",
+    "dex-pools": "dex_pool_state",
     "lending-indices": "lending_indices",
     "lst-rates": "lst_rates",
     "oracle-prices": "oracle_prices",
@@ -968,8 +968,8 @@ _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
     "mev-events": "mev_events",
 }
 _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
-    "dex-swaps": "dex_swaps",
-    "dex-pools": "dex_pools",
+    "dex-swaps": "dex_pool_swaps",
+    "dex-pools": "dex_pool_state",
     "lending-indices": "lending_indices",
     "lst-rates": "lst_rates",
     "oracle-prices": "oracle_prices",
@@ -998,7 +998,7 @@ def _canonicalise_defi_data_types(filtered: pd.DataFrame) -> pd.DataFrame:
     Sub-dim buckets (``lending-indices``, ``dex-swaps``, ``dex-pools``,
     ``lst-rates``, ``oracle-prices``, ``perp-funding``) write hyphenated
     ``data_type`` values but UAC ``VENUE_DATA_TYPE_CAPABILITIES`` uses
-    canonical underscore form (``lending_indices``, ``dex_swaps``, …). Two
+    canonical underscore form (``lending_indices``, ``dex_pool_swaps``, …). Two
     transforms applied here, both safe to remove once the corresponding
     one-shot manifest migration runs (Plan B follow-up — currently no
     successor plan; data_type alias migration is the natural next step):
