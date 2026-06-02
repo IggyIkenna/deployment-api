@@ -15,6 +15,19 @@ repos:
       - id: conventional-pre-commit
         stages: [commit-msg]
 
+  # Branch drift check - blocks commit if you're behind origin
+  - repo: local
+    hooks:
+      - id: check-branch-drift
+        name: Check branch drift (are you behind origin?)
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
+        language: system
+        always_run: true
+        pass_filenames: false
+        fail_fast: true  # behind-origin -> STOP before any formatter mutates (no reflow residue that breaks slot FF-sync)
+
   # Ruff - Fast Python linter AND formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.0
@@ -36,18 +49,6 @@ repos:
           --
         language: system
         types_or: [ts, tsx, javascript, jsx, json, markdown, yaml]
-
-  # Branch drift check - blocks commit if you're behind origin
-  - repo: local
-    hooks:
-      - id: check-branch-drift
-        name: Check branch drift (are you behind origin?)
-        entry:
-          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
-          pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
-        language: system
-        always_run: true
-        pass_filenames: false
 
   # Secret scanning — gitleaks (catches GCP SA keys, GitHub PATs, API keys)
   # Config SSOT: unified-trading-pm/.gitleaks.toml (propagated here at rollout)
