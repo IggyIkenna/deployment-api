@@ -3,7 +3,7 @@ name: Semver Agent
 # Computes the next semver for this repo based on diff analysis since last staging_versions
 # baseline, then dispatches a version-bump event to unified-trading-pm with the computed version.
 #
-# TRIGGER: Fires ONLY when the "Quality Gates" workflow passes on the staging branch.
+# TRIGGER: Fires ONLY when the "quality-gates-v2" workflow passes on the staging branch.
 # This ensures semver bumps are computed AFTER SIT validates staging and the code
 # is promoted from staging — not prematurely at feature-branch time.
 #
@@ -35,7 +35,7 @@ name: Semver Agent
 
 on:
   workflow_run:
-    workflows: ["Quality Gates"]
+    workflows: ["quality-gates-v2"]
     types: [completed]
     branches: [staging]
 

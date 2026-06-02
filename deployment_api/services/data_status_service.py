@@ -945,12 +945,12 @@ def _is_mtds_honest_coverage_target(service: str, category: str) -> bool:
 # DEFI data_type canonicalisation maps. Sub-dim buckets write the hyphenated
 # form (``lending-indices``, ``dex-swaps``) but UAC
 # ``VENUE_DATA_TYPE_CAPABILITIES`` declares the underscore form
-# (``lending_indices``, ``dex_swaps``). The honest-coverage per-(venue, dt)
+# (``lending_indices``, ``dex_pool_swaps``). The honest-coverage per-(venue, dt)
 # filter needs the rows canonicalised before matching. Module-level
 # constants per ruff N806 — they're configuration, not per-call state.
 _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
-    "dex-swaps": "dex_swaps",
-    "dex-pools": "dex_pools",
+    "dex-swaps": "dex_pool_swaps",
+    "dex-pools": "dex_pool_state",
     "lending-indices": "lending_indices",
     "lst-rates": "lst_rates",
     "oracle-prices": "oracle_prices",
@@ -968,8 +968,8 @@ _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
     "mev-events": "mev_events",
 }
 _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
-    "dex-swaps": "dex_swaps",
-    "dex-pools": "dex_pools",
+    "dex-swaps": "dex_pool_swaps",
+    "dex-pools": "dex_pool_state",
     "lending-indices": "lending_indices",
     "lst-rates": "lst_rates",
     "oracle-prices": "oracle_prices",
@@ -998,7 +998,7 @@ def _canonicalise_defi_data_types(filtered: pd.DataFrame) -> pd.DataFrame:
     Sub-dim buckets (``lending-indices``, ``dex-swaps``, ``dex-pools``,
     ``lst-rates``, ``oracle-prices``, ``perp-funding``) write hyphenated
     ``data_type`` values but UAC ``VENUE_DATA_TYPE_CAPABILITIES`` uses
-    canonical underscore form (``lending_indices``, ``dex_swaps``, …). Two
+    canonical underscore form (``lending_indices``, ``dex_pool_swaps``, …). Two
     transforms applied here, both safe to remove once the corresponding
     one-shot manifest migration runs (Plan B follow-up — currently no
     successor plan; data_type alias migration is the natural next step):
@@ -1711,6 +1711,7 @@ _EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_FIXTURE_CANCELLED",
     "EXPECTED_FIXTURE_POSTPONED",
     "EXPECTED_NO_FIXTURE",
+    "EXPECTED_NO_MAPPING",
     "EXPECTED_OUTSIDE_PROCESSING_SCOPE",
     "EXPECTED_LEGACY_MIGRATION_MISSING_EXPIRY",
     "EXPECTED_NO_FUNDING_RATE_TICKS",
@@ -3314,6 +3315,21 @@ class DataStatusService:
                 return filtered
         return filtered
 
+    @staticmethod
+    def _apply_pipeline_mode_filter(filtered: pd.DataFrame, pipeline_modes: list[str]) -> pd.DataFrame:
+        """Filter manifest slice to rows whose pipeline_mode is in pipeline_modes.
+
+        OR semantics: any row matching at least one of the requested modes is kept.
+        Used by the deployment-ui pipeline_mode filter chip (Phase 4 consumer migration,
+        pipeline_mode_implementation_2026_05_28.md).
+        """
+        if filtered.empty or not pipeline_modes:
+            return filtered
+        if "pipeline_mode" not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        mode_set = set(pipeline_modes)
+        return filtered.loc[filtered["pipeline_mode"].fillna("").astype(str).isin(mode_set)].copy()
+
     def _build_breakdowns(
         self,
         service: str,
@@ -3536,6 +3552,7 @@ class DataStatusService:
         canonical_question_group: str | None = None,
         job_id: str | None = None,
         chain: str | None = None,
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """Return data status from manifest indices in TurboDataStatusResponse shape.
 
@@ -3558,7 +3575,7 @@ class DataStatusService:
         """
         any_row_filter = any(
             f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
-        )
+        ) or bool(pipeline_modes)
         if not any_row_filter:
             rollup = await asyncio.to_thread(_read_rollup_if_fresh, service)
             if rollup is not None:
@@ -3579,6 +3596,7 @@ class DataStatusService:
             job_id,
             chain,
             cloud,
+            pipeline_modes,
         )
 
     def _get_manifest_status_sync(
@@ -3594,6 +3612,7 @@ class DataStatusService:
         job_id: str | None = None,
         chain: str | None = None,
         cloud: str = "gcp",
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = asset_groups or [str(c) for c in MarketCategory]
@@ -3641,7 +3660,7 @@ class DataStatusService:
             chain=chain,
         )
 
-        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED or row_filters:
+        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED or row_filters or pipeline_modes:
             for cat in cat_list:
                 cat_result = self._build_manifest_category(
                     service,
@@ -3653,6 +3672,7 @@ class DataStatusService:
                     venue_mapping,
                     row_filters=row_filters,
                     cloud=cloud,
+                    pipeline_modes=pipeline_modes,
                 )
                 result_categories[cat] = cat_result
                 overall_found += int(cat_result.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
@@ -5699,6 +5719,7 @@ class DataStatusService:
         venue_mapping: VenueMapping,
         row_filters: dict[str, str] | None = None,
         cloud: str = "gcp",
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """Build a single category entry for manifest status.
 
@@ -5709,6 +5730,10 @@ class DataStatusService:
         so the UI can drill into a single ``league_id`` /
         ``canonical_question_group`` / ``job_id`` / ``chain`` /
         ``fixture_id`` slice. Empty/None == no filter.
+
+        ``pipeline_modes`` narrows the manifest slice to rows whose
+        ``pipeline_mode`` column matches any of the supplied values (OR semantics).
+        Used by the deployment-ui pipeline_mode filter chip.
         """
         empty: dict[str, object] = {
             "category": cat,
@@ -5767,6 +5792,9 @@ class DataStatusService:
         # query (see ``_apply_row_filters`` for semantics).
         if row_filters:
             filtered = self._apply_row_filters(filtered, row_filters)
+        # Apply pipeline_mode filter (OR across requested modes).
+        if pipeline_modes:
+            filtered = self._apply_pipeline_mode_filter(filtered, pipeline_modes)
 
         # Fold bare venue aliases (e.g. "OKX" → "OKX-SPOT", "COINBASE" → "COINBASE-SPOT")
         if "venue" in filtered.columns and not filtered.empty:

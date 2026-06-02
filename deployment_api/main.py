@@ -55,6 +55,7 @@ from .routes import (
     config_management,
     cost_daily,
     data_status,
+    data_status_tardis_windows,
     deploy_events_sse,
     deployment_diff,
     deployments,
@@ -87,6 +88,9 @@ from .routes import (
     treasury,
     treasury_routes,
     user_management,
+    venue_credentials,
+    venue_date_ranges,
+    venue_relaunch_estimate,
     vm_admin,
     vm_cost_estimate,
     vm_deployments,
@@ -181,6 +185,10 @@ _authenticated_router.include_router(
 _authenticated_router.include_router(
     execution_backtest_launch.router, prefix="/api/execution/backtest", tags=["Execution Backtest"]
 )
+_authenticated_router.include_router(venue_credentials.router, tags=["Venue Credentials"])
+_authenticated_router.include_router(data_status_tardis_windows.router, tags=["Data Status"])
+_authenticated_router.include_router(venue_date_ranges.router, tags=["Venue Date Ranges"])
+_authenticated_router.include_router(venue_relaunch_estimate.router, tags=["Venue Relaunch Estimate"])
 _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM Admin"])
 _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])

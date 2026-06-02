@@ -103,8 +103,8 @@ _GROUPED_DATA_TYPES: frozenset[str] = frozenset(
         "options_chain",
         "futures_chain",
         "combo_chain",
-        "dex_pools",
-        "dex_swaps",
+        "dex_pool_state",
+        "dex_pool_swaps",
         "liquidation_events",
         "flash_loan_events",
         "token_transfers",
@@ -145,7 +145,7 @@ def _classify_shard(
     2. Service default — instruments-service / corporate-actions publish
        reference data regardless of instrument_type.
     3. ``data_type`` in the grouped bundle set (``options_chain``,
-       ``dex_swaps``, …) → ``grouped``.
+       ``dex_pool_swaps``, …) → ``grouped``.
     4. ``instrument_type`` uppercase is in the per-symbol set → ``per_symbol``.
     5. Fallback → ``grouped`` (safer default for unknown shards — the
        ``instrument_list`` branch can surface an empty list without

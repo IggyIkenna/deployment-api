@@ -98,7 +98,7 @@ def test_default_data_types_tradfi() -> None:
 
 def test_default_data_types_defi() -> None:
     svc = _svc()
-    assert svc._default_data_types("DEFI") == ["dex_swaps", "lending_indices"]
+    assert svc._default_data_types("DEFI") == ["dex_pool_swaps", "lending_indices"]
 
 
 def test_default_data_types_unknown_falls_back_to_trades() -> None:

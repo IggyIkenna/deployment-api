@@ -15,6 +15,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+# deploy_missing_launch is imported lazily inside post_deploy_missing_launch
+# to break the services/__init__ → deployment_manager → routes → services circular chain.
+# Module-level reference so tests can patch it without reaching into function locals.
+from unified_trading_library import read_availability_index as _read_availability_index
+
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services import DataAnalyticsService, DataQueryService, DataStatusService
 from deployment_api.services.data_status_drilldown import (
@@ -57,9 +62,6 @@ from deployment_api.services.deploy_missing import (
 from deployment_api.services.deploy_missing import (
     list_supported_services as deploy_missing_supported_services,
 )
-
-# deploy_missing_launch is imported lazily inside post_deploy_missing_launch
-# to break the services/__init__ → deployment_manager → routes → services circular chain.
 
 _cfg = DeploymentApiConfig()
 
@@ -772,6 +774,14 @@ async def get_data_status_turbo(
     end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
     asset_group: list[str] | None = Query(None, description="Filter by asset group"),
     venue: list[str] | None = Query(None, description="Filter by venue"),
+    pipeline_mode: list[str] | None = Query(
+        None,
+        description=(
+            "Filter by pipeline_mode (OR semantics). Accepts canonical PipelineMode values "
+            "e.g. 'batch_tardis', 'batch_databento', 'live_websocket'. "
+            "Bypasses rollup cache; forces on-demand manifest read."
+        ),
+    ),
     include_sub_dimensions: bool = Query(False, description="Include sub-dimension breakdown"),
     include_instrument_types: bool = Query(False, description="Include instrument type breakdown"),
     include_file_counts: bool = Query(False, description="Include per-date file counts"),
@@ -786,7 +796,7 @@ async def get_data_status_turbo(
         # /turbo or /manifest. Ignores venue/include_* filters in mock —
         # the seed data is enough to drive every UI flow.
         _ = (include_sub_dimensions, include_instrument_types, include_file_counts)
-        _ = (include_dates_list, venue)
+        _ = (include_dates_list, venue, pipeline_mode)
         return build_mock_turbo_response(
             service=service,
             start_date=start_date,
@@ -796,6 +806,8 @@ async def get_data_status_turbo(
     try:
         # Use manifest reader directly (faster, no CLI subprocess,
         # returns league breakdowns for sports venues).
+        _pipeline_modes = pipeline_mode or None
+
         async def _manifest_source(
             service: str,
             start_date: str,
@@ -809,6 +821,7 @@ async def get_data_status_turbo(
                 end_date=end_date,
                 asset_groups=asset_groups,
                 cloud=cloud,
+                pipeline_modes=_pipeline_modes,
             )
 
         result = await data_analytics_service.get_data_status_turbo(
@@ -818,6 +831,7 @@ async def get_data_status_turbo(
             from_data_status_service=_manifest_source,
             asset_groups=asset_group,
             venues=venue,
+            pipeline_modes=_pipeline_modes,
         )
 
         if "error" in result:
@@ -2362,3 +2376,150 @@ async def get_honest_coverage(
         ) from exc
 
     return Response(content=raw, media_type="application/json")
+
+
+# ---------------------------------------------------------------------------
+# §4 venue x year coverage breakdown (deployment_ui plan §4 P1)
+# ---------------------------------------------------------------------------
+
+_VENUE_YEAR_COVERAGE_ASSET_GROUPS = ("cefi", "tradfi", "defi", "sports", "prediction")
+_BLOCKED_CREDENTIALS_REASON = "blocked_credentials"
+
+
+class VenueYearRow(BaseModel):
+    venue: str
+    asset_group: str
+    year: int
+    captured: int = 0
+    empty_confirmed: int = 0
+    expected_unattempted: int = 0
+    pending_paid_key: int = 0
+    attempted_failed: int = 0
+    total: int = 0
+
+    @property
+    def remaining(self) -> int:
+        return self.total - self.captured - self.empty_confirmed - self.expected_unattempted
+
+
+class VenueYearCoverageResponse(BaseModel):
+    rows: list[VenueYearRow]
+    asset_groups_loaded: list[str]
+    asset_groups_failed: list[str]
+
+
+@router.get("/venue-year-coverage", response_model=VenueYearCoverageResponse)
+async def get_venue_year_coverage(
+    asset_groups: str = Query(
+        "cefi,tradfi,defi",
+        description="Comma-separated asset groups (cefi/tradfi/defi/sports/prediction)",
+    ),
+) -> VenueYearCoverageResponse:
+    """Per-venue x year capture-status breakdown from the MTDS availability manifest.
+
+    Reads ``_index/availability_index.parquet`` for each requested asset group
+    and aggregates by (venue, year, capture_status).  The UI uses this to show:
+
+    * **captured** — shards successfully downloaded.
+    * **empty_confirmed** — genuinely absent (pre-listing, out-of-window, venue gap).
+    * **expected_unattempted** — known-missing, not yet attempted.
+    * **pending_paid_key** — ``attempted_failed`` + ``error_reason=blocked_credentials``
+      (401 / expired Tardis key).  A cell with this reason must read
+      "downloadable once key active", NOT "complete/empty".
+    * **attempted_failed** — other failures (network, parse error, etc.).
+    * **remaining** (derived) = total - captured - empty_confirmed - expected_unattempted.
+
+    Source: ``_index/availability_index.parquet`` per MTDS bucket.
+    """
+    import pandas as pd
+
+    requested_ags = [ag.strip().lower() for ag in asset_groups.split(",") if ag.strip()]
+    requested_ags = [ag for ag in requested_ags if ag in _VENUE_YEAR_COVERAGE_ASSET_GROUPS]
+
+    rows: list[VenueYearRow] = []
+    loaded: list[str] = []
+    failed: list[str] = []
+
+    for ag in requested_ags:
+        try:
+            bucket = build_bucket_name("market-tick-data-service", ag)
+            df: pd.DataFrame = _read_availability_index(bucket)
+        except Exception as exc:
+            logger.warning("venue-year-coverage: failed to read manifest for %s: %s", ag, exc)
+            failed.append(ag)
+            continue
+
+        if df.empty or "date" not in df.columns:
+            loaded.append(ag)
+            continue
+
+        # Derive year from date column (YYYY-MM-DD or datetime).
+        df = df.copy()
+        df["_year"] = pd.to_datetime(df["date"], errors="coerce").dt.year
+        df = df.dropna(subset=["_year", "venue"])
+        if df.empty:
+            loaded.append(ag)
+            continue
+
+        df["_year"] = df["_year"].astype(int)
+        df["venue"] = df["venue"].astype(str).str.upper()
+
+        # Normalise capture_status: default missing to "captured" (legacy rows).
+        if "capture_status" not in df.columns:
+            df["capture_status"] = "captured"
+        else:
+            df["capture_status"] = df["capture_status"].fillna("captured").astype(str)
+
+        error_col = df["error_reason"].astype(str) if "error_reason" in df.columns else pd.Series("", index=df.index)
+
+        # Classify: attempted_failed + blocked_credentials → pending_paid_key.
+        def _classify(row: "pd.Series[object]") -> str:  # type: ignore[type-arg]
+            status = str(row["capture_status"]).lower()
+            if status == "attempted_failed":
+                reason = str(row.get("_error_reason", "") or "").lower()
+                if _BLOCKED_CREDENTIALS_REASON in reason:
+                    return "pending_paid_key"
+            return status
+
+        df["_error_reason"] = error_col
+        df["_status_key"] = df.apply(_classify, axis=1)
+
+        # Aggregate per (venue, year, status_key).
+        agg = df.groupby(["venue", "_year", "_status_key"]).size().reset_index(name="count")
+
+        # Also compute total per (venue, year).
+        totals = df.groupby(["venue", "_year"]).size().reset_index(name="total")
+        totals_map: dict[tuple[str, int], int] = {
+            (str(r["venue"]), int(r["_year"])): int(r["total"]) for _, r in totals.iterrows()
+        }
+
+        # Build result rows — one VenueYearRow per (venue, year).
+        bucket_map: dict[tuple[str, int], dict[str, int]] = {}
+        for _, agg_row in agg.iterrows():
+            key = (str(agg_row["venue"]), int(agg_row["_year"]))
+            if key not in bucket_map:
+                bucket_map[key] = {}
+            bucket_map[key][str(agg_row["_status_key"])] = int(agg_row["count"])
+
+        for (venue, year), counts in sorted(bucket_map.items()):
+            rows.append(
+                VenueYearRow(
+                    venue=venue,
+                    asset_group=ag.upper(),
+                    year=year,
+                    captured=counts.get("captured", 0),
+                    empty_confirmed=counts.get("empty_confirmed", 0),
+                    expected_unattempted=counts.get("expected_unattempted", 0),
+                    pending_paid_key=counts.get("pending_paid_key", 0),
+                    attempted_failed=counts.get("attempted_failed", 0),
+                    total=totals_map.get((venue, year), 0),
+                )
+            )
+
+        loaded.append(ag)
+
+    return VenueYearCoverageResponse(
+        rows=rows,
+        asset_groups_loaded=loaded,
+        asset_groups_failed=failed,
+    )
