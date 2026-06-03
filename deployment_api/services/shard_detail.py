@@ -1347,7 +1347,12 @@ def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
     ``instrument_id`` (v9) and fall back to ``underlying`` gracefully so reads
     remain correct across the migration window.
     """
-    bucket = _instruments_bucket_for_category("prediction")
+    # The prediction cqg-bundle manifest (`data_type=prediction_canonical_question_group`
+    # with `observed_clusters`) is written by MTDS into `market-data-tick-pred-prd-{pid}`,
+    # NOT the instruments-store — the shard axis is ("market-tick-data-service",
+    # "prediction"). Reading the instruments-store bucket here returned an empty/wrong
+    # drilldown for v9 rows (prediction_manifest_canonicalisation_2026_06_01.md).
+    bucket = build_bucket_name("market-tick-data-service", "prediction")
     try:
         df = read_availability_index(bucket)
     except (OSError, RuntimeError, ValueError) as exc:

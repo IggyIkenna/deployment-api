@@ -439,6 +439,27 @@ class TestFetchVenueDetailPrediction:
         assert resp.total_instruments == 0
         assert resp.instruments == []
 
+    def test_prediction_reads_mtds_bucket_not_instruments_store(self) -> None:
+        # Regression: the prediction cqg-bundle manifest (`prediction_canonical_question_group`
+        # with `observed_clusters`) is written by MTDS into `market-data-tick-pred-prd-*`,
+        # NOT the instruments-store. Reading the instruments bucket returned an empty/wrong
+        # v9 drilldown. The read must target the MTDS bucket regardless of the caller's
+        # `service` arg (the data source is definitionally the MTDS manifest).
+        captured: dict[str, str] = {}
+
+        def _capture(bucket: str) -> pd.DataFrame:
+            captured["bucket"] = bucket
+            return pd.DataFrame()
+
+        with patch.object(svc, "read_availability_index", side_effect=_capture):
+            svc.fetch_venue_detail(
+                service="instruments-service",  # UI passes this; prediction must still read MTDS
+                asset_group="PREDICTION",
+                venue="POLYMARKET",
+            )
+        assert "market-data-tick-pred-prd" in captured["bucket"], captured
+        assert "instruments-store" not in captured["bucket"], captured
+
 
 # ---------------------------------------------------------------------------
 # instrument_type=AUTO resolution
