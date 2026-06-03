@@ -2618,3 +2618,181 @@ class TestSportsRetiredDataTypeFiltering:
                 f"Retired data_type {dt!r} was rendered in the data-status panel — "
                 "should be clipped from denominator (SPORTS_DATA_TYPE_META is the SSOT)"
             )
+
+
+# ── Item 7: Trigger-date denominator for mapping entities ─────────────────────
+
+
+class TestTriggerDateDenominator:
+    """ITEM 7 (sports_master.md:1064): TEAMS and PLAYER_VALUES use trigger-date
+    denominator instead of daily/periodic calendar.
+
+    TEAMS uses ``global_trigger_date`` axis — expected = union of
+    get_reference_refresh_dates across all leagues.
+    PLAYER_VALUES uses ``per_league_trigger_date`` axis — expected = per-league
+    trigger date count.
+
+    Soft-gated on sports_master item A2.4 (instruments-service write-path);
+    these tests verify the denominator mechanics in isolation.
+    """
+
+    def test_teams_axis_is_global_trigger_date(self) -> None:
+        """TEAMS meta entry declares global_trigger_date axis."""
+        from deployment_api.services.data_status_service import SPORTS_DATA_TYPE_META
+
+        meta = SPORTS_DATA_TYPE_META["TEAMS"]
+        assert meta["axis"] == "global_trigger_date", (
+            f"TEAMS axis should be 'global_trigger_date', got {meta['axis']!r}"
+        )
+        assert meta["unit"] == "trigger_date_snapshots"
+        # No cadence_days for trigger-date axes
+        assert "cadence_days" not in meta
+
+    def test_player_values_axis_is_per_league_trigger_date(self) -> None:
+        """PLAYER_VALUES meta entry declares per_league_trigger_date axis."""
+        from deployment_api.services.data_status_service import SPORTS_DATA_TYPE_META
+
+        meta = SPORTS_DATA_TYPE_META["PLAYER_VALUES"]
+        assert meta["axis"] == "per_league_trigger_date", (
+            f"PLAYER_VALUES axis should be 'per_league_trigger_date', got {meta['axis']!r}"
+        )
+        assert meta["unit"] == "trigger_date_snapshots"
+
+    def test_sports_trigger_dates_for_window_returns_sorted_list(self) -> None:
+        """_sports_trigger_dates_for_window returns sorted ISO date strings."""
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_window
+
+        result = _sports_trigger_dates_for_window("2024-01-01", "2024-12-31")
+        assert isinstance(result, list)
+        # Should contain at least some trigger dates for a full year
+        assert len(result) > 0
+        # All dates should be within the window
+        for d in result:
+            assert "2024-01-01" <= d <= "2024-12-31"
+        # Should be sorted
+        assert result == sorted(result)
+        # No duplicates
+        assert len(result) == len(set(result))
+
+    def test_sports_trigger_dates_empty_window(self) -> None:
+        """Invalid date range returns empty list, no exception."""
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_window
+
+        result = _sports_trigger_dates_for_window("2024-12-31", "2024-01-01")
+        assert result == []
+
+    def test_sports_trigger_dates_for_league_returns_sorted_list(self) -> None:
+        """_sports_trigger_dates_for_league returns sorted ISO date strings for EPL."""
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_league
+
+        result = _sports_trigger_dates_for_league("EPL", "2024-01-01", "2024-12-31")
+        assert isinstance(result, list)
+        # EPL has season-start + summer/winter window dates
+        assert len(result) > 0
+        assert result == sorted(result)
+        for d in result:
+            assert "2024-01-01" <= d <= "2024-12-31"
+
+    def test_teams_honest_coverage_uses_trigger_dates(self) -> None:
+        """_sports_honest_coverage for TEAMS returns global_trigger_date axis result."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            _sports_honest_coverage,
+            _sports_trigger_dates_for_window,
+        )
+
+        # Real trigger dates for 2024 (derived from UAC)
+        trigger_dates = _sports_trigger_dates_for_window("2024-06-01", "2024-06-30")
+
+        result = _sports_honest_coverage(
+            filtered=pd.DataFrame(columns=["data_type", "league_id", "date", "capture_status"]),
+            entity_name="TEAMS",
+            start_date="2024-06-01",
+            end_date="2024-06-30",
+        )
+        assert result is not None
+        assert result["axis"] == "global_trigger_date"
+        assert result["unit"] == "trigger_date_snapshots"
+        # expected_shards should match the trigger date count for the window
+        assert result["expected_shards"] == len(trigger_dates)
+        # Empty manifest → 0 found
+        assert result["found_shards"] == 0
+        # Trigger dates list is included in response for UI drill-down
+        assert "trigger_dates" in result
+
+    def test_teams_honest_coverage_counts_found_on_trigger_dates(self) -> None:
+        """found_shards for TEAMS counts manifest rows that land on trigger dates."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            _sports_honest_coverage,
+            _sports_trigger_dates_for_window,
+        )
+
+        trigger_dates = _sports_trigger_dates_for_window("2024-06-01", "2024-06-30")
+        if not trigger_dates:
+            pytest.skip("No trigger dates for 2024-06 window — UAC data not available")
+
+        # One manifest row on a real trigger date, one on a non-trigger date
+        trigger_date_in = trigger_dates[0]
+        nontrigger_date = "2024-06-15"  # Mid-month, unlikely to be a trigger date
+
+        df = pd.DataFrame(
+            {
+                "data_type": ["TEAMS", "TEAMS"],
+                "league_id": ["EPL", "EPL"],
+                "date": [trigger_date_in, nontrigger_date],
+                "capture_status": ["captured", "captured"],
+            }
+        )
+
+        result = _sports_honest_coverage(
+            filtered=df,
+            entity_name="TEAMS",
+            start_date="2024-06-01",
+            end_date="2024-06-30",
+        )
+        assert result is not None
+        # found_shards = intersection of manifest dates with trigger dates
+        assert result["found_shards"] >= 1
+
+    def test_player_values_honest_coverage_uses_per_league_triggers(self) -> None:
+        """_sports_honest_coverage for PLAYER_VALUES returns per_league_trigger_date."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _sports_honest_coverage
+
+        result = _sports_honest_coverage(
+            filtered=pd.DataFrame(columns=["data_type", "league_id", "date", "capture_status"]),
+            entity_name="PLAYER_VALUES",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+        )
+        assert result is not None
+        assert result["axis"] == "per_league_trigger_date"
+        assert result["unit"] == "trigger_date_snapshots"
+        # expected_shards > 0 for a full year (multiple leagues x multiple triggers)
+        assert isinstance(result["expected_shards"], int)
+        assert result["expected_shards"] > 0
+        # found_shards = 0 (empty manifest)
+        assert result["found_shards"] == 0
+        # per_league populated
+        assert isinstance(result["per_league"], dict)
+
+    def test_trigger_date_denominator_less_than_daily_denominator(self) -> None:
+        """Trigger-date denominator must be smaller than daily denominator.
+
+        The whole point of this item is that the daily calendar over-estimates
+        the expected shard count for reference entities. Trigger-date count for
+        a full year should be << 365 days.
+        """
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_window
+
+        trigger_dates = _sports_trigger_dates_for_window("2024-01-01", "2024-12-31")
+        days_in_year = 366  # 2024 is a leap year
+        # Trigger dates should be a fraction of daily days
+        assert len(trigger_dates) < days_in_year // 4, (
+            f"Expected trigger-date count << {days_in_year // 4} days/year, "
+            f"got {len(trigger_dates)} — denominator may not be corrected"
+        )
