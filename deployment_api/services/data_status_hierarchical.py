@@ -20,8 +20,8 @@ This module is the SSOT-driven generic builder. The axis order per
 ``unified_api_contracts.registry.data_status_axis_matrix.SHARD_AXIS_MATRIX``;
 the leaf row count comes from the v5+ availability manifest read by
 ``unified_trading_library.read_availability_index``. Each leaf carries
-``capture_status`` counts (captured / empty_confirmed / attempted_failed)
-and the structured ``row_key`` consumed by the per-leaf SmartDownloadButton
+``capture_status`` counts (captured / empty_confirmed / attempted_failed /
+expected_unattempted) and the structured ``row_key`` consumed by the per-leaf SmartDownloadButton
 + the surgical Deploy-Missing CLI invocation
 (``--shard-key=<asset_group>|<venue>|<data_type>|...``).
 
@@ -98,12 +98,15 @@ class DrilldownNode:
     captured: int = 0
     empty_confirmed: int = 0
     attempted_failed: int = 0
+    expected_unattempted: int = 0
     children: list[DrilldownNode] = field(default_factory=list)
     row_key: dict[str, str] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
-        return self.captured + self.empty_confirmed + self.attempted_failed
+        # B3: denominator includes the 4th bin (expected_unattempted) so the
+        # completion_pct is captured / (captured+empty+failed+expected).
+        return self.captured + self.empty_confirmed + self.attempted_failed + self.expected_unattempted
 
     @property
     def completion_pct(self) -> float:
@@ -119,6 +122,7 @@ class DrilldownNode:
             "captured": self.captured,
             "empty_confirmed": self.empty_confirmed,
             "attempted_failed": self.attempted_failed,
+            "expected_unattempted": self.expected_unattempted,
             "total": self.total,
             "completion_pct": self.completion_pct,
             "row_key": self.row_key,
@@ -177,19 +181,25 @@ def _filter_manifest(df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str,
     return out
 
 
-def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int]:
+def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int, int]:
     """Per-status counts for a slice of manifest rows.
+
+    Returns the 4-state tuple ``(captured, empty_confirmed, attempted_failed,
+    expected_unattempted)``. B2: the 4th bin (``expected_unattempted``) makes
+    genuinely-missing cells visible in the drilldown tree — the most useful
+    "where's the missing data" view.
 
     Pre-v5 manifests omit ``capture_status``; in that case every row counts
     as captured (the legacy assumption — degenerate compatibility path).
     """
     if "capture_status" not in rows.columns:
-        return len(rows), 0, 0
+        return len(rows), 0, 0, 0
     cs = rows["capture_status"].astype(str)
     captured = int((cs == "captured").sum())
     empty_confirmed = int((cs == "empty_confirmed").sum())
     attempted_failed = int((cs == "attempted_failed").sum())
-    return captured, empty_confirmed, attempted_failed
+    expected_unattempted = int((cs == "expected_unattempted").sum())
+    return captured, empty_confirmed, attempted_failed, expected_unattempted
 
 
 def _children_for_axis(
@@ -224,7 +234,7 @@ def _children_for_axis(
     children: list[DrilldownNode] = []
     for val in values:  # pyright: ignore[reportAny]
         sub = rows[rows[axis].astype(str) == val]  # pyright: ignore[reportUnknownVariableType]
-        captured, empty_confirmed, attempted_failed = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
+        captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
         node_row_key = {**parent_row_key, axis: val}
         node = DrilldownNode(
             axis=axis,
@@ -232,6 +242,7 @@ def _children_for_axis(
             captured=captured,
             empty_confirmed=empty_confirmed,
             attempted_failed=attempted_failed,
+            expected_unattempted=expected_unattempted,
             row_key=node_row_key,
         )
         if deeper_axes and current_depth < expand_to_depth:
@@ -384,7 +395,7 @@ def get_hierarchical_drilldown(
     Returns:
         ``{"axes": (tuple), "tree": [DrilldownNode.to_dict(), ...],
             "totals": {captured, empty_confirmed, attempted_failed,
-                       total, completion_pct}, "filtered_by": filters,
+                       expected_unattempted, total, completion_pct}, "filtered_by": filters,
             "service": service, "asset_group": asset_group,
             "child_offset": int, "child_limit": int | None,
             "total_top_axis_children": int}``.
@@ -415,6 +426,7 @@ def get_hierarchical_drilldown(
                 "captured": 0,
                 "empty_confirmed": 0,
                 "attempted_failed": 0,
+                "expected_unattempted": 0,
                 "total": 0,
                 "completion_pct": 0.0,
             },
@@ -448,11 +460,11 @@ def get_hierarchical_drilldown(
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)
     remaining_axes = axes[matched_depth:]
     if not remaining_axes:
-        captured, empty_confirmed, attempted_failed = _aggregate_counts(df)
+        captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(df)
         return {
             "axes": list(axes),
             "tree": [],
-            "totals": _totals_dict(captured, empty_confirmed, attempted_failed),
+            "totals": _totals_dict(captured, empty_confirmed, attempted_failed, expected_unattempted),
             "filtered_by": filters,
             "service": service,
             "asset_group": asset_group,
@@ -478,11 +490,11 @@ def get_hierarchical_drilldown(
     elif child_offset > 0:
         tree = tree[child_offset:]
 
-    captured, empty_confirmed, attempted_failed = _aggregate_counts(df)
+    captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(df)
     return {
         "axes": list(axes),
         "tree": [n.to_dict() for n in tree],
-        "totals": _totals_dict(captured, empty_confirmed, attempted_failed),
+        "totals": _totals_dict(captured, empty_confirmed, attempted_failed, expected_unattempted),
         "filtered_by": filters,
         "service": service,
         "asset_group": asset_group,
@@ -493,13 +505,18 @@ def get_hierarchical_drilldown(
     }
 
 
-def _totals_dict(captured: int, empty_confirmed: int, attempted_failed: int) -> dict[str, object]:
-    total = captured + empty_confirmed + attempted_failed
+def _totals_dict(
+    captured: int, empty_confirmed: int, attempted_failed: int, expected_unattempted: int
+) -> dict[str, object]:
+    # B3: denominator includes expected_unattempted (the 4th bin) so the
+    # completion_pct is captured / (captured+empty+failed+expected).
+    total = captured + empty_confirmed + attempted_failed + expected_unattempted
     completion_pct = round(captured / total * 100, 2) if total > 0 else 0.0
     return {
         "captured": captured,
         "empty_confirmed": empty_confirmed,
         "attempted_failed": attempted_failed,
+        "expected_unattempted": expected_unattempted,
         "total": total,
         "completion_pct": completion_pct,
     }

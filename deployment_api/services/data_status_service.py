@@ -3660,6 +3660,28 @@ class DataStatusService:
             index["venue"] = index["venue"].replace(self._VENUE_ALIASES)
         index = self._filter_legacy_defi_rows(index, cat)
         shards = len(index)
+        # B1: honest 4-state breakdown so completion% is captured /
+        # (captured+empty+failed+expected_unattempted), NOT the self-referential
+        # captured/len(index)≈100%. Aligns the coverage-summary with
+        # manifest-status + the drilldown's _aggregate_counts. v4 rows without a
+        # ``capture_status`` column are the legacy "every row captured" path.
+        if "capture_status" in index.columns:
+            cs = index["capture_status"].astype(str)
+            capture_status_counts: dict[str, int] = {
+                "captured": int((cs == "captured").sum()),
+                "empty_confirmed": int((cs == "empty_confirmed").sum()),
+                "attempted_failed": int((cs == "attempted_failed").sum()),
+                "expected_unattempted": int((cs == "expected_unattempted").sum()),
+            }
+        else:
+            capture_status_counts = {
+                "captured": shards,
+                "empty_confirmed": 0,
+                "attempted_failed": 0,
+                "expected_unattempted": 0,
+            }
+        cov_total = sum(capture_status_counts.values())
+        completion_pct = round(capture_status_counts["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
         date_index = self._filter_to_iso_dates(index)
         unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []  # pyright: ignore[reportAny]
         group_axis = self._select_coverage_group_axis(service, cat, index)
@@ -3691,6 +3713,8 @@ class DataStatusService:
             "latest_day_instruments": latest_day_instruments,
             "latest_day_total": latest_day_total,
             "breakdowns": breakdowns,
+            "capture_status_counts": capture_status_counts,
+            "completion_pct": completion_pct,
             "_unique_dates_set": [str(d) for d in unique_dates],  # pyright: ignore[reportAny]
         }
 
@@ -3707,6 +3731,14 @@ class DataStatusService:
         total_instrument_rows = 0
         all_dates: set[str] = set()
         total_latest_day_instruments = 0
+        # B1: aggregate the per-cat 4-state so the service-level totals carry an
+        # honest completion%, not the self-referential shards count.
+        total_capture_status: dict[str, int] = {
+            "captured": 0,
+            "empty_confirmed": 0,
+            "attempted_failed": 0,
+            "expected_unattempted": 0,
+        }
 
         for cat in cat_list:
             entry = self._build_coverage_for_cat(service, cat, cloud=cloud)
@@ -3719,11 +3751,18 @@ class DataStatusService:
             ld_total_int = entry["latest_day_total"]
             assert isinstance(shards_int, int)
             assert isinstance(ld_total_int, int)
+            cat_counts = entry.get("capture_status_counts")
+            if isinstance(cat_counts, dict):
+                cat_counts_typed = cast(dict[str, int], cat_counts)
+                for _k, _v in total_capture_status.items():
+                    total_capture_status[_k] = _v + int(cat_counts_typed.get(_k, 0))
             result_categories[cat] = entry
             total_shards += shards_int
             total_instrument_rows += shards_int
             total_latest_day_instruments += ld_total_int
 
+        cov_total = sum(total_capture_status.values())
+        completion_pct = round(total_capture_status["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
         return {
             "service": service,
             "asset_groups": result_categories,
@@ -3732,6 +3771,8 @@ class DataStatusService:
                 "instrument_rows": total_instrument_rows,
                 "dates_across_categories": len(all_dates),
                 "latest_day_instruments": total_latest_day_instruments,
+                "capture_status_counts": total_capture_status,
+                "completion_pct": completion_pct,
             },
             "totals_source": "manifest",
         }
