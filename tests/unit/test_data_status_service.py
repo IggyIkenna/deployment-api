@@ -2133,6 +2133,236 @@ class TestMTDSHonestCoverage:
         assert result["shards_expected"] > 20  # 11 venues x ≥2 dts x 1 day
 
 
+class TestTradFiMultiSourceUnion:
+    """FLAG-1: TradFi v9 multi-source UNION dedup + per-source breakdown.
+
+    The v9 manifest carries one row per (venue, data_type, date, source).
+    Databento + Massive both captured for the same date → two rows. The
+    honest-coverage aggregator MUST:
+      1. Count that date ONCE (union: ≥1 captured → cell captured).
+      2. Surface a ``per_source`` breakdown so the drilldown can show
+         per-vendor coverage without double-counting the headline.
+
+    Plan: downstream_services_manifest_canonicalisation_2026_06_01 FLAG-1.
+    Operator 2026-06-02: UNION + manifest-derived per-source breakdown.
+    """
+
+    def _v9_df(self, rows):
+        """Build a v9-shaped manifest DataFrame including the ``source`` column."""
+        cols = [
+            "date",
+            "venue",
+            "data_type",
+            "service_name",
+            "capture_status",
+            "chain",
+            "instrument_type",
+            "league_id",
+            "row_count",
+            "source",
+        ]
+        return pd.DataFrame(rows, columns=cols)
+
+    # Use CBOE + ohlcv_15m: a UAC-declared TRADFI (venue, dt) pair that is
+    # NOT per_instrument (is_per_instrument_shard_data_type returns False),
+    # so it exercises the venue-level dt branch where per_source is emitted.
+    _VENUE = "CBOE"
+    _DT = "ohlcv_15m"
+
+    def test_two_source_rows_same_date_counts_once(self):
+        """FLAG-1 regression: databento + massive both captured on 2026-01-02
+        must produce found_shards=1 (union), NOT 2 (per-source double-count).
+
+        Uses CBOE/ohlcv_15m — a UAC-declared venue-level (not per-instrument)
+        TRADFI (venue, data_type) pair."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._v9_df(
+            [
+                # databento row
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                    "databento",
+                ],
+                # massive row — same venue/dt/date, different source
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    95,
+                    "massive",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None, f"{self._DT} dt entry missing"
+        # UNION: one date, two sources → found_shards must be 1
+        assert dt_entry["found_shards"] == 1, f"Expected 1 found_shard (union), got {dt_entry['found_shards']}"
+        assert dt_entry["expected_shards"] == 1
+
+    def test_per_source_breakdown_present_in_dt_entry(self):
+        """FLAG-1: per-source breakdown is emitted when the source column is present.
+
+        The breakdown should have one entry per distinct source in the
+        manifest rows (e.g. databento and massive), each reporting its
+        own found_shards count. The headline (union) count stays at 1."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._v9_df(
+            [
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                    "databento",
+                ],
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    95,
+                    "massive",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None
+        # per_source breakdown must be present
+        per_source = dt_entry.get("per_source")
+        assert per_source is not None, "per_source key missing from dt entry"
+        assert isinstance(per_source, dict)
+        # Both sources should appear
+        assert "databento" in per_source, f"databento missing from per_source: {per_source}"
+        assert "massive" in per_source, f"massive missing from per_source: {per_source}"
+        # Each source found the same date
+        assert per_source["databento"]["found_shards"] == 1
+        assert per_source["massive"]["found_shards"] == 1
+        # Headline union found is still 1 (no double-count)
+        assert dt_entry["found_shards"] == 1
+
+    def test_one_source_captured_other_failed_union_is_captured(self):
+        """FLAG-1: if databento=captured and massive=attempted_failed on same date,
+        the union MUST see the date as found (databento passes the ok_mask).
+
+        Uses 2026-01-02 — a valid CBOE trading day (verified via
+        _mtds_expected_dates_for_venue_dt returns {'2026-01-02'})."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._v9_df(
+            [
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                    "databento",
+                ],
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "attempted_failed",
+                    "",
+                    "",
+                    "",
+                    0,
+                    "massive",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None
+        # Union: databento captured → date found
+        assert dt_entry["found_shards"] == 1, f"Expected 1 (union of captured), got {dt_entry['found_shards']}"
+        # per_source only shows sources that pass the ok_mask
+        per_source = dt_entry.get("per_source")
+        if per_source:
+            # databento passed; massive did not (attempted_failed filtered out)
+            assert "databento" in per_source
+            # massive row was filtered by ok_mask so it may not appear
+            assert per_source["databento"]["found_shards"] == 1
+
+    def test_no_source_column_no_per_source_key(self):
+        """FLAG-1: v8 manifests lack the source column; per_source must not crash
+        and the key must simply be absent from the dt entry."""
+        from unified_api_contracts import VenueMapping
+
+        # v8-shaped df: same cols as _mtds_df (no source column)
+        cols = [
+            "date",
+            "venue",
+            "data_type",
+            "service_name",
+            "capture_status",
+            "chain",
+            "instrument_type",
+            "league_id",
+            "row_count",
+        ]
+        df = pd.DataFrame(
+            [
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                ]
+            ],
+            columns=cols,
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None
+        # No source column → per_source key must be absent (not an empty dict error)
+        assert "per_source" not in dt_entry
+
+
 class TestMTDSPerInstrumentHonestCoverage:
     """Phase 8D -- per-(venue, data_type, instrument_id, date) denominator.
 
@@ -2796,3 +3026,32 @@ class TestTriggerDateDenominator:
             f"Expected trigger-date count << {days_in_year // 4} days/year, "
             f"got {len(trigger_dates)} — denominator may not be corrected"
         )
+
+
+class TestTradFiVenueAccessorFlag4:
+    """FLAG-4: the TRADFI honest-coverage DENOMINATOR must count the full cross-source venue universe.
+
+    Verified (slot-6 2026-06-03): no undercount existed — `all_databento_venues` (despite the
+    misleading name) already resolves to the complete 6-venue tradfi set including the non-Databento
+    venues CBOE (→Barchart/VIX) and FX (→Yahoo). This test guards that INVARIANT against whatever
+    `venue_accessor` is configured, so a future narrowing of the venue list can't silently shrink the
+    tradfi coverage denominator. (UAC also adds a correctly-named `all_tradfi_venues` alias + its own
+    universe test; deployment-api will switch the accessor string to it after the UAC version cascade.)
+    """
+
+    def test_tradfi_venue_accessor_resolves_to_full_universe_incl_cboe_fx(self) -> None:
+        """The configured TRADFI venue_accessor must resolve to the full tradfi universe (incl CBOE+FX)."""
+        meta = _dss_mod.MTDS_CATEGORY_META.get("TRADFI")
+        assert meta is not None, "TRADFI missing from MTDS_CATEGORY_META"
+        accessor = meta.get("venue_accessor")
+        assert accessor, "TRADFI venue_accessor must be set"
+        venues = getattr(_dss_mod.VenueMapping(), str(accessor), None)
+        assert isinstance(venues, list) and len(venues) >= 6, (
+            f"TRADFI venue_accessor {accessor!r} must resolve to >=6 venues (full universe), got {venues!r}"
+        )
+        # The non-Databento tradfi venues MUST be in the denominator (else VIX/FX coverage is undercounted).
+        for required in ("CBOE", "FX"):
+            assert required in venues, (
+                f"{required} missing from TRADFI denominator via {accessor!r}: {venues} — "
+                "VIX(CBOE/Barchart) / forex(FX/Yahoo) coverage would be undercounted (FLAG-4)."
+            )

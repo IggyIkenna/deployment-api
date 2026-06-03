@@ -940,6 +940,13 @@ MTDS_CATEGORY_META: dict[str, dict[str, object]] = {
         "unit": "shard_days",
     },
     "TRADFI": {
+        # FLAG-4 (verified, slot-6 2026-06-03): the tradfi honest-coverage denominator
+        # is ALREADY complete — `all_databento_venues` despite its name contains the full
+        # 6-venue tradfi universe [CME, CBOE, NASDAQ, NYSE, ICE, FX] incl. CBOE→Barchart(VIX)
+        # + FX→Yahoo (per UAC venue_mapping venue→source map). No undercount. UAC adds a
+        # correctly-named `all_tradfi_venues` alias; SWITCH this string to it AFTER UAC version
+        # cascades into deployment-api's pinned dep (else runtime AttributeError vs the older
+        # installed UAC). Tracked: tradfi_manifest_canonicalisation_2026_06_01 FLAG-4 follow-up.
         "venue_accessor": "all_databento_venues",
         "axis": "per_venue_per_data_type_daily",
         "tradfi_tick_gate": True,
@@ -1667,10 +1674,22 @@ def _mtds_honest_coverage_for_venue(
         else:
             # Venue-level dt — preserve the Phase 6d per-(venue, dt, date)
             # denominator.
+            #
+            # FLAG-1 (TradFi v9 multi-source): the v9 manifest carries one row
+            # per (venue, data_type, date, source) — e.g. databento + massive
+            # both captured for the same date produce two rows. The UNION
+            # semantics (≥1 captured → cell captured) are enforced here by
+            # ``dt_rows["date"].unique()``, which deduplicates across sources
+            # before computing found_dates_set. A per-source breakdown is also
+            # surfaced in ``per_source`` for the UI drilldown (plan FLAG-1,
+            # operator 2026-06-02: UNION + manifest-derived per-source breakdown).
             if "data_type" in venue_df_ok.columns:
                 dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
+                # Union dedup: distinct dates regardless of how many sources
+                # have a captured/empty_confirmed row for that date.
                 found_dates_set = {str(d) for d in dt_rows["date"].unique()}  # pyright: ignore[reportAny]
             else:
+                dt_rows = venue_df_ok.iloc[0:0]
                 found_dates_set: set[str] = set()
             # Only count dates that fall inside the expected window — a
             # row from before ``effective_start`` should not inflate
@@ -1680,7 +1699,22 @@ def _mtds_honest_coverage_for_venue(
             expected_count = len(expected_dates)
             found_count = len(found_in_expected)  # pyright: ignore[reportUnknownVariableType]
 
-            dt_entries[dt] = {
+            # Per-source breakdown — free from the in-memory ``_index`` rows
+            # (the v9 manifest denormalises source to the row level so this is
+            # a single groupby, no per-parquet scan). Only emitted when the
+            # ``source`` column is present (v9 manifests); v8 manifests omit it.
+            per_source: dict[str, object] = {}
+            if "source" in dt_rows.columns and not dt_rows.empty:
+                for src, src_group in dt_rows.groupby("source"):  # pyright: ignore[reportUnknownVariableType]
+                    src_str = str(src)
+                    src_dates = {str(d) for d in src_group["date"].unique()}  # pyright: ignore[reportAny]
+                    src_found = src_dates & expected_dates  # pyright: ignore[reportUnknownVariableType]
+                    per_source[src_str] = {
+                        "found_shards": len(src_found),  # pyright: ignore[reportUnknownArgumentType]
+                        "dates_found_list": sorted(src_found)[:500],  # pyright: ignore[reportUnknownVariableType]
+                    }
+
+            dt_entry: dict[str, object] = {
                 "expected_shards": expected_count,
                 "found_shards": found_count,
                 "missing_shards": max(0, expected_count - found_count),
@@ -1689,6 +1723,9 @@ def _mtds_honest_coverage_for_venue(
                 "dates_found_list": sorted(found_in_expected)[:500],  # pyright: ignore[reportUnknownVariableType]
                 "unit": "shard_days",
             }
+            if per_source:
+                dt_entry["per_source"] = per_source
+            dt_entries[dt] = dt_entry
 
         total_expected += expected_count
         total_found += found_count
