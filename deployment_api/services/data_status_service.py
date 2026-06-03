@@ -5450,7 +5450,26 @@ class DataStatusService:
             dates_found = len(chain_dates & chain_expected_dates) if chain_expected_dates else len(chain_dates)
 
             captured_chain_df = chain_df[chain_df["capture_status"] == "captured"] if has_capture_status else chain_df  # pyright: ignore[reportUnknownVariableType]
-            shards_found = len(captured_chain_df)  # pyright: ignore[reportUnknownArgumentType]
+            # Count distinct shard atoms, NOT raw manifest rows. The DeFi
+            # shard atom is ``(chain, venue, data_type, instrument_id, day)``
+            # — ``pipeline_mode`` is NOT part of it. Post the 2026-05-19
+            # pipeline_mode migration the same shard atom can carry multiple
+            # rows (one per ``pipeline_mode=batch_*`` / ``live_websocket``), so
+            # a raw ``len()`` double-counts a shard that has both a batch and a
+            # live row and inflates ``shards_found`` past the dedup'd
+            # ``shards_expected`` denominator. De-duplicate on the shard-atom
+            # axes that are present (matches ``_shards_expected_for_chain``'s
+            # leaf axis ``(data_type, instrument_id)`` plus ``venue`` + ``date``).
+            _shard_atom_cols = [
+                c
+                for c in ("venue", "data_type", "instrument_id", "date")
+                if c in captured_chain_df.columns  # pyright: ignore[reportUnknownMemberType]
+            ]
+            shards_found = (
+                len(captured_chain_df.drop_duplicates(subset=_shard_atom_cols))  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
+                if _shard_atom_cols
+                else len(captured_chain_df)  # pyright: ignore[reportUnknownArgumentType]
+            )
 
             shards_expected = self._shards_expected_for_chain(chain_df, chain_venues, venue_expected_dates)  # pyright: ignore[reportUnknownArgumentType]
             if shards_expected == 0:

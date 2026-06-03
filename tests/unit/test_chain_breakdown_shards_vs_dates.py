@@ -173,6 +173,48 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
         # Only the 5 captured rows count toward shards_found.
         assert base.get("shards_found") == 5
 
+    def test_pipeline_mode_rows_do_not_double_count_shards(self) -> None:
+        """Post the 2026-05-19 pipeline_mode migration, the same shard atom
+        ``(chain, venue, data_type, instrument_id, day)`` can carry MULTIPLE
+        manifest rows — one per ``pipeline_mode=batch_*`` / ``live_websocket``.
+        ``pipeline_mode`` is NOT part of the DeFi shard atom, so a shard with
+        both a batch row and a live row must count ONCE, not twice. Guards the
+        raw-``len()`` numerator double-count fix in ``_build_chain_breakdown``.
+        """
+        rows: list[dict[str, object]] = []
+        # 5 days, each shard atom captured under BOTH batch_databento AND
+        # live_websocket — 10 raw rows, but only 5 distinct shard atoms.
+        for i in range(5):
+            for pipeline_mode in ("batch_databento", "live_websocket"):
+                row = _row(
+                    venue="AAVE_V3-OPTIMISM",
+                    chain="OPTIMISM",
+                    data_type="lending_indices",
+                    instrument_id="USDC",
+                    date=f"2024-03-{i + 1:02d}",
+                    capture_status="captured",
+                )
+                row["pipeline_mode"] = pipeline_mode
+                rows.append(row)
+        df = pd.DataFrame(rows)
+        dss = DataStatusService()
+        breakdown = dss._build_chain_breakdown(
+            df,
+            start_date="2024-03-01",
+            end_date="2024-03-05",
+            venue_mapping=_stub_venue_mapping(),
+        )
+        assert "OPTIMISM" in breakdown
+        opt = breakdown["OPTIMISM"]
+        assert isinstance(opt, dict)
+        # 10 raw rows collapse to 5 distinct shard atoms. A raw len() would
+        # report 10 (double-counted across pipeline_mode); the dedup'd count
+        # is 5.
+        assert opt.get("shards_found") == 5, (
+            f"pipeline_mode double-count regressed: shards_found={opt.get('shards_found')} "
+            f"(expected 5 distinct shard atoms, not 10 raw batch+live rows)"
+        )
+
     def test_empty_chain_column_returns_empty_breakdown(self) -> None:
         """When the manifest has no DeFi rows (no chain column), the
         breakdown is an empty dict — never a NaN / null / partial."""
