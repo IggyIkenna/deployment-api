@@ -5,7 +5,7 @@ Plan: features_sports_honest_coverage_2026_05_05.md, Phase 3.D.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from deployment_api.services.data_status_service import (
     _features_sports_expected_dates_for_calculator,
@@ -162,3 +162,111 @@ class TestSfiProgressiveOverride:
             end_date="2019-12-31",
         )
         assert result == []
+
+
+class TestPerFeatureAxisAlreadySatisfied:
+    """ITEM 5 verification: per_feature_per_league_per_fixture_date axis is
+    fully handled in ``_sports_honest_coverage``.
+
+    Semantics: expected_shards for a calculator entry = sum over expected
+    leagues of (number of expected fixture dates in that league). The
+    architecture ensures each calculator is a separate entity_name in
+    FEATURES_SPORTS_PER_CALC_META — no single-entity multi-feature scenario.
+    The per_feature multiplier IS the architecture (N calculators = N rows
+    in the meta dict, each with its own expected_shards). sports_master.md:352.
+    """
+
+    def test_axis_value_in_sports_axis_literal(self) -> None:
+        """per_feature_per_league_per_fixture_date appears in SportsAxis."""
+        from deployment_api.services.data_status_service import FEATURES_SPORTS_PER_CALC_META
+
+        # Every calc in FEATURES_SPORTS_PER_CALC_META declares this axis
+        for calc_name, meta in FEATURES_SPORTS_PER_CALC_META.items():
+            assert meta["axis"] == "per_feature_per_league_per_fixture_date", (
+                f"Calculator {calc_name!r} has unexpected axis {meta['axis']!r}"
+            )
+
+    def test_expected_shards_is_sum_across_leagues(self) -> None:
+        """expected_shards = sum of fixture-date counts per expected league.
+
+        For a 3-league scenario (EPL, LA_LIGA, BUNDESLIGA) with 2 fixture
+        dates each → expected_shards = 6. Verifies the accumulation loop in
+        _sports_honest_coverage correctly sums across leagues.
+        """
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            FEATURES_SPORTS_PER_CALC_META,
+            _sports_honest_coverage,
+        )
+
+        # Verify team_form is in the meta (sanity check)
+        assert "team_form" in FEATURES_SPORTS_PER_CALC_META
+
+        with (
+            patch("deployment_api.services.data_status_service.get_expected_leagues_for_source") as mock_leagues,
+            patch(
+                "deployment_api.services.data_status_service._features_sports_expected_dates_for_calculator"
+            ) as mock_dates,
+        ):
+            # 3 mock leagues, each with 2 fixture dates
+            mock_league = MagicMock()
+            mock_league.league_id = "EPL"
+            mock_league2 = MagicMock()
+            mock_league2.league_id = "LA_LIGA"
+            mock_league3 = MagicMock()
+            mock_league3.league_id = "BUNDESLIGA"
+            mock_leagues.return_value = [mock_league, mock_league2, mock_league3]
+            mock_dates.return_value = ["2024-04-13", "2024-04-27"]
+
+            result = _sports_honest_coverage(
+                filtered=pd.DataFrame(columns=["data_type", "feature_group", "league_id", "date", "capture_status"]),
+                entity_name="team_form",
+                start_date="2024-04-01",
+                end_date="2024-04-30",
+            )
+
+        assert result is not None
+        assert result["axis"] == "per_feature_per_league_per_fixture_date"
+        # 3 leagues x 2 dates = 6 expected shards
+        assert result["expected_shards"] == 6
+        # Empty manifest → 0 found
+        assert result["found_shards"] == 0
+
+    def test_found_shards_counted_from_manifest(self) -> None:
+        """found_shards counts (league, date) pairs present in the manifest."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _sports_honest_coverage
+
+        df = pd.DataFrame(
+            {
+                "data_type": ["DERIVED_FEATURES", "DERIVED_FEATURES"],
+                "feature_group": ["team_form", "team_form"],
+                "league_id": ["EPL", "EPL"],
+                "date": ["2024-04-13", "2024-04-27"],
+                "capture_status": ["captured", "captured"],
+            }
+        )
+
+        with (
+            patch("deployment_api.services.data_status_service.get_expected_leagues_for_source") as mock_leagues,
+            patch(
+                "deployment_api.services.data_status_service._features_sports_expected_dates_for_calculator"
+            ) as mock_dates,
+        ):
+            mock_league = MagicMock()
+            mock_league.league_id = "EPL"
+            mock_leagues.return_value = [mock_league]
+            mock_dates.return_value = ["2024-04-13", "2024-04-27"]
+
+            result = _sports_honest_coverage(
+                filtered=df,
+                entity_name="team_form",
+                start_date="2024-04-01",
+                end_date="2024-04-30",
+            )
+
+        assert result is not None
+        assert result["expected_shards"] == 2
+        assert result["found_shards"] == 2

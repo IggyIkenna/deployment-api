@@ -51,10 +51,12 @@ from unified_api_contracts.registry.data_status_axis_matrix import (
 )
 from unified_api_contracts.sports import (
     FEATURE_UPSTREAM_REQUIREMENTS,
+    LEAGUE_REGISTRY,
     UpstreamReq,
     get_entity_league_coverage,
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
+    get_reference_refresh_dates,
     get_sports_entity_start_date,
     get_transfer_windows_for_year,
     in_coverage,
@@ -138,12 +140,21 @@ COVERAGE_SEMANTICS: dict[str, Literal["dense", "event_driven"]] = {
 # - ``global_periodic``: one expected shard per cadence-date (daily
 #   reference-list snapshot). No league axis.
 # - ``global_season``: one expected shard per season (venues list, etc).
+# - ``global_trigger_date``: one expected shard per trigger date (season-start
+#   + transfer-window-open + transfer-window-close), across all leagues.
+#   Used for global reference entities like TEAMS that are written at trigger
+#   dates rather than daily (instrument-service writes master/ + snapshots/).
+# - ``per_league_trigger_date``: one expected shard per (league, trigger_date).
+#   Used for per-league reference entities like PLAYER_VALUES that are written
+#   at league-specific trigger dates (season-start + window open/close).
 SportsAxis = Literal[
     "per_league_per_fixture_date",
     "per_league_periodic",
     "per_feature_per_league_per_fixture_date",
     "global_periodic",
     "global_season",
+    "global_trigger_date",
+    "per_league_trigger_date",
 ]
 
 
@@ -217,9 +228,14 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
     "TEAMS": {
         "source": "api_football",
         "classifications": ("Prediction", "Features", "Reference"),
-        "axis": "global_periodic",
-        "cadence_days": 1,
-        "unit": "daily_snapshots",
+        # TEAMS is a global reference entity written at trigger dates (season-
+        # start + transfer-window-open + transfer-window-close), not daily.
+        # instruments-service writes master/ + snapshots/trigger=T/ paths.
+        # Depends on sports_master item A2.4 (write-path) being shipped;
+        # degrades gracefully if trigger dates can't be derived (returns an
+        # approximate count). See sports_master.md:1064.
+        "axis": "global_trigger_date",
+        "unit": "trigger_date_snapshots",
     },
     "VENUES": {
         "source": "api_football",
@@ -266,15 +282,16 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
     "PLAYER_VALUES": {
         "source": "transfermarkt",
         "classifications": ("Prediction", "Features"),
-        "axis": "per_league_periodic",
-        # PLAYER_VALUES is trigger-based, not weekly: the orchestrator only
-        # fetches at season-start + transfer-window-open + transfer-window-
-        # close + mid-season (~4 capture dates per league per year, see
-        # ``get_leagues_needing_refresh``). cadence_days=90 (quarterly)
-        # matches the actual capture cadence — pre-2026-05-05 the ``7``
-        # weekly setting capped UI coverage at ~10% even with full data.
-        "cadence_days": 90,
-        "unit": "cadence_refreshes",
+        # PLAYER_VALUES is trigger-based: the orchestrator only fetches at
+        # season-start + transfer-window-open + transfer-window-close
+        # (~3-4 capture dates per league per year via
+        # ``get_reference_refresh_dates``). The per_league_trigger_date axis
+        # computes expected_shards as the count of actual trigger dates per
+        # league inside the window (not a daily or quarterly approximation).
+        # Depends on sports_master item A2.4 (write-path); degrades gracefully.
+        # See sports_master.md:1064.
+        "axis": "per_league_trigger_date",
+        "unit": "trigger_date_snapshots",
     },
     # TRANSFERMARKT_LEAGUES + SFI_LEAGUES retired 2026-05-05 — both were
     # static provider-catalog mappings (provider_id -> canonical_name + country)
@@ -515,6 +532,81 @@ def _sports_expected_dates_for_league(
     return result
 
 
+def _sports_trigger_dates_for_window(
+    start_date: str,
+    end_date: str,
+) -> list[str]:
+    """Derive global trigger dates for reference-entity denominator.
+
+    Trigger dates are union of ``get_reference_refresh_dates(league_id, year)``
+    across all leagues in ``LEAGUE_REGISTRY`` for every year in [start_date,
+    end_date]. These correspond to season-start + transfer-window-open +
+    transfer-window-close events — the dates when instruments-service writes
+    reference data to ``master/`` and ``snapshots/trigger=T/`` paths.
+
+    Degrades gracefully when ``get_reference_refresh_dates`` raises or returns
+    an empty set — returns a sorted list of unique ISO date strings.
+
+    Used by the ``global_trigger_date`` axis branch in ``_sports_honest_coverage``
+    (TEAMS denominator) and the ``per_league_trigger_date`` branch (PLAYER_VALUES
+    denominator). See sports_master.md:1064 for the soft-gating note on the
+    instruments-service write-path dependency.
+    """
+    from datetime import date as _date
+
+    try:
+        start_d = _date.fromisoformat(start_date)
+        end_d = _date.fromisoformat(end_date)
+    except ValueError:
+        return []
+
+    triggers: set[str] = set()
+    for year in range(start_d.year, end_d.year + 1):
+        for league_id in LEAGUE_REGISTRY:
+            try:
+                for t in get_reference_refresh_dates(league_id, year):
+                    t_iso = t.isoformat()
+                    if start_date <= t_iso <= end_date:
+                        triggers.add(t_iso)
+            except Exception:
+                # Never hard-fail the denominator — missing a league or year
+                # silently drops those trigger dates; the manifest rows still
+                # surface in found_shards so coverage is at worst under-counted.
+                continue
+    return sorted(triggers)
+
+
+def _sports_trigger_dates_for_league(
+    league_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[str]:
+    """Derive per-league trigger dates for the ``per_league_trigger_date`` axis.
+
+    Returns sorted ISO date strings in [start_date, end_date] that are trigger
+    dates for this league (season-start + transfer-window-open/close via
+    ``get_reference_refresh_dates``). Degrades gracefully on error.
+    """
+    from datetime import date as _date
+
+    try:
+        start_d = _date.fromisoformat(start_date)
+        end_d = _date.fromisoformat(end_date)
+    except ValueError:
+        return []
+
+    triggers: set[str] = set()
+    for year in range(start_d.year, end_d.year + 1):
+        try:
+            for t in get_reference_refresh_dates(league_id, year):
+                t_iso = t.isoformat()
+                if start_date <= t_iso <= end_date:
+                    triggers.add(t_iso)
+        except Exception:
+            continue
+    return sorted(triggers)
+
+
 def _sports_honest_coverage(
     filtered: pd.DataFrame,
     entity_name: str,
@@ -622,6 +714,72 @@ def _sports_honest_coverage(
             "found_shards": total_found_pf,
             "expected_shards": total_expected_pf,
             "per_league": per_league_pf,
+        }
+
+    if axis == "global_trigger_date":
+        # No league axis — expected = number of trigger dates in window derived
+        # from ``get_reference_refresh_dates`` across all LEAGUE_REGISTRY entries.
+        # Trigger dates = season-start + transfer-window-open + transfer-window-close.
+        # Soft-gated on sports_master item A2.4 (instruments-service write-path);
+        # degrades gracefully if the trigger set is empty (expected_shards = 0).
+        trigger_dates = _sports_trigger_dates_for_window(start_date, end_date)
+        expected_shards_t = len(trigger_dates)
+        found_dates_t: set[str] = {str(d) for d in ent_rows["date"].unique()} if not ent_rows.empty else set()  # pyright: ignore[reportAny]
+        found_shards_t = len(found_dates_t & set(trigger_dates)) if trigger_dates else len(found_dates_t)
+        return {
+            "axis": axis,
+            "unit": str(meta["unit"]),
+            "source": source_key,
+            "expected_leagues": [],
+            "found_shards": found_shards_t,
+            "expected_shards": expected_shards_t,
+            "per_league": None,
+            "trigger_dates": sorted(trigger_dates)[:100],
+        }
+
+    if axis == "per_league_trigger_date":
+        # Per-league axis — expected = count of trigger dates for each league
+        # in the expected set, derived from ``get_reference_refresh_dates``.
+        # Trigger dates = season-start + transfer-window-open + transfer-window-close.
+        # Soft-gated on sports_master item A2.4 (instruments-service write-path);
+        # degrades gracefully per league if trigger dates can't be computed.
+        per_league_td: dict[str, dict[str, object]] = {}
+        total_expected_td = 0
+        total_found_td = 0
+        ent_rows_by_league_td = (
+            ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
+        )
+        for league in expected_leagues:
+            lid = league.league_id
+            trigger_dates_l = _sports_trigger_dates_for_league(lid, start_date, end_date)
+            if not trigger_dates_l:
+                continue
+            expected_set_td = set(trigger_dates_l)
+            found_set_td: set[str] = set()
+            if ent_rows_by_league_td is not None and lid in ent_rows_by_league_td.groups:
+                found_set_td = {str(d) for d in ent_rows_by_league_td.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
+            covered_td = expected_set_td & found_set_td
+            missing_td = sorted(expected_set_td - found_set_td)
+            per_league_td[lid] = {
+                "found_shards": len(covered_td),
+                "expected_shards": len(expected_set_td),
+                "missing_shards": len(missing_td),
+                "completion_pct": round(len(covered_td) / max(1, len(expected_set_td)) * 100, 2),
+                "unit": str(meta["unit"]),
+                "missing_dates": missing_td[:500],
+                "found_dates_list": sorted(covered_td)[:500],
+                "trigger_dates": trigger_dates_l[:100],
+            }
+            total_expected_td += len(expected_set_td)
+            total_found_td += len(covered_td)
+        return {
+            "axis": axis,
+            "unit": str(meta["unit"]),
+            "source": source_key,
+            "expected_leagues": [lg.league_id for lg in expected_leagues],
+            "found_shards": total_found_td,
+            "expected_shards": total_expected_td,
+            "per_league": per_league_td,
         }
 
     if axis in ("global_periodic", "global_season"):
