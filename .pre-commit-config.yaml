@@ -18,6 +18,18 @@ repos:
   # Branch drift check - blocks commit if you're behind origin
   - repo: local
     hooks:
+      - id: fix-commit-identity
+        name: Enforce slot·host commit identity
+        entry:
+          bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
+          pwd)}/unified-trading-pm/scripts/hooks/fix-commit-identity.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
+        language: system
+        always_run: true
+        pass_filenames: false
+        fail_fast: true # wrong identity -> STOP + re-run (git resolves author BEFORE hooks)
+
+  - repo: local
+    hooks:
       - id: check-branch-drift
         name: Check branch drift (are you behind origin?)
         entry:
@@ -26,7 +38,7 @@ repos:
         language: system
         always_run: true
         pass_filenames: false
-        fail_fast: true  # behind-origin -> STOP before any formatter mutates (no reflow residue that breaks slot FF-sync)
+        fail_fast: true # behind-origin -> STOP before any formatter mutates (no reflow residue that breaks slot FF-sync)
 
   # Ruff - Fast Python linter AND formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
