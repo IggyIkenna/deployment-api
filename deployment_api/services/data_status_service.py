@@ -2008,6 +2008,38 @@ _TRANSFER_COUNTRIES = (
     "AUS",
 )
 
+# v9 prediction bundled data_type constant (matches ManifestWriter row_key).
+_PREDICTION_BUNDLED_DT: str = "prediction_canonical_question_group"
+
+
+def _promote_prediction_cqg_from_instrument_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Read-side: promote ``instrument_id`` → ``canonical_question_group`` for v9 prediction rows.
+
+    v9 canonical prediction shape (``prediction_manifest_canonicalisation_2026_06_01.md``):
+    ``data_type="prediction_canonical_question_group"`` bundled rows store the cqg value in
+    ``instrument_id`` (the ManifestWriter row_key field ``instrument_id=cqg_str``).  The
+    turbo aggregation and ``_apply_row_filters`` both key on the ``canonical_question_group``
+    column, which is absent in v9 rows.  This function fills that column read-side so both
+    paths work across the migration window.
+
+    Pre-v9 rows that already have a non-empty ``canonical_question_group`` column are
+    left untouched.  Read-side only — no manifest writes.
+    """
+    if "data_type" not in df.columns or "instrument_id" not in df.columns:
+        return df
+    pred_mask = df["data_type"].astype(str) == _PREDICTION_BUNDLED_DT
+    if not pred_mask.any():
+        return df
+    out = df.copy()
+    if "canonical_question_group" not in out.columns:
+        out["canonical_question_group"] = ""
+    cqg = out["canonical_question_group"].astype(str)
+    inst = out["instrument_id"].astype(str)
+    needs_fill = pred_mask & ((cqg == "") | (cqg == "nan"))
+    out.loc[needs_fill, "canonical_question_group"] = inst[needs_fill]
+    return out
+
+
 # Cache for availability index reads — avoids repeated GCS downloads
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL = 300  # 5 minutes
@@ -3002,6 +3034,14 @@ class DataStatusService:
         # cell-grid.
         if service == "market-tick-data-service" and cat.lower() == "defi" and not merged.empty:
             merged = self._filter_to_canonical_defi_venues(merged)
+
+        # v9 prediction: promote ``instrument_id`` → ``canonical_question_group`` so
+        # the ``_apply_row_filters(canonical_question_group=...)`` and the turbo
+        # breakdowns axis both work correctly against v9-canonical manifest rows.
+        # Pre-v9 rows that already carry a non-empty ``canonical_question_group``
+        # column are left untouched (the fill is conditioned on emptiness).
+        if cat.lower() == "prediction" and not merged.empty:
+            merged = _promote_prediction_cqg_from_instrument_id(merged)
         return merged
 
     @classmethod

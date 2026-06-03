@@ -363,8 +363,45 @@ class TestFetchVenueDetailCefi:
 
 
 class TestFetchVenueDetailPrediction:
-    def test_prediction_returns_canonical_question_groups(self) -> None:
-        # Prediction manifest stores question groups in `underlying` column.
+    def test_prediction_v9_instrument_id_returns_canonical_question_groups(self) -> None:
+        # v9 canonical shape: cqg value lives in ``instrument_id`` (ManifestWriter
+        # row_key field), NOT in ``underlying``.
+        df = pd.DataFrame(
+            {
+                "venue": ["POLYMARKET", "POLYMARKET", "POLYMARKET"],
+                "data_type": [
+                    "prediction_canonical_question_group",
+                    "prediction_canonical_question_group",
+                    "prediction_canonical_question_group",
+                ],
+                "instrument_id": ["BTC_UP_DOWN_HOURLY", "ETH_UP_DOWN_HOURLY", "FOOTBALL"],
+                "instrument_count": [100, 80, 60],
+                "date": ["2026-05-22", "2026-05-22", "2026-05-22"],
+                # v9 extra columns
+                "pipeline_mode": ["batch_polymarket_clob"] * 3,
+                "source": ["polymarket"] * 3,
+            }
+        )
+        with patch.object(svc, "read_availability_index", return_value=df):
+            resp = svc.fetch_venue_detail(
+                service="instruments-service",
+                asset_group="PREDICTION",
+                venue="POLYMARKET",
+            )
+        assert resp.category == "PREDICTION"
+        assert resp.venue == "POLYMARKET"
+        assert resp.total_instruments == 3
+        groups = [r["canonical_question_group"] for r in resp.instruments]
+        assert "BTC_UP_DOWN_HOURLY" in groups
+        assert "ETH_UP_DOWN_HOURLY" in groups
+        assert "FOOTBALL" in groups
+        # v9: pipeline_mode + source surfaced in each leaf
+        btc_row = next(r for r in resp.instruments if r["canonical_question_group"] == "BTC_UP_DOWN_HOURLY")
+        assert btc_row["pipeline_mode"] == "batch_polymarket_clob"
+        assert btc_row["source"] == "polymarket"
+
+    def test_prediction_legacy_underlying_returns_canonical_question_groups(self) -> None:
+        # Legacy (pre-v9) shape: cqg value in ``underlying`` column.
         df = pd.DataFrame(
             {
                 "venue": ["POLYMARKET", "POLYMARKET", "POLYMARKET"],

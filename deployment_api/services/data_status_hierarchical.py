@@ -307,6 +307,44 @@ def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# Bundled prediction data_type constant (matches the ManifestWriter row_key).
+_PREDICTION_BUNDLED_DT: str = "prediction_canonical_question_group"
+
+
+def _coalesce_cqg_from_instrument_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Promote ``instrument_id`` → ``canonical_question_group`` for v9 prediction rows.
+
+    v9 canonical prediction shape (``prediction_manifest_canonicalisation_2026_06_01.md``):
+    the bundled manifest row has ``data_type="prediction_canonical_question_group"`` and
+    stores the canonical_question_group value in ``instrument_id`` (the ManifestWriter
+    row_key field).  The SHARD_AXIS_MATRIX for prediction uses ``canonical_question_group``
+    as the second axis, so without this promotion the drilldown filter + ``_children_for_axis``
+    find no ``canonical_question_group`` column and return empty.
+
+    Read-side only — the manifest writer is unchanged.  Rows that already have a
+    non-empty ``canonical_question_group`` column (pre-v9 legacy writes) are left
+    as-is; only rows with ``data_type == "prediction_canonical_question_group"`` and
+    an empty / absent ``canonical_question_group`` are filled from ``instrument_id``.
+
+    Plan: ``prediction_manifest_canonicalisation_2026_06_01.md``
+    § "Deployment-API/UI prediction v9 data-status alignment".
+    """
+    if "data_type" not in df.columns or "instrument_id" not in df.columns:
+        return df
+    pred_mask = df["data_type"].astype(str) == _PREDICTION_BUNDLED_DT
+    if not pred_mask.any():
+        return df
+    out = df.copy()
+    if "canonical_question_group" not in out.columns:
+        out["canonical_question_group"] = ""
+    cqg = out["canonical_question_group"].astype(str)
+    inst = out["instrument_id"].astype(str)
+    # Fill empty cqg slots on prediction bundled rows from instrument_id.
+    needs_fill = pred_mask & ((cqg == "") | (cqg == "nan"))
+    out.loc[needs_fill, "canonical_question_group"] = inst[needs_fill]
+    return out
+
+
 def get_hierarchical_drilldown(
     service: str,
     asset_group: str,
@@ -396,6 +434,10 @@ def get_hierarchical_drilldown(
     # bundled-data_type rows respond to operator-supplied
     # ``instrument_id`` filters keyed by root (BTC, ESH4, …).
     df = _coalesce_instrument_id_from_underlying(df)
+    # v9 prediction: promote ``instrument_id`` → ``canonical_question_group`` so
+    # the SHARD_AXIS_MATRIX axis filter + drilldown children work correctly.
+    # Read-side only; rows with a pre-existing non-empty cqg column are untouched.
+    df = _coalesce_cqg_from_instrument_id(df)
     # Stamp ``feature_family`` (read-side) so callers can filter / group
     # features-* manifests by the parent classification axis even when
     # the manifest predates the column. Plan: features-repo consolidation
