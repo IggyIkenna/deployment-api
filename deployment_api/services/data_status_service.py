@@ -1396,12 +1396,86 @@ def _mtds_expected_dates_for_venue_dt(
     return set(_mtds_expected_dates_cached(venue, data_type, category, window_start, window_end))
 
 
+def _build_cefi_is_instruments_provider(
+    cloud: object,
+) -> Callable[[str, str], list[str] | None] | None:
+    """Build an instruments_provider backed by the live IS cefi catalog.
+
+    Reads the instruments-store-cefi-* availability index ONCE, builds a
+    ``{venue: list[instrument_id]}`` map, and returns a closure that answers
+    ``(venue, data_type) -> list[str]``.
+
+    Fail-open: any GCS / parse error returns ``None`` (NOT a provider) so the
+    CALLER injects no provider at all and the per-instrument denominator path
+    falls back to UAC's MVP seed tables with the default cap — current
+    behaviour when IS is unavailable.  Returning a ``lambda: None`` provider
+    here would be WRONG: UAC only falls back to its MVP seed when the provider
+    OBJECT is ``None``; a non-None provider that *returns* ``None`` yields an
+    EMPTY universe (denominator collapses to 0), not the seed.  This avoids
+    crashing the data-status request.
+
+    The catalog read is performed eagerly at call-time (not lazily per
+    (venue, dt) invocation) so the returned callable is cheap to call many
+    times within one request: one GCS read → O(N) Python loop → per-venue
+    dicts.
+    """
+    try:
+        bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
+        df: pd.DataFrame = read_availability_index(bucket)
+        if df.empty or "venue" not in df.columns:
+            logger.warning("cefi IS catalog empty or missing 'venue' column — falling back to MVP seed")
+            return None
+
+        # Support both column name conventions used by IS catalog parquets.
+        id_col = "instrument_id" if "instrument_id" in df.columns else "instrument_key"
+        if id_col not in df.columns:
+            logger.warning("cefi IS catalog has neither 'instrument_id' nor 'instrument_key' — falling back")
+            return None
+
+        # Build {venue: sorted list of instrument_ids} — date-agnostic for now
+        # (IS catalog available_from/to lifecycle filtering is reserved for a
+        # future walk once the full universe stabilises).
+        venue_map: dict[str, list[str]] = {}
+        for row_venue, row_id in zip(df["venue"].astype(str), df[id_col].astype(str), strict=True):
+            row_venue_s = row_venue.strip()
+            row_id_s = row_id.strip()
+            if not row_venue_s or not row_id_s or row_id_s.lower() in ("nan", "none", ""):
+                continue
+            venue_map.setdefault(row_venue_s, []).append(row_id_s)
+
+        # Deduplicate + sort each list so the provider output is deterministic.
+        deduped: dict[str, list[str]] = {v: sorted(set(ids)) for v, ids in venue_map.items()}
+        instrument_count = sum(len(v) for v in deduped.values())
+        logger.debug(
+            "cefi IS catalog loaded: %d venues, %d instruments total",
+            len(deduped),
+            instrument_count,
+        )
+    except Exception as exc:
+        logger.warning(
+            "cefi IS catalog read failed (%s) — falling back to MVP seed",
+            exc,
+        )
+        return None
+
+    def _provider(venue: str, _data_type: str) -> list[str] | None:
+        """Return IS instrument_ids for venue, or None to fall back to MVP seed."""
+        result = deduped.get(venue)
+        if result is None:
+            # Venue not in IS catalog — fall back so UAC uses its MVP seed.
+            return None
+        return result
+
+    return _provider
+
+
 def _per_instrument_coverage(
     venue_df_ok: pd.DataFrame,
     venue: str,
     dt: str,
     expected_dates: set[str],
-    cap: int,
+    cap: int | None,
+    instruments_provider: Callable[[str, str], list[str] | None] | None = None,
 ) -> dict[str, object]:
     """Phase 8D — compute the per-(instrument_id, date) denominator for a
     per-instrument shard ``data_type``.
@@ -1413,9 +1487,12 @@ def _per_instrument_coverage(
 
     Mirrors the sentinel fan-out landed in MTDS orchestrator commit
     ``2947dd2``: expected denominator = ``|instruments| x |dates|`` where
-    ``instruments`` comes from :func:`get_expected_instruments_for_venue`
-    (with ``instruments_provider=None`` so UAC falls back to its MVP seed
-    tables). The found set counts distinct ``(instrument_id, date)``
+    ``instruments`` comes from :func:`get_expected_instruments_for_venue`.
+    When ``instruments_provider`` is supplied (e.g. the live IS cefi
+    catalog), UAC uses it instead of its MVP seed tables so the denominator
+    reflects the full real universe.  When ``instruments_provider=None``
+    UAC falls back to its MVP seed tables (current behaviour for non-CEFI
+    asset_groups).  The found set counts distinct ``(instrument_id, date)``
     tuples in ``venue_df_ok`` whose ``instrument_id`` is non-empty.
 
     **Legacy-row fallback:** if the manifest has (venue, dt) rows that
@@ -1439,8 +1516,14 @@ def _per_instrument_coverage(
         :func:`_mtds_expected_dates_for_venue_dt`.
     cap:
         Hard ceiling on the returned instrument universe size. Passed to
-        UAC; the Phase 8 MVP default is
-        :data:`_DEFAULT_PER_INSTRUMENT_SENTINEL_CAP` (50).
+        UAC. For CEFI pass ``None`` so the full real universe is not
+        truncated by the MVP seed cap of 50.  For other asset_groups use
+        :data:`_DEFAULT_PER_INSTRUMENT_SENTINEL_CAP`.
+    instruments_provider:
+        Optional callable ``(venue, data_type) -> list[str] | None``
+        injected for CEFI so the denominator uses the live IS catalog
+        rather than the UAC MVP seed tables.  ``None`` preserves existing
+        behaviour for non-CEFI asset_groups.
 
     Returns
     -------
@@ -1456,7 +1539,7 @@ def _per_instrument_coverage(
     expected_instruments = get_expected_instruments_for_venue(
         venue,
         dt,
-        instruments_provider=None,
+        instruments_provider=instruments_provider,
         cap=cap,
     )
 
@@ -1583,6 +1666,7 @@ def _mtds_honest_coverage_for_venue(
     window_start: str,
     window_end: str,
     venue_mapping: VenueMapping,
+    instruments_provider: Callable[[str, str], list[str] | None] | None = None,
 ) -> dict[str, object]:
     """Honest-coverage rollup for one ``(category, venue)`` pair.
 
@@ -1661,12 +1745,18 @@ def _mtds_honest_coverage_for_venue(
         if is_per_instrument_shard_data_type(dt):
             # Phase 8D Tier-3 branch — per-(venue, dt, instrument_id,
             # date) denominator.
+            # For CEFI: pass the live IS catalog provider + cap=None so the
+            # full real universe is not truncated by the MVP seed cap of 50.
+            # For other asset_groups: instruments_provider=None falls back to
+            # UAC MVP seed tables (existing behaviour).
+            _instr_cap: int | None = None if instruments_provider is not None else _DEFAULT_PER_INSTRUMENT_SENTINEL_CAP
             dt_entry = _per_instrument_coverage(
                 venue_df_ok,
                 venue,
                 dt,
                 expected_dates,
-                _DEFAULT_PER_INSTRUMENT_SENTINEL_CAP,
+                _instr_cap,
+                instruments_provider=instruments_provider,
             )
             dt_entries[dt] = dt_entry
             expected_count = int(cast(int, dt_entry["expected_shards"]))
@@ -4364,6 +4454,7 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         venue_mapping: VenueMapping,
+        cloud: str = "gcp",
     ) -> tuple[dict[str, object], int, int]:
         """Override per-venue denominator with UAC-driven honest-coverage.
 
@@ -4397,6 +4488,16 @@ class DataStatusService:
         if category.upper() == "DEFI" and not filtered.empty:
             filtered = _canonicalise_defi_data_types(filtered)
 
+        # For CEFI, build the live IS-catalog instruments_provider ONCE so all
+        # per-instrument denominator lookups within this category call use the
+        # real universe (not the UAC MVP seed of 21 spot / 10 perp instruments).
+        # Fail-open: if IS is unavailable _build_cefi_is_instruments_provider
+        # returns a provider that always yields None → UAC MVP seed is used.
+        # For all other asset_groups the provider stays None (existing behaviour).
+        _cefi_instruments_provider: Callable[[str, str], list[str] | None] | None = None
+        if category.upper() == "CEFI":
+            _cefi_instruments_provider = _build_cefi_is_instruments_provider(cloud)
+
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
         # _build_venue_breakdown).
@@ -4410,7 +4511,15 @@ class DataStatusService:
         union_venues = set(new_venues.keys()) | set(expected_venues)
 
         for venue in sorted(union_venues):
-            honest = _mtds_honest_coverage_for_venue(filtered, venue, category, start_date, end_date, venue_mapping)
+            honest = _mtds_honest_coverage_for_venue(
+                filtered,
+                venue,
+                category,
+                start_date,
+                end_date,
+                venue_mapping,
+                instruments_provider=_cefi_instruments_provider,
+            )
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))
             if expected_shards == 0:
@@ -6166,6 +6275,7 @@ class DataStatusService:
                 effective_start,
                 end_date,
                 venue_mapping,
+                cloud=cloud,
             )
 
         # When no venues or all are empty (sports instruments pattern), group
