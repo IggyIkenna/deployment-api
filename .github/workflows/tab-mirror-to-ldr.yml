@@ -1,5 +1,34 @@
-# tab-mirror-to-ldr.yml — auto-land tab/** branches on live-defi-rollout
+# tab-mirror-to-ldr.yml — BIDIRECTIONAL tab/** <-> live-defi-rollout mirror + divergence monitor
 #
+# Two legs (which one runs is decided by what triggered the workflow):
+#
+#   A. tab -> LDR  (push to a `tab/**` branch — the `mirror` job below). Lands agent work
+#      committed on a tab branch onto LDR. Original behaviour; see decision table below.
+#
+#   B. LDR -> tab  (every-15-min schedule + manual dispatch — the `ldr_to_tabs` job). The
+#      "keep-tabs-current-down" leg, added 2026-06-04
+#      (qg_commit_quality_boundary_and_slot_ff_push_2026_06_03.md § "Remote tab branch
+#      stays current with LDR"). NOT push-triggered: it runs on a `*/15 * * * *` cron and FFs
+#      each behind tab only up to the latest LDR commit that is **older than 15 minutes** — a
+#      "settle window" so freshly-landed LDR commits aren't propagated onto remote tabs until
+#      they've stabilized (never races an in-flight host that's about to push to its own tab).
+#      For EVERY `tab/*` branch:
+#        - purely BEHIND LDR (ancestor)  -> FF the remote tab up to the >15-min-old LDR commit
+#          (host-independent; covers headless/offline VMs the local slot-cron-ff-pull can't
+#          reach). A tab already caught up to that aged commit (only behind by <15-min-old
+#          commits) is left until those age in — deferred, not drift.
+#        - purely AHEAD (own commits)    -> leave it; leg A lands it on the next tab push.
+#        - DIVERGED (ahead AND behind)   -> never touched here -> ALERT (#ci-failures +
+#          orchestrator). This is the divergence monitor escalation path
+#          (cicd_contract_hardening_2026_06_01.md § "Tab-branch divergence detection").
+#        - NAME COLLISION (generic `root`/`rootm` prefix = the $USER-on-VM collision class
+#          fixed in setup-tab-worktrees.sh) -> ALERT. A tab branch name must be a global
+#          key (one host fleet-wide); a generic prefix means >1 host can write it.
+#      FF/alert-only — NEVER force-pushes a tab in leg B, NEVER auto-merges a divergence.
+#      LDR->tab FF uses GITHUB_TOKEN so it does NOT recursively trigger leg A (GitHub
+#      suppresses GITHUB_TOKEN-authored push events).
+#
+# ---- Leg A decision table (push to a tab branch) ----
 # Triggered on every push to a `tab/<operator>/<slot>` branch. Lands the tab tip on
 # `live-defi-rollout` (LDR):
 #   - decision=ff      tab is a strict FF over LDR            → FF-push LDR directly.
@@ -43,9 +72,13 @@ name: tab-mirror-to-ldr
 on:
   push:
     branches:
-      - "tab/**"
+      - "tab/**" # leg A: tab -> LDR (land agent work promptly — stays push-triggered)
+  schedule:
+    - cron: "*/15 * * * *" # leg B: every 15 min, FF behind tabs to the LDR commit that's >15 min old
+  workflow_dispatch: {} # manual leg-B sweep
 
 concurrency:
+  # Serialize all mirror activity per repo (both legs) so two runs never race a push.
   group: tab-mirror-to-ldr
   cancel-in-progress: false
 
@@ -54,6 +87,8 @@ permissions:
 
 jobs:
   mirror:
+    # Leg A only — push to a tab/** branch. Never runs for the LDR/schedule/dispatch triggers.
+    if: startsWith(github.ref, 'refs/heads/tab/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -192,4 +227,142 @@ jobs:
             echo "[mirror-notify] non-2xx (${HTTP_CODE}) — best-effort, ignoring"
             cat /tmp/notify.body 2>/dev/null | head -c 200 || true
           fi
+          exit 0
+
+  ldr_to_tabs:
+    # Leg B — runs every 15 min (schedule) or on manual dispatch. FFs every behind-only tab up
+    # to the latest LDR commit OLDER THAN 15 MIN (settle window — never propagates a just-landed
+    # commit onto remote tabs); alerts on diverged tabs + name collisions. FF/alert-only — never
+    # force-pushes a tab, never auto-merges a divergence.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout LDR (full history; tab refs fetched below)
+        uses: actions/checkout@v4
+        with:
+          ref: live-defi-rollout
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: FF behind-only tabs + classify diverged / collisions
+        id: sweep
+        run: |
+          set -uo pipefail
+          git config user.name "tab-mirror[bot]"
+          git config user.email "ikennaigboaka@gmail.com"
+          # checkout fetched LDR only; pull in every remote tab/* ref for the sweep.
+          git fetch --prune origin '+refs/heads/tab/*:refs/remotes/origin/tab/*' >/dev/null 2>&1 || true
+          git fetch -q origin live-defi-rollout
+          ldr="$(git rev-parse origin/live-defi-rollout)"
+          # Settle window: FF tabs only up to the latest LDR commit older than 15 min, so a
+          # just-landed commit isn't propagated onto remote tabs until it stabilizes. Empty if
+          # EVERY LDR commit is <15 min old (very fresh history) -> defer all FF this tick.
+          ff_target="$(git rev-list -1 --before='15 minutes ago' origin/live-defi-rollout 2>/dev/null || true)"
+          echo "[ldr->tab] LDR tip=${ldr:0:8}; 15-min-settled FF target=${ff_target:0:8}"
+
+          ff_n=0; defer_n=0; div_n=0; col_n=0
+          : > /tmp/ffed.txt; : > /tmp/diverged.txt; : > /tmp/collisions.txt
+          declare -A div_hosts
+
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/tab); do
+            br="${ref#origin/}"                          # tab/<prefix>/<N>
+            [ "${br#tab/}" = "$br" ] && continue         # safety: only tab/* names
+            tip="$(git rev-parse "$ref")"
+            prefix="${br#tab/}"; prefix="${prefix%/*}"    # tab/<prefix>/<N> -> <prefix>
+
+            # Name-collision class: generic $USER-on-VM prefix (fixed in setup-tab-worktrees.sh).
+            case "$prefix" in
+              root|rootm)
+                printf '• `%s` (generic prefix `%s` — >1 host can write this name)\n' "$br" "$prefix" >> /tmp/collisions.txt
+                col_n=$((col_n+1)) ;;
+            esac
+
+            [ "$tip" = "$ldr" ] && continue              # already current
+
+            if git merge-base --is-ancestor "$tip" "$ldr"; then
+              # behind-only vs LDR tip. FF only up to the 15-min-settled target, so a just-landed
+              # commit isn't pushed onto the tab yet. Default push is FF-only; GITHUB_TOKEN
+              # authorship suppresses a recursive leg-A trigger.
+              if [ -n "$ff_target" ] && [ "$tip" != "$ff_target" ] && git merge-base --is-ancestor "$tip" "$ff_target"; then
+                if git push origin "${ff_target}:refs/heads/${br}" >/tmp/ff.log 2>&1; then
+                  behind="$(git rev-list --count "${tip}..${ff_target}")"
+                  printf '• `%s` (+%s -> settled %s)\n' "$br" "$behind" "${ff_target:0:8}" >> /tmp/ffed.txt
+                  ff_n=$((ff_n+1))
+                else
+                  echo "[ldr->tab] FF push FAILED for ${br}:"; cat /tmp/ff.log
+                fi
+              else
+                # behind only by commits <15 min old (or no aged target this tick) — defer to settle
+                defer_n=$((defer_n+1))
+              fi
+            elif git merge-base --is-ancestor "$ldr" "$tip"; then
+              :                                          # ahead-only (own commits) — leg A lands it; benign
+            else
+              ab="$(git rev-list --left-right --count "${ldr}...${tip}")"   # "<behind>\t<ahead>" rel. LDR
+              behind="$(printf '%s' "$ab" | cut -f1)"
+              ahead="$(printf '%s' "$ab" | cut -f2)"
+              printf '• `%s` (ahead %s, behind %s; tip %s, prefix `%s`)\n' "$br" "$ahead" "$behind" "${tip:0:8}" "$prefix" >> /tmp/diverged.txt
+              div_n=$((div_n+1)); div_hosts["$prefix"]=1
+            fi
+          done
+
+          {
+            echo "ff_n=${ff_n}"
+            echo "defer_n=${defer_n}"
+            echo "div_n=${div_n}"
+            echo "col_n=${col_n}"
+            echo "div_hosts=${#div_hosts[@]}"
+          } >> "$GITHUB_OUTPUT"
+          echo "[ldr->tab] FF'd ${ff_n} tab(s) to settled target; deferred ${defer_n} (<15-min-fresh); ${div_n} diverged across ${#div_hosts[@]} host(s); ${col_n} name-collision(s)"
+
+      - name: Alert on divergence / collisions (#ci-failures + orchestrator)
+        if: always() && (steps.sweep.outputs.div_n != '0' || steps.sweep.outputs.col_n != '0')
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+          ORCHESTRATOR_URL: https://api.agent-orchestrator.odum-research.com
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DIV_N: ${{ steps.sweep.outputs.div_n }}
+          DIV_HOSTS: ${{ steps.sweep.outputs.div_hosts }}
+          COL_N: ${{ steps.sweep.outputs.col_n }}
+        run: |
+          set +e   # alerting is BEST-EFFORT — never red-fail the sweep on a notifier issue
+          HEADER=":rotating_light: *tab-branch drift* in \`${REPO}\` — ${DIV_N} diverged across ${DIV_HOSTS} host(s), ${COL_N} name-collision(s)"
+          BODY=""
+          if [ "${DIV_N}" != "0" ]; then
+            BODY="${BODY}*Diverged* (own commits AND behind LDR — jams the tab→LDR mirror; fix on the owning host: \`git rebase origin/live-defi-rollout\`):"$'\n'"$(cat /tmp/diverged.txt 2>/dev/null)"$'\n'
+          fi
+          if [ "${COL_N}" != "0" ]; then
+            BODY="${BODY}*Name collisions* (re-provision with VM_NAME set: \`setup-tab-worktrees.sh --reset-slot N\`):"$'\n'"$(cat /tmp/collisions.txt 2>/dev/null)"$'\n'
+          fi
+          BODY="${BODY}<${RUN_URL}|sweep run>"
+
+          case "${SLACK_WEBHOOK_URL:-}" in
+            https://*)
+              HEADER="$HEADER" BODY="$BODY" python3 - <<PYEOF
+          import json, os, urllib.request
+          req = urllib.request.Request(
+              os.environ["SLACK_WEBHOOK_URL"],
+              data=json.dumps({"text": os.environ["HEADER"], "blocks": [
+                  {"type": "section", "text": {"type": "mrkdwn", "text": os.environ["HEADER"]}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": os.environ["BODY"]}},
+              ]}).encode(),
+              headers={"Content-Type": "application/json"}, method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"[alert] posted to #ci-failures (HTTP {r.status})")
+          except Exception as e:
+              print(f"[alert] slack post failed (best-effort): {e}")
+          PYEOF
+              ;;
+            *) echo "[alert] no https Slack webhook — skipping (best-effort)" ;;
+          esac
+
+          # Best-effort orchestrator surface (same sink as mirror-events; never red-fails).
+          curl -sS -o /dev/null -X POST "${ORCHESTRATOR_URL}/api/mirror-events" \
+            -H "Content-Type: application/json" --connect-timeout 5 --max-time 15 \
+            -d "{\"repo\":\"${REPO}\",\"branch\":\"(fleet-sweep)\",\"decision\":\"diverged\",\"reason\":\"${DIV_N} diverged / ${COL_N} collisions\",\"workflow_run_url\":\"${RUN_URL}\"}" \
+            >/dev/null 2>&1 || true
           exit 0
