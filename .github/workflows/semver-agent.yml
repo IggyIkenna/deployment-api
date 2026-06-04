@@ -71,6 +71,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GH_ORG }}/unified-trading-pm
+          # MUST be a workspace-internal path: actions/checkout@v4 rejects a path that
+          # escapes GITHUB_WORKSPACE ("Repository path ... is not under ...") — the
+          # `../unified-trading-pm` form failed on EVERY repo's run, jamming staging→main
+          # fleet-wide (2026-06-04). A subdir of the main checkout is fine (sparse, transient).
           path: pm-readiness
           token: ${{ secrets.GH_PAT }}
           sparse-checkout: |
@@ -266,7 +270,11 @@ jobs:
 
           # Determine what the commit message signals
           EXPECTED_FROM_LABEL="none"
-          LATEST_MSG=$(echo "$COMMITS" | head -1)
+          # here-string, NOT echo "$COMMITS" | head: a large COMMITS list floods the pipe and
+          # head -1 closes it after one line → echo SIGPIPEs → pipefail fails the assignment →
+          # set -e aborts step 4 ("Compute next semver"). This was the 2nd fleet-wide jam after
+          # the PM-checkout path bug (only surfaced once step 3 stopped failing first). 2026-06-04.
+          LATEST_MSG=$(head -1 <<< "$COMMITS")
           if echo "$LATEST_MSG" | grep -qE "^[a-f0-9]+ [a-z]+!(\(.+\))?:" || echo "$LATEST_MSG" | grep -qi "BREAKING CHANGE"; then
             EXPECTED_FROM_LABEL="breaking"
           elif echo "$LATEST_MSG" | grep -qE "^[a-f0-9]+ feat(\(.+\))?:"; then
