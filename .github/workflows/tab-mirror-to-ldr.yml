@@ -1,23 +1,37 @@
-# tab-mirror-to-ldr.yml — auto-FF push tab/** branches to live-defi-rollout
+# tab-mirror-to-ldr.yml — auto-land tab/** branches on live-defi-rollout
 #
-# Triggered on every push to a `tab/<operator>/<slot>` branch. Attempts an FF-only
-# push of the new tip to `live-defi-rollout`. Idempotent: if the tab branch is not
-# strictly ahead of LDR (e.g. someone else just pushed first), the FF-only push
-# fails cleanly and the workflow exits 0 — no destructive action.
+# Triggered on every push to a `tab/<operator>/<slot>` branch. Lands the tab tip on
+# `live-defi-rollout` (LDR):
+#   - decision=ff      tab is a strict FF over LDR            → FF-push LDR directly.
+#   - decision=rebase  tab DIVERGED from LDR (ahead AND behind — the FF-race-loss case
+#                      on a hot integration branch)           → rebase the tab's commits
+#                      onto current LDR, FF-push LDR, then realign the remote tab. Only
+#                      a genuine textual CONFLICT aborts + surfaces (the sole thing that
+#                      now blocks auto-landing). Added 2026-06-04 per the auto-rebasing
+#                      mirror design (cicd_contract_hardening_2026_06_01.md).
+#   - decision=behind  tab purely behind LDR (no unique commits) → nothing to mirror;
+#                      the local slot-cron-ff-pull FFs the tab.
+#   - decision=noop    tab tip == LDR tip                     → nothing to do.
 #
-# Why this exists: agents commit on `tab/<op>/<N>` and historically had to remember
-# `git push origin HEAD:live-defi-rollout` to land on LDR. This workflow makes
-# `git push` (which pushes to the tab branch) automatically mirror to LDR.
+# WHY the rebase is safe (the reason the mirror could previously only FF-or-skip):
+#   1. A no-conflict rebase is content-clean; a real conflict aborts + is surfaced.
+#   2. The tab force-push uses GITHUB_TOKEN, so it does NOT recursively re-trigger this
+#      workflow (GitHub suppresses GITHUB_TOKEN-authored push events) — no loop.
+#   3. `--force-with-lease=<branch>:<orig-sha>` refuses if a concurrent agent pushed to
+#      this tab since checkout, so live work on the tab is never clobbered.
+#   4. The local worktree adopts the rewritten tab via the cron's `[adopt-rebase]` path
+#      (slot-cron-ff-pull.sh) — clean-gated, and ONLY when every ahead-commit is already
+#      patch-id-present in LDR (exactly the commits this workflow rebased), so genuine
+#      in-flight work and dirty WIP are never auto-rewritten.
 #
 # Per-side / per-slot push semantics:
 #   - Tab branch always advances first (the push that triggers this).
-#   - LDR advances iff tab tip is a strict FF over LDR HEAD.
-#   - If LDR has commits the tab branch doesn't, the agent must rebase locally and
-#     re-push (the FF-only refuses + this workflow logs `[skip:non-ff]`).
+#   - LDR advances iff the tab tip is (or is rebased to) a strict FF over LDR HEAD.
+#   - A genuine same-file conflict between tab and LDR halts as `[mirror:conflict]` and
+#     requires the local `git rebase origin/live-defi-rollout` recovery.
 #
-# Concurrency: workflow uses `cancel-in-progress: false` with concurrency group keyed
-# on the destination ref so two simultaneous mirror attempts serialize (avoids race
-# where both pass FF-only check then one clobbers the other).
+# Concurrency: `cancel-in-progress: false` with a destination-keyed group so two mirror
+# attempts serialize (avoids two runs both passing the check then racing the push).
 #
 # Rollout: `bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh --template tab-mirror-to-ldr.yml`
 #
@@ -43,14 +57,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout pushed tab branch (full history needed for FF check)
+      - name: Checkout pushed tab branch (full history needed for FF/rebase)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute FF eligibility
+      - name: Compute mirror decision
         id: ff_check
         run: |
           set -euo pipefail
@@ -67,11 +81,11 @@ jobs:
             echo "decision=ff" >> "$GITHUB_OUTPUT"
             echo "reason=tab is strict FF over LDR" >> "$GITHUB_OUTPUT"
           elif [ "$merge_base" = "$tab_sha" ]; then
-            echo "decision=skip" >> "$GITHUB_OUTPUT"
-            echo "reason=LDR is ahead of tab (tab needs to rebase locally)" >> "$GITHUB_OUTPUT"
+            echo "decision=behind" >> "$GITHUB_OUTPUT"
+            echo "reason=LDR is ahead of tab; nothing to mirror (local cron FFs tab)" >> "$GITHUB_OUTPUT"
           else
-            echo "decision=skip" >> "$GITHUB_OUTPUT"
-            echo "reason=tab and LDR diverged (manual rebase required)" >> "$GITHUB_OUTPUT"
+            echo "decision=rebase" >> "$GITHUB_OUTPUT"
+            echo "reason=tab diverged from LDR (ahead AND behind) — rebase onto LDR + mirror" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Fast-forward LDR to tab tip
@@ -80,9 +94,6 @@ jobs:
           set -euo pipefail
           echo "[mirror] ${GITHUB_REF} -> live-defi-rollout (${{ steps.ff_check.outputs.reason }})"
           # Default `git push` (no --force) is FF-only on the destination ref.
-          # If a concurrent mirror beat us to LDR (or LDR was advanced by another
-          # tab), this push fails cleanly and exits non-zero; we trap so the
-          # workflow ends in a clear "race lost" log rather than red failure.
           if git push origin "HEAD:live-defi-rollout" 2>&1 | tee /tmp/push.log; then
             echo "[mirror:done] LDR advanced to $(git rev-parse HEAD | head -c 8)"
           else
@@ -92,25 +103,69 @@ jobs:
             exit 1
           fi
 
-      - name: Log skip / no-op
-        if: steps.ff_check.outputs.decision != 'ff'
+      - name: Rebase onto LDR + mirror (diverged tab)
+        id: rebase
+        if: steps.ff_check.outputs.decision == 'rebase'
+        run: |
+          set -uo pipefail   # NOT -e: rebase/push failures are handled explicitly
+          orig_sha="$(git rev-parse HEAD)"      # lease anchor: only realign tab if remote still here
+          git config user.name "tab-mirror[bot]"
+          git config user.email "ikennaigboaka@gmail.com"
+          landed=0
+          for attempt in 1 2 3; do
+            git fetch -q origin live-defi-rollout
+            if ! git rebase origin/live-defi-rollout >/tmp/rb.log 2>&1; then
+              git rebase --abort >/dev/null 2>&1 || true
+              echo "[mirror:conflict] real rebase conflict (attempt ${attempt}) — manual 'git rebase origin/live-defi-rollout' required"
+              tail -20 /tmp/rb.log 2>/dev/null || true
+              echo "outcome=conflict" >> "$GITHUB_OUTPUT"
+              exit 0   # expected outcome — the orchestrator surfaces it via the webhook
+            fi
+            if git push origin "HEAD:live-defi-rollout" 2>/tmp/ldr.log; then
+              landed=1; break
+            fi
+            if ! grep -qE "non-fast-forward|rejected|fetch first|stale info" /tmp/ldr.log; then
+              echo "[mirror:error] unexpected LDR push failure:"; cat /tmp/ldr.log; exit 1
+            fi
+            echo "[mirror:race] LDR moved during attempt ${attempt}; re-rebasing onto the new tip"
+          done
+          # Realign the remote tab to the rebased history so the local worktree can adopt
+          # it cleanly. GITHUB_TOKEN push => no recursive trigger. The lease (orig_sha)
+          # refuses if a concurrent agent pushed to this tab since checkout.
+          if git push "--force-with-lease=${GITHUB_REF_NAME}:${orig_sha}" origin "HEAD:${GITHUB_REF_NAME}" 2>/tmp/tab.log; then
+            echo "[mirror:tab-realigned] origin/${GITHUB_REF_NAME} rebased onto LDR"
+          else
+            echo "[mirror:tab-realign-skipped] lease refused — concurrent push to this tab; leaving remote tab unchanged"
+            cat /tmp/tab.log 2>/dev/null || true
+          fi
+          if [ "${landed}" -eq 1 ]; then
+            echo "[mirror:rebased+landed] LDR advanced to $(git rev-parse HEAD | head -c 8) + tab realigned"
+            echo "outcome=rebased+landed" >> "$GITHUB_OUTPUT"
+          else
+            echo "[mirror:race-exhausted] LDR too hot across 3 attempts; tab realigned onto latest LDR (clean FF) — next push/mirror lands it"
+            echo "outcome=race-exhausted" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log no-op / behind
+        if: steps.ff_check.outputs.decision == 'noop' || steps.ff_check.outputs.decision == 'behind'
         run: |
           echo "[mirror:skip] ${GITHUB_REF} -> live-defi-rollout : ${{ steps.ff_check.outputs.reason }}"
           echo "decision: ${{ steps.ff_check.outputs.decision }}"
 
       - name: Notify orchestrator (mirror event webhook)
-        if: always() # fire on success AND skip AND race-lost — orchestrator decides what to surface
+        if: always() # fire on success AND skip AND conflict — orchestrator decides what to surface
         env:
           ORCHESTRATOR_URL: https://api.agent-orchestrator.odum-research.com
           DECISION: ${{ steps.ff_check.outputs.decision }}
           REASON: ${{ steps.ff_check.outputs.reason }}
+          REBASE_OUTCOME: ${{ steps.rebase.outputs.outcome }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Best-effort webhook: never red-fail the workflow on notifier issues.
-          # The orchestrator persists every event (ff/noop/skip/race-lost) so the
-          # dashboard can surface alerts for skip/race-lost and a heartbeat for the
+          # The orchestrator persists every event (ff/noop/behind/rebased/conflict) so the
+          # dashboard can surface alerts for conflict/race-exhausted and a heartbeat for the
           # rest. Added 2026-05-20 per
           # plans/active/agent_reliability_mitigations_2026_05_20.md Phase 1.
           set +e
@@ -121,7 +176,7 @@ jobs:
             "branch": "${BRANCH}",
             "sha": "${SHA}",
             "decision": "${DECISION:-unknown}",
-            "reason": "${REASON:-no reason recorded}",
+            "reason": "${REASON:-no reason recorded}${REBASE_OUTCOME:+ (${REBASE_OUTCOME})}",
             "workflow_run_url": "${RUN_URL}"
           }
           EOF
