@@ -71,7 +71,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GH_ORG }}/unified-trading-pm
-          path: ../unified-trading-pm
+          path: pm-readiness
           token: ${{ secrets.GH_PAT }}
           sparse-checkout: |
             codex/10-audit/
@@ -362,7 +362,7 @@ jobs:
 
           echo "Opening MAJOR bump approval issue for deployment-api ($CURRENT → $NEXT)"
 
-          CHECKLIST_FILE="../unified-trading-pm/codex/10-audit/repos/deployment-api.yaml"
+          CHECKLIST_FILE="pm-readiness/codex/10-audit/repos/deployment-api.yaml"
           if [ -f "$CHECKLIST_FILE" ]; then
             CHECKLIST_BODY=$(head -80 "$CHECKLIST_FILE")
           else
