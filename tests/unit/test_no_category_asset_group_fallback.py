@@ -171,3 +171,50 @@ class TestShardPrefixUsesAssetGroup:
         assert "category=" not in prefix, (
             f"_shard_prefix fallback branch must NOT use 'category='. Got: {prefix!r}. v9 regression guard."
         )
+
+
+# ---------------------------------------------------------------------------
+# data_status_drilldown: sports per_venue_day_bundle _shard_prefix must not
+# introduce a category= (or any asset-group) hive key (correct by construction;
+# this pins it so a future refactor can't regress it). slot-4 dim-⑦ 2026-06-05.
+# ---------------------------------------------------------------------------
+
+
+class TestSportsShardPrefixNoCategoryKey:
+    """Ratchet: the sports per_venue_day_bundle drilldown prefix uses the
+    instrument_availability layout (league/venue) with NO category=/asset_group=
+    hive key — so deleting legacy category= buckets can't break it."""
+
+    def test_sports_shard_prefix_has_no_category_or_asset_group_key(self) -> None:
+        from deployment_api.services.data_status_drilldown import (
+            _shard_prefix,  # type: ignore[reportPrivateUsage]
+        )
+
+        prefix = _shard_prefix(
+            service="instruments-service",
+            asset_group="sports",
+            venue="API_FOOTBALL",
+            day="2026-04-14",
+            instrument_type="EPL",
+            data_type="FIXTURES",
+        )
+        assert "category=" not in prefix, f"sports drilldown prefix must not carry category= key: {prefix}"
+        assert "asset_group=" not in prefix, f"sports drilldown prefix must not carry asset_group= key: {prefix}"
+        assert prefix.startswith("instrument_availability/by_date/day="), prefix
+        assert "league=EPL/" in prefix and "venue=API_FOOTBALL/" in prefix, prefix
+
+    def test_sports_shard_prefix_no_league_falls_back_cleanly(self) -> None:
+        from deployment_api.services.data_status_drilldown import (
+            _shard_prefix,  # type: ignore[reportPrivateUsage]
+        )
+
+        prefix = _shard_prefix(
+            service="instruments-service",
+            asset_group="sports",
+            venue="API_FOOTBALL",
+            day="2026-04-14",
+            instrument_type="",
+            data_type="FIXTURES",
+        )
+        assert "category=" not in prefix and "asset_group=" not in prefix, prefix
+        assert prefix == "instrument_availability/by_date/day=2026-04-14/league=/venue=API_FOOTBALL/", prefix
