@@ -251,6 +251,36 @@ jobs:
           set -uo pipefail
           git config user.name "tab-mirror[bot]"
           git config user.email "ikennaigboaka@gmail.com"
+
+          # --- Active-host filter (operator-maintained SSOT). A diverged tab whose prefix is ACTIVE
+          #     alerts LOUDLY (:rotating_light: #ci-failures, every 15 min) — a host that is up and
+          #     able to act must be loud. A diverged tab on a NON-active prefix (a parked/dormant epic
+          #     VM, the other operator's offline laptop, a decommissioned root VM, an orphan prefix)
+          #     is NOT spammed: silent if it carries no genuinely-unmerged work, or surfaced ONCE/day
+          #     in a low-severity "stranded work on dormant host" digest if it does (so stranded
+          #     commits aren't lost, just not spammed). This is the registry filter that stops
+          #     dormant-host alert spam.
+          #
+          #     POLICY (operator 2026-06-05): loud = (a) the operator's CURRENTLY-DRIVING laptop
+          #     (transient — whoever is interactively live) + (b) the DURABLE escalation sink, which
+          #     MUST be a VM, never a long-lived laptop — the `vm-orchestrator` host runs
+          #     agent-orchestrator's escalation.py (POST /api/escalate) and is the thing that actions
+          #     CI-job escalations. Everything else is parked by default — we are NOT always running a
+          #     host per epic, so listing every epic VM here would re-spam the moment one is down. To
+          #     mark an epic VM up while it runs (or to swap the live laptop), edit ACTIVE_PREFIX_BASES
+          #     + roll out (rollout-workflow-templates.sh). `is_active` also matches the `<base>m`
+          #     main-role form (vm-orchestratorm). Suppressed by construction: hk/harsh (Harsh offline),
+          #     all parked epic VMs, root/rootm (the $USER-on-VM collision class), and any unregistered
+          #     prefix (e.g. the malformed vm-0 half-brand).
+          ACTIVE_PREFIX_BASES="ikennaigboaka ikenna vm-orchestrator"
+          is_active() {
+            local p="$1" b
+            for b in $ACTIVE_PREFIX_BASES; do
+              [ "$p" = "$b" ] && return 0
+              [ "$p" = "${b}m" ] && return 0     # main-role form (tab/<base>m/<N>)
+            done
+            return 1
+          }
           # checkout fetched LDR only; pull in every remote tab/* ref for the sweep.
           git fetch --prune origin '+refs/heads/tab/*:refs/remotes/origin/tab/*' >/dev/null 2>&1 || true
           git fetch -q origin live-defi-rollout
@@ -261,9 +291,9 @@ jobs:
           ff_target="$(git rev-list -1 --before='15 minutes ago' origin/live-defi-rollout 2>/dev/null || true)"
           echo "[ldr->tab] LDR tip=${ldr:0:8}; 15-min-settled FF target=${ff_target:0:8}"
 
-          ff_n=0; defer_n=0; div_n=0; col_n=0
-          : > /tmp/ffed.txt; : > /tmp/diverged.txt; : > /tmp/collisions.txt
-          declare -A div_hosts
+          ff_n=0; defer_n=0; div_n=0; col_n=0; stranded_n=0
+          : > /tmp/ffed.txt; : > /tmp/diverged.txt; : > /tmp/collisions.txt; : > /tmp/stranded.txt
+          declare -A div_hosts; declare -A stranded_hosts
 
           for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/tab); do
             br="${ref#origin/}"                          # tab/<prefix>/<N>
@@ -272,10 +302,15 @@ jobs:
             prefix="${br#tab/}"; prefix="${prefix%/*}"    # tab/<prefix>/<N> -> <prefix>
 
             # Name-collision class: generic $USER-on-VM prefix (fixed in setup-tab-worktrees.sh).
+            # Only LOUD-alert a collision on an ACTIVE prefix (a real, current problem). A root/rootm
+            # collision is a known dormant-host artifact → it flows through the diverged/stranded
+            # routing below instead of spamming the collision alert every 15 min.
             case "$prefix" in
               root|rootm)
-                printf '• `%s` (generic prefix `%s` — >1 host can write this name)\n' "$br" "$prefix" >> /tmp/collisions.txt
-                col_n=$((col_n+1)) ;;
+                if is_active "$prefix"; then
+                  printf '• `%s` (generic prefix `%s` — >1 host can write this name)\n' "$br" "$prefix" >> /tmp/collisions.txt
+                  col_n=$((col_n+1))
+                fi ;;
             esac
 
             [ "$tip" = "$ldr" ] && continue              # already current
@@ -302,8 +337,20 @@ jobs:
               ab="$(git rev-list --left-right --count "${ldr}...${tip}")"   # "<behind>\t<ahead>" rel. LDR
               behind="$(printf '%s' "$ab" | cut -f1)"
               ahead="$(printf '%s' "$ab" | cut -f2)"
-              printf '• `%s` (ahead %s, behind %s; tip %s, prefix `%s`)\n' "$br" "$ahead" "$behind" "${tip:0:8}" "$prefix" >> /tmp/diverged.txt
-              div_n=$((div_n+1)); div_hosts["$prefix"]=1
+              if is_active "$prefix"; then
+                # ACTIVE host diverged → loud alert (a live host going sideways jams the mirror).
+                printf '• `%s` (ahead %s, behind %s; tip %s, prefix `%s`)\n' "$br" "$ahead" "$behind" "${tip:0:8}" "$prefix" >> /tmp/diverged.txt
+                div_n=$((div_n+1)); div_hosts["$prefix"]=1
+              else
+                # DORMANT/unknown host diverged → do NOT spam. Only surface (once/day, low severity)
+                # if it carries genuinely-unmerged commits (cherry '+'), so stranded work isn't lost;
+                # a pure patch-id-duplicate divergence (0 unmerged) is a benign stale pointer → silent.
+                unmerged="$(git cherry "$ldr" "$ref" 2>/dev/null | grep -c '^+')"
+                if [ "${unmerged:-0}" -gt 0 ]; then
+                  printf '• `%s` (%s unmerged commit(s); ahead %s, behind %s; tip %s)\n' "$br" "$unmerged" "$ahead" "$behind" "${tip:0:8}" >> /tmp/stranded.txt
+                  stranded_n=$((stranded_n+1)); stranded_hosts["$prefix"]=1
+                fi
+              fi
             fi
           done
 
@@ -313,8 +360,10 @@ jobs:
             echo "div_n=${div_n}"
             echo "col_n=${col_n}"
             echo "div_hosts=${#div_hosts[@]}"
+            echo "stranded_n=${stranded_n}"
+            echo "stranded_hosts=${#stranded_hosts[@]}"
           } >> "$GITHUB_OUTPUT"
-          echo "[ldr->tab] FF'd ${ff_n} tab(s) to settled target; deferred ${defer_n} (<15-min-fresh); ${div_n} diverged across ${#div_hosts[@]} host(s); ${col_n} name-collision(s)"
+          echo "[ldr->tab] FF'd ${ff_n} tab(s) to settled target; deferred ${defer_n} (<15-min-fresh); ${div_n} diverged (active) across ${#div_hosts[@]} host(s); ${col_n} name-collision(s); ${stranded_n} stranded-on-dormant across ${#stranded_hosts[@]} host(s) (suppressed from loud alert)"
 
       - name: Alert on divergence / collisions (#ci-failures + orchestrator)
         if: always() && (steps.sweep.outputs.div_n != '0' || steps.sweep.outputs.col_n != '0')
@@ -365,4 +414,50 @@ jobs:
             -H "Content-Type: application/json" --connect-timeout 5 --max-time 15 \
             -d "{\"repo\":\"${REPO}\",\"branch\":\"(fleet-sweep)\",\"decision\":\"diverged\",\"reason\":\"${DIV_N} diverged / ${COL_N} collisions\",\"workflow_run_url\":\"${RUN_URL}\"}" \
             >/dev/null 2>&1 || true
+          exit 0
+
+      - name: Stranded-work digest (dormant hosts — low severity, ONCE/day)
+        # Diverged tabs on NON-active prefixes that carry genuinely-unmerged commits are suppressed
+        # from the 15-min loud alert (above) so a parked/decommissioned host doesn't spam. Instead we
+        # surface them in a quiet digest ONCE/day — the 06:00-06:14 UTC tick — so stranded commits are
+        # visible to the owner without 96 pages/day. GHA is stateless, so the daily window is the
+        # practical "once". Best-effort; never red-fails the sweep.
+        if: always() && steps.sweep.outputs.stranded_n != '0'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STRANDED_N: ${{ steps.sweep.outputs.stranded_n }}
+          STRANDED_HOSTS: ${{ steps.sweep.outputs.stranded_hosts }}
+        run: |
+          set +e
+          # Daily gate: only emit in the first 15-min window of 06:00 UTC (one sweep tick/day).
+          hh="$(date -u +%H)"; mm="$(date -u +%M)"
+          if [ "$hh" != "06" ] || [ "$mm" -ge 15 ]; then
+            echo "[stranded-digest] ${STRANDED_N} stranded branch(es) on dormant host(s) — holding until the 06:00 UTC daily digest (now ${hh}:${mm} UTC)."
+            exit 0
+          fi
+          HEADER=":information_source: *stranded work on dormant hosts* in \`${REPO}\` — ${STRANDED_N} branch(es) across ${STRANDED_HOSTS} dormant/parked host(s)"
+          BODY="These diverged tabs are on NON-active prefixes (parked/decommissioned hosts) so they're suppressed from the 15-min drift alert, but they carry unmerged commits. Rescue on the owning host (\`git rebase origin/live-defi-rollout\`) or delete if obsolete:"$'\n'"$(cat /tmp/stranded.txt 2>/dev/null)"$'\n'"<${RUN_URL}|sweep run>"
+          case "${SLACK_WEBHOOK_URL:-}" in
+            https://*)
+              HEADER="$HEADER" BODY="$BODY" python3 - <<PYEOF
+          import json, os, urllib.request
+          req = urllib.request.Request(
+              os.environ["SLACK_WEBHOOK_URL"],
+              data=json.dumps({"text": os.environ["HEADER"], "blocks": [
+                  {"type": "section", "text": {"type": "mrkdwn", "text": os.environ["HEADER"]}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": os.environ["BODY"]}},
+              ]}).encode(),
+              headers={"Content-Type": "application/json"}, method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"[stranded-digest] posted (HTTP {r.status})")
+          except Exception as e:
+              print(f"[stranded-digest] slack post failed (best-effort): {e}")
+          PYEOF
+              ;;
+            *) echo "[stranded-digest] no https Slack webhook — skipping (best-effort)" ;;
+          esac
           exit 0
