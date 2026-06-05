@@ -261,19 +261,28 @@ jobs:
           #     commits aren't lost, just not spammed). This is the registry filter that stops
           #     dormant-host alert spam.
           #
-          #     POLICY (operator 2026-06-05): loud = (a) the OPERATOR LAPTOPS — Ikenna (`ikennaigboaka`
-          #     / `ikenna`) + Harsh (`hk`, the canonical Harsh-laptop prefix — NOT `hkm`, and NOT
-          #     `harsh` which is Harsh's separate AWS VM) + (b) the DURABLE escalation sink, which MUST
-          #     be a VM, never a long-lived laptop — the `vm-orchestrator` host runs agent-orchestrator's
-          #     escalation.py (POST /api/escalate) and is the thing that actions CI-job escalations.
+          #     POLICY (operator 2026-06-05): loud = (a) the OPERATOR LAPTOPS — Ikenna (`ikennaigboaka`)
+          #     + Harsh (`hk`, the canonical Harsh-laptop prefix — NOT `hkm`, and NOT `harsh` which is
+          #     Harsh's separate AWS VM) + (b) the always-on CENTRAL API / PLANNING VM = prefix `planning`
+          #     (EC2 i-0c9b283b…, Elastic IP 13.113.200.22, api.agent-orchestrator.odum-research.com). THAT
+          #     box is the single API that actions CI escalations (nginx :443 → orchestrator backend :8765;
+          #     POST /api/escalate lands there) AND hosts the interactive planning slots. `vm-orchestrator`
+          #     is NOT it — that's a separate, currently-STOPPED *epic* VM (owns the agent-orchestrator
+          #     codebase epic), so it's parked like every epic VM. The earlier note here that called
+          #     vm-orchestrator the escalation sink was WRONG (topology reconciled
+          #     planning_vm_canonical_bringup_and_topology_reconcile_2026_06_05.md).
+          #     NAMING: a VM brands its tab branches by its ROLE/VM-id (`planning`, `vm-defi`, …), NEVER by
+          #     a human operator's name — the planning VM was mis-provisioned as `--operator ikenna` →
+          #     `tab/ikenna/<N>` (collided with Ikenna's laptop); it is now `planning`
+          #     (ORCHESTRATOR_VM_ID=planning → tab/planning/<N>).
           #     Everything else is parked by default — we are NOT always running a host per epic, so
           #     listing every epic VM here would re-spam the moment one is down. To mark an epic VM up
           #     while it runs, edit ACTIVE_PREFIX_BASES + roll out (rollout-workflow-templates.sh).
-          #     `is_active` also matches the `<base>m` main-role form (so `hk` covers `hkm` too, and
-          #     `vm-orchestrator` covers `vm-orchestratorm`). Suppressed by construction: `harsh` (Harsh's
-          #     parked AWS VM — mis-named, not his laptop), all parked epic VMs, root/rootm (the
-          #     $USER-on-VM collision class), and any unregistered prefix (e.g. the malformed vm-0).
-          ACTIVE_PREFIX_BASES="ikennaigboaka ikenna hk vm-orchestrator"
+          #     `is_active` also matches the `<base>m` main-role form (so `hk` covers `hkm`, `planning`
+          #     covers `planningm`). Suppressed by construction: `vm-orchestrator` + all parked epic VMs,
+          #     `harsh` (Harsh's parked AWS VM), root/rootm (the $USER-on-VM collision class), any
+          #     unregistered prefix.
+          ACTIVE_PREFIX_BASES="ikennaigboaka hk planning"
           is_active() {
             local p="$1" b
             for b in $ACTIVE_PREFIX_BASES; do
