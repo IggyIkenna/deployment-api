@@ -441,7 +441,7 @@ class TestFetchVenueDetailPrediction:
 
     def test_prediction_reads_mtds_bucket_not_instruments_store(self) -> None:
         # Regression: the prediction cqg-bundle manifest (`prediction_canonical_question_group`
-        # with `observed_clusters`) is written by MTDS into `market-data-tick-pred-prd-*`,
+        # with `observed_clusters`) is written by MTDS into `market-data-tick-pred-<env>-*`,
         # NOT the instruments-store. Reading the instruments bucket returned an empty/wrong
         # v9 drilldown. The read must target the MTDS bucket regardless of the caller's
         # `service` arg (the data source is definitionally the MTDS manifest).
@@ -457,7 +457,9 @@ class TestFetchVenueDetailPrediction:
                 asset_group="PREDICTION",
                 venue="POLYMARKET",
             )
-        assert "market-data-tick-pred-prd" in captured["bucket"], captured
+        # Env-invariant prefix: bucket resolves to market-data-tick-pred-<env>-<project>
+        # (e.g. -prd- in prod, -test- in CI) — assert the env-agnostic prefix, not a hardcoded env.
+        assert "market-data-tick-pred-" in captured["bucket"], captured
         assert "instruments-store" not in captured["bucket"], captured
 
 
