@@ -1,0 +1,243 @@
+# main-backmerge-to-ldr.yml — auto back-merge `main` → live-defi-rollout
+#
+# Triggered on every push to `main`. Brings main-only commits (doc-fast-path
+# merges, semver-agent version bumps, [skip ci] automation) back into the
+# integration branch `live-defi-rollout` so the two never drift apart.
+#
+# Why this exists (root cause, 2026-06-01): the PM/codex doc-fast-path lands
+# commits directly on `main` but nothing back-merged them into LDR. Over a sprint
+# `main` and LDR diverged BOTH ways and the LDR→main catch-up PR became a
+# ~95-file conflict (PR #103). This workflow closes that hole permanently — it is
+# the reverse-direction sibling of `tab-mirror-to-ldr.yml`.
+#
+# SAFETY CONTRACT (this is the important part):
+#   - NEVER force-pushes. It only does a `git merge` (additive) then an FF-only
+#     push to LDR. It can never overwrite or rewrite a developer's LDR work.
+#   - CLEAN merge  → silently merge-pushes into LDR (no PR noise). Rapid tab→LDR
+#     development is untouched: this fires only on `main` pushes, which are rare.
+#   - CONFLICT     → does NOTHING destructive. It opens (or refreshes) a visible
+#     `main → live-defi-rollout` PR for a human to resolve, and notifies the
+#     orchestrator. It never auto-resolves a conflict.
+#   - RACE (LDR moved mid-merge) → retries FF-only up to 3×; never clobbers.
+#
+# Concurrency: keyed on the destination ref so simultaneous back-merges serialize.
+#
+# Rollout: `bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh --template main-backmerge-to-ldr.yml`
+#
+# SSOT: this file lives canonically in unified-trading-pm/scripts/workflow-templates/.
+# Per-repo copies are flat duplicates; never edit the per-repo copy.
+
+name: main-backmerge-to-ldr
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: main-backmerge-to-ldr
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backmerge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout (full history needed for merge + relationship check)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Back-merge main into LDR (merge-only; conflict → visible PR; never force)
+        id: bm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -uo pipefail
+
+          # LDR must exist (some repos use main-only; nothing to back-merge then).
+          if ! git ls-remote --exit-code --heads origin live-defi-rollout >/dev/null 2>&1; then
+            echo "decision=noop" >> "$GITHUB_OUTPUT"
+            echo "reason=no live-defi-rollout branch in this repo" >> "$GITHUB_OUTPUT"
+            echo "[backmerge:noop] no LDR branch — nothing to do"
+            exit 0
+          fi
+
+          git fetch origin main live-defi-rollout --quiet
+
+          # If LDR already contains everything on main, this is a no-op.
+          if [ "$(git rev-list origin/live-defi-rollout..origin/main --count)" = "0" ]; then
+            echo "decision=noop" >> "$GITHUB_OUTPUT"
+            echo "reason=main already contained in LDR" >> "$GITHUB_OUTPUT"
+            echo "[backmerge:noop] LDR already contains main HEAD"
+            exit 0
+          fi
+
+          git config user.name "uts-backmerge-bot"
+          git config user.email "uts-backmerge-bot@users.noreply.github.com"
+
+          DECISION="race"
+          REASON="LDR kept advancing; exhausted retries"
+          for attempt in 1 2 3; do
+            git fetch origin live-defi-rollout --quiet
+            git checkout -B _backmerge origin/live-defi-rollout --quiet
+
+            # Additive merge. --no-ff keeps a clear back-merge commit in history.
+            if ! git merge --no-ff --no-edit origin/main; then
+              # Guard 2 (cicd_contract_hardening § "Guard 2"): auto-resolve a ci_status-only
+              # workspace-manifest.json conflict. ci_status (+ coverage_pct / ci_failure_reason
+              # + top-level promotion state) is bot-written on main = the single authoritative
+              # home; LDR's copy is non-authoritative and goes stale (tab branches fork an older
+              # snapshot then FF-mirror it back), so the recurring textual conflict on those
+              # lines must NOT block the back-merge — it transitively dams the LDR→main
+              # promotion. The reconciler takes main's CI-automation fields and 3-way-merges
+              # everything else; a GENUINE non-CI manifest divergence (exit 2) still falls
+              # through to the human PR + orchestrator escalation below. workspace-manifest.json
+              # exists only in unified-trading-pm → this is a no-op in every other repo.
+              CONFLICTED="$(git diff --name-only --diff-filter=U)"
+              if [ "${CONFLICTED}" = "workspace-manifest.json" ] && [ -f scripts/cicd/reconcile_manifest_backmerge.py ]; then
+                MB="$(git merge-base HEAD MERGE_HEAD)"
+                git show "${MB}:workspace-manifest.json" > /tmp/bm_mb.json 2>/dev/null || echo '{}' > /tmp/bm_mb.json
+                git show ":2:workspace-manifest.json" > /tmp/bm_ours.json
+                git show ":3:workspace-manifest.json" > /tmp/bm_theirs.json
+                if python3 scripts/cicd/reconcile_manifest_backmerge.py \
+                     --base /tmp/bm_mb.json --ours /tmp/bm_ours.json --theirs /tmp/bm_theirs.json \
+                     --out workspace-manifest.json; then
+                  git add workspace-manifest.json
+                  git commit --no-edit --quiet
+                  echo "[backmerge] Guard 2: auto-resolved ci_status-only manifest conflict (main authoritative)"
+                  # fall through to the FF-only push below
+                else
+                  git merge --abort || true
+                  DECISION="conflict"
+                  REASON="genuine non-ci_status manifest divergence — human resolution required"
+                  break
+                fi
+              else
+                git merge --abort || true
+                DECISION="conflict"
+                REASON="main and LDR conflict — human resolution required (no auto-resolve)"
+                break
+              fi
+            fi
+
+            # FF-only push (default push is non-destructive on the destination ref).
+            if git push origin "HEAD:live-defi-rollout" 2>&1 | tee /tmp/push.log; then
+              DECISION="merged"
+              REASON="main back-merged into LDR (attempt ${attempt})"
+              break
+            else
+              if grep -q "non-fast-forward\|rejected" /tmp/push.log; then
+                echo "[backmerge:race] LDR advanced during merge — retrying (attempt ${attempt})"
+                continue
+              fi
+              # A real push error (auth/etc) — surface it.
+              DECISION="error"
+              REASON="push failed for a non-race reason (see log)"
+              cat /tmp/push.log
+              break
+            fi
+          done
+
+          echo "decision=${DECISION}" >> "$GITHUB_OUTPUT"
+          echo "reason=${REASON}" >> "$GITHUB_OUTPUT"
+          echo "[backmerge:${DECISION}] ${REASON}"
+
+          # On conflict, ensure a VISIBLE main→LDR PR exists so a human can resolve
+          # it (mirrors how PR #103 surfaced the original drift). Never auto-resolve.
+          if [ "${DECISION}" = "conflict" ]; then
+            EXISTING=$(gh pr list --base live-defi-rollout --head main --state open --json number -q '.[0].number' 2>/dev/null || echo "")
+            if [ -z "${EXISTING}" ]; then
+              gh pr create --base live-defi-rollout --head main \
+                --title "[backmerge] main → live-defi-rollout (CONFLICT — needs resolution)" \
+                --body "Auto-opened by main-backmerge-to-ldr because main has commit(s) that conflict with LDR. Resolve to keep main and the integration branch from drifting (root cause: doc-fast-path commits to main not back-merged). Do NOT force-push LDR." \
+                2>/dev/null && echo "[backmerge] opened conflict PR" || echo "[backmerge] could not open PR (may already exist / perms)"
+            else
+              echo "[backmerge] conflict PR #${EXISTING} already open"
+            fi
+            # ALSO escalate to the orchestrator (Max worker) so the conflict is actively resolved on
+            # live-defi-rollout, not just parked in a human PR — "every alert → orchestrator" (2026-06-03).
+            # Fired with GH_PAT: a repository_dispatch from GITHUB_TOKEN does NOT trigger workflows.
+            REPO_NAME="${GITHUB_REPOSITORY##*/}"
+            CONFLICT_PR="$(gh pr list --base live-defi-rollout --head main --state open --json number -q '.[0].number' 2>/dev/null || echo 0)"
+            GH_TOKEN="${GH_PAT:-}" gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
+              -f event_type=escalate-to-orchestrator \
+              -f "client_payload[repo]=${REPO_NAME}" \
+              -f "client_payload[pr_number]=${CONFLICT_PR:-0}" \
+              -f 'client_payload[wall_type]=merge_conflict' \
+              -f "client_payload[context]=main->live-defi-rollout back-merge conflict: ${REASON}. Resolve on live-defi-rollout (never force-push); quality-gates-v2 re-gates." \
+              -f 'client_payload[model]=opus' \
+              >/dev/null 2>&1 && echo "[backmerge] escalated conflict to orchestrator (opus worker)" \
+              || echo "[backmerge] orchestrator escalation dispatch failed (best-effort; human PR still open)"
+          fi
+
+          # A real error (not conflict/race/noop/merged) is the only red-fail case.
+          if [ "${DECISION}" = "error" ]; then
+            exit 1
+          fi
+          exit 0
+
+      - name: Notify orchestrator (best-effort; fires on every decision)
+        if: always()
+        env:
+          ORCHESTRATOR_URL: https://api.agent-orchestrator.odum-research.com
+          DECISION: ${{ steps.bm.outputs.decision }}
+          REASON: ${{ steps.bm.outputs.reason }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          SHA="$(git rev-parse origin/main 2>/dev/null || echo unknown)"
+          PAYLOAD=$(cat <<EOF
+          {
+            "repo": "${REPO}",
+            "branch": "main",
+            "sha": "${SHA}",
+            "decision": "${DECISION:-unknown}",
+            "reason": "${REASON:-no reason recorded}",
+            "workflow_run_url": "${RUN_URL}",
+            "kind": "main-backmerge-to-ldr"
+          }
+          EOF
+          )
+          HTTP_CODE=$(curl -sS -o /tmp/notify.body -w "%{http_code}" \
+            -X POST "${ORCHESTRATOR_URL}/api/mirror-events" \
+            -H "Content-Type: application/json" \
+            --connect-timeout 5 --max-time 15 \
+            -d "${PAYLOAD}" || echo "000")
+          if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "201" ]; then
+            echo "[backmerge-notify] ok (${HTTP_CODE})"
+          else
+            echo "[backmerge-notify] non-2xx (${HTTP_CODE}) — best-effort, ignoring"
+          fi
+          exit 0
+
+      - name: Ping plan-health agent (unified-trading-pm only)
+        # On each LDR→main promotion that lands new content on main, trigger the plan-health
+        # agent (cross-plan contradiction + governance-doc-drift) on a planning-VM Max-plan slot
+        # so the plans stay clean as main↔LDR reconcile. Reuses the BUILT, $0-API endpoint
+        # POST /api/plan-health/dispatch (server/plan_health.py + agents/plan-health.md) — the
+        # FF main→LDR itself is the deterministic back-merge above. Best-effort — NEVER fails the
+        # back-merge. Only PM has plans, so every other repo's copy of this workflow skips it.
+        if: github.repository == 'IggyIkenna/unified-trading-pm' && steps.bm.outputs.decision != 'noop'
+        env:
+          ORCH_URL: https://api.agent-orchestrator.odum-research.com
+          ORCH_SECRET: ${{ secrets.ORCHESTRATOR_INTERNAL_SECRET }}
+        run: |
+          set +e
+          if [ -z "${ORCH_SECRET}" ]; then echo "[plan-health] no ORCHESTRATOR_INTERNAL_SECRET — skip"; exit 0; fi
+          BODY='{"pm_repo_path":"/home/ubuntu/unified-trading-system-repos/unified-trading-pm","model":"sonnet"}'
+          HTTP=$(curl -sS -o /tmp/ph.body -w "%{http_code}" --max-time 30 \
+            -X POST "${ORCH_URL}/api/plan-health/dispatch" \
+            -H "Content-Type: application/json" -H "X-Orchestrator-Secret: ${ORCH_SECRET}" \
+            -d "${BODY}" || echo "000")
+          echo "[plan-health] POST /api/plan-health/dispatch -> ${HTTP}"
+          [ "${HTTP}" = "200" ] || [ "${HTTP}" = "201" ] || { echo "  body:"; head -c 200 /tmp/ph.body 2>/dev/null; }
+          exit 0
