@@ -1,20 +1,33 @@
 # quality-gates-v2.yml — UNIFIED quality-gates workflow template (v2, escapes GHA ghost cache)
 #
-# DESIGN: This is the v2 replacement for workspace-qg.yml. The v1 chain had
-# GitHub cache a BuildFailed state for check context "quality-gates". This template
-# calls python-quality-gates-v2.yml whose job key is "quality-gates-v2", registering
-# a fresh check context that bypasses the ghost cache (Option D).
+# CANONICAL SOURCE. Do NOT hand-edit per-repo copies — edit THIS template and run
+#   bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh
+# The hand-copied v2 workflows that predated this template carried a stale job
+# `name:` (every copy said `Quality Gates (alerting-service)` regardless of repo),
+# which broke the ruleset required-check derivation in
+# `scripts/repo-management/pin_branch_protection_rulesets.py` (the required context
+# is `<job name:> / quality-gates-v2`, so a wrong name = a context the run never
+# emits = a permanently-red required check). This template renders the correct
+# per-repo `name:` + the full **transitive editable dependency closure** so CI
+# clones every `path = "../<repo>"` sibling `uv sync` needs (an incomplete
+# `dep_repos` is the other historical break — e.g. system-integration-tests failing
+# on `metadata for alerting-service==0.1.0 @ editable+../alerting-service`).
+#
+# DESIGN: v2 replacement for workspace-qg.yml. The v1 chain had GitHub cache a
+# BuildFailed state for check context "quality-gates"; calling
+# python-quality-gates-v2.yml (job key "quality-gates-v2") registers a fresh check
+# context that bypasses the ghost cache (Option D).
 #
 # ## Trigger surface:
-#
-#  push to [main, staging] + pull_request to [main, staging] + workflow_dispatch
-#  (live-defi-rollout removed — already post-cutover scope)
+#   push to [main, staging] + pull_request to [main, staging] + workflow_dispatch
+#   (live-defi-rollout removed from triggers — post-cutover scope; no remote CI on LDR)
 #
 # ## Substitution placeholders (rendered by rollout-workflow-templates.sh):
-#
-# - `unified-trading-library unified-api-contracts` — rendered from workspace-manifest.json
-# - `alerting-service` — repo name
-# - `alerting_service` — Python source dir
+#   - unified-trading-library unified-api-contracts deployment-service strategy-service market-tick-data-service   — transitive editable closure from the repo's pyproject
+#                       `path = "../<repo>"` deps (manifest fallback if no pyproject)
+#   - deployment-api   — repo name (e.g. alerting-service)
+#   - deployment_api  — Python source dir (e.g. alerting_service) [reserved; derived
+#                       inside the reusable workflow today]
 
 name: quality-gates-v2
 
@@ -40,7 +53,7 @@ jobs:
     name: Quality Gates (deployment-api)
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates-v2.yml@live-defi-rollout
     with:
-      dep_repos: "deployment-service market-tick-data-service strategy-service unified-api-contracts unified-trading-library"
+      dep_repos: "unified-trading-library unified-api-contracts deployment-service strategy-service market-tick-data-service"
     secrets: inherit
     # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
     # are derived inside the reusable workflow from github.repository (caller's repo name)

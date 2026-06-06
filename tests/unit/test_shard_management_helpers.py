@@ -91,16 +91,19 @@ class TestAssetGroupFromShardDims:
     def test_asset_group_key(self) -> None:
         assert _asset_group_from_shard_dims({"asset_group": "cefi"}) == "cefi"
 
-    def test_fallback_to_category(self) -> None:
-        assert _asset_group_from_shard_dims({"category": "defi"}) == "defi"
+    def test_category_only_returns_empty(self) -> None:
+        """v9 canonical: category-only shards are unmigrated → return '' (not 'defi')."""
+        assert _asset_group_from_shard_dims({"category": "defi"}) == ""
 
-    def test_empty_asset_group_falls_back(self) -> None:
-        assert _asset_group_from_shard_dims({"asset_group": "", "category": "tradfi"}) == "tradfi"
+    def test_empty_asset_group_does_not_fall_back(self) -> None:
+        """v9 canonical: empty asset_group with category present → '' (no fallback)."""
+        assert _asset_group_from_shard_dims({"asset_group": "", "category": "tradfi"}) == ""
 
     def test_neither_present(self) -> None:
         assert _asset_group_from_shard_dims({}) == ""
 
     def test_category_not_string_returns_empty(self) -> None:
+        """category field with non-string value is always ignored (v9: not read at all)."""
         assert _asset_group_from_shard_dims({"category": 123}) == ""
 
 

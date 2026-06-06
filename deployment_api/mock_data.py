@@ -91,7 +91,7 @@ MOCK_CONFIGS: list[dict[str, object]] = [
     {
         "config_id": "cfg-exec-cefi-btc",
         "service": "execution-service",
-        "category": "CEFI",
+        "asset_group": "cefi",
         "venue": "binance",
         "instrument": "BTC-USDT",
         "path": "configs/V2/CEFI_BTC/binance/BTC-USDT/config.json",
@@ -99,7 +99,7 @@ MOCK_CONFIGS: list[dict[str, object]] = [
     {
         "config_id": "cfg-exec-cefi-eth",
         "service": "execution-service",
-        "category": "CEFI",
+        "asset_group": "cefi",
         "venue": "binance",
         "instrument": "ETH-USDT",
         "path": "configs/V2/CEFI_ETH/binance/ETH-USDT/config.json",
@@ -107,7 +107,7 @@ MOCK_CONFIGS: list[dict[str, object]] = [
     {
         "config_id": "cfg-strategy-momentum",
         "service": "strategy-service",
-        "category": "CEFI",
+        "asset_group": "cefi",
         "venue": "binance",
         "path": "configs_grid/CEFI/binance/momentum_macd_5M.json",
     },

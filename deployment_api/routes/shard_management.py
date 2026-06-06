@@ -37,12 +37,13 @@ def _shard_dims(shard: object) -> dict[str, object]:
 
 
 def _asset_group_from_shard_dims(dims_dict: dict[str, object]) -> str:
-    """Shard dimension for market group: ``asset_group`` or legacy ``category``."""
+    """Shard dimension for market group: ``asset_group`` only (v9 canonical).
+
+    Returns ``""`` when the key is absent so callers can surface the shard as
+    unmigrated rather than silently falling back to the legacy ``category`` key.
+    """
     ag = dims_dict.get("asset_group")
-    if isinstance(ag, str) and ag:
-        return ag
-    c = dims_dict.get("category")
-    return c if isinstance(c, str) else ""
+    return ag if isinstance(ag, str) else ""
 
 
 def _turbo_asset_groups_block(turbo_result: dict[str, object]) -> dict[str, object]:
@@ -482,7 +483,7 @@ def _compute_verified_succeeded_shard_ids(
             continue
 
         dims = _shard_dims(shard)
-        cat = cast(str, dims.get("category") or "")
+        cat = cast(str, dims.get("asset_group") or "")
         venue_val = cast(str, dims.get("venue") or "")
         start_date, _ = _extract_date_range(dims.get("date"))
         date_str = start_date or ""
@@ -578,7 +579,8 @@ def get_all_zones_for_vm_lookup(primary_region: str | None = None) -> list[str]:
 def asset_groups_from_state(state: object) -> list[str] | None:
     """Extract unique asset-group shard dimensions from deployment state.
 
-    Reads ``asset_group`` when present, else ``category`` (legacy persisted state).
+    Reads ``asset_group`` only (v9 canonical).  Shards without ``asset_group``
+    are skipped (unmigrated) rather than silently falling back to ``category``.
     """
     if not state or not _get_shards(state):
         return None
@@ -586,7 +588,7 @@ def asset_groups_from_state(state: object) -> list[str] | None:
     ags: set[str] = set()
     for shard in _get_shards(state):
         dims = _shard_dims(shard)
-        ag_raw: object = dims.get("asset_group") or dims.get("category")
+        ag_raw: object = dims.get("asset_group")
         if ag_raw and isinstance(ag_raw, str):
             ags.add(ag_raw)
 

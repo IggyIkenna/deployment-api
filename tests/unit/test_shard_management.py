@@ -528,10 +528,11 @@ class TestAssetGroupsFromStateInShard:
 
         from deployment_api.routes.shard_management import asset_groups_from_state
 
+        # v9 canonical: only asset_group is read; legacy category-only shards are skipped.
         shards = [
             SimpleNamespace(status="succeeded", dimensions={"asset_group": "CEFI"}),
-            SimpleNamespace(status="failed", dimensions={"category": "TRADFI"}),
-            SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),  # duplicate
+            SimpleNamespace(status="failed", dimensions={"asset_group": "TRADFI"}),
+            SimpleNamespace(status="succeeded", dimensions={"asset_group": "CEFI"}),  # duplicate
         ]
         state = SimpleNamespace(shards=shards)
         result = asset_groups_from_state(state)
@@ -539,6 +540,20 @@ class TestAssetGroupsFromStateInShard:
         assert "CEFI" in result
         assert "TRADFI" in result
         assert result.count("CEFI") == 1  # deduped
+
+    def test_legacy_category_only_shards_are_skipped(self):
+        """v9: shards with only ``category`` (no ``asset_group``) are unmigrated → skipped."""
+        from types import SimpleNamespace
+
+        from deployment_api.routes.shard_management import asset_groups_from_state
+
+        shards = [
+            SimpleNamespace(status="succeeded", dimensions={"category": "CEFI"}),
+        ]
+        state = SimpleNamespace(shards=shards)
+        # Only category-keyed shards → all skipped → None (no valid asset_groups found).
+        result = asset_groups_from_state(state)
+        assert result is None
 
     def test_returns_none_for_no_categories(self):
         from types import SimpleNamespace
@@ -630,11 +645,12 @@ class TestComputeCompletedBreakdown:
 
         from deployment_api.routes.shard_management import compute_completed_breakdown
 
+        # v9 canonical: use asset_group (not category) in shard dimensions.
         shards = [
             SimpleNamespace(
                 shard_id="s1",
                 status="succeeded",
-                dimensions={"category": "CEFI", "venue": "BINANCE", "date": "2024-01-01"},
+                dimensions={"asset_group": "CEFI", "venue": "BINANCE", "date": "2024-01-01"},
             ),
         ]
         state = SimpleNamespace(shards=shards)

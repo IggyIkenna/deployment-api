@@ -123,3 +123,7 @@ logs/
 # --- Optional: Jupyter (uncomment if repo has notebooks) ---
 # .ipynb_checkpoints/
 # profile_default/
+
+# Quality-gate local caches (regenerated each run — never commit; SSOT: CLAUDE.md + cicd_contract_hardening item H)
+.qg_last_passed_sha
+.qg_content_sentinel

@@ -103,8 +103,8 @@ _GROUPED_DATA_TYPES: frozenset[str] = frozenset(
         "options_chain",
         "futures_chain",
         "combo_chain",
-        "dex_pools",
-        "dex_swaps",
+        "dex_pool_state",
+        "dex_pool_swaps",
         "liquidation_events",
         "flash_loan_events",
         "token_transfers",
@@ -145,7 +145,7 @@ def _classify_shard(
     2. Service default — instruments-service / corporate-actions publish
        reference data regardless of instrument_type.
     3. ``data_type`` in the grouped bundle set (``options_chain``,
-       ``dex_swaps``, …) → ``grouped``.
+       ``dex_pool_swaps``, …) → ``grouped``.
     4. ``instrument_type`` uppercase is in the per-symbol set → ``per_symbol``.
     5. Fallback → ``grouped`` (safer default for unknown shards — the
        ``instrument_list`` branch can surface an empty list without
@@ -1330,16 +1330,29 @@ def _defi_venue_detail(venue: str) -> VenueDetailResponse:
 def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
     """Prediction branch — returns canonical_question_group breakdown for the venue.
 
-    Reads the instruments-service prediction manifest index and aggregates by
+    Reads the MTDS prediction manifest index and aggregates by
     canonical_question_group on the latest available day for the given venue.
     Shard axis per UAC SHARD_AXIS_MATRIX:
-    ("instruments-service", "prediction"): ("venue", "canonical_question_group").
+    ("market-tick-data-service", "prediction"): ("venue", "canonical_question_group", "data_type").
 
-    The prediction manifest stores question group names in the ``underlying``
-    column (not a ``canonical_question_group`` column); ``data_type`` is always
-    ``prediction_canonical_question_group``.
+    v9 canonical shape (``prediction_manifest_canonicalisation_2026_06_01.md``):
+    - ``data_type = "prediction_canonical_question_group"`` (bundled row)
+    - ``instrument_id`` = canonical_question_group value (the cqg lives here in v9,
+      NOT in ``underlying`` — the ManifestWriter row_key uses ``instrument_id``).
+    - ``observed_clusters`` = ``{conditionId: row_count}`` (per-market drilldown).
+    - v9 columns: ``schema_version``, ``source``, ``asset_group``, ``pipeline_mode``,
+      ``available_at``.
+
+    Legacy shape (pre-v9): cqg value was stored in ``underlying``.  We prefer
+    ``instrument_id`` (v9) and fall back to ``underlying`` gracefully so reads
+    remain correct across the migration window.
     """
-    bucket = _instruments_bucket_for_category("prediction")
+    # The prediction cqg-bundle manifest (`data_type=prediction_canonical_question_group`
+    # with `observed_clusters`) is written by MTDS into `market-data-tick-pred-prd-{pid}`,
+    # NOT the instruments-store — the shard axis is ("market-tick-data-service",
+    # "prediction"). Reading the instruments-store bucket here returned an empty/wrong
+    # drilldown for v9 rows (prediction_manifest_canonicalisation_2026_06_01.md).
+    bucket = build_bucket_name("market-tick-data-service", "prediction")
     try:
         df = read_availability_index(bucket)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -1348,6 +1361,13 @@ def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
 
     if df.empty or "venue" not in df.columns:
         return VenueDetailResponse(category="PREDICTION", venue=venue)
+
+    # Restrict to the bundled data_type so raw per-cid rows are excluded.
+    bundled_dt = "prediction_canonical_question_group"
+    if "data_type" in df.columns:
+        bundled_mask = df["data_type"].astype(str) == bundled_dt
+        if bundled_mask.any():
+            df = df[bundled_mask].copy()
 
     venue_df = df[df["venue"].astype(str).str.upper() == venue.upper()].copy()
     if venue_df.empty:
@@ -1360,19 +1380,50 @@ def _prediction_venue_detail(venue: str) -> VenueDetailResponse:
             day = dates[-1]
             venue_df = venue_df[venue_df["date"].astype(str) == day].copy()
 
+    # Resolve the column that holds the canonical_question_group value.
+    # v9: cqg lives in ``instrument_id`` (ManifestWriter row_key).
+    # Legacy: cqg lives in ``underlying``.
+    cqg_col: str | None = None
+    if "instrument_id" in venue_df.columns and venue_df["instrument_id"].astype(str).str.strip().ne("").any():
+        cqg_col = "instrument_id"
+    elif "underlying" in venue_df.columns:
+        cqg_col = "underlying"
+
     instruments: list[dict[str, object]] = []
-    if "underlying" in venue_df.columns and "instrument_count" in venue_df.columns:
-        agg = venue_df.groupby("underlying")["instrument_count"].sum().sort_values(ascending=False)
-        for grp, count in agg.items():  # pyright: ignore[reportAny]
-            if str(grp).strip():
-                instruments.append(
-                    {
-                        "key": str(grp),
-                        "type": f"{int(count):,} instruments",  # pyright: ignore[reportAny]
-                        "canonical_question_group": str(grp),
-                        "instrument_count": int(count),  # pyright: ignore[reportAny]
-                    }
-                )
+    if cqg_col is not None:
+        # Count per canonical_question_group: prefer ``observed_clusters`` total
+        # (v9 bundled row carries the per-market count dict); fall back to
+        # ``instrument_count`` (legacy column) or row-count.
+        cqg_series = venue_df[cqg_col].astype(str)
+        has_instrument_count = "instrument_count" in venue_df.columns
+        for grp in sorted(cqg_series.unique()):  # pyright: ignore[reportAny]
+            grp_str = str(grp)  # pyright: ignore[reportAny]
+            if not grp_str.strip() or grp_str == "nan":
+                continue
+            grp_rows = venue_df[cqg_series == grp_str]
+            count = int(grp_rows["instrument_count"].fillna(0).sum()) if has_instrument_count else len(grp_rows)  # pyright: ignore[reportAny]
+            instruments.append(
+                {
+                    "key": grp_str,
+                    "type": f"{count:,} markets",
+                    "canonical_question_group": grp_str,
+                    "instrument_count": count,
+                    # v9: expose pipeline_mode + source from the first bundled row
+                    # so the UI filter chips can show live vs batch correctly.
+                    "pipeline_mode": str(
+                        grp_rows["pipeline_mode"].iloc[0]  # pyright: ignore[reportAny]
+                        if "pipeline_mode" in grp_rows.columns and not grp_rows.empty
+                        else ""
+                    ),
+                    "source": str(
+                        grp_rows["source"].iloc[0]  # pyright: ignore[reportAny]
+                        if "source" in grp_rows.columns and not grp_rows.empty
+                        else ""
+                    ),
+                }
+            )
+        # Sort descending by count to match the previous groupby behaviour.
+        instruments.sort(key=lambda r: -int(r["instrument_count"]))  # pyright: ignore[reportArgumentType]
 
     return VenueDetailResponse(
         category="PREDICTION",

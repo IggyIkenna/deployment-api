@@ -36,6 +36,8 @@ if "deployment_service.deployments_registry" not in sys.modules:
     _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
     _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
     _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
+    _dr_mod.vm_run_log_rolling_uri = MagicMock()  # type: ignore[attr-defined]
+    _dr_mod.vm_serial_rolling_uri = MagicMock()  # type: ignore[attr-defined]
     sys.modules["deployment_service.deployments_registry"] = _dr_mod
 
 import hashlib

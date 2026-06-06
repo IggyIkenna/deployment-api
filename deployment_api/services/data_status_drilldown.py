@@ -892,7 +892,8 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
       ``instrument_type`` / ``data_type`` partitioning — those live as
       columns inside the parquet. Sports additionally groups by league.
     * ``market-tick-data-service`` / ``market-data-processing-service`` —
-      ``raw_tick_data/by_date/day=.../category=.../venue=.../instrument_type=<lower>/data_type=<lower>/``.
+      ``raw_tick_data/by_date/day=.../asset_group=.../venue=.../instrument_type=<lower>/data_type=<lower>/``
+      (v9 canonical; ``storage_facade.list_objects`` transparently also probes the legacy ``category=`` prefix).
       MTDS writes the ``instrument_type`` / ``data_type`` axis values in
       lower case on disk (e.g. ``instrument_type=spot``), so we normalise
       the UI's upper-case inputs before building the prefix.
@@ -913,13 +914,13 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
 
     if svc in {"market-tick-data-service", "market-data-processing-service"}:
         return (
-            f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
+            f"raw_tick_data/by_date/day={day}/asset_group={asset_group.lower()}/"
             f"venue={venue}/instrument_type={instrument_type.lower()}/"
             f"data_type={data_type.lower()}/"
         )
 
     return (
-        f"raw_tick_data/by_date/day={day}/category={asset_group.lower()}/"
+        f"raw_tick_data/by_date/day={day}/asset_group={asset_group.lower()}/"
         f"venue={venue}/instrument_type={instrument_type}/data_type={data_type}/"
     )
 
@@ -1361,7 +1362,7 @@ def get_shard_info(
         return cast_dict(cast(dict[str, object], cached))
 
     bucket = build_bucket_name(service, category, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
+    venue_prefix = f"raw_tick_data/by_date/day={day}/asset_group={category.lower()}/venue={venue}/"
     instrument_types = sorted(_collect_instrument_types(bucket, venue_prefix))
 
     types_out: list[dict[str, str]] = []
@@ -1439,7 +1440,7 @@ def compute_bucket_counts(
         return cached_typed
 
     bucket = build_bucket_name(service, category, project_id)
-    venue_prefix = f"raw_tick_data/by_date/day={day}/category={category.lower()}/venue={venue}/"
+    venue_prefix = f"raw_tick_data/by_date/day={day}/asset_group={category.lower()}/venue={venue}/"
     instrument_types = _collect_instrument_types(bucket, venue_prefix)
     named = sum(1 for it in instrument_types if it.upper() != "OTHER")
 

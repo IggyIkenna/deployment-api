@@ -51,10 +51,12 @@ from unified_api_contracts.registry.data_status_axis_matrix import (
 )
 from unified_api_contracts.sports import (
     FEATURE_UPSTREAM_REQUIREMENTS,
+    LEAGUE_REGISTRY,
     UpstreamReq,
     get_entity_league_coverage,
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
+    get_reference_refresh_dates,
     get_sports_entity_start_date,
     get_transfer_windows_for_year,
     in_coverage,
@@ -138,12 +140,21 @@ COVERAGE_SEMANTICS: dict[str, Literal["dense", "event_driven"]] = {
 # - ``global_periodic``: one expected shard per cadence-date (daily
 #   reference-list snapshot). No league axis.
 # - ``global_season``: one expected shard per season (venues list, etc).
+# - ``global_trigger_date``: one expected shard per trigger date (season-start
+#   + transfer-window-open + transfer-window-close), across all leagues.
+#   Used for global reference entities like TEAMS that are written at trigger
+#   dates rather than daily (instrument-service writes master/ + snapshots/).
+# - ``per_league_trigger_date``: one expected shard per (league, trigger_date).
+#   Used for per-league reference entities like PLAYER_VALUES that are written
+#   at league-specific trigger dates (season-start + window open/close).
 SportsAxis = Literal[
     "per_league_per_fixture_date",
     "per_league_periodic",
     "per_feature_per_league_per_fixture_date",
     "global_periodic",
     "global_season",
+    "global_trigger_date",
+    "per_league_trigger_date",
 ]
 
 
@@ -217,9 +228,14 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
     "TEAMS": {
         "source": "api_football",
         "classifications": ("Prediction", "Features", "Reference"),
-        "axis": "global_periodic",
-        "cadence_days": 1,
-        "unit": "daily_snapshots",
+        # TEAMS is a global reference entity written at trigger dates (season-
+        # start + transfer-window-open + transfer-window-close), not daily.
+        # instruments-service writes master/ + snapshots/trigger=T/ paths.
+        # Depends on sports_master item A2.4 (write-path) being shipped;
+        # degrades gracefully if trigger dates can't be derived (returns an
+        # approximate count). See sports_master.md:1064.
+        "axis": "global_trigger_date",
+        "unit": "trigger_date_snapshots",
     },
     "VENUES": {
         "source": "api_football",
@@ -266,15 +282,16 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
     "PLAYER_VALUES": {
         "source": "transfermarkt",
         "classifications": ("Prediction", "Features"),
-        "axis": "per_league_periodic",
-        # PLAYER_VALUES is trigger-based, not weekly: the orchestrator only
-        # fetches at season-start + transfer-window-open + transfer-window-
-        # close + mid-season (~4 capture dates per league per year, see
-        # ``get_leagues_needing_refresh``). cadence_days=90 (quarterly)
-        # matches the actual capture cadence — pre-2026-05-05 the ``7``
-        # weekly setting capped UI coverage at ~10% even with full data.
-        "cadence_days": 90,
-        "unit": "cadence_refreshes",
+        # PLAYER_VALUES is trigger-based: the orchestrator only fetches at
+        # season-start + transfer-window-open + transfer-window-close
+        # (~3-4 capture dates per league per year via
+        # ``get_reference_refresh_dates``). The per_league_trigger_date axis
+        # computes expected_shards as the count of actual trigger dates per
+        # league inside the window (not a daily or quarterly approximation).
+        # Depends on sports_master item A2.4 (write-path); degrades gracefully.
+        # See sports_master.md:1064.
+        "axis": "per_league_trigger_date",
+        "unit": "trigger_date_snapshots",
     },
     # TRANSFERMARKT_LEAGUES + SFI_LEAGUES retired 2026-05-05 — both were
     # static provider-catalog mappings (provider_id -> canonical_name + country)
@@ -515,6 +532,81 @@ def _sports_expected_dates_for_league(
     return result
 
 
+def _sports_trigger_dates_for_window(
+    start_date: str,
+    end_date: str,
+) -> list[str]:
+    """Derive global trigger dates for reference-entity denominator.
+
+    Trigger dates are union of ``get_reference_refresh_dates(league_id, year)``
+    across all leagues in ``LEAGUE_REGISTRY`` for every year in [start_date,
+    end_date]. These correspond to season-start + transfer-window-open +
+    transfer-window-close events — the dates when instruments-service writes
+    reference data to ``master/`` and ``snapshots/trigger=T/`` paths.
+
+    Degrades gracefully when ``get_reference_refresh_dates`` raises or returns
+    an empty set — returns a sorted list of unique ISO date strings.
+
+    Used by the ``global_trigger_date`` axis branch in ``_sports_honest_coverage``
+    (TEAMS denominator) and the ``per_league_trigger_date`` branch (PLAYER_VALUES
+    denominator). See sports_master.md:1064 for the soft-gating note on the
+    instruments-service write-path dependency.
+    """
+    from datetime import date as _date
+
+    try:
+        start_d = _date.fromisoformat(start_date)
+        end_d = _date.fromisoformat(end_date)
+    except ValueError:
+        return []
+
+    triggers: set[str] = set()
+    for year in range(start_d.year, end_d.year + 1):
+        for league_id in LEAGUE_REGISTRY:
+            try:
+                for t in get_reference_refresh_dates(league_id, year):
+                    t_iso = t.isoformat()
+                    if start_date <= t_iso <= end_date:
+                        triggers.add(t_iso)
+            except Exception:
+                # Never hard-fail the denominator — missing a league or year
+                # silently drops those trigger dates; the manifest rows still
+                # surface in found_shards so coverage is at worst under-counted.
+                continue
+    return sorted(triggers)
+
+
+def _sports_trigger_dates_for_league(
+    league_id: str,
+    start_date: str,
+    end_date: str,
+) -> list[str]:
+    """Derive per-league trigger dates for the ``per_league_trigger_date`` axis.
+
+    Returns sorted ISO date strings in [start_date, end_date] that are trigger
+    dates for this league (season-start + transfer-window-open/close via
+    ``get_reference_refresh_dates``). Degrades gracefully on error.
+    """
+    from datetime import date as _date
+
+    try:
+        start_d = _date.fromisoformat(start_date)
+        end_d = _date.fromisoformat(end_date)
+    except ValueError:
+        return []
+
+    triggers: set[str] = set()
+    for year in range(start_d.year, end_d.year + 1):
+        try:
+            for t in get_reference_refresh_dates(league_id, year):
+                t_iso = t.isoformat()
+                if start_date <= t_iso <= end_date:
+                    triggers.add(t_iso)
+        except Exception:
+            continue
+    return sorted(triggers)
+
+
 def _sports_honest_coverage(
     filtered: pd.DataFrame,
     entity_name: str,
@@ -622,6 +714,72 @@ def _sports_honest_coverage(
             "found_shards": total_found_pf,
             "expected_shards": total_expected_pf,
             "per_league": per_league_pf,
+        }
+
+    if axis == "global_trigger_date":
+        # No league axis — expected = number of trigger dates in window derived
+        # from ``get_reference_refresh_dates`` across all LEAGUE_REGISTRY entries.
+        # Trigger dates = season-start + transfer-window-open + transfer-window-close.
+        # Soft-gated on sports_master item A2.4 (instruments-service write-path);
+        # degrades gracefully if the trigger set is empty (expected_shards = 0).
+        trigger_dates = _sports_trigger_dates_for_window(start_date, end_date)
+        expected_shards_t = len(trigger_dates)
+        found_dates_t: set[str] = {str(d) for d in ent_rows["date"].unique()} if not ent_rows.empty else set()  # pyright: ignore[reportAny]
+        found_shards_t = len(found_dates_t & set(trigger_dates)) if trigger_dates else len(found_dates_t)
+        return {
+            "axis": axis,
+            "unit": str(meta["unit"]),
+            "source": source_key,
+            "expected_leagues": [],
+            "found_shards": found_shards_t,
+            "expected_shards": expected_shards_t,
+            "per_league": None,
+            "trigger_dates": sorted(trigger_dates)[:100],
+        }
+
+    if axis == "per_league_trigger_date":
+        # Per-league axis — expected = count of trigger dates for each league
+        # in the expected set, derived from ``get_reference_refresh_dates``.
+        # Trigger dates = season-start + transfer-window-open + transfer-window-close.
+        # Soft-gated on sports_master item A2.4 (instruments-service write-path);
+        # degrades gracefully per league if trigger dates can't be computed.
+        per_league_td: dict[str, dict[str, object]] = {}
+        total_expected_td = 0
+        total_found_td = 0
+        ent_rows_by_league_td = (
+            ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
+        )
+        for league in expected_leagues:
+            lid = league.league_id
+            trigger_dates_l = _sports_trigger_dates_for_league(lid, start_date, end_date)
+            if not trigger_dates_l:
+                continue
+            expected_set_td = set(trigger_dates_l)
+            found_set_td: set[str] = set()
+            if ent_rows_by_league_td is not None and lid in ent_rows_by_league_td.groups:
+                found_set_td = {str(d) for d in ent_rows_by_league_td.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
+            covered_td = expected_set_td & found_set_td
+            missing_td = sorted(expected_set_td - found_set_td)
+            per_league_td[lid] = {
+                "found_shards": len(covered_td),
+                "expected_shards": len(expected_set_td),
+                "missing_shards": len(missing_td),
+                "completion_pct": round(len(covered_td) / max(1, len(expected_set_td)) * 100, 2),
+                "unit": str(meta["unit"]),
+                "missing_dates": missing_td[:500],
+                "found_dates_list": sorted(covered_td)[:500],
+                "trigger_dates": trigger_dates_l[:100],
+            }
+            total_expected_td += len(expected_set_td)
+            total_found_td += len(covered_td)
+        return {
+            "axis": axis,
+            "unit": str(meta["unit"]),
+            "source": source_key,
+            "expected_leagues": [lg.league_id for lg in expected_leagues],
+            "found_shards": total_found_td,
+            "expected_shards": total_expected_td,
+            "per_league": per_league_td,
         }
 
     if axis in ("global_periodic", "global_season"):
@@ -782,6 +940,13 @@ MTDS_CATEGORY_META: dict[str, dict[str, object]] = {
         "unit": "shard_days",
     },
     "TRADFI": {
+        # FLAG-4 (verified, slot-6 2026-06-03): the tradfi honest-coverage denominator
+        # is ALREADY complete — `all_databento_venues` despite its name contains the full
+        # 6-venue tradfi universe [CME, CBOE, NASDAQ, NYSE, ICE, FX] incl. CBOE→Barchart(VIX)
+        # + FX→Yahoo (per UAC venue_mapping venue→source map). No undercount. UAC adds a
+        # correctly-named `all_tradfi_venues` alias; SWITCH this string to it AFTER UAC version
+        # cascades into deployment-api's pinned dep (else runtime AttributeError vs the older
+        # installed UAC). Tracked: tradfi_manifest_canonicalisation_2026_06_01 FLAG-4 follow-up.
         "venue_accessor": "all_databento_venues",
         "axis": "per_venue_per_data_type_daily",
         "tradfi_tick_gate": True,
@@ -945,12 +1110,12 @@ def _is_mtds_honest_coverage_target(service: str, category: str) -> bool:
 # DEFI data_type canonicalisation maps. Sub-dim buckets write the hyphenated
 # form (``lending-indices``, ``dex-swaps``) but UAC
 # ``VENUE_DATA_TYPE_CAPABILITIES`` declares the underscore form
-# (``lending_indices``, ``dex_swaps``). The honest-coverage per-(venue, dt)
+# (``lending_indices``, ``dex_pool_swaps``). The honest-coverage per-(venue, dt)
 # filter needs the rows canonicalised before matching. Module-level
 # constants per ruff N806 — they're configuration, not per-call state.
 _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
-    "dex-swaps": "dex_swaps",
-    "dex-pools": "dex_pools",
+    "dex-swaps": "dex_pool_swaps",
+    "dex-pools": "dex_pool_state",
     "lending-indices": "lending_indices",
     "lst-rates": "lst_rates",
     "oracle-prices": "oracle_prices",
@@ -968,8 +1133,8 @@ _DEFI_DATA_TYPE_ALIASES: dict[str, str] = {
     "mev-events": "mev_events",
 }
 _DEFI_SOURCE_TO_DATA_TYPE: dict[str, str] = {
-    "dex-swaps": "dex_swaps",
-    "dex-pools": "dex_pools",
+    "dex-swaps": "dex_pool_swaps",
+    "dex-pools": "dex_pool_state",
     "lending-indices": "lending_indices",
     "lst-rates": "lst_rates",
     "oracle-prices": "oracle_prices",
@@ -998,7 +1163,7 @@ def _canonicalise_defi_data_types(filtered: pd.DataFrame) -> pd.DataFrame:
     Sub-dim buckets (``lending-indices``, ``dex-swaps``, ``dex-pools``,
     ``lst-rates``, ``oracle-prices``, ``perp-funding``) write hyphenated
     ``data_type`` values but UAC ``VENUE_DATA_TYPE_CAPABILITIES`` uses
-    canonical underscore form (``lending_indices``, ``dex_swaps``, …). Two
+    canonical underscore form (``lending_indices``, ``dex_pool_swaps``, …). Two
     transforms applied here, both safe to remove once the corresponding
     one-shot manifest migration runs (Plan B follow-up — currently no
     successor plan; data_type alias migration is the natural next step):
@@ -1231,12 +1396,86 @@ def _mtds_expected_dates_for_venue_dt(
     return set(_mtds_expected_dates_cached(venue, data_type, category, window_start, window_end))
 
 
+def _build_cefi_is_instruments_provider(
+    cloud: object,
+) -> Callable[[str, str], list[str] | None] | None:
+    """Build an instruments_provider backed by the live IS cefi catalog.
+
+    Reads the instruments-store-cefi-* availability index ONCE, builds a
+    ``{venue: list[instrument_id]}`` map, and returns a closure that answers
+    ``(venue, data_type) -> list[str]``.
+
+    Fail-open: any GCS / parse error returns ``None`` (NOT a provider) so the
+    CALLER injects no provider at all and the per-instrument denominator path
+    falls back to UAC's MVP seed tables with the default cap — current
+    behaviour when IS is unavailable.  Returning a ``lambda: None`` provider
+    here would be WRONG: UAC only falls back to its MVP seed when the provider
+    OBJECT is ``None``; a non-None provider that *returns* ``None`` yields an
+    EMPTY universe (denominator collapses to 0), not the seed.  This avoids
+    crashing the data-status request.
+
+    The catalog read is performed eagerly at call-time (not lazily per
+    (venue, dt) invocation) so the returned callable is cheap to call many
+    times within one request: one GCS read → O(N) Python loop → per-venue
+    dicts.
+    """
+    try:
+        bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
+        df: pd.DataFrame = read_availability_index(bucket)
+        if df.empty or "venue" not in df.columns:
+            logger.warning("cefi IS catalog empty or missing 'venue' column — falling back to MVP seed")
+            return None
+
+        # Support both column name conventions used by IS catalog parquets.
+        id_col = "instrument_id" if "instrument_id" in df.columns else "instrument_key"
+        if id_col not in df.columns:
+            logger.warning("cefi IS catalog has neither 'instrument_id' nor 'instrument_key' — falling back")
+            return None
+
+        # Build {venue: sorted list of instrument_ids} — date-agnostic for now
+        # (IS catalog available_from/to lifecycle filtering is reserved for a
+        # future walk once the full universe stabilises).
+        venue_map: dict[str, list[str]] = {}
+        for row_venue, row_id in zip(df["venue"].astype(str), df[id_col].astype(str), strict=True):
+            row_venue_s = row_venue.strip()
+            row_id_s = row_id.strip()
+            if not row_venue_s or not row_id_s or row_id_s.lower() in ("nan", "none", ""):
+                continue
+            venue_map.setdefault(row_venue_s, []).append(row_id_s)
+
+        # Deduplicate + sort each list so the provider output is deterministic.
+        deduped: dict[str, list[str]] = {v: sorted(set(ids)) for v, ids in venue_map.items()}
+        instrument_count = sum(len(v) for v in deduped.values())
+        logger.debug(
+            "cefi IS catalog loaded: %d venues, %d instruments total",
+            len(deduped),
+            instrument_count,
+        )
+    except Exception as exc:
+        logger.warning(
+            "cefi IS catalog read failed (%s) — falling back to MVP seed",
+            exc,
+        )
+        return None
+
+    def _provider(venue: str, _data_type: str) -> list[str] | None:
+        """Return IS instrument_ids for venue, or None to fall back to MVP seed."""
+        result = deduped.get(venue)
+        if result is None:
+            # Venue not in IS catalog — fall back so UAC uses its MVP seed.
+            return None
+        return result
+
+    return _provider
+
+
 def _per_instrument_coverage(
     venue_df_ok: pd.DataFrame,
     venue: str,
     dt: str,
     expected_dates: set[str],
-    cap: int,
+    cap: int | None,
+    instruments_provider: Callable[[str, str], list[str] | None] | None = None,
 ) -> dict[str, object]:
     """Phase 8D — compute the per-(instrument_id, date) denominator for a
     per-instrument shard ``data_type``.
@@ -1248,9 +1487,12 @@ def _per_instrument_coverage(
 
     Mirrors the sentinel fan-out landed in MTDS orchestrator commit
     ``2947dd2``: expected denominator = ``|instruments| x |dates|`` where
-    ``instruments`` comes from :func:`get_expected_instruments_for_venue`
-    (with ``instruments_provider=None`` so UAC falls back to its MVP seed
-    tables). The found set counts distinct ``(instrument_id, date)``
+    ``instruments`` comes from :func:`get_expected_instruments_for_venue`.
+    When ``instruments_provider`` is supplied (e.g. the live IS cefi
+    catalog), UAC uses it instead of its MVP seed tables so the denominator
+    reflects the full real universe.  When ``instruments_provider=None``
+    UAC falls back to its MVP seed tables (current behaviour for non-CEFI
+    asset_groups).  The found set counts distinct ``(instrument_id, date)``
     tuples in ``venue_df_ok`` whose ``instrument_id`` is non-empty.
 
     **Legacy-row fallback:** if the manifest has (venue, dt) rows that
@@ -1274,8 +1516,14 @@ def _per_instrument_coverage(
         :func:`_mtds_expected_dates_for_venue_dt`.
     cap:
         Hard ceiling on the returned instrument universe size. Passed to
-        UAC; the Phase 8 MVP default is
-        :data:`_DEFAULT_PER_INSTRUMENT_SENTINEL_CAP` (50).
+        UAC. For CEFI pass ``None`` so the full real universe is not
+        truncated by the MVP seed cap of 50.  For other asset_groups use
+        :data:`_DEFAULT_PER_INSTRUMENT_SENTINEL_CAP`.
+    instruments_provider:
+        Optional callable ``(venue, data_type) -> list[str] | None``
+        injected for CEFI so the denominator uses the live IS catalog
+        rather than the UAC MVP seed tables.  ``None`` preserves existing
+        behaviour for non-CEFI asset_groups.
 
     Returns
     -------
@@ -1291,7 +1539,7 @@ def _per_instrument_coverage(
     expected_instruments = get_expected_instruments_for_venue(
         venue,
         dt,
-        instruments_provider=None,
+        instruments_provider=instruments_provider,
         cap=cap,
     )
 
@@ -1418,6 +1666,7 @@ def _mtds_honest_coverage_for_venue(
     window_start: str,
     window_end: str,
     venue_mapping: VenueMapping,
+    instruments_provider: Callable[[str, str], list[str] | None] | None = None,
 ) -> dict[str, object]:
     """Honest-coverage rollup for one ``(category, venue)`` pair.
 
@@ -1496,12 +1745,18 @@ def _mtds_honest_coverage_for_venue(
         if is_per_instrument_shard_data_type(dt):
             # Phase 8D Tier-3 branch — per-(venue, dt, instrument_id,
             # date) denominator.
+            # For CEFI: pass the live IS catalog provider + cap=None so the
+            # full real universe is not truncated by the MVP seed cap of 50.
+            # For other asset_groups: instruments_provider=None falls back to
+            # UAC MVP seed tables (existing behaviour).
+            _instr_cap: int | None = None if instruments_provider is not None else _DEFAULT_PER_INSTRUMENT_SENTINEL_CAP
             dt_entry = _per_instrument_coverage(
                 venue_df_ok,
                 venue,
                 dt,
                 expected_dates,
-                _DEFAULT_PER_INSTRUMENT_SENTINEL_CAP,
+                _instr_cap,
+                instruments_provider=instruments_provider,
             )
             dt_entries[dt] = dt_entry
             expected_count = int(cast(int, dt_entry["expected_shards"]))
@@ -1509,10 +1764,22 @@ def _mtds_honest_coverage_for_venue(
         else:
             # Venue-level dt — preserve the Phase 6d per-(venue, dt, date)
             # denominator.
+            #
+            # FLAG-1 (TradFi v9 multi-source): the v9 manifest carries one row
+            # per (venue, data_type, date, source) — e.g. databento + massive
+            # both captured for the same date produce two rows. The UNION
+            # semantics (≥1 captured → cell captured) are enforced here by
+            # ``dt_rows["date"].unique()``, which deduplicates across sources
+            # before computing found_dates_set. A per-source breakdown is also
+            # surfaced in ``per_source`` for the UI drilldown (plan FLAG-1,
+            # operator 2026-06-02: UNION + manifest-derived per-source breakdown).
             if "data_type" in venue_df_ok.columns:
                 dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
+                # Union dedup: distinct dates regardless of how many sources
+                # have a captured/empty_confirmed row for that date.
                 found_dates_set = {str(d) for d in dt_rows["date"].unique()}  # pyright: ignore[reportAny]
             else:
+                dt_rows = venue_df_ok.iloc[0:0]
                 found_dates_set: set[str] = set()
             # Only count dates that fall inside the expected window — a
             # row from before ``effective_start`` should not inflate
@@ -1522,7 +1789,22 @@ def _mtds_honest_coverage_for_venue(
             expected_count = len(expected_dates)
             found_count = len(found_in_expected)  # pyright: ignore[reportUnknownVariableType]
 
-            dt_entries[dt] = {
+            # Per-source breakdown — free from the in-memory ``_index`` rows
+            # (the v9 manifest denormalises source to the row level so this is
+            # a single groupby, no per-parquet scan). Only emitted when the
+            # ``source`` column is present (v9 manifests); v8 manifests omit it.
+            per_source: dict[str, object] = {}
+            if "source" in dt_rows.columns and not dt_rows.empty:
+                for src, src_group in dt_rows.groupby("source"):  # pyright: ignore[reportUnknownVariableType]
+                    src_str = str(src)
+                    src_dates = {str(d) for d in src_group["date"].unique()}  # pyright: ignore[reportAny]
+                    src_found = src_dates & expected_dates  # pyright: ignore[reportUnknownVariableType]
+                    per_source[src_str] = {
+                        "found_shards": len(src_found),  # pyright: ignore[reportUnknownArgumentType]
+                        "dates_found_list": sorted(src_found)[:500],  # pyright: ignore[reportUnknownVariableType]
+                    }
+
+            dt_entry: dict[str, object] = {
                 "expected_shards": expected_count,
                 "found_shards": found_count,
                 "missing_shards": max(0, expected_count - found_count),
@@ -1531,6 +1813,9 @@ def _mtds_honest_coverage_for_venue(
                 "dates_found_list": sorted(found_in_expected)[:500],  # pyright: ignore[reportUnknownVariableType]
                 "unit": "shard_days",
             }
+            if per_source:
+                dt_entry["per_source"] = per_source
+            dt_entries[dt] = dt_entry
 
         total_expected += expected_count
         total_found += found_count
@@ -1711,6 +1996,7 @@ _EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_FIXTURE_CANCELLED",
     "EXPECTED_FIXTURE_POSTPONED",
     "EXPECTED_NO_FIXTURE",
+    "EXPECTED_NO_MAPPING",
     "EXPECTED_OUTSIDE_PROCESSING_SCOPE",
     "EXPECTED_LEGACY_MIGRATION_MISSING_EXPIRY",
     "EXPECTED_NO_FUNDING_RATE_TICKS",
@@ -2006,6 +2292,38 @@ _TRANSFER_COUNTRIES = (
     "JPN",
     "AUS",
 )
+
+# v9 prediction bundled data_type constant (matches ManifestWriter row_key).
+_PREDICTION_BUNDLED_DT: str = "prediction_canonical_question_group"
+
+
+def _promote_prediction_cqg_from_instrument_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Read-side: promote ``instrument_id`` → ``canonical_question_group`` for v9 prediction rows.
+
+    v9 canonical prediction shape (``prediction_manifest_canonicalisation_2026_06_01.md``):
+    ``data_type="prediction_canonical_question_group"`` bundled rows store the cqg value in
+    ``instrument_id`` (the ManifestWriter row_key field ``instrument_id=cqg_str``).  The
+    turbo aggregation and ``_apply_row_filters`` both key on the ``canonical_question_group``
+    column, which is absent in v9 rows.  This function fills that column read-side so both
+    paths work across the migration window.
+
+    Pre-v9 rows that already have a non-empty ``canonical_question_group`` column are
+    left untouched.  Read-side only — no manifest writes.
+    """
+    if "data_type" not in df.columns or "instrument_id" not in df.columns:
+        return df
+    pred_mask = df["data_type"].astype(str) == _PREDICTION_BUNDLED_DT
+    if not pred_mask.any():
+        return df
+    out = df.copy()
+    if "canonical_question_group" not in out.columns:
+        out["canonical_question_group"] = ""
+    cqg = out["canonical_question_group"].astype(str)
+    inst = out["instrument_id"].astype(str)
+    needs_fill = pred_mask & ((cqg == "") | (cqg == "nan"))
+    out.loc[needs_fill, "canonical_question_group"] = inst[needs_fill]
+    return out
+
 
 # Cache for availability index reads — avoids repeated GCS downloads
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
@@ -3001,6 +3319,14 @@ class DataStatusService:
         # cell-grid.
         if service == "market-tick-data-service" and cat.lower() == "defi" and not merged.empty:
             merged = self._filter_to_canonical_defi_venues(merged)
+
+        # v9 prediction: promote ``instrument_id`` → ``canonical_question_group`` so
+        # the ``_apply_row_filters(canonical_question_group=...)`` and the turbo
+        # breakdowns axis both work correctly against v9-canonical manifest rows.
+        # Pre-v9 rows that already carry a non-empty ``canonical_question_group``
+        # column are left untouched (the fill is conditioned on emptiness).
+        if cat.lower() == "prediction" and not merged.empty:
+            merged = _promote_prediction_cqg_from_instrument_id(merged)
         return merged
 
     @classmethod
@@ -3314,6 +3640,21 @@ class DataStatusService:
                 return filtered
         return filtered
 
+    @staticmethod
+    def _apply_pipeline_mode_filter(filtered: pd.DataFrame, pipeline_modes: list[str]) -> pd.DataFrame:
+        """Filter manifest slice to rows whose pipeline_mode is in pipeline_modes.
+
+        OR semantics: any row matching at least one of the requested modes is kept.
+        Used by the deployment-ui pipeline_mode filter chip (Phase 4 consumer migration,
+        pipeline_mode_implementation_2026_05_28.md).
+        """
+        if filtered.empty or not pipeline_modes:
+            return filtered
+        if "pipeline_mode" not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        mode_set = set(pipeline_modes)
+        return filtered.loc[filtered["pipeline_mode"].fillna("").astype(str).isin(mode_set)].copy()
+
     def _build_breakdowns(
         self,
         service: str,
@@ -3446,6 +3787,28 @@ class DataStatusService:
             index["venue"] = index["venue"].replace(self._VENUE_ALIASES)
         index = self._filter_legacy_defi_rows(index, cat)
         shards = len(index)
+        # B1: honest 4-state breakdown so completion% is captured /
+        # (captured+empty+failed+expected_unattempted), NOT the self-referential
+        # captured/len(index)≈100%. Aligns the coverage-summary with
+        # manifest-status + the drilldown's _aggregate_counts. v4 rows without a
+        # ``capture_status`` column are the legacy "every row captured" path.
+        if "capture_status" in index.columns:
+            cs = index["capture_status"].astype(str)
+            capture_status_counts: dict[str, int] = {
+                "captured": int((cs == "captured").sum()),
+                "empty_confirmed": int((cs == "empty_confirmed").sum()),
+                "attempted_failed": int((cs == "attempted_failed").sum()),
+                "expected_unattempted": int((cs == "expected_unattempted").sum()),
+            }
+        else:
+            capture_status_counts = {
+                "captured": shards,
+                "empty_confirmed": 0,
+                "attempted_failed": 0,
+                "expected_unattempted": 0,
+            }
+        cov_total = sum(capture_status_counts.values())
+        completion_pct = round(capture_status_counts["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
         date_index = self._filter_to_iso_dates(index)
         unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []  # pyright: ignore[reportAny]
         group_axis = self._select_coverage_group_axis(service, cat, index)
@@ -3477,6 +3840,8 @@ class DataStatusService:
             "latest_day_instruments": latest_day_instruments,
             "latest_day_total": latest_day_total,
             "breakdowns": breakdowns,
+            "capture_status_counts": capture_status_counts,
+            "completion_pct": completion_pct,
             "_unique_dates_set": [str(d) for d in unique_dates],  # pyright: ignore[reportAny]
         }
 
@@ -3493,6 +3858,14 @@ class DataStatusService:
         total_instrument_rows = 0
         all_dates: set[str] = set()
         total_latest_day_instruments = 0
+        # B1: aggregate the per-cat 4-state so the service-level totals carry an
+        # honest completion%, not the self-referential shards count.
+        total_capture_status: dict[str, int] = {
+            "captured": 0,
+            "empty_confirmed": 0,
+            "attempted_failed": 0,
+            "expected_unattempted": 0,
+        }
 
         for cat in cat_list:
             entry = self._build_coverage_for_cat(service, cat, cloud=cloud)
@@ -3505,11 +3878,18 @@ class DataStatusService:
             ld_total_int = entry["latest_day_total"]
             assert isinstance(shards_int, int)
             assert isinstance(ld_total_int, int)
+            cat_counts = entry.get("capture_status_counts")
+            if isinstance(cat_counts, dict):
+                cat_counts_typed = cast(dict[str, int], cat_counts)
+                for _k, _v in total_capture_status.items():
+                    total_capture_status[_k] = _v + int(cat_counts_typed.get(_k, 0))
             result_categories[cat] = entry
             total_shards += shards_int
             total_instrument_rows += shards_int
             total_latest_day_instruments += ld_total_int
 
+        cov_total = sum(total_capture_status.values())
+        completion_pct = round(total_capture_status["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
         return {
             "service": service,
             "asset_groups": result_categories,
@@ -3518,6 +3898,8 @@ class DataStatusService:
                 "instrument_rows": total_instrument_rows,
                 "dates_across_categories": len(all_dates),
                 "latest_day_instruments": total_latest_day_instruments,
+                "capture_status_counts": total_capture_status,
+                "completion_pct": completion_pct,
             },
             "totals_source": "manifest",
         }
@@ -3536,6 +3918,7 @@ class DataStatusService:
         canonical_question_group: str | None = None,
         job_id: str | None = None,
         chain: str | None = None,
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """Return data status from manifest indices in TurboDataStatusResponse shape.
 
@@ -3558,7 +3941,7 @@ class DataStatusService:
         """
         any_row_filter = any(
             f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
-        )
+        ) or bool(pipeline_modes)
         if not any_row_filter:
             rollup = await asyncio.to_thread(_read_rollup_if_fresh, service)
             if rollup is not None:
@@ -3579,6 +3962,7 @@ class DataStatusService:
             job_id,
             chain,
             cloud,
+            pipeline_modes,
         )
 
     def _get_manifest_status_sync(
@@ -3594,6 +3978,7 @@ class DataStatusService:
         job_id: str | None = None,
         chain: str | None = None,
         cloud: str = "gcp",
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = asset_groups or [str(c) for c in MarketCategory]
@@ -3641,7 +4026,7 @@ class DataStatusService:
             chain=chain,
         )
 
-        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED or row_filters:
+        if len(cat_list) <= 1 or _PROCESS_POOL_DISABLED or row_filters or pipeline_modes:
             for cat in cat_list:
                 cat_result = self._build_manifest_category(
                     service,
@@ -3653,6 +4038,7 @@ class DataStatusService:
                     venue_mapping,
                     row_filters=row_filters,
                     cloud=cloud,
+                    pipeline_modes=pipeline_modes,
                 )
                 result_categories[cat] = cat_result
                 overall_found += int(cat_result.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
@@ -4068,6 +4454,7 @@ class DataStatusService:
         start_date: str,
         end_date: str,
         venue_mapping: VenueMapping,
+        cloud: str = "gcp",
     ) -> tuple[dict[str, object], int, int]:
         """Override per-venue denominator with UAC-driven honest-coverage.
 
@@ -4101,6 +4488,16 @@ class DataStatusService:
         if category.upper() == "DEFI" and not filtered.empty:
             filtered = _canonicalise_defi_data_types(filtered)
 
+        # For CEFI, build the live IS-catalog instruments_provider ONCE so all
+        # per-instrument denominator lookups within this category call use the
+        # real universe (not the UAC MVP seed of 21 spot / 10 perp instruments).
+        # Fail-open: if IS is unavailable _build_cefi_is_instruments_provider
+        # returns a provider that always yields None → UAC MVP seed is used.
+        # For all other asset_groups the provider stays None (existing behaviour).
+        _cefi_instruments_provider: Callable[[str, str], list[str] | None] | None = None
+        if category.upper() == "CEFI":
+            _cefi_instruments_provider = _build_cefi_is_instruments_provider(cloud)
+
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
         # _build_venue_breakdown).
@@ -4114,7 +4511,15 @@ class DataStatusService:
         union_venues = set(new_venues.keys()) | set(expected_venues)
 
         for venue in sorted(union_venues):
-            honest = _mtds_honest_coverage_for_venue(filtered, venue, category, start_date, end_date, venue_mapping)
+            honest = _mtds_honest_coverage_for_venue(
+                filtered,
+                venue,
+                category,
+                start_date,
+                end_date,
+                venue_mapping,
+                instruments_provider=_cefi_instruments_provider,
+            )
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))
             if expected_shards == 0:
@@ -5232,7 +5637,26 @@ class DataStatusService:
             dates_found = len(chain_dates & chain_expected_dates) if chain_expected_dates else len(chain_dates)
 
             captured_chain_df = chain_df[chain_df["capture_status"] == "captured"] if has_capture_status else chain_df  # pyright: ignore[reportUnknownVariableType]
-            shards_found = len(captured_chain_df)  # pyright: ignore[reportUnknownArgumentType]
+            # Count distinct shard atoms, NOT raw manifest rows. The DeFi
+            # shard atom is ``(chain, venue, data_type, instrument_id, day)``
+            # — ``pipeline_mode`` is NOT part of it. Post the 2026-05-19
+            # pipeline_mode migration the same shard atom can carry multiple
+            # rows (one per ``pipeline_mode=batch_*`` / ``live_websocket``), so
+            # a raw ``len()`` double-counts a shard that has both a batch and a
+            # live row and inflates ``shards_found`` past the dedup'd
+            # ``shards_expected`` denominator. De-duplicate on the shard-atom
+            # axes that are present (matches ``_shards_expected_for_chain``'s
+            # leaf axis ``(data_type, instrument_id)`` plus ``venue`` + ``date``).
+            _shard_atom_cols = [
+                c
+                for c in ("venue", "data_type", "instrument_id", "date")
+                if c in captured_chain_df.columns  # pyright: ignore[reportUnknownMemberType]
+            ]
+            shards_found = (
+                len(captured_chain_df.drop_duplicates(subset=_shard_atom_cols))  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
+                if _shard_atom_cols
+                else len(captured_chain_df)  # pyright: ignore[reportUnknownArgumentType]
+            )
 
             shards_expected = self._shards_expected_for_chain(chain_df, chain_venues, venue_expected_dates)  # pyright: ignore[reportUnknownArgumentType]
             if shards_expected == 0:
@@ -5699,6 +6123,7 @@ class DataStatusService:
         venue_mapping: VenueMapping,
         row_filters: dict[str, str] | None = None,
         cloud: str = "gcp",
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """Build a single category entry for manifest status.
 
@@ -5709,6 +6134,10 @@ class DataStatusService:
         so the UI can drill into a single ``league_id`` /
         ``canonical_question_group`` / ``job_id`` / ``chain`` /
         ``fixture_id`` slice. Empty/None == no filter.
+
+        ``pipeline_modes`` narrows the manifest slice to rows whose
+        ``pipeline_mode`` column matches any of the supplied values (OR semantics).
+        Used by the deployment-ui pipeline_mode filter chip.
         """
         empty: dict[str, object] = {
             "category": cat,
@@ -5767,6 +6196,9 @@ class DataStatusService:
         # query (see ``_apply_row_filters`` for semantics).
         if row_filters:
             filtered = self._apply_row_filters(filtered, row_filters)
+        # Apply pipeline_mode filter (OR across requested modes).
+        if pipeline_modes:
+            filtered = self._apply_pipeline_mode_filter(filtered, pipeline_modes)
 
         # Fold bare venue aliases (e.g. "OKX" → "OKX-SPOT", "COINBASE" → "COINBASE-SPOT")
         if "venue" in filtered.columns and not filtered.empty:
@@ -5843,6 +6275,7 @@ class DataStatusService:
                 effective_start,
                 end_date,
                 venue_mapping,
+                cloud=cloud,
             )
 
         # When no venues or all are empty (sports instruments pattern), group

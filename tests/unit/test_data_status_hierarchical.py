@@ -52,6 +52,7 @@ _DRILLDOWN_NODE_GOLDEN_KEYS: frozenset[str] = frozenset(
         "captured",
         "empty_confirmed",
         "attempted_failed",
+        "expected_unattempted",
         "total",
         "completion_pct",
         "row_key",
@@ -83,13 +84,33 @@ class TestDrilldownNodeShape:
         assert isinstance(children, list)
         assert len(children) == 1
 
-    def test_to_dict_golden_schema_has_exactly_ten_keys(self) -> None:
+    def test_to_dict_golden_schema_has_exactly_eleven_keys(self) -> None:
+        # B2: the schema carries the 4th capture-status bin
+        # (expected_unattempted) so genuinely-missing cells are visible.
         node = DrilldownNode(axis="venue", value="BINANCE", captured=5)
         d = node.to_dict()
+        assert len(_DRILLDOWN_NODE_GOLDEN_KEYS) == 11
+        assert "expected_unattempted" in _DRILLDOWN_NODE_GOLDEN_KEYS
         assert set(d.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS, (
             f"to_dict() key set drifted. Missing: {_DRILLDOWN_NODE_GOLDEN_KEYS - set(d.keys())}. "
             f"Extra: {set(d.keys()) - _DRILLDOWN_NODE_GOLDEN_KEYS}."
         )
+
+    def test_expected_unattempted_counts_in_total_and_dilutes_completion(self) -> None:
+        # B2 + B3: the 4th bin counts toward total + the completion denominator.
+        node = DrilldownNode(
+            axis="chain",
+            value="ARBITRUM",
+            captured=80,
+            empty_confirmed=10,
+            attempted_failed=5,
+            expected_unattempted=5,
+        )
+        assert node.total == 100  # all four bins
+        assert node.completion_pct == 80.0  # 80 / (80+10+5+5)
+        d = node.to_dict()
+        assert isinstance(d["expected_unattempted"], int)
+        assert d["expected_unattempted"] == 5
 
     def test_to_dict_axis_is_str(self) -> None:
         d = DrilldownNode(axis="chain", value="ARBITRUM").to_dict()
@@ -212,9 +233,15 @@ class TestHierarchicalDrilldown:
         assert totals["completion_pct"] == 100.0
 
     def test_capture_status_counts_split_by_status(self) -> None:
-        # Mix captured / empty_confirmed / attempted_failed for one slice.
+        # B2: mix all FOUR capture-status bins for one slice, incl. the 4th
+        # (expected_unattempted) — genuinely-missing cells must surface in the tree.
         rows: list[dict[str, object]] = []
-        for status, n in (("captured", 10), ("empty_confirmed", 3), ("attempted_failed", 2)):
+        for status, n in (
+            ("captured", 10),
+            ("empty_confirmed", 3),
+            ("attempted_failed", 2),
+            ("expected_unattempted", 5),
+        ):
             for i in range(n):
                 rows.append(
                     {
@@ -242,8 +269,9 @@ class TestHierarchicalDrilldown:
         assert totals["captured"] == 10
         assert totals["empty_confirmed"] == 3
         assert totals["attempted_failed"] == 2
-        # 10/15 = 66.67%.
-        assert totals["completion_pct"] == 66.67
+        assert totals["expected_unattempted"] == 5
+        # B3: denominator now includes the 4th bin → 10 / (10+3+2+5) = 50.0%.
+        assert totals["completion_pct"] == 50.0
 
     def test_window_clipping_excludes_out_of_range_dates(self) -> None:
         df = _mtds_defi_manifest()

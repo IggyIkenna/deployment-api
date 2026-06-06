@@ -28,7 +28,7 @@ dependencies = [
     # GitHub API (service status checkers)
     "PyGithub>=2.0.0,<3.0.0",
     # Async HTTP (service status checks)
-    "aiohttp>=3.13.4,<4.0.0",
+    "aiohttp>=3.13.4,<3.14.0",
     # Cache
     "jsonpickle>=3.0.0,<4.0.0",
     "cachetools>=5.0.0,<6.0.0",
@@ -51,7 +51,7 @@ dependencies = [
     "basedpyright==1.38.2",
     "pip-audit>=2.7.0,<3.0.0",
     "bandit>=1.7.0,<2.0.0",
-    "pyjwt>=2.12.0,<3.0.0",
+    "pyjwt>=2.13.0,<3.0.0",
     "cryptography<47.0.0,>=46.0.7",
     "pygments>=2.20.0,<3.0.0",
     "requests>=2.33.0,<3.0.0",

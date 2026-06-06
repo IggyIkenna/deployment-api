@@ -182,6 +182,7 @@ class DataAnalyticsService:
         ],
         asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
+        pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
         """
         Get data status with turbo mode caching.
@@ -192,6 +193,7 @@ class DataAnalyticsService:
             end_date: End date
             asset_groups: Asset groups filter
             venues: Venues filter
+            pipeline_modes: Pipeline mode filter (OR semantics, bypasses rollup cache)
             from_data_status_service: Callable to get fresh data
 
         Returns:
@@ -204,6 +206,7 @@ class DataAnalyticsService:
             end_date=end_date,
             asset_groups=asset_groups,
             venues=venues,
+            pipeline_modes=",".join(sorted(pipeline_modes)) if pipeline_modes else None,
         )
 
         # Check cache first

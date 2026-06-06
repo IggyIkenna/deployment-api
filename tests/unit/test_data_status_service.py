@@ -2133,6 +2133,236 @@ class TestMTDSHonestCoverage:
         assert result["shards_expected"] > 20  # 11 venues x ≥2 dts x 1 day
 
 
+class TestTradFiMultiSourceUnion:
+    """FLAG-1: TradFi v9 multi-source UNION dedup + per-source breakdown.
+
+    The v9 manifest carries one row per (venue, data_type, date, source).
+    Databento + Massive both captured for the same date → two rows. The
+    honest-coverage aggregator MUST:
+      1. Count that date ONCE (union: ≥1 captured → cell captured).
+      2. Surface a ``per_source`` breakdown so the drilldown can show
+         per-vendor coverage without double-counting the headline.
+
+    Plan: downstream_services_manifest_canonicalisation_2026_06_01 FLAG-1.
+    Operator 2026-06-02: UNION + manifest-derived per-source breakdown.
+    """
+
+    def _v9_df(self, rows):
+        """Build a v9-shaped manifest DataFrame including the ``source`` column."""
+        cols = [
+            "date",
+            "venue",
+            "data_type",
+            "service_name",
+            "capture_status",
+            "chain",
+            "instrument_type",
+            "league_id",
+            "row_count",
+            "source",
+        ]
+        return pd.DataFrame(rows, columns=cols)
+
+    # Use CBOE + ohlcv_15m: a UAC-declared TRADFI (venue, dt) pair that is
+    # NOT per_instrument (is_per_instrument_shard_data_type returns False),
+    # so it exercises the venue-level dt branch where per_source is emitted.
+    _VENUE = "CBOE"
+    _DT = "ohlcv_15m"
+
+    def test_two_source_rows_same_date_counts_once(self):
+        """FLAG-1 regression: databento + massive both captured on 2026-01-02
+        must produce found_shards=1 (union), NOT 2 (per-source double-count).
+
+        Uses CBOE/ohlcv_15m — a UAC-declared venue-level (not per-instrument)
+        TRADFI (venue, data_type) pair."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._v9_df(
+            [
+                # databento row
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                    "databento",
+                ],
+                # massive row — same venue/dt/date, different source
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    95,
+                    "massive",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None, f"{self._DT} dt entry missing"
+        # UNION: one date, two sources → found_shards must be 1
+        assert dt_entry["found_shards"] == 1, f"Expected 1 found_shard (union), got {dt_entry['found_shards']}"
+        assert dt_entry["expected_shards"] == 1
+
+    def test_per_source_breakdown_present_in_dt_entry(self):
+        """FLAG-1: per-source breakdown is emitted when the source column is present.
+
+        The breakdown should have one entry per distinct source in the
+        manifest rows (e.g. databento and massive), each reporting its
+        own found_shards count. The headline (union) count stays at 1."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._v9_df(
+            [
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                    "databento",
+                ],
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    95,
+                    "massive",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None
+        # per_source breakdown must be present
+        per_source = dt_entry.get("per_source")
+        assert per_source is not None, "per_source key missing from dt entry"
+        assert isinstance(per_source, dict)
+        # Both sources should appear
+        assert "databento" in per_source, f"databento missing from per_source: {per_source}"
+        assert "massive" in per_source, f"massive missing from per_source: {per_source}"
+        # Each source found the same date
+        assert per_source["databento"]["found_shards"] == 1
+        assert per_source["massive"]["found_shards"] == 1
+        # Headline union found is still 1 (no double-count)
+        assert dt_entry["found_shards"] == 1
+
+    def test_one_source_captured_other_failed_union_is_captured(self):
+        """FLAG-1: if databento=captured and massive=attempted_failed on same date,
+        the union MUST see the date as found (databento passes the ok_mask).
+
+        Uses 2026-01-02 — a valid CBOE trading day (verified via
+        _mtds_expected_dates_for_venue_dt returns {'2026-01-02'})."""
+        from unified_api_contracts import VenueMapping
+
+        df = self._v9_df(
+            [
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                    "databento",
+                ],
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "attempted_failed",
+                    "",
+                    "",
+                    "",
+                    0,
+                    "massive",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None
+        # Union: databento captured → date found
+        assert dt_entry["found_shards"] == 1, f"Expected 1 (union of captured), got {dt_entry['found_shards']}"
+        # per_source only shows sources that pass the ok_mask
+        per_source = dt_entry.get("per_source")
+        if per_source:
+            # databento passed; massive did not (attempted_failed filtered out)
+            assert "databento" in per_source
+            # massive row was filtered by ok_mask so it may not appear
+            assert per_source["databento"]["found_shards"] == 1
+
+    def test_no_source_column_no_per_source_key(self):
+        """FLAG-1: v8 manifests lack the source column; per_source must not crash
+        and the key must simply be absent from the dt entry."""
+        from unified_api_contracts import VenueMapping
+
+        # v8-shaped df: same cols as _mtds_df (no source column)
+        cols = [
+            "date",
+            "venue",
+            "data_type",
+            "service_name",
+            "capture_status",
+            "chain",
+            "instrument_type",
+            "league_id",
+            "row_count",
+        ]
+        df = pd.DataFrame(
+            [
+                [
+                    "2026-01-02",
+                    self._VENUE,
+                    self._DT,
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "",
+                    "",
+                    100,
+                ]
+            ],
+            columns=cols,
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df, self._VENUE, "TRADFI", "2026-01-02", "2026-01-02", VenueMapping()
+        )
+        dt_entry = honest["data_types"].get(self._DT)
+        assert dt_entry is not None
+        # No source column → per_source key must be absent (not an empty dict error)
+        assert "per_source" not in dt_entry
+
+
 class TestMTDSPerInstrumentHonestCoverage:
     """Phase 8D -- per-(venue, data_type, instrument_id, date) denominator.
 
@@ -2562,3 +2792,266 @@ class TestBuildChainBreakdownShardMath:
         # Date math: 2 found / 5 expected.
         assert entry["dates_found"] == 2
         assert entry["dates_expected"] == 5
+
+
+class TestSportsRetiredDataTypeFiltering:
+    """Phase 3 smoke-test: retired sports data_types don't render in the data-status panel.
+
+    Regression guard for plans/active/sports_retired_data_types_code_cleanup_2026_05_13.md.
+    TRANSFERMARKT_LEAGUES / SFI_LEAGUES / SFI_STANDINGS were retired 2026-05-05 /
+    2026-04-24 and must not appear in the panel denominator. The 88,779 manifest rows
+    for these types were flipped to empty_confirmed/EXPECTED_DEPRECATED_DATA_TYPE at
+    instruments-service@a0a720e; the panel must clip them entirely from the denominator.
+    """
+
+    _RETIRED = frozenset({"TRANSFERMARKT_LEAGUES", "SFI_LEAGUES", "SFI_STANDINGS"})
+
+    def test_retired_types_absent_from_sports_data_type_meta(self):
+        """SPORTS_DATA_TYPE_META must not contain the three retired data types."""
+        ssot_keys = set(_dss_mod.SPORTS_DATA_TYPE_META.keys())
+        for dt in self._RETIRED:
+            assert dt not in ssot_keys, f"{dt} still present in SPORTS_DATA_TYPE_META — should be absent"
+
+    def test_panel_skips_retired_types_present_in_manifest(self):
+        """_build_data_type_grouping must not render retired types even when manifest rows exist.
+
+        Covers the filtering path: for SPORTS, all_dt_vals = sports_ssot_vals
+        (set(SPORTS_DATA_TYPE_META.keys())), so retired types that appear in the
+        manifest as empty_confirmed/EXPECTED_DEPRECATED_DATA_TYPE rows are never
+        iterated and never added to dt_venues.
+        """
+        svc = _make_svc()
+        rows = [
+            {
+                "date": "2024-01-01",
+                "venue": "",
+                "data_type": dt,
+                "league_id": "1",
+                "capture_status": "empty_confirmed",
+                "error_reason": "EXPECTED_DEPRECATED_DATA_TYPE",
+                "instrument_count": 0,
+            }
+            for dt in self._RETIRED
+        ]
+        df = pd.DataFrame(rows)
+        _stub_entry: dict[str, object] = {
+            "dates_found": 0,
+            "dates_expected": 0,
+            "dates_expected_venue": 0,
+            "dates_missing": 0,
+            "completion_pct": 0.0,
+        }
+        with patch.object(svc, "_build_sports_entity_entry", return_value=_stub_entry):
+            dt_venues, _found, _expected = svc._build_data_type_grouping(df, "2024-01-01", "2024-01-31", cat="SPORTS")
+        for dt in self._RETIRED:
+            assert dt not in dt_venues, (
+                f"Retired data_type {dt!r} was rendered in the data-status panel — "
+                "should be clipped from denominator (SPORTS_DATA_TYPE_META is the SSOT)"
+            )
+
+
+# ── Item 7: Trigger-date denominator for mapping entities ─────────────────────
+
+
+class TestTriggerDateDenominator:
+    """ITEM 7 (sports_master.md:1064): TEAMS and PLAYER_VALUES use trigger-date
+    denominator instead of daily/periodic calendar.
+
+    TEAMS uses ``global_trigger_date`` axis — expected = union of
+    get_reference_refresh_dates across all leagues.
+    PLAYER_VALUES uses ``per_league_trigger_date`` axis — expected = per-league
+    trigger date count.
+
+    Soft-gated on sports_master item A2.4 (instruments-service write-path);
+    these tests verify the denominator mechanics in isolation.
+    """
+
+    def test_teams_axis_is_global_trigger_date(self) -> None:
+        """TEAMS meta entry declares global_trigger_date axis."""
+        from deployment_api.services.data_status_service import SPORTS_DATA_TYPE_META
+
+        meta = SPORTS_DATA_TYPE_META["TEAMS"]
+        assert meta["axis"] == "global_trigger_date", (
+            f"TEAMS axis should be 'global_trigger_date', got {meta['axis']!r}"
+        )
+        assert meta["unit"] == "trigger_date_snapshots"
+        # No cadence_days for trigger-date axes
+        assert "cadence_days" not in meta
+
+    def test_player_values_axis_is_per_league_trigger_date(self) -> None:
+        """PLAYER_VALUES meta entry declares per_league_trigger_date axis."""
+        from deployment_api.services.data_status_service import SPORTS_DATA_TYPE_META
+
+        meta = SPORTS_DATA_TYPE_META["PLAYER_VALUES"]
+        assert meta["axis"] == "per_league_trigger_date", (
+            f"PLAYER_VALUES axis should be 'per_league_trigger_date', got {meta['axis']!r}"
+        )
+        assert meta["unit"] == "trigger_date_snapshots"
+
+    def test_sports_trigger_dates_for_window_returns_sorted_list(self) -> None:
+        """_sports_trigger_dates_for_window returns sorted ISO date strings."""
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_window
+
+        result = _sports_trigger_dates_for_window("2024-01-01", "2024-12-31")
+        assert isinstance(result, list)
+        # Should contain at least some trigger dates for a full year
+        assert len(result) > 0
+        # All dates should be within the window
+        for d in result:
+            assert "2024-01-01" <= d <= "2024-12-31"
+        # Should be sorted
+        assert result == sorted(result)
+        # No duplicates
+        assert len(result) == len(set(result))
+
+    def test_sports_trigger_dates_empty_window(self) -> None:
+        """Invalid date range returns empty list, no exception."""
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_window
+
+        result = _sports_trigger_dates_for_window("2024-12-31", "2024-01-01")
+        assert result == []
+
+    def test_sports_trigger_dates_for_league_returns_sorted_list(self) -> None:
+        """_sports_trigger_dates_for_league returns sorted ISO date strings for EPL."""
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_league
+
+        result = _sports_trigger_dates_for_league("EPL", "2024-01-01", "2024-12-31")
+        assert isinstance(result, list)
+        # EPL has season-start + summer/winter window dates
+        assert len(result) > 0
+        assert result == sorted(result)
+        for d in result:
+            assert "2024-01-01" <= d <= "2024-12-31"
+
+    def test_teams_honest_coverage_uses_trigger_dates(self) -> None:
+        """_sports_honest_coverage for TEAMS returns global_trigger_date axis result."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            _sports_honest_coverage,
+            _sports_trigger_dates_for_window,
+        )
+
+        # Real trigger dates for 2024 (derived from UAC)
+        trigger_dates = _sports_trigger_dates_for_window("2024-06-01", "2024-06-30")
+
+        result = _sports_honest_coverage(
+            filtered=pd.DataFrame(columns=["data_type", "league_id", "date", "capture_status"]),
+            entity_name="TEAMS",
+            start_date="2024-06-01",
+            end_date="2024-06-30",
+        )
+        assert result is not None
+        assert result["axis"] == "global_trigger_date"
+        assert result["unit"] == "trigger_date_snapshots"
+        # expected_shards should match the trigger date count for the window
+        assert result["expected_shards"] == len(trigger_dates)
+        # Empty manifest → 0 found
+        assert result["found_shards"] == 0
+        # Trigger dates list is included in response for UI drill-down
+        assert "trigger_dates" in result
+
+    def test_teams_honest_coverage_counts_found_on_trigger_dates(self) -> None:
+        """found_shards for TEAMS counts manifest rows that land on trigger dates."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import (
+            _sports_honest_coverage,
+            _sports_trigger_dates_for_window,
+        )
+
+        trigger_dates = _sports_trigger_dates_for_window("2024-06-01", "2024-06-30")
+        if not trigger_dates:
+            pytest.skip("No trigger dates for 2024-06 window — UAC data not available")
+
+        # One manifest row on a real trigger date, one on a non-trigger date
+        trigger_date_in = trigger_dates[0]
+        nontrigger_date = "2024-06-15"  # Mid-month, unlikely to be a trigger date
+
+        df = pd.DataFrame(
+            {
+                "data_type": ["TEAMS", "TEAMS"],
+                "league_id": ["EPL", "EPL"],
+                "date": [trigger_date_in, nontrigger_date],
+                "capture_status": ["captured", "captured"],
+            }
+        )
+
+        result = _sports_honest_coverage(
+            filtered=df,
+            entity_name="TEAMS",
+            start_date="2024-06-01",
+            end_date="2024-06-30",
+        )
+        assert result is not None
+        # found_shards = intersection of manifest dates with trigger dates
+        assert result["found_shards"] >= 1
+
+    def test_player_values_honest_coverage_uses_per_league_triggers(self) -> None:
+        """_sports_honest_coverage for PLAYER_VALUES returns per_league_trigger_date."""
+        import pandas as pd
+
+        from deployment_api.services.data_status_service import _sports_honest_coverage
+
+        result = _sports_honest_coverage(
+            filtered=pd.DataFrame(columns=["data_type", "league_id", "date", "capture_status"]),
+            entity_name="PLAYER_VALUES",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+        )
+        assert result is not None
+        assert result["axis"] == "per_league_trigger_date"
+        assert result["unit"] == "trigger_date_snapshots"
+        # expected_shards > 0 for a full year (multiple leagues x multiple triggers)
+        assert isinstance(result["expected_shards"], int)
+        assert result["expected_shards"] > 0
+        # found_shards = 0 (empty manifest)
+        assert result["found_shards"] == 0
+        # per_league populated
+        assert isinstance(result["per_league"], dict)
+
+    def test_trigger_date_denominator_less_than_daily_denominator(self) -> None:
+        """Trigger-date denominator must be smaller than daily denominator.
+
+        The whole point of this item is that the daily calendar over-estimates
+        the expected shard count for reference entities. Trigger-date count for
+        a full year should be << 365 days.
+        """
+        from deployment_api.services.data_status_service import _sports_trigger_dates_for_window
+
+        trigger_dates = _sports_trigger_dates_for_window("2024-01-01", "2024-12-31")
+        days_in_year = 366  # 2024 is a leap year
+        # Trigger dates should be a fraction of daily days
+        assert len(trigger_dates) < days_in_year // 4, (
+            f"Expected trigger-date count << {days_in_year // 4} days/year, "
+            f"got {len(trigger_dates)} — denominator may not be corrected"
+        )
+
+
+class TestTradFiVenueAccessorFlag4:
+    """FLAG-4: the TRADFI honest-coverage DENOMINATOR must count the full cross-source venue universe.
+
+    Verified (slot-6 2026-06-03): no undercount existed — `all_databento_venues` (despite the
+    misleading name) already resolves to the complete 6-venue tradfi set including the non-Databento
+    venues CBOE (→Barchart/VIX) and FX (→Yahoo). This test guards that INVARIANT against whatever
+    `venue_accessor` is configured, so a future narrowing of the venue list can't silently shrink the
+    tradfi coverage denominator. (UAC also adds a correctly-named `all_tradfi_venues` alias + its own
+    universe test; deployment-api will switch the accessor string to it after the UAC version cascade.)
+    """
+
+    def test_tradfi_venue_accessor_resolves_to_full_universe_incl_cboe_fx(self) -> None:
+        """The configured TRADFI venue_accessor must resolve to the full tradfi universe (incl CBOE+FX)."""
+        meta = _dss_mod.MTDS_CATEGORY_META.get("TRADFI")
+        assert meta is not None, "TRADFI missing from MTDS_CATEGORY_META"
+        accessor = meta.get("venue_accessor")
+        assert accessor, "TRADFI venue_accessor must be set"
+        venues = getattr(_dss_mod.VenueMapping(), str(accessor), None)
+        assert isinstance(venues, list) and len(venues) >= 6, (
+            f"TRADFI venue_accessor {accessor!r} must resolve to >=6 venues (full universe), got {venues!r}"
+        )
+        # The non-Databento tradfi venues MUST be in the denominator (else VIX/FX coverage is undercounted).
+        for required in ("CBOE", "FX"):
+            assert required in venues, (
+                f"{required} missing from TRADFI denominator via {accessor!r}: {venues} — "
+                "VIX(CBOE/Barchart) / forex(FX/Yahoo) coverage would be undercounted (FLAG-4)."
+            )
