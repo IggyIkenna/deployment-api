@@ -20,8 +20,8 @@ This module is the SSOT-driven generic builder. The axis order per
 ``unified_api_contracts.registry.data_status_axis_matrix.SHARD_AXIS_MATRIX``;
 the leaf row count comes from the v5+ availability manifest read by
 ``unified_trading_library.read_availability_index``. Each leaf carries
-``capture_status`` counts (captured / empty_confirmed / attempted_failed)
-and the structured ``row_key`` consumed by the per-leaf SmartDownloadButton
+``capture_status`` counts (captured / empty_confirmed / attempted_failed /
+expected_unattempted) and the structured ``row_key`` consumed by the per-leaf SmartDownloadButton
 + the surgical Deploy-Missing CLI invocation
 (``--shard-key=<asset_group>|<venue>|<data_type>|...``).
 
@@ -98,12 +98,15 @@ class DrilldownNode:
     captured: int = 0
     empty_confirmed: int = 0
     attempted_failed: int = 0
+    expected_unattempted: int = 0
     children: list[DrilldownNode] = field(default_factory=list)
     row_key: dict[str, str] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
-        return self.captured + self.empty_confirmed + self.attempted_failed
+        # B3: denominator includes the 4th bin (expected_unattempted) so the
+        # completion_pct is captured / (captured+empty+failed+expected).
+        return self.captured + self.empty_confirmed + self.attempted_failed + self.expected_unattempted
 
     @property
     def completion_pct(self) -> float:
@@ -119,6 +122,7 @@ class DrilldownNode:
             "captured": self.captured,
             "empty_confirmed": self.empty_confirmed,
             "attempted_failed": self.attempted_failed,
+            "expected_unattempted": self.expected_unattempted,
             "total": self.total,
             "completion_pct": self.completion_pct,
             "row_key": self.row_key,
@@ -177,19 +181,25 @@ def _filter_manifest(df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str,
     return out
 
 
-def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int]:
+def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int, int]:
     """Per-status counts for a slice of manifest rows.
+
+    Returns the 4-state tuple ``(captured, empty_confirmed, attempted_failed,
+    expected_unattempted)``. B2: the 4th bin (``expected_unattempted``) makes
+    genuinely-missing cells visible in the drilldown tree — the most useful
+    "where's the missing data" view.
 
     Pre-v5 manifests omit ``capture_status``; in that case every row counts
     as captured (the legacy assumption — degenerate compatibility path).
     """
     if "capture_status" not in rows.columns:
-        return len(rows), 0, 0
+        return len(rows), 0, 0, 0
     cs = rows["capture_status"].astype(str)
     captured = int((cs == "captured").sum())
     empty_confirmed = int((cs == "empty_confirmed").sum())
     attempted_failed = int((cs == "attempted_failed").sum())
-    return captured, empty_confirmed, attempted_failed
+    expected_unattempted = int((cs == "expected_unattempted").sum())
+    return captured, empty_confirmed, attempted_failed, expected_unattempted
 
 
 def _children_for_axis(
@@ -224,7 +234,7 @@ def _children_for_axis(
     children: list[DrilldownNode] = []
     for val in values:  # pyright: ignore[reportAny]
         sub = rows[rows[axis].astype(str) == val]  # pyright: ignore[reportUnknownVariableType]
-        captured, empty_confirmed, attempted_failed = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
+        captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
         node_row_key = {**parent_row_key, axis: val}
         node = DrilldownNode(
             axis=axis,
@@ -232,6 +242,7 @@ def _children_for_axis(
             captured=captured,
             empty_confirmed=empty_confirmed,
             attempted_failed=attempted_failed,
+            expected_unattempted=expected_unattempted,
             row_key=node_row_key,
         )
         if deeper_axes and current_depth < expand_to_depth:
@@ -307,6 +318,44 @@ def _coalesce_instrument_id_from_underlying(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# Bundled prediction data_type constant (matches the ManifestWriter row_key).
+_PREDICTION_BUNDLED_DT: str = "prediction_canonical_question_group"
+
+
+def _coalesce_cqg_from_instrument_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Promote ``instrument_id`` → ``canonical_question_group`` for v9 prediction rows.
+
+    v9 canonical prediction shape (``prediction_manifest_canonicalisation_2026_06_01.md``):
+    the bundled manifest row has ``data_type="prediction_canonical_question_group"`` and
+    stores the canonical_question_group value in ``instrument_id`` (the ManifestWriter
+    row_key field).  The SHARD_AXIS_MATRIX for prediction uses ``canonical_question_group``
+    as the second axis, so without this promotion the drilldown filter + ``_children_for_axis``
+    find no ``canonical_question_group`` column and return empty.
+
+    Read-side only — the manifest writer is unchanged.  Rows that already have a
+    non-empty ``canonical_question_group`` column (pre-v9 legacy writes) are left
+    as-is; only rows with ``data_type == "prediction_canonical_question_group"`` and
+    an empty / absent ``canonical_question_group`` are filled from ``instrument_id``.
+
+    Plan: ``prediction_manifest_canonicalisation_2026_06_01.md``
+    § "Deployment-API/UI prediction v9 data-status alignment".
+    """
+    if "data_type" not in df.columns or "instrument_id" not in df.columns:
+        return df
+    pred_mask = df["data_type"].astype(str) == _PREDICTION_BUNDLED_DT
+    if not pred_mask.any():
+        return df
+    out = df.copy()
+    if "canonical_question_group" not in out.columns:
+        out["canonical_question_group"] = ""
+    cqg = out["canonical_question_group"].astype(str)
+    inst = out["instrument_id"].astype(str)
+    # Fill empty cqg slots on prediction bundled rows from instrument_id.
+    needs_fill = pred_mask & ((cqg == "") | (cqg == "nan"))
+    out.loc[needs_fill, "canonical_question_group"] = inst[needs_fill]
+    return out
+
+
 def get_hierarchical_drilldown(
     service: str,
     asset_group: str,
@@ -346,7 +395,7 @@ def get_hierarchical_drilldown(
     Returns:
         ``{"axes": (tuple), "tree": [DrilldownNode.to_dict(), ...],
             "totals": {captured, empty_confirmed, attempted_failed,
-                       total, completion_pct}, "filtered_by": filters,
+                       expected_unattempted, total, completion_pct}, "filtered_by": filters,
             "service": service, "asset_group": asset_group,
             "child_offset": int, "child_limit": int | None,
             "total_top_axis_children": int}``.
@@ -377,6 +426,7 @@ def get_hierarchical_drilldown(
                 "captured": 0,
                 "empty_confirmed": 0,
                 "attempted_failed": 0,
+                "expected_unattempted": 0,
                 "total": 0,
                 "completion_pct": 0.0,
             },
@@ -396,6 +446,10 @@ def get_hierarchical_drilldown(
     # bundled-data_type rows respond to operator-supplied
     # ``instrument_id`` filters keyed by root (BTC, ESH4, …).
     df = _coalesce_instrument_id_from_underlying(df)
+    # v9 prediction: promote ``instrument_id`` → ``canonical_question_group`` so
+    # the SHARD_AXIS_MATRIX axis filter + drilldown children work correctly.
+    # Read-side only; rows with a pre-existing non-empty cqg column are untouched.
+    df = _coalesce_cqg_from_instrument_id(df)
     # Stamp ``feature_family`` (read-side) so callers can filter / group
     # features-* manifests by the parent classification axis even when
     # the manifest predates the column. Plan: features-repo consolidation
@@ -406,11 +460,11 @@ def get_hierarchical_drilldown(
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)
     remaining_axes = axes[matched_depth:]
     if not remaining_axes:
-        captured, empty_confirmed, attempted_failed = _aggregate_counts(df)
+        captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(df)
         return {
             "axes": list(axes),
             "tree": [],
-            "totals": _totals_dict(captured, empty_confirmed, attempted_failed),
+            "totals": _totals_dict(captured, empty_confirmed, attempted_failed, expected_unattempted),
             "filtered_by": filters,
             "service": service,
             "asset_group": asset_group,
@@ -436,11 +490,11 @@ def get_hierarchical_drilldown(
     elif child_offset > 0:
         tree = tree[child_offset:]
 
-    captured, empty_confirmed, attempted_failed = _aggregate_counts(df)
+    captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(df)
     return {
         "axes": list(axes),
         "tree": [n.to_dict() for n in tree],
-        "totals": _totals_dict(captured, empty_confirmed, attempted_failed),
+        "totals": _totals_dict(captured, empty_confirmed, attempted_failed, expected_unattempted),
         "filtered_by": filters,
         "service": service,
         "asset_group": asset_group,
@@ -451,13 +505,18 @@ def get_hierarchical_drilldown(
     }
 
 
-def _totals_dict(captured: int, empty_confirmed: int, attempted_failed: int) -> dict[str, object]:
-    total = captured + empty_confirmed + attempted_failed
+def _totals_dict(
+    captured: int, empty_confirmed: int, attempted_failed: int, expected_unattempted: int
+) -> dict[str, object]:
+    # B3: denominator includes expected_unattempted (the 4th bin) so the
+    # completion_pct is captured / (captured+empty+failed+expected).
+    total = captured + empty_confirmed + attempted_failed + expected_unattempted
     completion_pct = round(captured / total * 100, 2) if total > 0 else 0.0
     return {
         "captured": captured,
         "empty_confirmed": empty_confirmed,
         "attempted_failed": attempted_failed,
+        "expected_unattempted": expected_unattempted,
         "total": total,
         "completion_pct": completion_pct,
     }

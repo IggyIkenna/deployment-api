@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 # ``shard_class`` drives UI rendering of the payload branch.  The mapping
 # from ``(service, category, instrument_type, data_type)`` to one of these
@@ -325,6 +325,13 @@ class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     ``total_pools``, ``total_tokens``) or composite protocol-chain pool
     listings (``pools``, ``tokens``).  ``category`` is always echoed so the
     UI can render the correct view without inferring from the venue string.
+
+    ``asset_group`` is a computed alias for ``category`` emitted alongside it
+    in the JSON response so the deployment-ui TypeScript contract (which uses
+    ``asset_group`` for its ``VenueDetailResult`` / ``VenueDetailV2Response``
+    types) receives the correct field name.  Both fields carry the same value;
+    ``category`` is preserved for backward-compat with existing callers.
+    SSOT: prediction_manifest_canonicalisation_2026_06_01.md § UI contract.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -342,3 +349,14 @@ class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     pools: list[dict[str, object]] = Field(default_factory=list)
     tokens: list[dict[str, object]] = Field(default_factory=list)
     day: str | None = None
+
+    @computed_field
+    @property
+    def asset_group(self) -> str:
+        """Mirror of ``category`` — emitted in JSON as ``asset_group`` so the
+        deployment-ui TypeScript type (``VenueDetailResult.asset_group`` /
+        ``VenueDetailV2Response.asset_group``) receives the expected key.
+        The UI branches on ``data.asset_group === "DEFI"`` in VenueDetailPanel;
+        without this field, ``asset_group`` was always ``undefined`` on the
+        client and all responses fell back to the CeFi v1 render branch."""
+        return self.category

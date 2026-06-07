@@ -6,11 +6,11 @@ name: major-bump-issue-handler
 #   1. Parses repo/version metadata from issue body
 #   2. Bumps pyproject.toml version on the staging branch
 #   3. Dispatches version-bump to unified-trading-pm (updates staging_versions)
-#   4. Sends Telegram success alert
+#   4. Sends Slack success alert (#ci-failures)
 #   5. Closes issue as completed
 #
 # When a user with write access comments /reject:
-#   1. Sends Telegram rejection alert
+#   1. Sends Slack rejection alert (#ci-failures)
 #   2. Closes issue as not_planned (no version bump)
 #
 # STAGING ONLY: version bumps NEVER touch main.
@@ -207,7 +207,7 @@ jobs:
             exit 1
           fi
 
-      - name: Send Telegram notification
+      - name: Send Slack notification
         if: steps.cmd.outputs.action != 'none'
         env:
           ACTION: ${{ steps.cmd.outputs.action }}
@@ -215,32 +215,21 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           APPROVER: ${{ github.event.comment.user.login }}
           ISSUE_URL: ${{ github.event.issue.html_url }}
-          TELEGRAM_BOT_TOKEN_PROD: ${{ secrets.TELEGRAM_BOT_TOKEN_PROD }}
-          TELEGRAM_BOT_TOKEN_STAGING: ${{ secrets.TELEGRAM_BOT_TOKEN_STAGING }}
-          TELEGRAM_BOT_TOKEN_DEV: ${{ secrets.TELEGRAM_BOT_TOKEN_DEV }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID_PROD: ${{ vars.TELEGRAM_CHAT_ID_PROD || vars.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_STAGING: ${{ vars.TELEGRAM_CHAT_ID_STAGING || vars.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_DEV: ${{ vars.TELEGRAM_CHAT_ID_DEV || vars.TELEGRAM_CHAT_ID }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
+          # Retired Telegram -> Slack #ci-failures (cicd #551). Prefer the dedicated valid webhook.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
         run: |
-          case "$GITHUB_REF_NAME" in
-            main|live-defi-rollout) BOT_TOKEN="${TELEGRAM_BOT_TOKEN_PROD:-${TELEGRAM_BOT_TOKEN:-}}"; CHAT_ID="${TELEGRAM_CHAT_ID_PROD:-}" ;;
-            staging)                BOT_TOKEN="${TELEGRAM_BOT_TOKEN_STAGING:-${TELEGRAM_BOT_TOKEN:-}}"; CHAT_ID="${TELEGRAM_CHAT_ID_STAGING:-}" ;;
-            *)                      BOT_TOKEN="${TELEGRAM_BOT_TOKEN_DEV:-${TELEGRAM_BOT_TOKEN:-}}"; CHAT_ID="${TELEGRAM_CHAT_ID_DEV:-}" ;;
-          esac
-          if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
-            if [ "$ACTION" = "approve" ]; then
-              MSG="Major bump APPROVED: ${REPO} -> v${VERSION} on staging (by @${APPROVER})%0A${ISSUE_URL}"
-            else
-              MSG="Major bump REJECTED: ${REPO} -> v${VERSION} (by @${APPROVER})%0A${ISSUE_URL}"
-            fi
-            curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${CHAT_ID}&text=${MSG}&disable_web_page_preview=false" || true
-            echo "Telegram notification sent"
+          if [ "$ACTION" = "approve" ]; then
+            MSG="Major bump APPROVED: ${REPO} -> v${VERSION} on staging (by @${APPROVER})\n${ISSUE_URL}"
           else
-            echo "Telegram secrets not configured -- skipping notification"
+            MSG="Major bump REJECTED: ${REPO} -> v${VERSION} (by @${APPROVER})\n${ISSUE_URL}"
           fi
+          # Best-effort -- never fail the run on a missing/misconfigured webhook.
+          case "${SLACK_WEBHOOK_URL:-}" in
+            https://*)
+              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$MSG" '{text:$t}')" && echo "Slack notification sent" || true ;;
+            *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
+          esac
 
       - name: Update issue and close
         if: steps.cmd.outputs.action != 'none'
@@ -297,29 +286,21 @@ jobs:
           echo "Issue #${ISSUE_NUMBER} closed as ${STATE_REASON}"
 
   notify-failure:
-    name: Telegram — Major Bump Handler Failure
+    name: Slack — Major Bump Handler Failure
     needs: [handle-major-bump]
     if: always() && needs.handle-major-bump.result == 'failure'
     runs-on: ubuntu-latest
     steps:
-      - name: Send Telegram failure alert
+      - name: Send Slack failure alert
         env:
-          TELEGRAM_BOT_TOKEN_PROD: ${{ secrets.TELEGRAM_BOT_TOKEN_PROD }}
-          TELEGRAM_BOT_TOKEN_STAGING: ${{ secrets.TELEGRAM_BOT_TOKEN_STAGING }}
-          TELEGRAM_BOT_TOKEN_DEV: ${{ secrets.TELEGRAM_BOT_TOKEN_DEV }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID_PROD: ${{ vars.TELEGRAM_CHAT_ID_PROD || vars.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_STAGING: ${{ vars.TELEGRAM_CHAT_ID_STAGING || vars.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_DEV: ${{ vars.TELEGRAM_CHAT_ID_DEV || vars.TELEGRAM_CHAT_ID }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
+          # Retired Telegram -> Slack #ci-failures (cicd #551). Prefer the dedicated valid webhook.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
         run: |
-          case "$GITHUB_REF_NAME" in
-            main|live-defi-rollout) TOKEN="${TELEGRAM_BOT_TOKEN_PROD:-${TELEGRAM_BOT_TOKEN:-}}"; CHAT_ID="${TELEGRAM_CHAT_ID_PROD:-}" ;;
-            staging)                TOKEN="${TELEGRAM_BOT_TOKEN_STAGING:-${TELEGRAM_BOT_TOKEN:-}}"; CHAT_ID="${TELEGRAM_CHAT_ID_STAGING:-}" ;;
-            *)                      TOKEN="${TELEGRAM_BOT_TOKEN_DEV:-${TELEGRAM_BOT_TOKEN:-}}"; CHAT_ID="${TELEGRAM_CHAT_ID_DEV:-}" ;;
-          esac
-          [ -z "$TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
-          [ -z "$CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
           MSG="❌ Major bump handler FAILED — ${{ github.event.repository.name }} (issue #${{ github.event.issue.number }}). View: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-            -d "chat_id=${CHAT_ID}" -d "text=${MSG}" -d "disable_web_page_preview=true" || true
+          # Best-effort -- never fail the run on a missing/misconfigured webhook.
+          case "${SLACK_WEBHOOK_URL:-}" in
+            https://*)
+              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$MSG" '{text:$t}')" && echo "Slack failure alert sent" || true ;;
+            *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
+          esac
