@@ -71,15 +71,6 @@ repos:
         name: Detect secrets with gitleaks
         args: ["--config", ".gitleaks.toml"]
 
-  # Secret scanning — gitleaks (catches GCP SA keys, GitHub PATs, API keys)
-  # Config SSOT: unified-trading-pm/.gitleaks.toml (propagated here at rollout)
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.27.2
-    hooks:
-      - id: gitleaks
-        name: Detect secrets with gitleaks
-        args: ["--config", ".gitleaks.toml"]
-
   # Basic file checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
