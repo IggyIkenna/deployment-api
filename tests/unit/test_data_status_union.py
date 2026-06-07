@@ -219,3 +219,55 @@ class TestProvenanceBreakdown:
     def test_breakdown_empty_on_v8_manifest(self) -> None:
         df = pd.DataFrame([{**_CELL, "capture_status": "captured", "error_reason": ""}])
         assert provenance_breakdown(df) == []
+
+
+class TestM4ModePrecedenceTiebreak:
+    """M4 mode-precedence (live > replay > batch) is a TIEBREAK for the
+    REPRESENTATIVE row among rows sharing the M5-winning status — it never
+    changes the capture_status outcome (M5 captured-union dominates)."""
+
+    def test_captured_in_multiple_modes_represents_live(self) -> None:
+        df = pd.DataFrame(
+            [
+                _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
+                _row(source="databento", pipeline_mode="replay_databento", capture_status="captured"),
+                _row(source="databento", pipeline_mode="live_databento", capture_status="captured"),
+            ]
+        )
+        reduced = union_reduce_to_cells(df)
+        assert len(reduced) == 1
+        assert reduced.iloc[0]["capture_status"] == "captured"
+        assert reduced.iloc[0]["pipeline_mode"] == "live_databento"  # M4: live wins the tiebreak
+
+    def test_status_union_dominates_mode_precedence(self) -> None:
+        """batch captured + live failed → captured (M5), NOT live's failed —
+        mode precedence must not override the honest status union."""
+        df = pd.DataFrame(
+            [
+                _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
+                _row(source="databento", pipeline_mode="live_databento", capture_status="attempted_failed"),
+            ]
+        )
+        reduced = union_reduce_to_cells(df)
+        assert reduced.iloc[0]["capture_status"] == "captured"
+        assert reduced.iloc[0]["pipeline_mode"] == "batch_databento"
+
+    def test_replay_beats_batch_within_same_status(self) -> None:
+        df = pd.DataFrame(
+            [
+                _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
+                _row(source="databento", pipeline_mode="replay_databento", capture_status="captured"),
+            ]
+        )
+        reduced = union_reduce_to_cells(df)
+        assert reduced.iloc[0]["pipeline_mode"] == "replay_databento"
+
+    def test_live_websocket_alias_treated_as_live(self) -> None:
+        df = pd.DataFrame(
+            [
+                _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
+                _row(source="databento", pipeline_mode="live_websocket", capture_status="captured"),
+            ]
+        )
+        reduced = union_reduce_to_cells(df)
+        assert reduced.iloc[0]["pipeline_mode"] == "live_websocket"

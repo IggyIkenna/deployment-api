@@ -87,6 +87,31 @@ _STATUS_RANK: dict[str, int] = {
     "expected_unattempted": 3,
 }
 
+# M4 mode-contextual precedence — the TIEBREAK among rows of the SAME status.
+# The honest capture_status is ALWAYS the M5 status-union (captured wins
+# regardless of mode); M4 only decides WHICH mode's row REPRESENTS the cell
+# (its source / error_reason / transport in the reduced row) when several modes
+# share the winning status. Data-status uses the live-consumer order
+# (live > replay > batch — live is real-time truth, replay fills gaps, batch
+# backs history); the symmetric batch-consumer order lives in the live read-path
+# resolver (batch-live-reconciliation-service), out of scope here. ``live_websocket``
+# is the transitional alias for ``live_*``.
+_MODE_RANK: dict[str, int] = {"live": 0, "replay": 1, "batch": 2}
+_MODE_RANK_UNKNOWN = 3
+
+
+def _mode_of(pipeline_mode: str) -> str:
+    """Extract the reconciliation mode ({live,replay,batch}) from a
+    ``{mode}_{source}`` pipeline_mode (``live_websocket`` → ``live``)."""
+    pm = pipeline_mode.strip().lower()
+    if pm.startswith("live"):
+        return "live"
+    if pm.startswith("replay"):
+        return "replay"
+    if pm.startswith("batch"):
+        return "batch"
+    return ""
+
 
 def cell_key_columns(df: pd.DataFrame) -> list[str]:
     """Return the cell-identity columns present in ``df`` (de-dup key)."""
@@ -129,7 +154,20 @@ def union_reduce_to_cells(df: pd.DataFrame) -> pd.DataFrame:
     # pending-fetch one (the cell IS honestly answered). +1 demotes pending.
     eu_mask = status == "expected_unattempted"
     eu_refine = (eu_mask & ~reason.str.startswith(_EXPECTED_PREFIX)).astype(int)  # pyright: ignore[reportUnknownMemberType]
-    combined = base_rank * 10 + eu_refine
+    # M4 mode-precedence TIEBREAK (live > replay > batch) — applied AFTER status
+    # + eu_refine, so it only chooses the REPRESENTATIVE row among rows that
+    # share the winning status (never changes the M5 capture_status outcome).
+    if _PIPELINE_MODE_COL in df.columns:
+        mode_rank = (
+            df[_PIPELINE_MODE_COL]  # pyright: ignore[reportUnknownMemberType]
+            .fillna("")
+            .astype(str)
+            .map(lambda pm: _MODE_RANK.get(_mode_of(pm), _MODE_RANK_UNKNOWN))  # pyright: ignore[reportUnknownArgumentType,reportUnknownLambdaType]
+            .astype(int)
+        )
+    else:
+        mode_rank = pd.Series(_MODE_RANK_UNKNOWN, index=df.index)
+    combined = base_rank * 100 + eu_refine * 10 + mode_rank
 
     ranked = df.assign(_union_rank=combined)
     reduced = (
