@@ -46,12 +46,8 @@ env:
   GH_ORG: ${{ github.repository_owner }}
 
 permissions:
-  contents: read
+  contents: write
   issues: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   semver:
@@ -75,7 +71,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GH_ORG }}/unified-trading-pm
-          path: ../unified-trading-pm
+          # MUST be a workspace-internal path: actions/checkout@v4 rejects a path that
+          # escapes GITHUB_WORKSPACE ("Repository path ... is not under ...") — the
+          # `../unified-trading-pm` form failed on EVERY repo's run, jamming staging→main
+          # fleet-wide (2026-06-04). A subdir of the main checkout is fine (sparse, transient).
+          path: pm-readiness
           token: ${{ secrets.GH_PAT }}
           sparse-checkout: |
             codex/10-audit/
@@ -270,7 +270,11 @@ jobs:
 
           # Determine what the commit message signals
           EXPECTED_FROM_LABEL="none"
-          LATEST_MSG=$(echo "$COMMITS" | head -1)
+          # here-string, NOT echo "$COMMITS" | head: a large COMMITS list floods the pipe and
+          # head -1 closes it after one line → echo SIGPIPEs → pipefail fails the assignment →
+          # set -e aborts step 4 ("Compute next semver"). This was the 2nd fleet-wide jam after
+          # the PM-checkout path bug (only surfaced once step 3 stopped failing first). 2026-06-04.
+          LATEST_MSG=$(head -1 <<< "$COMMITS")
           if echo "$LATEST_MSG" | grep -qE "^[a-f0-9]+ [a-z]+!(\(.+\))?:" || echo "$LATEST_MSG" | grep -qi "BREAKING CHANGE"; then
             EXPECTED_FROM_LABEL="breaking"
           elif echo "$LATEST_MSG" | grep -qE "^[a-f0-9]+ feat(\(.+\))?:"; then
@@ -366,7 +370,7 @@ jobs:
 
           echo "Opening MAJOR bump approval issue for deployment-api ($CURRENT → $NEXT)"
 
-          CHECKLIST_FILE="../unified-trading-pm/codex/10-audit/repos/deployment-api.yaml"
+          CHECKLIST_FILE="pm-readiness/codex/10-audit/repos/deployment-api.yaml"
           if [ -f "$CHECKLIST_FILE" ]; then
             CHECKLIST_BODY=$(head -80 "$CHECKLIST_FILE")
           else
@@ -423,6 +427,60 @@ jobs:
             || echo "WARNING: Issue creation failed (label may not exist) — continuing"
 
           echo "Issue created. Skipping version-bump dispatch until user approves."
+
+      # ── APPLY the computed version to the repo's OWN pyproject.toml BEFORE dispatching.
+      # WHY (root-cause fix 2026-06-06): the retired version-bump.yml committed
+      # `chore(release): bump version to X` to pyproject; the semver-agent.yml migration
+      # DROPPED that step — it only computed + dispatched. Result: PM recorded the new
+      # version in the manifest + fanned out `dep-update/<dep>-<X>` constraint bumps to
+      # dependents (">=X"), but the dep repo's pyproject stayed at the OLD version. Because
+      # dependents consume the dep via `[tool.uv.sources] path=...` at its PHYSICAL version,
+      # ">=X" became UNSATISFIABLE → broken/inconsistent CI installs → dep-update v2 FAILING
+      # → dep-order staging→main gate jammed. Committing the version here makes the version
+      # the cascade dispatches actually EXIST. `[skip ci]` prevents a QG re-trigger loop.
+      - name: Apply version bump to staging (chore(release))
+        id: apply
+        if: steps.compute.outputs.skip != 'true' && steps.compute.outputs.bump != 'major_blocked'
+        run: |
+          set -euo pipefail
+
+          NEW_VERSION="${{ steps.compute.outputs.new_version }}"
+          CURRENT="${{ steps.compute.outputs.current_version }}"
+
+          if [ -z "$NEW_VERSION" ]; then
+            echo "FATAL: empty new_version — cannot apply." >&2
+            exit 1
+          fi
+
+          # Replace the version line in pyproject.toml (anchored to the CURRENT value the
+          # compute step read, so we never touch a dependency version line by accident).
+          if ! grep -qE "^version = \"${CURRENT}\"" pyproject.toml; then
+            echo "FATAL: pyproject.toml version is not '${CURRENT}' (compute baseline) — refusing to sed." >&2
+            grep -E "^version = " pyproject.toml || true
+            exit 1
+          fi
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+
+          if git diff --quiet pyproject.toml; then
+            echo "pyproject.toml already at ${NEW_VERSION} — nothing to commit (idempotent)."
+            exit 0
+          fi
+
+          git config user.name "semver-agent[bot]"
+          git config user.email "semver-rollout[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore(release): bump version to ${NEW_VERSION} [skip ci]"
+
+          # Push to staging. The job checked out the staging head_sha (detached); push the
+          # commit explicitly to refs/heads/staging. Retry once on a benign non-FF race
+          # (another commit landed on staging since checkout) by rebasing onto it.
+          git fetch origin staging --quiet
+          if ! git push origin "HEAD:refs/heads/staging"; then
+            echo "Non-FF push to staging — rebasing onto origin/staging and retrying once."
+            git rebase origin/staging
+            git push origin "HEAD:refs/heads/staging"
+          fi
+          echo "Committed + pushed chore(release): bump version to ${NEW_VERSION} on staging."
 
       - name: Dispatch version-bump to unified-trading-pm
         if: steps.compute.outputs.skip != 'true' && steps.compute.outputs.bump != 'major_blocked'
@@ -500,22 +558,20 @@ jobs:
             cat /tmp/schema_dispatch_response.json 2>/dev/null || true
           fi
 
-      # ── TELEGRAM NOTIFY ─────────────────────────────────────────────────────
-      - name: Notify Telegram
+      # ── SLACK NOTIFY (#ci-failures) ──────────────────────────────────────────
+      - name: Notify Slack
         if: always()
         env:
-          TELEGRAM_BOT_TOKEN_STAGING: ${{ secrets.TELEGRAM_BOT_TOKEN_STAGING }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID_STAGING: ${{ vars.TELEGRAM_CHAT_ID_STAGING || vars.TELEGRAM_CHAT_ID }}
+          # Retired Telegram -> Slack #ci-failures (cicd #551). Prefer the dedicated valid webhook.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
           STATUS: ${{ job.status }}
         run: |
           # semver-agent always runs on staging branch
-          TOKEN="${TELEGRAM_BOT_TOKEN_STAGING:-${TELEGRAM_BOT_TOKEN:-}}"
-          CHAT_ID="${TELEGRAM_CHAT_ID_STAGING:-}"
-          [ -z "$TOKEN" ] && echo "No bot token — skipping Telegram notify" && exit 0
-          [ -z "$CHAT_ID" ] && echo "No chat ID — skipping Telegram notify" && exit 0
           TEXT="*semver-agent* | deployment-api | ${STATUS} | branch: staging | triggered by QG pass on staging (pre-SIT)"
-          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-            -d chat_id="${CHAT_ID}" \
-            -d text="${TEXT}" \
-            -d parse_mode="Markdown" || true
+          # Best-effort -- never fail the run on a missing/misconfigured webhook.
+          case "${SLACK_WEBHOOK_URL:-}" in
+            https://*)
+              curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "Slack notification sent" || true ;;
+            *) echo "SLACK_CI_WEBHOOK_URL not set/https -- skipping notification" ;;
+          esac
