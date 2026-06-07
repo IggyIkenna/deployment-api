@@ -42,6 +42,10 @@ jobs:
           fetch-depth: 0
           ref: staging
 
+      # uv is needed to re-lock uv.lock after the constraint bump (lock-drift fix).
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Update pyproject.toml dependency constraint
         id: update
         run: |
@@ -112,6 +116,16 @@ jobs:
           print(f"Updated {dep} -> {constraint} ({count} occurrence(s))")
           PYEOF
 
+          # Re-lock uv.lock so the new constraint is reflected in the lock — otherwise
+          # pyproject/uv.lock drift and the next quality-gates `uv lock --check` fails
+          # with "uv.lock out of sync with pyproject.toml" (the recurring lock-drift class).
+          # Best-effort: do not fail the dep-update on a relock hiccup (a follow-up recovers it).
+          if command -v uv >/dev/null 2>&1; then
+            uv lock || echo "WARN: uv lock failed — uv.lock may drift; relock manually"
+          else
+            echo "WARN: uv not on PATH — skipping uv lock (uv.lock may drift)"
+          fi
+
           echo "dep_name=$DEP_NAME" >> "$GITHUB_OUTPUT"
           echo "dep_version=$DEP_VERSION" >> "$GITHUB_OUTPUT"
           echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
@@ -126,12 +140,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet pyproject.toml; then
-            echo "No changes to pyproject.toml. Skipping commit."
+          if git diff --quiet pyproject.toml uv.lock; then
+            echo "No changes to pyproject.toml/uv.lock. Skipping commit."
             exit 0
           fi
 
           git add pyproject.toml
+          # Stage the re-locked uv.lock alongside the constraint bump so they never drift.
+          git add uv.lock 2>/dev/null || true
           git commit -m "chore(deps): pin ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }} [skip ci]"
           git push origin staging
 
@@ -150,8 +166,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet pyproject.toml; then
-            echo "No changes to pyproject.toml. Skipping."
+          if git diff --quiet pyproject.toml uv.lock; then
+            echo "No changes to pyproject.toml/uv.lock. Skipping."
             exit 0
           fi
 
@@ -159,6 +175,8 @@ jobs:
           BRANCH="dep-update/${{ steps.update.outputs.dep_name }}-${{ steps.update.outputs.dep_version }}"
           git checkout -b "$BRANCH"
           git add pyproject.toml
+          # Stage the re-locked uv.lock alongside the constraint bump so they never drift.
+          git add uv.lock 2>/dev/null || true
           git commit -m "feat!: update ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }} (breaking)"
           git push origin "$BRANCH"
 
