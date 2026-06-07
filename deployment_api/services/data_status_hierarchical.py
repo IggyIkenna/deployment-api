@@ -46,6 +46,11 @@ from unified_api_contracts.registry.data_status_axis_matrix import (
 from unified_trading_library import read_availability_index
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
+from deployment_api.services.data_status_union import (
+    has_provenance_columns,
+    provenance_breakdown,
+    union_reduce_to_cells,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +106,11 @@ class DrilldownNode:
     expected_unattempted: int = 0
     children: list[DrilldownNode] = field(default_factory=list)
     row_key: dict[str, str] = field(default_factory=dict)
+    # G3/M5 per-cell provenance: per-(pipeline_mode, source) capture_status
+    # CELL counts. Populated only at the shard-atom leaf (the ``date`` level)
+    # so the UI can render "captured via batch_databento + replay_databento,
+    # missing in live_databento". Empty on v8 manifests (no provenance cols).
+    provenance: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -126,6 +136,7 @@ class DrilldownNode:
             "total": self.total,
             "completion_pct": self.completion_pct,
             "row_key": self.row_key,
+            "provenance": self.provenance,
             "children": [c.to_dict() for c in self.children],
             "is_leaf": not self.children,
         }
@@ -152,11 +163,19 @@ def _resolve_axis_order(service: str, asset_group: str) -> tuple[str, ...]:
     return (*axes, "date")
 
 
-_NON_AXIS_FILTERS: frozenset[str] = frozenset({"feature_family"})
+_NON_AXIS_FILTERS: frozenset[str] = frozenset({"feature_family", "pipeline_mode", "source"})
 """Filter keys that are NOT in any service's SHARD_AXIS_MATRIX axes but
-are valid manifest columns (post-:func:`_stamp_feature_family`) and so
-get applied unconditionally if the caller supplies them. Plan:
-features-repo consolidation Phase 8B (deployment-api side)."""
+are valid manifest columns and so get applied unconditionally if the caller
+supplies them. ``feature_family``: features-repo consolidation Phase 8B.
+``pipeline_mode`` / ``source`` (G3/M5): the v9 provenance axes — let an
+operator narrow the tree to a single mode/source (e.g. "show only the
+live_databento view")."""
+
+# G3/M5: provenance axes the caller may inject as GROUP-BY levels at the top of
+# the tree (e.g. group the whole tree by ``pipeline_mode`` to compare batch vs
+# live coverage). Restricted to the provenance columns — every other axis comes
+# from the SHARD_AXIS_MATRIX SSOT.
+_GROUP_BY_AXES: frozenset[str] = frozenset({"pipeline_mode", "source"})
 
 
 def _filter_manifest(df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str, str]) -> pd.DataFrame:
@@ -191,9 +210,17 @@ def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int, int]:
 
     Pre-v5 manifests omit ``capture_status``; in that case every row counts
     as captured (the legacy assumption — degenerate compatibility path).
+
+    G3/M5 UNION: post-migration a cell carries one row per (source,
+    pipeline_mode). Collapse to one honest row per cell first so a leaf cell
+    captured by >1 source/mode counts once (≥1 captured ⇒ captured) instead of
+    inflating the tree counts past the de-dup'd denominator. v8 manifests (no
+    provenance columns) already have one row per cell → no-op.
     """
     if "capture_status" not in rows.columns:
         return len(rows), 0, 0, 0
+    if has_provenance_columns(rows):
+        rows = union_reduce_to_cells(rows)
     cs = rows["capture_status"].astype(str)
     captured = int((cs == "captured").sum())
     empty_confirmed = int((cs == "empty_confirmed").sum())
@@ -245,6 +272,11 @@ def _children_for_axis(
             expected_unattempted=expected_unattempted,
             row_key=node_row_key,
         )
+        # Shard-atom leaf (no deeper axis) → attach the per-(pipeline_mode,
+        # source) breakdown so the UI can show which mode/source answered the
+        # cell. Cell-grain + honest (v8 manifests yield []).
+        if not deeper_axes:
+            node.provenance = provenance_breakdown(sub)  # pyright: ignore[reportUnknownArgumentType]
         if deeper_axes and current_depth < expand_to_depth:
             next_axis, *rest = deeper_axes
             node.children = _children_for_axis(
@@ -367,6 +399,7 @@ def get_hierarchical_drilldown(
     project_id: str | None = None,
     child_offset: int = 0,
     child_limit: int | None = None,
+    group_by: list[str] | None = None,
 ) -> dict[str, object]:
     """Build the hierarchical drill-down tree for ``(service, asset_group)``.
 
@@ -437,6 +470,7 @@ def get_hierarchical_drilldown(
             "child_offset": child_offset,
             "child_limit": child_limit,
             "total_top_axis_children": 0,
+            "provenance": [],
         }
 
     if "date" in df.columns:
@@ -455,6 +489,9 @@ def get_hierarchical_drilldown(
     # the manifest predates the column. Plan: features-repo consolidation
     # Phase 8B (deployment-api side).
     df = _stamp_feature_family(df)
+    # G3/M5: inject requested provenance group-by axes (pipeline_mode / source)
+    # at the TOP of the tree so an operator can compare batch-vs-live coverage.
+    axes = _apply_group_by_axes(axes, group_by, df)
     df = _filter_manifest(df, axes, filters)
 
     matched_depth = sum(1 for axis in axes if filters.get(axis) is not None)
@@ -472,6 +509,7 @@ def get_hierarchical_drilldown(
             "child_offset": child_offset,
             "child_limit": child_limit,
             "total_top_axis_children": 0,
+            "provenance": provenance_breakdown(df),
         }
 
     head_axis, *rest = remaining_axes
@@ -502,7 +540,24 @@ def get_hierarchical_drilldown(
         "child_offset": child_offset,
         "child_limit": child_limit,
         "total_top_axis_children": total_top_axis_children,
+        "provenance": provenance_breakdown(df),
     }
+
+
+def _apply_group_by_axes(axes: tuple[str, ...], group_by: list[str] | None, df: pd.DataFrame) -> tuple[str, ...]:
+    """Prepend valid provenance group-by axes (pipeline_mode / source) to the
+    tree axis order.
+
+    Only ``_GROUP_BY_AXES`` columns that actually exist in the manifest and are
+    not already an axis are added, preserving caller order. v8 manifests (no
+    provenance columns) get the base axes unchanged.
+    """
+    if not group_by:
+        return axes
+    extra = [g for g in group_by if g in _GROUP_BY_AXES and g in df.columns and g not in axes]
+    if not extra:
+        return axes
+    return (*extra, *axes)
 
 
 def _totals_dict(

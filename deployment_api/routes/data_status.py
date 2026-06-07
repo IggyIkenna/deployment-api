@@ -507,6 +507,28 @@ async def get_data_status_drilldown(
     ),
     timeframe: str | None = Query(None, description="Timeframe filter"),
     canonical_question_group: str | None = Query(None, description="Prediction canonical_question_group filter"),
+    pipeline_mode: str | None = Query(
+        None,
+        description=(
+            "v9 provenance filter (G3/M5): narrow the tree to a single "
+            "pipeline_mode (e.g. ``batch_databento`` / ``live_databento`` / "
+            "``replay_databento``). The data-status totals always UNION across "
+            "modes; this filter scopes the per-mode view."
+        ),
+    ),
+    source: str | None = Query(
+        None,
+        description="v9 provenance filter (G3/M5): narrow the tree to a single source (e.g. ``databento``).",
+    ),
+    group_by: list[str] | None = Query(
+        None,
+        description=(
+            "v9 provenance group-by axes (G3/M5): ``pipeline_mode`` and/or "
+            "``source``, inserted at the TOP of the tree so batch-vs-live (or "
+            "per-source) coverage can be compared. Repeat the param to group by "
+            "both."
+        ),
+    ),
     expand_to_depth: int = Query(2, ge=0, le=10, description="Levels to materialise eagerly"),
     child_offset: int = Query(
         0,
@@ -562,6 +584,8 @@ async def get_data_status_drilldown(
         "feature_family": feature_family,
         "timeframe": timeframe,
         "canonical_question_group": canonical_question_group,
+        "pipeline_mode": pipeline_mode,
+        "source": source,
     }
     filters: dict[str, str] = {k: v for k, v in raw_filters.items() if v is not None}
     try:
@@ -574,6 +598,7 @@ async def get_data_status_drilldown(
             expand_to_depth=expand_to_depth,
             child_offset=child_offset,
             child_limit=child_limit,
+            group_by=group_by,
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)

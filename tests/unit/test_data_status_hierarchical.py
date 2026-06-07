@@ -56,6 +56,8 @@ _DRILLDOWN_NODE_GOLDEN_KEYS: frozenset[str] = frozenset(
         "total",
         "completion_pct",
         "row_key",
+        # G3/M5: per-(pipeline_mode, source) breakdown at shard-atom leaves.
+        "provenance",
         "children",
         "is_leaf",
     }
@@ -84,13 +86,15 @@ class TestDrilldownNodeShape:
         assert isinstance(children, list)
         assert len(children) == 1
 
-    def test_to_dict_golden_schema_has_exactly_eleven_keys(self) -> None:
+    def test_to_dict_golden_schema_has_exactly_twelve_keys(self) -> None:
         # B2: the schema carries the 4th capture-status bin
         # (expected_unattempted) so genuinely-missing cells are visible.
+        # G3/M5: + the ``provenance`` key (per-mode/source leaf breakdown).
         node = DrilldownNode(axis="venue", value="BINANCE", captured=5)
         d = node.to_dict()
-        assert len(_DRILLDOWN_NODE_GOLDEN_KEYS) == 11
+        assert len(_DRILLDOWN_NODE_GOLDEN_KEYS) == 12
         assert "expected_unattempted" in _DRILLDOWN_NODE_GOLDEN_KEYS
+        assert "provenance" in _DRILLDOWN_NODE_GOLDEN_KEYS
         assert set(d.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS, (
             f"to_dict() key set drifted. Missing: {_DRILLDOWN_NODE_GOLDEN_KEYS - set(d.keys())}. "
             f"Extra: {set(d.keys()) - _DRILLDOWN_NODE_GOLDEN_KEYS}."

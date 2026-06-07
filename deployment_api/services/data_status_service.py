@@ -77,6 +77,12 @@ from deployment_api.services.data_status_drilldown import (
 from deployment_api.services.data_status_drilldown import (
     build_bucket_name as _drilldown_build_bucket_name,
 )
+from deployment_api.services.data_status_union import (
+    has_provenance_columns as _has_provenance_columns,
+)
+from deployment_api.services.data_status_union import (
+    union_reduce_to_cells as _union_reduce_to_cells,
+)
 from deployment_api.settings import deployment_env_short as _env_short
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -1886,6 +1892,13 @@ def _compute_capture_status_counts(df: pd.DataFrame) -> CaptureStatusCounts:
         return CaptureStatusCounts()
     if _CAPTURE_STATUS_COL not in df.columns:
         return CaptureStatusCounts(captured=len(df))
+    # G3/M5 UNION: post-migration a cell carries one row per (source,
+    # pipeline_mode). Collapse to one honest row per cell BEFORE bucketing so a
+    # cell captured by >1 source/mode counts once (≥1 captured ⇒ captured) and
+    # never inflates ``captured`` past the de-dup'd denominator. v8 manifests
+    # (no provenance columns) already have one row per cell → skipped (no-op).
+    if _has_provenance_columns(df):
+        df = _union_reduce_to_cells(df)
     series = df[_CAPTURE_STATUS_COL].fillna(_CAPTURE_STATUS_CAPTURED).astype(str).str.lower()
     reason_col = df["error_reason"].astype(str) if "error_reason" in df.columns else pd.Series("", index=df.index)
     eu_mask = series == "expected_unattempted"
