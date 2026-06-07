@@ -364,16 +364,24 @@ jobs:
             fi
           done
 
+          # NOTE: ${#assoc[@]} on an EMPTY `declare -A` array still trips `set -u`
+          # ("unbound variable") on the runner's bash when a tick has no active-diverged /
+          # stranded hosts — which crashed the whole mirror (exit 1, no FF) every tick that
+          # found nothing wrong. Count into plain ints with nounset OFF so the empty case is 0.
+          set +u
+          div_hosts_n="${#div_hosts[@]}"
+          stranded_hosts_n="${#stranded_hosts[@]}"
+          set -u
           {
             echo "ff_n=${ff_n}"
             echo "defer_n=${defer_n}"
             echo "div_n=${div_n}"
             echo "col_n=${col_n}"
-            echo "div_hosts=${#div_hosts[@]}"
+            echo "div_hosts=${div_hosts_n}"
             echo "stranded_n=${stranded_n}"
-            echo "stranded_hosts=${#stranded_hosts[@]}"
+            echo "stranded_hosts=${stranded_hosts_n}"
           } >> "$GITHUB_OUTPUT"
-          echo "[ldr->tab] FF'd ${ff_n} tab(s) to settled target; deferred ${defer_n} (<15-min-fresh); ${div_n} diverged (active) across ${#div_hosts[@]} host(s); ${col_n} name-collision(s); ${stranded_n} stranded-on-dormant across ${#stranded_hosts[@]} host(s) (suppressed from loud alert)"
+          echo "[ldr->tab] FF'd ${ff_n} tab(s) to settled target; deferred ${defer_n} (<15-min-fresh); ${div_n} diverged (active) across ${div_hosts_n} host(s); ${col_n} name-collision(s); ${stranded_n} stranded-on-dormant across ${stranded_hosts_n} host(s) (suppressed from loud alert)"
 
       - name: Alert on divergence / collisions (#ci-failures + orchestrator)
         if: always() && (steps.sweep.outputs.div_n != '0' || steps.sweep.outputs.col_n != '0')
