@@ -41,11 +41,13 @@ jobs:
     steps:
       - name: Detect command
         id: cmd
+        env:
+          # Pass untrusted github.event.comment.body via env (NOT inlined into the script) —
+          # avoids the actionlint expression-injection error ([5.5] WORKFLOW LINT) + the
+          # real script-injection risk. https://docs.github.com/actions/security-guides/security-hardening
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          BODY=$(cat << 'BODYEOF'
-          ${{ github.event.comment.body }}
-          BODYEOF
-          )
+          BODY="$COMMENT_BODY"
           TRIMMED=$(echo "$BODY" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r\n')
           if echo "$TRIMMED" | grep -q "^/approve"; then
             echo "action=approve" >> "$GITHUB_OUTPUT"
@@ -95,14 +97,15 @@ jobs:
       - name: Parse issue metadata
         if: steps.cmd.outputs.action != 'none'
         id: meta
+        env:
+          # Untrusted github.event.issue.body via env, not inlined (actionlint expression
+          # injection guard + real script-injection mitigation).
+          ISSUE_BODY_RAW: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
 
           # Extract JSON from <!-- major-bump-metadata ... --> block in issue body
-          ISSUE_BODY=$(cat << 'ISSUEEOF'
-          ${{ github.event.issue.body }}
-          ISSUEEOF
-          )
+          ISSUE_BODY="$ISSUE_BODY_RAW"
 
           METADATA=$(echo "$ISSUE_BODY" | python3 -c "
           import sys, re, json
