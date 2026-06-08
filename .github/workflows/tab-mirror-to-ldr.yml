@@ -125,11 +125,41 @@ jobs:
 
       - name: Fast-forward LDR to tab tip
         if: steps.ff_check.outputs.decision == 'ff'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
           echo "[mirror] ${GITHUB_REF} -> live-defi-rollout (${{ steps.ff_check.outputs.reason }})"
+          # PAT-authed LDR push (NOT GITHUB_TOKEN). GitHub SUPPRESSES workflow events for
+          # GITHUB_TOKEN-authored pushes, so a GITHUB_TOKEN LDR advance never fires the
+          # `pull_request: synchronize` on an open LDR->staging promote PR -> its required
+          # quality-gates-v2 + check-staging-lock never re-run on the new head -> the PR wedges
+          # on never-reported required checks (the root cause that forced manual admin-merges;
+          # cicd_contract_hardening_2026_06_01.md § "bot-token suppression"). Pushing LDR with the
+          # workflow-scoped GH_PAT makes `synchronize` fire natively, so the promote PR re-gates on
+          # every head advance with no close+reopen workaround.
+          # LOOP-SAFE: live-defi-rollout does NOT match this job's `push: tab/**` trigger, so a
+          # PAT-authed LDR push never recursively re-triggers leg A. (The TAB force-push below MUST
+          # stay GITHUB_TOKEN — it targets tab/** and WOULD recursively re-trigger this workflow.)
+          # actions/checkout persists the GITHUB_TOKEN as an `http.<server>.extraheader` basic-auth
+          # header that takes precedence over URL userinfo, so we SWAP it for a GH_PAT basic-auth
+          # header (exactly the form checkout uses) for the LDR push, then restore it. This is the
+          # only reliable override (clearing the header to empty sends a malformed Authorization and
+          # 401s; a second `-c` extraheader stacks two Authorization headers). No tab force-push in
+          # this step, so the restore is belt-and-braces.
+          HDR_KEY="http.https://github.com/.extraheader"
+          SAVED_HDR="$(git config --get "$HDR_KEY" 2>/dev/null || true)"
+          git config --unset-all "$HDR_KEY" 2>/dev/null || true
+          git config "$HDR_KEY" "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
           # Default `git push` (no --force) is FF-only on the destination ref.
           if git push origin "HEAD:live-defi-rollout" 2>&1 | tee /tmp/push.log; then
+            push_ok=1
+          else
+            push_ok=0
+          fi
+          git config --unset-all "$HDR_KEY" 2>/dev/null || true
+          [ -n "$SAVED_HDR" ] && git config "$HDR_KEY" "$SAVED_HDR"
+          if [ "$push_ok" = "1" ]; then
             echo "[mirror:done] LDR advanced to $(git rev-parse HEAD | head -c 8)"
           else
             echo "[mirror:race-lost] another push beat us; LDR is now ahead of this tab tip"
@@ -141,8 +171,20 @@ jobs:
       - name: Rebase onto LDR + mirror (diverged tab)
         id: rebase
         if: steps.ff_check.outputs.decision == 'rebase'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -uo pipefail   # NOT -e: rebase/push failures are handled explicitly
+          # The LDR push must authenticate as GH_PAT (fires the promote PR's synchronize — see the
+          # FF step rationale); the TAB realign force-push below MUST stay GITHUB_TOKEN (targets
+          # tab/** -> would recursively re-trigger leg A). We therefore SWAP the checkout-persisted
+          # GITHUB_TOKEN extraheader for a GH_PAT one only around the LDR pushes, then RESTORE the
+          # GITHUB_TOKEN header before the tab force-push.
+          HDR_KEY="http.https://github.com/.extraheader"
+          SAVED_HDR="$(git config --get "$HDR_KEY" 2>/dev/null || true)"
+          PAT_HDR="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)"
+          use_pat_auth() { git config --unset-all "$HDR_KEY" 2>/dev/null || true; git config "$HDR_KEY" "$PAT_HDR"; }
+          use_token_auth() { git config --unset-all "$HDR_KEY" 2>/dev/null || true; [ -n "$SAVED_HDR" ] && git config "$HDR_KEY" "$SAVED_HDR"; return 0; }
           orig_sha="$(git rev-parse HEAD)"      # lease anchor: only realign tab if remote still here
           git config user.name "tab-mirror[bot]"
           git config user.email "ikennaigboaka@gmail.com"
@@ -156,9 +198,11 @@ jobs:
               echo "outcome=conflict" >> "$GITHUB_OUTPUT"
               exit 0   # expected outcome — the orchestrator surfaces it via the webhook
             fi
+            use_pat_auth
             if git push origin "HEAD:live-defi-rollout" 2>/tmp/ldr.log; then
-              landed=1; break
+              use_token_auth; landed=1; break
             fi
+            use_token_auth
             if ! grep -qE "non-fast-forward|rejected|fetch first|stale info" /tmp/ldr.log; then
               echo "[mirror:error] unexpected LDR push failure:"; cat /tmp/ldr.log; exit 1
             fi
