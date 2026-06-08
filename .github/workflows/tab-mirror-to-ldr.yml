@@ -93,7 +93,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout pushed tab branch (full history needed for FF/rebase)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -239,7 +239,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout LDR (full history; tab refs fetched below)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: live-defi-rollout
           fetch-depth: 0
