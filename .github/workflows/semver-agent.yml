@@ -234,25 +234,30 @@ jobs:
             CHANGED_FILES=$(git diff --name-only "${BASELINE_SHA_FOR_DIFF}..HEAD" 2>/dev/null || echo "")
           fi
 
-          # Check public __init__.py exports
-          INIT_PY=$(find . -name "__init__.py" -path "*deployment_api/__init__.py" | head -1 || echo "")
-          if [ -n "$INIT_PY" ] && echo "$CHANGED_FILES" | grep -q "__init__.py"; then
-            REMOVED_EXPORTS=$(git diff "$DIFF_BASE" HEAD -- "$INIT_PY" 2>/dev/null | grep "^-" | grep -E "^-[^-]" | grep -v "^---" || echo "")
-            ADDED_EXPORTS=$(git diff "$DIFF_BASE" HEAD -- "$INIT_PY" 2>/dev/null | grep "^+" | grep -E "^\+[^+]" | grep -v "^+++" || echo "")
-            if [ -n "$REMOVED_EXPORTS" ] && [ "$BUMP" != "breaking" ]; then
-              echo "WARNING: Removed lines in public __init__.py — MAJOR signal (removed/renamed export)"
-              BUMP="breaking"
-            elif [ -n "$ADDED_EXPORTS" ] && [ -z "$BUMP" ]; then
-              BUMP="minor"
+          # ── Content-based public-surface breaking detection (SSOT differ) ──
+          # Replaces the crude `git diff __init__.py | grep '^-'` heuristic (flagged ANY removed
+          # line — reformat / reorder / docstring — as breaking; the false-positive source of
+          # spurious cascade locks) with an AST diff of the PUBLIC API/schema surface (differ
+          # fetched from unified-trading-pm): removed export/class/method, incompatible signature,
+          # removed/renamed/retyped schema field, or removed HTTP route = breaking; additive /
+          # docstring / reformat / move-across-modules = NOT breaking.
+          if [ "$BUMP" != "breaking" ]; then
+            DIFFER="scripts/cicd/detect_breaking_change.py"
+            if [ ! -f "$DIFFER" ]; then
+              gh api "repos/${GH_ORG}/unified-trading-pm/contents/scripts/cicd/detect_breaking_change.py" \
+                --jq '.content' 2>/dev/null | base64 -d > /tmp/detect_breaking_change.py \
+                && DIFFER="/tmp/detect_breaking_change.py"
             fi
-          fi
-
-          # Check HTTP route removals
-          if echo "$CHANGED_FILES" | grep -qE "\.(py)$"; then
-            ROUTE_REMOVALS=$(git diff "$DIFF_BASE" HEAD 2>/dev/null | grep "^-" | grep -E "@(app|router)\.(get|post|put|delete|patch)\(" | grep -v "^---" || echo "")
-            if [ -n "$ROUTE_REMOVALS" ] && [ "$BUMP" != "breaking" ]; then
-              echo "WARNING: Detected removed HTTP routes — MAJOR signal"
+            SURFACE=$(python3 "$DIFFER" --source-dir "${SOURCE_DIR}" --base-ref "$DIFF_BASE" --head-ref HEAD --json 2>/dev/null \
+              || echo '{"is_breaking": false, "reasons": ["differ-unavailable"]}')
+            echo "Public-surface diff verdict: $SURFACE"
+            if echo "$SURFACE" | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('is_breaking') else 1)" 2>/dev/null; then
+              echo "Public API/schema surface changed incompatibly -> breaking"
               BUMP="breaking"
+            elif [ -z "$BUMP" ]; then
+              if echo "$SURFACE" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('new_export_count',0) > d.get('old_export_count',0) else 1)" 2>/dev/null; then
+                BUMP="minor"
+              fi
             fi
           fi
 
