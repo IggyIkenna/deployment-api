@@ -33,6 +33,13 @@ on:
   push:
     branches:
       - main
+  # Drift-tick (2026-06-08): `[skip ci]` commits to main suppress ALL Actions triggers —
+  # including this push trigger — so main drifts ahead of LDR by automation commits. A
+  # scheduled run is NOT `[skip ci]`-suppressed, so it sweeps accumulated drift with no real
+  # commit, making "main never ahead of LDR" actually hold (not just eventually-converge).
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
 
 concurrency:
   group: main-backmerge-to-ldr
