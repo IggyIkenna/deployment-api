@@ -170,8 +170,23 @@ jobs:
           echo "--- Step 2: Determining commit range ---"
 
           if [ "$BASELINE" = "0.0.0" ]; then
-            COMMITS=$(git log --oneline 2>/dev/null || echo "")
-            echo "No prior staging version — scanning all commits"
+            # BASELINE=0.0.0 is USUALLY SPURIOUS, not a genuine first release: the manifest
+            # staging_versions entry can read 0.0.0/missing for a repo that HAS released (e.g. a
+            # staging merge-sync bumped before the manifest had a baseline — incident 2026-06-09,
+            # deployment-api=0.3.0). Scanning ALL history then catches an ancient `feat!:` → BUMP=breaking
+            # → spurious fleet-locking cascade (the differ is skipped once BUMP=breaking). So bound the
+            # scan the SAME way as the unresolvable-baseline fail-safe below: to the most recent
+            # release/version commit reachable from HEAD. Only if NONE exists is this a genuine first
+            # release → then all-history is correct (no prior release to bound to; the 0.0.0 first-bump
+            # rule governs the version anyway). Closes the 0.0.0-branch gap in the 2026-06-09 bounded-scan fix.
+            BASELINE_SHA=$(git log --oneline | grep -m1 -E "chore\((release|version)\):" | awk '{print $1}' 2>/dev/null || echo "")
+            if [ -n "$BASELINE_SHA" ]; then
+              COMMITS=$(git log --oneline "${BASELINE_SHA}..HEAD" 2>/dev/null || echo "")
+              echo "BASELINE=0.0.0 but a prior release/version commit exists ($BASELINE_SHA) → SPURIOUS 0.0.0; BOUNDED scan (fail-safe; was all-history — the 2026-06-09 spurious-cascade bug)"
+            else
+              COMMITS=$(git log --oneline 2>/dev/null || echo "")
+              echo "BASELINE=0.0.0 and no prior release commit → genuine first release; scanning all commits"
+            fi
           else
             # Resolve the baseline-version commit ROBUSTLY (incident 2026-06-09): UAC 0.3.0 was set by an
             # admin `chore(version): align ... to 0.3.0` commit, NOT a `bump version to 0.3.0` message, so the
