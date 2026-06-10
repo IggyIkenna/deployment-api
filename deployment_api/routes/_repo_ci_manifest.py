@@ -99,6 +99,27 @@ class ManifestView:
         reason = self._staging_status.get("locked_reason")
         return str(reason) if reason else None
 
+    def resolve_repo(self, name: str) -> str | None:
+        """Resolve a DEPLOYMENT-SERVICE name to its hosting REPO (or the repo itself).
+
+        The canonical mapping is `repositories[repo].consolidates[]` (e.g. features-service
+        consolidates features-delta-one-service et al; ml-service consolidates ml-training/
+        ml-inference) — so the per-service CI tab works for consolidated service names too.
+        """
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return None
+        repos = cast(dict[str, object], repositories)
+        if name in repos:
+            return name
+        for repo_name, meta_obj in repos.items():
+            if not isinstance(meta_obj, dict):
+                continue
+            consolidates = cast(dict[str, object], meta_obj).get("consolidates")
+            if isinstance(consolidates, list) and name in cast(list[object], consolidates):
+                return repo_name
+        return None
+
     def deployed_version_for(self, repo: str) -> str | None:
         """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal)."""
         deployed = self._raw.get("deployed_versions")

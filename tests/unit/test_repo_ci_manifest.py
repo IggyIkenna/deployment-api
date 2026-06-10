@@ -26,6 +26,17 @@ _FIXTURE: dict[str, object] = {
     "deployed_versions": {"greeks-service": "0.9.1"},
 }
 
+_FIXTURE_CONSOLIDATES: dict[str, object] = {
+    "repositories": {
+        "features-service": {
+            "type": "service",
+            "consolidates": ["features-delta-one-service", "features-onchain-service"],
+        },
+        "ml-service": {"type": "service", "consolidates": ["ml-training-service", "ml-inference-service"]},
+        "unified-trading-library": {"type": "library"},
+    },
+}
+
 
 class TestManifestView:
     def test_repos_sorted_and_typed(self) -> None:
@@ -60,6 +71,15 @@ class TestManifestView:
         view = manifest_view_from_raw(_FIXTURE)
         assert view.deployed_version_for("greeks-service") == "0.9.1"
         assert view.deployed_version_for("unified-trading-library") is None
+
+    def test_resolve_repo_exact_and_consolidated(self) -> None:
+        # Canonical service→repo mapping = repositories[repo].consolidates[] (manifest-documented).
+        view = manifest_view_from_raw(_FIXTURE_CONSOLIDATES)
+        assert view.resolve_repo("features-service") == "features-service"
+        assert view.resolve_repo("features-delta-one-service") == "features-service"
+        assert view.resolve_repo("ml-inference-service") == "ml-service"
+        assert view.resolve_repo("unified-trading-library") == "unified-trading-library"
+        assert view.resolve_repo("not-a-thing") is None
 
     def test_empty_manifest_safe(self) -> None:
         view = manifest_view_from_raw({})
