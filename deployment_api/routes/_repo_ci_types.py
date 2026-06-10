@@ -172,3 +172,19 @@ class RepoDetailResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api respon
     open_prs: list[RepoPrDict]
     sit: SitStateDict
     image: ImageSignalDict
+
+
+class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """GET /api/repo-ci/fleet-git-health — proxied agent-orchestrator fleet git-health.
+
+    Operator decision v2 (2026-06-10): deployment-ui is the single devops pane, so
+    deployment-api proxies the orchestrator's /api/fleet/git-health server-side. Honest
+    degradation: when the orchestrator is unreachable or no token is configured,
+    available=False + a reason; `orchestrator_url` always lets the UI deep-link to the
+    orchestrator's own Fleet Git-Health page (the authoritative git-health surface).
+    """
+
+    available: bool
+    reason: str  # "" when available; failure reason otherwise (honest, never fabricated)
+    orchestrator_url: str  # always present → UI deep-link target (the AO UI)
+    data: dict[str, object] | None  # the orchestrator FleetGitHealthResponse payload, or None

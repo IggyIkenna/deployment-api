@@ -106,3 +106,51 @@ class TestDetailMock:
         with patch(_PATCH_MOCK_MODE, return_value=True):
             resp = client_repo_ci.get("/api/repo-ci/not-a-repo/detail")
         assert resp.status_code == 200  # mock mode serves the first fixture row
+
+
+class TestFleetGitHealthMock:
+    def test_fleet_git_health_mock_shape(self, client_repo_ci: TestClient) -> None:
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            resp = client_repo_ci.get("/api/repo-ci/fleet-git-health")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Always carries the orchestrator deep-link URL (git-health click-through → AO UI).
+        assert body["orchestrator_url"].startswith("http")
+        assert body["available"] is True
+        assert body["reason"] == ""
+        data = body["data"]
+        assert data is not None
+        assert data["summary"]["drift_violations"] == 1
+        # The drift-violating repo is flagged + rolled up.
+        drift_repos = {d["repo"] for d in data["drift_violations"]}
+        assert "execution-service" in drift_repos
+        flagged = [
+            r["name"]
+            for h in data["hosts"]
+            for s in h["slots"]
+            for r in r_iter(s)
+            if r["drift_violation"]
+        ]
+        assert "execution-service" in flagged
+
+
+def r_iter(slot: dict[str, object]) -> list[dict[str, object]]:
+    repos = slot["repos"]
+    assert isinstance(repos, list)
+    return repos
+
+
+class TestFleetGitHealthDegrade:
+    def test_proxy_degrades_honestly_without_token(self) -> None:
+        """No token configured → available=False + a reason + the deep-link URL, never raises."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from deployment_api.routes import _repo_ci_fleet
+
+        with patch.object(_repo_ci_fleet, "_resolve_orchestrator_token", new=AsyncMock(return_value=None)):
+            result = asyncio.run(_repo_ci_fleet.fetch_fleet_git_health("proj"))
+        assert result["available"] is False
+        assert result["data"] is None
+        assert "token" in result["reason"]
+        assert result["orchestrator_url"].startswith("http")
