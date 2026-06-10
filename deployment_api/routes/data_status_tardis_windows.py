@@ -13,12 +13,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from unified_api_contracts.registry.tardis_free_coverage import TARDIS_FREE_ROLLING_WINDOW_DAYS
 
-from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes.venue_credentials import get_tardis_key_status
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-_cfg = DeploymentApiConfig()
 
 
 class TardisFreeTierRules(BaseModel):
@@ -35,6 +33,9 @@ class VenueTardisWindowsResponse(BaseModel):
     free_tier: TardisFreeTierRules
 
 
+# QG-allow: data-status-no-coverage — returns Tardis free-tier access RULES (rolling-window
+# cutoff + key status), not a manifest-coverage read; the canonical coverage helper does not
+# apply here. See codex/06-coding-standards/data-status-endpoint-contract.md § Exemption.
 @router.get("/api/data-status/venue-tardis-windows", response_model=VenueTardisWindowsResponse)
 async def get_venue_tardis_windows() -> VenueTardisWindowsResponse:
     """Return Tardis free-tier access rules + current key status.
