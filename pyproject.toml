@@ -36,7 +36,7 @@ dependencies = [
     # LLM commentary (pipeline UAT — optional at runtime, required as dep)
     "anthropic>=0.87.0,<1.0.0",
     # Internal libraries
-    "unified-trading-library>=0.1.0,<1.0.0",
+    "unified-trading-library>=0.6.0,<1.0.0",
     "unified-api-contracts>=0.6.0,<1.0.0",
     "deployment-service>=0.8.0,<1.0.0",
     "strategy-service>=0.2.0,<1.0.0",
