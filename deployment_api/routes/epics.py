@@ -20,12 +20,84 @@ import logging
 from pathlib import Path
 from typing import cast
 
+import aiohttp
 import yaml
 from fastapi import APIRouter, HTTPException, Request
+
+from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.routes._epics_plans import load_epics_plans
+from deployment_api.routes._epics_plans_types import (
+    EpicCardDict,
+    EpicPlanDict,
+    EpicsPlansResponseDict,
+)
+from deployment_api.routes._repo_ci_github import resolve_gh_token
+from deployment_api.settings import gcp_project_id as default_project_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _mock_plan(slug: str, parent: str, done: int, open_: int, open_p01: int) -> EpicPlanDict:
+    total = done + open_
+    return EpicPlanDict(
+        slug=slug,
+        parent_epic=parent,
+        status="active",
+        estimate_class="brand-new",
+        done=done,
+        open=open_,
+        open_p0p1=open_p01,
+        pct=round(100.0 * done / total, 1) if total > 0 else 0.0,
+        github_url=f"https://github.com/IggyIkenna/unified-trading-pm/blob/main/plans/active/{slug}.md",
+    )
+
+
+def _mock_epics_plans() -> EpicsPlansResponseDict:
+    """Mock fixture mirroring _epics_plans.load_epics_plans — two epics (one with plans,
+    one empty) + one orphan, so the UI/playwright can assert cards, drilldown, orphans."""
+    obs_plans = [
+        _mock_plan("monitoring_control_plane_master_2026_06_10", "observability_master", 18, 5, 2),
+        _mock_plan("ci_dashboard_deployment_ui_2026_06_10", "observability_master", 30, 6, 1),
+    ]
+    epics: list[EpicCardDict] = [
+        EpicCardDict(
+            name="observability_master",
+            title="Observability Master",
+            tier="L4",
+            priority="P0",
+            assigned_vm="vm-cross-cutting",
+            status="active",
+            github_url="https://github.com/IggyIkenna/unified-trading-pm/blob/main/plans/epics/observability_master.md",
+            plans=obs_plans,
+            plan_count=len(obs_plans),
+            done_total=48,
+            open_total=11,
+        ),
+        EpicCardDict(
+            name="orchestrator_master",
+            title="Orchestrator Master",
+            tier="L4",
+            priority="P1",
+            assigned_vm="vm-orchestrator",
+            status="active",
+            github_url="https://github.com/IggyIkenna/unified-trading-pm/blob/main/plans/epics/orchestrator_master.md",
+            plans=[],
+            plan_count=0,
+            done_total=0,
+            open_total=0,
+        ),
+    ]
+    orphans = [_mock_plan("some_orphan_plan_2026_06_10", "", 2, 4, 1)]
+    return EpicsPlansResponseDict(
+        generated_at="2026-06-10T13:00:00Z",
+        source="mock",
+        epics=epics,
+        orphans=orphans,
+        orphan_count=len(orphans),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -351,6 +423,25 @@ async def list_epics(request: Request) -> list[dict[str, object]]:
         )
 
     return summaries
+
+
+@router.get("/plans")
+async def list_epic_plans() -> EpicsPlansResponseDict:
+    """Epics tab v2 — LIVE PM epics + active-plan drilldown (operator add 2026-06-10).
+
+    Replaces the stale archived-codex asset-class view: reads `plans/epics/*.md` +
+    `plans/active/*.md` frontmatter from PM `main` (GitHub contents API, 300 s TTL),
+    rolls active plans under their `parent_epic`, counts checkboxes for completion %,
+    and surfaces orphans (no parent_epic) as a review-blocking strip. Declared BEFORE
+    `/{epic_id}` so `/plans` is not captured by the path param. Honest 503 on no token.
+    """
+    cfg = DeploymentApiConfig()
+    if cfg.is_mock_mode():
+        return _mock_epics_plans()
+    project_id = default_project_id or ""
+    token = await resolve_gh_token(project_id)
+    async with aiohttp.ClientSession() as session:
+        return await load_epics_plans(session, token)
 
 
 @router.get("/{epic_id}")
