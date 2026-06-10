@@ -58,6 +58,7 @@ from ._repo_ci_types import (
     ImageSignalDict,
     OverviewResponseDict,
     RepoDetailResponseDict,
+    RepoErrorDict,
     RepoOverviewDict,
     RepoPrDict,
     SitJobDict,
@@ -247,6 +248,8 @@ def _mock_overview() -> OverviewResponseDict:
         stuck_prs=stuck_prs,
         stuck_in_sit=stuck_in_sit,
         sit_last_run=sit_last_run,
+        # One sample degraded repo so the UI errors[] panel + its regression spec have data.
+        errors=[RepoErrorDict(repo="alerting-service", error="HTTP 502 from GitHub compare")],
     )
 
 
@@ -455,7 +458,10 @@ async def _overview_row(
     sit_run: tuple[str | None, int | None],
     builds: dict[str, tuple[str | None, str | None]],
     semaphore: asyncio.Semaphore,
-) -> RepoOverviewDict | None:
+) -> RepoOverviewDict | RepoErrorDict:
+    """Aggregate one repo's row. On a per-repo (non-rate-limit) failure return a typed
+    RepoErrorDict instead of dropping the repo silently (operator add 2026-06-10) — the
+    overview endpoint splits rows from errors so a degraded repo stays VISIBLE."""
     async with semaphore:
         try:
             branches, deltas = await _repo_branches_and_deltas(session, token, meta.name)
@@ -463,11 +469,11 @@ async def _overview_row(
         except HTTPException as exc:
             if exc.status_code == 503:
                 raise  # rate-limit is global — surface it honestly
-            logger.warning("[REPO-CI] %s aggregation degraded (dropped row): %s", meta.name, exc.detail)
-            return None
+            logger.warning("[REPO-CI] %s aggregation degraded (errors[] entry): %s", meta.name, exc.detail)
+            return RepoErrorDict(repo=meta.name, error=str(exc.detail))
         except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
-            logger.warning("[REPO-CI] %s aggregation failed: %s", meta.name, exc)
-            return None
+            logger.warning("[REPO-CI] %s aggregation failed (errors[] entry): %s", meta.name, exc)
+            return RepoErrorDict(repo=meta.name, error=f"{type(exc).__name__}: {exc}")
     sit = derive_sit_state(
         repo=meta.name,
         breaking_pending=view.breaking_pending,
@@ -507,7 +513,13 @@ async def get_overview() -> OverviewResponseDict:
         rows_raw = await asyncio.gather(
             *[_overview_row(session, token, view, meta, sit_run, builds, semaphore) for meta in view.repos]
         )
-    rows = [row for row in rows_raw if row is not None]
+    rows: list[RepoOverviewDict] = []
+    errors: list[RepoErrorDict] = []
+    for result in rows_raw:
+        if "error" in result:  # RepoErrorDict carries an "error" key; RepoOverviewDict does not
+            errors.append(result)
+        else:
+            rows.append(result)
     stuck_prs = [pr for row in rows for pr in row["open_prs"] if pr.get("stuck_class")]
     stuck_in_sit = [row["repo"] for row in rows if row["sit"]["stuck_in_sit"]]
     return OverviewResponseDict(
@@ -517,6 +529,7 @@ async def get_overview() -> OverviewResponseDict:
         stuck_prs=stuck_prs,
         stuck_in_sit=stuck_in_sit,
         sit_last_run=_to_sit_last_run(sit_last_run),
+        errors=errors,
     )
 
 

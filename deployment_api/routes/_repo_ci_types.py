@@ -128,6 +128,17 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     image: ImageSignalDict
 
 
+class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """A repo whose row was dropped from the overview because its aggregation failed.
+
+    Surfaced (operator add 2026-06-10) so a degraded row is VISIBLE, not silently dropped —
+    a per-repo GitHub 5xx / timeout / client error degrades that one repo to an errors[]
+    entry while the rest of the fleet renders (shard-level isolation)."""
+
+    repo: str
+    error: str
+
+
 class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/overview response."""
 
@@ -137,6 +148,7 @@ class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response
     stuck_prs: list[RepoPrDict]  # fleet-wide triage queue (operator add)
     stuck_in_sit: list[str]  # repos currently stuck in SIT (operator add)
     sit_last_run: SitLastRunDict | None  # live SIT run panel (alert-parity, operator add)
+    errors: list[RepoErrorDict]  # repos dropped on aggregation failure (operator add — never silent)
 
 
 class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

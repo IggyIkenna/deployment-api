@@ -70,11 +70,23 @@ class TestOverviewMock:
     def test_stuck_prs_match_rows(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):
             body = client_repo_ci.get("/api/repo-ci/overview").json()
-        from_rows = {
-            (pr["repo"], pr["number"]) for row in body["repos"] for pr in row["open_prs"] if pr["stuck_class"]
-        }
+        from_rows = {(pr["repo"], pr["number"]) for row in body["repos"] for pr in row["open_prs"] if pr["stuck_class"]}
         from_panel = {(pr["repo"], pr["number"]) for pr in body["stuck_prs"]}
         assert from_rows == from_panel
+
+    def test_errors_block_present(self, client_repo_ci: TestClient) -> None:
+        # Operator add 2026-06-10: a degraded repo surfaces as an errors[] entry, never a
+        # silently-dropped row. The mock seeds one so the UI panel + spec have data.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        assert "errors" in body
+        assert isinstance(body["errors"], list)
+        assert body["errors"], "mock seeds at least one degraded-repo error"
+        err = body["errors"][0]
+        assert {"repo", "error"} <= set(err)
+        # An errors[] repo must NOT also appear as a rendered row (it was dropped from rows).
+        row_repos = {r["repo"] for r in body["repos"]}
+        assert err["repo"] not in row_repos
 
 
 class TestDetailMock:
