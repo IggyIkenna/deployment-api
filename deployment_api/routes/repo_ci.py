@@ -23,6 +23,12 @@ from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.settings import GITHUB_ORG
 from deployment_api.settings import gcp_project_id as default_project_id
 
+from ._cloud_builds_history import (
+    _get_recent_builds_for_triggers,  # pyright: ignore[reportPrivateUsage]
+)
+from ._cloud_builds_trigger import (
+    _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
+)
 from ._repo_ci_github import (
     age_minutes,
     branch_head,
@@ -369,13 +375,6 @@ async def _latest_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
     if _builds_cache is not None and now - _builds_cache[0] < _BUILDS_CACHE_TTL:
         return _builds_cache[1]
     try:
-        from ._cloud_builds_history import (
-            _get_recent_builds_for_triggers,  # pyright: ignore[reportPrivateUsage]
-        )
-        from ._cloud_builds_trigger import (
-            _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
-        )
-
         triggers = await asyncio.to_thread(_build_trigger_list_sync)
         trigger_to_repo = {t["trigger_id"]: str(t.get("service") or "") for t in triggers}
         builds = await _get_recent_builds_for_triggers(list(trigger_to_repo.keys()))

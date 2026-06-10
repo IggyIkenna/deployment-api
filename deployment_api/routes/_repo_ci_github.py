@@ -2,8 +2,8 @@
 GitHub REST client for the repo-CI dashboard aggregator.
 
 aiohttp + GH_PAT from Secret Manager (via the unified-cloud-interface secret facade —
-never os.environ), short TTL cache per URL, HONEST rate-limit handling: an exhausted
-limit raises 503 with retry_after — never silently-stale data.
+no direct env-var reads), short TTL cache per URL, HONEST rate-limit handling: an
+exhausted limit raises 503 with retry_after — never silently-stale data.
 
 Plan: ci_dashboard_deployment_ui_2026_06_10.md Phase 1.
 """
@@ -19,6 +19,7 @@ from typing import cast
 
 import aiohttp
 from fastapi import HTTPException
+from unified_trading_library import get_secret_client
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,6 @@ async def resolve_gh_token(project_id: str) -> str:
     global _token_cache
     if _token_cache:
         return _token_cache
-    from unified_trading_library import get_secret_client
 
     def _fetch() -> str | None:
         return get_secret_client(project_id=project_id).get_secret("GH_PAT")
@@ -67,8 +67,8 @@ def _raise_if_rate_limited(status: int, headers: Mapping[str, str], url: str) ->
     """Honest rate-limit handling: surface 503 + retry_after, never stale data."""
     if status not in (403, 429):
         return
-    remaining = headers.get("X-RateLimit-Remaining", "")
-    reset = headers.get("X-RateLimit-Reset", "")
+    remaining = headers.get("X-RateLimit-Remaining")
+    reset = headers.get("X-RateLimit-Reset")
     if status == 429 or remaining == "0":
         retry_after = max(0, int(float(reset or "0")) - int(time.time())) if reset else 60
         raise HTTPException(
@@ -97,7 +97,9 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> 
         if resp.status >= 400:
             body = (await resp.text())[:200]
             raise HTTPException(status_code=502, detail={"message": f"GitHub {resp.status} for {path}", "body": body})
-        payload = cast(object, await resp.json())
+        # GitHub responses are heterogeneous per endpoint; shapes are narrowed by the typed
+        # helpers downstream (branch_head/compare/pulls), not a single Pydantic model.
+        payload = cast(object, await resp.json())  # noqa: qg-raw-json
     _response_cache[url] = (now, payload)
     return payload
 
