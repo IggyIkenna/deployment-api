@@ -531,8 +531,13 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
     token = await resolve_gh_token(project_id)
     async with aiohttp.ClientSession() as session:
         view = await load_manifest_view(session, token)
-        if repo not in {m.name for m in view.repos}:
-            raise HTTPException(status_code=404, detail=f"unknown repo: {repo}")
+        # Accept deployment-SERVICE names too — resolve via manifest `consolidates[]`
+        # (e.g. features-delta-one-service → features-service), so the per-service CI tab
+        # works for every entry in the service list (operator 2026-06-10).
+        resolved = view.resolve_repo(repo)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail=f"unknown repo/service: {repo}")
+        repo = resolved
         sit_run = _sit_run_tuple(
             await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SIT_WORKFLOW_FILE)
         )
