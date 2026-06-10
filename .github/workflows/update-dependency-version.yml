@@ -5,7 +5,9 @@ name: update-dependency-version
 #
 # Routing logic (based on bump_type in payload):
 #   MAJOR bump -> create branch + PR targeting staging (quality gates required -- breaking change)
-#   MINOR/PATCH -> direct commit to staging with [skip ci] (compatible update, no QG needed)
+#   MINOR/PATCH -> direct commit to staging (compatible update; the reusable QG fast-paths this
+#                  metadata-only pin to GREEN so it carries a check for the promotion PR without
+#                  a full run -- NO [skip ci]; plan semver_version_bump_skip_ci_promotion_block)
 #
 # Dispatch payload:
 #   {dep_name, dep_version, constraint, bump_type, is_breaking, chain_depth}
@@ -36,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -148,7 +150,12 @@ jobs:
           git add pyproject.toml
           # Stage the re-locked uv.lock alongside the constraint bump so they never drift.
           git add uv.lock 2>/dev/null || true
-          git commit -m "chore(deps): pin ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }} [skip ci]"
+          # NO [skip ci] (2026-06-09, plan semver_version_bump_skip_ci_promotion_block): a
+          # [skip ci] pin commit produces zero checks, so when it is the staging->main promotion
+          # PR head the required quality-gates-v2 context is MISSING -> the PR is BLOCKED. The
+          # reusable QG fast-paths this metadata-only commit (chore(deps) pin, pyproject/uv.lock
+          # only) to GREEN in seconds, so it gets a check without a wasteful full run.
+          git commit -m "chore(deps): pin ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }}"
           git push origin staging
 
       - name: Create PR to staging (MAJOR or breaking -- requires quality gates)
