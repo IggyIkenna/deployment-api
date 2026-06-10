@@ -427,3 +427,24 @@ def _reset_rate_limit_windows() -> _Generator[None]:
     yield
 
     _rl._ENDPOINT_WINDOWS.clear()
+
+
+@_pytest.fixture(autouse=True)
+def _isolate_events_globals() -> _Generator[None]:
+    """Snapshot + restore the unified_trading_library.events module globals around every test.
+
+    test_lifespan exercises the real FastAPI lifespan, whose `fastapi_uei_lifespan` else-branch
+    calls `setup_service_observability(mode=<non-test>, sink=<real sink>)` — flipping the shared
+    `_mode`/`_writer` out of test mode and never restoring them. Later tests that call `log_event`
+    (tarball `trigger_refresh`/`ensure_fresh`, vm_events real-mode) then raise
+    "Event logging not initialized" / fail the real sink — a deterministic cross-file pollution
+    surfaced under `pytest -n` work-stealing as 2-3 "flaky" failures. Restoring the globals here
+    isolates the leak.
+    """
+    import unified_trading_library.events as _ev
+
+    _saved = (_ev._mode, _ev._writer, _ev._service_name)  # pyright: ignore[reportPrivateUsage]
+    try:
+        yield
+    finally:
+        _ev._mode, _ev._writer, _ev._service_name = _saved  # pyright: ignore[reportPrivateUsage]
