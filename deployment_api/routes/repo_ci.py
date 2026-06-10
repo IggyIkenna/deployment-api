@@ -34,6 +34,7 @@ from ._code_builds_aws import (
     is_aws_provider,
     list_codebuild_projects_sync,
 )
+from ._repo_ci_alerts import AlertEntryDict, AlertsPayloadDict, derive_streams, load_alerts_payload
 from ._repo_ci_github import (
     age_minutes,
     branch_head,
@@ -610,6 +611,52 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
         sit=sit,
         image=_image_signal(view, repo, main_sha, await _latest_builds_by_repo()),
     )
+
+
+
+def _mock_alerts() -> AlertsPayloadDict:
+    """Mock alert ledger — a lifecycle pair (FAILED -> RESOLVED) + a live CRITICAL, so the
+    UI/playwright can assert current-vs-previous traceability."""
+    entries: list[AlertEntryDict] = [
+        AlertEntryDict(
+            kind="alert", timestamp="2026-06-10T12:10:00Z", repo="unified-trading-pm",
+            workflow_name="ci-status-update", severity="CRITICAL", conclusion="failure",
+            message="CI REGRESSION: deployment-api is now FAILING (was MAIN_GREEN)",
+            run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/1",
+        ),
+        AlertEntryDict(
+            kind="alert", timestamp="2026-06-10T12:50:00Z", repo="unified-trading-pm",
+            workflow_name="ci-status-update", severity="INFO", conclusion="success",
+            message="RESOLVED: deployment-api recovered (FAILING -> MAIN_GREEN)",
+            run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/2",
+        ),
+        AlertEntryDict(
+            kind="alert", timestamp="2026-06-10T13:00:00Z", repo="unified-trading-pm",
+            workflow_name="sit-unlock", severity="INFO", conclusion="success",
+            message="SIT PASSED — staging UNLOCKED, breaking_pending cleared. Promotion queue flowing.",
+            run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/3",
+        ),
+        AlertEntryDict(
+            kind="alert", timestamp="2026-06-10T13:05:00Z", repo="execution-service",
+            workflow_name="quality-gates-v2", severity="CRITICAL", conclusion="failure",
+            message="quality-gates-v2 FAILED on main",
+            run_url="https://github.com/IggyIkenna/execution-service/actions/runs/4",
+        ),
+    ]
+    ordered = sorted(entries, key=lambda e: e["timestamp"], reverse=True)
+    return AlertsPayloadDict(
+        generated_at=_now_iso(), source="mock", alerts=ordered, streams=derive_streams(entries)
+    )
+
+
+@router.get("/alerts")
+async def get_alerts() -> AlertsPayloadDict:
+    """Alert-ledger traceability: every Slack alert + workflow state event, grouped into
+    (repo, workflow) lifecycle streams with current vs previous state (operator 2026-06-10)."""
+    cfg = DeploymentApiConfig()
+    if cfg.is_mock_mode():
+        return _mock_alerts()
+    return await load_alerts_payload()
 
 
 # Re-export for tests that patch the shared JSON getter.
