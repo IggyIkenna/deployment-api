@@ -27,7 +27,7 @@ StuckClass = Literal[
 ]
 
 
-class BranchHeadDict(TypedDict):
+class BranchHeadDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """Head of one promotion branch."""
 
     branch: str
@@ -35,7 +35,7 @@ class BranchHeadDict(TypedDict):
     committed_at: str | None
 
 
-class BranchDeltaDict(TypedDict):
+class BranchDeltaDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """Content-aware compare between two promotion branches.
 
     files_changed is the honest signal — squash-merges keep LDR perpetually ahead by
@@ -49,7 +49,7 @@ class BranchDeltaDict(TypedDict):
     files_changed: int
 
 
-class CommitEntryDict(TypedDict):
+class CommitEntryDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """One commit in a branch's SHA history."""
 
     sha: str
@@ -59,7 +59,7 @@ class CommitEntryDict(TypedDict):
     v2_conclusion: str | None  # quality-gates-v2 check conclusion for this sha (None = not run)
 
 
-class RepoPrDict(TypedDict, total=False):
+class RepoPrDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """An open PR into a promotion base, with stuck classification."""
 
     repo: Required[str]
@@ -76,7 +76,7 @@ class RepoPrDict(TypedDict, total=False):
     stuck_class: StuckClass | None
 
 
-class SitStateDict(TypedDict):
+class SitStateDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """Per-repo SIT visibility (operator add 2026-06-10 — stuck-in-SIT must be visible)."""
 
     in_breaking_pending: bool
@@ -87,7 +87,7 @@ class SitStateDict(TypedDict):
     stuck_in_sit: bool
 
 
-class ImageSignalDict(TypedDict):
+class ImageSignalDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """Image-level deploy signal (operator decision: v1 is image-level, not runtime-level)."""
 
     last_build_status: str | None
@@ -96,7 +96,7 @@ class ImageSignalDict(TypedDict):
     image_stale: bool | None  # main HEAD sha != last successful build sha (None = unknown)
 
 
-class SitJobDict(TypedDict):
+class SitJobDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """One job of the last cascade/SIT run (job name carries the repo)."""
 
     name: str
@@ -104,7 +104,7 @@ class SitJobDict(TypedDict):
     conclusion: str | None
 
 
-class SitLastRunDict(TypedDict):
+class SitLastRunDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """The last cascade/SIT run, always visible (alert-parity principle, operator add
     2026-06-10): which repos were in it, which passed/failed, what's in progress."""
 
@@ -115,7 +115,7 @@ class SitLastRunDict(TypedDict):
     jobs: list[SitJobDict]
 
 
-class RepoOverviewDict(TypedDict):
+class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """One row of the fleet overview matrix."""
 
     repo: str
@@ -128,7 +128,7 @@ class RepoOverviewDict(TypedDict):
     image: ImageSignalDict
 
 
-class OverviewResponseDict(TypedDict):
+class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/overview response."""
 
     generated_at: str
@@ -139,14 +139,14 @@ class OverviewResponseDict(TypedDict):
     sit_last_run: SitLastRunDict | None  # live SIT run panel (alert-parity, operator add)
 
 
-class BranchCommitsDict(TypedDict):
+class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """SHA history for one branch in the drill-down."""
 
     branch: str
     commits: list[CommitEntryDict]
 
 
-class RepoDetailResponseDict(TypedDict):
+class RepoDetailResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/{repo}/detail response."""
 
     repo: str
