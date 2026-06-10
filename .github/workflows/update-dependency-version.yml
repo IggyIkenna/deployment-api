@@ -46,7 +46,7 @@ jobs:
 
       # uv is needed to re-lock uv.lock after the constraint bump (lock-drift fix).
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8
 
       - name: Update pyproject.toml dependency constraint
         id: update
