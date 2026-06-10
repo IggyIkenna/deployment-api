@@ -75,6 +75,7 @@ from .routes import (
     recursive_borrow_coverage,
     repo_ci,
     repo_coverage,
+    repo_gh_rate_limit,
     repo_readiness,
     risk_routes,
     scenarios,
@@ -200,6 +201,7 @@ _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tag
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
 _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
+_authenticated_router.include_router(repo_gh_rate_limit.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(scenarios.router, prefix="/api/scenarios", tags=["Scenarios"])
 _authenticated_router.include_router(strategy_runs.router, prefix="/api", tags=["Strategy Runs"])
 _authenticated_router.include_router(strategy_shard.router)  # prefix=/api/strategy/shard (set on router)
