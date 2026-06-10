@@ -11,6 +11,10 @@ name: update-dependency-version
 #
 # Dispatch payload:
 #   {dep_name, dep_version, constraint, bump_type, is_breaking, chain_depth}
+#   + optional base_image_digest (sha256:<64-hex>): when the UTL base image republishes,
+#     the digest-refresh step rewrites the checked-in `ARG BASE_IMAGE_DIGEST=sha256:...`
+#     default in production Dockerfiles so the FROM-digest pin (QG STEP 5.79) stays fresh
+#     (plan dependency_promotion_range_pins_and_major_bump_sit_2026_06_09.md Phase 6).
 #
 # Constraint capping (Phase 2): if this repo has a dependency_caps entry in the PM manifest
 # for the incoming dep, the constraint update is SKIPPED and a warning is logged. The repo
@@ -134,28 +138,78 @@ jobs:
           echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      # FROM-digest ratchet (QG STEP 5.79): when the dispatch carries base_image_digest
+      # (the freshly-republished UTL base image), rewrite the checked-in
+      # `ARG BASE_IMAGE_DIGEST=sha256:...` default in production Dockerfiles so the
+      # digest pin rides the same dep-update commit/PR. No-op for repos not yet
+      # converted to the ARG-digest pattern (add-dockerfile-digest-arg.py rollout).
+      - name: Refresh base-image digest pin (ARG BASE_IMAGE_DIGEST)
+        id: digest
+        run: |
+          set -euo pipefail
+
+          DIGEST="${{ github.event.client_payload.base_image_digest }}"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$DIGEST" ]; then
+            echo "No base_image_digest in payload -- skipping digest refresh."
+            exit 0
+          fi
+          if ! echo "$DIGEST" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+            echo "Invalid base_image_digest '$DIGEST' (want sha256:<64-hex>) -- skipping digest refresh."
+            exit 0
+          fi
+
+          CHANGED=false
+          for df in Dockerfile Dockerfile.*; do
+            if [ ! -f "$df" ]; then continue; fi
+            # Production Dockerfiles only -- mirror add-dockerfile-digest-arg.py skip set.
+            case "$df" in *.dev|*.test|*.ci|*.local) continue ;; esac
+            if grep -qE '^ARG BASE_IMAGE_DIGEST=sha256:[0-9a-f]{64}[[:space:]]*$' "$df"; then
+              sed -i -E "s|^ARG BASE_IMAGE_DIGEST=sha256:[0-9a-f]{64}[[:space:]]*$|ARG BASE_IMAGE_DIGEST=${DIGEST}|" "$df"
+              if ! git diff --quiet -- "$df"; then
+                CHANGED=true
+                echo "Refreshed $df -> $DIGEST"
+              fi
+            fi
+          done
+          if [ "$CHANGED" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Dockerfile carried a stale ARG BASE_IMAGE_DIGEST default -- nothing to refresh."
+          fi
+
       - name: Commit (MINOR/PATCH non-breaking -- direct commit to staging)
         if:
-          steps.update.outputs.skip != 'true' && steps.update.outputs.bump_type != 'major' &&
-          steps.update.outputs.is_breaking != 'true'
+          (steps.update.outputs.skip != 'true' || steps.digest.outputs.changed == 'true') &&
+          steps.update.outputs.bump_type != 'major' && steps.update.outputs.is_breaking != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet pyproject.toml uv.lock; then
-            echo "No changes to pyproject.toml/uv.lock. Skipping commit."
+          if git diff --quiet -- pyproject.toml uv.lock Dockerfile 'Dockerfile.*'; then
+            echo "No changes to pyproject.toml/uv.lock/Dockerfiles. Skipping commit."
             exit 0
           fi
 
-          git add pyproject.toml
+          git add pyproject.toml 2>/dev/null || true
           # Stage the re-locked uv.lock alongside the constraint bump so they never drift.
           git add uv.lock 2>/dev/null || true
+          # Stage refreshed base-image digest pins (FROM-digest ratchet, QG STEP 5.79).
+          for df in Dockerfile Dockerfile.*; do
+            if [ -f "$df" ]; then git add "$df"; fi
+          done
           # NO [skip ci] (2026-06-09, plan semver_version_bump_skip_ci_promotion_block): a
           # [skip ci] pin commit produces zero checks, so when it is the staging->main promotion
           # PR head the required quality-gates-v2 context is MISSING -> the PR is BLOCKED. The
           # reusable QG fast-paths this metadata-only commit (chore(deps) pin, pyproject/uv.lock
           # only) to GREEN in seconds, so it gets a check without a wasteful full run.
-          git commit -m "chore(deps): pin ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }}"
+          MSG="chore(deps): pin ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }}"
+          if [ "${{ steps.update.outputs.skip }}" = "true" ]; then
+            MSG="chore(deps): refresh base-image digest pin (ARG BASE_IMAGE_DIGEST)"
+          elif [ "${{ steps.digest.outputs.changed }}" = "true" ]; then
+            MSG="$MSG + base-image digest refresh"
+          fi
+          git commit -m "$MSG"
           git push origin staging
 
       - name: Create PR to staging (MAJOR or breaking -- requires quality gates)
@@ -173,8 +227,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet pyproject.toml uv.lock; then
-            echo "No changes to pyproject.toml/uv.lock. Skipping."
+          if git diff --quiet -- pyproject.toml uv.lock Dockerfile 'Dockerfile.*'; then
+            echo "No changes to pyproject.toml/uv.lock/Dockerfiles. Skipping."
             exit 0
           fi
 
@@ -184,6 +238,10 @@ jobs:
           git add pyproject.toml
           # Stage the re-locked uv.lock alongside the constraint bump so they never drift.
           git add uv.lock 2>/dev/null || true
+          # Stage refreshed base-image digest pins (FROM-digest ratchet, QG STEP 5.79).
+          for df in Dockerfile Dockerfile.*; do
+            if [ -f "$df" ]; then git add "$df"; fi
+          done
           git commit -m "feat!: update ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }} (breaking)"
           git push origin "$BRANCH"
 
