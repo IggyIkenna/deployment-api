@@ -245,11 +245,17 @@ jobs:
           git commit -m "feat!: update ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }} (breaking)"
           git push origin "$BRANCH"
 
-          gh pr create \
+          PR_URL=$(gh pr create \
             --title "feat!: update ${{ steps.update.outputs.dep_name }} to ${{ steps.update.outputs.dep_version }}" \
             --body "$PR_BODY" \
             --base staging \
-            --head "$BRANCH"
+            --head "$BRANCH")
+
+          # Arm auto-merge at creation — without this the PR sits green-but-unmerged until a
+          # human presses merge (incident 2026-06-10: greeks-service PR #21 sat ~50 min with all
+          # checks green). Arm failure is non-fatal (repo allow_auto_merge off) but must be LOUD.
+          gh pr merge "$PR_URL" --auto --squash 2>/dev/null || \
+            echo "::warning::auto-merge arm refused for $PR_URL — enable allow_auto_merge on this repo; PR needs a manual merge until then"
 
   notify-failure:
     name: Slack — Dep Update Failure

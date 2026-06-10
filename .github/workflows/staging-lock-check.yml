@@ -27,6 +27,10 @@ concurrency:
 jobs:
   check-staging-lock:
     name: check-staging-lock
+    # PR-context only: this job reports the required check on the PR head. A
+    # repository_dispatch run executes on the DEFAULT-branch ref and can never
+    # re-report on a PR head — that path is handled by refresh-open-prs below.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Check PM staging lock status
@@ -58,3 +62,32 @@ jobs:
           fi
 
           echo "Staging is unlocked -- will auto-merge when all checks pass"
+
+  # On staging-locked/staging-unlocked dispatch, refresh the verdicts pinned to OPEN PR heads.
+  # The prior single-job design ran the lock check on the dispatch event itself — but that run
+  # executes on the default-branch ref, so it NEVER re-reported the required check on any PR
+  # (incident 2026-06-10: greeks-service PR #21 kept a stale FAIL ~50 min after staging unlocked,
+  # blocking its green dep-update from merging). The only mechanism that refreshes a PR's check
+  # is re-running that PR's OWN run — do exactly that for every open PR targeting staging.
+  refresh-open-prs:
+    name: refresh-open-prs
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run stale Staging Lock Check runs on open staging PRs
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          for PR in $(gh pr list --repo "${GITHUB_REPOSITORY}" --base staging --state open --json number --jq '.[].number'); do
+            HEAD_SHA=$(gh pr view "$PR" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq '.headRefOid')
+            RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/staging-lock-check.yml/runs?head_sha=${HEAD_SHA}&per_page=5" \
+              --jq '[.workflow_runs[] | select(.conclusion == "failure")][0].id' 2>/dev/null || echo "")
+            if [ -n "$RID" ] && [ "$RID" != "null" ]; then
+              gh run rerun "$RID" --repo "${GITHUB_REPOSITORY}" 2>/dev/null \
+                && echo "re-ran stale lock-check run ${RID} on PR #${PR}" \
+                || echo "WARNING: could not re-run ${RID} for PR #${PR} (may be in progress)"
+            else
+              echo "PR #${PR}: no failed lock-check run to refresh"
+            fi
+          done
