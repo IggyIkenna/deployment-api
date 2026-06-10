@@ -64,7 +64,12 @@ jobs:
       - name: Back-merge main into LDR (merge-only; conflict → visible PR; never force)
         id: bm
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT (not GITHUB_TOKEN) so `gh pr create` for the conflict PR works: the default
+          # GITHUB_TOKEN cannot open PRs when the org/repo disallows Actions-created PRs (the
+          # silent "could not open PR — perms" that broke the human-resolution fallback), and a
+          # PAT-created PR triggers its own checks. The LDR `git push` (line ~139) still uses the
+          # checkout-persisted GITHUB_TOKEN, so it stays workflow-non-triggering.
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -uo pipefail

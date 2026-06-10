@@ -44,6 +44,10 @@ env:
   SERVICE_NAME: "deployment-api"
   SOURCE_DIR: "deployment_api"
   GH_ORG: ${{ github.repository_owner }}
+  # Slack #ci-failures webhook — used by the bump-rate circuit breaker + the
+  # version-bump dispatch failure path to page CRITICAL (same channel/pattern as
+  # the Notify Slack step below and request-major-bump.yml).
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
 
 permissions:
   contents: write
@@ -79,6 +83,56 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           sparse-checkout: |
             codex/10-audit/
+
+      # ── BUMP-RATE CIRCUIT BREAKER (incident 2026-06-10: instruments-service runaway
+      # 0.3.0→0.30.0 at 1 bump/min). A dead baseline writer (PM update-repo-version)
+      # freezes staging_versions → the range-based chore-skip never fires → every
+      # QG-green re-bumps forever. A runaway must SELF-HALT, not wait for a human to
+      # notice version 0.30.0. "Pending bump" = a `chore(release): bump version to X`
+      # commit on staging in the last hour (the bump exists but its release never
+      # completed — a healthy cycle records the baseline + promotes before the next).
+      # ≥3 pending bumps (or ≥3 consecutive at the staging tip, clock-skew independent)
+      # → REFUSE to compute/dispatch another bump + page CRITICAL + fail the run loudly.
+      # Plan: plans/active/issues/semver_version_bump_skip_ci_promotion_block_2026_06_09.md §15.
+      - name: Bump-rate circuit breaker (≥3 pending bumps on staging)
+        run: |
+          set -euo pipefail
+
+          # Scan the LIVE staging tip, not the (possibly stale) workflow_run head_sha —
+          # during a runaway, newer bump commits land between trigger and execution.
+          git fetch origin staging --quiet 2>/dev/null || true
+          SCAN_REF=$(git rev-parse --verify --quiet origin/staging || echo "HEAD")
+
+          RECENT_BUMPS=$(git log --since="1 hour ago" --format=%s "$SCAN_REF" 2>/dev/null \
+            | grep -cE '^chore\(release\): bump version to ' || true)
+          RECENT_BUMPS="${RECENT_BUMPS:-0}"
+
+          CONSECUTIVE=0
+          while IFS= read -r msg; do
+            case "$msg" in
+              "chore(release): bump version to "*) CONSECUTIVE=$((CONSECUTIVE + 1)) ;;
+              *) break ;;
+            esac
+          done < <(git log -10 --format=%s "$SCAN_REF" 2>/dev/null || true)
+
+          echo "Pending-bump scan on ${SCAN_REF}: ${RECENT_BUMPS} bump commit(s) in the last hour; ${CONSECUTIVE} consecutive at tip"
+
+          if [ "$RECENT_BUMPS" -ge 3 ] || [ "$CONSECUTIVE" -ge 3 ]; then
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            TEXT=":rotating_light: *CRITICAL — semver-agent BUMP-RATE CIRCUIT BREAKER tripped* | deployment-api | ${RECENT_BUMPS} chore(release) bump commit(s) on staging in the last hour (${CONSECUTIVE} consecutive at tip; threshold 3). Runaway re-bump loop suspected — check the PM baseline writer (update-repo-version.yml) health + staging_versions[deployment-api]. REFUSING to dispatch another bump. ${RUN_URL}"
+            # Best-effort page on the canonical #ci-failures webhook; the loud signal is
+            # the run failure either way (a missing webhook must not mask the halt).
+            case "${SLACK_WEBHOOK_URL:-}" in
+              https://*)
+                curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                  --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+              *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
+            esac
+            echo "::error::Bump-rate circuit breaker: ${RECENT_BUMPS} pending bumps in the last hour / ${CONSECUTIVE} consecutive at staging tip (threshold 3). Refusing to dispatch another bump."
+            exit 1
+          fi
+
+          echo "Circuit breaker clear — proceeding."
 
       - name: Compute next semver via diff analysis
         id: compute
@@ -128,16 +182,35 @@ jobs:
               --field state=success \
               --field context="semver-agent/label-check" \
               --field description="always_patch policy: patch bump applied, label check skipped." || true
-            HTTP_STATUS=$(curl -s -o /tmp/dispatch_response.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
-              -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\", \"is_breaking\": \"false\"}}")
-            if [ "$HTTP_STATUS" = "204" ]; then
-              echo "Dispatched successfully to unified-trading-pm (always_patch)"
-            else
-              echo "ERROR: HTTP $HTTP_STATUS dispatching to unified-trading-pm"
-              cat /tmp/dispatch_response.json || true
+            # Baseline-writer SPOF hardening: retry 3× with backoff + CRITICAL page on
+            # final failure (mirrors the main dispatch step; incident 2026-06-10).
+            HTTP_STATUS=""
+            DISPATCH_OK="false"
+            for ATTEMPT in 1 2 3; do
+              HTTP_STATUS=$(curl -s -o /tmp/dispatch_response.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
+                -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\", \"is_breaking\": \"false\"}}") || HTTP_STATUS="000"
+              if [ "$HTTP_STATUS" = "204" ]; then
+                DISPATCH_OK="true"
+                echo "Dispatched successfully to unified-trading-pm (always_patch, attempt ${ATTEMPT})"
+                break
+              fi
+              echo "WARNING: HTTP ${HTTP_STATUS} dispatching version-bump (always_patch, attempt ${ATTEMPT}/3)"
+              cat /tmp/dispatch_response.json 2>/dev/null || true
+              [ "$ATTEMPT" -lt 3 ] && sleep $((ATTEMPT * 10))
+            done
+            if [ "$DISPATCH_OK" != "true" ]; then
+              RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | deployment-api v${NEW_VERSION} (always_patch) | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM staging_versions baseline will NOT record ${NEW_VERSION} → re-bump-loop fuel. Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
+              case "${SLACK_WEBHOOK_URL:-}" in
+                https://*)
+                  curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                    --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+                *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
+              esac
+              echo "::error::version-bump dispatch FAILED after 3 attempts (always_patch, last HTTP ${HTTP_STATUS}) — baseline NOT recorded for ${NEW_VERSION}."
               exit 1
             fi
             exit 0
@@ -549,17 +622,38 @@ jobs:
           IS_BREAKING="${{ steps.compute.outputs.is_breaking }}"
           echo "Dispatching version-bump: repo=$REPO version=$VERSION branch=$BRANCH commit_sha=$COMMIT_SHA is_breaking=$IS_BREAKING"
 
-          HTTP_STATUS=$(curl -s -o /tmp/dispatch_response.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
-            -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"${REPO}\", \"version\": \"${VERSION}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\", \"is_breaking\": \"${IS_BREAKING}\"}}")
+          # Baseline-writer SPOF hardening (incident 2026-06-10): a lost version-bump
+          # dispatch freezes the PM staging_versions baseline → fuels the re-bump loop.
+          # Retry up to 3× with backoff; on final failure page CRITICAL (the silent
+          # single-shot failure was the SPOF). Plan: semver_version_bump_skip_ci_promotion_block §15.
+          HTTP_STATUS=""
+          DISPATCH_OK="false"
+          for ATTEMPT in 1 2 3; do
+            HTTP_STATUS=$(curl -s -o /tmp/dispatch_response.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
+              -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"${REPO}\", \"version\": \"${VERSION}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\", \"is_breaking\": \"${IS_BREAKING}\"}}") || HTTP_STATUS="000"
+            if [ "$HTTP_STATUS" = "204" ]; then
+              DISPATCH_OK="true"
+              echo "Dispatched successfully to unified-trading-pm (attempt ${ATTEMPT})"
+              break
+            fi
+            echo "WARNING: HTTP ${HTTP_STATUS} dispatching version-bump (attempt ${ATTEMPT}/3)"
+            cat /tmp/dispatch_response.json 2>/dev/null || true
+            [ "$ATTEMPT" -lt 3 ] && sleep $((ATTEMPT * 10))
+          done
 
-          if [ "$HTTP_STATUS" = "204" ]; then
-            echo "Dispatched successfully to unified-trading-pm"
-          else
-            echo "ERROR: HTTP $HTTP_STATUS dispatching to unified-trading-pm"
-            cat /tmp/dispatch_response.json || true
+          if [ "$DISPATCH_OK" != "true" ]; then
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | deployment-api v${VERSION} | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM staging_versions baseline will NOT record ${VERSION} → every future QG-green on staging may re-bump (runaway-loop fuel, incident 2026-06-10). Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
+            case "${SLACK_WEBHOOK_URL:-}" in
+              https://*)
+                curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                  --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+              *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
+            esac
+            echo "::error::version-bump dispatch to unified-trading-pm FAILED after 3 attempts (last HTTP ${HTTP_STATUS}) — baseline NOT recorded for ${VERSION}."
             exit 1
           fi
 
