@@ -20,7 +20,7 @@ import aiohttp
 from fastapi import APIRouter, HTTPException
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.settings import GITHUB_ORG
+from deployment_api.settings import CLOUD_PROVIDER, GITHUB_ORG
 from deployment_api.settings import gcp_project_id as default_project_id
 
 from ._cloud_builds_history import (
@@ -28,6 +28,11 @@ from ._cloud_builds_history import (
 )
 from ._cloud_builds_trigger import (
     _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
+)
+from ._code_builds_aws import (
+    get_recent_builds_for_projects_sync,
+    is_aws_provider,
+    list_codebuild_projects_sync,
 )
 from ._repo_ci_github import (
     age_minutes,
@@ -287,9 +292,7 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
 async def _repo_branches_and_deltas(
     session: aiohttp.ClientSession, token: str, repo: str
 ) -> tuple[list[BranchHeadDict], list[BranchDeltaDict]]:
-    heads = await asyncio.gather(
-        *[branch_head(session, token, GITHUB_ORG, repo, b) for b in PROMOTION_BRANCHES]
-    )
+    heads = await asyncio.gather(*[branch_head(session, token, GITHUB_ORG, repo, b) for b in PROMOTION_BRANCHES])
     branches = [
         BranchHeadDict(branch=b, sha=sha, committed_at=committed_at)
         for b, (sha, committed_at) in zip(PROMOTION_BRANCHES, heads, strict=True)
@@ -364,30 +367,59 @@ _builds_cache: tuple[float, dict[str, tuple[str | None, str | None]]] | None = N
 _BUILDS_CACHE_TTL = 300.0  # mirrors the cloud-builds TTL pattern
 
 
-async def _latest_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
-    """repo -> (last_build_status, last_build_sha) via the existing cloud-builds plumbing.
+async def _gcp_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
+    """GCP Cloud Build half — repo -> (status, sha) via the trigger plumbing."""
+    triggers = await asyncio.to_thread(_build_trigger_list_sync)
+    trigger_to_repo = {t["trigger_id"]: str(t.get("service") or "") for t in triggers}
+    builds = await _get_recent_builds_for_triggers(list(trigger_to_repo.keys()))
+    result: dict[str, tuple[str | None, str | None]] = {}
+    for trigger_id, info in builds.items():
+        repo = trigger_to_repo.get(trigger_id)
+        if repo:
+            result[repo] = (info.get("status"), info.get("commit_sha"))
+    return result
 
-    Best-effort: any cloud failure (AWS provider, missing perms) yields {} — the image
-    signal then reads honestly-unknown (None), never fabricated.
+
+async def _aws_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
+    """AWS CodeBuild half — repo -> (status, sha) via the CodeBuild project plumbing.
+
+    Parallel to the GCP half: CodeBuild projects are the AWS equivalent of triggers,
+    named `{service}-build`. `get_recent_builds_for_projects_sync` yields None for a
+    project with no builds — skipped so that repo stays honestly-unknown.
+    """
+    projects = await asyncio.to_thread(list_codebuild_projects_sync)
+    project_to_repo = {p["trigger_id"]: str(p.get("service") or "") for p in projects}
+    builds = await asyncio.to_thread(get_recent_builds_for_projects_sync, list(project_to_repo.keys()))
+    result: dict[str, tuple[str | None, str | None]] = {}
+    for project_name, info in builds.items():
+        repo = project_to_repo.get(project_name)
+        if repo and info is not None:
+            result[repo] = (info.get("status"), info.get("commit_sha"))
+    return result
+
+
+async def _latest_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
+    """repo -> (last_build_status, last_build_sha) via the cloud-builds plumbing,
+    dispatched on the active cloud provider (parity with the Cloud Builds tab).
+
+    GCP reuses the Cloud Build trigger plumbing; AWS reuses the CodeBuild project
+    plumbing. The GitHub/manifest half of the aggregator is cloud-agnostic — only the
+    image/build signal follows the toggle. Best-effort: any cloud failure (missing
+    perms, inactive/unavailable provider) yields {} — the image signal then reads
+    honestly-unknown (None) for that repo, never fabricated.
     """
     global _builds_cache
     now = asyncio.get_running_loop().time()
     if _builds_cache is not None and now - _builds_cache[0] < _BUILDS_CACHE_TTL:
         return _builds_cache[1]
     try:
-        triggers = await asyncio.to_thread(_build_trigger_list_sync)
-        trigger_to_repo = {t["trigger_id"]: str(t.get("service") or "") for t in triggers}
-        builds = await _get_recent_builds_for_triggers(list(trigger_to_repo.keys()))
-        result: dict[str, tuple[str | None, str | None]] = {}
-        for trigger_id, info in builds.items():
-            repo = trigger_to_repo.get(trigger_id)
-            if repo:
-                result[repo] = (info.get("status"), info.get("commit_sha"))
+        result = await (_aws_builds_by_repo() if is_aws_provider() else _gcp_builds_by_repo())
     except Exception as exc:
-        # google.api_core exceptions (e.g. InvalidArgument on a region/project mismatch) that are
-        # not in the OSError/ValueError family; ANY failure here must degrade to honest-unknown,
-        # never kill the overview (live 500, 2026-06-10). Rate limits don't apply (GCP, not GitHub).
-        logger.warning("[REPO-CI] cloud-builds image signal unavailable: %s", exc)
+        # boto3 / google.api_core exceptions (e.g. InvalidArgument on a region/project mismatch,
+        # NoCredentialsError) outside the OSError/ValueError family; ANY failure here must degrade
+        # to honest-unknown, never kill the overview (live 500, 2026-06-10). Rate limits don't
+        # apply (cloud-build APIs, not GitHub).
+        logger.warning("[REPO-CI] cloud-builds image signal unavailable (provider=%s): %s", CLOUD_PROVIDER, exc)
         result = {}
     _builds_cache = (now, result)
     return result
