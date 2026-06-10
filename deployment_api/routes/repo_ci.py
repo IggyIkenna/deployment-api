@@ -383,7 +383,10 @@ async def _latest_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
             repo = trigger_to_repo.get(trigger_id)
             if repo:
                 result[repo] = (info.get("status"), info.get("commit_sha"))
-    except (OSError, ValueError, RuntimeError) as exc:
+    except Exception as exc:
+        # google.api_core exceptions (e.g. InvalidArgument on a region/project mismatch) that are
+        # not in the OSError/ValueError family; ANY failure here must degrade to honest-unknown,
+        # never kill the overview (live 500, 2026-06-10). Rate limits don't apply (GCP, not GitHub).
         logger.warning("[REPO-CI] cloud-builds image signal unavailable: %s", exc)
         result = {}
     _builds_cache = (now, result)
