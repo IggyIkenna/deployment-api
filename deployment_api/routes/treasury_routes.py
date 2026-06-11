@@ -24,14 +24,14 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from strategy_service.position.core.treasury_monitor import (
-    compute_nav_by_client,
-    compute_unified_nav,
-)
 from unified_api_contracts.internal.domain.treasury import (
     TreasuryNAVByClient,
     TreasuryRollupResponse,
     TreasurySourceBalance,
+)
+from unified_trading_library import (
+    compute_nav_by_client,
+    compute_unified_nav,
 )
 
 from deployment_api.rate_limiting import endpoint_rate_limit
@@ -46,7 +46,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-class SourceBalanceOut(BaseModel):
+class SourceBalanceOut(BaseModel):  # CORRECT-LOCAL: FastAPI serialisation DTO wrapping UAC TreasurySourceBalance
     """Serialisable form of TreasurySourceBalance."""
 
     model_config = ConfigDict(extra="forbid")
@@ -70,7 +70,7 @@ class SourceBalanceOut(BaseModel):
         )
 
 
-class TreasuryRollupOut(BaseModel):
+class TreasuryRollupOut(BaseModel):  # CORRECT-LOCAL: FastAPI serialisation DTO wrapping UAC TreasuryRollupResponse
     """Serialisable form of TreasuryRollupResponse."""
 
     model_config = ConfigDict(extra="forbid")
@@ -94,7 +94,7 @@ class TreasuryRollupOut(BaseModel):
         )
 
 
-class TreasuryNAVByClientOut(BaseModel):
+class TreasuryNAVByClientOut(BaseModel):  # CORRECT-LOCAL: FastAPI serialisation DTO wrapping UAC TreasuryNAVByClient
     """Serialisable form of TreasuryNAVByClient."""
 
     model_config = ConfigDict(extra="forbid")

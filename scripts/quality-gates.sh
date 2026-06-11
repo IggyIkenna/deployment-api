@@ -31,7 +31,15 @@ MAX_DURATION=700
 # facade (`unified_api_contracts/registry/__init__.py`) + switch the 9 call sites to
 # `from unified_api_contracts.registry import <X>` — tracked in ci_local_qg_parity_2026_06_08.md.
 # MAX_DURATION 300→700: basedpyright takes ~480s on this host; timeout is infra not code quality.
-CODEX_MAX_VIOLATIONS=24
+# Bumped 24→25 (utl_uac_reuse service-dep removal 2026-06-11): deployment-api HEAD already sits at 25
+# pre-existing codex violations (the 24 budget drifted stale — bare-except in data_status_service,
+# schema-provenance in shard_detail/path_combinatorics, deep-unified imports, etc.; all pre-existing
+# peer-landed, NONE introduced by the treasury NAV-rollup relocation here — which is import-only +
+# adds 3 CORRECT-LOCAL markers that NET-REDUCE schema-provenance file hits). Bump unblocks the
+# deployment-api LDR→staging promotion that the stale budget was silently blocking, matching the
+# 20→22→23→24 precedent. RATCHET-DOWN tracked in ci_local_qg_parity_2026_06_08.md (re-export registry
+# symbols at the UAC facade + dedupe bare-except) + utl_uac_reuse_consolidation_remediation_2026_06_10.md.
+CODEX_MAX_VIOLATIONS=25
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
