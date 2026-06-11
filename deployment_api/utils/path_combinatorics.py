@@ -168,7 +168,7 @@ class PathCombinatorics:
         TRADFI_TICK_DATA_WINDOWS to avoid duplicating this cost-management config
         across repos.
         """
-        from unified_api_contracts.registry.market_data_categories import (
+        from unified_api_contracts.registry import (
             TRADFI_TICK_DATA_WINDOWS,
         )
 
@@ -182,7 +182,7 @@ class PathCombinatorics:
 
     def is_in_tick_window(self, date_str: str) -> bool:
         """Check if a date falls within any tick data window."""
-        from unified_api_contracts.registry.market_data_categories import (
+        from unified_api_contracts.registry import (
             is_in_tradfi_tick_window,
         )
 

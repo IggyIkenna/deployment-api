@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from unified_api_contracts.registry.tardis_free_coverage import TARDIS_FREE_ROLLING_WINDOW_DAYS
+from unified_api_contracts.registry import TARDIS_FREE_ROLLING_WINDOW_DAYS
 
 from deployment_api.routes.venue_credentials import get_tardis_key_status
 

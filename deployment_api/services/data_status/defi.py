@@ -315,7 +315,7 @@ class DefiStatusMixin(DataStatusCliMixin):
         carry). Adding both shapes means the filter accepts canonical
         rows AND legacy-underscore rows that haven't yet been migrated.
         """
-        from unified_api_contracts.registry.defi_venues import (
+        from unified_api_contracts.registry import (
             ALL_DEFI_VENUES,
             LEGACY_DEFI_VENUE_ALIASES,
         )

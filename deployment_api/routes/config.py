@@ -344,7 +344,7 @@ async def get_shard_axis_matrix(
     """
     # Lazy import keeps the route importable in mock mode where UAC
     # may not be installed (Tier 0 emulator-only setup).
-    from unified_api_contracts.registry.data_status_axis_matrix import (
+    from unified_api_contracts.registry import (
         BREAKDOWN_AXES,
         DISPLAY_AXES,
         PRIMARY_AXIS,

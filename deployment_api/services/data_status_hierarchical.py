@@ -39,7 +39,7 @@ from typing import cast
 import pandas as pd
 from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
 from unified_api_contracts.registry import EMPTY_OR_DEPRECATED_DEFI_VENUES
-from unified_api_contracts.registry.data_status_axis_matrix import (
+from unified_api_contracts.registry import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
 )

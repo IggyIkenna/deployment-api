@@ -36,7 +36,19 @@ MAX_DURATION=700
 # after the treasury NAV-rollup relocation dropped the last import; the PM manifest edge is now
 # removed, so the measured honest count is back at 24 (QG_SLICE=lint-codex verified). Budgets only
 # ratchet DOWN from here — the ≤5 ceiling drive continues under the plan above.
-CODEX_MAX_VIOLATIONS=24
+# Ratcheted 24→22 on 2026-06-11 (codex_violations_ratchet_to_five_2026_06_10 Phase-1 P2 + Phase-2b):
+# (1) file-size class CLEARED — the last four >900-line files split into facade packages with
+#     byte-identical route tables / public surfaces (routes/data_status 2,550 → 6-module package;
+#     services/data_status_drilldown 2,586 → 6-module package; services/shard_detail 1,777 →
+#     5-module package; routes/deployments 968 → 3-module package; every module ≤ 731 lines).
+# (2) deep-import class CLEARED — all 8 two-level `unified_api_contracts.registry.<X>` call sites
+#     flipped to the one-level facade (`from unified_api_contracts.registry import <X>`; facade
+#     re-exports landed at UAC@c8287d3). This also satisfies + supersedes the plan's
+#     "budget 23→24 revert" item (we land at 22 < 23).
+# Honest measured count 22 (QG_SLICE=lint-codex verified 2026-06-11). Next classes to clear per the
+# plan: function-size (deployment_state/data_analytics/deployment_manager + data_status mixins),
+# os.getenv, Any-types, schema-provenance.
+CODEX_MAX_VIOLATIONS=22
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
