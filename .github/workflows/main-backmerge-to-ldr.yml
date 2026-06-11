@@ -39,7 +39,7 @@ on:
   # scheduled run is NOT `[skip ci]`-suppressed, so it sweeps accumulated drift with no real
   # commit, making "main never ahead of LDR" actually hold (not just eventually-converge).
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "0 * * * *" # hourly drift safety-net (push trigger handles common case); */20→hourly to cut Actions spend ~1152 runs/day fleet-wide (billing 2026-06-11)
   workflow_dispatch: {}
 
 concurrency:
