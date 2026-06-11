@@ -35,6 +35,16 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="GCS bucket for deployment state storage",
     )
 
+    data_status_beta_manifest_blob: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATA_STATUS_BETA_MANIFEST_BLOB"),
+        description=(
+            "CF-20 beta-manifest preview: blob template (formatted with {asset_group}) "
+            "read INSTEAD of the live availability _index by every data-status surface, "
+            "e.g. '_index/audit/projected_index_{asset_group}.parquet'. Empty = live index."
+        ),
+    )
+
     service_account_email: str = Field(
         default="",
         validation_alias=AliasChoices("SERVICE_ACCOUNT", "SERVICE_ACCOUNT_EMAIL"),

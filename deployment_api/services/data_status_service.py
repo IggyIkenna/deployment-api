@@ -35,7 +35,7 @@ from unified_api_contracts.sports import (
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
 )
-from unified_trading_library import read_availability_index, resolve_bucket_name
+from unified_trading_library import resolve_bucket_name
 
 from deployment_api.services.data_status.breakdowns_core import CoreBreakdownsMixin
 from deployment_api.services.data_status.breakdowns_domain import DomainBreakdownsMixin
@@ -232,6 +232,7 @@ from deployment_api.services.data_status.sports_helpers import (
     sports_trigger_dates_for_window as _sports_trigger_dates_for_window,
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import deployment_env_short as _env_short
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects

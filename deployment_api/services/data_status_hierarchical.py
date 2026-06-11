@@ -43,7 +43,6 @@ from unified_api_contracts.registry import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
 )
-from unified_trading_library import read_availability_index
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_union import (
@@ -51,6 +50,7 @@ from deployment_api.services.data_status_union import (
     provenance_breakdown,
     union_reduce_to_cells,
 )
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 
 logger = logging.getLogger(__name__)
 

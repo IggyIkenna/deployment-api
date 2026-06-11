@@ -35,10 +35,10 @@ from unified_trading_library import (
     LEGACY_REASON_ASSET_GROUPS,
     AssetGroup,
     classify_legacy_empty_row,
-    read_availability_index,
     resolve_bucket_name,
 )
 
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
 
