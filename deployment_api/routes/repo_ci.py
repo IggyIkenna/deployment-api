@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+from dataclasses import dataclass
 from typing import cast
 
 import aiohttp
@@ -146,6 +147,8 @@ def _mock_image(version: str | None, stale: bool | None) -> ImageSignalDict:
     return ImageSignalDict(
         last_build_status="SUCCESS",
         last_build_sha="aaa1111",
+        last_build_time="2026-06-11T07:30:00Z",
+        last_build_log_url="https://console.cloud.google.com/cloud-build/builds/mock-build-id",
         deployed_version=version,
         image_stale=stale,
     )
@@ -394,25 +397,43 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
     return out
 
 
-_builds_cache: tuple[float, dict[str, tuple[str | None, str | None]]] | None = None
+@dataclass(frozen=True)
+class BuildSignal:
+    """The latest image build for one repo (B1 — operator add 2026-06-11). Carries the
+    build TIME + LOG URL alongside status/sha so the Image column is a full deploy signal
+    (status + when + which sha + click-through to the GCP Cloud Build / AWS CodeBuild log),
+    not a bare status word. All fields honestly-None when the provider doesn't report them."""
+
+    status: str | None
+    sha: str | None
+    finish_time: str | None  # ISO-8601 of the build's finish_time (create_time fallback upstream)
+    log_url: str | None  # GCP Cloud Build / AWS CodeBuild console URL for this build
+
+
+_builds_cache: tuple[float, dict[str, BuildSignal]] | None = None
 _BUILDS_CACHE_TTL = 300.0  # mirrors the cloud-builds TTL pattern
 
 
-async def _gcp_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
-    """GCP Cloud Build half — repo -> (status, sha) via the trigger plumbing."""
+async def _gcp_builds_by_repo() -> dict[str, BuildSignal]:
+    """GCP Cloud Build half — repo -> BuildSignal via the trigger plumbing."""
     triggers = await asyncio.to_thread(_build_trigger_list_sync)
     trigger_to_repo = {t["trigger_id"]: str(t.get("service") or "") for t in triggers}
     builds = await _get_recent_builds_for_triggers(list(trigger_to_repo.keys()))
-    result: dict[str, tuple[str | None, str | None]] = {}
+    result: dict[str, BuildSignal] = {}
     for trigger_id, info in builds.items():
         repo = trigger_to_repo.get(trigger_id)
         if repo:
-            result[repo] = (info.get("status"), info.get("commit_sha"))
+            result[repo] = BuildSignal(
+                status=info.get("status"),
+                sha=info.get("commit_sha"),
+                finish_time=info.get("finish_time"),
+                log_url=info.get("log_url"),
+            )
     return result
 
 
-async def _aws_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
-    """AWS CodeBuild half — repo -> (status, sha) via the CodeBuild project plumbing.
+async def _aws_builds_by_repo() -> dict[str, BuildSignal]:
+    """AWS CodeBuild half — repo -> BuildSignal via the CodeBuild project plumbing.
 
     Parallel to the GCP half: CodeBuild projects are the AWS equivalent of triggers,
     named `{service}-build`. `get_recent_builds_for_projects_sync` yields None for a
@@ -421,15 +442,20 @@ async def _aws_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
     projects = await asyncio.to_thread(list_codebuild_projects_sync)
     project_to_repo = {p["trigger_id"]: str(p.get("service") or "") for p in projects}
     builds = await asyncio.to_thread(get_recent_builds_for_projects_sync, list(project_to_repo.keys()))
-    result: dict[str, tuple[str | None, str | None]] = {}
+    result: dict[str, BuildSignal] = {}
     for project_name, info in builds.items():
         repo = project_to_repo.get(project_name)
         if repo and info is not None:
-            result[repo] = (info.get("status"), info.get("commit_sha"))
+            result[repo] = BuildSignal(
+                status=info.get("status"),
+                sha=info.get("commit_sha"),
+                finish_time=info.get("finish_time"),
+                log_url=info.get("log_url"),
+            )
     return result
 
 
-async def _latest_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
+async def _latest_builds_by_repo() -> dict[str, BuildSignal]:
     """repo -> (last_build_status, last_build_sha) via the cloud-builds plumbing,
     dispatched on the active cloud provider (parity with the Cloud Builds tab).
 
@@ -460,19 +486,23 @@ def _image_signal(
     view: ManifestView,
     repo: str,
     main_sha: str | None,
-    builds: dict[str, tuple[str | None, str | None]],
+    builds: dict[str, BuildSignal],
 ) -> ImageSignalDict:
     """Image-level deploy signal (operator decision: v1 image-level, not runtime-level).
 
     image_stale = main HEAD sha differs from the last SUCCESSFUL build's sha — "is main's
     code built into the latest image". None = honestly unknown (no build data)."""
-    build_status, build_sha = builds.get(repo, (None, None))
+    sig = builds.get(repo)
+    build_status = sig.status if sig else None
+    build_sha = sig.sha if sig else None
     stale: bool | None = None
     if main_sha and build_sha and build_status == "SUCCESS":
         stale = not main_sha.startswith(build_sha) and not build_sha.startswith(main_sha)
     return ImageSignalDict(
         last_build_status=build_status,
         last_build_sha=build_sha,
+        last_build_time=sig.finish_time if sig else None,
+        last_build_log_url=sig.log_url if sig else None,
         deployed_version=view.deployed_version_for(repo),
         image_stale=stale,
     )
@@ -484,7 +514,7 @@ async def _overview_row(
     view: ManifestView,
     meta: RepoMeta,
     sit_run: tuple[str | None, int | None],
-    builds: dict[str, tuple[str | None, str | None]],
+    builds: dict[str, BuildSignal],
     semaphore: asyncio.Semaphore,
 ) -> RepoOverviewDict | RepoErrorDict:
     """Aggregate one repo's row. On a per-repo (non-rate-limit) failure return a typed
