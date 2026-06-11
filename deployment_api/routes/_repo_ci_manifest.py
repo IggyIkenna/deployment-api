@@ -128,6 +128,31 @@ class ManifestView:
         value = cast(dict[str, object], deployed).get(repo)
         return str(value) if value else None
 
+    def promotion_failures(self) -> dict[str, int]:
+        """workspace-manifest.json.promotion_failures (`{repo: consecutive-fail count}`)."""
+        raw = self._raw.get("promotion_failures")
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, int] = {}
+        for repo, count in cast(dict[str, object], raw).items():
+            if isinstance(count, bool):
+                continue
+            if isinstance(count, int):
+                out[repo] = count
+            elif isinstance(count, str) and count.isdigit():
+                out[repo] = int(count)
+        return out
+
+    def promotion_quarantine(self) -> dict[str, dict[str, object]]:
+        """workspace-manifest.json.promotion_quarantine (`{repo: {since, attempts, escalated}}`)."""
+        raw = self._raw.get("promotion_quarantine")
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, dict[str, object]] = {}
+        for repo, detail in cast(dict[str, object], raw).items():
+            out[repo] = cast(dict[str, object], detail) if isinstance(detail, dict) else {}
+        return out
+
     @property
     def _staging_status(self) -> dict[str, object]:
         staging_status = self._raw.get("staging_status")

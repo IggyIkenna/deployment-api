@@ -61,6 +61,7 @@ from ._repo_ci_types import (
     FleetGitHealthProxyDict,
     ImageSignalDict,
     OverviewResponseDict,
+    PromotionBlockedDict,
     RepoDetailResponseDict,
     RepoErrorDict,
     RepoOverviewDict,
@@ -264,6 +265,19 @@ def _mock_overview() -> OverviewResponseDict:
         sit_last_run=sit_last_run,
         # One sample degraded repo so the UI errors[] panel + its regression spec have data.
         errors=[RepoErrorDict(repo="alerting-service", error="HTTP 502 from GitHub compare")],
+        # Two sample promotion-blocked repos (G1) so the panel + its regression spec have data:
+        # one quarantined (escalated), one with a raw consecutive-fail count.
+        promotion_blocked=[
+            PromotionBlockedDict(
+                repo="batch-live-reconciliation-service",
+                failures=3,
+                quarantined=True,
+                since="2026-06-11T08:00:00Z",
+                attempts=3,
+                escalated=True,
+            ),
+            PromotionBlockedDict(repo="execution-service", failures=1, quarantined=False),
+        ],
     )
 
 
@@ -526,6 +540,37 @@ async def _overview_row(
     )
 
 
+def _build_promotion_blocked(view: ManifestView) -> list[PromotionBlockedDict]:
+    """Repos parked out of staging→main (G1) — union of promotion_failures + promotion_quarantine.
+
+    Alert-parity for the staging-to-main genuine-failure CRITICAL page (failures) + the
+    newly-quarantined WARNING (quarantine). Sorted: quarantined first, then by fail count desc.
+    """
+    failures = view.promotion_failures()
+    quarantine = view.promotion_quarantine()
+    blocked: list[PromotionBlockedDict] = []
+    for repo in sorted(set(failures) | set(quarantine)):
+        q = quarantine.get(repo)
+        entry = PromotionBlockedDict(
+            repo=repo,
+            failures=failures.get(repo, 0),
+            quarantined=repo in quarantine,
+        )
+        if isinstance(q, dict):
+            since = q.get("since")
+            attempts = q.get("attempts")
+            escalated = q.get("escalated")
+            if isinstance(since, str):
+                entry["since"] = since
+            if isinstance(attempts, int) and not isinstance(attempts, bool):
+                entry["attempts"] = attempts
+            if isinstance(escalated, bool):
+                entry["escalated"] = escalated
+        blocked.append(entry)
+    blocked.sort(key=lambda e: (not e.get("quarantined", False), -e.get("failures", 0)))
+    return blocked
+
+
 @router.get("/overview")
 async def get_overview() -> OverviewResponseDict:
     """Fleet matrix: every repo's branch heads, deltas, CI status, PRs, SIT + deploy state."""
@@ -561,6 +606,7 @@ async def get_overview() -> OverviewResponseDict:
         stuck_in_sit=stuck_in_sit,
         sit_last_run=_to_sit_last_run(sit_last_run),
         errors=errors,
+        promotion_blocked=_build_promotion_blocked(view),
     )
 
 
