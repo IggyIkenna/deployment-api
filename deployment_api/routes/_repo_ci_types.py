@@ -94,6 +94,11 @@ class ImageSignalDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shap
     last_build_sha: str | None
     last_build_time: str | None  # ISO-8601 of the last build's finish_time (B1 — when it built)
     last_build_log_url: str | None  # GCP Cloud Build / AWS CodeBuild console URL (B1 — click-through)
+    # Last SUCCESSFUL build (operator add 2026-06-11) — so a red latest build doesn't hide the last
+    # good image: "current build failed, what's the last sha that succeeded?". None = no success in window.
+    last_success_sha: str | None
+    last_success_time: str | None
+    last_success_log_url: str | None
     deployed_version: str | None  # workspace-manifest.json deployed_versions[repo]
     image_stale: bool | None  # main HEAD sha != last successful build sha (None = unknown)
 
