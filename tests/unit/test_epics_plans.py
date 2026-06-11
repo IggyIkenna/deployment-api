@@ -17,6 +17,7 @@ setup_events("deployment-api", "test")
 
 from deployment_api.routes._epics_plans import (
     _count_checkboxes,
+    _is_plan_md,
     _normalize_epic_ref,
     _parse_frontmatter,
     _str_field,
@@ -48,6 +49,25 @@ class TestNormalizeEpicRef:
 
     def test_distinct_epics_stay_distinct(self) -> None:
         assert _normalize_epic_ref("epics/cefi_master.md") != _normalize_epic_ref("epics/defi_master.md")
+
+
+class TestIsPlanMd:
+    """plans/active/ housekeeping files are NOT plans and must never reach the orphan strip
+    (regression: operator-reported 2026-06-11 — INDEX/_agent_pings/task_template shown as
+    review-blocking orphans)."""
+
+    def test_housekeeping_files_excluded(self) -> None:
+        for name in ("INDEX.md", "task_template.md", "README.md", "_agent_pings.md"):
+            assert not _is_plan_md("file", name), name
+
+    def test_real_plans_and_epics_included(self) -> None:
+        assert _is_plan_md("file", "cefi_manifest_canonicalisation_2026_06_01.md")
+        assert _is_plan_md("file", "mtds_mdps_master.md")
+
+    def test_non_md_and_dirs_excluded(self) -> None:
+        assert not _is_plan_md("dir", "issues")
+        assert not _is_plan_md("file", "notes.txt")
+        assert not _is_plan_md("file", None)
 
 
 class TestParsers:

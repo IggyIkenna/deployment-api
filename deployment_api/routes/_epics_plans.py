@@ -39,6 +39,14 @@ _TTL_SECONDS = 300.0
 _FETCH_CONCURRENCY = 8
 _EPICS_DIR = "plans/epics"
 _ACTIVE_DIR = "plans/active"
+# Read plans from LDR, not main: LDR is the plan SSOT (plans are authored there and drain to
+# main on a ~15-min promote) — reading main false-orphans any plan whose parent_epic landed on
+# LDR inside the promotion-lag window (operator-reported 2026-06-11: 2 of 25 "orphans" were lag).
+_REF = "live-defi-rollout"
+# Housekeeping files that are not plans/epics — never orphan-strip or epic-card material
+# (per the inventory-tracker rule, the orphan check applies to ACTIVE PLANS only; README is
+# the epic registry doc). `_`-prefixed files (_agent_pings.md) are skipped by prefix below.
+_NON_PLAN_FILES = frozenset({"INDEX.md", "task_template.md", "README.md"})
 
 # Tier sort: L0 (foundation) → L5; unknown last. Priority sort P0 → P3.
 _TIER_ORDER = {"l0": 0, "l1": 1, "l2": 2, "l3": 3, "l4": 4, "l5": 5}
@@ -103,9 +111,16 @@ def _normalize_epic_ref(ref: str) -> str:
     return bare.lower()
 
 
+def _is_plan_md(entry_type: object, name: object) -> bool:
+    """True for a real plan/epic markdown file; excludes housekeeping + `_`-prefixed files."""
+    if entry_type != "file" or not isinstance(name, str) or not name.endswith(".md"):
+        return False
+    return name not in _NON_PLAN_FILES and not name.startswith("_")  # _agent_pings.md etc.
+
+
 async def _list_md(session: aiohttp.ClientSession, token: str, path: str) -> list[str]:
-    """List `*.md` file paths directly under a PM directory (top-level only)."""
-    listing = await gh_get_json(session, token, f"/repos/{GITHUB_ORG}/{_PM_REPO}/contents/{path}?ref=main")
+    """List plan/epic `*.md` file paths directly under a PM directory (top-level only)."""
+    listing = await gh_get_json(session, token, f"/repos/{GITHUB_ORG}/{_PM_REPO}/contents/{path}?ref={_REF}")
     if not isinstance(listing, list):
         return []
     out: list[str] = []
@@ -113,9 +128,8 @@ async def _list_md(session: aiohttp.ClientSession, token: str, path: str) -> lis
         if not isinstance(entry, dict):
             continue
         e = cast(dict[str, object], entry)
-        name = e.get("name")
-        if e.get("type") == "file" and isinstance(name, str) and name.endswith(".md"):
-            out.append(f"{path}/{name}")
+        if _is_plan_md(e.get("type"), e.get("name")):
+            out.append(f"{path}/{cast(str, e.get('name'))}")
     return out
 
 
@@ -124,7 +138,7 @@ async def _fetch_epic(
 ) -> EpicCardDict | None:
     async with sem:
         try:
-            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref="main")
+            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref=_REF)
         except (TimeoutError, aiohttp.ClientError):
             return None
     fm = _parse_frontmatter(text)
@@ -138,7 +152,7 @@ async def _fetch_epic(
         priority=_str_field(fm, "priority"),
         assigned_vm=_str_field(fm, "assigned_vm"),
         status=_str_field(fm, "status"),
-        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/main/{path}",
+        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/{_REF}/{path}",
         plans=[],
         plan_count=0,
         done_total=0,
@@ -151,7 +165,7 @@ async def _fetch_plan(
 ) -> EpicPlanDict | None:
     async with sem:
         try:
-            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref="main")
+            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref=_REF)
         except (TimeoutError, aiohttp.ClientError):
             return None
     fm = _parse_frontmatter(text)
@@ -167,12 +181,12 @@ async def _fetch_plan(
         open=open_,
         open_p0p1=open_p01,
         pct=round(100.0 * done / total, 1) if total > 0 else 0.0,
-        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/main/{path}",
+        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/{_REF}/{path}",
     )
 
 
 async def load_epics_plans(session: aiohttp.ClientSession, token: str) -> EpicsPlansResponseDict:
-    """Live epics + active-plan drilldown from PM `main` (300 s TTL cache)."""
+    """Live epics + active-plan drilldown from PM LDR — the plan SSOT (300 s TTL cache)."""
     global _cache
     now = time.monotonic()
     if _cache is not None and now - _cache[0] < _TTL_SECONDS:
