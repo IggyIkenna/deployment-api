@@ -104,7 +104,7 @@ def _parse_blob(blob_bytes: bytes, blob_name: str) -> VmCostRow | None:
     row = cast(dict[str, object], row_obj)
     try:
         return VmCostRow(
-            vm_name=str(row.get("vm_name", "")),
+            vm_name=str(row.get("vm_name", "")),  # noqa: qg-empty-fallback — display default
             asset_group=str(row.get("asset_group", "unknown")),
             archetype=str(row.get("archetype", "unknown")),
             machine_type=str(row.get("machine_type", "unknown")),

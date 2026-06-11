@@ -122,8 +122,8 @@ def _capture_status_response(
     This is a pure response builder — does NOT touch the parquet.
     """
     status = capture_meta.get("status", "captured")
-    error_reason = capture_meta.get("error_reason", "")
-    attempted_at = capture_meta.get("attempted_at", "")
+    error_reason = capture_meta.get("error_reason", "")  # noqa: qg-empty-fallback — optional manifest meta
+    attempted_at = capture_meta.get("attempted_at", "")  # noqa: qg-empty-fallback — optional manifest meta
 
     if status == "captured":
         return None

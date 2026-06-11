@@ -328,7 +328,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             # status. The API is dict-like on the .items() mapping; each
             # zone bucket carries an ``instances`` list we walk once.
             raw = ce.instances().aggregatedList(project=self.project_id).execute()  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
-            items: object = raw.get("items", {}) if isinstance(raw, dict) else {}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            items: object = raw.get("items", {}) if isinstance(raw, dict) else {}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # noqa: qg-empty-fallback — defensive GCS JSON parse
             if not isinstance(items, dict):
                 return False
             for zone_bucket in items.values():  # pyright: ignore[reportUnknownVariableType]

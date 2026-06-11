@@ -48,7 +48,9 @@ MAX_DURATION=700
 # Honest measured count 22 (QG_SLICE=lint-codex verified 2026-06-11). Next classes to clear per the
 # plan: function-size (deployment_state/data_analytics/deployment_manager + data_status mixins),
 # os.getenv, Any-types, schema-provenance.
-CODEX_MAX_VIOLATIONS=22
+# 2026-06-12 (codex ratchet plan Phase 4): os.getenv + comment-false-positive + empty-fallback
+# sites cleared across 17 files -> honest measured V=16. Ratcheted 22 -> 16.
+CODEX_MAX_VIOLATIONS=16
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 

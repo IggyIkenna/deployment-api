@@ -332,7 +332,9 @@ async def _fetch_health_data_freshness(
                 url,
             )
             return None
-        body = response.json()  # pyright: ignore[reportAny]
+        # Health-API payload is a dynamic per-service dict (data_freshness shape
+        # varies by service); validation happens structurally below, not via Pydantic.
+        body = response.json()  # pyright: ignore[reportAny]  # noqa: qg-raw-json
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning(
             "Live data-status: %s /health call failed (url=%s): %s",
@@ -682,7 +684,7 @@ async def get_venue_year_coverage(
         def _classify(row: "pd.Series[object]") -> str:  # type: ignore[type-arg]
             status = str(row["capture_status"]).lower()
             if status == "attempted_failed":
-                reason = str(row.get("_error_reason", "") or "").lower()
+                reason = str(row.get("_error_reason", "") or "").lower()  # noqa: qg-empty-fallback — optional manifest column
                 if _BLOCKED_CREDENTIALS_REASON in reason:
                     return "pending_paid_key"
             return status

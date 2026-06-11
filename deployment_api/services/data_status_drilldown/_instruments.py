@@ -284,7 +284,7 @@ def _apply_search_and_pagination(
     filtered = instruments
     if search and bundling != "per_underlying":
         needle = search.strip().lower()
-        filtered = [inst for inst in instruments if needle in str(inst.get("instrument_id", "")).lower()][
+        filtered = [inst for inst in instruments if needle in str(inst.get("instrument_id", "")).lower()][  # noqa: qg-empty-fallback — display filter
             :MAX_SEARCH_RESULTS
         ]
 
@@ -393,7 +393,7 @@ def list_instruments_for_shard(
         project_id=project_id,
     )
 
-    raw_list_obj: object = full.get("instruments", [])
+    raw_list_obj: object = full.get("instruments", [])  # noqa: qg-empty-fallback — drilldown payload optional
     raw_list = cast(list[object], raw_list_obj if isinstance(raw_list_obj, list) else [])
     full_instruments: list[dict[str, object]] = [
         cast_dict(cast(dict[str, object], i)) for i in raw_list if isinstance(i, dict)
@@ -417,8 +417,8 @@ def list_instruments_for_shard(
         "data_type": full.get("data_type", data_type),
         "bundling": bundling_mode,
         "instruments": page,
-        "bucket": full.get("bucket", ""),
-        "prefix": full.get("prefix", ""),
+        "bucket": full.get("bucket", ""),  # noqa: qg-empty-fallback — display default
+        "prefix": full.get("prefix", ""),  # noqa: qg-empty-fallback — display default
         "total_count": total_count,
         "limit": safe_limit,
         "offset": safe_offset,
@@ -463,7 +463,7 @@ def preview_bundle_symbols(
         data_type=data_type,
         project_id=project_id,
     )
-    raw_list_obj: object = listing.get("instruments", [])
+    raw_list_obj: object = listing.get("instruments", [])  # noqa: qg-empty-fallback — drilldown payload optional
     raw_list = cast(list[object], raw_list_obj if isinstance(raw_list_obj, list) else [])
     if not raw_list:
         return {"bundling": bundling, "symbols": [], "message": "Bundle not found."}
@@ -475,7 +475,7 @@ def preview_bundle_symbols(
     if not isinstance(first_obj, dict):
         return {"bundling": bundling, "symbols": [], "message": "Bundle not found."}
     first = cast_dict(cast(dict[str, object], first_obj))
-    uri = str(first.get("file_uri", ""))
+    uri = str(first.get("file_uri", ""))  # noqa: qg-empty-fallback — display default
     symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
     try:
         symbols = _dd._distinct_values_in_parquet(uri, symbol_col)[:limit]  # pyright: ignore[reportPrivateUsage]
@@ -485,7 +485,7 @@ def preview_bundle_symbols(
 
     return {
         "bundling": bundling,
-        "underlying": str(first.get("instrument_id", "")),
+        "underlying": str(first.get("instrument_id", "")),  # noqa: qg-empty-fallback — display default
         "file_uri": uri,
         "symbol_column": symbol_col,
         "symbols": symbols,

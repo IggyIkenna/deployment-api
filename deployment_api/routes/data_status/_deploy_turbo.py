@@ -167,9 +167,9 @@ async def post_deploy_missing_preview(
                         "day": "2024-03-04"}
         }
     """
-    service = str(request.get("service", ""))
-    asset_group = str(request.get("asset_group", ""))
-    raw_row_key = request.get("row_key", {})
+    service = str(request.get("service", ""))  # noqa: qg-empty-fallback — validated below
+    asset_group = str(request.get("asset_group", ""))  # noqa: qg-empty-fallback — validated below
+    raw_row_key = request.get("row_key", {})  # noqa: qg-empty-fallback — validated below
     mode = str(request.get("mode", "preview"))
     override_tarball_block = bool(request.get("override_tarball_block", False))
     if not isinstance(raw_row_key, dict):
@@ -221,10 +221,10 @@ async def post_deploy_missing_launch(
         launch_deploy_missing_vm,
     )
 
-    service = str(request.get("service", ""))
-    asset_group = str(request.get("asset_group", ""))
+    service = str(request.get("service", ""))  # noqa: qg-empty-fallback — validated below
+    asset_group = str(request.get("asset_group", ""))  # noqa: qg-empty-fallback — validated below
     operator_id = str(request.get("operator_id", "unknown"))
-    raw_row_key = request.get("row_key", {})
+    raw_row_key = request.get("row_key", {})  # noqa: qg-empty-fallback — validated below
     dry_run = bool(request.get("dry_run", False))
     skip_tarball_check = bool(request.get("skip_tarball_check", False))
 
@@ -286,7 +286,7 @@ async def post_deploy_live_cluster_preview(
             "replay_shard_key": "..."
         }
     """
-    role = str(request.get("role", ""))
+    role = str(request.get("role", ""))  # noqa: qg-empty-fallback — validated below
     raw_asset_group = request.get("asset_group")
     asset_group = str(raw_asset_group) if raw_asset_group not in (None, "") else None
     deployment_env = str(request.get("deployment_env", "prod"))

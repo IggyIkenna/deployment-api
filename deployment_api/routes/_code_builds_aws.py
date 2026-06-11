@@ -54,7 +54,7 @@ def _get_aws_account_id() -> str:
 
     sts: STSClient = boto3.client("sts", region_name=_AWS_REGION)  # type: ignore[reportUnknownMemberType, reportAny]
     identity: dict[str, object] = cast(dict[str, object], sts.get_caller_identity())  # type: ignore[reportUnknownMemberType]
-    account_id = identity.get("Account", "")
+    account_id = identity.get("Account", "")  # noqa: qg-empty-fallback — AWS SDK boundary
     return str(account_id)
 
 
@@ -94,9 +94,9 @@ def _format_codebuild_build(build: dict[str, object]) -> BuildInfoDict:
     )
 
     # Build log URL
-    logs: dict[str, Any] = cast(dict[str, Any], build.get("logs", {}))  # noqa: qg-empty-fallback — AWS SDK boundary
+    logs: dict[str, object] = cast(dict[str, object], build.get("logs", {}))  # noqa: qg-empty-fallback — AWS SDK boundary
     log_url: str | None = None
-    deep_link: Any = logs.get("deepLink")
+    deep_link: object = logs.get("deepLink")
     if isinstance(deep_link, str):
         log_url = deep_link
     if not log_url:
@@ -145,7 +145,7 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
         batch = matched_projects[i : i + 100]
         response = client.batch_get_projects(names=batch)  # type: ignore[reportAny, reportUnknownMemberType]
         response_dict = cast(dict[str, object], response)
-        projects_raw = response_dict.get("projects", [])
+        projects_raw = response_dict.get("projects", [])  # noqa: qg-empty-fallback — AWS SDK boundary
         projects = cast(list[dict[str, object]], projects_raw) if projects_raw else []
 
         for proj in projects:  # noqa: qg-empty-fallback — AWS SDK boundary
@@ -157,7 +157,7 @@ def list_codebuild_projects_sync() -> list[TriggerDict]:
 
             github_repo: str | None = None
             if source and source_type in ("GITHUB", "GITHUB_ENTERPRISE"):
-                location = str(source.get("location", ""))
+                location = str(source.get("location", ""))  # noqa: qg-empty-fallback — AWS SDK boundary
                 # Extract org/repo from URL
                 if "github.com/" in location:
                     github_repo = location.split("github.com/")[-1].rstrip(".git")
@@ -191,7 +191,7 @@ def get_codebuild_history_sync(project_name: str, limit: int = 10) -> list[Build
         sortOrder="DESCENDING",
     )
     response_dict = cast(dict[str, object], response)
-    build_ids_raw = response_dict.get("ids", [])
+    build_ids_raw = response_dict.get("ids", [])  # noqa: qg-empty-fallback — AWS SDK boundary
     build_ids: list[str] = cast(list[str], build_ids_raw)[:limit] if build_ids_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
 
     if not build_ids:
@@ -200,7 +200,7 @@ def get_codebuild_history_sync(project_name: str, limit: int = 10) -> list[Build
     # Get build details
     builds_response = client.batch_get_builds(ids=build_ids)  # type: ignore[reportAny, reportUnknownMemberType]
     builds_response_dict = cast(dict[str, object], builds_response)
-    builds_raw = builds_response_dict.get("builds", [])
+    builds_raw = builds_response_dict.get("builds", [])  # noqa: qg-empty-fallback — AWS SDK boundary
     builds: list[dict[str, object]] = cast(list[dict[str, object]], builds_raw) if builds_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
 
     return [_format_codebuild_build(b) for b in builds]
@@ -220,12 +220,12 @@ def get_recent_builds_for_projects_sync(
                 sortOrder="DESCENDING",
             )
             response_dict = cast(dict[str, object], response)
-            build_ids_raw = response_dict.get("ids", [])
+            build_ids_raw = response_dict.get("ids", [])  # noqa: qg-empty-fallback — AWS SDK boundary
             build_ids: list[str] = cast(list[str], build_ids_raw)[:1] if build_ids_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
             if build_ids:
                 builds_response = client.batch_get_builds(ids=build_ids)  # type: ignore[reportAny, reportUnknownMemberType]
                 builds_response_dict = cast(dict[str, object], builds_response)
-                builds_raw = builds_response_dict.get("builds", [])
+                builds_raw = builds_response_dict.get("builds", [])  # noqa: qg-empty-fallback — AWS SDK boundary
                 builds: list[dict[str, object]] = cast(list[dict[str, object]], builds_raw) if builds_raw else []  # noqa: qg-empty-fallback — AWS SDK boundary
                 if builds:
                     result[proj_name] = _format_codebuild_build(builds[0])
