@@ -23,6 +23,12 @@ _config = DeploymentApiConfig()
 # Named in snake_case; canonical env var is the GCP project env var (handled by UnifiedCloudConfig).
 gcp_project_id = _config.gcp_project_id
 GCS_REGION = _config.gcs_region
+# GCP Cloud Build region — PINNED to asia-northeast1, the workspace canonical region where ALL
+# Cloud Build triggers + the Artifact Registry live (cloudbuild.yaml is asia-northeast1 fleet-wide;
+# operator matched-region decision 2026-05-11). Deliberately NOT GCS_REGION: that config can resolve
+# to the us-central1 default, which would query an empty region → the repo-CI Image column reads
+# "unknown" for every repo (0 triggers found). Mirrors AWS `_code_builds_aws._AWS_REGION` ("ap-northeast-1").
+CLOUD_BUILD_REGION = "asia-northeast1"
 STATE_BUCKET = _config.effective_state_bucket
 SERVICE_ACCOUNT = _config.service_account_email
 

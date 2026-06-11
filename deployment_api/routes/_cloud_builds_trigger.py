@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from itertools import islice
 from typing import TYPE_CHECKING, cast
 
-from deployment_api.settings import GCS_REGION as DEFAULT_REGION
+from deployment_api.settings import CLOUD_BUILD_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 
 from ._cloud_builds_types import (
