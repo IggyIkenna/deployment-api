@@ -121,6 +121,11 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     repo: str
     repo_type: str
     ci_status: str
+    # Per-branch quality-gates-v2 conclusion (live-defi-rollout / staging / main) so the UI can
+    # show WHICH branch is red — `ci_status` alone (a single manifest value) can't distinguish
+    # "main red, LDR recovered (draining)" from "LDR actively broken". Keyed by branch name;
+    # value is success/failure/in_progress/… or None when v2 never ran on that branch.
+    branch_ci: dict[str, str | None]
     branches: list[BranchHeadDict]
     deltas: list[BranchDeltaDict]
     open_prs: list[RepoPrDict]

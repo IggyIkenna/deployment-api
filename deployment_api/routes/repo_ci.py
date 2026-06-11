@@ -47,6 +47,7 @@ from ._repo_ci_github import (
     list_branch_commits,
     list_open_promotion_prs,
     resolve_gh_token,
+    v2_conclusion_for_branch,
     v2_conclusion_for_sha,
 )
 from ._repo_ci_manifest import ManifestView, RepoMeta, load_manifest_view
@@ -183,10 +184,20 @@ def _mock_row(
         BranchDeltaDict(base="main", head="staging", ahead_by=1, behind_by=0, files_changed=1),
         BranchDeltaDict(base="main", head="live-defi-rollout", ahead_by=3, behind_by=0, files_changed=4),
     ]
+    # Mock the failing branch: FAILING → main red (the common "main red, LDR recovered" shape);
+    # STAGING_GREEN → LDR red (actively-broken shape); else all green. Lets playwright assert the
+    # branch annotation deterministically.
+    if ci_status == "FAILING":
+        branch_ci: dict[str, str | None] = {"live-defi-rollout": "success", "staging": "success", "main": "failure"}
+    elif ci_status == "STAGING_GREEN":
+        branch_ci = {"live-defi-rollout": "failure", "staging": "success", "main": "success"}
+    else:
+        branch_ci = {"live-defi-rollout": "success", "staging": "success", "main": "success"}
     return RepoOverviewDict(
         repo=repo,
         repo_type=repo_type,
         ci_status=ci_status,
+        branch_ci=branch_ci,
         branches=branches,
         deltas=deltas,
         open_prs=prs,
@@ -486,10 +497,22 @@ async def _overview_row(
         last_sit_run_age_min=sit_run[1],
     )
     main_sha = next((b["sha"] for b in branches if b["branch"] == "main"), None)
+    # Per-branch v2 conclusion so the UI can annotate WHICH branch is red. Degrades to None
+    # per-branch (honest-unknown) on a per-branch fetch failure — never fails the row.
+    branch_ci: dict[str, str | None] = {}
+    try:
+        conclusions = await asyncio.gather(
+            *[v2_conclusion_for_branch(session, token, GITHUB_ORG, meta.name, b) for b in PROMOTION_BRANCHES]
+        )
+        branch_ci = dict(zip(PROMOTION_BRANCHES, conclusions, strict=True))
+    except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+        logger.warning("[REPO-CI] %s per-branch v2 fetch degraded: %s", meta.name, exc)
+        branch_ci = dict.fromkeys(PROMOTION_BRANCHES, None)
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
         ci_status=view.ci_status_for(meta.name),
+        branch_ci=branch_ci,
         branches=branches,
         deltas=deltas,
         open_prs=prs,

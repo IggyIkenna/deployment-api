@@ -276,6 +276,34 @@ async def v2_conclusion_for_sha(
     return None
 
 
+async def v2_conclusion_for_branch(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
+) -> str | None:
+    """Latest quality-gates-v2 conclusion for a BRANCH head, via the Actions runs API.
+
+    Uses `/actions/workflows/quality-gates-v2.yml/runs?branch=` (Actions:read — which the
+    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which it does NOT,
+    the open BLOCKED-CREDENTIALS ask). So this lights up per-branch CI today without the
+    extra scope. Returns the conclusion (`success`/`failure`/…), the status when still
+    running (`in_progress`/`queued`), or None when the workflow never ran on that branch."""
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?branch={branch}&per_page=1",
+    )
+    data = _as_dict(payload)
+    for run in _as_list(data.get("workflow_runs")):
+        run_dict = _as_dict(run)
+        conclusion = run_dict.get("conclusion")
+        if conclusion:
+            return str(conclusion)
+        status = run_dict.get("status")
+        if status:
+            return str(status)  # in_progress / queued — still informative
+        return None
+    return None
+
+
 async def list_open_promotion_prs(
     session: aiohttp.ClientSession, token: str, org: str, repo: str
 ) -> list[dict[str, object]]:
