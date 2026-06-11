@@ -54,6 +54,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
+      # GitHub App installation token — separate 5000/hr pool from the shared user PAT.
+      # Used for `gh pr create` (conflict PR) + the repository_dispatch; an App token CAN
+      # open PRs and trigger downstream workflows (the repo-scoped GITHUB_TOKEN cannot).
+      # App perms: Contents+PullRequests+Actions R/W; owner: IggyIkenna (fleet-wide).
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.GH_APP_CI_POLLER_APP_ID }}
+          private-key: ${{ secrets.GH_APP_CI_POLLER_PRIVATE_KEY }}
+          owner: IggyIkenna
       - name: Checkout (full history needed for merge + relationship check)
         uses: actions/checkout@v5
         with:
@@ -64,13 +74,14 @@ jobs:
       - name: Back-merge main into LDR (merge-only; conflict → visible PR; never force)
         id: bm
         env:
-          # GH_PAT (not GITHUB_TOKEN) so `gh pr create` for the conflict PR works: the default
+          # App token (not GITHUB_TOKEN) so `gh pr create` for the conflict PR works: the default
           # GITHUB_TOKEN cannot open PRs when the org/repo disallows Actions-created PRs (the
-          # silent "could not open PR — perms" that broke the human-resolution fallback), and a
-          # PAT-created PR triggers its own checks. The LDR `git push` (line ~139) still uses the
-          # checkout-persisted GITHUB_TOKEN, so it stays workflow-non-triggering.
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GH_PAT: ${{ secrets.GH_PAT }}
+          # silent "could not open PR — perms" that broke the human-resolution fallback), and an
+          # App-created PR triggers its own checks. The LDR `git push` (line ~139) still uses the
+          # checkout-persisted GITHUB_TOKEN, so it stays workflow-non-triggering. Draws from the
+          # App's separate 5000/hr pool, not the shared user PAT.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_PAT: ${{ steps.app-token.outputs.token }}
         run: |
           set -uo pipefail
 
