@@ -15,7 +15,12 @@ from unified_trading_library import setup_events
 
 setup_events("deployment-api", "test")
 
-from deployment_api.routes._epics_plans import _count_checkboxes, _parse_frontmatter, _str_field
+from deployment_api.routes._epics_plans import (
+    _count_checkboxes,
+    _normalize_epic_ref,
+    _parse_frontmatter,
+    _str_field,
+)
 
 _PATCH_MOCK_MODE = "deployment_api.routes.epics.DeploymentApiConfig.is_mock_mode"
 
@@ -27,6 +32,22 @@ def client_epics() -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix="/api/epics")
     return TestClient(app, raise_server_exceptions=False)
+
+
+class TestNormalizeEpicRef:
+    """parent_epic is declared 3 ways across the repo; all must collapse to one slug so a
+    path-form reference (e.g. asset-group canonicalisation plans → epics/mtds_mdps_master.md)
+    is NOT wrongly orphaned (regression: operator-reported 0-plan/false-orphan counts 2026-06-11)."""
+
+    def test_all_forms_collapse_to_bare_slug(self) -> None:
+        assert _normalize_epic_ref("mtds_mdps_master") == "mtds_mdps_master"
+        assert _normalize_epic_ref("epics/mtds_mdps_master.md") == "mtds_mdps_master"
+        assert _normalize_epic_ref("plans/epics/infrastructure_master.md") == "infrastructure_master"
+        # case-insensitive + whitespace-trimmed
+        assert _normalize_epic_ref("  Infrastructure_Master  ") == "infrastructure_master"
+
+    def test_distinct_epics_stay_distinct(self) -> None:
+        assert _normalize_epic_ref("epics/cefi_master.md") != _normalize_epic_ref("epics/defi_master.md")
 
 
 class TestParsers:

@@ -90,6 +90,19 @@ def _count_checkboxes(text: str) -> tuple[int, int, int]:
     return done, open_, open_p01
 
 
+def _normalize_epic_ref(ref: str) -> str:
+    """Reduce any epic reference to its bare slug for matching.
+
+    Plan `parent_epic:` is declared inconsistently across the repo — `mtds_mdps_master`,
+    `epics/mtds_mdps_master.md`, `plans/epics/infrastructure_master.md` all mean the same epic.
+    Strip the directory prefix + `.md` suffix and lowercase so they all collapse to one key.
+    """
+    bare = ref.strip().rsplit("/", 1)[-1]
+    if bare.endswith(".md"):
+        bare = bare[: -len(".md")]
+    return bare.lower()
+
+
 async def _list_md(session: aiohttp.ClientSession, token: str, path: str) -> list[str]:
     """List `*.md` file paths directly under a PM directory (top-level only)."""
     listing = await gh_get_json(session, token, f"/repos/{GITHUB_ORG}/{_PM_REPO}/contents/{path}?ref=main")
@@ -115,9 +128,11 @@ async def _fetch_epic(
         except (TimeoutError, aiohttp.ClientError):
             return None
     fm = _parse_frontmatter(text)
-    name = _str_field(fm, "name") or path.rsplit("/", 1)[-1].removesuffix(".md")
+    slug = path.rsplit("/", 1)[-1].removesuffix(".md")
+    name = _str_field(fm, "name") or slug
     return EpicCardDict(
         name=name,
+        slug=slug,
         title=_str_field(fm, "title") or name,
         tier=_str_field(fm, "tier"),
         priority=_str_field(fm, "priority"),
@@ -172,11 +187,18 @@ async def load_epics_plans(session: aiohttp.ClientSession, token: str) -> EpicsP
     epics = [e for e in epics_raw if e is not None]
     plans = [p for p in plans_raw if p is not None]
 
-    by_name = {e["name"]: e for e in epics}
+    # Match on the NORMALIZED epic slug, not the raw string — plan `parent_epic:` is declared in
+    # three inconsistent forms across the repo (`mtds_mdps_master`, `epics/mtds_mdps_master.md`,
+    # `plans/epics/infrastructure_master.md`). An exact-string match wrongly orphans the path-forms
+    # (e.g. every asset-group `*_manifest_canonicalisation` plan declares `epics/mtds_mdps_master.md`).
+    by_key: dict[str, EpicCardDict] = {}
+    for e in epics:
+        by_key[_normalize_epic_ref(e["slug"])] = e
+        by_key.setdefault(_normalize_epic_ref(e["name"]), e)
     orphans: list[EpicPlanDict] = []
     for plan in plans:
         parent = plan["parent_epic"]
-        epic = by_name.get(parent)
+        epic = by_key.get(_normalize_epic_ref(parent)) if parent else None
         if epic is None:
             orphans.append(plan)
             continue
