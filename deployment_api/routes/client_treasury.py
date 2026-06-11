@@ -44,7 +44,7 @@ from unified_api_contracts.internal.domain.treasury import (
     WithdrawalApprovalChain,
     WithdrawalApprovalSignature,
 )
-from unified_api_contracts.registry.withdrawal_approval_rules import (
+from unified_api_contracts.registry import (
     get_approver_pool,
     get_required_approvers,
 )

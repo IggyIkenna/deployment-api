@@ -15,6 +15,13 @@
 
 ARG PROJECT_ID
 
+# Digest-pinned UTL base image (QG STEP 5.79). Declared GLOBAL — before the first FROM — so the
+# default digest resolves for the `base` FROM below even on AWS CodeBuild, which (unlike GCP
+# cloudbuild) does NOT pass --build-arg BASE_IMAGE_DIGEST. An ARG declared after a FROM is
+# stage-scoped and invisible to a later FROM → empty digest → "invalid reference format".
+# Refreshed by update-dependency-version.yml on base-image republish.
+ARG BASE_IMAGE_DIGEST=sha256:c7c4fff27a717febfc6be8786c2034fba20b56044e15c891ab0fbf1da1578ab9
+
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
 FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
@@ -34,10 +41,8 @@ ENV VITE_SKIP_AUTH=true \
 RUN npm run build
 
 # ── Stage 1: Python API base ────────────────────────────────────────────
-# Digest-pinned UTL base image (QG STEP 5.79 -- reproducible builds + UTL/UAC provenance).
-# Refreshed by the dependency-update fan-out (update-dependency-version.yml) on base-image
-# republish; cloudbuild may override at build time: --build-arg BASE_IMAGE_DIGEST=sha256:...
-ARG BASE_IMAGE_DIGEST=sha256:c7c4fff27a717febfc6be8786c2034fba20b56044e15c891ab0fbf1da1578ab9
+# BASE_IMAGE_DIGEST is declared GLOBALLY at the top (see the note there — it must precede the
+# first FROM to be visible here). cloudbuild may override: --build-arg BASE_IMAGE_DIGEST=sha256:...
 FROM --platform=linux/amd64 asia-northeast1-docker.pkg.dev/${PROJECT_ID}/unified-trading-library/unified-trading-library@${BASE_IMAGE_DIGEST} AS base
 
 FROM base AS api
