@@ -81,7 +81,7 @@ class TestAuditBucketVersioningEnabled:
 
         # Simulate the check our provisioning script performs:
         # Read bucket.versioning_enabled and assert it is True.
-        audit_bucket_name = "trading-audit-records-prd-central-element-323112"
+        audit_bucket_name = "trading-audit-records-prd-test-project"
         checked_bucket = client.bucket(audit_bucket_name)
         assert checked_bucket.versioning_enabled is True, (
             f"Audit bucket {audit_bucket_name} must have versioning enabled; "
@@ -91,7 +91,7 @@ class TestAuditBucketVersioningEnabled:
     def test_versioning_disabled_raises_assertion(self) -> None:
         """If versioning is off, the compliance check should fail loudly."""
         client, bucket, blob_obj, _ = _make_gcs_client(versioning_enabled=False)
-        checked_bucket = client.bucket("trading-audit-records-prd-central-element-323112")
+        checked_bucket = client.bucket("trading-audit-records-prd-test-project")
         assert checked_bucket.versioning_enabled is False  # This is the "disabled" case.
         # The provisioning guard MUST detect this and raise — validated here as:
         with pytest.raises(AssertionError):
@@ -111,7 +111,7 @@ class TestAuditRetentionLock7Years:
     def test_audit_retention_lock_7_years(self) -> None:
         """Bucket retention_policy.retention_period == 7 years AND is_locked=True."""
         client, bucket, blob_obj, _ = _make_gcs_client(retention_period=self.SEVEN_YEARS_SECS)
-        bucket_obj = client.bucket("trading-audit-records-prd-central-element-323112")
+        bucket_obj = client.bucket("trading-audit-records-prd-test-project")
         assert bucket_obj.retention_policy is not None, "Audit bucket must have a retention_policy set."
         assert bucket_obj.retention_policy.retention_period == self.SEVEN_YEARS_SECS, (
             f"Expected 7-year retention ({self.SEVEN_YEARS_SECS}s); "
@@ -125,7 +125,7 @@ class TestAuditRetentionLock7Years:
         """A 1-year retention policy does NOT satisfy the 7-year requirement."""
         one_year_secs = 31_536_000
         client, bucket, blob_obj, _ = _make_gcs_client(retention_period=one_year_secs)
-        bucket_obj = client.bucket("trading-audit-records-prd-central-element-323112")
+        bucket_obj = client.bucket("trading-audit-records-prd-test-project")
         with pytest.raises(AssertionError):
             assert bucket_obj.retention_policy.retention_period >= self.SEVEN_YEARS_SECS, (
                 f"Retention period {bucket_obj.retention_policy.retention_period}s "
@@ -135,7 +135,7 @@ class TestAuditRetentionLock7Years:
     def test_unlocked_retention_fails_compliance(self) -> None:
         """An unlocked retention policy is not compliant (can be shortened/removed)."""
         client, bucket, blob_obj, _ = _make_gcs_client(retention_period=self.SEVEN_YEARS_SECS)
-        bucket_obj = client.bucket("trading-audit-records-prd-central-element-323112")
+        bucket_obj = client.bucket("trading-audit-records-prd-test-project")
         # Simulate unlocked bucket
         bucket_obj.retention_policy.is_locked = False
         with pytest.raises(AssertionError):
@@ -234,10 +234,10 @@ class TestAuditLogImmutableAfterWrite:
         assert path1 != path2, "Audit paths must be distinct (append-only; never overwrite)."
 
         # Simulate two writes
-        blob1 = client.bucket("trading-audit-records-prd-central-element-323112").blob(path1)
+        blob1 = client.bucket("trading-audit-records-prd-test-project").blob(path1)
         blob1.upload_from_string(b'{"event":"ORDER_FILLED","ts":"20260514T120000Z"}')
 
-        blob2 = client.bucket("trading-audit-records-prd-central-element-323112").blob(path2)
+        blob2 = client.bucket("trading-audit-records-prd-test-project").blob(path2)
         blob2.upload_from_string(b'{"event":"ORDER_FILLED","ts":"20260514T120001Z"}')
 
         # Both uploads were called (not short-circuited)

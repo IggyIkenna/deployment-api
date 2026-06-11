@@ -55,7 +55,7 @@ _KNOWN_TARBALL_SERVICES = [
 ]
 
 
-class TarballInfo(BaseModel):
+class TarballInfo(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """GCS tarball metadata (no full gs:// URI — callers compose from bucket + object_path)."""
 
     bucket: str = Field(..., description="GCS bucket name (without gs:// prefix).")
@@ -65,7 +65,7 @@ class TarballInfo(BaseModel):
     sha256_hex: str | None = Field(default=None, description="SHA-256 from sibling manifest.json if present.")
 
 
-class BuildLineageEntry(BaseModel):
+class BuildLineageEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Combined tarball + Docker-image lineage for a single service."""
 
     service: str
@@ -78,7 +78,7 @@ class BuildLineageEntry(BaseModel):
     latest_image_tag: str | None = Field(default=None, description="Most recent semver tag (highest version).")
 
 
-class BuildsHistoryResponse(BaseModel):
+class BuildsHistoryResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response for GET /api/builds/history."""
 
     entries: list[BuildLineageEntry]
@@ -138,10 +138,12 @@ def _mock_entries(project_id: str, services: list[str], limit: int) -> list[Buil
 
 async def _live_entries(project_id: str, services: list[str], limit: int) -> list[BuildLineageEntry]:
     """Fetch tarball metadata from GCS + image tags from AR per service."""
-    from google.cloud import (  # noqa: cloud-sdk-direct
+    # Cloud-SDK boundary: kept lazy — module-level google.cloud imports would trip the
+    # direct-cloud-SDK QG check and load the SDKs at service startup.
+    from google.cloud import (  # noqa: cloud-sdk-direct, imports-inside-functions
         artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs,reportAttributeAccessIssue,reportUnknownVariableType]
     )
-    from google.cloud import storage as gcs_storage  # noqa: cloud-sdk-direct
+    from google.cloud import storage as gcs_storage  # noqa: cloud-sdk-direct, imports-inside-functions
 
     bucket_name = _tarball_bucket(project_id)
     try:

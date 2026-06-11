@@ -41,7 +41,7 @@ _VALID_ARCHETYPES = frozenset({"carry_staked_basis", "arbitrage_price_dispersion
 _VALID_GRID_DENSITIES = frozenset({"low", "medium", "high"})
 
 
-class StrategyBacktestLaunchRequest(BaseModel):
+class StrategyBacktestLaunchRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui launch request DTO
     """Request payload for POST /api/strategy/backtest/launch."""
 
     archetype: str = Field(
@@ -72,7 +72,7 @@ class StrategyBacktestLaunchRequest(BaseModel):
     )
 
 
-class StrategyBacktestLaunchResult(BaseModel):
+class StrategyBacktestLaunchResult(BaseModel):  # CORRECT-LOCAL: deployment-ui launch response DTO
     """Response for POST /api/strategy/backtest/launch."""
 
     vm_name: str
@@ -168,7 +168,9 @@ def launch_strategy_backtest(
                 capture_output=True,
                 text=True,
                 timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-                env={**_process_env, "GCP_PROJECT_ID": project_id},
+                # Canonical project-id env key passed to the launch subprocess —
+                # not an env read in this service.
+                env={**_process_env, "GCP_PROJECT_ID": project_id},  # noqa: qg-gcp-project-id
             )
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=504, detail="Launcher timed out") from None

@@ -28,7 +28,9 @@ _cloud_cfg = UnifiedCloudConfig()
 def _check_gcs() -> dict[str, object]:
     """Probe GCS reachability by attempting to instantiate the storage client."""
     try:
-        from unified_trading_library import get_storage_client
+        # call-time patch surface (tests/unit/test_detailed_health.py patches
+        # unified_trading_library.get_storage_client)
+        from unified_trading_library import get_storage_client  # noqa: imports-inside-functions
 
         get_storage_client()
         return {"status": "up", "detail": None}
@@ -39,7 +41,11 @@ def _check_gcs() -> dict[str, object]:
 def _check_pubsub() -> dict[str, object]:
     """Probe Pub/Sub reachability via the project subscription list."""
     try:
-        from google.cloud import pubsub_v1  # pyright: ignore[reportMissingModuleSource]
+        # lazy cloud-SDK boundary — module-level google.cloud import trips the direct-cloud-SDK QG + loads the SDK
+        # at startup
+        from google.cloud import (
+            pubsub_v1,  # noqa: imports-inside-functions # pyright: ignore[reportMissingModuleSource]
+        )
 
         project_id = _cloud_cfg.gcp_project_id
         subscriber = pubsub_v1.SubscriberClient()
@@ -53,7 +59,11 @@ def _check_pubsub() -> dict[str, object]:
 def _check_secret_manager() -> dict[str, object]:
     """Probe Secret Manager by listing secrets (first page only)."""
     try:
-        from google.cloud import secretmanager  # pyright: ignore[reportMissingModuleSource]
+        # lazy cloud-SDK boundary — module-level google.cloud import trips the direct-cloud-SDK QG + loads the SDK
+        # at startup
+        from google.cloud import (
+            secretmanager,  # noqa: imports-inside-functions # pyright: ignore[reportMissingModuleSource]
+        )
 
         project_id = _cloud_cfg.gcp_project_id
         client = secretmanager.SecretManagerServiceClient()
@@ -67,7 +77,11 @@ def _check_secret_manager() -> dict[str, object]:
 def _check_deployment_events() -> dict[str, object]:
     """Probe the deployment-api-events Pub/Sub topic existence."""
     try:
-        from google.cloud import pubsub_v1  # pyright: ignore[reportMissingModuleSource]
+        # lazy cloud-SDK boundary — module-level google.cloud import trips the direct-cloud-SDK QG + loads the SDK
+        # at startup
+        from google.cloud import (
+            pubsub_v1,  # noqa: imports-inside-functions # pyright: ignore[reportMissingModuleSource]
+        )
 
         project_id = _cloud_cfg.gcp_project_id
         publisher = pubsub_v1.PublisherClient()
@@ -197,7 +211,9 @@ async def get_workers_status() -> dict[str, object]:
     Useful for debugging and monitoring.
     """
     try:
-        from .workers.deployment_worker import get_active_workers
+        # call-time patch surface (tests/unit/test_health_routes.py seeds
+        # sys.modules["deployment_api.workers.deployment_worker"])
+        from .workers.deployment_worker import get_active_workers  # noqa: imports-inside-functions
 
         workers = get_active_workers()
         return {
@@ -224,7 +240,8 @@ async def clear_cache():
 
     Use this to force fresh data on next request.
     """
-    from .utils.cache import cache
+    # call-time patch surface (tests/unit/test_health_routes.py patch.dict's sys.modules["deployment_api.utils.cache"])
+    from .utils.cache import cache  # noqa: imports-inside-functions
 
     try:
         # Clear all cache patterns
@@ -244,7 +261,9 @@ async def clear_cache():
 
         # Also clear the GCS-based file cache used by service_status
         try:
-            from .routes.service_status_cache import clear_gcs_cache
+            # deferred inside try/except so /api/cache/clear degrades gracefully when the optional GCS cache
+            # backend is unavailable
+            from .routes.service_status_cache import clear_gcs_cache  # noqa: imports-inside-functions
 
             clear_gcs_cache()
         except (OSError, ValueError, RuntimeError) as e:
@@ -253,7 +272,9 @@ async def clear_cache():
 
         # Clear the data status turbo cache (separate in-memory cache)
         try:
-            from .utils.data_status_cache import clear_cache as clear_turbo_cache
+            # call-time patch surface (tests/unit/test_health_routes.py patch.dict's
+            # sys.modules["deployment_api.utils.data_status_cache"])
+            from .utils.data_status_cache import clear_cache as clear_turbo_cache  # noqa: imports-inside-functions
 
             turbo_cleared = clear_turbo_cache()
             total_cleared += turbo_cleared
@@ -263,7 +284,9 @@ async def clear_cache():
 
         # Clear the availability index cache (GCS index reads)
         try:
-            from .services.data_status_service import clear_index_cache
+            # deferred inside try/except so /api/cache/clear degrades gracefully when the optional index cache
+            # backend is unavailable
+            from .services.data_status_service import clear_index_cache  # noqa: imports-inside-functions
 
             clear_index_cache()
             total_cleared += 1

@@ -597,3 +597,19 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     def effective_region(self) -> str:
         """Get the effective GCS region."""
         return self.gcs_region or "us-central1"
+
+    def require_gcp_project_id(self) -> str:
+        """GCP project id, or fail loud when unconfigured.
+
+        Replaces the prior hardcoded prod-project fallback (QG
+        hardcoded-project-id ratchet; codex_violations_ratchet_to_five
+        plan 2026-06-10): production always sets ``GCP_PROJECT_ID``
+        (Cloud Run env), tests set ``test-project``
+        (``tests/unit/conftest.py``), so an empty value is a deployment
+        misconfiguration — never silently target the prod project.
+        """
+        if not self.gcp_project_id:
+            raise RuntimeError(
+                "GCP_PROJECT_ID is not configured — set the env var; hardcoded prod-project fallbacks are banned"
+            )
+        return self.gcp_project_id

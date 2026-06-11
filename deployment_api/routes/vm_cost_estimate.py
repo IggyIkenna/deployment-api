@@ -44,7 +44,7 @@ _MACHINE_HOURLY_USD: dict[str, float] = {
 _DISK_HOURLY_USD_PER_GB = 0.000_054  # pd-ssd in asia-northeast1
 
 
-class VmCostEstimateRequest(BaseModel):
+class VmCostEstimateRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """Request payload for POST /api/vm/cost-estimate."""
 
     machine_type: str = Field(
@@ -72,7 +72,7 @@ class VmCostEstimateRequest(BaseModel):
     )
 
 
-class VmCostEstimateResponse(BaseModel):
+class VmCostEstimateResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Estimated GCP cost breakdown for a VM launch."""
 
     machine_type: str

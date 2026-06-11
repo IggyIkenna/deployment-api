@@ -8,11 +8,13 @@ time so the existing test patch surface keeps intercepting.
 """
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
 import httpx
+import pandas as pd
 from fastapi import HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -48,7 +50,7 @@ LiveCaptureStatus = Literal[
 ]
 
 
-class LiveStatusRow(BaseModel):
+class LiveStatusRow(BaseModel):  # CORRECT-LOCAL: deployment-ui Live-tab response row; TS consumer only
     """One per-shard live-pipeline status row for the deployment-UI Live tab.
 
     Phase 11.1 endpoint contract per
@@ -123,7 +125,7 @@ class LiveStatusRow(BaseModel):
     last_candle_emitted_at: datetime | None = None
 
 
-class LiveStatusResponse(BaseModel):
+class LiveStatusResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui Live-tab response envelope; TS consumer only
     """``GET /api/data-status/live`` response envelope."""
 
     status: Literal["ok"] = "ok"
@@ -411,7 +413,10 @@ def _read_live_manifest_rows(asset_group: str) -> list[object]:
     so the endpoint stays responsive even when one asset_group's bucket
     is missing.
     """
-    from unified_trading_library import read_availability_index
+    # Call-time patch surface: tests/unit/test_data_status_live.py patches
+    # unified_trading_library.read_availability_index with `with patch(...)` at
+    # call time -- a module-top binding would not be intercepted. Stays lazy.
+    from unified_trading_library import read_availability_index  # noqa: imports-inside-functions
 
     from deployment_api.services.data_status_drilldown import build_bucket_name
 
@@ -536,6 +541,17 @@ async def get_live_data_status(
     )
 
 
+def _honest_coverage_bucket() -> str:
+    """Honest-coverage bucket derived from the configured project id.
+
+    Mirrors the writer's derivation (instruments-service
+    ``scripts/measure_honest_coverage.py``: ``f"{PROJECT_ID}-honest-coverage"``).
+    Fails loud when ``GCP_PROJECT_ID`` is unset -- no hardcoded
+    prod-project fallback (QG hardcoded-project-id ratchet).
+    """
+    return f"{_ds._cfg.require_gcp_project_id()}-honest-coverage"  # pyright: ignore[reportPrivateUsage]
+
+
 @router.get("/honest-coverage")
 async def get_honest_coverage(
     query_date: str | None = Query(
@@ -546,7 +562,7 @@ async def get_honest_coverage(
 ) -> Response:
     """Cross-asset-group honest coverage for a given date.
 
-    Reads ``gs://central-element-323112-honest-coverage/{date}/coverage.json``
+    Reads ``gs://{gcp_project_id}-honest-coverage/{date}/coverage.json``
     written daily by the ``measure-honest-coverage`` cron VM
     (``deployment-service/scripts/vm/launch-measure-honest-coverage-vm.sh``)
     and returns the JSON payload verbatim.
@@ -557,12 +573,10 @@ async def get_honest_coverage(
     Returns 404 when coverage has not yet been measured for the requested
     date (cron VM has not run yet, or staging env without backfill).
     """
-    import json
-
     from deployment_api.utils.storage_facade import read_object_text
 
     run_date = query_date or datetime.now(UTC).date().isoformat()
-    coverage_bucket = "central-element-323112-honest-coverage"
+    coverage_bucket = _honest_coverage_bucket()
     object_path = f"{run_date}/coverage.json"
 
     try:
@@ -594,7 +608,7 @@ _VENUE_YEAR_COVERAGE_ASSET_GROUPS = ("cefi", "tradfi", "defi", "sports", "predic
 _BLOCKED_CREDENTIALS_REASON = "blocked_credentials"
 
 
-class VenueYearRow(BaseModel):
+class VenueYearRow(BaseModel):  # CORRECT-LOCAL: deployment-ui venue-year drilldown row; TS consumer only
     venue: str
     asset_group: str
     year: int
@@ -610,7 +624,9 @@ class VenueYearRow(BaseModel):
         return self.total - self.captured - self.empty_confirmed - self.expected_unattempted
 
 
-class VenueYearCoverageResponse(BaseModel):
+class VenueYearCoverageResponse(
+    BaseModel
+):  # CORRECT-LOCAL: deployment-ui venue-year response envelope; TS consumer only
     rows: list[VenueYearRow]
     asset_groups_loaded: list[str]
     asset_groups_failed: list[str]
@@ -639,8 +655,6 @@ async def get_venue_year_coverage(
 
     Source: ``_index/availability_index.parquet`` per MTDS bucket.
     """
-    import pandas as pd
-
     requested_ags = [ag.strip().lower() for ag in asset_groups.split(",") if ag.strip()]
     requested_ags = [ag for ag in requested_ags if ag in _VENUE_YEAR_COVERAGE_ASSET_GROUPS]
 

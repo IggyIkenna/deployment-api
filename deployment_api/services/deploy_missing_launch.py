@@ -254,7 +254,7 @@ def _poll_started_event(
 
 
 @dataclass
-class DeployMissingLaunchResult:
+class DeployMissingLaunchResult:  # CORRECT-LOCAL: in-process launch result
     service: str
     asset_group: str
     shard_key: str

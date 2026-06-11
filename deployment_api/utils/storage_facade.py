@@ -68,7 +68,7 @@ def _is_bucket_mounted(bucket_name: str) -> bool:
 
 
 @dataclass
-class ObjectInfo:
+class ObjectInfo:  # CORRECT-LOCAL: in-process storage object metadata
     """Unified object metadata (from FUSE or GCS API). Blob-compatible interface."""
 
     name: str
@@ -363,8 +363,6 @@ def get_object_metadata(bucket_name: str, object_path: str) -> dict[str, object]
     Returns a dict with at least 'updated' (datetime | None) and 'size' (int | None).
     Always uses GCS API.
     """
-    from datetime import UTC, datetime
-
     if _use_gcs_fuse() and _is_bucket_mounted(bucket_name):
         try:
             path = _fuse_path(bucket_name, object_path)

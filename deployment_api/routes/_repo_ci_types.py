@@ -8,6 +8,7 @@ short TTL cache + workspace-manifest.json for the repo registry / ci_status / st
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Literal, Required, TypedDict
 
 # The three branches of the promotion contract (LDR -> staging -> SIT -> main).
@@ -217,3 +218,8 @@ class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api respo
     reason: str  # "" when available; failure reason otherwise (honest, never fabricated)
     orchestrator_url: str  # always present → UI deep-link target (the AO UI)
     data: dict[str, object] | None  # the orchestrator FleetGitHealthResponse payload, or None
+
+
+def _now_iso() -> str:
+    """UTC now in ISO-8601 (shared by the live aggregator + mock fixtures)."""
+    return dt.datetime.now(dt.UTC).isoformat()

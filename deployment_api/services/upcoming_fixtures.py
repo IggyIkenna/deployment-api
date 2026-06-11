@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from io import BytesIO
 from typing import TypedDict
 
 import pandas as pd
@@ -60,9 +62,8 @@ def _sports_bucket() -> str:
 
 def _read_fixtures_parquet(bucket: str, object_path: str) -> pd.DataFrame:
     """Load a parquet object via UCI ``StorageClient`` (no ``gs://`` literals)."""
-    from io import BytesIO
-
-    import pyarrow.parquet as pq
+    # Lazy heavy/optional parquet SDK — module-level import would slow API startup
+    import pyarrow.parquet as pq  # noqa: imports-inside-functions
 
     client = get_storage_client()
     blob = client.download_bytes(bucket, object_path)
@@ -185,8 +186,6 @@ def _read_frames_for_window(
     # Per-day reads are independent transpacific GCS HEAD + GET round-trips
     # (~2-3s each from US to asia-northeast1). A 7-day window serial = 30-40s.
     # Threading across days collapses to one round-trip latency.
-    from concurrent.futures import ThreadPoolExecutor
-
     days = [start + timedelta(days=offset) for offset in range(0, inclusive_extra_days + 1)]
     with ThreadPoolExecutor(max_workers=min(len(days), 16)) as ex:
         results = list(ex.map(lambda d: _read_one_day_frame(bucket, d), days))  # pyright: ignore[reportUnknownArgumentType,reportUnknownLambdaType]

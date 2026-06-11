@@ -168,8 +168,11 @@ class DeploymentStateManager:
         Returns:
             Updated deployment status
         """
-        from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import refresh_deployment_status_sync
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_caching import invalidate_deployment_state_cache  # noqa: imports-inside-functions
+
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_state import refresh_deployment_status_sync  # noqa: imports-inside-functions
 
         # Refresh from cloud provider
         refresh_deployment_status_sync(deployment_id)
@@ -194,8 +197,11 @@ class DeploymentStateManager:
         Returns:
             Dict with cancellation status
         """
-        from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import cancel_deployment_sync
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_caching import invalidate_deployment_state_cache  # noqa: imports-inside-functions
+
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_state import cancel_deployment_sync  # noqa: imports-inside-functions
 
         try:
             # Cancel deployment
@@ -227,8 +233,11 @@ class DeploymentStateManager:
         Returns:
             Dict with resume status
         """
-        from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import resume_deployment_sync
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_caching import invalidate_deployment_state_cache  # noqa: imports-inside-functions
+
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_state import resume_deployment_sync  # noqa: imports-inside-functions
 
         try:
             # Resume deployment
@@ -260,11 +269,14 @@ class DeploymentStateManager:
         Returns:
             Dict with deletion status
         """
-        from ..routes.deployment_caching import (
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_caching import (  # noqa: imports-inside-functions
             invalidate_deployment_cache,
             invalidate_deployment_state_cache,
         )
-        from ..routes.deployment_state import delete_deployment_sync
+
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_state import delete_deployment_sync  # noqa: imports-inside-functions
 
         try:
             # Delete deployment
@@ -296,7 +308,8 @@ class DeploymentStateManager:
         Returns:
             Dict with bulk deletion results
         """
-        from ..routes.deployment_caching import invalidate_deployment_cache
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_caching import invalidate_deployment_cache  # noqa: imports-inside-functions
 
         successful_list: list[str] = []
         failed_list: list[object] = []
@@ -346,8 +359,11 @@ class DeploymentStateManager:
         Returns:
             Dict with update status
         """
-        from ..routes.deployment_caching import invalidate_deployment_state_cache
-        from ..routes.deployment_state import update_deployment_tag_sync
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_caching import invalidate_deployment_state_cache  # noqa: imports-inside-functions
+
+        # circular-dep breaker (bypass audit § 2.5A): services/deployment_state ↔ routes
+        from ..routes.deployment_state import update_deployment_tag_sync  # noqa: imports-inside-functions
 
         try:
             # Update tag

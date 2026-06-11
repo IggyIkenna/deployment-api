@@ -48,7 +48,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-class OrderContextRequest(BaseModel):
+class OrderContextRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """Operator-supplied order context for the pre-flight playground.
 
     Fields mirror :class:`unified_trading_library.risk.RuleEvalContext` —
@@ -101,7 +101,7 @@ class OrderContextRequest(BaseModel):
     secondary_venue_notional_usd: str | float | int | None = None
 
 
-class ApplicableRulesFilter(BaseModel):
+class ApplicableRulesFilter(BaseModel):  # CORRECT-LOCAL: deployment-ui request filter DTO
     """Optional override for which axes to enumerate during pre-flight.
 
     When omitted, the route derives the axes from the order context (every
@@ -120,7 +120,7 @@ class ApplicableRulesFilter(BaseModel):
     strategy_family_id: str | None = None
 
 
-class PreflightTestRequest(BaseModel):
+class PreflightTestRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """POST body for ``/api/risk/preflight-test``."""
 
     model_config = ConfigDict(extra="forbid")

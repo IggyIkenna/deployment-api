@@ -3315,7 +3315,7 @@ requires-dist = [
 
 [[package]]
 name = "unified-trading-library"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "aiohttp" },

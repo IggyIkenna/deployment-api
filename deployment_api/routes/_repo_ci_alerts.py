@@ -20,6 +20,8 @@ import logging
 import time
 from typing import TypedDict, cast
 
+from unified_trading_library import download_from_storage, get_storage_client
+
 logger = logging.getLogger(__name__)
 
 _BUCKET = "unified-trading-cicd-events"
@@ -30,7 +32,7 @@ _MAX_ITEMS = 400
 _cache: tuple[float, AlertsPayloadDict] | None = None
 
 
-class AlertEntryDict(TypedDict):
+class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
     """One ledger entry (a Slack alert or a persisted workflow state event)."""
 
     kind: str  # "alert" | "event"
@@ -43,7 +45,7 @@ class AlertEntryDict(TypedDict):
     run_url: str | None
 
 
-class AlertStreamDict(TypedDict):
+class AlertStreamDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
     """Lifecycle of one (repo, workflow) alert stream: current vs previous state."""
 
     repo: str
@@ -53,7 +55,7 @@ class AlertStreamDict(TypedDict):
     count: int
 
 
-class AlertsPayloadDict(TypedDict):
+class AlertsPayloadDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
     """GET /api/repo-ci/alerts response."""
 
     generated_at: str
@@ -136,8 +138,6 @@ def derive_streams(entries: list[AlertEntryDict]) -> list[AlertStreamDict]:
 
 def _read_ledgers_sync(days: int) -> list[AlertEntryDict]:
     """List + read the last N days of alert/event JSONL blobs from GCS."""
-    from unified_trading_library import download_from_storage, get_storage_client
-
     client = get_storage_client()
     dates = [(dt.datetime.now(dt.UTC) - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)]
     entries: list[AlertEntryDict] = []

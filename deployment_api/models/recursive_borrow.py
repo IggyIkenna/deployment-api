@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 CellStatus = Literal["design-ready", "coverage-ready", "live-ready", "paused"]
 
 
-class CellCoverage(BaseModel):
+class CellCoverage(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     protocol: str
     chain: str
     collateral_asset: str
@@ -24,14 +24,14 @@ class CellCoverage(BaseModel):
     cell_status: CellStatus
 
 
-class CoverageSummary(BaseModel):
+class CoverageSummary(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     total_cells: int
     coverage_ready: int
     live_ready: int
     avg_lending_rate_coverage_pct: float
 
 
-class RecursiveBorrowCoverageResponse(BaseModel):
+class RecursiveBorrowCoverageResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     cache_ttl_seconds: int = 60
     cells: list[CellCoverage]

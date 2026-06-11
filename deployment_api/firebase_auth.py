@@ -30,10 +30,15 @@ def _verify_firebase_id_token(token: str) -> str:
     Raises ValueError on expired / invalid tokens.
     Raises google.auth.exceptions.TransportError on network failure.
     """
-    from google.auth.transport.requests import (
+    # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
+    from google.auth.transport.requests import (  # noqa: imports-inside-functions
         Request as AuthRequest,  # pyright: ignore[reportMissingTypeStubs]
     )
-    from google.oauth2 import id_token as google_id_token  # pyright: ignore[reportMissingTypeStubs]
+
+    # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
+    from google.oauth2 import (
+        id_token as google_id_token,  # noqa: imports-inside-functions # pyright: ignore[reportMissingTypeStubs]
+    )
 
     raw = google_id_token.verify_firebase_token(  # pyright: ignore[reportUnknownMemberType]
         token, AuthRequest()
@@ -104,7 +109,10 @@ async def verify_firebase_token(
         raise HTTPException(status_code=401, detail="Bearer token is empty")
 
     try:
-        from google.auth.exceptions import TransportError  # pyright: ignore[reportMissingTypeStubs]
+        # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
+        from google.auth.exceptions import (
+            TransportError,  # noqa: imports-inside-functions # pyright: ignore[reportMissingTypeStubs]
+        )
 
         try:
             email = _verify_firebase_id_token(token)

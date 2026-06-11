@@ -14,7 +14,7 @@ from unified_api_contracts import (
 router = APIRouter()
 
 
-class ScenarioListItem(BaseModel):
+class ScenarioListItem(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     scenario_id: str
     category: str
     layer: str

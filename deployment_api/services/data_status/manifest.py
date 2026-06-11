@@ -309,8 +309,8 @@ class ManifestStatusMixin(MissingShardsMixin):
             "asset_groups": result_categories,
         }
         # Echo secondary_axis + active filters back so the UI can confirm
-        # which slice it received. No-filter requests omit these keys
-        # (backward-compat with existing /manifest consumers).
+        # which slice it received. No-filter requests omit these keys --
+        # existing /manifest consumers expect them absent on unfiltered reads.
         if secondary_axis:
             response["secondary_axis"] = secondary_axis
         if row_filters:
