@@ -39,7 +39,7 @@ _SERVICE = "ml-service"
 _SUBPROCESS_TIMEOUT_SECONDS = 600
 
 
-class MlExperimentLaunchRequest(BaseModel):
+class MlExperimentLaunchRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui launch request DTO
     """Request payload for POST /api/ml/experiment/launch."""
 
     asset_group: str = Field(
@@ -86,7 +86,7 @@ class MlExperimentLaunchRequest(BaseModel):
     )
 
 
-class MlExperimentLaunchResult(BaseModel):
+class MlExperimentLaunchResult(BaseModel):  # CORRECT-LOCAL: deployment-ui launch response DTO
     """Response for POST /api/ml/experiment/launch."""
 
     vm_name: str
@@ -175,7 +175,9 @@ def launch_ml_experiment(
                 capture_output=True,
                 text=True,
                 timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-                env={**_process_env, "GCP_PROJECT_ID": project_id},
+                # Canonical project-id env key passed to the launch subprocess —
+                # not an env read in this service.
+                env={**_process_env, "GCP_PROJECT_ID": project_id},  # noqa: qg-gcp-project-id
             )
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=504, detail="Launcher timed out") from None

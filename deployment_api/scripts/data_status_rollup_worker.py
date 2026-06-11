@@ -30,8 +30,8 @@ Image:
 
 CLI:
     python -m deployment_api.scripts.data_status_rollup_worker \\
-        --project=central-element-323112 \\
-        --bucket=central-element-323112-data-status-rollups
+        --project=<gcp-project-id> \\
+        --bucket=<gcp-project-id>-data-status-rollups
 """
 
 from __future__ import annotations

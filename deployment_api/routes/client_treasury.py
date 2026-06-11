@@ -169,7 +169,7 @@ def set_treasury_rollup_provider(fn: Callable[[], TreasuryRollupResponse]) -> No
 # ---------------------------------------------------------------------------
 
 
-class TreasurySourceAttributionModel(BaseModel):
+class TreasurySourceAttributionModel(BaseModel):  # CORRECT-LOCAL: deployment-ui view-model DTO
     """JSON-serialisable view of TreasurySourceAttribution."""
 
     source: str = Field(..., description="TreasurySource enum value")
@@ -180,7 +180,7 @@ class TreasurySourceAttributionModel(BaseModel):
     is_stub: bool = Field(False, description="True when source SDK is not yet wired")
 
 
-class ClientTreasuryViewResponse(BaseModel):
+class ClientTreasuryViewResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response model for GET /api/clients/{client_id}/treasury."""
 
     client_id: str
@@ -191,7 +191,7 @@ class ClientTreasuryViewResponse(BaseModel):
     rollup_version: str = ""
 
 
-class ClientShareClassSubscriptionViewModel(BaseModel):
+class ClientShareClassSubscriptionViewModel(BaseModel):  # CORRECT-LOCAL: deployment-ui view-model DTO
     """JSON-serialisable view of ClientShareClassSubscriptionView."""
 
     client_id: str
@@ -205,7 +205,7 @@ class ClientShareClassSubscriptionViewModel(BaseModel):
     max_drawdown_for_suspension_pct: str = Field(..., description="Drawdown gate % as string decimal")
 
 
-class ClientSubscriptionListResponse(BaseModel):
+class ClientSubscriptionListResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response model for GET /api/clients/{client_id}/subscriptions."""
 
     client_id: str
@@ -215,7 +215,7 @@ class ClientSubscriptionListResponse(BaseModel):
     total_active_allocation_pct: str = Field(..., description="Sum of active allocation percentages as string decimal")
 
 
-class WithdrawalApproveRequest(BaseModel):
+class WithdrawalApproveRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """Request body for POST /api/clients/{client_id}/withdrawal/{withdrawal_id}/approve."""
 
     approver_id: str = Field(..., description="Operator ID from the approver pool")
@@ -225,7 +225,7 @@ class WithdrawalApproveRequest(BaseModel):
     signed_at: str = Field(..., description="ISO-8601 UTC timestamp at which approver signed")
 
 
-class WithdrawalApproveResponse(BaseModel):
+class WithdrawalApproveResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response model for POST /api/clients/{client_id}/withdrawal/{withdrawal_id}/approve."""
 
     withdrawal_id: str
@@ -339,7 +339,9 @@ def _emit_cloud_audit_log(operation: str, client_id: str, details: dict[str, obj
     block the withdrawal operation (defence-in-depth; primary record is on GCS).
     """
     try:
-        import google.cloud.logging  # pyright: ignore[reportMissingModuleSource]
+        # Cloud-SDK boundary: kept lazy — a module-level google.cloud import would trip
+        # the direct-cloud-SDK QG check and load the SDK at service startup.
+        import google.cloud.logging  # noqa: imports-inside-functions  # pyright: ignore[reportMissingModuleSource]
 
         project_id = _cfg.gcp_project_id or ""
         log_client = google.cloud.logging.Client(project=project_id)

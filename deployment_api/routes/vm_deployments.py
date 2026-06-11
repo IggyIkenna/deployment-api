@@ -136,6 +136,11 @@ def _to_model(
     return VmDeploymentEntryModel(**cast(dict[str, object], data))  # type: ignore[reportArgumentType]
 
 
+# Mock-fixture URI placeholder: the literal shell-style token the VM launcher
+# writes into registry blobs (substituted at launch time) -- NOT an env read.
+_MOCK_PID_TOKEN = "${GCP_PROJECT_ID}"  # noqa: qg-gcp-project-id
+
+
 def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
     defaults: dict[str, object] = {
         "deployment_id": "dep-mock-1",
@@ -154,7 +159,7 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
         "rows_out": 11_987,
         "rows_error": 13,
         "events_emitted": 42,
-        "log_uri": "gs://deployment-scripts-${GCP_PROJECT_ID}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
+        "log_uri": f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
         "archive_run_log_uri": "",
         "archive_serial_uri": "",
     }
@@ -185,8 +190,8 @@ def list_vm_deployments(
                     rows_in=30_000,
                     rows_out=30_000,
                     rows_error=0,
-                    archive_run_log_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
-                    archive_serial_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",  # noqa: gs-uri (mock fixture URI)
+                    archive_run_log_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
+                    archive_serial_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",  # noqa: gs-uri (mock fixture URI)
                 ),
                 _mock_entry(
                     deployment_id="dep-mock-3",
@@ -202,7 +207,7 @@ def list_vm_deployments(
         )
 
     registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-    project_id = _cfg.gcp_project_id or "central-element-323112"
+    project_id = _cfg.require_gcp_project_id()
 
     try:
         # Get actual VM details from GCP
@@ -264,7 +269,7 @@ def reconcile_vm_deployments() -> VmReconcileResult:
         )
 
     registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-    project_id = _cfg.gcp_project_id or "central-element-323112"
+    project_id = _cfg.require_gcp_project_id()
 
     try:
         all_active = registry.list_active()
@@ -300,7 +305,7 @@ def get_vm_deployment(deployment_id: str) -> VmDeploymentEntryModel:
         return _mock_entry(deployment_id=deployment_id)
 
     registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-    project_id = _cfg.gcp_project_id or "central-element-323112"
+    project_id = _cfg.require_gcp_project_id()
 
     try:
         entry = registry.get(deployment_id)

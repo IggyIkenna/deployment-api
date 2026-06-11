@@ -41,7 +41,7 @@ def _is_backfill_vm(vm_name: str) -> bool:
     return not any(vm_name.startswith(p) for p in _LIVE_PREFIXES)
 
 
-class BackfillJobEntry(BaseModel):
+class BackfillJobEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """One row in the /api/monitor/backfill response."""
 
     deployment_id: str
@@ -64,7 +64,7 @@ class BackfillJobEntry(BaseModel):
     lifecycle_class: str = "EPHEMERAL_BATCH"
 
 
-class BackfillMonitorResponse(BaseModel):
+class BackfillMonitorResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from GET /api/monitor/backfill."""
 
     jobs: list[BackfillJobEntry]

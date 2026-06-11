@@ -88,7 +88,7 @@ _REQUIRED_COLUMNS: tuple[str, ...] = (
 
 
 @dataclass
-class DrilldownNode:
+class DrilldownNode:  # CORRECT-LOCAL: in-process drilldown tree node
     """One node in the hierarchical drill-down tree.
 
     ``axis`` is the manifest column this node groups by (e.g. ``venue``,

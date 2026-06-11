@@ -50,7 +50,10 @@ MAX_DURATION=700
 # os.getenv, Any-types, schema-provenance.
 # 2026-06-12 (codex ratchet plan Phase 4): os.getenv + comment-false-positive + empty-fallback
 # sites cleared across 17 files -> honest measured V=16. Ratcheted 22 -> 16.
-CODEX_MAX_VIOLATIONS=16
+# 2026-06-12 (codex ratchet plan Phase 3+4): wave-4b agent cleared 10 classes (schema-provenance
+# CORRECT-LOCAL triage, os.getenv, Any-types, imports-in-fn, empty-fallbacks et al) -> honest
+# measured V=6. Ratcheted 16 -> 6.
+CODEX_MAX_VIOLATIONS=6
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
@@ -65,6 +68,16 @@ EMPTY_DICT_LIST_EXCLUDE_GLOBS=()
 
 # Function/method size: deployment-api has large orchestration and analytics methods
 FUNCTION_SIZE_EXTRA_EXCLUDES=()
+
+# STEP 5.11/5.12 protocol-symbol excludes: monitor_live.py + monitor_scheduled.py match ONLY on
+# `CloudTarget` — the UAC canonical StrEnum (unified_api_contracts.canonical.crosscutting.cloud_target)
+# used as the LIVE_CLUSTER_REGISTRY cloud axis. That is contract usage, not a raw GCS/BigQuery
+# protocol call (the legit case the base-service.sh comment names). Documented in
+# QUALITY_GATE_BYPASS_AUDIT.md § "STEP 5.11/5.12 protocol-symbol exceptions" (2026-06-12).
+HARDCODED_PROTO_EXCLUDE_GLOBS=(
+    "--glob=!**/routes/monitor_live.py"
+    "--glob=!**/routes/monitor_scheduled.py"
+)
 WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 source "${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
 

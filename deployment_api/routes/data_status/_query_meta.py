@@ -8,6 +8,7 @@ time so the existing test patch surface keeps intercepting.
 """
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, Query
 
@@ -459,8 +460,6 @@ async def get_bucket_counts(
 
 def _default_bucket_counts_day() -> str:
     """Return yesterday UTC as YYYY-MM-DD (the badge's default sample day)."""
-    from datetime import UTC, datetime, timedelta
-
     return (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
 
 

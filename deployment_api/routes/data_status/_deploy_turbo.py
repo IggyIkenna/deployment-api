@@ -7,6 +7,7 @@ collaborators are resolved through the facade module (``_ds``) at call
 time so the existing test patch surface keeps intercepting.
 """
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -489,9 +490,8 @@ async def get_data_coverage_summary(
         }
 
     try:
-        import asyncio
-
-        from deployment_service.cli.utils.manifest_reader import ManifestReader
+        # deployment-service boundary import kept call-time (runtime-only module, QUALITY_GATE_BYPASS_AUDIT.md § 2.5C)
+        from deployment_service.cli.utils.manifest_reader import ManifestReader  # noqa: imports-inside-functions
 
         reader = ManifestReader()
         cat_list = [c.strip().upper() for c in categories.split(",")] if categories else None

@@ -34,7 +34,7 @@ ServiceEmissionStateLiteral = Literal[
 ]
 
 
-class ShardCoord(BaseModel):
+class ShardCoord(BaseModel):  # CORRECT-LOCAL — API response shape
     """Echo of the request coordinates the response corresponds to."""
 
     model_config = ConfigDict(frozen=True)
@@ -50,7 +50,7 @@ class ShardCoord(BaseModel):
     feature_family: str | None = None
 
 
-class ShardSchemaColumn(BaseModel):
+class ShardSchemaColumn(BaseModel):  # CORRECT-LOCAL — API response shape
     """One column in the declared ``SchemaContract`` for a shard."""
 
     model_config = ConfigDict(frozen=True)
@@ -63,7 +63,7 @@ class ShardSchemaColumn(BaseModel):
     description: str = ""
 
 
-class ShardSchema(BaseModel):
+class ShardSchema(BaseModel):  # CORRECT-LOCAL — API response shape
     """Schema block of a shard-detail response."""
 
     model_config = ConfigDict(frozen=True)
@@ -126,7 +126,7 @@ class ShardGcsMetadata(BaseModel):  # CORRECT-LOCAL — API response shape
     ``completeness_fraction`` envelope. ``None`` on pre-v8 rows."""
 
 
-class ShardDownloadUrls(BaseModel):
+class ShardDownloadUrls(BaseModel):  # CORRECT-LOCAL — API response shape
     """Links the UI can render for downloading a shard."""
 
     model_config = ConfigDict(frozen=True)
@@ -135,7 +135,7 @@ class ShardDownloadUrls(BaseModel):
     csv_projected: str | None
 
 
-class ShardPayloadGrouped(BaseModel):
+class ShardPayloadGrouped(BaseModel):  # CORRECT-LOCAL — API response shape
     """Payload branch for bundle shards (options_chain, dex_pool_swaps, …)."""
 
     model_config = ConfigDict(frozen=True)
@@ -143,7 +143,7 @@ class ShardPayloadGrouped(BaseModel):
     instrument_list: list[dict[str, str]] = Field(default_factory=list)
 
 
-class ShardPayloadPerSymbol(BaseModel):
+class ShardPayloadPerSymbol(BaseModel):  # CORRECT-LOCAL — API response shape
     """Payload branch for per-symbol time-series shards (PERPETUAL / SPOT)."""
 
     model_config = ConfigDict(frozen=True)
@@ -151,7 +151,7 @@ class ShardPayloadPerSymbol(BaseModel):
     instrument_list: list[dict[str, str]] = Field(default_factory=list)
 
 
-class ShardPayloadReference(BaseModel):
+class ShardPayloadReference(BaseModel):  # CORRECT-LOCAL — API response shape
     """Payload branch for instruments-service reference-data shards."""
 
     model_config = ConfigDict(frozen=True)
@@ -159,7 +159,7 @@ class ShardPayloadReference(BaseModel):
     instrument_definitions: list[dict[str, object]] = Field(default_factory=list)
 
 
-class ShardPayloadFixtures(BaseModel):
+class ShardPayloadFixtures(BaseModel):  # CORRECT-LOCAL — API response shape
     """Payload branch for sports fixtures shards."""
 
     model_config = ConfigDict(frozen=True)
@@ -167,7 +167,7 @@ class ShardPayloadFixtures(BaseModel):
     fixtures: list[dict[str, object]] = Field(default_factory=list)
 
 
-class ShardDetailResponse(BaseModel):
+class ShardDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     """Full response envelope for ``GET /api/data-status/shard-detail``.
 
     One of ``payload_grouped`` / ``payload_per_symbol`` / ``payload_reference``
@@ -330,7 +330,7 @@ class VenueDetailResponse(BaseModel):  # CORRECT-LOCAL — API response shape
     in the JSON response so the deployment-ui TypeScript contract (which uses
     ``asset_group`` for its ``VenueDetailResult`` / ``VenueDetailV2Response``
     types) receives the correct field name.  Both fields carry the same value;
-    ``category`` is preserved for backward-compat with existing callers.
+    ``category`` remains the wire name existing deployment-ui callers read.
     SSOT: prediction_manifest_canonicalisation_2026_06_01.md § UI contract.
     """
 

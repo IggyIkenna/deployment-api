@@ -19,12 +19,15 @@ This module remains the ONLY public import surface:
   ``unittest.mock.patch`` on this module is visible to the moved code.
 """
 
+import gzip
 import json
 import logging
 import time
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
+import yaml
 from unified_api_contracts import (
     VenueMapping,
     get_expected_data_types_for_venue,
@@ -35,7 +38,7 @@ from unified_api_contracts.sports import (
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
 )
-from unified_trading_library import resolve_bucket_name
+from unified_trading_library import get_storage_client, resolve_bucket_name
 
 from deployment_api.services.data_status.breakdowns_core import CoreBreakdownsMixin
 from deployment_api.services.data_status.breakdowns_domain import DomainBreakdownsMixin
@@ -266,7 +269,7 @@ __all__ = [  # noqa: RUF022
     "clear_index_cache",
     "clear_rollup_cache",
     "get_effective_start_date",
-    # ── legacy-underscore re-exports (back-compat import surface) ──
+    # ── facade-canonical underscore constants (package modules + tests resolve these late-bound here) ──
     "_ALL_DEFI_GHOST_VENUES",
     "_CAPTURE_STATUS_CAPTURED",
     "_CAPTURE_STATUS_COL",
@@ -452,8 +455,6 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return cached[1]
 
     try:
-        from unified_trading_library import get_storage_client
-
         client = get_storage_client(project_id=_pid)
         bucket_name = _rollup_bucket()
         blob_path = f"{service}/full.json.gz"
@@ -482,8 +483,6 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         # decompress explicitly. The first two bytes (0x1f 0x8b) are the
         # gzip magic — defensive sniff lets us handle a future change to
         # auto-decompressing transports without churning this code.
-        import gzip
-
         payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
         payload = json.loads(payload_bytes.decode("utf-8"))  # pyright: ignore[reportAny]
         if not isinstance(payload, dict):
@@ -537,8 +536,6 @@ def _load_expected_start_dates_cached() -> dict[str, object]:
     # Prefer app_config.get_config_dir() (respects bundled pm-configs/ + sibling
     # workspace lookup). Fall back to repo-relative path for test contexts where
     # the FastAPI app hasn't been initialised.
-    import yaml
-
     from deployment_api.app_config import get_config_dir
 
     config_dir: object
@@ -546,9 +543,7 @@ def _load_expected_start_dates_cached() -> dict[str, object]:
         config_dir = get_config_dir()
     except RuntimeError:
         # Test / standalone contexts: fall back to workspace sibling
-        from pathlib import Path as _Path
-
-        here = _Path(__file__).resolve()
+        here = Path(__file__).resolve()
         # deployment-api/deployment_api/services/data_status_service.py
         # → workspace root = parents[4]
         workspace_root = here.parents[4]

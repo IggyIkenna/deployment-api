@@ -41,8 +41,8 @@ def _emit_deploy_event(event_name: str, details: dict[str, object]) -> None:
     """Best-effort structured event emission for tarball deploy audit trail."""
     try:
         log_event(event_name, severity="WARNING", details=details)
-    except Exception:
-        logger.debug("Structured event emission skipped (events not initialized): %s", event_name)
+    except Exception as exc:
+        logger.debug("Structured event emission skipped (events not initialized): %s: %s", event_name, exc)
 
 
 # Supported launch modes for the Deploy-Missing flow.
@@ -204,7 +204,7 @@ _BUNDLED_DATA_TYPES: frozenset[str] = frozenset(
 
 
 @dataclass
-class DeployMissingPreview:
+class DeployMissingPreview:  # CORRECT-LOCAL: in-process launch preview
     """Structured response for the UI's Deploy-Missing copy-to-clipboard
     widget.
 
@@ -442,7 +442,7 @@ _LIVE_ROLES_WINDOW_PARAMETERISED: frozenset[str] = frozenset({"replay-cascade"})
 
 
 @dataclass
-class LiveClusterLaunchPreview:
+class LiveClusterLaunchPreview:  # CORRECT-LOCAL: in-process launch preview
     """Structured response for the UI's Deploy-live-cluster copy-to-clipboard widget.
 
     Mirrors ``DeployMissingPreview`` shape but keyed by live-cluster ROLE instead

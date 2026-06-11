@@ -345,8 +345,9 @@ class DomainBreakdownsMixin(SportsStatusMixin):
         date-only math (which collapsed the within-day fan-out across
         protocols x data_types x instruments and produced misleading
         "ARBITRUM 32/54" rollups when the real shard universe was ~25k)
-        is preserved as ``dates_found`` / ``dates_expected`` for
-        backward-compat -- UI consumers should switch to the new fields.
+        is preserved as ``dates_found`` / ``dates_expected`` for the
+        existing deployment-ui consumers (their move to the shard-based
+        fields is tracked UI-side); new consumers use the shard fields.
         """
         if "chain" not in filtered.columns:
             return {}

@@ -47,7 +47,7 @@ def _subscriptions_dir() -> Path:
     return path
 
 
-class CreateSubscriptionRequest(BaseModel):
+class CreateSubscriptionRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """Request body for POST /subscriptions."""
 
     client_id: str = Field(..., min_length=1)
@@ -58,13 +58,13 @@ class CreateSubscriptionRequest(BaseModel):
     note: str = ""
 
 
-class SubscriptionResponse(BaseModel):
+class SubscriptionResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Standard response envelope for subscription endpoints."""
 
     subscription: ClientSubscription
 
 
-class SubscriptionListResponse(BaseModel):
+class SubscriptionListResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """List response."""
 
     subscriptions: list[ClientSubscription]

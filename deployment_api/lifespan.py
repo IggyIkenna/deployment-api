@@ -128,7 +128,8 @@ async def lifespan(app: FastAPI):
             logger.info("PM plans dir: not found — plans visualization endpoints unavailable")
 
         # Initialize cache
-        from .utils.cache import cache
+        # call-time patch surface (tests/unit/test_lifespan.py patch.dict's sys.modules["deployment_api.utils.cache"])
+        from .utils.cache import cache  # noqa: imports-inside-functions
 
         await cache.initialize()
 
@@ -153,7 +154,9 @@ async def lifespan(app: FastAPI):
         _release_deployment_locks()
 
         try:
-            from .utils.cache import cache
+            # call-time patch surface (tests/unit/test_lifespan.py patch.dict's
+            # sys.modules["deployment_api.utils.cache"])
+            from .utils.cache import cache  # noqa: imports-inside-functions
 
             await cache.shutdown()
         except (OSError, ValueError, RuntimeError) as e:

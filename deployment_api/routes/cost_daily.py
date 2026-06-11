@@ -82,8 +82,7 @@ def _normalise_date(date: str | None) -> str:
 
 
 def _cost_bucket() -> str:
-    pid = _cfg.gcp_project_id or "central-element-323112"
-    return f"{pid}-deployment-events"
+    return f"{_cfg.require_gcp_project_id()}-deployment-events"
 
 
 def _parse_blob(blob_bytes: bytes, blob_name: str) -> VmCostRow | None:

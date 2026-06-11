@@ -38,7 +38,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-class TreasurySourceAttribution(BaseModel):
+class TreasurySourceAttribution(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Per-source attribution for a single client."""
 
     source: str = Field(..., description="TreasurySource enum value (e.g. COPPER, DEFI_HOT_WALLET)")
@@ -47,7 +47,7 @@ class TreasurySourceAttribution(BaseModel):
     source_nav_usd: str = Field(..., description="Total NAV for this source (Decimal-as-string)")
 
 
-class CustodyPingResult(BaseModel):
+class CustodyPingResult(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Per-source custody ping result."""
 
     source: str = Field(..., description="TreasurySource enum value")
@@ -58,7 +58,7 @@ class CustodyPingResult(BaseModel):
     error_message: str = ""
 
 
-class ShareClassSubscriptionResponse(BaseModel):
+class ShareClassSubscriptionResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Serialised ClientShareClassSubscription for the API response."""
 
     client_id: str
@@ -72,7 +72,7 @@ class ShareClassSubscriptionResponse(BaseModel):
     is_active: bool = True
 
 
-class AllocationDecision(BaseModel):
+class AllocationDecision(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Single archetype allocation decision."""
 
     archetype_id: str
@@ -82,7 +82,7 @@ class AllocationDecision(BaseModel):
     decided_at: str = Field(..., description="ISO-8601 UTC timestamp")
 
 
-class TradeSettledSummary(BaseModel):
+class TradeSettledSummary(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Summary of the most recent settled trade."""
 
     trade_id: str
@@ -95,7 +95,7 @@ class TradeSettledSummary(BaseModel):
     settled_at: str
 
 
-class ClientTreasuryResponse(BaseModel):
+class ClientTreasuryResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response for GET /api/clients/{client_id}/treasury."""
 
     client_id: str
@@ -108,7 +108,7 @@ class ClientTreasuryResponse(BaseModel):
     nav_usd: str = Field(..., description="Total NAV attributable to this client (Decimal-as-string)")
 
 
-class ClientSubscriptionsResponse(BaseModel):
+class ClientSubscriptionsResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response for GET /api/clients/{client_id}/subscriptions."""
 
     client_id: str

@@ -38,7 +38,7 @@ _VALID_ARCHETYPES = frozenset({"carry_staked_basis", "ARBITRAGE_PRICE_DISPERSION
 _VALID_MODES: frozenset[str] = frozenset({"paper", "live"})
 
 
-class ShardSpawnRequest(BaseModel):
+class ShardSpawnRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     archetype: str = Field(..., description="Strategy archetype slug.")
     mode: Literal["paper", "live"] = Field(..., description="paper or live.")
     shard_id: int = Field(default=0, ge=0, description="Shard index to spawn.")
@@ -63,21 +63,21 @@ class ShardSpawnRequest(BaseModel):
     )
 
 
-class ShardSpawnResponse(BaseModel):
+class ShardSpawnResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     ok: bool
     vm_name: str | None = None
     dry_run: bool
     message: str
 
 
-class ShardDrainRequest(BaseModel):
+class ShardDrainRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     archetype: str = Field(..., description="Strategy archetype slug.")
     mode: Literal["paper", "live"] = Field(..., description="paper or live.")
     shard_id: int = Field(default=0, ge=0, description="Shard index to drain.")
     force: bool = Field(default=False, description="Force drain even if clients are active.")
 
 
-class ShardDrainResponse(BaseModel):
+class ShardDrainResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     ok: bool
     message: str
 

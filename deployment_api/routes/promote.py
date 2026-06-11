@@ -70,7 +70,7 @@ class PromoteRequest(BaseModel):  # CORRECT-LOCAL
 
 
 @dataclass
-class PreflightResult:
+class PreflightResult:  # CORRECT-LOCAL: in-process preflight result
     passed: bool
     failed_gates: list[str] = field(default_factory=list)
 

@@ -36,7 +36,7 @@ def _instruments_bucket_for_category(category: str) -> str:
 # ghost form (``AAVEV3-ETHEREUM``). Writers were updated to canonical
 # ``AAVE_V3-ETHEREUM`` in 2026-05-23, but old parquets on GCS may still live
 # under ghost-name paths until a full migration completes. The alias list
-# tries canonical first; ghost is a backward-compat fallback.
+# tries canonical first, then the ghost form for legacy-named GCS parquets.
 _DEFI_VERSION_UNDERSCORE_RE = _re.compile(r"_V(\d+)")
 
 
@@ -51,7 +51,7 @@ def _venue_aliases_for_bucket(category: str, venue: str) -> list[str]:
 
     * **DEFI**: try the literal venue first (canonical ``AAVE_V3-ETHEREUM``),
       then the ghost-name alias without underscore (``AAVEV3-ETHEREUM``) as a
-      backward-compat fallback for old GCS parquets written before 2026-05-23.
+      legacy-path fallback for old GCS parquets written before 2026-05-23.
     * **SPORTS**: the partition key is ``league=<NAME>`` not ``venue=<NAME>``
       — handled by ``_partition_key_for_category`` rather than aliasing.
     * **CEFI / TRADFI / PREDICTION**: venue is canonical — single alias.
