@@ -154,7 +154,7 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
         "rows_out": 11_987,
         "rows_error": 13,
         "events_emitted": 42,
-        "log_uri": "gs://deployment-scripts-${GCP_PROJECT_ID}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",
+        "log_uri": "gs://deployment-scripts-${GCP_PROJECT_ID}/vm-logs/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
         "archive_run_log_uri": "",
         "archive_serial_uri": "",
     }
@@ -185,8 +185,8 @@ def list_vm_deployments(
                     rows_in=30_000,
                     rows_out=30_000,
                     rows_error=0,
-                    archive_run_log_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",
-                    archive_serial_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",
+                    archive_run_log_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
+                    archive_serial_uri="gs://deployment-scripts-${GCP_PROJECT_ID}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",  # noqa: gs-uri (mock fixture URI)
                 ),
                 _mock_entry(
                     deployment_id="dep-mock-3",

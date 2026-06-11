@@ -313,9 +313,9 @@ def _first_parquet_under_prefix(gs_prefix: str) -> str | None:
     Limits the listing to 10 results — we only need one parquet to
     project the schema.
     """
-    if not gs_prefix.startswith("gs://"):
+    if not gs_prefix.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         return None
-    rest = gs_prefix[len("gs://") :]
+    rest = gs_prefix[len("gs://") :]  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
     bucket, _, prefix = rest.partition("/")
     if not bucket:
         return None

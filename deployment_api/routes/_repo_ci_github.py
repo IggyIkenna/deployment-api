@@ -309,6 +309,47 @@ async def gh_raw_file(session: aiohttp.ClientSession, token: str, org: str, repo
     return text
 
 
+async def gh_graphql(
+    session: aiohttp.ClientSession, token: str, query: str, variables: dict[str, object]
+) -> dict[str, object]:
+    """POST /graphql — ONE request batching what would be many REST calls.
+
+    GraphQL spends from its OWN 5,000-point/hr budget (separate from the REST core
+    budget the rest of the dashboard uses), and a tree-with-blob-text query costs ~1
+    point — so the epics tab's cold load drops from ~92 REST requests to one cheap
+    query (the 2026-06-11 rate-limit-exhaustion fix). Honest rate-limit handling
+    mirrors gh_get_json: 503 + retry_after on exhaustion, 502 on other errors.
+    Returns the `data` object."""
+    url = f"{_API_BASE}/graphql"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with session.post(
+        url, headers=headers, json={"query": query, "variables": variables}, timeout=_REQUEST_TIMEOUT
+    ) as resp:
+        _raise_if_rate_limited(resp.status, resp.headers, url)
+        if resp.status >= 400:
+            body = (await resp.text())[:200]
+            raise HTTPException(status_code=502, detail={"message": f"GitHub {resp.status} for /graphql", "body": body})
+        payload = cast(object, await resp.json())  # noqa: qg-raw-json
+    data = _as_dict(payload)
+    errors = _as_list(data.get("errors"))
+    if errors:
+        first = _as_dict(errors[0])
+        if str(first.get("type") or "") == "RATE_LIMITED":
+            raise HTTPException(status_code=503, detail={"message": "GitHub GraphQL rate limit exhausted", "url": url})
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "GitHub GraphQL errors",
+                "errors": [str(_as_dict(e).get("message") or "") for e in errors[:3]],
+            },
+        )
+    return _as_dict(data.get("data"))
+
+
 def _as_dict(value: object) -> dict[str, object]:
     return cast(dict[str, object], value) if isinstance(value, dict) else {}
 

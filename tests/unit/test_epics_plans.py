@@ -6,10 +6,13 @@ and the mock-mode route shape (the UI/playwright contract).
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from collections.abc import Iterator
+from typing import cast
+from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from unified_trading_library import setup_events
 
@@ -126,6 +129,102 @@ class TestParsers:
         assert open_p01 == 1  # only the P1 line (P3 + nested-no-priority excluded)
 
 
+def _blob_entry(name: str, text: str, truncated: bool = False) -> dict[str, object]:
+    return {"name": name, "type": "blob", "object": {"text": text, "isTruncated": truncated}}
+
+
+_EPIC_TEXT = "---\nname: mtds_mdps_master\ntitle: MTDS Master\ntier: L1\npriority: P0\nstatus: active\n---\n"
+_PLAN_TEXT = "---\nparent_epic: epics/mtds_mdps_master.md\nstatus: active\nestimate_class: infra\n---\n- [x] a\n- [ ] [CODE] P1. b\n"
+
+
+def _gql_fixture() -> dict[str, object]:
+    return {
+        "repository": {
+            "epics": {"entries": [_blob_entry("mtds_mdps_master.md", _EPIC_TEXT), _blob_entry("README.md", "x")]},
+            "active": {
+                "entries": [
+                    _blob_entry("some_plan_2026_06_01.md", _PLAN_TEXT),
+                    _blob_entry("INDEX.md", "x"),
+                    _blob_entry("_agent_pings.md", "x"),
+                ]
+            },
+        }
+    }
+
+
+class TestQuotaBudget:
+    """The 2026-06-11 rate-limit fix: ONE GraphQL call per cold load (was ~92 REST calls —
+    live 503 'GitHub rate limit exhausted' reproduced), and on GitHub failure the LAST
+    cached payload is served with stale=True instead of a 503 (degraded ≠ blank)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self) -> Iterator[None]:
+        import deployment_api.routes._epics_plans as mod
+
+        mod._cache = None  # pyright: ignore[reportPrivateUsage]
+        yield
+        mod._cache = None  # pyright: ignore[reportPrivateUsage]
+
+    async def test_cold_load_is_one_github_call(self) -> None:
+        from deployment_api.routes import _epics_plans as mod
+
+        gql = AsyncMock(return_value=_gql_fixture())
+        with patch.object(mod, "gh_graphql", gql), patch.object(mod, "gh_raw_file", AsyncMock()) as raw:
+            result = await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+        assert gql.await_count == 1  # the whole cold load
+        assert raw.await_count == 0  # no per-file REST fallback needed
+        assert result["stale"] is False
+        assert result["orphan_count"] == 0  # path-form parent groups; housekeeping excluded
+        assert result["epics"][0]["plan_count"] == 1
+
+    async def test_cached_load_is_zero_calls(self) -> None:
+        from deployment_api.routes import _epics_plans as mod
+
+        gql = AsyncMock(return_value=_gql_fixture())
+        with patch.object(mod, "gh_graphql", gql):
+            await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+            await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+        assert gql.await_count == 1  # second load served from the 300 s TTL cache
+
+    async def test_rate_limit_serves_stale_cache_not_503(self) -> None:
+        from deployment_api.routes import _epics_plans as mod
+
+        gql = AsyncMock(return_value=_gql_fixture())
+        with patch.object(mod, "gh_graphql", gql):
+            first = await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+        assert mod._cache is not None  # pyright: ignore[reportPrivateUsage]
+        # Expire the TTL, then make GitHub rate-limited: the cached payload must come back stale.
+        mod._cache = (mod._cache[0] - 10_000.0, mod._cache[1])  # pyright: ignore[reportPrivateUsage]
+        gql_limited = AsyncMock(side_effect=HTTPException(status_code=503, detail="rate limited"))
+        with patch.object(mod, "gh_graphql", gql_limited):
+            second = await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+        assert second["stale"] is True
+        assert second["epics"] == first["epics"]
+
+    async def test_cold_start_with_no_cache_propagates(self) -> None:
+        from deployment_api.routes import _epics_plans as mod
+
+        gql_limited = AsyncMock(side_effect=HTTPException(status_code=503, detail="rate limited"))
+        with patch.object(mod, "gh_graphql", gql_limited), pytest.raises(HTTPException):
+            await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+
+    async def test_truncated_blob_falls_back_to_rest_for_that_file_only(self) -> None:
+        from deployment_api.routes import _epics_plans as mod
+
+        fixture = _gql_fixture()
+        repo = cast(dict[str, object], fixture["repository"])
+        active = cast(dict[str, object], repo["active"])
+        cast(list[object], active["entries"]).append(_blob_entry("big_plan_2026_06_01.md", "", truncated=True))
+        gql = AsyncMock(return_value=fixture)
+        raw = AsyncMock(return_value=_PLAN_TEXT)
+        with patch.object(mod, "gh_graphql", gql), patch.object(mod, "gh_raw_file", raw):
+            result = await mod.load_epics_plans(cast(aiohttp.ClientSession, None), "tok")
+        assert gql.await_count == 1
+        assert raw.await_count == 1  # exactly the truncated file
+        slugs = {p["slug"] for p in result["epics"][0]["plans"]}
+        assert "big_plan_2026_06_01" in slugs
+
+
 class TestEpicsPlansMockRoute:
     def test_plans_route_not_captured_by_epic_id(self, client_epics: TestClient) -> None:
         # `/plans` must resolve to the v2 endpoint, NOT the `/{epic_id}` path param.
@@ -134,7 +233,7 @@ class TestEpicsPlansMockRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert body["source"] == "mock"
-        assert {"generated_at", "epics", "orphans", "orphan_count"} <= set(body)
+        assert {"generated_at", "epics", "orphans", "orphan_count", "stale"} <= set(body)
 
     def test_mock_shape_cards_drilldown_orphans(self, client_epics: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):

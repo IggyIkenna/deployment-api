@@ -44,6 +44,7 @@ class EpicsPlansResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api respon
 
     generated_at: str
     source: str  # "live" | "mock"
+    stale: bool  # True = GitHub unreachable/rate-limited; this is the LAST cached payload
     epics: list[EpicCardDict]
     orphans: list[EpicPlanDict]  # active plans with no parent_epic — review-blocking
     orphan_count: int

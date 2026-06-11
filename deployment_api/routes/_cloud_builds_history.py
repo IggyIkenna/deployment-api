@@ -108,7 +108,10 @@ async def _get_recent_builds_for_triggers(
             request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=1,
-                filter=f'build_trigger_id="{trigger_id}"',
+                # Filter field is `trigger_id` — `build_trigger_id` (the proto FIELD name) is
+                # not a valid FILTER token and 400s "invalid argument" (diagnosed live
+                # 2026-06-11; this was the dev-stack "Image column unknown" root cause).
+                filter=f'trigger_id="{trigger_id}"',
             )
             # Use next(iter(...)) to get only the first build without exhausting the pager
             build = next(iter(client.list_builds(request=request)), None)  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
@@ -149,9 +152,9 @@ async def _recent_builds_by_repo_name(
     """repo_name -> (latest build, last SUCCESSFUL build | None), grouped from recent builds
     via the REPO_NAME substitution that every Cloud Build carries.
 
-    Robust where the per-trigger path is not: the regional Cloud Build list_builds API rejects
-    the `build_trigger_id="..."` filter (400 InvalidArgument), and a build's build_trigger_id
-    drifts from the current trigger list whenever a trigger is recreated. REPO_NAME maps 1:1 to
+    Robust where the per-trigger path is not: the per-trigger filter token is `trigger_id`
+    (`build_trigger_id` is the proto field name, not a filter token — using it 400s; corrected
+    2026-06-11), and a build's trigger id drifts whenever a trigger is recreated. REPO_NAME maps 1:1 to
     the repo, so fetch recent builds ONCE (newest-first by create_time) and, per repo, keep the
     first build seen (= latest) AND the first SUCCESS seen (= last good build, so a red latest
     build doesn't hide the last green image). Scans up to max_scan builds; repos with no build in

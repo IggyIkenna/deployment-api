@@ -427,8 +427,8 @@ _BUILDS_CACHE_TTL = 300.0  # mirrors the cloud-builds TTL pattern
 
 async def _gcp_builds_by_repo() -> dict[str, BuildSignal]:
     """GCP Cloud Build half — repo -> BuildSignal, matched on each build's REPO_NAME
-    substitution (1:1 with the repo). Robust to trigger recreation and avoids the
-    per-trigger build_trigger_id filter that the regional list_builds API rejects (400)."""
+    substitution (1:1 with the repo). Robust to trigger recreation (a per-trigger
+    `trigger_id` filter goes stale when triggers are recreated)."""
     builds = await _recent_builds_by_repo_name()
     out: dict[str, BuildSignal] = {}
     for repo, (latest, success) in builds.items():
