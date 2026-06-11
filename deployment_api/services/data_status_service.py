@@ -1665,6 +1665,116 @@ def _per_instrument_coverage(
     return entry
 
 
+def _seeded_expected_unattempted_dts(venue_df: pd.DataFrame) -> set[str]:
+    """Return the data_types with ≥1 materialised ``expected_unattempted`` row.
+
+    F4 seed-guard (codex/02-data/availability-manifest-and-data-status.md):
+    ``expected_unattempted`` is MATERIALISED by the writer (MTDS pre-flight /
+    IS ``enumerate_expected_universe`` v2 enumerator) and READ by consumers.
+    A (venue, data_type) with seeded rows must take the 4-state READ
+    denominator — re-deriving genesis/launch math on top of seeded rows
+    double-counts / diverges. Cheap per-venue-frame presence check: one
+    vectorised equality + one ``unique()``.
+    """
+    if venue_df.empty or "capture_status" not in venue_df.columns or "data_type" not in venue_df.columns:
+        return set()
+    seeded_mask = venue_df["capture_status"].fillna("").astype(str) == "expected_unattempted"  # pyright: ignore[reportUnknownMemberType]
+    if not bool(seeded_mask.any()):  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
+        return set()
+    return {str(d) for d in venue_df.loc[seeded_mask, "data_type"].astype(str).unique()}  # pyright: ignore[reportAny]
+
+
+def _mtds_seeded_4state_dt_entry(
+    venue_df: pd.DataFrame,
+    venue_df_ok: pd.DataFrame,
+    dt: str,
+    window_start: str,
+    window_end: str,
+) -> dict[str, object]:
+    """4-state READ entry for a (venue, dt) whose expected universe is seeded.
+
+    F4: when the writer/enumerator has materialised ``expected_unattempted``
+    rows for this (venue, data_type), the manifest rows ARE the expected
+    universe. Denominator = distinct shard cells across ``captured`` +
+    ``empty_confirmed`` + ``attempted_failed`` + ``expected_unattempted``
+    (the M5/union rule used by ``data_status_hierarchical`` /
+    ``data_status_union``); numerator keeps this module's existing
+    skip-worthy convention (``venue_df_ok``: captured / empty_confirmed /
+    EXPECTED_*-reasoned expected_unattempted). The genesis/launch
+    re-derivation (``_mtds_expected_dates_for_venue_dt``) is NOT consulted.
+
+    Grain dispatch mirrors the derived path: if the (venue, dt) rows carry
+    non-empty ``instrument_id`` values, cells are (instrument_id, date)
+    pairs (Tier-3 ``shard_instrument_days``); otherwise cells are dates
+    (``shard_days``). Dates are clipped to the request window for parity
+    with the derived denominator (callers pre-filter ``filtered`` by date,
+    so this is a no-op on the service path but keeps direct calls honest).
+    """
+
+    def _dt_slice(df: pd.DataFrame) -> pd.DataFrame:
+        if "data_type" not in df.columns or df.empty:
+            return df.iloc[0:0]
+        return df[df["data_type"] == dt]
+
+    all_rows = _dt_slice(venue_df)
+    ok_rows = _dt_slice(venue_df_ok)
+
+    def _windowed(df: pd.DataFrame) -> pd.DataFrame:
+        if "date" not in df.columns or df.empty:
+            return df.iloc[0:0]
+        date_s = df["date"].astype(str)  # pyright: ignore[reportUnknownMemberType]
+        return df[(date_s >= window_start) & (date_s <= window_end)]
+
+    all_rows = _windowed(all_rows)
+    ok_rows = _windowed(ok_rows)
+
+    has_iid = "instrument_id" in all_rows.columns
+    iid_all = all_rows["instrument_id"].fillna("").astype(str).str.strip() if has_iid else pd.Series([], dtype=str)  # pyright: ignore[reportUnknownMemberType]
+    per_instrument_grain = bool((iid_all.str.len() > 0).any()) if len(iid_all) else False  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+
+    def _cells(df: pd.DataFrame) -> set[tuple[str, str]]:
+        """Distinct shard cells in ``df`` at the resolved grain."""
+        if df.empty:
+            return set()
+        date_list = [str(d) for d in df["date"].tolist()]  # pyright: ignore[reportAny]
+        if per_instrument_grain:
+            iid_list = [str(i).strip() for i in df["instrument_id"].fillna("").tolist()]  # pyright: ignore[reportAny,reportUnknownMemberType]
+            return {(iid, d) for iid, d in zip(iid_list, date_list, strict=True) if iid}
+        return {("", d) for d in date_list if d}
+
+    expected_cells = _cells(all_rows)
+    found_cells = _cells(ok_rows)
+    # ok_rows is a row-subset of venue_df, but guard the intersection anyway
+    # so found can never exceed expected.
+    found_cells &= expected_cells
+
+    expected_count = len(expected_cells)
+    found_count = len(found_cells)
+    expected_dates = {d for _, d in expected_cells}
+    found_dates = {d for _, d in found_cells}
+
+    entry: dict[str, object] = {
+        "expected_shards": expected_count,
+        "found_shards": found_count,
+        "missing_shards": max(0, expected_count - found_count),
+        "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+        # Collapsed across instruments at the dt level — same convention as
+        # the Tier-3 derived path so the UI drill-down stays compatible.
+        "missing_dates": sorted(expected_dates - found_dates)[:500],
+        "dates_found_list": sorted(found_dates)[:500],
+        "unit": "shard_instrument_days" if per_instrument_grain else "shard_days",
+        # Provenance marker: the denominator came from materialised
+        # expected_unattempted rows, NOT the genesis/launch re-derivation.
+        "denominator_source": "materialised_expected_unattempted",
+    }
+    if per_instrument_grain:
+        expected_instruments = sorted({iid for iid, _ in expected_cells})
+        found_instruments = {iid for iid, _ in found_cells}
+        entry["expected_instruments"] = expected_instruments
+        entry["missing_instruments"] = [iid for iid in expected_instruments if iid not in found_instruments]
+    return entry
+
+
 def _mtds_honest_coverage_for_venue(
     filtered: pd.DataFrame,
     venue: str,
@@ -1677,8 +1787,13 @@ def _mtds_honest_coverage_for_venue(
     """Honest-coverage rollup for one ``(category, venue)`` pair.
 
     For each UAC-declared data_type on this venue, compute:
-      - expected_dates: from ``_mtds_expected_dates_for_venue_dt`` (honest
-        per-(venue, dt) window with TRADFI tick-window gate applied).
+      - expected_dates: SEED-AWARE (F4). When the manifest carries
+        materialised ``expected_unattempted`` rows for (venue, dt), the
+        denominator is the 4-state READ over the manifest rows
+        (``_mtds_seeded_4state_dt_entry``) and the re-derivation is
+        skipped. Otherwise (pre-seed reality) from
+        ``_mtds_expected_dates_for_venue_dt`` (honest per-(venue, dt)
+        window with TRADFI tick-window gate applied).
       - found_dates: distinct dates in ``filtered`` where
         ``(venue, data_type)`` matches AND ``capture_status in
         {captured, empty_confirmed}`` (v4 rows without capture_status are
@@ -1745,7 +1860,29 @@ def _mtds_honest_coverage_for_venue(
     total_found = 0
     missing_dts: list[str] = []
 
+    # F4 seed-guard: data_types with materialised ``expected_unattempted``
+    # rows take the 4-state READ denominator below and SKIP the
+    # genesis/launch re-derivation entirely (re-deriving on top of seeded
+    # rows double-counts / diverges). Pre-seed (no such rows) keeps the
+    # derived path unchanged.
+    seeded_dts = _seeded_expected_unattempted_dts(venue_df)
+
     for dt in sorted(expected_dts):
+        if dt in seeded_dts:
+            # Seed-aware 4-state READ — denominator = captured + empty +
+            # failed + expected_unattempted over the manifest rows; no
+            # ``_mtds_expected_dates_for_venue_dt`` call, no IS-provider
+            # derived universe for this dt.
+            dt_entry = _mtds_seeded_4state_dt_entry(venue_df, venue_df_ok, dt, window_start, window_end)
+            dt_entries[dt] = dt_entry
+            expected_count = int(cast(int, dt_entry["expected_shards"]))
+            found_count = int(cast(int, dt_entry["found_shards"]))
+            total_expected += expected_count
+            total_found += found_count
+            if found_count == 0 and expected_count > 0:
+                missing_dts.append(dt)
+            continue
+
         expected_dates = _mtds_expected_dates_for_venue_dt(venue_mapping, venue, dt, category, window_start, window_end)
 
         if is_per_instrument_shard_data_type(dt):
