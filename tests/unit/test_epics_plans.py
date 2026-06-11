@@ -70,6 +70,36 @@ class TestIsPlanMd:
         assert not _is_plan_md("file", None)
 
 
+class TestFrontmatterRobustness:
+    """A plan must never be silently orphaned because its frontmatter is invalid YAML — live PM
+    plans have prettier-wrapped multi-line `title:` (\\ continuation) + plain `source:` lists with
+    embedded `:`/quotes that make `yaml.safe_load` RAISE (regression: 2 plans orphaned 2026-06-11
+    despite a valid parent_epic). The line-based fallback must still recover the scalar fields."""
+
+    _MALFORMED = (
+        "---\n"
+        'title: "CI-status side store — move ci_status from the git \\\n'
+        'manifest to Firestore (doc-per-repo + CAS-on-rank)"\n'
+        "parent_epic: infrastructure_master\n"
+        "status: active\n"
+        "tier: L4\n"
+        "source:\n"
+        '  - operator design direction 2026-06-10 ("ci_status commit\\\n'
+        " noise — what's a side store + how are races handled\")\n"
+        "---\n# body\n- [ ] todo\n"
+    )
+
+    def test_invalid_yaml_falls_back_to_line_scalars(self) -> None:
+        fm = _parse_frontmatter(self._MALFORMED)
+        assert _str_field(fm, "parent_epic") == "infrastructure_master"
+        assert _str_field(fm, "status") == "active"
+        assert _str_field(fm, "tier") == "L4"
+
+    def test_indented_list_lines_do_not_leak_into_scalars(self) -> None:
+        fm = _parse_frontmatter(self._MALFORMED)
+        assert "operator design direction" not in str(fm.get("source", ""))
+
+
 class TestParsers:
     def test_parse_frontmatter(self) -> None:
         text = "---\nname: observability_master\ntier: L4\npriority: P0\n---\n# body\n- [ ] todo"

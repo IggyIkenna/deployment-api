@@ -65,8 +65,33 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
 
+_SIMPLE_FM_LINE = re.compile(r"^([a-z][a-z0-9_]*):[ \t]+(.+?)[ \t]*$", re.IGNORECASE)
+
+
+def _line_based_frontmatter(block: str) -> dict[str, object]:
+    """Best-effort extraction of top-level scalar `key: value` pairs from a frontmatter block.
+
+    Fallback for when `yaml.safe_load` chokes (e.g. a `title:` prettier-wrapped across lines with a
+    `\\` continuation, or a `source:` list whose plain scalars embed `:`/quotes — both seen in live
+    PM plans). The fields the epics tab needs (parent_epic / status / tier / priority / assigned_vm /
+    name / title) are always single-line `key: value`, so a regex over top-level (column-0) lines
+    recovers them even when the document as a whole is invalid YAML. Indented (list/continuation)
+    lines are skipped so a malformed `source:` block can't corrupt a later key.
+    """
+    out: dict[str, object] = {}
+    for line in block.splitlines():
+        if not line or line[0] in " \t#-":  # skip indented / comment / list-item / blank lines
+            continue
+        m = _SIMPLE_FM_LINE.match(line)
+        if m:
+            out.setdefault(m.group(1), m.group(2).strip().strip("\"'"))
+    return out
+
+
 def _parse_frontmatter(text: str) -> dict[str, object]:
-    """Parse the leading `--- ... ---` YAML frontmatter; {} if absent/malformed."""
+    """Parse the leading `--- ... ---` frontmatter; {} if absent. Robust to invalid YAML — falls
+    back to a line-based scalar extraction so a plan is never silently dropped over a wrapped title
+    or a funky `source:` list (regression: 2 live plans orphaned 2026-06-11 despite valid parent_epic)."""
     if not text.startswith("---"):
         return {}
     end = text.find("\n---", 3)
@@ -76,8 +101,10 @@ def _parse_frontmatter(text: str) -> dict[str, object]:
     try:
         parsed = cast(object, yaml.safe_load(block))
     except yaml.YAMLError:
-        return {}
-    return cast(dict[str, object], parsed) if isinstance(parsed, dict) else {}
+        return _line_based_frontmatter(block)
+    if isinstance(parsed, dict):
+        return cast(dict[str, object], parsed)
+    return _line_based_frontmatter(block)
 
 
 def _str_field(fm: dict[str, object], key: str) -> str:
