@@ -95,6 +95,7 @@ def _mock_epics_plans() -> EpicsPlansResponseDict:
     return EpicsPlansResponseDict(
         generated_at="2026-06-10T13:00:00Z",
         source="mock",
+        stale=False,
         epics=epics,
         orphans=orphans,
         orphan_count=len(orphans),

@@ -43,9 +43,9 @@ def _read_parquet_columns(gs_uri: str, columns: list[str] | None = None) -> pd.D
     import gcsfs
     import pyarrow.parquet as pq
 
-    if not gs_uri.startswith("gs://"):
+    if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
-    bucket_key = gs_uri[len("gs://") :]
+    bucket_key = gs_uri[len("gs://") :]  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
     # gcsfs + pyarrow lack usable type stubs; we keep every cross-boundary
     # value narrowed to ``object`` and re-check at the DataFrame boundary.
     fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
@@ -81,9 +81,9 @@ def _parquet_schema_names(gs_uri: str) -> set[str]:
     import gcsfs
     import pyarrow.parquet as pq
 
-    if not gs_uri.startswith("gs://"):
+    if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
-    bucket_key = gs_uri[len("gs://") :]
+    bucket_key = gs_uri[len("gs://") :]  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
     fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
     open_fn: object = getattr(fs_any, "open", None)
     if not callable(open_fn):

@@ -181,7 +181,9 @@ def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentB
     builds_request = _cb.ListBuildsRequest(
         parent=parent,
         page_size=5,
-        filter=f'build_trigger_id="{trigger_id}"',
+        # Filter field is `trigger_id` — `build_trigger_id` (the proto FIELD name) is not a
+        # valid FILTER token and 400s "invalid argument" (diagnosed live 2026-06-11).
+        filter=f'trigger_id="{trigger_id}"',
     )
     for build in islice(client.list_builds(request=builds_request), 5):  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
         if build.create_time and build.create_time >= started_after:  # type: ignore[reportUnknownMemberType]

@@ -570,9 +570,9 @@ class DataQueryService:
         import gcsfs  # pyright: ignore[reportMissingModuleSource]
         import pyarrow.parquet as pq  # pyright: ignore[reportMissingModuleSource]
 
-        if not gs_uri.startswith("gs://"):
+        if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
             return None
-        bucket_key = gs_uri[len("gs://") :]
+        bucket_key = gs_uri[len("gs://") :]  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         try:
             fs = gcsfs.GCSFileSystem()
             with fs.open(bucket_key, "rb") as fh:  # type: ignore[reportUnknownMemberType]

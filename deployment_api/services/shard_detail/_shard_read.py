@@ -47,9 +47,9 @@ def _read_parquet_footer_row_count(gs_uri: str) -> int | None:
     import gcsfs
     import pyarrow.parquet as pq
 
-    if not gs_uri.startswith("gs://"):
+    if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         return None
-    bucket_key = gs_uri[len("gs://") :]
+    bucket_key = gs_uri[len("gs://") :]  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
     try:
         fs_any: object = gcsfs.GCSFileSystem(project=_pid)  # pyright: ignore[reportUnknownMemberType]
         open_fn: object = getattr(fs_any, "open", None)

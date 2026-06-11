@@ -25,10 +25,7 @@ from deployment_api.settings import CLOUD_PROVIDER, GITHUB_ORG
 from deployment_api.settings import gcp_project_id as default_project_id
 
 from ._cloud_builds_history import (
-    _get_recent_builds_for_triggers,  # pyright: ignore[reportPrivateUsage]
-)
-from ._cloud_builds_trigger import (
-    _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
+    _recent_builds_by_repo_name,  # pyright: ignore[reportPrivateUsage]
 )
 from ._code_builds_aws import (
     get_recent_builds_for_projects_sync,
@@ -144,11 +141,17 @@ def _mock_sit(in_pending: bool, stuck: bool) -> SitStateDict:
 
 
 def _mock_image(version: str | None, stale: bool | None) -> ImageSignalDict:
+    # When stale (mock FAILING repo) the latest build is red but a prior SUCCESS is still
+    # surfaced — exercises the "last successful build" path in the UI.
+    failing = stale is True
     return ImageSignalDict(
-        last_build_status="SUCCESS",
-        last_build_sha="aaa1111",
-        last_build_time="2026-06-11T07:30:00Z",
-        last_build_log_url="https://console.cloud.google.com/cloud-build/builds/mock-build-id",
+        last_build_status="FAILURE" if failing else "SUCCESS",
+        last_build_sha="fae1ed0" if failing else "aaa1111",
+        last_build_time="2026-06-11T09:15:00Z" if failing else "2026-06-11T07:30:00Z",
+        last_build_log_url="https://console.cloud.google.com/cloud-build/builds/mock-latest",
+        last_success_sha="aaa1111",
+        last_success_time="2026-06-11T07:30:00Z",
+        last_success_log_url="https://console.cloud.google.com/cloud-build/builds/mock-success",
         deployed_version=version,
         image_stale=stale,
     )
@@ -400,15 +403,22 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
 
 @dataclass(frozen=True)
 class BuildSignal:
-    """The latest image build for one repo (B1 — operator add 2026-06-11). Carries the
-    build TIME + LOG URL alongside status/sha so the Image column is a full deploy signal
-    (status + when + which sha + click-through to the GCP Cloud Build / AWS CodeBuild log),
-    not a bare status word. All fields honestly-None when the provider doesn't report them."""
+    """The build signal for one repo (B1 — operator add 2026-06-11). Carries the LATEST build
+    (status + time + sha + log) so the Image column is a full deploy signal, AND the LAST
+    SUCCESSFUL build (operator add 2026-06-11) so a red latest build doesn't hide the last good
+    image — "the current build failed, what's the last sha that succeeded?". success_* fields are
+    None when no successful build is found in the scanned window (honestly absent, never faked).
+    All fields None when the provider doesn't report them."""
 
     status: str | None
     sha: str | None
     finish_time: str | None  # ISO-8601 of the build's finish_time (create_time fallback upstream)
     log_url: str | None  # GCP Cloud Build / AWS CodeBuild console URL for this build
+    success_sha: str | None = (
+        None  # sha of the most recent SUCCESSFUL build (may equal sha, or differ when latest failed)
+    )
+    success_time: str | None = None  # finish_time of that successful build
+    success_log_url: str | None = None  # console log URL of that successful build
 
 
 _builds_cache: tuple[float, dict[str, BuildSignal]] | None = None
@@ -416,21 +426,22 @@ _BUILDS_CACHE_TTL = 300.0  # mirrors the cloud-builds TTL pattern
 
 
 async def _gcp_builds_by_repo() -> dict[str, BuildSignal]:
-    """GCP Cloud Build half — repo -> BuildSignal via the trigger plumbing."""
-    triggers = await asyncio.to_thread(_build_trigger_list_sync)
-    trigger_to_repo = {t["trigger_id"]: str(t.get("service") or "") for t in triggers}
-    builds = await _get_recent_builds_for_triggers(list(trigger_to_repo.keys()))
-    result: dict[str, BuildSignal] = {}
-    for trigger_id, info in builds.items():
-        repo = trigger_to_repo.get(trigger_id)
-        if repo:
-            result[repo] = BuildSignal(
-                status=info.get("status"),
-                sha=info.get("commit_sha"),
-                finish_time=info.get("finish_time"),
-                log_url=info.get("log_url"),
-            )
-    return result
+    """GCP Cloud Build half — repo -> BuildSignal, matched on each build's REPO_NAME
+    substitution (1:1 with the repo). Robust to trigger recreation (a per-trigger
+    `trigger_id` filter goes stale when triggers are recreated)."""
+    builds = await _recent_builds_by_repo_name()
+    out: dict[str, BuildSignal] = {}
+    for repo, (latest, success) in builds.items():
+        out[repo] = BuildSignal(
+            status=latest.get("status"),
+            sha=latest.get("commit_sha"),
+            finish_time=latest.get("finish_time"),
+            log_url=latest.get("log_url"),
+            success_sha=success.get("commit_sha") if success else None,
+            success_time=success.get("finish_time") if success else None,
+            success_log_url=success.get("log_url") if success else None,
+        )
+    return out
 
 
 async def _aws_builds_by_repo() -> dict[str, BuildSignal]:
@@ -447,11 +458,18 @@ async def _aws_builds_by_repo() -> dict[str, BuildSignal]:
     for project_name, info in builds.items():
         repo = project_to_repo.get(project_name)
         if repo and info is not None:
+            # Best-effort last-success on AWS: the project plumbing returns only the latest
+            # build, so success_* is that build when it's green, else None (a deeper CodeBuild
+            # history scan for the last green is a follow-up; GCP carries the full last-success).
+            is_success = info.get("status") == "SUCCESS"
             result[repo] = BuildSignal(
                 status=info.get("status"),
                 sha=info.get("commit_sha"),
                 finish_time=info.get("finish_time"),
                 log_url=info.get("log_url"),
+                success_sha=info.get("commit_sha") if is_success else None,
+                success_time=info.get("finish_time") if is_success else None,
+                success_log_url=info.get("log_url") if is_success else None,
             )
     return result
 
@@ -492,18 +510,24 @@ def _image_signal(
     """Image-level deploy signal (operator decision: v1 image-level, not runtime-level).
 
     image_stale = main HEAD sha differs from the last SUCCESSFUL build's sha — "is main's
-    code built into the latest image". None = honestly unknown (no build data)."""
+    code built into the latest image". The comparison uses the last SUCCESS sha (not the latest
+    build's), because a failed latest build produced no new image — the running image is still
+    from the last green build. None = honestly unknown (no successful build data)."""
     sig = builds.get(repo)
     build_status = sig.status if sig else None
     build_sha = sig.sha if sig else None
+    success_sha = sig.success_sha if sig else None
     stale: bool | None = None
-    if main_sha and build_sha and build_status == "SUCCESS":
-        stale = not main_sha.startswith(build_sha) and not build_sha.startswith(main_sha)
+    if main_sha and success_sha:
+        stale = not main_sha.startswith(success_sha) and not success_sha.startswith(main_sha)
     return ImageSignalDict(
         last_build_status=build_status,
         last_build_sha=build_sha,
         last_build_time=sig.finish_time if sig else None,
         last_build_log_url=sig.log_url if sig else None,
+        last_success_sha=success_sha,
+        last_success_time=sig.success_time if sig else None,
+        last_success_log_url=sig.success_log_url if sig else None,
         deployed_version=view.deployed_version_for(repo),
         image_stale=stale,
     )
