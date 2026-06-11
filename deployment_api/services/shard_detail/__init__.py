@@ -39,13 +39,13 @@ from unified_api_contracts.features import get_feature_family
 from unified_trading_library import (
     LEGACY_REASON_ASSET_GROUPS,
     classify_legacy_empty_row,
-    read_availability_index,
 )
 
 from deployment_api.services.data_status_drilldown import (
     _read_parquet_columns,  # pyright: ignore[reportPrivateUsage]
     build_bucket_name,
 )
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.types.shard_detail import (
     CaptureStatusLiteral,

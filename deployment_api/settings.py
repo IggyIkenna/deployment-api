@@ -43,6 +43,9 @@ CLOUD_PROVIDER = _config.cloud_provider
 # STATE FILE ENVIRONMENT SEPARATION
 # =============================================================================
 DEPLOYMENT_ENV = _config.deployment_env
+
+# CF-20 beta-manifest preview (see services/manifest_source.py) — empty = live index.
+DATA_STATUS_BETA_MANIFEST_BLOB = _config.data_status_beta_manifest_blob
 _DEPLOYMENT_ENV_SHORT_MAP: dict[str, str] = {
     "prod": "prd",
     "prd": "prd",
