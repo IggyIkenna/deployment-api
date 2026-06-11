@@ -71,3 +71,51 @@ def test_beta_mode_fails_loud_on_missing_projection() -> None:
             raise AssertionError("expected loud failure")
         except FileNotFoundError:
             pass
+
+
+def test_beta_mode_bypasses_rollup_fast_path() -> None:
+    """In beta mode get_manifest_status must NEVER serve the offline rollup.
+
+    The rollup blob is computed from the LIVE index by the Cloud Run cron, so
+    serving it while ``DATA_STATUS_BETA_MANIFEST_BLOB`` is set would quietly
+    render live data in a beta eyeball session (CF-20/V5).
+    """
+    import asyncio
+
+    import deployment_api.services.data_status_service as dss_mod
+
+    svc = dss_mod.DataStatusService()
+    sentinel: dict[str, object] = {"asset_groups": {}, "beta": True}
+    with (
+        patch.object(
+            manifest_source,
+            "DATA_STATUS_BETA_MANIFEST_BLOB",
+            "_index/audit/projected_index_{asset_group}.parquet",
+        ),
+        patch.object(dss_mod, "_read_rollup_if_fresh") as rollup_read,
+        patch.object(type(svc), "_get_manifest_status_sync", return_value=sentinel),
+    ):
+        out = asyncio.run(svc.get_manifest_status("market-tick-data-service", "2026-01-01", "2026-01-02"))
+    rollup_read.assert_not_called()
+    assert out is sentinel
+
+
+def test_live_mode_still_uses_rollup_fast_path() -> None:
+    """Live mode (blob unset) keeps the rollup fast-path — regression guard for the bypass."""
+    import asyncio
+
+    import deployment_api.services.data_status_service as dss_mod
+    from deployment_api.services.data_status import manifest as manifest_mod
+
+    svc = dss_mod.DataStatusService()
+    rollup_payload: dict[str, object] = {"asset_groups": {}, "rollup": True}
+    sliced: dict[str, object] = {"asset_groups": {}, "sliced": True}
+    with (
+        patch.object(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", ""),
+        patch.object(dss_mod, "_read_rollup_if_fresh", return_value=rollup_payload) as rollup_read,
+        patch.object(manifest_mod, "slice_rollup_to_window", return_value=sliced) as slicer,
+    ):
+        out = asyncio.run(svc.get_manifest_status("market-tick-data-service", "2026-01-01", "2026-01-02"))
+    rollup_read.assert_called_once_with("market-tick-data-service")
+    slicer.assert_called_once()
+    assert out is sliced

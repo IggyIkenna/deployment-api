@@ -19,6 +19,7 @@ from unified_api_contracts import (
 from unified_api_contracts.internal import MarketCategory
 
 import deployment_api.services.data_status_service as _dss
+from deployment_api.services import manifest_source
 from deployment_api.services.data_status_drilldown import (
     COMMODITY_BUCKET_TEMPLATE,
     PREDICTION_KIND_MAP,
@@ -133,7 +134,12 @@ class ManifestStatusMixin(MissingShardsMixin):
         any_row_filter = any(
             f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
         ) or bool(pipeline_modes)
-        if not any_row_filter:
+        # CF-20 beta preview: the offline rollup is computed from the LIVE
+        # index, so serving it in beta mode would quietly render live data —
+        # exactly what the beta eyeball must never do (see
+        # ``services/manifest_source.py``). Beta mode always takes the
+        # on-demand path, which reads through the beta-aware seam.
+        if not any_row_filter and not manifest_source.DATA_STATUS_BETA_MANIFEST_BLOB:
             rollup = await asyncio.to_thread(_dss._read_rollup_if_fresh, service)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             if rollup is not None:
                 response = slice_rollup_to_window(rollup, start_date, end_date, asset_groups)
