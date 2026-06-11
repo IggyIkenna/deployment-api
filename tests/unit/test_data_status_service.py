@@ -6,20 +6,22 @@ run_data_status_cli, calculate_missing_shards, get_last_updated_info,
 validate_data_completeness.
 """
 
-import importlib.util
 import json
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
 
-# Load directly to avoid circular import via services/__init__.py
-_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py")
-_spec = importlib.util.spec_from_file_location("_dss_standalone", os.path.abspath(_path))
-assert _spec is not None and _spec.loader is not None
-_dss_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_dss_mod)  # type: ignore[union-attr]
+# Import the CANONICAL facade module (NOT a standalone file-loaded copy).
+# The data_status mixin chain resolves the patchable module-level names
+# (list_objects / read_availability_index / VenueMapping / ...) late-bound
+# through ``sys.modules["deployment_api.services.data_status_service"]``,
+# so ``patch.object(_dss_mod, ...)`` only reaches the implementation when
+# ``_dss_mod`` IS that canonical module. The old standalone loader (which
+# existed to dodge a since-fixed circular import via services/__init__)
+# created a second module instance whose patches the mixins never saw.
+import deployment_api.services.data_status_service as _dss_mod
+
 DataStatusService = _dss_mod.DataStatusService
 
 

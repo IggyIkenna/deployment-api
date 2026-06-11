@@ -28,7 +28,7 @@ import pytest
 
 # Load directly to avoid circular import via services/__init__.py (same
 # pattern as tests/unit/test_data_status_service.py).
-_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_status_service.py")
+_path = os.path.join(os.path.dirname(__file__), "../../deployment_api/services/data_status/mtds.py")
 _spec = importlib.util.spec_from_file_location("_dss_seeded_standalone", os.path.abspath(_path))
 assert _spec is not None and _spec.loader is not None
 _dss_mod = importlib.util.module_from_spec(_spec)
@@ -54,9 +54,9 @@ def _venue_mapping():
 def _clear_expected_dates_cache():
     """The derived-path lru_cache is process-shared — clear per test so the
     unseeded assertions observe real derivations, not cache hits."""
-    _dss_mod._mtds_expected_dates_cached.cache_clear()
+    _dss_mod.mtds_expected_dates_cached.cache_clear()
     yield
-    _dss_mod._mtds_expected_dates_cached.cache_clear()
+    _dss_mod.mtds_expected_dates_cached.cache_clear()
 
 
 class TestSeededFourStateDenominator:
@@ -83,10 +83,10 @@ class TestSeededFourStateDenominator:
         )
         with patch.object(
             _dss_mod,
-            "_mtds_expected_dates_for_venue_dt",
+            "mtds_expected_dates_for_venue_dt",
             side_effect=AssertionError("F4 violation: re-derivation called for a seeded (venue, dt)"),
         ):
-            honest = _dss_mod._mtds_honest_coverage_for_venue(
+            honest = _dss_mod.mtds_honest_coverage_for_venue(
                 df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", _venue_mapping()
             )
 
@@ -122,7 +122,7 @@ class TestSeededFourStateDenominator:
                 ["2026-04-17", "BINANCE-SPOT", "book_snapshot_5", "expected_unattempted", "", "BTC-USDT"],
             ]
         )
-        honest = _dss_mod._mtds_honest_coverage_for_venue(
+        honest = _dss_mod.mtds_honest_coverage_for_venue(
             df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", _venue_mapping()
         )
         trades = honest["data_types"]["trades"]
@@ -140,7 +140,7 @@ class TestSeededFourStateDenominator:
                 ["2026-04-17", "BINANCE-SPOT", "book_snapshot_5", "expected_unattempted", "", "BTC-USDT"],
             ]
         )
-        honest = _dss_mod._mtds_honest_coverage_for_venue(
+        honest = _dss_mod.mtds_honest_coverage_for_venue(
             df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", _venue_mapping()
         )
         assert honest["data_types"]["trades"]["expected_shards"] == 1
@@ -182,10 +182,10 @@ class TestUnseededLegacyRederivation:
         )
         with patch.object(
             _dss_mod,
-            "_mtds_expected_dates_for_venue_dt",
-            wraps=_dss_mod._mtds_expected_dates_for_venue_dt,
+            "mtds_expected_dates_for_venue_dt",
+            wraps=_dss_mod.mtds_expected_dates_for_venue_dt,
         ) as derive_spy:
-            honest = _dss_mod._mtds_honest_coverage_for_venue(
+            honest = _dss_mod.mtds_honest_coverage_for_venue(
                 df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", _venue_mapping()
             )
 
@@ -216,7 +216,7 @@ class TestUnseededLegacyRederivation:
                 ["2026-04-17", "BINANCE-SPOT", "trades", "attempted_failed", "HTTP_500", ""],
             ]
         )
-        honest = _dss_mod._mtds_honest_coverage_for_venue(
+        honest = _dss_mod.mtds_honest_coverage_for_venue(
             df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", _venue_mapping()
         )
         trades = honest["data_types"]["trades"]
@@ -246,13 +246,11 @@ class TestMixedVenues:
 
         with patch.object(
             _dss_mod,
-            "_mtds_expected_dates_for_venue_dt",
-            wraps=_dss_mod._mtds_expected_dates_for_venue_dt,
+            "mtds_expected_dates_for_venue_dt",
+            wraps=_dss_mod.mtds_expected_dates_for_venue_dt,
         ) as derive_spy:
-            seeded = _dss_mod._mtds_honest_coverage_for_venue(
-                df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", vm
-            )
-            unseeded = _dss_mod._mtds_honest_coverage_for_venue(df, "OKX-SPOT", "CEFI", "2026-04-17", "2026-04-18", vm)
+            seeded = _dss_mod.mtds_honest_coverage_for_venue(df, "BINANCE-SPOT", "CEFI", "2026-04-17", "2026-04-18", vm)
+            unseeded = _dss_mod.mtds_honest_coverage_for_venue(df, "OKX-SPOT", "CEFI", "2026-04-17", "2026-04-18", vm)
 
         # The seeded venue never re-derived; the unseeded venue did.
         derived_venues = {call.args[1] for call in derive_spy.call_args_list}
@@ -281,7 +279,7 @@ class TestMixedVenues:
                 ["2026-04-17", "OKX-SPOT", "trades", "captured", "", ""],
             ]
         )
-        unseeded = _dss_mod._mtds_honest_coverage_for_venue(
+        unseeded = _dss_mod.mtds_honest_coverage_for_venue(
             df, "OKX-SPOT", "CEFI", "2026-04-17", "2026-04-18", _venue_mapping()
         )
         assert "denominator_source" not in unseeded["data_types"]["trades"]

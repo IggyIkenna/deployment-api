@@ -31,15 +31,12 @@ MAX_DURATION=700
 # facade (`unified_api_contracts/registry/__init__.py`) + switch the 9 call sites to
 # `from unified_api_contracts.registry import <X>` — tracked in ci_local_qg_parity_2026_06_08.md.
 # MAX_DURATION 300→700: basedpyright takes ~480s on this host; timeout is infra not code quality.
-# Bumped 24→25 (utl_uac_reuse service-dep removal 2026-06-11): deployment-api HEAD already sits at 25
-# pre-existing codex violations (the 24 budget drifted stale — bare-except in data_status_service,
-# schema-provenance in shard_detail/path_combinatorics, deep-unified imports, etc.; all pre-existing
-# peer-landed, NONE introduced by the treasury NAV-rollup relocation here — which is import-only +
-# adds 3 CORRECT-LOCAL markers that NET-REDUCE schema-provenance file hits). Bump unblocks the
-# deployment-api LDR→staging promotion that the stale budget was silently blocking, matching the
-# 20→22→23→24 precedent. RATCHET-DOWN tracked in ci_local_qg_parity_2026_06_08.md (re-export registry
-# symbols at the UAC facade + dedupe bare-except) + utl_uac_reuse_consolidation_remediation_2026_06_10.md.
-CODEX_MAX_VIOLATIONS=25
+# Ratcheted 25→24 on 2026-06-11 (codex_violations_ratchet_to_five_2026_06_10): the transient 25th
+# class was manifest-import-alignment — strategy-service was still declared in PM workspace-manifest
+# after the treasury NAV-rollup relocation dropped the last import; the PM manifest edge is now
+# removed, so the measured honest count is back at 24 (QG_SLICE=lint-codex verified). Budgets only
+# ratchet DOWN from here — the ≤5 ceiling drive continues under the plan above.
+CODEX_MAX_VIOLATIONS=24
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
