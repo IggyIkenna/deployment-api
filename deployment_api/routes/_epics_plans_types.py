@@ -26,6 +26,7 @@ class EpicCardDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, 
     """One epic card with its rolled-up active plans."""
 
     name: str
+    slug: str  # normalized filename slug (e.g. mtds_mdps_master) — the canonical match key vs plan.parent_epic
     title: str
     tier: str
     priority: str

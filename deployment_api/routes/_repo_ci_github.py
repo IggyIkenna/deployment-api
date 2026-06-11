@@ -27,8 +27,12 @@ _API_BASE = "https://api.github.com"
 _CACHE_TTL_SECONDS = 90.0
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 
-# url -> (monotonic_ts, parsed json | raw text)
-_response_cache: dict[str, tuple[float, object]] = {}
+# url -> (monotonic_ts, parsed json | raw text, etag | None)
+# The ETag lets us send a conditional `If-None-Match` once the short TTL lapses:
+# GitHub answers a matching ETag with `304 Not Modified` which is FREE — it does
+# NOT decrement the shared per-user REST budget. On 304 we serve the cached body;
+# on 200 we refresh both the body and the ETag.
+_response_cache: dict[str, tuple[float, object, str | None]] = {}
 _token_cache: str | None = None
 
 
@@ -77,8 +81,57 @@ def _raise_if_rate_limited(status: int, headers: Mapping[str, str], url: str) ->
         )
 
 
+def _resource_view(resource: object) -> dict[str, object]:
+    """Project one /rate_limit resource block to {limit, remaining, used, reset}."""
+    block = _as_dict(resource)
+    return {
+        "limit": int(cast(int, block.get("limit") or 0)),
+        "remaining": int(cast(int, block.get("remaining") or 0)),
+        "used": int(cast(int, block.get("used") or 0)),
+        "reset": int(cast(int, block.get("reset") or 0)),
+    }
+
+
+async def gh_rate_limit(session: aiohttp.ClientSession, token: str) -> dict[str, object]:
+    """Parse `GET /rate_limit` — the shared per-user REST budget for the UI.
+
+    The `/rate_limit` endpoint is itself FREE (it never counts against the budget),
+    so this is NEVER cached and NEVER sends `If-None-Match`. Surfaces the core /
+    graphql / search resource blocks plus the fetch minute (UTC) for the dashboard.
+    """
+    url = f"{_API_BASE}/rate_limit"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with session.get(url, headers=headers, timeout=_REQUEST_TIMEOUT) as resp:
+        if resp.status >= 400:
+            body = (await resp.text())[:200]
+            raise HTTPException(
+                status_code=502, detail={"message": f"GitHub {resp.status} for /rate_limit", "body": body}
+            )
+        payload = cast(object, await resp.json())  # noqa: qg-raw-json
+    resources = _as_dict(_as_dict(payload).get("resources"))
+    return {
+        "fetched_at": _utcnow().strftime("%Y-%m-%dT%H:%MZ"),
+        "resources": {
+            "core": _resource_view(resources.get("core")),
+            "graphql": _resource_view(resources.get("graphql")),
+            "search": _resource_view(resources.get("search")),
+        },
+    }
+
+
 async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> object:
-    """GET an api.github.com path, parsed JSON, behind the TTL cache. 404 -> None."""
+    """GET an api.github.com path, parsed JSON, behind the TTL + ETag cache. 404 -> None.
+
+    Two layers of rate-cost avoidance:
+      1. Fresh TTL hit -> serve the cached body with ZERO network call.
+      2. TTL lapsed but ETag known -> send `If-None-Match`; GitHub's `304 Not Modified`
+         is FREE (no REST-budget decrement) and we serve the cached body.
+    Only a 200 spends from the shared per-user budget — and refreshes body + ETag.
+    """
     url = f"{_API_BASE}{path}"
     now = time.monotonic()
     cached = _response_cache.get(url)
@@ -89,9 +142,16 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> 
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    cached_etag = cached[2] if cached is not None else None
+    if cached_etag:
+        headers["If-None-Match"] = cached_etag
     async with session.get(url, headers=headers, timeout=_REQUEST_TIMEOUT) as resp:
+        if resp.status == 304 and cached is not None:
+            # FREE conditional hit — content unchanged. Re-stamp the TTL, keep body + ETag.
+            _response_cache[url] = (now, cached[1], cached_etag)
+            return cached[1]
         if resp.status == 404:
-            _response_cache[url] = (now, None)
+            _response_cache[url] = (now, None, resp.headers.get("ETag"))
             return None
         _raise_if_rate_limited(resp.status, resp.headers, url)
         if resp.status >= 400:
@@ -100,13 +160,12 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> 
         # GitHub responses are heterogeneous per endpoint; shapes are narrowed by the typed
         # helpers downstream (branch_head/compare/pulls), not a single Pydantic model.
         payload = cast(object, await resp.json())  # noqa: qg-raw-json
-    _response_cache[url] = (now, payload)
+        etag = resp.headers.get("ETag")
+    _response_cache[url] = (now, payload, etag)
     return payload
 
 
-async def gh_raw_file(
-    session: aiohttp.ClientSession, token: str, org: str, repo: str, path: str, ref: str
-) -> str:
+async def gh_raw_file(session: aiohttp.ClientSession, token: str, org: str, repo: str, path: str, ref: str) -> str:
     """Fetch a file's raw content via the contents API (works on private repos)."""
     url = f"{_API_BASE}/repos/{org}/{repo}/contents/{path}?ref={ref}"
     now = time.monotonic()
@@ -118,13 +177,20 @@ async def gh_raw_file(
         "Accept": "application/vnd.github.raw+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    cached_etag = cached[2] if cached is not None else None
+    if cached_etag:
+        headers["If-None-Match"] = cached_etag
     async with session.get(url, headers=headers, timeout=_REQUEST_TIMEOUT) as resp:
+        if resp.status == 304 and cached is not None:
+            _response_cache[url] = (now, cached[1], cached_etag)
+            return str(cached[1])
         _raise_if_rate_limited(resp.status, resp.headers, url)
         if resp.status >= 400:
             body = (await resp.text())[:200]
             raise HTTPException(status_code=502, detail={"message": f"GitHub {resp.status} for {path}", "body": body})
         text = await resp.text()
-    _response_cache[url] = (now, text)
+        etag = resp.headers.get("ETag")
+    _response_cache[url] = (now, text, etag)
     return text
 
 
@@ -210,6 +276,34 @@ async def v2_conclusion_for_sha(
     return None
 
 
+async def v2_conclusion_for_branch(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
+) -> str | None:
+    """Latest quality-gates-v2 conclusion for a BRANCH head, via the Actions runs API.
+
+    Uses `/actions/workflows/quality-gates-v2.yml/runs?branch=` (Actions:read — which the
+    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which it does NOT,
+    the open BLOCKED-CREDENTIALS ask). So this lights up per-branch CI today without the
+    extra scope. Returns the conclusion (`success`/`failure`/…), the status when still
+    running (`in_progress`/`queued`), or None when the workflow never ran on that branch."""
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?branch={branch}&per_page=1",
+    )
+    data = _as_dict(payload)
+    for run in _as_list(data.get("workflow_runs")):
+        run_dict = _as_dict(run)
+        conclusion = run_dict.get("conclusion")
+        if conclusion:
+            return str(conclusion)
+        status = run_dict.get("status")
+        if status:
+            return str(status)  # in_progress / queued — still informative
+        return None
+    return None
+
+
 async def list_open_promotion_prs(
     session: aiohttp.ClientSession, token: str, org: str, repo: str
 ) -> list[dict[str, object]]:
@@ -256,9 +350,7 @@ async def list_open_promotion_prs(
     return enriched
 
 
-async def head_commit_message(
-    session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str
-) -> str:
+async def head_commit_message(session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str) -> str:
     """Full message of one commit (drives the [skip ci] jam classification)."""
     payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/commits/{sha}")
     data = _as_dict(payload)

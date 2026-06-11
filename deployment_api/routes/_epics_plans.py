@@ -39,6 +39,14 @@ _TTL_SECONDS = 300.0
 _FETCH_CONCURRENCY = 8
 _EPICS_DIR = "plans/epics"
 _ACTIVE_DIR = "plans/active"
+# Read plans from LDR, not main: LDR is the plan SSOT (plans are authored there and drain to
+# main on a ~15-min promote) — reading main false-orphans any plan whose parent_epic landed on
+# LDR inside the promotion-lag window (operator-reported 2026-06-11: 2 of 25 "orphans" were lag).
+_REF = "live-defi-rollout"
+# Housekeeping files that are not plans/epics — never orphan-strip or epic-card material
+# (per the inventory-tracker rule, the orphan check applies to ACTIVE PLANS only; README is
+# the epic registry doc). `_`-prefixed files (_agent_pings.md) are skipped by prefix below.
+_NON_PLAN_FILES = frozenset({"INDEX.md", "task_template.md", "README.md"})
 
 # Tier sort: L0 (foundation) → L5; unknown last. Priority sort P0 → P3.
 _TIER_ORDER = {"l0": 0, "l1": 1, "l2": 2, "l3": 3, "l4": 4, "l5": 5}
@@ -57,8 +65,33 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
 
+_SIMPLE_FM_LINE = re.compile(r"^([a-z][a-z0-9_]*):[ \t]+(.+?)[ \t]*$", re.IGNORECASE)
+
+
+def _line_based_frontmatter(block: str) -> dict[str, object]:
+    """Best-effort extraction of top-level scalar `key: value` pairs from a frontmatter block.
+
+    Fallback for when `yaml.safe_load` chokes (e.g. a `title:` prettier-wrapped across lines with a
+    `\\` continuation, or a `source:` list whose plain scalars embed `:`/quotes — both seen in live
+    PM plans). The fields the epics tab needs (parent_epic / status / tier / priority / assigned_vm /
+    name / title) are always single-line `key: value`, so a regex over top-level (column-0) lines
+    recovers them even when the document as a whole is invalid YAML. Indented (list/continuation)
+    lines are skipped so a malformed `source:` block can't corrupt a later key.
+    """
+    out: dict[str, object] = {}
+    for line in block.splitlines():
+        if not line or line[0] in " \t#-":  # skip indented / comment / list-item / blank lines
+            continue
+        m = _SIMPLE_FM_LINE.match(line)
+        if m:
+            out.setdefault(m.group(1), m.group(2).strip().strip("\"'"))
+    return out
+
+
 def _parse_frontmatter(text: str) -> dict[str, object]:
-    """Parse the leading `--- ... ---` YAML frontmatter; {} if absent/malformed."""
+    """Parse the leading `--- ... ---` frontmatter; {} if absent. Robust to invalid YAML — falls
+    back to a line-based scalar extraction so a plan is never silently dropped over a wrapped title
+    or a funky `source:` list (regression: 2 live plans orphaned 2026-06-11 despite valid parent_epic)."""
     if not text.startswith("---"):
         return {}
     end = text.find("\n---", 3)
@@ -68,8 +101,10 @@ def _parse_frontmatter(text: str) -> dict[str, object]:
     try:
         parsed = cast(object, yaml.safe_load(block))
     except yaml.YAMLError:
-        return {}
-    return cast(dict[str, object], parsed) if isinstance(parsed, dict) else {}
+        return _line_based_frontmatter(block)
+    if isinstance(parsed, dict):
+        return cast(dict[str, object], parsed)
+    return _line_based_frontmatter(block)
 
 
 def _str_field(fm: dict[str, object], key: str) -> str:
@@ -90,9 +125,29 @@ def _count_checkboxes(text: str) -> tuple[int, int, int]:
     return done, open_, open_p01
 
 
+def _normalize_epic_ref(ref: str) -> str:
+    """Reduce any epic reference to its bare slug for matching.
+
+    Plan `parent_epic:` is declared inconsistently across the repo — `mtds_mdps_master`,
+    `epics/mtds_mdps_master.md`, `plans/epics/infrastructure_master.md` all mean the same epic.
+    Strip the directory prefix + `.md` suffix and lowercase so they all collapse to one key.
+    """
+    bare = ref.strip().rsplit("/", 1)[-1]
+    if bare.endswith(".md"):
+        bare = bare[: -len(".md")]
+    return bare.lower()
+
+
+def _is_plan_md(entry_type: object, name: object) -> bool:
+    """True for a real plan/epic markdown file; excludes housekeeping + `_`-prefixed files."""
+    if entry_type != "file" or not isinstance(name, str) or not name.endswith(".md"):
+        return False
+    return name not in _NON_PLAN_FILES and not name.startswith("_")  # _agent_pings.md etc.
+
+
 async def _list_md(session: aiohttp.ClientSession, token: str, path: str) -> list[str]:
-    """List `*.md` file paths directly under a PM directory (top-level only)."""
-    listing = await gh_get_json(session, token, f"/repos/{GITHUB_ORG}/{_PM_REPO}/contents/{path}?ref=main")
+    """List plan/epic `*.md` file paths directly under a PM directory (top-level only)."""
+    listing = await gh_get_json(session, token, f"/repos/{GITHUB_ORG}/{_PM_REPO}/contents/{path}?ref={_REF}")
     if not isinstance(listing, list):
         return []
     out: list[str] = []
@@ -100,9 +155,8 @@ async def _list_md(session: aiohttp.ClientSession, token: str, path: str) -> lis
         if not isinstance(entry, dict):
             continue
         e = cast(dict[str, object], entry)
-        name = e.get("name")
-        if e.get("type") == "file" and isinstance(name, str) and name.endswith(".md"):
-            out.append(f"{path}/{name}")
+        if _is_plan_md(e.get("type"), e.get("name")):
+            out.append(f"{path}/{cast(str, e.get('name'))}")
     return out
 
 
@@ -111,19 +165,21 @@ async def _fetch_epic(
 ) -> EpicCardDict | None:
     async with sem:
         try:
-            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref="main")
+            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref=_REF)
         except (TimeoutError, aiohttp.ClientError):
             return None
     fm = _parse_frontmatter(text)
-    name = _str_field(fm, "name") or path.rsplit("/", 1)[-1].removesuffix(".md")
+    slug = path.rsplit("/", 1)[-1].removesuffix(".md")
+    name = _str_field(fm, "name") or slug
     return EpicCardDict(
         name=name,
+        slug=slug,
         title=_str_field(fm, "title") or name,
         tier=_str_field(fm, "tier"),
         priority=_str_field(fm, "priority"),
         assigned_vm=_str_field(fm, "assigned_vm"),
         status=_str_field(fm, "status"),
-        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/main/{path}",
+        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/{_REF}/{path}",
         plans=[],
         plan_count=0,
         done_total=0,
@@ -136,7 +192,7 @@ async def _fetch_plan(
 ) -> EpicPlanDict | None:
     async with sem:
         try:
-            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref="main")
+            text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, path, ref=_REF)
         except (TimeoutError, aiohttp.ClientError):
             return None
     fm = _parse_frontmatter(text)
@@ -152,12 +208,12 @@ async def _fetch_plan(
         open=open_,
         open_p0p1=open_p01,
         pct=round(100.0 * done / total, 1) if total > 0 else 0.0,
-        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/main/{path}",
+        github_url=f"https://github.com/{GITHUB_ORG}/{_PM_REPO}/blob/{_REF}/{path}",
     )
 
 
 async def load_epics_plans(session: aiohttp.ClientSession, token: str) -> EpicsPlansResponseDict:
-    """Live epics + active-plan drilldown from PM `main` (300 s TTL cache)."""
+    """Live epics + active-plan drilldown from PM LDR — the plan SSOT (300 s TTL cache)."""
     global _cache
     now = time.monotonic()
     if _cache is not None and now - _cache[0] < _TTL_SECONDS:
@@ -172,11 +228,18 @@ async def load_epics_plans(session: aiohttp.ClientSession, token: str) -> EpicsP
     epics = [e for e in epics_raw if e is not None]
     plans = [p for p in plans_raw if p is not None]
 
-    by_name = {e["name"]: e for e in epics}
+    # Match on the NORMALIZED epic slug, not the raw string — plan `parent_epic:` is declared in
+    # three inconsistent forms across the repo (`mtds_mdps_master`, `epics/mtds_mdps_master.md`,
+    # `plans/epics/infrastructure_master.md`). An exact-string match wrongly orphans the path-forms
+    # (e.g. every asset-group `*_manifest_canonicalisation` plan declares `epics/mtds_mdps_master.md`).
+    by_key: dict[str, EpicCardDict] = {}
+    for e in epics:
+        by_key[_normalize_epic_ref(e["slug"])] = e
+        by_key.setdefault(_normalize_epic_ref(e["name"]), e)
     orphans: list[EpicPlanDict] = []
     for plan in plans:
         parent = plan["parent_epic"]
-        epic = by_name.get(parent)
+        epic = by_key.get(_normalize_epic_ref(parent)) if parent else None
         if epic is None:
             orphans.append(plan)
             continue

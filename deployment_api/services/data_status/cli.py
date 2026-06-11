@@ -1,0 +1,301 @@
+"""Chain base: CLI wrapper + last-updated / completeness operations.
+
+Split out of the 6,663-line ``data_status_service.py`` god-module
+(codex ratchet plan 2026-06-10). The facade module re-exports every
+public + legacy-underscore name, so callers keep importing from
+``deployment_api.services.data_status_service``.
+"""
+
+import asyncio
+import json
+import logging
+import sys
+from typing import cast
+
+from unified_api_contracts.internal import MarketCategory
+
+import deployment_api.services.data_status_service as _dss
+from deployment_api.services.data_status_drilldown import (
+    SERVICE_TO_KIND,
+)
+from deployment_api.services.data_status_drilldown import (
+    build_bucket_name as _drilldown_build_bucket_name,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class DataStatusCliMixin:
+    """Chain base — CLI subprocess wrapper + cross-service status ops.
+
+    The data_status mixins form a single linear inheritance chain
+    (cli -> defi -> sports -> breakdowns_domain -> breakdowns_core ->
+    venue_resolution -> coverage -> missing_shards -> manifest) so that
+    every cross-group ``self._method`` reference resolves statically
+    under basedpyright strict. ``DataStatusService`` composes the top of
+    the chain and is the ONLY public entry point — import it from
+    ``deployment_api.services.data_status_service`` (the facade).
+    """
+
+    project_id: str
+    deployment_env_short: str
+
+    def _build_cli_cmd(
+        self,
+        service: str,
+        start_date: str,
+        end_date: str,
+        asset_groups: list[str] | None,
+        venues: list[str] | None,
+        show_missing: bool,
+        check_venues: bool,
+        check_data_types: bool,
+        check_feature_groups: bool,
+        check_timeframes: bool,
+        mode: str,
+    ) -> list[str]:
+        """Build the data-status CLI command list."""
+        cmd = [
+            sys.executable,
+            "-m",
+            "deployment_service",
+            "data-status",
+            "-s",
+            service,
+            "--start-date",
+            start_date,
+            "--end-date",
+            end_date,
+            "--output",
+            "json",
+            "--mode",
+            mode,
+        ]
+        for ag in asset_groups or []:
+            # The deployment-service CLI still accepts ``-c`` for the
+            # asset_group filter (legacy short flag preserved during the
+            # asset_group canonical-vocabulary rollout per CLAUDE.md SSOT).
+            cmd.extend(["-c", ag])
+        for venue in venues or []:
+            cmd.extend(["-v", venue])
+        if show_missing:
+            cmd.append("--show-missing")
+        if check_venues:
+            cmd.append("--check-venues")
+        elif check_feature_groups:
+            cmd.append("--check-feature-groups")
+        elif check_timeframes:
+            cmd.append("--check-timeframes")
+        elif service in ["market-tick-data-handler", "market-data-processing-service"]:
+            cmd.append("--fast")
+        if check_data_types:
+            cmd.append("--check-data-types")
+        return cmd
+
+    async def run_data_status_cli(
+        self,
+        service: str,
+        start_date: str,
+        end_date: str,
+        asset_groups: list[str] | None = None,
+        venues: list[str] | None = None,
+        show_missing: bool = False,
+        check_venues: bool = False,
+        check_data_types: bool = False,
+        check_feature_groups: bool = False,
+        check_timeframes: bool = False,
+        mode: str = "batch",
+    ) -> dict[str, object]:
+        """
+        Run data-status CLI command and return parsed JSON output.
+
+        Returns parsed JSON output from CLI command.
+        """
+        cmd = self._build_cli_cmd(
+            service,
+            start_date,
+            end_date,
+            asset_groups,
+            venues,
+            show_missing,
+            check_venues,
+            check_data_types,
+            check_feature_groups,
+            check_timeframes,
+            mode,
+        )
+        logger.info("Running CLI: %s", " ".join(cmd))
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=None,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                error_msg = f"CLI command failed with code {process.returncode}: {stderr.decode()}"
+                logger.error(error_msg)
+                return {"error": error_msg, "stderr": stderr.decode()}
+
+            try:
+                result = cast(dict[str, object], json.loads(stdout.decode()))
+                return result
+            except json.JSONDecodeError as e:
+                logger.error("Failed to parse CLI JSON output: %s", e)
+                return {"error": f"Invalid JSON output: {e}", "raw_output": stdout.decode()}
+
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.error("Error running CLI command: %s", e)
+            return {"error": str(e)}
+
+    async def get_last_updated_info(
+        self,
+        service: str,
+        asset_groups: list[str] | None = None,
+    ) -> dict[str, object]:
+        """
+        Get last updated information for a service.
+
+        Args:
+            service: Service name to check
+            asset_groups: Optional list of asset_groups to filter
+
+        Returns:
+            Dictionary containing last updated information
+        """
+        if service not in SERVICE_TO_KIND and service != "features-commodity-service":
+            return {"error": f"Unknown service: {service}"}
+
+        # Default asset_groups if none specified
+        if not asset_groups:
+            asset_groups = [cat.value.lower() for cat in MarketCategory]
+
+        asset_groups_info: dict[str, object] = {}
+        last_updated_info: dict[str, object] = {
+            "service": service,
+            "asset_groups": asset_groups_info,
+            "overall_last_updated": None,
+        }
+
+        for category in asset_groups:
+            try:
+                bucket_name = _drilldown_build_bucket_name(service, category)
+
+                # Check if bucket has any recent activity
+                # Use the most recent object in the bucket as proxy
+                objects = _dss.list_objects(bucket_name, "", max_results=10)
+
+                if objects:
+                    # Get the most recently created object
+                    # This is a simplified approach - in production you might want
+                    # to check specific paths or use bucket metadata
+                    asset_groups_info[category] = {
+                        "status": "active",
+                        "object_count": len(objects),
+                        "sample_paths": objects[:5],  # First 5 as examples
+                    }
+                else:
+                    asset_groups_info[category] = {
+                        "status": "empty",
+                        "object_count": 0,
+                    }
+
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.debug("Error checking category %s: %s", category, e)
+                asset_groups_info[category] = {
+                    "status": "error",
+                    "error": str(e),
+                }
+
+        return last_updated_info
+
+    async def validate_data_completeness(
+        self,
+        service: str,
+        date: str,
+        asset_groups: list[str] | None = None,
+        venues: list[str] | None = None,
+    ) -> dict[str, object]:
+        """
+        Validate data completeness for a specific date.
+
+        Args:
+            service: Service name to validate
+            date: Date in YYYY-MM-DD format
+            asset_groups: Optional list of asset_groups to check
+            venues: Optional list of venues to check
+
+        Returns:
+            Validation result with completeness details
+        """
+        # Get data status for single day
+        result = await self.run_data_status_cli(
+            service=service,
+            start_date=date,
+            end_date=date,
+            asset_groups=asset_groups,
+            venues=venues,
+            show_missing=True,
+        )
+
+        if "error" in result:
+            return result
+
+        # Analyze completeness
+        missing_venues: list[str] = []
+        validation_errors: list[object] = []
+        is_complete = True
+        total_venues = 0
+        completed_venues = 0
+
+        dates_val: object = result.get("dates")
+        if dates_val and isinstance(dates_val, list):
+            dates_list = cast(list[object], dates_val)
+            if dates_list and isinstance(dates_list[0], dict):
+                date_data = cast(dict[str, object], dates_list[0])  # Single date
+
+                venues_val: object = date_data.get("venues")
+                if venues_val and isinstance(venues_val, list):
+                    venues_list = cast(list[object], venues_val)
+                    total_venues = len(venues_list)
+
+                    for venue_info_raw in venues_list:
+                        if not isinstance(venue_info_raw, dict):
+                            continue
+                        venue_info = cast(dict[str, object], venue_info_raw)
+                        vname_raw: object = venue_info.get("venue", "unknown")
+                        venue_name = vname_raw if isinstance(vname_raw, str) else "unknown"
+                        status_raw: object = venue_info.get("status")
+                        status = status_raw if isinstance(status_raw, str) else ""
+
+                        if status == "missing":
+                            is_complete = False
+                            missing_venues.append(venue_name)
+                        elif status == "error":
+                            err_raw: object = venue_info.get("error", "Unknown error")
+                            validation_errors.append(
+                                {
+                                    "venue": venue_name,
+                                    "error": err_raw if isinstance(err_raw, str) else "Unknown error",
+                                }
+                            )
+                        else:
+                            completed_venues += 1
+
+        completion_rate = (completed_venues / total_venues * 100) if total_venues > 0 else 0.0
+
+        validation: dict[str, object] = {
+            "service": service,
+            "date": date,
+            "is_complete": is_complete,
+            "total_venues": total_venues,
+            "completed_venues": completed_venues,
+            "missing_venues": missing_venues,
+            "errors": validation_errors,
+            "completion_rate": completion_rate,
+        }
+
+        return validation
