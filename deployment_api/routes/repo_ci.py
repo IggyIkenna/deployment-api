@@ -497,21 +497,26 @@ async def _overview_row(
         last_sit_run_age_min=sit_run[1],
     )
     main_sha = next((b["sha"] for b in branches if b["branch"] == "main"), None)
-    # Per-branch v2 conclusion so the UI can annotate WHICH branch is red. Degrades to None
-    # per-branch (honest-unknown) on a per-branch fetch failure — never fails the row.
+    ci_status = view.ci_status_for(meta.name)
+    # Per-branch v2 conclusion so the UI can annotate WHICH branch is red. ONLY fetched for
+    # non-MAIN_GREEN repos: a fully-green repo needs no branch annotation, and skipping it keeps
+    # the overview's GitHub-API budget bounded (3 Actions-API calls for only the handful of red
+    # repos, not for all 25 — the cold-overview rate-limit guard). Degrades to None per-branch on a
+    # fetch failure; never fails the row.
     branch_ci: dict[str, str | None] = {}
-    try:
-        conclusions = await asyncio.gather(
-            *[v2_conclusion_for_branch(session, token, GITHUB_ORG, meta.name, b) for b in PROMOTION_BRANCHES]
-        )
-        branch_ci = dict(zip(PROMOTION_BRANCHES, conclusions, strict=True))
-    except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
-        logger.warning("[REPO-CI] %s per-branch v2 fetch degraded: %s", meta.name, exc)
-        branch_ci = dict.fromkeys(PROMOTION_BRANCHES, None)
+    if ci_status != "MAIN_GREEN":
+        try:
+            conclusions = await asyncio.gather(
+                *[v2_conclusion_for_branch(session, token, GITHUB_ORG, meta.name, b) for b in PROMOTION_BRANCHES]
+            )
+            branch_ci = dict(zip(PROMOTION_BRANCHES, conclusions, strict=True))
+        except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+            logger.warning("[REPO-CI] %s per-branch v2 fetch degraded: %s", meta.name, exc)
+            branch_ci = dict.fromkeys(PROMOTION_BRANCHES, None)
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
-        ci_status=view.ci_status_for(meta.name),
+        ci_status=ci_status,
         branch_ci=branch_ci,
         branches=branches,
         deltas=deltas,
