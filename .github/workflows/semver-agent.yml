@@ -539,7 +539,7 @@ jobs:
             --repo "${GH_ORG}/deployment-api" \
             --title "[MAJOR BUMP REQUIRED] deployment-api: $BUMP_REASON" \
             --body "$ISSUE_BODY" \
-            --label "major-bump-approval" \
+            --label "major-bump-pending" \
             || echo "WARNING: Issue creation failed (label may not exist) — continuing"
 
           echo "Issue created. Skipping version-bump dispatch until user approves."

@@ -20,7 +20,8 @@
 #     orchestrator. It never auto-resolves a conflict.
 #   - RACE (LDR moved mid-merge) → retries FF-only up to 3×; never clobbers.
 #
-# Concurrency: keyed on the destination ref so simultaneous back-merges serialize.
+# Concurrency: keyed on the destination ref so simultaneous back-merges serialize
+# (group shared with staging-backmerge-to-ldr so the two never race the same LDR push).
 #
 # Rollout: `bash unified-trading-pm/scripts/workflow-templates/rollout-workflow-templates.sh --template main-backmerge-to-ldr.yml`
 #
@@ -42,7 +43,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: main-backmerge-to-ldr
+  group: backmerge-to-ldr
   cancel-in-progress: false
 
 permissions:
