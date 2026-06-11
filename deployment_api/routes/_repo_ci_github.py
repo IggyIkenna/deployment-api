@@ -260,19 +260,32 @@ async def list_branch_commits(
 async def v2_conclusion_for_sha(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str
 ) -> str | None:
-    """quality-gates-v2 check-run conclusion for one commit (None = never reported)."""
+    """quality-gates-v2 conclusion for ONE commit, via the Actions runs API.
+
+    Uses `/actions/workflows/quality-gates-v2.yml/runs?head_sha=` (Actions:read — which the
+    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which fine-grained
+    PATs CANNOT be granted: GitHub offers no Checks permission for fine-grained tokens at all,
+    so that endpoint 403s permanently — community#129512). For a single-required-check workflow
+    the workflow-run conclusion equals the check-run conclusion, so this lights up the per-SHA
+    verdict today with no extra scope (mirrors `v2_conclusion_for_branch`). `per_page=1` returns
+    the most-recent run for the SHA (the current verdict even after a re-run). Returns the
+    conclusion (`success`/`failure`/…), the status while still running (`in_progress`/`queued`),
+    or None when v2 never ran on that commit."""
     payload = await gh_get_json(
-        session, token, f"/repos/{org}/{repo}/commits/{sha}/check-runs?check_name=quality-gates-v2&per_page=5"
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?head_sha={sha}&per_page=1",
     )
     data = _as_dict(payload)
-    for run in _as_list(data.get("check_runs")):
+    for run in _as_list(data.get("workflow_runs")):
         run_dict = _as_dict(run)
         conclusion = run_dict.get("conclusion")
-        status = run_dict.get("status")
         if conclusion:
             return str(conclusion)
+        status = run_dict.get("status")
         if status:
-            return str(status)  # queued / in_progress — still informative
+            return str(status)  # in_progress / queued — still informative
+        return None
     return None
 
 
@@ -282,10 +295,11 @@ async def v2_conclusion_for_branch(
     """Latest quality-gates-v2 conclusion for a BRANCH head, via the Actions runs API.
 
     Uses `/actions/workflows/quality-gates-v2.yml/runs?branch=` (Actions:read — which the
-    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which it does NOT,
-    the open BLOCKED-CREDENTIALS ask). So this lights up per-branch CI today without the
-    extra scope. Returns the conclusion (`success`/`failure`/…), the status when still
-    running (`in_progress`/`queued`), or None when the workflow never ran on that branch."""
+    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which fine-grained
+    PATs CANNOT be granted at all; GitHub offers no Checks permission for them, so that endpoint
+    403s permanently — community#129512). So this lights up per-branch CI without the extra
+    scope. Returns the conclusion (`success`/`failure`/…), the status when still running
+    (`in_progress`/`queued`), or None when the workflow never ran on that branch."""
     payload = await gh_get_json(
         session,
         token,
@@ -361,16 +375,25 @@ async def head_commit_message(session: aiohttp.ClientSession, token: str, org: s
 async def head_check_rollup(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str
 ) -> tuple[bool, bool]:
-    """(failed_check, v2_present) over ALL check runs on a PR head sha."""
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/commits/{sha}/check-runs?per_page=50")
+    """(failed_check, v2_present) over ALL Actions runs on a PR head sha.
+
+    Via `/actions/runs?head_sha=` (Actions:read — granted) rather than
+    `/commits/{sha}/check-runs` (Checks:read — ungrantable for fine-grained PATs, 403s
+    permanently; see `v2_conclusion_for_sha`). All this repo's required checks ARE Actions
+    workflows, so the workflow-run rollup carries the same (failed, v2_present) signal the
+    check-run rollup did — and without the 403 this feeds the v2-never-reported deadlock
+    classifier honestly (the old 403 path defaulted `v2_present=True`, silently masking the
+    deadlock signature)."""
+    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/actions/runs?head_sha={sha}&per_page=100")
     data = _as_dict(payload)
     failed = False
     v2_present = False
-    for run in _as_list(data.get("check_runs")):
+    for run in _as_list(data.get("workflow_runs")):
         run_dict = _as_dict(run)
         name = str(run_dict.get("name") or "")
+        path = str(run_dict.get("path") or "")
         conclusion = str(run_dict.get("conclusion") or "")
-        if "quality-gates-v2" in name:
+        if "quality-gates-v2" in path or "quality-gates-v2" in name:
             v2_present = True
         if conclusion in ("failure", "timed_out", "startup_failure"):
             failed = True

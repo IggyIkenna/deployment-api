@@ -360,9 +360,10 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
         v2_present = True
         head_message = ""
         if merge_state.lower() in ("blocked", "dirty", "conflicting") and head_sha:
-            # Shard-level isolation: a checks-API 403 (fine-grained PAT missing Checks:read
-            # on one repo) degrades THIS PR's classification to conservative defaults —
-            # it must never kill the whole overview. Rate-limit 503 still propagates.
+            # Shard-level isolation: any per-PR rollup error (a transient 4xx/5xx on one
+            # repo) degrades THIS PR's classification to conservative defaults — it must
+            # never kill the whole overview. Rate-limit 503 still propagates. (The rollup
+            # now reads the Actions API, which the GH_PAT can access — no Checks:read 403.)
             try:
                 failed_check, v2_present = await head_check_rollup(session, token, GITHUB_ORG, repo, head_sha)
                 if not v2_present:
@@ -676,7 +677,8 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
                 sha = str(commit.get("sha") or "")
                 v2: str | None = None
                 if sha and index < _DETAIL_V2_LOOKUPS_PER_BRANCH:
-                    # Checks-API 403 (PAT missing Checks:read) degrades to unknown, never fatal.
+                    # Any transient lookup error degrades this commit's v2 to unknown, never
+                    # fatal (now reads the Actions API — no Checks:read 403). 503 propagates.
                     try:
                         v2 = await v2_conclusion_for_sha(session, token, GITHUB_ORG, repo, sha)
                     except HTTPException as exc:
