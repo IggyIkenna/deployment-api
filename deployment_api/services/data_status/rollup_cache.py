@@ -188,7 +188,7 @@ def slice_asset_group(cat_payload: dict[str, object], start_date: str, end_date:
             sliced_venues[venue] = sv
             venue_found_total += int(cast(int, sv.get("dates_found", 0)))
             venue_expected_total += int(cast(int, sv.get("dates_expected", 0)))
-            for d in sv.get("dates_found_list", []) or []:  # pyright: ignore[reportGeneralTypeIssues,reportUnknownVariableType]
+            for d in sv.get("dates_found_list", []) or []:  # pyright: ignore[reportGeneralTypeIssues,reportUnknownVariableType]  # noqa: qg-empty-fallback — optional rollup field
                 cat_found_dates.add(str(d))  # pyright: ignore[reportUnknownArgumentType]
         sliced["venues"] = sliced_venues
 
@@ -306,7 +306,7 @@ def filter_coverage_to_asset_groups(
         return {**rollup, "served_from": "rollup", "totals_source": "rollup"}
 
     filter_set = {ag.upper() for ag in asset_groups_filter}
-    asset_groups = rollup.get("asset_groups", {})
+    asset_groups = rollup.get("asset_groups", {})  # noqa: qg-empty-fallback — optional rollup field
     if not isinstance(asset_groups, dict):
         return {**rollup, "served_from": "rollup", "totals_source": "rollup"}
 

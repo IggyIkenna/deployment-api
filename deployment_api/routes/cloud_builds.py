@@ -23,13 +23,13 @@ from typing import cast
 from fastapi import APIRouter, HTTPException, Query
 from unified_trading_library import __version__ as uts_version
 
+from deployment_api.settings import CLOUD_BUILD_REGION as DEFAULT_REGION
 from deployment_api.settings import (
     CLOUD_MOCK_MODE,
     CLOUD_PROVIDER,
     GITHUB_ORG,
     WORKSPACE_ROOT,
 )
-from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 

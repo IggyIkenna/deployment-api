@@ -126,7 +126,7 @@ def _to_model(
     if completed_at and isinstance(completed_at, str) and len(completed_at) >= 10:
         try:
             date_stamp = completed_at[:10].replace("-", "")  # YYYYMMDD
-            vm_name = str(data.get("vm_name", ""))
+            vm_name = str(data.get("vm_name", ""))  # noqa: qg-empty-fallback — registry blob display default
             if vm_name and date_stamp.isdigit():
                 data["archive_run_log_uri"] = vm_run_log_rolling_uri(vm_name, date_stamp)
                 data["archive_serial_uri"] = vm_serial_rolling_uri(vm_name, date_stamp)

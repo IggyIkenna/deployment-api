@@ -199,7 +199,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
                     "elapsed_s": round(elapsed, 1),
                     "size_compressed": metrics["size_compressed"],
                     "size_uncompressed": metrics["size_uncompressed"],
-                    "asset_groups_n": len(payload.get("asset_groups", {})),  # pyright: ignore[reportAny]
+                    "asset_groups_n": len(payload.get("asset_groups", {})),  # pyright: ignore[reportAny]  # noqa: qg-empty-fallback — telemetry count only
                 },
             )
             # Free the manifest payload before computing coverage — the MTDS

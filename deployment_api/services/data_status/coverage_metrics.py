@@ -358,7 +358,7 @@ def build_failure_rate_by_dimension(
         venue_entry = cast(dict[str, object], venue_entry_raw)
         venue_failure_rate_raw = venue_entry.get("failure_rate", 0.0)
         venue_failure_rate = float(venue_failure_rate_raw) if isinstance(venue_failure_rate_raw, (int, float)) else 0.0
-        v_counts_raw = venue_entry.get("capture_status_counts", {})
+        v_counts_raw = venue_entry.get("capture_status_counts", {})  # noqa: qg-empty-fallback — pre-v9 rollup rows lack counts
         v_counts = cast(dict[str, int], v_counts_raw) if isinstance(v_counts_raw, dict) else {}
         failed_count = int(v_counts.get("attempted_failed", 0) or 0)
         if failed_count > 0:

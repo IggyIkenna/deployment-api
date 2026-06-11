@@ -13,8 +13,8 @@ import os
 
 # Read directly from env to avoid triggering the full UTL→UAC import chain
 # during gunicorn config loading (before the WSGI app is initialised).
-_PORT = int(os.environ.get("PORT", 8080))
-_WORKERS = int(os.environ.get("WORKERS", 4))
+_PORT = int(os.environ.get("PORT", 8080))  # config-bootstrap: gunicorn loads pre-UnifiedCloudConfig (Cloud Run PORT)
+_WORKERS = int(os.environ.get("WORKERS", 4))  # config-bootstrap: gunicorn loads pre-UnifiedCloudConfig
 
 # Server socket
 bind = f"0.0.0.0:{_PORT}"

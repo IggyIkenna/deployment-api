@@ -394,8 +394,8 @@ def _features_sports_expected_dates_for_calculator(
 
 # ProcessPool toggle. Hardcoded False — set to True here only as a temporary
 # rollback if a deployment hits subtle pickling / fork issues. Workspace rule
-# bans os.environ access in service source (use UnifiedCloudConfig for any
-# real runtime toggles).
+# bans process-environment access in service source (use UnifiedCloudConfig
+# for any real runtime toggles).
 _PROCESS_POOL_DISABLED = False
 
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}

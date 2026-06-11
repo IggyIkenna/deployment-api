@@ -92,6 +92,8 @@ class ImageSignalDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shap
 
     last_build_status: str | None
     last_build_sha: str | None
+    last_build_time: str | None  # ISO-8601 of the last build's finish_time (B1 — when it built)
+    last_build_log_url: str | None  # GCP Cloud Build / AWS CodeBuild console URL (B1 — click-through)
     deployed_version: str | None  # workspace-manifest.json deployed_versions[repo]
     image_stale: bool | None  # main HEAD sha != last successful build sha (None = unknown)
 
@@ -144,6 +146,22 @@ class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape,
     error: str
 
 
+class PromotionBlockedDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api response shape
+    """A repo parked out of the staging→main promotion (G1 — alert-parity for the
+    staging-to-main genuine-failure CRITICAL page + the newly-quarantined WARNING).
+
+    Sourced from manifest `promotion_failures` (`{repo: consecutive-fail count}`) and
+    `promotion_quarantine` (`{repo: {since, attempts, escalated}}`). `quarantined` is True
+    when the repo is in `promotion_quarantine`; `failures` is its consecutive-fail count."""
+
+    repo: Required[str]
+    failures: int
+    quarantined: bool
+    since: str
+    attempts: int
+    escalated: bool
+
+
 class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/overview response."""
 
@@ -154,6 +172,7 @@ class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response
     stuck_in_sit: list[str]  # repos currently stuck in SIT (operator add)
     sit_last_run: SitLastRunDict | None  # live SIT run panel (alert-parity, operator add)
     errors: list[RepoErrorDict]  # repos dropped on aggregation failure (operator add — never silent)
+    promotion_blocked: list[PromotionBlockedDict]  # repos parked out of staging→main (G1)
 
 
 class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
