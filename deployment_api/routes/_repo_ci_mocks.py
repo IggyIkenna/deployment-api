@@ -125,9 +125,12 @@ def _mock_row(
         # G6: every mock row is LDR-ahead-of-main (delta ahead_by=3) so it has a lag; FAILING
         # repos sit longer (the drain is stuck). >60min so the lag-chip renders prominently.
         main_lag_age_min=185 if ci_status == "FAILING" else 95,
-        # promotion-drain follow-up: the FAILING repo seeds the drain-stalled case (real content
-        # ahead + a stale/failing drain leg); healthy repos are draining so not stalled.
-        drain_stalled=ci_status == "FAILING",
+        # promotion-drain follow-up: drain-stalled = content ahead (every mock row is) AND a
+        # BLOCKING stuck PR (conflicting / failing_check / skip_ci_jammed). Derived from prs so the
+        # mock can't drift from the real contract. (execution-service: skip_ci_jammed + failing_check;
+        # market-tick-data-service: conflicting → both stalled. v2_never_reported / automerge_stuck
+        # are auto-recoverable → NOT stalled.)
+        drain_stalled=any(pr.get("stuck_class") in {"conflicting", "failing_check", "skip_ci_jammed"} for pr in prs),
     )
 
 
@@ -272,11 +275,8 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
                 sha=f"{row['branches'][0]['sha'] or 'abc0000'}", at="2026-06-10T07:00:00Z"
             ),
             "staging": LastGreenDict(sha="ab09111", at="2026-06-09T22:00:00Z"),
-            "main": (
-                LastGreenDict(sha=row["last_green_main"]["sha"], at=row["last_green_main"]["at"])
-                if row.get("last_green_main")
-                else None
-            ),
+            # the row's last_green_main is already LastGreenDict | None — pass it through directly.
+            "main": row.get("last_green_main"),
         },
     )
 
