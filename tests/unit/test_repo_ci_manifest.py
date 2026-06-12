@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from deployment_api.routes._repo_ci_manifest import manifest_view_from_raw
-from deployment_api.routes.repo_ci import _build_promotion_blocked, _drain_leg_healthy
+from deployment_api.routes.repo_ci import _build_promotion_blocked
 
 _FIXTURE: dict[str, object] = {
     "repositories": {
@@ -153,22 +153,3 @@ class TestPendingVersionBumps:
 
     def test_pending_version_bumps_empty_manifest(self) -> None:
         assert manifest_view_from_raw({}).pending_version_bumps() == []
-
-
-class TestDrainLegHealthy:
-    def test_recent_success_is_healthy(self) -> None:
-        assert _drain_leg_healthy({"status": "completed", "conclusion": "success", "age_min": 8}) is True
-
-    def test_stale_success_is_unhealthy(self) -> None:
-        # success but > _DRAIN_STALE_MIN (45) → the leg hasn't moved in 3+ ticks → unhealthy.
-        assert _drain_leg_healthy({"status": "completed", "conclusion": "success", "age_min": 90}) is False
-
-    def test_failure_is_unhealthy(self) -> None:
-        assert _drain_leg_healthy({"status": "completed", "conclusion": "failure", "age_min": 5}) is False
-
-    def test_in_flight_run_is_healthy(self) -> None:
-        # A run currently queued/in_progress is moving — not stalled regardless of conclusion.
-        assert _drain_leg_healthy({"status": "in_progress", "conclusion": None, "age_min": 2}) is True
-
-    def test_none_is_unhealthy(self) -> None:
-        assert _drain_leg_healthy(None) is False

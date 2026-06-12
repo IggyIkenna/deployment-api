@@ -94,25 +94,12 @@ _LDR_TO_MAIN_WORKFLOW = "ldr-to-main-promote.yml"
 # bumps (CLAUDE.md § "Manifest version-surface semantics"); the panel mirrors that threshold.
 _SEMVER_WORKFLOW = "semver-agent.yml"
 _SEMVER_BREAKER_THRESHOLD = 3
-# A drain leg (LDR→staging / LDR→main, every 15 min) is STALE past 3 missed ticks. A repo with
-# real content ahead of that hop + a stale/failing leg is drain-stalled (the bug-#11 class).
-_DRAIN_STALE_MIN = 45
-
-
-def _drain_leg_healthy(raw: dict[str, object] | None) -> bool:
-    """Is the routine promote-drain leg moving? Healthy = currently running (queued/in_progress)
-    OR last completed run was a recent success (≤ _DRAIN_STALE_MIN). Failing, stale-success, or
-    never-ran (None) → unhealthy. Used to decide whether content-ahead is genuinely stalled."""
-    if raw is None:
-        return False
-    status = str(raw.get("status") or "")
-    if status in ("queued", "in_progress"):
-        return True  # a run is in flight — not stalled
-    conclusion = raw.get("conclusion")
-    age = raw.get("age_min")
-    if conclusion != "success":
-        return False
-    return isinstance(age, int) and age <= _DRAIN_STALE_MIN
+# Drain-stall (per repo) keys off the repo's OWN standing promotion PR being stuck on a BLOCKING
+# class (needs a human/worker), NOT the PM-central drain-leg health — PM's ldr-to-main is a
+# PM-only Option-B run on an hourly-ish cadence, so gating per-repo "content ahead of main" on it
+# false-flagged the entire fleet. The auto-recoverable classes (v2_never_reported / automerge_stuck
+# self-heal in-band) are deliberately EXCLUDED so the signal doesn't cry wolf.
+_BLOCKING_STUCK_CLASSES = frozenset({"conflicting", "failing_check", "skip_ci_jammed"})
 
 
 _DETAIL_COMMITS_PER_BRANCH = 8
@@ -416,8 +403,6 @@ async def _overview_row(
     sit_run: tuple[str | None, int | None],
     builds: dict[str, BuildSignal],
     semaphore: asyncio.Semaphore,
-    staging_drain_healthy: bool,
-    main_drain_healthy: bool,
 ) -> RepoOverviewDict | RepoErrorDict:
     """Aggregate one repo's row. On a per-repo (non-rate-limit) failure return a typed
     RepoErrorDict instead of dropping the repo silently (operator add 2026-06-10) — the
@@ -490,15 +475,16 @@ async def _overview_row(
             oldest_at = None
         if oldest_at is not None:
             main_lag_age_min = age_minutes(oldest_at)
-    # promotion-drain follow-up: drain-stalled = real content ahead of staging/main AND that hop's
-    # global drain leg is failing/stale. files_changed (not ahead_by) is the honest signal —
-    # squash-merges keep LDR perpetually ahead-by-commit-count even when content matches.
+    # promotion-drain follow-up: drain-stalled = real content ahead of staging/main (files_changed,
+    # NOT ahead_by — squash-merges keep LDR perpetually ahead-by-commit-count even when content
+    # matches) AND this repo's own standing promotion PR is stuck on a BLOCKING class. A fleet-wide
+    # drain-leg outage shows in the PromotionDrainPanel's leg rows; it is NOT a per-repo flag.
     ldr_staging = next((d for d in deltas if d["base"] == "staging" and d["head"] == "live-defi-rollout"), None)
-    staging_content_ahead = ldr_staging is not None and ldr_staging["files_changed"] > 0
-    main_content_ahead = ldr_main is not None and ldr_main["files_changed"] > 0
-    drain_stalled = (staging_content_ahead and not staging_drain_healthy) or (
-        main_content_ahead and not main_drain_healthy
+    content_ahead = (ldr_staging is not None and ldr_staging["files_changed"] > 0) or (
+        ldr_main is not None and ldr_main["files_changed"] > 0
     )
+    has_blocking_pr = any(pr.get("stuck_class") in _BLOCKING_STUCK_CLASSES for pr in prs)
+    drain_stalled = content_ahead and has_blocking_pr
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
@@ -569,19 +555,10 @@ async def get_overview() -> OverviewResponseDict:
         )
         # Semver-agent standing health (G2) — one more global query (not per-repo).
         semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
-        # Drain-leg health (global, computed once) feeds each row's drain_stalled flag — a repo
-        # with content ahead of a STALE/failing leg is stalled; a healthy/in-flight leg is not.
-        staging_drain_healthy = _drain_leg_healthy(staging_drain_raw)
-        main_drain_healthy = _drain_leg_healthy(main_drain_raw)
         builds = await _latest_builds_by_repo()
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
-            *[
-                _overview_row(
-                    session, token, view, meta, sit_run, builds, semaphore, staging_drain_healthy, main_drain_healthy
-                )
-                for meta in view.repos
-            ]
+            *[_overview_row(session, token, view, meta, sit_run, builds, semaphore) for meta in view.repos]
         )
     rows: list[RepoOverviewDict] = []
     errors: list[RepoErrorDict] = []
