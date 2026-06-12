@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypedDict, cast
 
 from github import Github
+from unified_trading_library import resolve_bucket_name
 
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import GITHUB_ORG
@@ -165,23 +166,22 @@ def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
         return {"error": str(e)}
 
 
-# Service to GCS bucket mapping (constructed from project ID)
-_pid = default_project_id
-SERVICE_OUTPUT_BUCKETS = {  # CORRECT-LOCAL
-    "instruments-service": {  # CORRECT-LOCAL
-        "CEFI": f"instruments-store-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"instruments-store-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
+# Service to GCS bucket mapping — resolved via UTL SSOT (resolve_bucket_name reads cloud-providers.yaml)
+SERVICE_OUTPUT_BUCKETS: dict[str, dict[str, str]] = {
+    "instruments-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="tradfi"),
     },
     "market-tick-data-handler": {
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="tradfi"),
     },
     "market-data-processing-service": {
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="tradfi"),
     },
 }
 
