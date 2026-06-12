@@ -37,8 +37,46 @@ class TestOverviewMock:
         assert body["source"] == "mock"
         assert len(body["repos"]) >= 5
         row = body["repos"][0]
-        assert {"repo", "repo_type", "ci_status", "branches", "deltas", "open_prs", "sit", "image"} <= set(row)
+        assert {"repo", "repo_type", "ci_status", "branches", "deltas", "open_prs", "sit", "image", "last_green_main"} <= set(
+            row
+        )
         assert [b["branch"] for b in row["branches"]] == ["live-defi-rollout", "staging", "main"]
+
+    def test_last_green_main(self, client_repo_ci: TestClient) -> None:
+        # N2: each row carries the most-recent GREEN main sha + time. For a FAILING repo the
+        # last-green sha differs from the (red) main HEAD; for a green repo it IS the head.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        for row in body["repos"]:
+            lg = row["last_green_main"]
+            assert lg is not None and {"sha", "at"} <= set(lg)
+        failing = next(r for r in body["repos"] if r["ci_status"] == "FAILING")
+        failing_head = next(b["sha"] for b in failing["branches"] if b["branch"] == "main")
+        assert failing["last_green_main"]["sha"] != failing_head  # last green ≠ the red head
+        green = next(r for r in body["repos"] if r["ci_status"] == "MAIN_GREEN")
+        green_head = next(b["sha"] for b in green["branches"] if b["branch"] == "main")
+        assert green["last_green_main"]["sha"] == green_head  # green head IS the last green
+
+    def test_promotion_drain(self, client_repo_ci: TestClient) -> None:
+        # Routine LDR→staging / LDR→main promote drain (PM-central, every 15 min) — distinct from
+        # the breaking cascade/SIT panel (sit_last_run). Both legs are global single signals.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        drain = body["promotion_drain"]
+        assert drain is not None
+        for leg in ("ldr_to_staging", "ldr_to_main"):
+            assert drain[leg] is not None
+            assert {"status", "conclusion", "age_min", "url"} <= set(drain[leg])
+
+    def test_main_lag_age(self, client_repo_ci: TestClient) -> None:
+        # G6: promotion-lag age — the age (min) of the oldest LDR commit not yet on main (the lag
+        # promotion-lag-monitor pages on at >60min). Mock seeds every row LDR-ahead-of-main.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        for row in body["repos"]:
+            assert "main_lag_age_min" in row
+        failing = next(r for r in body["repos"] if r["ci_status"] == "FAILING")
+        assert isinstance(failing["main_lag_age_min"], int) and failing["main_lag_age_min"] > 60
 
     def test_all_stuck_classes_present(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):

@@ -40,9 +40,11 @@ from ._repo_ci_github import (
     gh_get_json,
     head_check_rollup,
     head_commit_message,
+    last_green_for_branch,
     latest_workflow_run_with_jobs,
     list_branch_commits,
     list_open_promotion_prs,
+    oldest_unpromoted_commit_at,
     resolve_gh_token,
     v2_conclusion_for_branch,
     v2_conclusion_for_sha,
@@ -63,8 +65,11 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     CommitEntryDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
+    LastGreenDict,
     OverviewResponseDict,
+    PromoteRunDict,
     PromotionBlockedDict,
+    PromotionDrainDict,
     RepoDetailResponseDict,
     RepoErrorDict,
     RepoOverviewDict,
@@ -80,6 +85,10 @@ router = APIRouter(prefix="/api/repo-ci", tags=["Repo CI"])
 # The cascade/SIT workflow lives in the PM repo (CLAUDE.md § "Breaking-detection").
 _PM_REPO = "unified-trading-pm"
 _SIT_WORKFLOW_FILE = "cascade-qg-ordering.yml"
+# Routine promotion-drain workflows (PM-central, every 15 min) — distinct from the breaking
+# cascade above. These answer "is LDR draining to staging/main", not "did a breaking change run".
+_LDR_TO_STAGING_WORKFLOW = "ldr-to-staging-promote.yml"
+_LDR_TO_MAIN_WORKFLOW = "ldr-to-main-promote.yml"
 _DETAIL_COMMITS_PER_BRANCH = 8
 _DETAIL_V2_LOOKUPS_PER_BRANCH = 5
 _REPO_CONCURRENCY = 8
@@ -121,6 +130,20 @@ def _to_sit_last_run(raw: dict[str, object] | None) -> SitLastRunDict | None:
         conclusion=str(conclusion_value) if conclusion_value else None,
         age_min=int(age_value) if isinstance(age_value, int) else None,
         jobs=jobs,
+    )
+
+
+def _to_promote_run(raw: dict[str, object] | None) -> PromoteRunDict | None:
+    """Shape a raw workflow-run dict into the typed promote-drain payload (no jobs)."""
+    if raw is None:
+        return None
+    conclusion_value = raw.get("conclusion")
+    age_value = raw.get("age_min")
+    return PromoteRunDict(
+        status=str(raw.get("status") or ""),
+        conclusion=str(conclusion_value) if conclusion_value else None,
+        age_min=int(age_value) if isinstance(age_value, int) else None,
+        url=str(raw.get("url") or ""),
     )
 
 
@@ -385,6 +408,37 @@ async def _overview_row(
         except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
             logger.warning("[REPO-CI] %s per-branch v2 fetch degraded: %s", meta.name, exc)
             branch_ci = dict.fromkeys(PROMOTION_BRANCHES, None)
+    # N2: the most-recent GREEN main sha + time ("green as of <sha> · <age>") — distinct from the
+    # main HEAD, which may be red/pending. For a MAIN_GREEN repo the head IS the last green (no
+    # extra API call); only a non-green repo needs the runs-API lookup (same budget profile as
+    # branch_ci above — bounded to the handful of red repos).
+    last_green_main: LastGreenDict | None = None
+    main_committed = next((b["committed_at"] for b in branches if b["branch"] == "main"), None)
+    if ci_status == "MAIN_GREEN" and main_sha is not None and main_committed is not None:
+        last_green_main = LastGreenDict(sha=main_sha, at=main_committed)
+    elif ci_status != "MAIN_GREEN":
+        try:
+            lg = await last_green_for_branch(session, token, GITHUB_ORG, meta.name, "main")
+        except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+            logger.warning("[REPO-CI] %s last-green(main) fetch degraded: %s", meta.name, exc)
+            lg = None
+        if lg is not None:
+            last_green_main = LastGreenDict(sha=lg[0], at=lg[1])
+    # G6: promotion-lag age — the age of the OLDEST LDR commit not yet on main (the lag the
+    # promotion-lag-monitor pages on at >60min). Only when there's a real LDR→main delta (a repo
+    # in sync has no lag → no extra API call); reuses the compare API for the oldest commit only.
+    main_lag_age_min: int | None = None
+    ldr_main = next((d for d in deltas if d["base"] == "main" and d["head"] == "live-defi-rollout"), None)
+    if ldr_main is not None and ldr_main["ahead_by"] > 0:
+        try:
+            oldest_at = await oldest_unpromoted_commit_at(
+                session, token, GITHUB_ORG, meta.name, "main", "live-defi-rollout"
+            )
+        except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+            logger.warning("[REPO-CI] %s lag-age fetch degraded: %s", meta.name, exc)
+            oldest_at = None
+        if oldest_at is not None:
+            main_lag_age_min = age_minutes(oldest_at)
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
@@ -395,6 +449,8 @@ async def _overview_row(
         open_prs=prs,
         sit=sit,
         image=_image_signal(view, meta.name, main_sha, builds),
+        last_green_main=last_green_main,
+        main_lag_age_min=main_lag_age_min,
     )
 
 
@@ -442,6 +498,14 @@ async def get_overview() -> OverviewResponseDict:
         view = await load_manifest_view(session, token)
         sit_last_run = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SIT_WORKFLOW_FILE)
         sit_run = _sit_run_tuple(sit_last_run)
+        # Routine promote-drain (PM-central, every 15 min) — distinct from the breaking cascade
+        # above. Two GLOBAL queries (not per-repo), so the GitHub-API budget is unchanged.
+        staging_drain_raw = await latest_workflow_run_with_jobs(
+            session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_STAGING_WORKFLOW
+        )
+        main_drain_raw = await latest_workflow_run_with_jobs(
+            session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_MAIN_WORKFLOW
+        )
         builds = await _latest_builds_by_repo()
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
@@ -456,6 +520,10 @@ async def get_overview() -> OverviewResponseDict:
             rows.append(result)
     stuck_prs = [pr for row in rows for pr in row["open_prs"] if pr.get("stuck_class")]
     stuck_in_sit = [row["repo"] for row in rows if row["sit"]["stuck_in_sit"]]
+    promotion_drain = PromotionDrainDict(
+        ldr_to_staging=_to_promote_run(staging_drain_raw),
+        ldr_to_main=_to_promote_run(main_drain_raw),
+    )
     return OverviewResponseDict(
         generated_at=_now_iso(),
         source="live",
@@ -465,6 +533,7 @@ async def get_overview() -> OverviewResponseDict:
         sit_last_run=_to_sit_last_run(sit_last_run),
         errors=errors,
         promotion_blocked=_build_promotion_blocked(view),
+        promotion_drain=promotion_drain,
     )
 
 

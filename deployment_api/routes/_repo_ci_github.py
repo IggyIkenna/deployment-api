@@ -391,6 +391,24 @@ async def compare_branches(
     )
 
 
+async def oldest_unpromoted_commit_at(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, base: str, head: str
+) -> str | None:
+    """Commit time (ISO-8601) of the OLDEST commit in `head` not yet in `base` — the START of the
+    promotion lag (G6: "oldest unpromoted commit age", the signal `promotion-lag-monitor` pages on
+    at >60min). The compare API orders `commits` oldest→newest, so `per_page=1` returns just the
+    oldest. None when a ref is absent or `head` is not ahead of `base`."""
+    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1")
+    data = _as_dict(payload)
+    for commit_obj in _as_list(data.get("commits")):
+        commit = _as_dict(commit_obj)
+        inner = _as_dict(commit.get("commit"))
+        committer = _as_dict(inner.get("committer"))
+        when = committer.get("date")
+        return when if isinstance(when, str) else None
+    return None
+
+
 async def list_branch_commits(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str, limit: int
 ) -> list[dict[str, object]]:
@@ -470,6 +488,30 @@ async def v2_conclusion_for_branch(
         status = run_dict.get("status")
         if status:
             return str(status)  # in_progress / queued — still informative
+        return None
+    return None
+
+
+async def last_green_for_branch(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
+) -> tuple[str, str] | None:
+    """The most-recent SHA on `branch` whose quality-gates-v2 concluded success, plus the run's
+    completion time (N2 — "green as of <sha> · <age>"). Distinct from the branch HEAD, which may
+    be red or pending. Uses `?branch=&status=success&per_page=1` (Actions:read — which the GH_PAT
+    carries) so a single API call returns the latest green run for the branch. Returns
+    (head_sha, completed_at_iso) or None when no successful v2 run exists for the branch."""
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?branch={branch}&status=success&per_page=1",
+    )
+    data = _as_dict(payload)
+    for run in _as_list(data.get("workflow_runs")):
+        run_dict = _as_dict(run)
+        sha = run_dict.get("head_sha")
+        when = run_dict.get("updated_at") or run_dict.get("run_started_at") or run_dict.get("created_at")
+        if isinstance(sha, str) and isinstance(when, str):
+            return (sha, when)
         return None
     return None
 
