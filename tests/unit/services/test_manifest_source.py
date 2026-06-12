@@ -119,3 +119,35 @@ def test_live_mode_still_uses_rollup_fast_path() -> None:
     rollup_read.assert_called_once_with("market-tick-data-service")
     slicer.assert_called_once()
     assert out is sliced
+
+
+def test_unique_instrument_count_reads_catalogue_and_caches() -> None:
+    df = pd.DataFrame({"instrument_id": ["A", "B", "A", "C"]})
+    client = MagicMock()
+    client.download_bytes.return_value = _parquet_bytes(df)
+    manifest_source._UNIQUE_COUNT_CACHE.clear()
+    with (
+        patch.object(manifest_source, "get_storage_client", return_value=client),
+        patch("unified_trading_library.resolve_bucket_name", return_value="instruments-store-cefi-prd-p"),
+    ):
+        assert manifest_source.read_unique_instrument_count("cefi") == 3
+        assert manifest_source.read_unique_instrument_count("cefi") == 3  # cached
+    client.download_bytes.assert_called_once_with("instruments-store-cefi-prd-p", "prod/catalog.parquet")
+
+
+def test_unique_instrument_count_returns_none_on_missing_catalogue() -> None:
+    client = MagicMock()
+    client.download_bytes.side_effect = FileNotFoundError("no catalogue")
+    manifest_source._UNIQUE_COUNT_CACHE.clear()
+    with (
+        patch.object(manifest_source, "get_storage_client", return_value=client),
+        patch("unified_trading_library.resolve_bucket_name", return_value="b"),
+    ):
+        assert manifest_source.read_unique_instrument_count("defi") is None
+
+
+def test_is_beta_mode_tracks_blob_setting() -> None:
+    with patch.object(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", ""):
+        assert manifest_source.is_beta_mode() is False
+    with patch.object(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", "x_{asset_group}.parquet"):
+        assert manifest_source.is_beta_mode() is True
