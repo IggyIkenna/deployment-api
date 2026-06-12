@@ -92,7 +92,12 @@ def read_unique_instrument_count(asset_group: str, *, cloud: str = "gcp") -> int
     if ag in _UNIQUE_COUNT_CACHE:
         return _UNIQUE_COUNT_CACHE[ag]
     try:
-        bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group=ag)
+        # Prediction's bucket is its own KIND in cloud-providers.yaml (no asset_group
+        # entry under instruments-store) — same mapping as build_instrument_catalogue.
+        if ag == "prediction":
+            bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store-prediction")
+        else:
+            bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group=ag)
         raw = get_storage_client().download_bytes(bucket, "prod/catalog.parquet")
         df = pd.read_parquet(io.BytesIO(raw), columns=["instrument_id"])
         count = int(df["instrument_id"].nunique())
