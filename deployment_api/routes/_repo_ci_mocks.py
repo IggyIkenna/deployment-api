@@ -26,6 +26,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     RepoErrorDict,
     RepoOverviewDict,
     RepoPrDict,
+    SemverHealthDict,
     SitJobDict,
     SitLastRunDict,
     SitStateDict,
@@ -214,6 +215,18 @@ def _mock_overview() -> OverviewResponseDict:
                 url=f"https://github.com/{GITHUB_ORG}/unified-trading-pm/actions/runs/55502",
             ),
         ),
+        # Semver-agent standing health (G2) — breaker ARMED (3 pending bumps ≥ threshold) so the
+        # panel + its regression spec exercise the alert state, not just the healthy one.
+        semver_health=SemverHealthDict(
+            last_run_status="completed",
+            last_run_conclusion="success",
+            last_run_age_min=12,
+            last_run_url=f"https://github.com/{GITHUB_ORG}/unified-trading-pm/actions/runs/55503",
+            pending_bump_count=3,
+            pending_bump_repos=["execution-service", "mtds", "alerting-service"],
+            breaker_armed=True,
+            breaker_threshold=3,
+        ),
     )
 
 
@@ -248,6 +261,20 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
         open_prs=row["open_prs"],
         sit=row["sit"],
         image=row["image"],
+        # N2-followup: per-branch last-green. LDR + main green at their heads; staging's last
+        # green is an EARLIER sha (its head is red/pending) — so the drilldown shows the three
+        # axes can differ.
+        last_green={
+            "live-defi-rollout": LastGreenDict(
+                sha=f"{row['branches'][0]['sha'] or 'abc0000'}", at="2026-06-10T07:00:00Z"
+            ),
+            "staging": LastGreenDict(sha="ab09111", at="2026-06-09T22:00:00Z"),
+            "main": (
+                LastGreenDict(sha=row["last_green_main"]["sha"], at=row["last_green_main"]["at"])
+                if row.get("last_green_main")
+                else None
+            ),
+        },
     )
 
 

@@ -71,6 +71,23 @@ class TestUnifiedConfigInterfaceFunctional:
         assert len(regions) > 0
         assert all(isinstance(r, str) for r in regions)
 
+    def test_deployment_api_config_effective_region_default(self) -> None:
+        """effective_region defaults to the workspace-SSOT asia-northeast1 (not us-central1).
+
+        Regression for the B1-followup gcs_region anomaly (operator decision
+        2026-06-12): an unset gcs_region must default to asia-northeast1 — all
+        GCS data / Cloud Build / Artifact Registry live there; us-central1
+        mislocated VM zones + cross-region-egress checks.
+        """
+        from deployment_api.deployment_api_config import DeploymentApiConfig
+
+        cfg = DeploymentApiConfig()
+        # gcs_region unset in test env → the default path is exercised.
+        if not cfg.gcs_region:
+            assert cfg.effective_region == "asia-northeast1"
+        # Home region must lead the GCP failover preference list.
+        assert cfg.all_failover_regions[0] == "asia-northeast1"
+
     def test_unified_cloud_config_test_env_fields(self) -> None:
         """UnifiedCloudConfig reads env vars correctly in test mode."""
         from unified_trading_library import UnifiedCloudConfig

@@ -37,9 +37,17 @@ class TestOverviewMock:
         assert body["source"] == "mock"
         assert len(body["repos"]) >= 5
         row = body["repos"][0]
-        assert {"repo", "repo_type", "ci_status", "branches", "deltas", "open_prs", "sit", "image", "last_green_main"} <= set(
-            row
-        )
+        assert {
+            "repo",
+            "repo_type",
+            "ci_status",
+            "branches",
+            "deltas",
+            "open_prs",
+            "sit",
+            "image",
+            "last_green_main",
+        } <= set(row)
         assert [b["branch"] for b in row["branches"]] == ["live-defi-rollout", "staging", "main"]
 
     def test_last_green_main(self, client_repo_ci: TestClient) -> None:
@@ -77,6 +85,28 @@ class TestOverviewMock:
             assert "main_lag_age_min" in row
         failing = next(r for r in body["repos"] if r["ci_status"] == "FAILING")
         assert isinstance(failing["main_lag_age_min"], int) and failing["main_lag_age_min"] > 60
+
+    def test_semver_health(self, client_repo_ci: TestClient) -> None:
+        # G2: semver-agent standing health — last bump run + pending-bump count + breaker-armed.
+        # The mock seeds 3 pending bumps == threshold, so the breaker reads armed.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        health = body["semver_health"]
+        assert health is not None
+        assert {
+            "last_run_status",
+            "last_run_conclusion",
+            "last_run_age_min",
+            "last_run_url",
+            "pending_bump_count",
+            "pending_bump_repos",
+            "breaker_armed",
+            "breaker_threshold",
+        } <= set(health)
+        assert health["pending_bump_count"] == len(health["pending_bump_repos"])
+        # breaker_armed is exactly pending_bump_count >= breaker_threshold.
+        assert health["breaker_armed"] == (health["pending_bump_count"] >= health["breaker_threshold"])
+        assert health["breaker_armed"] is True  # mock seeds the armed case
 
     def test_all_stuck_classes_present(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):
@@ -139,6 +169,12 @@ class TestDetailMock:
             assert branch_history["commits"], "every branch carries SHA history"
             first = branch_history["commits"][0]
             assert {"sha", "message", "author", "committed_at", "v2_conclusion"} <= set(first)
+        # N2-followup: per-branch last-green keyed by branch name (LDR / staging / main).
+        last_green = body["last_green"]
+        assert {"live-defi-rollout", "staging", "main"} <= set(last_green)
+        # staging's last-green differs from LDR's (the three axes can be green at different shas).
+        assert last_green["staging"] is not None and {"sha", "at"} <= set(last_green["staging"])
+        assert last_green["staging"]["sha"] != last_green["live-defi-rollout"]["sha"]
 
     def test_detail_unknown_repo_falls_back_in_mock(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):
@@ -162,13 +198,7 @@ class TestFleetGitHealthMock:
         # The drift-violating repo is flagged + rolled up.
         drift_repos = {d["repo"] for d in data["drift_violations"]}
         assert "execution-service" in drift_repos
-        flagged = [
-            r["name"]
-            for h in data["hosts"]
-            for s in h["slots"]
-            for r in r_iter(s)
-            if r["drift_violation"]
-        ]
+        flagged = [r["name"] for h in data["hosts"] for s in h["slots"] for r in r_iter(s) if r["drift_violation"]]
         assert "execution-service" in flagged
 
 
