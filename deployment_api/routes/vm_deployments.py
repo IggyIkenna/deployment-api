@@ -65,6 +65,13 @@ class VmDeploymentEntryModel(BaseModel):  # CORRECT-LOCAL: FastAPI API contract 
     zone: str | None = None
     uptime_hours: float | None = None
     health_status: str | None = None  # "producing", "stalled", "boot-hung", etc.
+    # Build provenance (bill-of-materials) — stamped on the registry entry at launch
+    # time (deployment_service.bom). `_to_model` builds from `asdict(entry)` and
+    # pydantic silently DROPS unknown keys, so without these declarations the BoM
+    # reaches the GCS rows but never the API response. "" / {} = honestly unknown.
+    image_digest: str = ""
+    git_commit: str = ""
+    dep_versions: dict[str, str] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
 
 
 class VmDeploymentsListModel(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
