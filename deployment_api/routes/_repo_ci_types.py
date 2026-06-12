@@ -123,6 +123,16 @@ class SitLastRunDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape
     jobs: list[SitJobDict]
 
 
+class LastGreenDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """The most-recent SHA on a branch whose quality-gates-v2 concluded success, plus when (N2 —
+    "green as of <sha> · <age>"). Distinct from the branch HEAD, which may be red/pending. `at`
+    is the successful run's completion time (ISO-8601), or the head's commit time when the head
+    itself is green."""
+
+    sha: str
+    at: str
+
+
 class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """One row of the fleet overview matrix."""
 
@@ -139,6 +149,11 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     open_prs: list[RepoPrDict]
     sit: SitStateDict
     image: ImageSignalDict
+    # N2: most-recent GREEN main sha + time ("green as of <sha> · <age>"), distinct from the head.
+    last_green_main: LastGreenDict | None
+    # G6: age (minutes) of the oldest LDR commit not yet on main — the promotion lag the
+    # promotion-lag-monitor pages on (>60min). None when LDR is in sync with main (no lag).
+    main_lag_age_min: int | None
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -168,6 +183,25 @@ class PromotionBlockedDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment
     escalated: bool
 
 
+class PromoteRunDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """One promote-drain workflow's most-recent run (LDR→staging or LDR→main). Distinct from the
+    breaking cascade/SIT — this is the ROUTINE every-15-min drain (operator ask 2026-06-11: "when
+    did we last pull LDR→staging via auto-merge + QG branch-protection, and did it pass")."""
+
+    status: str  # queued | in_progress | completed
+    conclusion: str | None  # success | failure | … | None while running
+    age_min: int | None
+    url: str
+
+
+class PromotionDrainDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """The fleet-wide routine promotion drain (PM-central, every 15 min) — distinct from the
+    breaking cascade/SIT panel. Both legs are global (one PM-central workflow each)."""
+
+    ldr_to_staging: PromoteRunDict | None
+    ldr_to_main: PromoteRunDict | None
+
+
 class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/overview response."""
 
@@ -179,6 +213,9 @@ class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response
     sit_last_run: SitLastRunDict | None  # live SIT run panel (alert-parity, operator add)
     errors: list[RepoErrorDict]  # repos dropped on aggregation failure (operator add — never silent)
     promotion_blocked: list[PromotionBlockedDict]  # repos parked out of staging→main (G1)
+    # Routine LDR→staging / LDR→main promote drain (PM-central, every 15 min) — distinct from the
+    # breaking cascade/SIT above (operator gap 2026-06-11). None when the drain runs can't be fetched.
+    promotion_drain: PromotionDrainDict | None
 
 
 class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

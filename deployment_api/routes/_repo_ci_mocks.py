@@ -17,8 +17,11 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     CommitEntryDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
+    LastGreenDict,
     OverviewResponseDict,
+    PromoteRunDict,
     PromotionBlockedDict,
+    PromotionDrainDict,
     RepoDetailResponseDict,
     RepoErrorDict,
     RepoOverviewDict,
@@ -101,6 +104,12 @@ def _mock_row(
         branch_ci = {"live-defi-rollout": "failure", "staging": "success", "main": "success"}
     else:
         branch_ci = {"live-defi-rollout": "success", "staging": "success", "main": "success"}
+    # N2: last-green main. When main is red (FAILING) the last green ≠ the head (an EARLIER green
+    # sha); otherwise the head IS green so last-green = the main head.
+    if ci_status == "FAILING":
+        last_green_main = LastGreenDict(sha="ab09999", at="2026-06-09T20:00:00Z")
+    else:
+        last_green_main = LastGreenDict(sha="abc1100", at="2026-06-10T06:00:00Z")
     return RepoOverviewDict(
         repo=repo,
         repo_type=repo_type,
@@ -111,6 +120,10 @@ def _mock_row(
         open_prs=prs,
         sit=sit,
         image=_mock_image("1.2.0", stale=ci_status == "FAILING"),
+        last_green_main=last_green_main,
+        # G6: every mock row is LDR-ahead-of-main (delta ahead_by=3) so it has a lag; FAILING
+        # repos sit longer (the drain is stuck). >60min so the lag-chip renders prominently.
+        main_lag_age_min=185 if ci_status == "FAILING" else 95,
     )
 
 
@@ -185,6 +198,22 @@ def _mock_overview() -> OverviewResponseDict:
             ),
             PromotionBlockedDict(repo="execution-service", failures=1, quarantined=False),
         ],
+        # Routine promote drain (PM-central, every 15 min) — both legs green + recent so the panel
+        # renders the healthy case; distinct from the breaking cascade/SIT panel above.
+        promotion_drain=PromotionDrainDict(
+            ldr_to_staging=PromoteRunDict(
+                status="completed",
+                conclusion="success",
+                age_min=8,
+                url=f"https://github.com/{GITHUB_ORG}/unified-trading-pm/actions/runs/55501",
+            ),
+            ldr_to_main=PromoteRunDict(
+                status="completed",
+                conclusion="success",
+                age_min=5,
+                url=f"https://github.com/{GITHUB_ORG}/unified-trading-pm/actions/runs/55502",
+            ),
+        ),
     )
 
 
