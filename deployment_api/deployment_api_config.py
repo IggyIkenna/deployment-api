@@ -570,7 +570,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         """Get failover regions based on cloud provider."""
         if self.cloud_provider == "aws":
             return ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"]
-        return ["us-central1", "us-east1", "europe-west1", "asia-northeast1"]
+        return ["asia-northeast1", "us-central1", "us-east1", "europe-west1"]
 
     @property
     def effective_github_token_sa(self) -> str:
@@ -595,8 +595,16 @@ class DeploymentApiConfig(UnifiedCloudConfig):
 
     @property
     def effective_region(self) -> str:
-        """Get the effective GCS region."""
-        return self.gcs_region or "us-central1"
+        """Get the effective GCS region.
+
+        Defaults to ``asia-northeast1`` — the workspace SSOT region for ALL GCS
+        data, Cloud Build triggers, and the Artifact Registry (CLAUDE.md: "all
+        GCS data is in asia-northeast1; zone default asia-northeast1-c"). The
+        prior ``us-central1`` default mislocated VM-launch zones / GCS region /
+        cross-region-egress checks for this workspace (B1-followup anomaly,
+        operator decision 2026-06-12: fix default → asia-northeast1).
+        """
+        return self.gcs_region or "asia-northeast1"
 
     def require_gcp_project_id(self) -> str:
         """GCP project id, or fail loud when unconfigured.

@@ -202,6 +202,23 @@ class PromotionDrainDict(TypedDict):  # CORRECT-LOCAL: deployment-api response s
     ldr_to_main: PromoteRunDict | None
 
 
+class SemverHealthDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """Semver-agent standing health (G2 — the bump-rate circuit-breaker + dispatch-failure are
+    CRITICAL pages with no UI element today). `last_run_*` is the most-recent `semver-agent.yml`
+    run (one global GitHub-runs query); `pending_bump_*` + `breaker_armed` derive from the manifest
+    version-surface (`staging_versions` ahead of `versions`). `breaker_armed` mirrors the agent's
+    ≥3-pending-staging-bumps circuit-breaker threshold."""
+
+    last_run_status: str  # queued | in_progress | completed
+    last_run_conclusion: str | None  # success | failure | … | None while running
+    last_run_age_min: int | None
+    last_run_url: str
+    pending_bump_count: int  # repos whose staging version is ahead of main (pending promotion)
+    pending_bump_repos: list[str]
+    breaker_armed: bool  # pending_bump_count >= breaker_threshold (the semver-agent breaker condition)
+    breaker_threshold: int  # the ≥N-pending-bumps threshold the breaker pages on (3)
+
+
 class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/overview response."""
 
@@ -216,6 +233,9 @@ class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response
     # Routine LDR→staging / LDR→main promote drain (PM-central, every 15 min) — distinct from the
     # breaking cascade/SIT above (operator gap 2026-06-11). None when the drain runs can't be fetched.
     promotion_drain: PromotionDrainDict | None
+    # Semver-agent standing health (G2) — last bump run + pending-bump count + breaker-armed flag.
+    # None when the semver-agent run can't be fetched.
+    semver_health: SemverHealthDict | None
 
 
 class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -239,6 +259,11 @@ class RepoDetailResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api respon
     open_prs: list[RepoPrDict]
     sit: SitStateDict
     image: ImageSignalDict
+    # N2-followup: per-branch last-green (LDR / staging / main) — keyed by branch name, the
+    # most-recent SHA on that branch whose quality-gates-v2 concluded success, or None when no
+    # green run exists. The overview surfaces only the MAIN axis; the drilldown carries all three
+    # (a green head uses the head, else one runs-API lookup — same budget-gated pattern).
+    last_green: dict[str, LastGreenDict | None]
 
 
 class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

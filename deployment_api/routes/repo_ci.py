@@ -74,6 +74,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     RepoErrorDict,
     RepoOverviewDict,
     RepoPrDict,
+    SemverHealthDict,
     SitJobDict,
     SitLastRunDict,
     _now_iso,
@@ -89,6 +90,10 @@ _SIT_WORKFLOW_FILE = "cascade-qg-ordering.yml"
 # cascade above. These answer "is LDR draining to staging/main", not "did a breaking change run".
 _LDR_TO_STAGING_WORKFLOW = "ldr-to-staging-promote.yml"
 _LDR_TO_MAIN_WORKFLOW = "ldr-to-main-promote.yml"
+# Semver-agent standing health (G2). The bump-rate circuit-breaker arms at ≥3 pending staging
+# bumps (CLAUDE.md § "Manifest version-surface semantics"); the panel mirrors that threshold.
+_SEMVER_WORKFLOW = "semver-agent.yml"
+_SEMVER_BREAKER_THRESHOLD = 3
 _DETAIL_COMMITS_PER_BRANCH = 8
 _DETAIL_V2_LOOKUPS_PER_BRANCH = 5
 _REPO_CONCURRENCY = 8
@@ -130,6 +135,29 @@ def _to_sit_last_run(raw: dict[str, object] | None) -> SitLastRunDict | None:
         conclusion=str(conclusion_value) if conclusion_value else None,
         age_min=int(age_value) if isinstance(age_value, int) else None,
         jobs=jobs,
+    )
+
+
+def _to_semver_health(raw: dict[str, object] | None, view: ManifestView) -> SemverHealthDict | None:
+    """Shape the last semver-agent run + the manifest pending-bump surface into the G2 panel.
+
+    Returns None only when the run can't be fetched AND there is no pending-bump signal — so a
+    breaker-armed state is still surfaced even if the workflow query degrades.
+    """
+    pending = view.pending_version_bumps()
+    if raw is None and not pending:
+        return None
+    conclusion_value = raw.get("conclusion") if raw else None
+    age_value = raw.get("age_min") if raw else None
+    return SemverHealthDict(
+        last_run_status=str(raw.get("status") or "") if raw else "",
+        last_run_conclusion=str(conclusion_value) if conclusion_value else None,
+        last_run_age_min=int(age_value) if isinstance(age_value, int) else None,
+        last_run_url=str(raw.get("url") or "") if raw else "",
+        pending_bump_count=len(pending),
+        pending_bump_repos=pending,
+        breaker_armed=len(pending) >= _SEMVER_BREAKER_THRESHOLD,
+        breaker_threshold=_SEMVER_BREAKER_THRESHOLD,
     )
 
 
@@ -506,6 +534,8 @@ async def get_overview() -> OverviewResponseDict:
         main_drain_raw = await latest_workflow_run_with_jobs(
             session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_MAIN_WORKFLOW
         )
+        # Semver-agent standing health (G2) — one more global query (not per-repo).
+        semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
         builds = await _latest_builds_by_repo()
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
@@ -534,6 +564,7 @@ async def get_overview() -> OverviewResponseDict:
         errors=errors,
         promotion_blocked=_build_promotion_blocked(view),
         promotion_drain=promotion_drain,
+        semver_health=_to_semver_health(semver_raw, view),
     )
 
 
@@ -593,6 +624,29 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
                 )
             history.append(BranchCommitsDict(branch=branch["branch"], commits=entries))
 
+        # N2-followup: per-branch last-green. A branch whose HEAD's v2 is success IS its own last
+        # green (no extra call — the head v2 is history[0]); otherwise one runs-API lookup. Cheap:
+        # this is a single-repo drilldown, not the fleet overview.
+        last_green: dict[str, LastGreenDict | None] = {}
+        for branch in branches:
+            branch_name = branch["branch"]
+            head_sha = branch["sha"]
+            if head_sha is None:
+                last_green[branch_name] = None
+                continue
+            branch_hist = next((h for h in history if h["branch"] == branch_name), None)
+            head_v2 = branch_hist["commits"][0]["v2_conclusion"] if branch_hist and branch_hist["commits"] else None
+            head_committed = branch["committed_at"]
+            if head_v2 == "success" and head_committed is not None:
+                last_green[branch_name] = LastGreenDict(sha=head_sha, at=head_committed)
+                continue
+            try:
+                lg = await last_green_for_branch(session, token, GITHUB_ORG, repo, branch_name)
+            except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+                logger.warning("[REPO-CI] %s last-green(%s) fetch degraded: %s", repo, branch_name, exc)
+                lg = None
+            last_green[branch_name] = LastGreenDict(sha=lg[0], at=lg[1]) if lg else None
+
     sit = derive_sit_state(
         repo=repo,
         breaking_pending=view.breaking_pending,
@@ -614,6 +668,7 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
         open_prs=prs,
         sit=sit,
         image=_image_signal(view, repo, main_sha, await _latest_builds_by_repo()),
+        last_green=last_green,
     )
 
 

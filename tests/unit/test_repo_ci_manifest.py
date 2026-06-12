@@ -130,3 +130,26 @@ class TestPromotionBlocked:
 
     def test_build_promotion_blocked_empty(self) -> None:
         assert _build_promotion_blocked(manifest_view_from_raw({})) == []
+
+
+_SEMVER_FIXTURE: dict[str, object] = {
+    "versions": {"_note": "x", "a-svc": "0.4.0", "b-svc": "1.2.0", "c-svc": "0.9.0", "pm": "1.2.86"},
+    "staging_versions": {
+        "_note": "x",
+        "a-svc": "0.5.0",  # ahead → pending
+        "b-svc": "1.2.0",  # equal → not pending
+        "c-svc": "0.10.0",  # ahead (10 > 9 numerically, not string-wise) → pending
+        "pm": "1.2.45",  # BEHIND main (vestigial) → not pending
+    },
+}
+
+
+class TestPendingVersionBumps:
+    def test_pending_version_bumps_semver_aware(self) -> None:
+        view = manifest_view_from_raw(_SEMVER_FIXTURE)
+        # a-svc (0.4→0.5) + c-svc (0.9→0.10, numeric not lexical) are ahead; b-svc equal,
+        # pm behind, _note skipped.
+        assert view.pending_version_bumps() == ["a-svc", "c-svc"]
+
+    def test_pending_version_bumps_empty_manifest(self) -> None:
+        assert manifest_view_from_raw({}).pending_version_bumps() == []
