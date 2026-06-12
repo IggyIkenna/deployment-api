@@ -154,6 +154,11 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     # G6: age (minutes) of the oldest LDR commit not yet on main — the promotion lag the
     # promotion-lag-monitor pages on (>60min). None when LDR is in sync with main (no lag).
     main_lag_age_min: int | None
+    # promotion-drain follow-up: True when this repo has REAL file-content ahead of staging or main
+    # (files_changed > 0, not squash skew) AND the corresponding global drain leg is failing/stale
+    # (>45min = 3 missed 15-min ticks) — the bug-#11 class where content piles on LDR with a dead
+    # drain, invisible today. False when content is draining healthily or there's no real delta.
+    drain_stalled: bool
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

@@ -125,6 +125,9 @@ def _mock_row(
         # G6: every mock row is LDR-ahead-of-main (delta ahead_by=3) so it has a lag; FAILING
         # repos sit longer (the drain is stuck). >60min so the lag-chip renders prominently.
         main_lag_age_min=185 if ci_status == "FAILING" else 95,
+        # promotion-drain follow-up: the FAILING repo seeds the drain-stalled case (real content
+        # ahead + a stale/failing drain leg); healthy repos are draining so not stalled.
+        drain_stalled=ci_status == "FAILING",
     )
 
 
