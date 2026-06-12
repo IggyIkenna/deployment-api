@@ -47,8 +47,21 @@ class TestOverviewMock:
             "sit",
             "image",
             "last_green_main",
+            "drain_stalled",
         } <= set(row)
         assert [b["branch"] for b in row["branches"]] == ["live-defi-rollout", "staging", "main"]
+
+    def test_drain_stalled(self, client_repo_ci: TestClient) -> None:
+        # promotion-drain follow-up: a repo with real content ahead + a stale/failing drain leg is
+        # flagged drain_stalled; healthy-draining repos are not. Mock seeds the FAILING repo stalled.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        for row in body["repos"]:
+            assert isinstance(row["drain_stalled"], bool)
+        failing = next(r for r in body["repos"] if r["ci_status"] == "FAILING")
+        assert failing["drain_stalled"] is True
+        green = next(r for r in body["repos"] if r["ci_status"] == "MAIN_GREEN")
+        assert green["drain_stalled"] is False
 
     def test_last_green_main(self, client_repo_ci: TestClient) -> None:
         # N2: each row carries the most-recent GREEN main sha + time. For a FAILING repo the

@@ -94,6 +94,27 @@ _LDR_TO_MAIN_WORKFLOW = "ldr-to-main-promote.yml"
 # bumps (CLAUDE.md § "Manifest version-surface semantics"); the panel mirrors that threshold.
 _SEMVER_WORKFLOW = "semver-agent.yml"
 _SEMVER_BREAKER_THRESHOLD = 3
+# A drain leg (LDR→staging / LDR→main, every 15 min) is STALE past 3 missed ticks. A repo with
+# real content ahead of that hop + a stale/failing leg is drain-stalled (the bug-#11 class).
+_DRAIN_STALE_MIN = 45
+
+
+def _drain_leg_healthy(raw: dict[str, object] | None) -> bool:
+    """Is the routine promote-drain leg moving? Healthy = currently running (queued/in_progress)
+    OR last completed run was a recent success (≤ _DRAIN_STALE_MIN). Failing, stale-success, or
+    never-ran (None) → unhealthy. Used to decide whether content-ahead is genuinely stalled."""
+    if raw is None:
+        return False
+    status = str(raw.get("status") or "")
+    if status in ("queued", "in_progress"):
+        return True  # a run is in flight — not stalled
+    conclusion = raw.get("conclusion")
+    age = raw.get("age_min")
+    if conclusion != "success":
+        return False
+    return isinstance(age, int) and age <= _DRAIN_STALE_MIN
+
+
 _DETAIL_COMMITS_PER_BRANCH = 8
 _DETAIL_V2_LOOKUPS_PER_BRANCH = 5
 _REPO_CONCURRENCY = 8
@@ -395,6 +416,8 @@ async def _overview_row(
     sit_run: tuple[str | None, int | None],
     builds: dict[str, BuildSignal],
     semaphore: asyncio.Semaphore,
+    staging_drain_healthy: bool,
+    main_drain_healthy: bool,
 ) -> RepoOverviewDict | RepoErrorDict:
     """Aggregate one repo's row. On a per-repo (non-rate-limit) failure return a typed
     RepoErrorDict instead of dropping the repo silently (operator add 2026-06-10) — the
@@ -467,6 +490,15 @@ async def _overview_row(
             oldest_at = None
         if oldest_at is not None:
             main_lag_age_min = age_minutes(oldest_at)
+    # promotion-drain follow-up: drain-stalled = real content ahead of staging/main AND that hop's
+    # global drain leg is failing/stale. files_changed (not ahead_by) is the honest signal —
+    # squash-merges keep LDR perpetually ahead-by-commit-count even when content matches.
+    ldr_staging = next((d for d in deltas if d["base"] == "staging" and d["head"] == "live-defi-rollout"), None)
+    staging_content_ahead = ldr_staging is not None and ldr_staging["files_changed"] > 0
+    main_content_ahead = ldr_main is not None and ldr_main["files_changed"] > 0
+    drain_stalled = (staging_content_ahead and not staging_drain_healthy) or (
+        main_content_ahead and not main_drain_healthy
+    )
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
@@ -479,6 +511,7 @@ async def _overview_row(
         image=_image_signal(view, meta.name, main_sha, builds),
         last_green_main=last_green_main,
         main_lag_age_min=main_lag_age_min,
+        drain_stalled=drain_stalled,
     )
 
 
@@ -536,10 +569,19 @@ async def get_overview() -> OverviewResponseDict:
         )
         # Semver-agent standing health (G2) — one more global query (not per-repo).
         semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
+        # Drain-leg health (global, computed once) feeds each row's drain_stalled flag — a repo
+        # with content ahead of a STALE/failing leg is stalled; a healthy/in-flight leg is not.
+        staging_drain_healthy = _drain_leg_healthy(staging_drain_raw)
+        main_drain_healthy = _drain_leg_healthy(main_drain_raw)
         builds = await _latest_builds_by_repo()
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
-            *[_overview_row(session, token, view, meta, sit_run, builds, semaphore) for meta in view.repos]
+            *[
+                _overview_row(
+                    session, token, view, meta, sit_run, builds, semaphore, staging_drain_healthy, main_drain_healthy
+                )
+                for meta in view.repos
+            ]
         )
     rows: list[RepoOverviewDict] = []
     errors: list[RepoErrorDict] = []
