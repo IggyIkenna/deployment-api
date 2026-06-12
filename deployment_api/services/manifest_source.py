@@ -67,3 +67,42 @@ def read_manifest_index(bucket: str) -> pd.DataFrame:
     logger.info("BETA manifest mode: reading gs://%s/%s (asset_group=%s)", bucket, blob_name, asset_group)
     raw = get_storage_client().download_bytes(bucket, blob_name)
     return pd.read_parquet(io.BytesIO(raw))
+
+def is_beta_mode() -> bool:
+    """True when the CF-20 beta-manifest preview is active (every data-status read
+    redirected to the projected indexes) — precomputed LIVE rollup fast-paths must
+    be bypassed in this mode or the beta render quietly shows live data."""
+    return bool(DATA_STATUS_BETA_MANIFEST_BLOB)
+
+
+_UNIQUE_COUNT_CACHE: dict[str, int] = {}
+
+
+def read_unique_instrument_count(asset_group: str, *, cloud: str = "gcp") -> int | None:
+    """Deduplicated instrument-identity count for an asset_group, from the lifecycle
+    catalogue (``prod/catalog.parquet`` — one row per instrument with
+    available_from/to; the ONLY identity-level source: the availability ``_index``
+    carries per-shard COUNTS, so summing it over days multi-counts).
+
+    Cached per-process (the catalogue changes daily at most). ``None`` when the
+    catalogue is missing/unreadable — callers surface ``null``, never a fake 0."""
+    from unified_trading_library import resolve_bucket_name  # noqa: qg-inside-import
+
+    ag = asset_group.lower()
+    if ag in _UNIQUE_COUNT_CACHE:
+        return _UNIQUE_COUNT_CACHE[ag]
+    try:
+        # Prediction's bucket is its own KIND in cloud-providers.yaml (no asset_group
+        # entry under instruments-store) — same mapping as build_instrument_catalogue.
+        if ag == "prediction":
+            bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store-prediction")
+        else:
+            bucket = resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group=ag)
+        raw = get_storage_client().download_bytes(bucket, "prod/catalog.parquet")
+        df = pd.read_parquet(io.BytesIO(raw), columns=["instrument_id"])
+        count = int(df["instrument_id"].nunique())
+    except Exception as exc:
+        logger.warning("unique-instrument catalogue read failed for %s (%s) — returning None", ag, exc)
+        return None
+    _UNIQUE_COUNT_CACHE[ag] = count
+    return count
