@@ -236,6 +236,7 @@ from deployment_api.services.data_status.sports_helpers import (
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
 from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
+from deployment_api.settings import DATA_STATUS_DISABLE_PROCESS_POOL as _DISABLE_PROCESS_POOL
 from deployment_api.settings import deployment_env_short as _env_short
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -396,11 +397,13 @@ def _features_sports_expected_dates_for_calculator(
     return out or []
 
 
-# ProcessPool toggle. Hardcoded False — set to True here only as a temporary
-# rollback if a deployment hits subtle pickling / fork issues. Workspace rule
-# bans process-environment access in service source (use UnifiedCloudConfig
-# for any real runtime toggles).
-_PROCESS_POOL_DISABLED = False
+# ProcessPool toggle — config-driven (DATA_STATUS_DISABLE_PROCESS_POOL via pydantic
+# settings, not a raw process-env read). Linux deploys keep the fork pool; macOS dev hosts
+# MUST set it: the pool forks after grpc/GCS is initialised, which dies on macOS
+# (BrokenProcessPool; diagnosed 2026-06-12 under the CF-20 beta projected indexes). With it
+# set, the build falls back to a thread pool (overlaps the I/O-bound index loads). Module-level
+# so tests/scripts can still patch it.
+_PROCESS_POOL_DISABLED = _DISABLE_PROCESS_POOL
 
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL = 300  # 5 minutes

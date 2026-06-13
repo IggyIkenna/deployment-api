@@ -46,6 +46,14 @@ DEPLOYMENT_ENV = _config.deployment_env
 
 # CF-20 beta-manifest preview (see services/manifest_source.py) — empty = live index.
 DATA_STATUS_BETA_MANIFEST_BLOB = _config.data_status_beta_manifest_blob
+
+# Serial-path toggle for the data-status manifest build (macOS dev hosts — see
+# deployment_api_config.data_status_disable_process_pool for the spawn/OOM rationale).
+DATA_STATUS_DISABLE_PROCESS_POOL = _config.data_status_disable_process_pool
+
+# Startup index pre-warm target service (empty = off). See
+# deployment_api_config.data_status_prewarm_service.
+DATA_STATUS_PREWARM_SERVICE = _config.data_status_prewarm_service
 _DEPLOYMENT_ENV_SHORT_MAP: dict[str, str] = {
     "prod": "prd",
     "prd": "prd",

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 
 import pandas as pd
 from unified_trading_library import (
@@ -32,6 +33,14 @@ from unified_trading_library import (
 from deployment_api.settings import DATA_STATUS_BETA_MANIFEST_BLOB
 
 logger = logging.getLogger(__name__)
+
+# Beta-index TTL cache (bucket -> (monotonic_ts, DataFrame)). The LIVE path caches inside
+# UTL ``read_availability_index``; the beta path used to re-download the projected parquet on
+# EVERY per-category read (~7s of redundant GCS fetches per all-asset-group query, and it made
+# the startup pre-warm useless — the warmed blob was re-fetched on the next request). Mirror
+# the live 5-min TTL so a warmed index is reused (operator slowness fix, 2026-06-13).
+_BETA_INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_BETA_INDEX_TTL_SECONDS = 300.0
 
 # Bucket tag → canonical asset_group (the env-tiered bucket names abbreviate prediction).
 _TAG_TO_ASSET_GROUP: dict[str, str] = {
@@ -62,11 +71,16 @@ def read_manifest_index(bucket: str) -> pd.DataFrame:
     a beta render quietly showing live data would defeat the whole pre-apply eyeball)."""
     if not DATA_STATUS_BETA_MANIFEST_BLOB:
         return read_availability_index(bucket)
+    cached = _BETA_INDEX_CACHE.get(bucket)
+    if cached is not None and time.monotonic() - cached[0] < _BETA_INDEX_TTL_SECONDS:
+        return cached[1]
     asset_group = _asset_group_from_bucket(bucket)
     blob_name = DATA_STATUS_BETA_MANIFEST_BLOB.format(asset_group=asset_group)
     logger.info("BETA manifest mode: reading gs://%s/%s (asset_group=%s)", bucket, blob_name, asset_group)
     raw = get_storage_client().download_bytes(bucket, blob_name)
-    return pd.read_parquet(io.BytesIO(raw))
+    df = pd.read_parquet(io.BytesIO(raw))
+    _BETA_INDEX_CACHE[bucket] = (time.monotonic(), df)
+    return df
 
 def is_beta_mode() -> bool:
     """True when the CF-20 beta-manifest preview is active (every data-status read
