@@ -27,7 +27,7 @@ steps:
   # step is a guarded NO-OP for every other api-service repo (none bundle a UI),
   # so it is safe in the shared template. Restored 2026-06-14 after a template
   # rollout dropped it (issue: deployment_api_build_broken_fetch_ui_dropped).
-  - name: "gcr.io/cloud-builders/git"
+  - name: "gcr.io/cloud-builders/gcloud"
     id: "fetch-ui"
     entrypoint: "bash"
     args:
@@ -43,11 +43,15 @@ steps:
           exit 0
         fi
         BRANCH="${_BRANCH:-${BRANCH_NAME:-live-defi-rollout}}"
-        echo "Cloning deployment-ui at branch=$$BRANCH (fallback main) into ./ui"
-        git clone --depth 1 --branch "$$BRANCH" \
-          https://github.com/IggyIkenna/deployment-ui ./ui \
-          || git clone --depth 1 --branch main \
-          https://github.com/IggyIkenna/deployment-ui ./ui
+        echo "Cloning deployment-ui (private) at branch=$$BRANCH (fallback main) into ./ui"
+        # deployment-ui is a PRIVATE repo — auth via the GH_PAT secret (the default
+        # Cloud Build SA has secretAccessor). Token is passed as an http extraheader
+        # (kept out of the URL so it never lands in git's log output).
+        TOKEN="$$(gcloud secrets versions access latest --secret=GH_PAT)"
+        git -c http.extraheader="AUTHORIZATION: bearer $$TOKEN" clone --depth 1 \
+          --branch "$$BRANCH" https://github.com/IggyIkenna/deployment-ui ./ui \
+          || git -c http.extraheader="AUTHORIZATION: bearer $$TOKEN" clone --depth 1 \
+          --branch main https://github.com/IggyIkenna/deployment-ui ./ui
         echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
     waitFor: ["-"]
 
