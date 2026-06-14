@@ -288,9 +288,13 @@ class CoverageStatusMixin(VenueResolutionMixin):
             cs = index["capture_status"].astype(str)
             total_empty = int((cs == "empty_confirmed").sum())
             # Compute out-of-window subset of empty_confirmed rows.
-            if total_empty > 0 and "error_reason" in index.columns:
+            # Accept both "error_reason" (live consolidated index schema) and "reason"
+            # (projected / beta index schema written by the CF-20 dry-run builder).
+            _cols = index.columns
+            _reason_col = "error_reason" if "error_reason" in _cols else ("reason" if "reason" in _cols else None)
+            if total_empty > 0 and _reason_col is not None:
                 empty_mask = cs == "empty_confirmed"
-                reasons = index.loc[empty_mask, "error_reason"].fillna("").astype(str).str.strip()
+                reasons = index.loc[empty_mask, _reason_col].fillna("").astype(str).str.strip()
                 oow_count = int(reasons.apply(is_out_of_coverage_window).sum())  # pyright: ignore[reportUnknownMemberType]
             else:
                 oow_count = 0
