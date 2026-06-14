@@ -15,9 +15,48 @@
 substitutions:
   _SERVICE_NAME: "deployment-api"
   _REGISTRY_REPO: "unified-trading-system"
+  # Branch the UI-bundling step (fetch-ui) clones deployment-ui at. Cloud Build
+  # triggers set BRANCH_NAME automatically; manual `gcloud builds submit` runs
+  # pass --substitutions=_BRANCH=<name>. Only deployment-api consumes it.
+  _BRANCH: "live-defi-rollout"
 
 steps:
-steps:
+  # ── Fetch deployment-ui (SPA bundle source) — deployment-api ONLY ──────────
+  # deployment-api's Dockerfile Stage 0 builds the deployment-ui SPA into ./ui;
+  # Cloud Build must populate ./ui before `docker build` or the COPY fails. This
+  # step is a guarded NO-OP for every other api-service repo (none bundle a UI),
+  # so it is safe in the shared template. Restored 2026-06-14 after a template
+  # rollout dropped it (issue: deployment_api_build_broken_fetch_ui_dropped).
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "fetch-ui"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        if [ "${_SERVICE_NAME}" != "deployment-api" ]; then
+          echo "fetch-ui: ${_SERVICE_NAME} does not bundle a UI — skipping"
+          exit 0
+        fi
+        if [ -f ./ui/package.json ]; then
+          echo "ui/ pre-bundled in build context — skipping clone"
+          exit 0
+        fi
+        BRANCH="${_BRANCH:-${BRANCH_NAME:-live-defi-rollout}}"
+        echo "Cloning deployment-ui (private) at branch=$$BRANCH (fallback main) into ./ui"
+        # deployment-ui is a PRIVATE repo — auth via the GH_PAT secret (the default
+        # Cloud Build SA has secretAccessor). Token is passed as an http Basic
+        # extraheader (the format GitHub accepts for a PAT) so it never lands in
+        # git's URL/log output.
+        TOKEN="$$(gcloud secrets versions access latest --secret=GH_PAT)"
+        AUTH="$$(printf 'x-access-token:%s' "$$TOKEN" | base64 | tr -d '\n')"
+        git -c http.extraheader="AUTHORIZATION: basic $$AUTH" clone --depth 1 \
+          --branch "$$BRANCH" https://github.com/IggyIkenna/deployment-ui ./ui \
+          || git -c http.extraheader="AUTHORIZATION: basic $$AUTH" clone --depth 1 \
+          --branch main https://github.com/IggyIkenna/deployment-ui ./ui
+        echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
+    waitFor: ["-"]
+
   # ── Auth pre-check: fail fast if SA lacks AR access ─
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
     id: "auth-precheck"
@@ -57,18 +96,47 @@ steps:
           --enable-vulnerability-scanning 2>/dev/null || true
     waitFor: ["-"]
 
+  # ── Pull base image (digest-aware) — required for an authenticated FROM ────
+  # When the Dockerfile pins `ARG BASE_IMAGE_DIGEST=sha256:<64-hex>` and its base
+  # FROM is the UTL image (deployment-api does), pre-pull THAT digest with the
+  # authenticated CLI so the in-build FROM @${...} hits the local cache instead
+  # of an UNAUTHENTICATED daemon-side registry pull → "denied" (mtds incident
+  # 2026-06-10). Harmless for api repos that don't pin / don't use the UTL base:
+  # PIN is empty → only the best-effort `:latest || true` runs.
+  - name: "gcr.io/cloud-builders/docker"
+    id: "pull-base-image"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -euo pipefail
+        BASE="asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library"
+        PIN=$$(sed -n 's/^ARG BASE_IMAGE_DIGEST=\(sha256:[0-9a-f]\{64\}\).*/\1/p' Dockerfile | head -1 || true)
+        if [ -n "$$PIN" ]; then
+          echo "pinned base digest: $$PIN — pre-pulling the PINNED manifest"
+          docker pull "$${BASE}@$${PIN}"
+        fi
+        docker pull "$${BASE}:latest" || true
+    waitFor: ["configure-docker"]
+
   - name: "gcr.io/cloud-builders/docker"
     id: "build"
     args:
       - "build"
       - "-f"
       - "Dockerfile"
+      # PROJECT_ID is required by the digest-pinned base FROM in api Dockerfiles
+      # (.../unified-trading-library@${BASE_IMAGE_DIGEST}); Cloud Build does NOT
+      # auto-pass substitutions as docker build-args, so it must be explicit or
+      # the base FROM expands to an invalid reference.
+      - "--build-arg"
+      - "PROJECT_ID=$PROJECT_ID"
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "."
-    waitFor: ["configure-docker", "ensure-repo"]
+    waitFor: ["pull-base-image", "ensure-repo", "fetch-ui"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "quality-gates"
