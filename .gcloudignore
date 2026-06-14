@@ -1,0 +1,38 @@
+# .gcloudignore — controls what `gcloud builds submit` uploads as the build context.
+#
+# When present, this REPLACES .gitignore-based upload filtering. We need it because
+# deployment-api/.gitignore has an UNANCHORED `data/` rule that also matches the
+# bundled `ui/src/data/` (capability-manifest-loader.ts etc.) — stripping those app
+# source files from the upload made the in-image `tsc` fail with "Cannot find module
+# '../data/capability-manifest-loader'" (deploy-shared.sh tier-3 path, 2026-06-14).
+# The trigger build escaped this only because it git-clones ui in-container.
+#
+# Exclude the heavy / generated / secret paths, but keep all app source (incl.
+# ui/src/data and the rsync-bundled _unified-api-contracts / _deployment-service /
+# codex-data / pm-plans / pm-configs that deploy-shared.sh stages into the context).
+
+.git/
+.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+.qg_last_passed_sha
+.qg_content_sentinel
+
+# Local data dir ONLY (anchored to repo root — does NOT match ui/src/data/).
+/data/
+
+# Secrets — never upload.
+*credentials*.json
+service-account*.json
+*secret*.json
+central-element-323112-*.json
+*.json.bak

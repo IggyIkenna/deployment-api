@@ -54,14 +54,26 @@ steps:
         exit 1
     waitFor: ["-"]
 
-  # ── STEP 4: Pre-pull UTL base image (auth fix — see cloudbuild.yaml) ─────
+  # ── STEP 4: Pre-pull UTL base image (auth fix — DIGEST-AWARE) ────────────
+  # The Dockerfile pins `ARG BASE_IMAGE_DIGEST=sha256:<64-hex>` and its base FROM
+  # is `...@${BASE_IMAGE_DIGEST}`. Pulling only :latest is NOT enough when the pin
+  # is a generation behind :latest — the in-build FROM @digest then needs an
+  # UNAUTHENTICATED daemon pull → "denied" (2026-06-14). Pre-pull the PINNED
+  # manifest so the in-build FROM hits the local cache; also pull :latest.
   - name: "gcr.io/cloud-builders/docker"
     id: "pull-base-image"
+    entrypoint: "bash"
     args:
-      [
-        "pull",
-        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library:latest",
-      ]
+      - "-c"
+      - |
+        set -euo pipefail
+        BASE="asia-northeast1-docker.pkg.dev/$PROJECT_ID/unified-trading-library/unified-trading-library"
+        PIN=$$(sed -n 's/^ARG BASE_IMAGE_DIGEST=\(sha256:[0-9a-f]\{64\}\).*/\1/p' Dockerfile | head -1 || true)
+        if [ -n "$$PIN" ]; then
+          echo "pinned base digest: $$PIN — pre-pulling the PINNED manifest"
+          docker pull "$${BASE}@$${PIN}"
+        fi
+        docker pull "$${BASE}:latest" || true
     waitFor: ["configure-docker"]
 
   # ── STEP 5: Build (target the api stage — skips api-dev / test-in-image) ─
