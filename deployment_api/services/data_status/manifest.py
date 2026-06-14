@@ -688,9 +688,17 @@ class ManifestStatusMixin(MissingShardsMixin):
             # ``1 / 2577`` = 0.04%, but the row displayed ``20%``).
             "shards_found": venue_found_total,
             "shards_expected": venue_expected_total,
-            "completion_pct": cat_pct,
+            # PRIMARY metric = shards-weighted captured/could-exist (operator
+            # decision 2026-06-14: canonical completion = captured / could-exist
+            # universe). Was ``cat_pct`` (the build_coverage_metrics attempt/
+            # date-blended value) which read ~42% while the shards ratio read
+            # ~29% — the doc comment already claimed completion_pct was
+            # shards-weighted, and the overall rollup already is, so this
+            # aligns the per-category number with both.
+            "completion_pct": cat_pct_shards,
             "completion_pct_dates": cat_pct_dates,
             "completion_pct_shards_weighted": cat_pct_shards,
+            "completion_pct_attempt_blended": cat_pct,
             "attempt_coverage_pct": attempt_coverage_pct,
             "capture_coverage_pct": capture_coverage_pct,
             "coverage_semantics": coverage_semantics,
