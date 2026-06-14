@@ -15,9 +15,42 @@
 substitutions:
   _SERVICE_NAME: "deployment-api"
   _REGISTRY_REPO: "unified-trading-system"
+  # Branch the UI-bundling step (fetch-ui) clones deployment-ui at. Cloud Build
+  # triggers set BRANCH_NAME automatically; manual `gcloud builds submit` runs
+  # pass --substitutions=_BRANCH=<name>. Only deployment-api consumes it.
+  _BRANCH: "live-defi-rollout"
 
 steps:
-steps:
+  # ── Fetch deployment-ui (SPA bundle source) — deployment-api ONLY ──────────
+  # deployment-api's Dockerfile Stage 0 builds the deployment-ui SPA into ./ui;
+  # Cloud Build must populate ./ui before `docker build` or the COPY fails. This
+  # step is a guarded NO-OP for every other api-service repo (none bundle a UI),
+  # so it is safe in the shared template. Restored 2026-06-14 after a template
+  # rollout dropped it (issue: deployment_api_build_broken_fetch_ui_dropped).
+  - name: "gcr.io/cloud-builders/git"
+    id: "fetch-ui"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        if [ "${_SERVICE_NAME}" != "deployment-api" ]; then
+          echo "fetch-ui: ${_SERVICE_NAME} does not bundle a UI — skipping"
+          exit 0
+        fi
+        if [ -f ./ui/package.json ]; then
+          echo "ui/ pre-bundled in build context — skipping clone"
+          exit 0
+        fi
+        BRANCH="${_BRANCH:-${BRANCH_NAME:-live-defi-rollout}}"
+        echo "Cloning deployment-ui at branch=$$BRANCH (fallback main) into ./ui"
+        git clone --depth 1 --branch "$$BRANCH" \
+          https://github.com/IggyIkenna/deployment-ui ./ui \
+          || git clone --depth 1 --branch main \
+          https://github.com/IggyIkenna/deployment-ui ./ui
+        echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
+    waitFor: ["-"]
+
   # ── Auth pre-check: fail fast if SA lacks AR access ─
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
     id: "auth-precheck"
@@ -68,7 +101,7 @@ steps:
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "."
-    waitFor: ["configure-docker", "ensure-repo"]
+    waitFor: ["configure-docker", "ensure-repo", "fetch-ui"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "quality-gates"
