@@ -90,6 +90,9 @@ from deployment_api.services.data_status.coverage_metrics import (
     compute_failure_pillar_counts as _compute_failure_pillar_counts,
 )
 from deployment_api.services.data_status.coverage_metrics import (
+    compute_out_of_window_count as _compute_out_of_window_count,
+)
+from deployment_api.services.data_status.coverage_metrics import (
     derive_capture_status_rates as _derive_capture_status_rates,
 )
 from deployment_api.services.data_status.coverage_metrics import (
@@ -302,6 +305,7 @@ __all__ = [  # noqa: RUF022
     "_compute_capture_status_counts",
     "_compute_empty_reason_counts",
     "_compute_failure_pillar_counts",
+    "_compute_out_of_window_count",
     "_derive_capture_status_rates",
     "_derive_underlying_from_instrument_id",
     "_distinct_pairs",

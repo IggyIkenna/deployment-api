@@ -13,6 +13,7 @@ import pandas as pd
 from unified_api_contracts import (
     CaptureStatusCounts,
     compute_honest_coverage,
+    is_out_of_coverage_window,
 )
 
 from deployment_api.services.data_status_union import (
@@ -268,6 +269,36 @@ def compute_empty_reason_counts(df: pd.DataFrame) -> dict[str, int]:
     return out
 
 
+def compute_out_of_window_count(df: pd.DataFrame) -> int:
+    """Count ``empty_confirmed`` rows whose ``error_reason`` marks them as out-of-coverage-window.
+
+    Out-of-window cells (pre-genesis chains, pre-launch venues, delisted
+    instruments, post/pre-season, deprecated data_types, etc.) carry one of the
+    15 lifecycle reasons in ``OUT_OF_COVERAGE_WINDOW_REASONS``.  They are
+    **never-collectable** — not gaps — and must be excluded from the
+    completion-% denominator.
+
+    Within-window absences (weekends, holidays, paused leagues) and blank/None
+    reasons still count in the denominator via ``is_out_of_coverage_window``
+    returning False for those.
+
+    Args:
+        df: Manifest slice (any scope — category, venue, chain, …).
+
+    Returns:
+        Number of ``empty_confirmed`` rows flagged as out-of-window.
+    """
+    if df.empty or CAPTURE_STATUS_COL not in df.columns:
+        return 0
+    empty_mask = df[CAPTURE_STATUS_COL].fillna(CAPTURE_STATUS_CAPTURED).astype(str).str.lower() == CAPTURE_STATUS_EMPTY
+    if not bool(empty_mask.any()):
+        return 0
+    if "error_reason" not in df.columns:
+        return 0  # no reason column → assume within-window (conservative)
+    reasons = df.loc[empty_mask, "error_reason"].fillna("").astype(str).str.strip()
+    return int(reasons.apply(is_out_of_coverage_window).sum())  # pyright: ignore[reportUnknownMemberType]
+
+
 def compute_failure_pillar_counts(df: pd.DataFrame) -> dict[str, int]:
     """Bucket ``attempted_failed`` rows by typed-error class prefix.
 
@@ -461,12 +492,19 @@ def build_coverage_metrics(
         empty_rate_estimate = None
         completion_pct = capture_coverage_pct
         failure_rate = float(capture_rates["failure_rate"])
+    # OOW split: count empty_confirmed rows that are never-collectable lifecycle
+    # cells. These are excluded from the completion-% denominator by the
+    # coverage.py layer (which calls compute_out_of_window_count directly).
+    # Surfaced here so the manifest.py path also exposes out_of_window in its
+    # capture_status_counts output.
+    oow_count = compute_out_of_window_count(filtered)
     counts_dict = {
         "captured": capture_counts.captured,
         "empty_confirmed": capture_counts.empty_confirmed,
         "attempted_failed": capture_counts.attempted_failed,
         "expected_unattempted_known_empty": capture_counts.expected_unattempted_known_empty,
         "expected_unattempted_pending_fetch": capture_counts.expected_unattempted_pending_fetch,
+        "out_of_window": oow_count,
     }
     return {
         "coverage_semantics": coverage_semantics,

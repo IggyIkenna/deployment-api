@@ -164,6 +164,7 @@ class TestBuildCoverageMetricsCanonicalFields:
         "attempted_failed",
         "expected_unattempted_known_empty",
         "expected_unattempted_pending_fetch",
+        "out_of_window",
     }
 
     def test_counts_field_present_and_matches_capture_status_counts(self) -> None:
