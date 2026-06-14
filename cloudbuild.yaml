@@ -102,6 +102,12 @@ steps:
       - "build"
       - "-f"
       - "Dockerfile"
+      # PROJECT_ID is required by the digest-pinned base FROM in api Dockerfiles
+      # (.../unified-trading-library@${BASE_IMAGE_DIGEST}); Cloud Build does NOT
+      # auto-pass substitutions as docker build-args, so it must be explicit or
+      # the base FROM expands to an invalid reference.
+      - "--build-arg"
+      - "PROJECT_ID=$PROJECT_ID"
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
       - "-t"
