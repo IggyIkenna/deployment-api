@@ -34,6 +34,7 @@ from deployment_api.services.data_status.coverage_metrics import (
     compute_capture_status_counts,
     compute_empty_reason_counts,
     compute_failure_pillar_counts,
+    compute_out_of_window_count,
     derive_capture_status_rates,
 )
 from deployment_api.services.data_status.mtds import TRADFI_TICK_ONLY_DATA_TYPES
@@ -102,6 +103,10 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
         v_capture_rates = derive_capture_status_rates(v_capture_counts, expected)
         v_failure_pillars = compute_failure_pillar_counts(v_df)
         v_empty_reasons = compute_empty_reason_counts(v_df)
+        # OOW count: never-collectable cells surfaced as a distinct bucket so the
+        # UI can display them as "outside window — not a gap" without counting
+        # them as coverage gaps.
+        v_oow_count = compute_out_of_window_count(v_df)
 
         venue_entry: dict[str, object] = {
             "dates_found": found,
@@ -119,6 +124,7 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
                 "attempted_failed": v_capture_counts.attempted_failed,
                 "expected_unattempted_known_empty": v_capture_counts.expected_unattempted_known_empty,
                 "expected_unattempted_pending_fetch": v_capture_counts.expected_unattempted_pending_fetch,
+                "out_of_window": v_oow_count,
             },
             "counts": {
                 "captured": v_capture_counts.captured,
@@ -126,6 +132,7 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
                 "attempted_failed": v_capture_counts.attempted_failed,
                 "expected_unattempted_known_empty": v_capture_counts.expected_unattempted_known_empty,
                 "expected_unattempted_pending_fetch": v_capture_counts.expected_unattempted_pending_fetch,
+                "out_of_window": v_oow_count,
             },
             "coverage": v_capture_rates["honest_coverage"],
             "failure_pillars": v_failure_pillars,

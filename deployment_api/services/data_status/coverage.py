@@ -11,6 +11,7 @@ import logging
 from typing import cast
 
 import pandas as pd
+from unified_api_contracts import is_out_of_coverage_window
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     get_breakdown_axes,
@@ -276,13 +277,30 @@ class CoverageStatusMixin(VenueResolutionMixin):
         # captured/len(index)≈100%. Aligns the coverage-summary with
         # manifest-status + the drilldown's _aggregate_counts. v4 rows without a
         # ``capture_status`` column are the legacy "every row captured" path.
+        #
+        # OOW partition: within ``empty_confirmed`` rows, those carrying a
+        # lifecycle reason (pre-genesis chain, pre-launch venue, delisted
+        # instrument, post/pre-season, deprecated data_type, etc.) are
+        # NEVER-COLLECTABLE — they are NOT gaps. We split them into a separate
+        # ``out_of_window`` bucket and exclude them from the denominator so
+        # the completion-% reflects only genuinely actionable absences.
         if "capture_status" in index.columns:
             cs = index["capture_status"].astype(str)
+            total_empty = int((cs == "empty_confirmed").sum())
+            # Compute out-of-window subset of empty_confirmed rows.
+            if total_empty > 0 and "error_reason" in index.columns:
+                empty_mask = cs == "empty_confirmed"
+                reasons = index.loc[empty_mask, "error_reason"].fillna("").astype(str).str.strip()
+                oow_count = int(reasons.apply(is_out_of_coverage_window).sum())  # pyright: ignore[reportUnknownMemberType]
+            else:
+                oow_count = 0
+            within_window_empty = total_empty - oow_count
             capture_status_counts: dict[str, int] = {
                 "captured": int((cs == "captured").sum()),
-                "empty_confirmed": int((cs == "empty_confirmed").sum()),
+                "empty_confirmed": within_window_empty,
                 "attempted_failed": int((cs == "attempted_failed").sum()),
                 "expected_unattempted": int((cs == "expected_unattempted").sum()),
+                "out_of_window": oow_count,
             }
         else:
             capture_status_counts = {
@@ -290,8 +308,15 @@ class CoverageStatusMixin(VenueResolutionMixin):
                 "empty_confirmed": 0,
                 "attempted_failed": 0,
                 "expected_unattempted": 0,
+                "out_of_window": 0,
             }
-        cov_total = sum(capture_status_counts.values())
+        # Denominator EXCLUDES out_of_window: those cells were never collectable.
+        cov_total = (
+            capture_status_counts["captured"]
+            + capture_status_counts["empty_confirmed"]
+            + capture_status_counts["attempted_failed"]
+            + capture_status_counts["expected_unattempted"]
+        )
         completion_pct = round(capture_status_counts["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
         date_index = self._filter_to_iso_dates(index)
         unique_dates = sorted(date_index["date"].unique()) if "date" in date_index.columns else []  # pyright: ignore[reportAny]
@@ -353,11 +378,13 @@ class CoverageStatusMixin(VenueResolutionMixin):
         total_unique_instruments = 0
         # B1: aggregate the per-cat 4-state so the service-level totals carry an
         # honest completion%, not the self-referential shards count.
+        # out_of_window is tracked separately and EXCLUDED from the denominator.
         total_capture_status: dict[str, int] = {
             "captured": 0,
             "empty_confirmed": 0,
             "attempted_failed": 0,
             "expected_unattempted": 0,
+            "out_of_window": 0,
         }
 
         for cat in cat_list:
@@ -384,7 +411,13 @@ class CoverageStatusMixin(VenueResolutionMixin):
             if isinstance(uniq, int):
                 total_unique_instruments += uniq
 
-        cov_total = sum(total_capture_status.values())
+        # Exclude out_of_window from the denominator (never-collectable cells).
+        cov_total = (
+            total_capture_status["captured"]
+            + total_capture_status["empty_confirmed"]
+            + total_capture_status["attempted_failed"]
+            + total_capture_status["expected_unattempted"]
+        )
         completion_pct = round(total_capture_status["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
         return {
             "service": service,
