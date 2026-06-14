@@ -321,3 +321,29 @@ The single largest migration item is adding generic type arguments to the `route
 `.basedpyright-baseline.json` suppresses **3006 pre-existing type errors** (workspace library stub cascade, json.loads Any, unknown route handler types). Full analysis above.
 
 **Migration plan:** See existing migration plan in this file — generic type args, explicit imports, missing stubs.
+
+---
+
+## STEP 5.11/5.12 protocol-symbol exceptions — Added: 2026-06-12
+
+`HARDCODED_PROTO_EXCLUDE_GLOBS` in `scripts/quality-gates.sh` excludes two files
+(codex_violations_ratchet_to_five_2026_06_10):
+
+| File                                          | Matched symbol | Justification                                                                                                                                       |
+| --------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment_api/routes/monitor_live.py`      | `CloudTarget`  | UAC canonical StrEnum (`unified_api_contracts` `CloudTarget`) — the LIVE_CLUSTER_REGISTRY cloud axis. Contract usage, not a raw GCS/BigQuery call.   |
+| `deployment_api/routes/monitor_scheduled.py` | `CloudTarget`  | Same — resolves the registry's cloud axis; no protocol-specific storage symbols (`gcs_bucket=` / `upload_to_gcs` / `bigquery_dataset`) in the file. |
+
+Verified 2026-06-12: `rg "CloudTarget|upload_to_gcs|gcs_bucket|bigquery_dataset|StandardizedDomainCloudService"`
+matches ONLY `CloudTarget` lines in both files.
+
+## Cloud-SDK facade gaps (remaining budget classes) — Added: 2026-06-12
+
+Counted in `CODEX_MAX_VIOLATIONS` (not glob-hidden) until the UCI facade closes the gaps:
+
+- `deployment_api/vm_utils.py` (`compute_v1`, module-level): `get_vm_instance_details` needs
+  `machine_type` + `creation_timestamp`, which UTL `ComputeEngineClient.aggregated_list_instances`
+  does not return (name/status/zone only). Successor: extend the UTL facade, then migrate.
+- `deployment_api/health_routes.py` (`pubsub_v1` / `secretmanager`, in-function): infra health
+  probes ping the SDK clients directly; UCI exposes no health-probe surface. Successor: UCI
+  health-probe API.

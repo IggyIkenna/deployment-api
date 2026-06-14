@@ -35,6 +35,40 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="GCS bucket for deployment state storage",
     )
 
+    data_status_beta_manifest_blob: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATA_STATUS_BETA_MANIFEST_BLOB"),
+        description=(
+            "CF-20 beta-manifest preview: blob template (formatted with {asset_group}) "
+            "read INSTEAD of the live availability _index by every data-status surface, "
+            "e.g. '_index/audit/projected_index_{asset_group}.parquet'. Empty = live index."
+        ),
+    )
+
+    data_status_disable_process_pool: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("DATA_STATUS_DISABLE_PROCESS_POOL"),
+        description=(
+            "Force the data-status manifest build off the per-category fork ProcessPool. "
+            "Required on macOS dev hosts: the pool forks after grpc/GCS init, which dies on "
+            "macOS (BrokenProcessPool; diagnosed 2026-06-12). With the pool off, the build "
+            "falls back to a THREAD pool (overlaps the I/O-bound index loads; cell-grid "
+            "compute stays GIL-serial) — not pure serial — so it stays fast without forking."
+        ),
+    )
+
+    data_status_prewarm_service: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATA_STATUS_PREWARM_SERVICE"),
+        description=(
+            "If set to a service name (e.g. 'market-tick-data-service'), the API warms that "
+            "service's manifest indexes into _INDEX_CACHE at startup via a tiny background "
+            "7-day query — so the first real Data Status query hits warm cache (~10s) instead "
+            "of the cold transpacific GCS load (~50s/asset-group). Empty = no pre-warm "
+            "(default; avoids a boot-time memory spike on tight dev hosts)."
+        ),
+    )
+
     service_account_email: str = Field(
         default="",
         validation_alias=AliasChoices("SERVICE_ACCOUNT", "SERVICE_ACCOUNT_EMAIL"),
@@ -560,7 +594,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         """Get failover regions based on cloud provider."""
         if self.cloud_provider == "aws":
             return ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1"]
-        return ["us-central1", "us-east1", "europe-west1", "asia-northeast1"]
+        return ["asia-northeast1", "us-central1", "us-east1", "europe-west1"]
 
     @property
     def effective_github_token_sa(self) -> str:
@@ -585,5 +619,29 @@ class DeploymentApiConfig(UnifiedCloudConfig):
 
     @property
     def effective_region(self) -> str:
-        """Get the effective GCS region."""
-        return self.gcs_region or "us-central1"
+        """Get the effective GCS region.
+
+        Defaults to ``asia-northeast1`` — the workspace SSOT region for ALL GCS
+        data, Cloud Build triggers, and the Artifact Registry (CLAUDE.md: "all
+        GCS data is in asia-northeast1; zone default asia-northeast1-c"). The
+        prior ``us-central1`` default mislocated VM-launch zones / GCS region /
+        cross-region-egress checks for this workspace (B1-followup anomaly,
+        operator decision 2026-06-12: fix default → asia-northeast1).
+        """
+        return self.gcs_region or "asia-northeast1"
+
+    def require_gcp_project_id(self) -> str:
+        """GCP project id, or fail loud when unconfigured.
+
+        Replaces the prior hardcoded prod-project fallback (QG
+        hardcoded-project-id ratchet; codex_violations_ratchet_to_five
+        plan 2026-06-10): production always sets ``GCP_PROJECT_ID``
+        (Cloud Run env), tests set ``test-project``
+        (``tests/unit/conftest.py``), so an empty value is a deployment
+        misconfiguration — never silently target the prod project.
+        """
+        if not self.gcp_project_id:
+            raise RuntimeError(
+                "GCP_PROJECT_ID is not configured — set the env var; hardcoded prod-project fallbacks are banned"
+            )
+        return self.gcp_project_id

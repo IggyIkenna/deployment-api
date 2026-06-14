@@ -11,6 +11,7 @@ Plan: ci_dashboard_deployment_ui_2026_06_10.md Phase 1.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import logging
 import time
@@ -18,6 +19,7 @@ from collections.abc import Mapping
 from typing import cast
 
 import aiohttp
+import jwt
 from fastapi import HTTPException
 from unified_trading_library import get_secret_client
 
@@ -26,6 +28,16 @@ logger = logging.getLogger(__name__)
 _API_BASE = "https://api.github.com"
 _CACHE_TTL_SECONDS = 90.0
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+# GitHub App ("uts-ci-poller") installation-token pool — a SEPARATE 5000/hr REST +
+# 5000-pt/hr GraphQL budget from the shared user PAT. Secret Manager names (same
+# project the PAT comes from); any absent → App measurement is skipped gracefully.
+_APP_ID_SECRET = "gh-app-ci-poller-app-id"
+_APP_PRIVATE_KEY_SECRET = "gh-app-ci-poller-private-key"
+_APP_INSTALLATION_ID_SECRET = "gh-app-ci-poller-installation-id"
+# Installation tokens last 1 hour; refresh a margin before expiry. Cached in-process.
+_APP_TOKEN_REFRESH_MARGIN_SECONDS = 5 * 60
+_app_token_cache: tuple[str, float] | None = None  # (token, expiry_epoch)
 
 # url -> (monotonic_ts, parsed json | raw text, etag | None)
 # The ETag lets us send a conditional `If-None-Match` once the short TTL lapses:
@@ -123,6 +135,109 @@ async def gh_rate_limit(session: aiohttp.ClientSession, token: str) -> dict[str,
     }
 
 
+async def resolve_app_credentials(project_id: str) -> tuple[str, str, str] | None:
+    """Read the GitHub App creds (id / private-key PEM / installation-id) from Secret Manager.
+
+    Returns ``(app_id, private_key_pem, installation_id)`` or ``None`` when ANY is
+    absent — best-effort: a missing App config simply means no App pool is surfaced.
+    Never raises; never logs a secret value.
+    """
+
+    def _fetch() -> tuple[str, str, str] | None:
+        client = get_secret_client(project_id=project_id)
+        app_id = client.get_secret(_APP_ID_SECRET)
+        private_key = client.get_secret(_APP_PRIVATE_KEY_SECRET)
+        installation_id = client.get_secret(_APP_INSTALLATION_ID_SECRET)
+        if not app_id or not private_key or not installation_id:
+            return None
+        return app_id, private_key, installation_id
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception:  # best-effort: a SM transient/permission error must not break the PAT path
+        logger.debug("repo-ci: GitHub App creds unavailable (continuing with PAT-only rate view)", exc_info=True)
+        return None
+
+
+def _make_app_jwt(app_id: str, private_key_pem: str) -> str:
+    """Mint a 9-minute GitHub App JWT (RS256), used to exchange for an installation token."""
+    now = int(time.time())
+    payload: dict[str, object] = {
+        "iat": now - 60,  # 60 s clock-skew buffer
+        "exp": now + 9 * 60,
+        "iss": app_id,
+    }
+    return jwt.encode(payload, private_key_pem, algorithm="RS256")
+
+
+async def _app_installation_token(
+    session: aiohttp.ClientSession, app_id: str, private_key_pem: str, installation_id: str
+) -> str | None:
+    """Mint (or reuse a cached) App installation token via POST /app/installations/{id}/access_tokens.
+
+    The token is minted in-memory and cached for its lifetime (refreshed a margin
+    before expiry). Returns ``None`` on any failure — best-effort. Never logs the token.
+    """
+    global _app_token_cache
+    if _app_token_cache is not None and time.time() < _app_token_cache[1] - _APP_TOKEN_REFRESH_MARGIN_SECONDS:
+        return _app_token_cache[0]
+    app_jwt = _make_app_jwt(app_id, private_key_pem)
+    url = f"{_API_BASE}/app/installations/{installation_id}/access_tokens"
+    headers = {
+        "Authorization": f"Bearer {app_jwt}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with session.post(url, headers=headers, timeout=_REQUEST_TIMEOUT) as resp:
+        if resp.status >= 400:
+            logger.debug("repo-ci: App installation-token mint returned %s (continuing PAT-only)", resp.status)
+            return None
+        payload = cast(object, await resp.json())  # noqa: qg-raw-json
+    data = _as_dict(payload)
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        return None
+    expires_at = data.get("expires_at")
+    expiry = time.time() + 3600  # fallback if parse fails
+    if isinstance(expires_at, str):
+        with contextlib.suppress(ValueError):
+            expiry = parse_github_ts(expires_at).timestamp()
+    _app_token_cache = (token, expiry)
+    return token
+
+
+async def gh_app_rate_limit(
+    session: aiohttp.ClientSession, app_id: str, private_key_pem: str, installation_id: str
+) -> dict[str, object] | None:
+    """Measure the GitHub App installation-token REST budget — its OWN 5000/hr pool.
+
+    Mints an installation token (RS256 JWT → access_tokens) then calls the FREE
+    `GET /rate_limit` with it. Returns ``{resources: {core, graphql}}`` or ``None``
+    on any failure (best-effort: never breaks the PAT measurement). Never logs a secret.
+    """
+    token = await _app_installation_token(session, app_id, private_key_pem, installation_id)
+    if token is None:
+        return None
+    url = f"{_API_BASE}/rate_limit"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with session.get(url, headers=headers, timeout=_REQUEST_TIMEOUT) as resp:
+        if resp.status >= 400:
+            logger.debug("repo-ci: App /rate_limit returned %s (continuing PAT-only)", resp.status)
+            return None
+        payload = cast(object, await resp.json())  # noqa: qg-raw-json
+    resources = _as_dict(_as_dict(payload).get("resources"))
+    return {
+        "resources": {
+            "core": _resource_view(resources.get("core")),
+            "graphql": _resource_view(resources.get("graphql")),
+        },
+    }
+
+
 async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> object:
     """GET an api.github.com path, parsed JSON, behind the TTL + ETag cache. 404 -> None.
 
@@ -194,6 +309,47 @@ async def gh_raw_file(session: aiohttp.ClientSession, token: str, org: str, repo
     return text
 
 
+async def gh_graphql(
+    session: aiohttp.ClientSession, token: str, query: str, variables: dict[str, object]
+) -> dict[str, object]:
+    """POST /graphql — ONE request batching what would be many REST calls.
+
+    GraphQL spends from its OWN 5,000-point/hr budget (separate from the REST core
+    budget the rest of the dashboard uses), and a tree-with-blob-text query costs ~1
+    point — so the epics tab's cold load drops from ~92 REST requests to one cheap
+    query (the 2026-06-11 rate-limit-exhaustion fix). Honest rate-limit handling
+    mirrors gh_get_json: 503 + retry_after on exhaustion, 502 on other errors.
+    Returns the `data` object."""
+    url = f"{_API_BASE}/graphql"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    async with session.post(
+        url, headers=headers, json={"query": query, "variables": variables}, timeout=_REQUEST_TIMEOUT
+    ) as resp:
+        _raise_if_rate_limited(resp.status, resp.headers, url)
+        if resp.status >= 400:
+            body = (await resp.text())[:200]
+            raise HTTPException(status_code=502, detail={"message": f"GitHub {resp.status} for /graphql", "body": body})
+        payload = cast(object, await resp.json())  # noqa: qg-raw-json
+    data = _as_dict(payload)
+    errors = _as_list(data.get("errors"))
+    if errors:
+        first = _as_dict(errors[0])
+        if str(first.get("type") or "") == "RATE_LIMITED":
+            raise HTTPException(status_code=503, detail={"message": "GitHub GraphQL rate limit exhausted", "url": url})
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "GitHub GraphQL errors",
+                "errors": [str(_as_dict(e).get("message") or "") for e in errors[:3]],
+            },
+        )
+    return _as_dict(data.get("data"))
+
+
 def _as_dict(value: object) -> dict[str, object]:
     return cast(dict[str, object], value) if isinstance(value, dict) else {}
 
@@ -235,6 +391,24 @@ async def compare_branches(
     )
 
 
+async def oldest_unpromoted_commit_at(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, base: str, head: str
+) -> str | None:
+    """Commit time (ISO-8601) of the OLDEST commit in `head` not yet in `base` — the START of the
+    promotion lag (G6: "oldest unpromoted commit age", the signal `promotion-lag-monitor` pages on
+    at >60min). The compare API orders `commits` oldest→newest, so `per_page=1` returns just the
+    oldest. None when a ref is absent or `head` is not ahead of `base`."""
+    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1")
+    data = _as_dict(payload)
+    for commit_obj in _as_list(data.get("commits")):
+        commit = _as_dict(commit_obj)
+        inner = _as_dict(commit.get("commit"))
+        committer = _as_dict(inner.get("committer"))
+        when = committer.get("date")
+        return when if isinstance(when, str) else None
+    return None
+
+
 async def list_branch_commits(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str, limit: int
 ) -> list[dict[str, object]]:
@@ -260,19 +434,85 @@ async def list_branch_commits(
 async def v2_conclusion_for_sha(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str
 ) -> str | None:
-    """quality-gates-v2 check-run conclusion for one commit (None = never reported)."""
+    """quality-gates-v2 conclusion for ONE commit, via the Actions runs API.
+
+    Uses `/actions/workflows/quality-gates-v2.yml/runs?head_sha=` (Actions:read — which the
+    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which fine-grained
+    PATs CANNOT be granted: GitHub offers no Checks permission for fine-grained tokens at all,
+    so that endpoint 403s permanently — community#129512). For a single-required-check workflow
+    the workflow-run conclusion equals the check-run conclusion, so this lights up the per-SHA
+    verdict today with no extra scope (mirrors `v2_conclusion_for_branch`). `per_page=1` returns
+    the most-recent run for the SHA (the current verdict even after a re-run). Returns the
+    conclusion (`success`/`failure`/…), the status while still running (`in_progress`/`queued`),
+    or None when v2 never ran on that commit."""
     payload = await gh_get_json(
-        session, token, f"/repos/{org}/{repo}/commits/{sha}/check-runs?check_name=quality-gates-v2&per_page=5"
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?head_sha={sha}&per_page=1",
     )
     data = _as_dict(payload)
-    for run in _as_list(data.get("check_runs")):
+    for run in _as_list(data.get("workflow_runs")):
         run_dict = _as_dict(run)
         conclusion = run_dict.get("conclusion")
-        status = run_dict.get("status")
         if conclusion:
             return str(conclusion)
+        status = run_dict.get("status")
         if status:
-            return str(status)  # queued / in_progress — still informative
+            return str(status)  # in_progress / queued — still informative
+        return None
+    return None
+
+
+async def v2_conclusion_for_branch(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
+) -> str | None:
+    """Latest quality-gates-v2 conclusion for a BRANCH head, via the Actions runs API.
+
+    Uses `/actions/workflows/quality-gates-v2.yml/runs?branch=` (Actions:read — which the
+    GH_PAT carries) rather than `/commits/{sha}/check-runs` (Checks:read — which fine-grained
+    PATs CANNOT be granted at all; GitHub offers no Checks permission for them, so that endpoint
+    403s permanently — community#129512). So this lights up per-branch CI without the extra
+    scope. Returns the conclusion (`success`/`failure`/…), the status when still running
+    (`in_progress`/`queued`), or None when the workflow never ran on that branch."""
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?branch={branch}&per_page=1",
+    )
+    data = _as_dict(payload)
+    for run in _as_list(data.get("workflow_runs")):
+        run_dict = _as_dict(run)
+        conclusion = run_dict.get("conclusion")
+        if conclusion:
+            return str(conclusion)
+        status = run_dict.get("status")
+        if status:
+            return str(status)  # in_progress / queued — still informative
+        return None
+    return None
+
+
+async def last_green_for_branch(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
+) -> tuple[str, str] | None:
+    """The most-recent SHA on `branch` whose quality-gates-v2 concluded success, plus the run's
+    completion time (N2 — "green as of <sha> · <age>"). Distinct from the branch HEAD, which may
+    be red or pending. Uses `?branch=&status=success&per_page=1` (Actions:read — which the GH_PAT
+    carries) so a single API call returns the latest green run for the branch. Returns
+    (head_sha, completed_at_iso) or None when no successful v2 run exists for the branch."""
+    payload = await gh_get_json(
+        session,
+        token,
+        f"/repos/{org}/{repo}/actions/workflows/quality-gates-v2.yml/runs?branch={branch}&status=success&per_page=1",
+    )
+    data = _as_dict(payload)
+    for run in _as_list(data.get("workflow_runs")):
+        run_dict = _as_dict(run)
+        sha = run_dict.get("head_sha")
+        when = run_dict.get("updated_at") or run_dict.get("run_started_at") or run_dict.get("created_at")
+        if isinstance(sha, str) and isinstance(when, str):
+            return (sha, when)
+        return None
     return None
 
 
@@ -333,16 +573,25 @@ async def head_commit_message(session: aiohttp.ClientSession, token: str, org: s
 async def head_check_rollup(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str
 ) -> tuple[bool, bool]:
-    """(failed_check, v2_present) over ALL check runs on a PR head sha."""
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/commits/{sha}/check-runs?per_page=50")
+    """(failed_check, v2_present) over ALL Actions runs on a PR head sha.
+
+    Via `/actions/runs?head_sha=` (Actions:read — granted) rather than
+    `/commits/{sha}/check-runs` (Checks:read — ungrantable for fine-grained PATs, 403s
+    permanently; see `v2_conclusion_for_sha`). All this repo's required checks ARE Actions
+    workflows, so the workflow-run rollup carries the same (failed, v2_present) signal the
+    check-run rollup did — and without the 403 this feeds the v2-never-reported deadlock
+    classifier honestly (the old 403 path defaulted `v2_present=True`, silently masking the
+    deadlock signature)."""
+    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/actions/runs?head_sha={sha}&per_page=100")
     data = _as_dict(payload)
     failed = False
     v2_present = False
-    for run in _as_list(data.get("check_runs")):
+    for run in _as_list(data.get("workflow_runs")):
         run_dict = _as_dict(run)
         name = str(run_dict.get("name") or "")
+        path = str(run_dict.get("path") or "")
         conclusion = str(run_dict.get("conclusion") or "")
-        if "quality-gates-v2" in name:
+        if "quality-gates-v2" in path or "quality-gates-v2" in name:
             v2_present = True
         if conclusion in ("failure", "timed_out", "startup_failure"):
             failed = True

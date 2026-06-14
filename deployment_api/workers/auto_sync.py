@@ -12,6 +12,7 @@ import logging
 import os
 import socket
 import time as _time
+import traceback
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -271,7 +272,9 @@ def _build_vm_map(service_name: str, deployment_id: str) -> dict[str, object] | 
     """
     vm_map: dict[str, object] = {}
     try:
-        from unified_trading_library import get_compute_engine_client
+        # call-time patch surface (tests/unit/test_deployment_processor.py patches
+        # unified_trading_library.get_compute_engine_client)
+        from unified_trading_library import get_compute_engine_client  # noqa: imports-inside-functions
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
         instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")
@@ -527,8 +530,6 @@ def sync_running_deployments() -> tuple[int, int]:
         state_paths = [f"{p}state.json" for p in prefixes]
     except (OSError, ValueError, RuntimeError) as e:
         logger.error("[AUTO_SYNC] Error listing directories: %s", e)
-        import traceback
-
         logger.error(traceback.format_exc())
         return 0, 0
 
@@ -542,7 +543,9 @@ def sync_running_deployments() -> tuple[int, int]:
     # Process deployment implementations...
     # (This would be the large _process_one_deployment function -
     # extracted separately for brevity)
-    from .deployment_processor import process_deployments_batch
+    # call-time patch surface (tests/unit/test_auto_sync.py seeds
+    # sys.modules["deployment_api.workers.deployment_processor"])
+    from .deployment_processor import process_deployments_batch  # noqa: imports-inside-functions
 
     synced, num_active = process_deployments_batch(
         active_states,

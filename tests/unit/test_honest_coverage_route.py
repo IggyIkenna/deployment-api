@@ -71,7 +71,7 @@ class TestGetHonestCoverageRoute:
         assert "malformed" in resp.text
 
     def test_reads_correct_bucket_and_path(self, api_client: TestClient) -> None:
-        """Storage call uses central-element-323112-honest-coverage and date/coverage.json."""
+        """Storage call uses the config-derived {project}-honest-coverage bucket and date/coverage.json."""
         calls: list[tuple[str, str]] = []
 
         def _capture(bucket: str, path: str) -> str:
@@ -83,7 +83,9 @@ class TestGetHonestCoverageRoute:
 
         assert len(calls) == 1
         bucket, path = calls[0]
-        assert bucket == "central-element-323112-honest-coverage"
+        # Derived from GCP_PROJECT_ID (tests/unit/conftest.py sets test-project) --
+        # pins the f"{project_id}-honest-coverage" derivation, no hardcoded prod id.
+        assert bucket == "test-project-honest-coverage"
         assert path == "2026-05-15/coverage.json"
 
     def test_defaults_to_today_when_no_date_param(self, api_client: TestClient) -> None:

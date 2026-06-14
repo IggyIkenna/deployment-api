@@ -27,7 +27,7 @@ _cfg = DeploymentApiConfig()
 _MANIFEST_REPO_PATH = "unified-trading-pm/workspace-manifest.json"
 
 
-class DiffEntry(BaseModel):
+class DiffEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """A single service that appeared in the diff."""
 
     service: str = Field(..., description="Service name.")
@@ -35,7 +35,7 @@ class DiffEntry(BaseModel):
     to_version: str | None = Field(default=None, description="Version at to_sha; None for removed services.")
 
 
-class DeploymentDiffResponse(BaseModel):
+class DeploymentDiffResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response for GET /api/deployments/diff."""
 
     from_sha: str

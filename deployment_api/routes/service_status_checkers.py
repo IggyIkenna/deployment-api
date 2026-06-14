@@ -13,9 +13,10 @@ import logging
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
-from typing import TypedDict, cast
+from typing import Protocol, TypedDict, cast
 
 from github import Github
+from unified_trading_library import resolve_bucket_name
 
 from deployment_api.settings import GCS_REGION as DEFAULT_REGION
 from deployment_api.settings import GITHUB_ORG
@@ -100,8 +101,10 @@ def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
         # Query builds (client-side filtering - server-side filter has issues)
         # UCI CloudBuildClient routes client construction through UCI factory;
         # request types (ListBuildsRequest) still use cloudbuild_v1 directly as
-        # they are GCP-specific types not yet abstracted by UCI.
-        from google.cloud.devtools import cloudbuild_v1  # Deferred — request types only
+        # they are GCP-specific types not yet abstracted by UCI. Cloud Build
+        # boundary — kept lazy so the SDK never loads at startup (see
+        # QUALITY_GATE_BYPASS_AUDIT.md § 2.2 GROUP B).
+        from google.cloud.devtools import cloudbuild_v1  # noqa: imports-inside-functions
 
         client = _get_gcp_cb_client()
         parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
@@ -114,8 +117,6 @@ def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
 
         # Get builds and filter by trigger ID client-side
         # The list_builds member has Unknown params in GCP stubs; use Protocol to type-erase
-        from typing import Protocol
-
         class _ListBuildsCallable(Protocol):
             def __call__(self, *, request: object) -> object: ...
 
@@ -165,28 +166,27 @@ def _fetch_build_from_api(service: str) -> "BuildInfoDict | None":
         return {"error": str(e)}
 
 
-# Service to GCS bucket mapping (constructed from project ID)
-_pid = default_project_id
-SERVICE_OUTPUT_BUCKETS = {  # CORRECT-LOCAL
-    "instruments-service": {  # CORRECT-LOCAL
-        "CEFI": f"instruments-store-cefi-{_pid}",  # CORRECT-LOCAL
-        "DEFI": f"instruments-store-defi-{_pid}",  # CORRECT-LOCAL
-        "TRADFI": f"instruments-store-tradfi-{_pid}",  # CORRECT-LOCAL
+# Service to GCS bucket mapping — resolved via UTL SSOT (resolve_bucket_name reads cloud-providers.yaml)
+SERVICE_OUTPUT_BUCKETS: dict[str, dict[str, str]] = {
+    "instruments-service": {
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="tradfi"),
     },
     "market-tick-data-handler": {
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="tradfi"),
     },
     "market-data-processing-service": {
-        "CEFI": f"market-data-tick-cefi-{_pid}",
-        "DEFI": f"market-data-tick-defi-{_pid}",
-        "TRADFI": f"market-data-tick-tradfi-{_pid}",
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="market-data", asset_group="tradfi"),
     },
 }
 
 
-class AssetGroupTimestampDict(TypedDict, total=False):
+class AssetGroupTimestampDict(TypedDict, total=False):  # CORRECT-LOCAL: internal status-check dict shape
     """Timestamp info for a single asset group bucket."""
 
     timestamp: str | None
@@ -195,7 +195,7 @@ class AssetGroupTimestampDict(TypedDict, total=False):
     error: str
 
 
-class DataTimestampResultDict(TypedDict, total=False):
+class DataTimestampResultDict(TypedDict, total=False):  # CORRECT-LOCAL: internal status-check dict shape
     """Result from get_latest_data_timestamp."""
 
     by_asset_group: dict[str, AssetGroupTimestampDict]
@@ -203,7 +203,7 @@ class DataTimestampResultDict(TypedDict, total=False):
     error: str
 
 
-class DeploymentInfoDict(TypedDict, total=False):
+class DeploymentInfoDict(TypedDict, total=False):  # CORRECT-LOCAL: internal status-check dict shape
     """Result from get_latest_deployment."""
 
     deployment_id: str | None
@@ -218,7 +218,7 @@ class DeploymentInfoDict(TypedDict, total=False):
     error: str
 
 
-class BuildInfoDict(TypedDict, total=False):
+class BuildInfoDict(TypedDict, total=False):  # CORRECT-LOCAL: internal status-check dict shape
     """Result from get_latest_build."""
 
     build_id: str
@@ -229,7 +229,7 @@ class BuildInfoDict(TypedDict, total=False):
     error: str
 
 
-class CodePushInfoDict(TypedDict, total=False):
+class CodePushInfoDict(TypedDict, total=False):  # CORRECT-LOCAL: internal status-check dict shape
     """Result from get_latest_code_push."""
 
     commit_sha: str

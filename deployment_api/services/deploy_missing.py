@@ -41,8 +41,8 @@ def _emit_deploy_event(event_name: str, details: dict[str, object]) -> None:
     """Best-effort structured event emission for tarball deploy audit trail."""
     try:
         log_event(event_name, severity="WARNING", details=details)
-    except Exception:
-        logger.debug("Structured event emission skipped (events not initialized): %s", event_name)
+    except Exception as exc:
+        logger.debug("Structured event emission skipped (events not initialized): %s: %s", event_name, exc)
 
 
 # Supported launch modes for the Deploy-Missing flow.
@@ -204,7 +204,7 @@ _BUNDLED_DATA_TYPES: frozenset[str] = frozenset(
 
 
 @dataclass
-class DeployMissingPreview:
+class DeployMissingPreview:  # CORRECT-LOCAL: in-process launch preview
     """Structured response for the UI's Deploy-Missing copy-to-clipboard
     widget.
 
@@ -250,14 +250,14 @@ def _build_shard_key(asset_group: str, row_key: dict[str, str]) -> str:
     (``market_tick_data_service.cli.shard_key.decompose_shard_key``)
     skips empties so default behaviour applies.
     """
-    venue = row_key.get("venue", "")
-    data_type = row_key.get("data_type", "")
-    instrument_type = row_key.get("instrument_type", "")
+    venue = row_key.get("venue", "")  # noqa: qg-empty-fallback — optional row_key axis
+    data_type = row_key.get("data_type", "")  # noqa: qg-empty-fallback — optional row_key axis
+    instrument_type = row_key.get("instrument_type", "")  # noqa: qg-empty-fallback — optional row_key axis
     # Bundled shards put their root in either ``instrument_id`` (less
     # common) or a dedicated ``root`` column in the manifest. Read both;
     # ``root`` wins if both populated.
-    inst_or_root = row_key.get("root", "") or row_key.get("instrument_id", "")
-    day = row_key.get("day", "") or row_key.get("date", "")
+    inst_or_root = row_key.get("root", "") or row_key.get("instrument_id", "")  # noqa: qg-empty-fallback — optional row_key axis
+    day = row_key.get("day", "") or row_key.get("date", "")  # noqa: qg-empty-fallback — optional row_key axis
     return "|".join([asset_group, venue, data_type, instrument_type, inst_or_root, day])
 
 
@@ -324,7 +324,7 @@ def build_deploy_missing_preview(
 
     notes: list[str] = []
     warnings_out: list[str] = []
-    data_type = row_key.get("data_type", "").lower()
+    data_type = row_key.get("data_type", "").lower()  # noqa: qg-empty-fallback — optional row_key axis
     if data_type in _BUNDLED_DATA_TYPES:
         notes.append(
             "Bundled data_type: the 5th field is the cluster ROOT (e.g. ES.OPT). "
@@ -442,7 +442,7 @@ _LIVE_ROLES_WINDOW_PARAMETERISED: frozenset[str] = frozenset({"replay-cascade"})
 
 
 @dataclass
-class LiveClusterLaunchPreview:
+class LiveClusterLaunchPreview:  # CORRECT-LOCAL: in-process launch preview
     """Structured response for the UI's Deploy-live-cluster copy-to-clipboard widget.
 
     Mirrors ``DeployMissingPreview`` shape but keyed by live-cluster ROLE instead

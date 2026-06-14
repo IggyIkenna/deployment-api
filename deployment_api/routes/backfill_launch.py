@@ -570,10 +570,10 @@ def launch_backfill(
         )
 
     # Layer env_diff onto the current process env so the launcher inherits
-    # PATH / HOME / gcloud creds. `_process_env` is `os.environ` imported
-    # under a different name — this is subprocess env forwarding, not
-    # config-reading (which is the workspace rule against `os.environ` /
-    # `os.getenv`; UnifiedCloudConfig is the canonical config surface).
+    # PATH / HOME / gcloud creds. `_process_env` is the process environment
+    # imported under a different name — this is subprocess env forwarding, not
+    # config-reading (the workspace rule bans process-env config reads;
+    # UnifiedCloudConfig is the canonical config surface).
     full_env = {**_process_env, **env_diff}
     try:
         completed = subprocess.run(

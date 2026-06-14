@@ -23,6 +23,12 @@ _config = DeploymentApiConfig()
 # Named in snake_case; canonical env var is the GCP project env var (handled by UnifiedCloudConfig).
 gcp_project_id = _config.gcp_project_id
 GCS_REGION = _config.gcs_region
+# GCP Cloud Build region — PINNED to asia-northeast1, the workspace canonical region where ALL
+# Cloud Build triggers + the Artifact Registry live (cloudbuild.yaml is asia-northeast1 fleet-wide;
+# operator matched-region decision 2026-05-11). Deliberately NOT GCS_REGION: that config can resolve
+# to the us-central1 default, which would query an empty region → the repo-CI Image column reads
+# "unknown" for every repo (0 triggers found). Mirrors AWS `_code_builds_aws._AWS_REGION` ("ap-northeast-1").
+CLOUD_BUILD_REGION = "asia-northeast1"
 STATE_BUCKET = _config.effective_state_bucket
 SERVICE_ACCOUNT = _config.service_account_email
 
@@ -37,6 +43,17 @@ CLOUD_PROVIDER = _config.cloud_provider
 # STATE FILE ENVIRONMENT SEPARATION
 # =============================================================================
 DEPLOYMENT_ENV = _config.deployment_env
+
+# CF-20 beta-manifest preview (see services/manifest_source.py) — empty = live index.
+DATA_STATUS_BETA_MANIFEST_BLOB = _config.data_status_beta_manifest_blob
+
+# Serial-path toggle for the data-status manifest build (macOS dev hosts — see
+# deployment_api_config.data_status_disable_process_pool for the spawn/OOM rationale).
+DATA_STATUS_DISABLE_PROCESS_POOL = _config.data_status_disable_process_pool
+
+# Startup index pre-warm target service (empty = off). See
+# deployment_api_config.data_status_prewarm_service.
+DATA_STATUS_PREWARM_SERVICE = _config.data_status_prewarm_service
 _DEPLOYMENT_ENV_SHORT_MAP: dict[str, str] = {
     "prod": "prd",
     "prd": "prd",

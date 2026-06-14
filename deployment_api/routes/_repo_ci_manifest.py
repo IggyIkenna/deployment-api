@@ -34,6 +34,21 @@ _MANIFEST_TTL_SECONDS = 120.0
 _manifest_cache: tuple[float, dict[str, object]] | None = None
 
 
+def _semver_tuple(version: str) -> tuple[int, ...]:
+    """Parse a dotted version (e.g. "1.2.86") to an int tuple for ordering. Non-numeric or
+    pre-release segments degrade to 0 so a malformed value sorts low rather than raising."""
+    parts: list[int] = []
+    for segment in version.split("."):
+        digits = ""
+        for ch in segment:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
 @dataclass(frozen=True)
 class RepoMeta:
     """Registry metadata for one repo (from workspace-manifest.json.repositories)."""
@@ -127,6 +142,56 @@ class ManifestView:
             return None
         value = cast(dict[str, object], deployed).get(repo)
         return str(value) if value else None
+
+    def promotion_failures(self) -> dict[str, int]:
+        """workspace-manifest.json.promotion_failures (`{repo: consecutive-fail count}`)."""
+        raw = self._raw.get("promotion_failures")
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, int] = {}
+        for repo, count in cast(dict[str, object], raw).items():
+            if isinstance(count, bool):
+                continue
+            if isinstance(count, int):
+                out[repo] = count
+            elif isinstance(count, str) and count.isdigit():
+                out[repo] = int(count)
+        return out
+
+    def promotion_quarantine(self) -> dict[str, dict[str, object]]:
+        """workspace-manifest.json.promotion_quarantine (`{repo: {since, attempts, escalated}}`)."""
+        raw = self._raw.get("promotion_quarantine")
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, dict[str, object]] = {}
+        for repo, detail in cast(dict[str, object], raw).items():
+            out[repo] = cast(dict[str, object], detail) if isinstance(detail, dict) else {}
+        return out
+
+    def pending_version_bumps(self) -> list[str]:
+        """Repos whose staging version is AHEAD of main (a bump promoted to staging but not
+        yet to main — the "pending staging bump" the semver-agent circuit-breaker counts; G2).
+
+        Compares `staging_versions[repo]` vs `versions[repo]` by semver tuple; only a staging
+        version strictly greater than main counts (a staging version BEHIND main — e.g. PM's
+        vestigial no-staging entry — is not a pending bump). `_note` keys are skipped.
+        """
+        versions = self._raw.get("versions")
+        staging = self._raw.get("staging_versions")
+        if not isinstance(versions, dict) or not isinstance(staging, dict):
+            return []
+        versions_d = cast(dict[str, object], versions)
+        staging_d = cast(dict[str, object], staging)
+        out: list[str] = []
+        for repo, staging_v in staging_d.items():
+            if repo.startswith("_"):
+                continue
+            main_v = versions_d.get(repo)
+            if not isinstance(staging_v, str) or not isinstance(main_v, str):
+                continue
+            if _semver_tuple(staging_v) > _semver_tuple(main_v):
+                out.append(repo)
+        return sorted(out)
 
     @property
     def _staging_status(self) -> dict[str, object]:

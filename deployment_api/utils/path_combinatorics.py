@@ -39,6 +39,10 @@ from typing import cast
 
 import yaml
 from unified_api_contracts.internal import MarketCategory
+from unified_api_contracts.registry import (
+    TRADFI_TICK_DATA_WINDOWS,
+    is_in_tradfi_tick_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +99,10 @@ SHARDING_CONFIG_SERVICES = [
 ]
 
 
+# Sole external ref is deployment-service tests/mocks.py behind an optional find_spec
+# guard (operator-sanctioned 2026-06-10) — stays local, no UAC move.
 @dataclass
-class CombinatoricEntry:
+class CombinatoricEntry:  # CORRECT-LOCAL: in-process path-combinatorics entry
     """A single valid combinatoric (asset_group, venue, folder, data_type, optional timeframe)."""
 
     asset_group: str
@@ -134,7 +140,7 @@ class CombinatoricEntry:
 
 
 @dataclass
-class PathCombinatorics:
+class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration helper
     """
     Generate and manage all valid GCS path combinatorics.
 
@@ -168,10 +174,6 @@ class PathCombinatorics:
         TRADFI_TICK_DATA_WINDOWS to avoid duplicating this cost-management config
         across repos.
         """
-        from unified_api_contracts.registry.market_data_categories import (
-            TRADFI_TICK_DATA_WINDOWS,
-        )
-
         self.tick_windows = [(w["start"], w["end"]) for w in TRADFI_TICK_DATA_WINDOWS]
         if self.tick_windows:
             logger.info(
@@ -182,10 +184,6 @@ class PathCombinatorics:
 
     def is_in_tick_window(self, date_str: str) -> bool:
         """Check if a date falls within any tick data window."""
-        from unified_api_contracts.registry.market_data_categories import (
-            is_in_tradfi_tick_window,
-        )
-
         return is_in_tradfi_tick_window(date_str)
 
     def _load_config(self) -> None:

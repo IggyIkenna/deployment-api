@@ -203,8 +203,8 @@ def _parse_event_jsonl(blob_bytes: bytes, blob_name: str) -> VMLifecycleEvent | 
         return None
 
     row_dict = cast(dict[str, object], row)
-    event = str(row_dict.get("event", ""))
-    service = str(row_dict.get("service", ""))
+    event = str(row_dict.get("event", ""))  # noqa: qg-empty-fallback — event row display default
+    service = str(row_dict.get("service", ""))  # noqa: qg-empty-fallback — event row display default
     timestamp_raw = row_dict.get("timestamp")
     if not isinstance(timestamp_raw, str):
         log_event(
@@ -223,13 +223,13 @@ def _parse_event_jsonl(blob_bytes: bytes, blob_name: str) -> VMLifecycleEvent | 
         )
         return None
 
-    metadata_raw = row_dict.get("metadata", {})
+    metadata_raw = row_dict.get("metadata", {})  # noqa: qg-empty-fallback — optional event metadata
     metadata = cast(dict[str, object], metadata_raw) if isinstance(metadata_raw, dict) else {}
     severity = str(metadata.get("severity", "INFO")).upper()
     if severity not in _SEVERITY_ORDER:
         severity = "INFO"
 
-    details_raw = metadata.get("details", {})
+    details_raw = metadata.get("details", {})  # noqa: qg-empty-fallback — optional event metadata
     details_dict: dict[str, str] = {}
     if isinstance(details_raw, dict):
         for key, value in cast(dict[str, object], details_raw).items():
@@ -585,7 +585,7 @@ class VmLogTailResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 def _event_to_log_line(evt: VMLifecycleEvent) -> VmLogLine:
     ts = evt.timestamp.isoformat(timespec="seconds").replace("+00:00", "Z")
-    msg = evt.details.get("message", "")
+    msg = evt.details.get("message", "")  # noqa: qg-empty-fallback — fallback assembled below
     if not msg:
         msg = ", ".join(f"{k}={v}" for k, v in evt.details.items())
     return VmLogLine(timestamp=ts, event=evt.event, severity=evt.severity, message=msg)

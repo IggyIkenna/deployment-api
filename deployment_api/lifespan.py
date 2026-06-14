@@ -21,6 +21,8 @@ from deployment_api.background_sync import (
     get_owner_id,
     set_shutdown_event,
 )
+from deployment_api.services.data_status.manifest import prewarm_indexes
+from deployment_api.settings import DATA_STATUS_PREWARM_SERVICE
 from deployment_api.utils.service_utils import (
     get_codex_dir,
     get_config_dir,
@@ -45,7 +47,25 @@ _auto_sync_running_deployments = auto_sync_running_deployments
 # Background task handles
 _background_task = None
 _events_drain_task = None
+_prewarm_task = None
 _shutdown_event = None
+
+
+async def _prewarm_data_status(service: str) -> None:
+    """Background, best-effort Data Status index pre-warm (gated by DATA_STATUS_PREWARM_SERVICE).
+
+    Sleeps briefly so the warm's index load doesn't contend with the rest of startup, then
+    runs a tiny manifest query that populates _INDEX_CACHE. Swallows every error — a failed
+    pre-warm must never affect readiness or surface to a caller (the first real query just
+    pays the cold load as before)."""
+    try:
+        await asyncio.sleep(5)
+        await prewarm_indexes(service)
+        logger.info("Data Status pre-warm complete for %s", service)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # best-effort: never let a warm failure affect the service
+        logger.warning("Data Status pre-warm for %s failed (non-fatal): %s", service, exc)
 
 
 async def _cancel_background_tasks() -> None:
@@ -63,6 +83,10 @@ async def _cancel_background_tasks() -> None:
         _events_drain_task.cancel()
         with suppress(TimeoutError, asyncio.CancelledError):
             await asyncio.wait_for(_events_drain_task, timeout=2)
+    if _prewarm_task:
+        _prewarm_task.cancel()
+        with suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(_prewarm_task, timeout=2)
 
 
 def _release_one_lock(deployment_id: str, held_locks: set[str]) -> int:
@@ -100,7 +124,7 @@ def _release_deployment_locks() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
-    global _background_task, _shutdown_event, _events_drain_task
+    global _background_task, _shutdown_event, _events_drain_task, _prewarm_task
 
     async with fastapi_uei_lifespan("deployment-api", entrypoint="gunicorn/uvicorn"):
         # Startup
@@ -128,7 +152,8 @@ async def lifespan(app: FastAPI):
             logger.info("PM plans dir: not found — plans visualization endpoints unavailable")
 
         # Initialize cache
-        from .utils.cache import cache
+        # call-time patch surface (tests/unit/test_lifespan.py patch.dict's sys.modules["deployment_api.utils.cache"])
+        from .utils.cache import cache  # noqa: imports-inside-functions
 
         await cache.initialize()
 
@@ -144,6 +169,13 @@ async def lifespan(app: FastAPI):
         _events_drain_task = asyncio.create_task(drain_sync_queue())
         logger.info("Deployment events drain task started")
 
+        # Optional Data Status index pre-warm (DATA_STATUS_PREWARM_SERVICE; off by default).
+        # Background + best-effort: warms _INDEX_CACHE so the first Data Status query is fast
+        # (see services/data_status/manifest.prewarm_indexes). Never blocks readiness.
+        if DATA_STATUS_PREWARM_SERVICE:
+            _prewarm_task = asyncio.create_task(_prewarm_data_status(DATA_STATUS_PREWARM_SERVICE))
+            logger.info("Data Status pre-warm scheduled for %s", DATA_STATUS_PREWARM_SERVICE)
+
         yield
 
         # Shutdown
@@ -153,7 +185,9 @@ async def lifespan(app: FastAPI):
         _release_deployment_locks()
 
         try:
-            from .utils.cache import cache
+            # call-time patch surface (tests/unit/test_lifespan.py patch.dict's
+            # sys.modules["deployment_api.utils.cache"])
+            from .utils.cache import cache  # noqa: imports-inside-functions
 
             await cache.shutdown()
         except (OSError, ValueError, RuntimeError) as e:

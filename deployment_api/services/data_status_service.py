@@ -19,12 +19,15 @@ This module remains the ONLY public import surface:
   ``unittest.mock.patch`` on this module is visible to the moved code.
 """
 
+import gzip
 import json
 import logging
 import time
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
+import yaml
 from unified_api_contracts import (
     VenueMapping,
     get_expected_data_types_for_venue,
@@ -35,7 +38,7 @@ from unified_api_contracts.sports import (
     get_expected_leagues_for_source,
     get_league_fixture_calendar,
 )
-from unified_trading_library import read_availability_index, resolve_bucket_name
+from unified_trading_library import get_storage_client, resolve_bucket_name
 
 from deployment_api.services.data_status.breakdowns_core import CoreBreakdownsMixin
 from deployment_api.services.data_status.breakdowns_domain import DomainBreakdownsMixin
@@ -232,6 +235,8 @@ from deployment_api.services.data_status.sports_helpers import (
     sports_trigger_dates_for_window as _sports_trigger_dates_for_window,
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
+from deployment_api.settings import DATA_STATUS_DISABLE_PROCESS_POOL as _DISABLE_PROCESS_POOL
 from deployment_api.settings import deployment_env_short as _env_short
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects
@@ -265,7 +270,7 @@ __all__ = [  # noqa: RUF022
     "clear_index_cache",
     "clear_rollup_cache",
     "get_effective_start_date",
-    # ── legacy-underscore re-exports (back-compat import surface) ──
+    # ── facade-canonical underscore constants (package modules + tests resolve these late-bound here) ──
     "_ALL_DEFI_GHOST_VENUES",
     "_CAPTURE_STATUS_CAPTURED",
     "_CAPTURE_STATUS_COL",
@@ -392,11 +397,13 @@ def _features_sports_expected_dates_for_calculator(
     return out or []
 
 
-# ProcessPool toggle. Hardcoded False — set to True here only as a temporary
-# rollback if a deployment hits subtle pickling / fork issues. Workspace rule
-# bans os.environ access in service source (use UnifiedCloudConfig for any
-# real runtime toggles).
-_PROCESS_POOL_DISABLED = False
+# ProcessPool toggle — config-driven (DATA_STATUS_DISABLE_PROCESS_POOL via pydantic
+# settings, not a raw process-env read). Linux deploys keep the fork pool; macOS dev hosts
+# MUST set it: the pool forks after grpc/GCS is initialised, which dies on macOS
+# (BrokenProcessPool; diagnosed 2026-06-12 under the CF-20 beta projected indexes). With it
+# set, the build falls back to a thread pool (overlaps the I/O-bound index loads). Module-level
+# so tests/scripts can still patch it.
+_PROCESS_POOL_DISABLED = _DISABLE_PROCESS_POOL
 
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL = 300  # 5 minutes
@@ -451,8 +458,6 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return cached[1]
 
     try:
-        from unified_trading_library import get_storage_client
-
         client = get_storage_client(project_id=_pid)
         bucket_name = _rollup_bucket()
         blob_path = f"{service}/full.json.gz"
@@ -481,8 +486,6 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         # decompress explicitly. The first two bytes (0x1f 0x8b) are the
         # gzip magic — defensive sniff lets us handle a future change to
         # auto-decompressing transports without churning this code.
-        import gzip
-
         payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
         payload = json.loads(payload_bytes.decode("utf-8"))  # pyright: ignore[reportAny]
         if not isinstance(payload, dict):
@@ -536,8 +539,6 @@ def _load_expected_start_dates_cached() -> dict[str, object]:
     # Prefer app_config.get_config_dir() (respects bundled pm-configs/ + sibling
     # workspace lookup). Fall back to repo-relative path for test contexts where
     # the FastAPI app hasn't been initialised.
-    import yaml
-
     from deployment_api.app_config import get_config_dir
 
     config_dir: object
@@ -545,9 +546,7 @@ def _load_expected_start_dates_cached() -> dict[str, object]:
         config_dir = get_config_dir()
     except RuntimeError:
         # Test / standalone contexts: fall back to workspace sibling
-        from pathlib import Path as _Path
-
-        here = _Path(__file__).resolve()
+        here = Path(__file__).resolve()
         # deployment-api/deployment_api/services/data_status_service.py
         # → workspace root = parents[4]
         workspace_root = here.parents[4]

@@ -26,6 +26,7 @@ class EpicCardDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, 
     """One epic card with its rolled-up active plans."""
 
     name: str
+    slug: str  # normalized filename slug (e.g. mtds_mdps_master) — the canonical match key vs plan.parent_epic
     title: str
     tier: str
     priority: str
@@ -43,6 +44,7 @@ class EpicsPlansResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api respon
 
     generated_at: str
     source: str  # "live" | "mock"
+    stale: bool  # True = GitHub unreachable/rate-limited; this is the LAST cached payload
     epics: list[EpicCardDict]
     orphans: list[EpicPlanDict]  # active plans with no parent_epic — review-blocking
     orphan_count: int

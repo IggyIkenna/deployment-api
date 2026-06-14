@@ -12,8 +12,8 @@ Master: monitoring_control_plane_master_2026_06_10.md (division-of-surfaces cont
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import logging
+from dataclasses import dataclass
 from typing import cast
 
 import aiohttp
@@ -24,17 +24,14 @@ from deployment_api.settings import CLOUD_PROVIDER, GITHUB_ORG
 from deployment_api.settings import gcp_project_id as default_project_id
 
 from ._cloud_builds_history import (
-    _get_recent_builds_for_triggers,  # pyright: ignore[reportPrivateUsage]
-)
-from ._cloud_builds_trigger import (
-    _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
+    _recent_builds_by_repo_name,  # pyright: ignore[reportPrivateUsage]
 )
 from ._code_builds_aws import (
     get_recent_builds_for_projects_sync,
     is_aws_provider,
     list_codebuild_projects_sync,
 )
-from ._repo_ci_alerts import AlertEntryDict, AlertsPayloadDict, derive_streams, load_alerts_payload
+from ._repo_ci_alerts import AlertsPayloadDict, load_alerts_payload
 from ._repo_ci_fleet import fetch_fleet_git_health
 from ._repo_ci_github import (
     age_minutes,
@@ -43,15 +40,24 @@ from ._repo_ci_github import (
     gh_get_json,
     head_check_rollup,
     head_commit_message,
+    last_green_for_branch,
     latest_workflow_run_with_jobs,
     list_branch_commits,
     list_open_promotion_prs,
+    oldest_unpromoted_commit_at,
     resolve_gh_token,
+    v2_conclusion_for_branch,
     v2_conclusion_for_sha,
 )
 from ._repo_ci_manifest import ManifestView, RepoMeta, load_manifest_view
+from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
+    _mock_alerts,
+    _mock_detail,
+    _mock_fleet_git_health,
+    _mock_overview,
+)
 from ._repo_ci_stuck import classify_stuck_pr, derive_sit_state, is_promotion_contract_pr
-from ._repo_ci_types import (
+from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     PROMOTION_BRANCHES,
     BranchCommitsDict,
     BranchDeltaDict,
@@ -59,14 +65,19 @@ from ._repo_ci_types import (
     CommitEntryDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
+    LastGreenDict,
     OverviewResponseDict,
+    PromoteRunDict,
+    PromotionBlockedDict,
+    PromotionDrainDict,
     RepoDetailResponseDict,
     RepoErrorDict,
     RepoOverviewDict,
     RepoPrDict,
+    SemverHealthDict,
     SitJobDict,
     SitLastRunDict,
-    SitStateDict,
+    _now_iso,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,13 +86,25 @@ router = APIRouter(prefix="/api/repo-ci", tags=["Repo CI"])
 # The cascade/SIT workflow lives in the PM repo (CLAUDE.md § "Breaking-detection").
 _PM_REPO = "unified-trading-pm"
 _SIT_WORKFLOW_FILE = "cascade-qg-ordering.yml"
+# Routine promotion-drain workflows (PM-central, every 15 min) — distinct from the breaking
+# cascade above. These answer "is LDR draining to staging/main", not "did a breaking change run".
+_LDR_TO_STAGING_WORKFLOW = "ldr-to-staging-promote.yml"
+_LDR_TO_MAIN_WORKFLOW = "ldr-to-main-promote.yml"
+# Semver-agent standing health (G2). The bump-rate circuit-breaker arms at ≥3 pending staging
+# bumps (CLAUDE.md § "Manifest version-surface semantics"); the panel mirrors that threshold.
+_SEMVER_WORKFLOW = "semver-agent.yml"
+_SEMVER_BREAKER_THRESHOLD = 3
+# Drain-stall (per repo) keys off the repo's OWN standing promotion PR being stuck on a BLOCKING
+# class (needs a human/worker), NOT the PM-central drain-leg health — PM's ldr-to-main is a
+# PM-only Option-B run on an hourly-ish cadence, so gating per-repo "content ahead of main" on it
+# false-flagged the entire fleet. The auto-recoverable classes (v2_never_reported / automerge_stuck
+# self-heal in-band) are deliberately EXCLUDED so the signal doesn't cry wolf.
+_BLOCKING_STUCK_CLASSES = frozenset({"conflicting", "failing_check", "skip_ci_jammed"})
+
+
 _DETAIL_COMMITS_PER_BRANCH = 8
 _DETAIL_V2_LOOKUPS_PER_BRANCH = 5
 _REPO_CONCURRENCY = 8
-
-
-def _now_iso() -> str:
-    return dt.datetime.now(dt.UTC).isoformat()
 
 
 def _sit_run_tuple(sit_last_run: dict[str, object] | None) -> tuple[str | None, int | None]:
@@ -123,170 +146,40 @@ def _to_sit_last_run(raw: dict[str, object] | None) -> SitLastRunDict | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Mock fixtures — drive UI dev + the playwright mock-mode suite. Cover EVERY
-# stuck class + stuck-in-SIT (the regression spec asserts all of them).
-# ---------------------------------------------------------------------------
+def _to_semver_health(raw: dict[str, object] | None, view: ManifestView) -> SemverHealthDict | None:
+    """Shape the last semver-agent run + the manifest pending-bump surface into the G2 panel.
 
-
-def _mock_sit(in_pending: bool, stuck: bool) -> SitStateDict:
-    return SitStateDict(
-        in_breaking_pending=in_pending,
-        staging_locked=in_pending,
-        staging_locked_reason="breaking cascade in flight" if in_pending else None,
-        last_sit_run_status="failure" if stuck else "success",
-        last_sit_run_age_min=240 if stuck else 12,
-        stuck_in_sit=stuck,
+    Returns None only when the run can't be fetched AND there is no pending-bump signal — so a
+    breaker-armed state is still surfaced even if the workflow query degrades.
+    """
+    pending = view.pending_version_bumps()
+    if raw is None and not pending:
+        return None
+    conclusion_value = raw.get("conclusion") if raw else None
+    age_value = raw.get("age_min") if raw else None
+    return SemverHealthDict(
+        last_run_status=str(raw.get("status") or "") if raw else "",
+        last_run_conclusion=str(conclusion_value) if conclusion_value else None,
+        last_run_age_min=int(age_value) if isinstance(age_value, int) else None,
+        last_run_url=str(raw.get("url") or "") if raw else "",
+        pending_bump_count=len(pending),
+        pending_bump_repos=pending,
+        breaker_armed=len(pending) >= _SEMVER_BREAKER_THRESHOLD,
+        breaker_threshold=_SEMVER_BREAKER_THRESHOLD,
     )
 
 
-def _mock_image(version: str | None, stale: bool | None) -> ImageSignalDict:
-    return ImageSignalDict(
-        last_build_status="SUCCESS",
-        last_build_sha="aaa1111",
-        deployed_version=version,
-        image_stale=stale,
-    )
-
-
-def _mock_pr(repo: str, number: int, base: str, stuck_class: str | None, state: str) -> RepoPrDict:
-    return RepoPrDict(
-        repo=repo,
-        number=number,
-        title=f"promote live-defi-rollout -> {base}",
-        base=base,
-        head="live-defi-rollout",
-        url=f"https://github.com/{GITHUB_ORG}/{repo}/pull/{number}",
-        age_min=95,
-        auto_merge=True,
-        merge_state=state,
-        failed_check=stuck_class == "failing_check",
-        v2_present=stuck_class in (None, "failing_check", "automerge_stuck"),
-        stuck_class=stuck_class,  # pyright: ignore[reportArgumentType]  # fixture literal is within StuckClass
-    )
-
-
-def _mock_row(
-    repo: str,
-    repo_type: str,
-    ci_status: str,
-    prs: list[RepoPrDict],
-    sit: SitStateDict,
-) -> RepoOverviewDict:
-    branches = [
-        BranchHeadDict(branch="live-defi-rollout", sha="abc1234", committed_at="2026-06-10T08:00:00Z"),
-        BranchHeadDict(branch="staging", sha="abc1200", committed_at="2026-06-10T07:30:00Z"),
-        BranchHeadDict(branch="main", sha="abc1100", committed_at="2026-06-10T06:00:00Z"),
-    ]
-    deltas = [
-        BranchDeltaDict(base="staging", head="live-defi-rollout", ahead_by=2, behind_by=0, files_changed=3),
-        BranchDeltaDict(base="main", head="staging", ahead_by=1, behind_by=0, files_changed=1),
-        BranchDeltaDict(base="main", head="live-defi-rollout", ahead_by=3, behind_by=0, files_changed=4),
-    ]
-    return RepoOverviewDict(
-        repo=repo,
-        repo_type=repo_type,
-        ci_status=ci_status,
-        branches=branches,
-        deltas=deltas,
-        open_prs=prs,
-        sit=sit,
-        image=_mock_image("1.2.0", stale=ci_status == "FAILING"),
-    )
-
-
-def _mock_overview() -> OverviewResponseDict:
-    rows = [
-        _mock_row("unified-trading-library", "library", "MAIN_GREEN", [], _mock_sit(False, False)),
-        _mock_row(
-            "market-tick-data-service",
-            "service",
-            "STAGING_GREEN",
-            [_mock_pr("market-tick-data-service", 41, "main", "conflicting", "dirty")],
-            _mock_sit(False, False),
-        ),
-        _mock_row(
-            "instruments-service",
-            "service",
-            "STAGING_PENDING",
-            [_mock_pr("instruments-service", 17, "staging", "v2_never_reported", "blocked")],
-            _mock_sit(False, False),
-        ),
-        _mock_row(
-            "execution-service",
-            "service",
-            "FAILING",
-            [
-                _mock_pr("execution-service", 88, "main", "skip_ci_jammed", "blocked"),
-                _mock_pr("execution-service", 89, "staging", "failing_check", "blocked"),
-            ],
-            _mock_sit(False, False),
-        ),
-        _mock_row(
-            "strategy-service",
-            "service",
-            "STAGING_GREEN",
-            [_mock_pr("strategy-service", 52, "main", "automerge_stuck", "blocked")],
-            _mock_sit(False, False),
-        ),
-        _mock_row("greeks-service", "service", "STAGING_GREEN", [], _mock_sit(True, True)),
-    ]
-    stuck_prs = [pr for row in rows for pr in row["open_prs"] if pr.get("stuck_class")]
-    stuck_in_sit = [row["repo"] for row in rows if row["sit"]["stuck_in_sit"]]
-    sit_last_run = SitLastRunDict(
-        url=f"https://github.com/{GITHUB_ORG}/unified-trading-pm/actions/runs/12345",
-        status="in_progress",
-        conclusion=None,
-        age_min=18,
-        jobs=[
-            SitJobDict(name="sit / unified-trading-library", status="completed", conclusion="success"),
-            SitJobDict(name="sit / greeks-service", status="completed", conclusion="failure"),
-            SitJobDict(name="sit / execution-service", status="in_progress", conclusion=None),
-        ],
-    )
-    return OverviewResponseDict(
-        generated_at=_now_iso(),
-        source="mock",
-        repos=rows,
-        stuck_prs=stuck_prs,
-        stuck_in_sit=stuck_in_sit,
-        sit_last_run=sit_last_run,
-        # One sample degraded repo so the UI errors[] panel + its regression spec have data.
-        errors=[RepoErrorDict(repo="alerting-service", error="HTTP 502 from GitHub compare")],
-    )
-
-
-def _mock_detail(repo: str) -> RepoDetailResponseDict:
-    overview = _mock_overview()
-    row = next((r for r in overview["repos"] if r["repo"] == repo), overview["repos"][0])
-    history = [
-        BranchCommitsDict(
-            branch=branch["branch"],
-            commits=[
-                CommitEntryDict(
-                    sha=f"{branch['sha'] or 'abc0000'}{i}",
-                    message=f"feat: change {i} on {branch['branch']}",
-                    author="ikennaigboaka [slot-3·laptop]",
-                    committed_at="2026-06-10T07:00:00Z",
-                    v2_conclusion="success" if i % 3 else "failure",
-                )
-                for i in range(5)
-            ],
-        )
-        for branch in row["branches"]
-    ]
-    return RepoDetailResponseDict(
-        repo=row["repo"],
-        repo_type=row["repo_type"],
-        ci_status=row["ci_status"],
-        generated_at=_now_iso(),
-        source="mock",
-        branches=row["branches"],
-        deltas=row["deltas"],
-        history=history,
-        open_prs=row["open_prs"],
-        sit=row["sit"],
-        image=row["image"],
+def _to_promote_run(raw: dict[str, object] | None) -> PromoteRunDict | None:
+    """Shape a raw workflow-run dict into the typed promote-drain payload (no jobs)."""
+    if raw is None:
+        return None
+    conclusion_value = raw.get("conclusion")
+    age_value = raw.get("age_min")
+    return PromoteRunDict(
+        status=str(raw.get("status") or ""),
+        conclusion=str(conclusion_value) if conclusion_value else None,
+        age_min=int(age_value) if isinstance(age_value, int) else None,
+        url=str(raw.get("url") or ""),
     )
 
 
@@ -332,9 +225,10 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
         v2_present = True
         head_message = ""
         if merge_state.lower() in ("blocked", "dirty", "conflicting") and head_sha:
-            # Shard-level isolation: a checks-API 403 (fine-grained PAT missing Checks:read
-            # on one repo) degrades THIS PR's classification to conservative defaults —
-            # it must never kill the whole overview. Rate-limit 503 still propagates.
+            # Shard-level isolation: any per-PR rollup error (a transient 4xx/5xx on one
+            # repo) degrades THIS PR's classification to conservative defaults — it must
+            # never kill the whole overview. Rate-limit 503 still propagates. (The rollup
+            # now reads the Actions API, which the GH_PAT can access — no Checks:read 403.)
             try:
                 failed_check, v2_present = await head_check_rollup(session, token, GITHUB_ORG, repo, head_sha)
                 if not v2_present:
@@ -369,25 +263,51 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
     return out
 
 
-_builds_cache: tuple[float, dict[str, tuple[str | None, str | None]]] | None = None
+@dataclass(frozen=True)
+class BuildSignal:
+    """The build signal for one repo (B1 — operator add 2026-06-11). Carries the LATEST build
+    (status + time + sha + log) so the Image column is a full deploy signal, AND the LAST
+    SUCCESSFUL build (operator add 2026-06-11) so a red latest build doesn't hide the last good
+    image — "the current build failed, what's the last sha that succeeded?". success_* fields are
+    None when no successful build is found in the scanned window (honestly absent, never faked).
+    All fields None when the provider doesn't report them."""
+
+    status: str | None
+    sha: str | None
+    finish_time: str | None  # ISO-8601 of the build's finish_time (create_time fallback upstream)
+    log_url: str | None  # GCP Cloud Build / AWS CodeBuild console URL for this build
+    success_sha: str | None = (
+        None  # sha of the most recent SUCCESSFUL build (may equal sha, or differ when latest failed)
+    )
+    success_time: str | None = None  # finish_time of that successful build
+    success_log_url: str | None = None  # console log URL of that successful build
+
+
+_builds_cache: tuple[float, dict[str, BuildSignal]] | None = None
 _BUILDS_CACHE_TTL = 300.0  # mirrors the cloud-builds TTL pattern
 
 
-async def _gcp_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
-    """GCP Cloud Build half — repo -> (status, sha) via the trigger plumbing."""
-    triggers = await asyncio.to_thread(_build_trigger_list_sync)
-    trigger_to_repo = {t["trigger_id"]: str(t.get("service") or "") for t in triggers}
-    builds = await _get_recent_builds_for_triggers(list(trigger_to_repo.keys()))
-    result: dict[str, tuple[str | None, str | None]] = {}
-    for trigger_id, info in builds.items():
-        repo = trigger_to_repo.get(trigger_id)
-        if repo:
-            result[repo] = (info.get("status"), info.get("commit_sha"))
-    return result
+async def _gcp_builds_by_repo() -> dict[str, BuildSignal]:
+    """GCP Cloud Build half — repo -> BuildSignal, matched on each build's REPO_NAME
+    substitution (1:1 with the repo). Robust to trigger recreation (a per-trigger
+    `trigger_id` filter goes stale when triggers are recreated)."""
+    builds = await _recent_builds_by_repo_name()
+    out: dict[str, BuildSignal] = {}
+    for repo, (latest, success) in builds.items():
+        out[repo] = BuildSignal(
+            status=latest.get("status"),
+            sha=latest.get("commit_sha"),
+            finish_time=latest.get("finish_time"),
+            log_url=latest.get("log_url"),
+            success_sha=success.get("commit_sha") if success else None,
+            success_time=success.get("finish_time") if success else None,
+            success_log_url=success.get("log_url") if success else None,
+        )
+    return out
 
 
-async def _aws_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
-    """AWS CodeBuild half — repo -> (status, sha) via the CodeBuild project plumbing.
+async def _aws_builds_by_repo() -> dict[str, BuildSignal]:
+    """AWS CodeBuild half — repo -> BuildSignal via the CodeBuild project plumbing.
 
     Parallel to the GCP half: CodeBuild projects are the AWS equivalent of triggers,
     named `{service}-build`. `get_recent_builds_for_projects_sync` yields None for a
@@ -396,15 +316,27 @@ async def _aws_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
     projects = await asyncio.to_thread(list_codebuild_projects_sync)
     project_to_repo = {p["trigger_id"]: str(p.get("service") or "") for p in projects}
     builds = await asyncio.to_thread(get_recent_builds_for_projects_sync, list(project_to_repo.keys()))
-    result: dict[str, tuple[str | None, str | None]] = {}
+    result: dict[str, BuildSignal] = {}
     for project_name, info in builds.items():
         repo = project_to_repo.get(project_name)
         if repo and info is not None:
-            result[repo] = (info.get("status"), info.get("commit_sha"))
+            # Best-effort last-success on AWS: the project plumbing returns only the latest
+            # build, so success_* is that build when it's green, else None (a deeper CodeBuild
+            # history scan for the last green is a follow-up; GCP carries the full last-success).
+            is_success = info.get("status") == "SUCCESS"
+            result[repo] = BuildSignal(
+                status=info.get("status"),
+                sha=info.get("commit_sha"),
+                finish_time=info.get("finish_time"),
+                log_url=info.get("log_url"),
+                success_sha=info.get("commit_sha") if is_success else None,
+                success_time=info.get("finish_time") if is_success else None,
+                success_log_url=info.get("log_url") if is_success else None,
+            )
     return result
 
 
-async def _latest_builds_by_repo() -> dict[str, tuple[str | None, str | None]]:
+async def _latest_builds_by_repo() -> dict[str, BuildSignal]:
     """repo -> (last_build_status, last_build_sha) via the cloud-builds plumbing,
     dispatched on the active cloud provider (parity with the Cloud Builds tab).
 
@@ -435,19 +367,29 @@ def _image_signal(
     view: ManifestView,
     repo: str,
     main_sha: str | None,
-    builds: dict[str, tuple[str | None, str | None]],
+    builds: dict[str, BuildSignal],
 ) -> ImageSignalDict:
     """Image-level deploy signal (operator decision: v1 image-level, not runtime-level).
 
     image_stale = main HEAD sha differs from the last SUCCESSFUL build's sha — "is main's
-    code built into the latest image". None = honestly unknown (no build data)."""
-    build_status, build_sha = builds.get(repo, (None, None))
+    code built into the latest image". The comparison uses the last SUCCESS sha (not the latest
+    build's), because a failed latest build produced no new image — the running image is still
+    from the last green build. None = honestly unknown (no successful build data)."""
+    sig = builds.get(repo)
+    build_status = sig.status if sig else None
+    build_sha = sig.sha if sig else None
+    success_sha = sig.success_sha if sig else None
     stale: bool | None = None
-    if main_sha and build_sha and build_status == "SUCCESS":
-        stale = not main_sha.startswith(build_sha) and not build_sha.startswith(main_sha)
+    if main_sha and success_sha:
+        stale = not main_sha.startswith(success_sha) and not success_sha.startswith(main_sha)
     return ImageSignalDict(
         last_build_status=build_status,
         last_build_sha=build_sha,
+        last_build_time=sig.finish_time if sig else None,
+        last_build_log_url=sig.log_url if sig else None,
+        last_success_sha=success_sha,
+        last_success_time=sig.success_time if sig else None,
+        last_success_log_url=sig.success_log_url if sig else None,
         deployed_version=view.deployed_version_for(repo),
         image_stale=stale,
     )
@@ -459,7 +401,7 @@ async def _overview_row(
     view: ManifestView,
     meta: RepoMeta,
     sit_run: tuple[str | None, int | None],
-    builds: dict[str, tuple[str | None, str | None]],
+    builds: dict[str, BuildSignal],
     semaphore: asyncio.Semaphore,
 ) -> RepoOverviewDict | RepoErrorDict:
     """Aggregate one repo's row. On a per-repo (non-rate-limit) failure return a typed
@@ -486,16 +428,108 @@ async def _overview_row(
         last_sit_run_age_min=sit_run[1],
     )
     main_sha = next((b["sha"] for b in branches if b["branch"] == "main"), None)
+    ci_status = view.ci_status_for(meta.name)
+    # Per-branch v2 conclusion so the UI can annotate WHICH branch is red. ONLY fetched for
+    # non-MAIN_GREEN repos: a fully-green repo needs no branch annotation, and skipping it keeps
+    # the overview's GitHub-API budget bounded (3 Actions-API calls for only the handful of red
+    # repos, not for all 25 — the cold-overview rate-limit guard). Degrades to None per-branch on a
+    # fetch failure; never fails the row.
+    branch_ci: dict[str, str | None] = {}
+    if ci_status != "MAIN_GREEN":
+        try:
+            conclusions = await asyncio.gather(
+                *[v2_conclusion_for_branch(session, token, GITHUB_ORG, meta.name, b) for b in PROMOTION_BRANCHES]
+            )
+            branch_ci = dict(zip(PROMOTION_BRANCHES, conclusions, strict=True))
+        except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+            logger.warning("[REPO-CI] %s per-branch v2 fetch degraded: %s", meta.name, exc)
+            branch_ci = dict.fromkeys(PROMOTION_BRANCHES, None)
+    # N2: the most-recent GREEN main sha + time ("green as of <sha> · <age>") — distinct from the
+    # main HEAD, which may be red/pending. For a MAIN_GREEN repo the head IS the last green (no
+    # extra API call); only a non-green repo needs the runs-API lookup (same budget profile as
+    # branch_ci above — bounded to the handful of red repos).
+    last_green_main: LastGreenDict | None = None
+    main_committed = next((b["committed_at"] for b in branches if b["branch"] == "main"), None)
+    if ci_status == "MAIN_GREEN" and main_sha is not None and main_committed is not None:
+        last_green_main = LastGreenDict(sha=main_sha, at=main_committed)
+    elif ci_status != "MAIN_GREEN":
+        try:
+            lg = await last_green_for_branch(session, token, GITHUB_ORG, meta.name, "main")
+        except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+            logger.warning("[REPO-CI] %s last-green(main) fetch degraded: %s", meta.name, exc)
+            lg = None
+        if lg is not None:
+            last_green_main = LastGreenDict(sha=lg[0], at=lg[1])
+    # G6: promotion-lag age — the age of the OLDEST LDR commit not yet on main (the lag the
+    # promotion-lag-monitor pages on at >60min). Only when there's a real LDR→main delta (a repo
+    # in sync has no lag → no extra API call); reuses the compare API for the oldest commit only.
+    main_lag_age_min: int | None = None
+    ldr_main = next((d for d in deltas if d["base"] == "main" and d["head"] == "live-defi-rollout"), None)
+    if ldr_main is not None and ldr_main["ahead_by"] > 0:
+        try:
+            oldest_at = await oldest_unpromoted_commit_at(
+                session, token, GITHUB_ORG, meta.name, "main", "live-defi-rollout"
+            )
+        except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+            logger.warning("[REPO-CI] %s lag-age fetch degraded: %s", meta.name, exc)
+            oldest_at = None
+        if oldest_at is not None:
+            main_lag_age_min = age_minutes(oldest_at)
+    # promotion-drain follow-up: drain-stalled = real content ahead of staging/main (files_changed,
+    # NOT ahead_by — squash-merges keep LDR perpetually ahead-by-commit-count even when content
+    # matches) AND this repo's own standing promotion PR is stuck on a BLOCKING class. A fleet-wide
+    # drain-leg outage shows in the PromotionDrainPanel's leg rows; it is NOT a per-repo flag.
+    ldr_staging = next((d for d in deltas if d["base"] == "staging" and d["head"] == "live-defi-rollout"), None)
+    content_ahead = (ldr_staging is not None and ldr_staging["files_changed"] > 0) or (
+        ldr_main is not None and ldr_main["files_changed"] > 0
+    )
+    has_blocking_pr = any(pr.get("stuck_class") in _BLOCKING_STUCK_CLASSES for pr in prs)
+    drain_stalled = content_ahead and has_blocking_pr
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
-        ci_status=view.ci_status_for(meta.name),
+        ci_status=ci_status,
+        branch_ci=branch_ci,
         branches=branches,
         deltas=deltas,
         open_prs=prs,
         sit=sit,
         image=_image_signal(view, meta.name, main_sha, builds),
+        last_green_main=last_green_main,
+        main_lag_age_min=main_lag_age_min,
+        drain_stalled=drain_stalled,
     )
+
+
+def _build_promotion_blocked(view: ManifestView) -> list[PromotionBlockedDict]:
+    """Repos parked out of staging→main (G1) — union of promotion_failures + promotion_quarantine.
+
+    Alert-parity for the staging-to-main genuine-failure CRITICAL page (failures) + the
+    newly-quarantined WARNING (quarantine). Sorted: quarantined first, then by fail count desc.
+    """
+    failures = view.promotion_failures()
+    quarantine = view.promotion_quarantine()
+    blocked: list[PromotionBlockedDict] = []
+    for repo in sorted(set(failures) | set(quarantine)):
+        q = quarantine.get(repo)
+        entry = PromotionBlockedDict(
+            repo=repo,
+            failures=failures.get(repo, 0),
+            quarantined=repo in quarantine,
+        )
+        if isinstance(q, dict):
+            since = q.get("since")
+            attempts = q.get("attempts")
+            escalated = q.get("escalated")
+            if isinstance(since, str):
+                entry["since"] = since
+            if isinstance(attempts, int) and not isinstance(attempts, bool):
+                entry["attempts"] = attempts
+            if isinstance(escalated, bool):
+                entry["escalated"] = escalated
+        blocked.append(entry)
+    blocked.sort(key=lambda e: (not e.get("quarantined", False), -e.get("failures", 0)))
+    return blocked
 
 
 @router.get("/overview")
@@ -511,6 +545,16 @@ async def get_overview() -> OverviewResponseDict:
         view = await load_manifest_view(session, token)
         sit_last_run = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SIT_WORKFLOW_FILE)
         sit_run = _sit_run_tuple(sit_last_run)
+        # Routine promote-drain (PM-central, every 15 min) — distinct from the breaking cascade
+        # above. Two GLOBAL queries (not per-repo), so the GitHub-API budget is unchanged.
+        staging_drain_raw = await latest_workflow_run_with_jobs(
+            session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_STAGING_WORKFLOW
+        )
+        main_drain_raw = await latest_workflow_run_with_jobs(
+            session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_MAIN_WORKFLOW
+        )
+        # Semver-agent standing health (G2) — one more global query (not per-repo).
+        semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
         builds = await _latest_builds_by_repo()
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
@@ -525,6 +569,10 @@ async def get_overview() -> OverviewResponseDict:
             rows.append(result)
     stuck_prs = [pr for row in rows for pr in row["open_prs"] if pr.get("stuck_class")]
     stuck_in_sit = [row["repo"] for row in rows if row["sit"]["stuck_in_sit"]]
+    promotion_drain = PromotionDrainDict(
+        ldr_to_staging=_to_promote_run(staging_drain_raw),
+        ldr_to_main=_to_promote_run(main_drain_raw),
+    )
     return OverviewResponseDict(
         generated_at=_now_iso(),
         source="live",
@@ -533,6 +581,9 @@ async def get_overview() -> OverviewResponseDict:
         stuck_in_sit=stuck_in_sit,
         sit_last_run=_to_sit_last_run(sit_last_run),
         errors=errors,
+        promotion_blocked=_build_promotion_blocked(view),
+        promotion_drain=promotion_drain,
+        semver_health=_to_semver_health(semver_raw, view),
     )
 
 
@@ -572,7 +623,8 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
                 sha = str(commit.get("sha") or "")
                 v2: str | None = None
                 if sha and index < _DETAIL_V2_LOOKUPS_PER_BRANCH:
-                    # Checks-API 403 (PAT missing Checks:read) degrades to unknown, never fatal.
+                    # Any transient lookup error degrades this commit's v2 to unknown, never
+                    # fatal (now reads the Actions API — no Checks:read 403). 503 propagates.
                     try:
                         v2 = await v2_conclusion_for_sha(session, token, GITHUB_ORG, repo, sha)
                     except HTTPException as exc:
@@ -590,6 +642,29 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
                     )
                 )
             history.append(BranchCommitsDict(branch=branch["branch"], commits=entries))
+
+        # N2-followup: per-branch last-green. A branch whose HEAD's v2 is success IS its own last
+        # green (no extra call — the head v2 is history[0]); otherwise one runs-API lookup. Cheap:
+        # this is a single-repo drilldown, not the fleet overview.
+        last_green: dict[str, LastGreenDict | None] = {}
+        for branch in branches:
+            branch_name = branch["branch"]
+            head_sha = branch["sha"]
+            if head_sha is None:
+                last_green[branch_name] = None
+                continue
+            branch_hist = next((h for h in history if h["branch"] == branch_name), None)
+            head_v2 = branch_hist["commits"][0]["v2_conclusion"] if branch_hist and branch_hist["commits"] else None
+            head_committed = branch["committed_at"]
+            if head_v2 == "success" and head_committed is not None:
+                last_green[branch_name] = LastGreenDict(sha=head_sha, at=head_committed)
+                continue
+            try:
+                lg = await last_green_for_branch(session, token, GITHUB_ORG, repo, branch_name)
+            except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
+                logger.warning("[REPO-CI] %s last-green(%s) fetch degraded: %s", repo, branch_name, exc)
+                lg = None
+            last_green[branch_name] = LastGreenDict(sha=lg[0], at=lg[1]) if lg else None
 
     sit = derive_sit_state(
         repo=repo,
@@ -612,56 +687,8 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
         open_prs=prs,
         sit=sit,
         image=_image_signal(view, repo, main_sha, await _latest_builds_by_repo()),
+        last_green=last_green,
     )
-
-
-def _mock_alerts() -> AlertsPayloadDict:
-    """Mock alert ledger — a lifecycle pair (FAILED -> RESOLVED) + a live CRITICAL, so the
-    UI/playwright can assert current-vs-previous traceability."""
-    entries: list[AlertEntryDict] = [
-        AlertEntryDict(
-            kind="alert",
-            timestamp="2026-06-10T12:10:00Z",
-            repo="unified-trading-pm",
-            workflow_name="ci-status-update",
-            severity="CRITICAL",
-            conclusion="failure",
-            message="CI REGRESSION: deployment-api is now FAILING (was MAIN_GREEN)",
-            run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/1",
-        ),
-        AlertEntryDict(
-            kind="alert",
-            timestamp="2026-06-10T12:50:00Z",
-            repo="unified-trading-pm",
-            workflow_name="ci-status-update",
-            severity="INFO",
-            conclusion="success",
-            message="RESOLVED: deployment-api recovered (FAILING -> MAIN_GREEN)",
-            run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/2",
-        ),
-        AlertEntryDict(
-            kind="alert",
-            timestamp="2026-06-10T13:00:00Z",
-            repo="unified-trading-pm",
-            workflow_name="sit-unlock",
-            severity="INFO",
-            conclusion="success",
-            message="SIT PASSED — staging UNLOCKED, breaking_pending cleared. Promotion queue flowing.",
-            run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/3",
-        ),
-        AlertEntryDict(
-            kind="alert",
-            timestamp="2026-06-10T13:05:00Z",
-            repo="execution-service",
-            workflow_name="quality-gates-v2",
-            severity="CRITICAL",
-            conclusion="failure",
-            message="quality-gates-v2 FAILED on main",
-            run_url="https://github.com/IggyIkenna/execution-service/actions/runs/4",
-        ),
-    ]
-    ordered = sorted(entries, key=lambda e: e["timestamp"], reverse=True)
-    return AlertsPayloadDict(generated_at=_now_iso(), source="mock", alerts=ordered, streams=derive_streams(entries))
 
 
 @router.get("/alerts")
@@ -672,107 +699,6 @@ async def get_alerts() -> AlertsPayloadDict:
     if cfg.is_mock_mode():
         return _mock_alerts()
     return await load_alerts_payload()
-
-
-def _mock_fleet_git_health() -> FleetGitHealthProxyDict:
-    """Mock fleet git-health — one laptop host with a clean + a drift-violating slot, so the
-    UI/playwright can assert the proxied-data path AND the orchestrator deep-link both render."""
-    return {
-        "available": True,
-        "reason": "",
-        "orchestrator_url": "https://api.agent-orchestrator.odum-research.com",
-        "data": {
-            "generated_at": "2026-06-10T13:00:00Z",
-            "scope": "fleet",
-            "summary": {
-                "hosts": 1,
-                "slots": 2,
-                "repos_total": 3,
-                "dirty": 1,
-                "behind": 1,
-                "ahead": 1,
-                "diverged": 0,
-                "clean": 1,
-                "drift_violations": 1,
-                "reporter_stale_slots": 0,
-                "ff_cron_stale_slots": 0,
-            },
-            "hosts": [
-                {
-                    "host": "laptop",
-                    "vm_id": None,
-                    "slots": [
-                        {
-                            "slot_id": 1,
-                            "host": "laptop",
-                            "reported_at": "2026-06-10T12:59:00Z",
-                            "reporter_stale": False,
-                            "ff_pull_last_run": "2026-06-10T12:58:00Z",
-                            "ff_pull_last_result": "ok",
-                            "ff_cron_stale": False,
-                            "repos": [
-                                {
-                                    "name": "unified-trading-pm",
-                                    "state": "clean",
-                                    "dirty_files": 0,
-                                    "ahead": 0,
-                                    "behind": 0,
-                                    "local_sha": "abc1234",
-                                    "not_clean_since": None,
-                                    "unpushed_plans": [],
-                                    "drift_violation": False,
-                                }
-                            ],
-                        },
-                        {
-                            "slot_id": 3,
-                            "host": "laptop",
-                            "reported_at": "2026-06-10T12:59:00Z",
-                            "reporter_stale": False,
-                            "ff_pull_last_run": "2026-06-10T12:58:00Z",
-                            "ff_pull_last_result": "skip:dirty",
-                            "ff_cron_stale": False,
-                            "repos": [
-                                {
-                                    "name": "mtds",
-                                    "state": "dirty",
-                                    "dirty_files": 3,
-                                    "ahead": 0,
-                                    "behind": 1,
-                                    "local_sha": "def5678",
-                                    "not_clean_since": "2026-06-10T12:30:00Z",
-                                    "unpushed_plans": [],
-                                    "drift_violation": False,
-                                },
-                                {
-                                    "name": "execution-service",
-                                    "state": "ahead",
-                                    "dirty_files": 0,
-                                    "ahead": 2,
-                                    "behind": 0,
-                                    "local_sha": "fed9876",
-                                    "not_clean_since": "2026-06-10T12:40:00Z",
-                                    "unpushed_plans": [],
-                                    "drift_violation": True,
-                                },
-                            ],
-                        },
-                    ],
-                }
-            ],
-            "drift_violations": [
-                {
-                    "host": "laptop",
-                    "slot": "3",
-                    "repo": "execution-service",
-                    "state": "ahead",
-                    "ahead": "2",
-                    "behind": "0",
-                }
-            ],
-            "vm_errors": [],
-        },
-    }
 
 
 @router.get("/fleet-git-health")

@@ -64,6 +64,7 @@ def _mock_epics_plans() -> EpicsPlansResponseDict:
     epics: list[EpicCardDict] = [
         EpicCardDict(
             name="observability_master",
+            slug="observability_master",
             title="Observability Master",
             tier="L4",
             priority="P0",
@@ -77,6 +78,7 @@ def _mock_epics_plans() -> EpicsPlansResponseDict:
         ),
         EpicCardDict(
             name="orchestrator_master",
+            slug="orchestrator_master",
             title="Orchestrator Master",
             tier="L4",
             priority="P1",
@@ -93,6 +95,7 @@ def _mock_epics_plans() -> EpicsPlansResponseDict:
     return EpicsPlansResponseDict(
         generated_at="2026-06-10T13:00:00Z",
         source="mock",
+        stale=False,
         epics=epics,
         orphans=orphans,
         orphan_count=len(orphans),

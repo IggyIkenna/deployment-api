@@ -143,7 +143,8 @@ async def lifespan(app: FastAPI):
     logger.info("Config directory: %s", app.state.config_dir)
 
     # Initialize cache
-    from .utils.cache import cache
+    # call-time patch surface (tests/unit/test_app_config.py patch.dict's sys.modules["deployment_api.utils.cache"])
+    from .utils.cache import cache  # noqa: imports-inside-functions
 
     await cache.initialize()
 

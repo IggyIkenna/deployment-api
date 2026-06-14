@@ -8,6 +8,7 @@ short TTL cache + workspace-manifest.json for the repo registry / ci_status / st
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Literal, Required, TypedDict
 
 # The three branches of the promotion contract (LDR -> staging -> SIT -> main).
@@ -92,6 +93,13 @@ class ImageSignalDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shap
 
     last_build_status: str | None
     last_build_sha: str | None
+    last_build_time: str | None  # ISO-8601 of the last build's finish_time (B1 — when it built)
+    last_build_log_url: str | None  # GCP Cloud Build / AWS CodeBuild console URL (B1 — click-through)
+    # Last SUCCESSFUL build (operator add 2026-06-11) — so a red latest build doesn't hide the last
+    # good image: "current build failed, what's the last sha that succeeded?". None = no success in window.
+    last_success_sha: str | None
+    last_success_time: str | None
+    last_success_log_url: str | None
     deployed_version: str | None  # workspace-manifest.json deployed_versions[repo]
     image_stale: bool | None  # main HEAD sha != last successful build sha (None = unknown)
 
@@ -115,17 +123,42 @@ class SitLastRunDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape
     jobs: list[SitJobDict]
 
 
+class LastGreenDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """The most-recent SHA on a branch whose quality-gates-v2 concluded success, plus when (N2 —
+    "green as of <sha> · <age>"). Distinct from the branch HEAD, which may be red/pending. `at`
+    is the successful run's completion time (ISO-8601), or the head's commit time when the head
+    itself is green."""
+
+    sha: str
+    at: str
+
+
 class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """One row of the fleet overview matrix."""
 
     repo: str
     repo_type: str
     ci_status: str
+    # Per-branch quality-gates-v2 conclusion (live-defi-rollout / staging / main) so the UI can
+    # show WHICH branch is red — `ci_status` alone (a single manifest value) can't distinguish
+    # "main red, LDR recovered (draining)" from "LDR actively broken". Keyed by branch name;
+    # value is success/failure/in_progress/… or None when v2 never ran on that branch.
+    branch_ci: dict[str, str | None]
     branches: list[BranchHeadDict]
     deltas: list[BranchDeltaDict]
     open_prs: list[RepoPrDict]
     sit: SitStateDict
     image: ImageSignalDict
+    # N2: most-recent GREEN main sha + time ("green as of <sha> · <age>"), distinct from the head.
+    last_green_main: LastGreenDict | None
+    # G6: age (minutes) of the oldest LDR commit not yet on main — the promotion lag the
+    # promotion-lag-monitor pages on (>60min). None when LDR is in sync with main (no lag).
+    main_lag_age_min: int | None
+    # promotion-drain follow-up: True when this repo has REAL file-content ahead of staging or main
+    # (files_changed > 0, not squash skew) AND the corresponding global drain leg is failing/stale
+    # (>45min = 3 missed 15-min ticks) — the bug-#11 class where content piles on LDR with a dead
+    # drain, invisible today. False when content is draining healthily or there's no real delta.
+    drain_stalled: bool
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -139,6 +172,58 @@ class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape,
     error: str
 
 
+class PromotionBlockedDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api response shape
+    """A repo parked out of the staging→main promotion (G1 — alert-parity for the
+    staging-to-main genuine-failure CRITICAL page + the newly-quarantined WARNING).
+
+    Sourced from manifest `promotion_failures` (`{repo: consecutive-fail count}`) and
+    `promotion_quarantine` (`{repo: {since, attempts, escalated}}`). `quarantined` is True
+    when the repo is in `promotion_quarantine`; `failures` is its consecutive-fail count."""
+
+    repo: Required[str]
+    failures: int
+    quarantined: bool
+    since: str
+    attempts: int
+    escalated: bool
+
+
+class PromoteRunDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """One promote-drain workflow's most-recent run (LDR→staging or LDR→main). Distinct from the
+    breaking cascade/SIT — this is the ROUTINE every-15-min drain (operator ask 2026-06-11: "when
+    did we last pull LDR→staging via auto-merge + QG branch-protection, and did it pass")."""
+
+    status: str  # queued | in_progress | completed
+    conclusion: str | None  # success | failure | … | None while running
+    age_min: int | None
+    url: str
+
+
+class PromotionDrainDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """The fleet-wide routine promotion drain (PM-central, every 15 min) — distinct from the
+    breaking cascade/SIT panel. Both legs are global (one PM-central workflow each)."""
+
+    ldr_to_staging: PromoteRunDict | None
+    ldr_to_main: PromoteRunDict | None
+
+
+class SemverHealthDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """Semver-agent standing health (G2 — the bump-rate circuit-breaker + dispatch-failure are
+    CRITICAL pages with no UI element today). `last_run_*` is the most-recent `semver-agent.yml`
+    run (one global GitHub-runs query); `pending_bump_*` + `breaker_armed` derive from the manifest
+    version-surface (`staging_versions` ahead of `versions`). `breaker_armed` mirrors the agent's
+    ≥3-pending-staging-bumps circuit-breaker threshold."""
+
+    last_run_status: str  # queued | in_progress | completed
+    last_run_conclusion: str | None  # success | failure | … | None while running
+    last_run_age_min: int | None
+    last_run_url: str
+    pending_bump_count: int  # repos whose staging version is ahead of main (pending promotion)
+    pending_bump_repos: list[str]
+    breaker_armed: bool  # pending_bump_count >= breaker_threshold (the semver-agent breaker condition)
+    breaker_threshold: int  # the ≥N-pending-bumps threshold the breaker pages on (3)
+
+
 class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/overview response."""
 
@@ -149,6 +234,13 @@ class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response
     stuck_in_sit: list[str]  # repos currently stuck in SIT (operator add)
     sit_last_run: SitLastRunDict | None  # live SIT run panel (alert-parity, operator add)
     errors: list[RepoErrorDict]  # repos dropped on aggregation failure (operator add — never silent)
+    promotion_blocked: list[PromotionBlockedDict]  # repos parked out of staging→main (G1)
+    # Routine LDR→staging / LDR→main promote drain (PM-central, every 15 min) — distinct from the
+    # breaking cascade/SIT above (operator gap 2026-06-11). None when the drain runs can't be fetched.
+    promotion_drain: PromotionDrainDict | None
+    # Semver-agent standing health (G2) — last bump run + pending-bump count + breaker-armed flag.
+    # None when the semver-agent run can't be fetched.
+    semver_health: SemverHealthDict | None
 
 
 class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -172,6 +264,11 @@ class RepoDetailResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api respon
     open_prs: list[RepoPrDict]
     sit: SitStateDict
     image: ImageSignalDict
+    # N2-followup: per-branch last-green (LDR / staging / main) — keyed by branch name, the
+    # most-recent SHA on that branch whose quality-gates-v2 concluded success, or None when no
+    # green run exists. The overview surfaces only the MAIN axis; the drilldown carries all three
+    # (a green head uses the head, else one runs-API lookup — same budget-gated pattern).
+    last_green: dict[str, LastGreenDict | None]
 
 
 class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -188,3 +285,8 @@ class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api respo
     reason: str  # "" when available; failure reason otherwise (honest, never fabricated)
     orchestrator_url: str  # always present → UI deep-link target (the AO UI)
     data: dict[str, object] | None  # the orchestrator FleetGitHealthResponse payload, or None
+
+
+def _now_iso() -> str:
+    """UTC now in ISO-8601 (shared by the live aggregator + mock fixtures)."""
+    return dt.datetime.now(dt.UTC).isoformat()

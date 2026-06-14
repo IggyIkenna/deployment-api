@@ -71,7 +71,7 @@ def _infer_experiment_kind(vm_name: str) -> str:
     return "strategy_backtest"
 
 
-class ExperimentJobEntry(BaseModel):
+class ExperimentJobEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """One row in the /api/monitor/experiments response."""
 
     deployment_id: str
@@ -91,7 +91,7 @@ class ExperimentJobEntry(BaseModel):
     lifecycle_class: str = "EPHEMERAL_EXPERIMENT"
 
 
-class ExperimentMonitorResponse(BaseModel):
+class ExperimentMonitorResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from GET /api/monitor/experiments."""
 
     jobs: list[ExperimentJobEntry]
@@ -164,7 +164,7 @@ def list_experiment_jobs(
 # ---------------------------------------------------------------------------
 
 
-class ExperimentActionResponse(BaseModel):
+class ExperimentActionResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from POST /api/monitor/experiments/{deployment_id}/{stop|restart}."""
 
     deployment_id: str

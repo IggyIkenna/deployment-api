@@ -80,7 +80,7 @@ def _infer_deployment_kind(vm_name: str) -> str:
     return "unknown"
 
 
-class LiveClusterEntry(BaseModel):
+class LiveClusterEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """One row in the /api/monitor/live response."""
 
     deployment_id: str
@@ -97,7 +97,7 @@ class LiveClusterEntry(BaseModel):
     lifecycle_class: str = "LONG_LIVED_LIVE"
 
 
-class LiveMonitorResponse(BaseModel):
+class LiveMonitorResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from GET /api/monitor/live."""
 
     clusters: list[LiveClusterEntry]
@@ -107,7 +107,7 @@ class LiveMonitorResponse(BaseModel):
     env: str
 
 
-class LiveActionResponse(BaseModel):
+class LiveActionResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from POST /api/monitor/live/{name}/{action} — Phase E.2."""
 
     name: str

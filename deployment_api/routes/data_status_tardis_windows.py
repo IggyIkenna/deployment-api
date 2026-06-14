@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from unified_api_contracts.registry.tardis_free_coverage import TARDIS_FREE_ROLLING_WINDOW_DAYS
+from unified_api_contracts.registry import TARDIS_FREE_ROLLING_WINDOW_DAYS
 
 from deployment_api.routes.venue_credentials import get_tardis_key_status
 
@@ -19,14 +19,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-class TardisFreeTierRules(BaseModel):
+class TardisFreeTierRules(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     rolling_window_days: int
     rolling_window_cutoff: str
     monthly_firsts: bool
     rule_description: str
 
 
-class VenueTardisWindowsResponse(BaseModel):
+class VenueTardisWindowsResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     as_of: str
     key_name: str
     key_status: str

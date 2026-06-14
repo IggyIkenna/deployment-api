@@ -18,6 +18,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from unified_trading_library import (
     RequestAuditMiddleware,
+    UnifiedCloudConfig,
     make_events_relay_router,
 )
 
@@ -288,8 +289,6 @@ if _ui_dist:
 @app.get("/api/health")
 async def health_check_with_config() -> dict[str, object]:
     """Detailed health check. Includes GCS FUSE status for UI display."""
-    from unified_trading_library import UnifiedCloudConfig
-
     from deployment_api.utils.storage_facade import get_gcs_fuse_status
 
     _cloud_cfg = UnifiedCloudConfig()

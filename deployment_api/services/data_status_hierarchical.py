@@ -38,12 +38,11 @@ from typing import cast
 
 import pandas as pd
 from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
-from unified_api_contracts.registry import EMPTY_OR_DEPRECATED_DEFI_VENUES
-from unified_api_contracts.registry.data_status_axis_matrix import (
+from unified_api_contracts.registry import (
+    EMPTY_OR_DEPRECATED_DEFI_VENUES,
     SHARD_AXIS_MATRIX,
     get_shard_axes,
 )
-from unified_trading_library import read_availability_index
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_union import (
@@ -51,6 +50,7 @@ from deployment_api.services.data_status_union import (
     provenance_breakdown,
     union_reduce_to_cells,
 )
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ _REQUIRED_COLUMNS: tuple[str, ...] = (
 
 
 @dataclass
-class DrilldownNode:
+class DrilldownNode:  # CORRECT-LOCAL: in-process drilldown tree node
     """One node in the hierarchical drill-down tree.
 
     ``axis`` is the manifest column this node groups by (e.g. ``venue``,

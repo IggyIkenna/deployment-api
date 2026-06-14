@@ -304,8 +304,8 @@ class DefaultCloudBuildInvoker:
     def _cb_module() -> object:
         # Deferred import — `google.cloud.devtools.cloudbuild_v1` has
         # heavy proto deps; pulling it into the import graph during test
-        # collection slows pytest start-up.
-        from google.cloud.devtools import cloudbuild_v1
+        # collection slows pytest start-up (lazy heavy SDK).
+        from google.cloud.devtools import cloudbuild_v1  # noqa: imports-inside-functions
 
         return cloudbuild_v1
 

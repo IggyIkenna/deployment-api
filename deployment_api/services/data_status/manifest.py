@@ -7,9 +7,10 @@ public + legacy-underscore name, so callers keep importing from
 """
 
 import asyncio
+import datetime as dt
 import logging
 import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import cast
 
 import pandas as pd
@@ -19,6 +20,7 @@ from unified_api_contracts import (
 from unified_api_contracts.internal import MarketCategory
 
 import deployment_api.services.data_status_service as _dss
+from deployment_api.services import manifest_source
 from deployment_api.services.data_status_drilldown import (
     COMMODITY_BUCKET_TEMPLATE,
     PREDICTION_KIND_MAP,
@@ -38,6 +40,21 @@ from deployment_api.services.data_status.mtds import (
     mtds_expected_venues,
 )
 from deployment_api.services.data_status.rollup_cache import slice_rollup_to_window
+
+
+async def prewarm_indexes(service: str, *, days: int = 7, cloud: str = "gcp") -> None:
+    """Warm ``_INDEX_CACHE`` for a service by running a tiny manifest query at startup.
+
+    The manifest index load is whole-file (not date-windowed) — so a cheap 7-day query
+    loads and caches (5-min TTL) every asset-group index the Data Status landing page
+    needs, with negligible cell-grid compute. The user's first real query then hits warm
+    cache (~10s) instead of the cold ~50s/asset-group transpacific GCS fetch. Best-effort:
+    raises nothing the caller must handle (the lifespan wrapper logs + swallows). Honours
+    beta mode (reads through the same beta-aware seam)."""
+    end = dt.datetime.now(dt.UTC).date()
+    start = end - dt.timedelta(days=days)
+    svc = _dss.DataStatusService()
+    await svc.get_manifest_status(service, start.isoformat(), end.isoformat(), cloud=cloud)
 
 
 def build_category_in_subprocess(
@@ -133,7 +150,12 @@ class ManifestStatusMixin(MissingShardsMixin):
         any_row_filter = any(
             f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
         ) or bool(pipeline_modes)
-        if not any_row_filter:
+        # CF-20 beta preview: the offline rollup is computed from the LIVE
+        # index, so serving it in beta mode would quietly render live data —
+        # exactly what the beta eyeball must never do (see
+        # ``services/manifest_source.py``). Beta mode always takes the
+        # on-demand path, which reads through the beta-aware seam.
+        if not any_row_filter and not manifest_source.DATA_STATUS_BETA_MANIFEST_BLOB:
             rollup = await asyncio.to_thread(_dss._read_rollup_if_fresh, service)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             if rollup is not None:
                 response = slice_rollup_to_window(rollup, start_date, end_date, asset_groups)
@@ -192,23 +214,9 @@ class ManifestStatusMixin(MissingShardsMixin):
         overall_shards_found = 0
         overall_shards_expected = 0
 
-        # Parallelise per-category builds across processes. Each category is
-        # independent (own filter slice, own honest-coverage compute, writes to
-        # its own ``result_categories[cat]`` slot), so we map them onto a fork
-        # ProcessPool. Fork start-method is critical: children inherit the
-        # parent's loaded ``_INDEX_CACHE`` (the ~30 MB manifest DataFrames per
-        # bucket) via copy-on-write, so we don't pay the pickle/transfer cost
-        # of sending those over a Pipe. Only the small picklable args per task
-        # cross the boundary. Single-category requests stay serial — the fork
-        # + pickle overhead would dwarf the work.
-        #
-        # Why not threads: the honest-coverage inner loops are GIL-bound
-        # Python (set comprehensions, Counter, dict mutations); a previous
-        # ThreadPoolExecutor attempt gave zero speedup and OOM'd at 8 GiB.
-        # Pack secondary-axis filter params into a dict the per-category
-        # builder can apply after the date mask but before the cell-grid
-        # compute. Empty/None values are dropped so a no-filter request
-        # behaves identically to the previous code path.
+        # Pack secondary-axis filter params into a dict the per-category builder
+        # applies after the date mask but before the cell-grid compute. Empty/None
+        # values are dropped so a no-filter request behaves identically.
         row_filters = self._pack_row_filters(
             league_id=league_id,
             fixture_id=fixture_id,
@@ -217,53 +225,28 @@ class ManifestStatusMixin(MissingShardsMixin):
             chain=chain,
         )
 
-        if len(cat_list) <= 1 or _dss._PROCESS_POOL_DISABLED or row_filters or pipeline_modes:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
-            for cat in cat_list:
-                cat_result = self._build_manifest_category(
-                    service,
-                    cat,
-                    start_date,
-                    end_date,
-                    all_date_strs,
-                    total_days,
-                    venue_mapping,
-                    row_filters=row_filters,
-                    cloud=cloud,
-                    pipeline_modes=pipeline_modes,
-                )
-                result_categories[cat] = cat_result
-                overall_found += int(cat_result.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
-                overall_expected += int(cat_result.get("dates_expected", 0))  # pyright: ignore[reportArgumentType]
-                overall_shards_found += int(cat_result.get("_venue_found", 0))  # pyright: ignore[reportArgumentType]
-                overall_shards_expected += int(cat_result.get("_venue_expected", 0))  # pyright: ignore[reportArgumentType]
-                del cat_result["_venue_found"]
-                del cat_result["_venue_expected"]
-        else:
-            ctx = multiprocessing.get_context("fork")
-            with ProcessPoolExecutor(max_workers=min(len(cat_list), 5), mp_context=ctx) as pool:
-                futures = {
-                    pool.submit(
-                        build_category_in_subprocess,
-                        service,
-                        cat,
-                        start_date,
-                        end_date,
-                        all_date_strs,
-                        total_days,
-                        cloud,
-                    ): cat
-                    for cat in cat_list
-                }
-                for future in futures:
-                    cat = futures[future]
-                    cat_result = future.result()
-                    result_categories[cat] = cat_result
-                    overall_found += int(cat_result.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
-                    overall_expected += int(cat_result.get("dates_expected", 0))  # pyright: ignore[reportArgumentType]
-                    overall_shards_found += int(cat_result.get("_venue_found", 0))  # pyright: ignore[reportArgumentType]
-                    overall_shards_expected += int(cat_result.get("_venue_expected", 0))  # pyright: ignore[reportArgumentType]
-                    del cat_result["_venue_found"]
-                    del cat_result["_venue_expected"]
+        results = self._dispatch_category_builds(
+            cat_list,
+            service,
+            start_date,
+            end_date,
+            all_date_strs,
+            total_days,
+            venue_mapping,
+            row_filters=row_filters,
+            cloud=cloud,
+            pipeline_modes=pipeline_modes,
+        )
+
+        for cat in cat_list:
+            cat_result = results[cat]
+            result_categories[cat] = cat_result
+            overall_found += int(cat_result.get("dates_found", 0))  # pyright: ignore[reportArgumentType]
+            overall_expected += int(cat_result.get("dates_expected", 0))  # pyright: ignore[reportArgumentType]
+            overall_shards_found += int(cat_result.get("_venue_found", 0))  # pyright: ignore[reportArgumentType]
+            overall_shards_expected += int(cat_result.get("_venue_expected", 0))  # pyright: ignore[reportArgumentType]
+            del cat_result["_venue_found"]
+            del cat_result["_venue_expected"]
 
         overall_pct_dates = min(round(overall_found / max(1, overall_expected) * 100, 2), 100.0)
         overall_pct_shards = (
@@ -303,8 +286,8 @@ class ManifestStatusMixin(MissingShardsMixin):
             "asset_groups": result_categories,
         }
         # Echo secondary_axis + active filters back so the UI can confirm
-        # which slice it received. No-filter requests omit these keys
-        # (backward-compat with existing /manifest consumers).
+        # which slice it received. No-filter requests omit these keys --
+        # existing /manifest consumers expect them absent on unfiltered reads.
         if secondary_axis:
             response["secondary_axis"] = secondary_axis
         if row_filters:
@@ -328,7 +311,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             # status. The API is dict-like on the .items() mapping; each
             # zone bucket carries an ``instances`` list we walk once.
             raw = ce.instances().aggregatedList(project=self.project_id).execute()  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
-            items: object = raw.get("items", {}) if isinstance(raw, dict) else {}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            items: object = raw.get("items", {}) if isinstance(raw, dict) else {}  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # noqa: qg-empty-fallback — defensive GCS JSON parse
             if not isinstance(items, dict):
                 return False
             for zone_bucket in items.values():  # pyright: ignore[reportUnknownVariableType]
@@ -349,6 +332,90 @@ class ManifestStatusMixin(MissingShardsMixin):
             return False
         except (ImportError, OSError, RuntimeError, KeyError, AttributeError):
             return False
+
+    def _dispatch_category_builds(
+        self,
+        cat_list: list[str],
+        service: str,
+        start_date: str,
+        end_date: str,
+        all_date_strs: list[str],
+        total_days: int,
+        venue_mapping: VenueMapping,
+        *,
+        row_filters: dict[str, str] | None,
+        cloud: str,
+        pipeline_modes: list[str] | None,
+    ) -> dict[str, dict[str, object]]:
+        """Build every category's manifest entry, returning ``{cat: result}``. Three paths:
+
+        - PROCESS pool (Linux): fork children inherit the parent's loaded ``_INDEX_CACHE``
+          (~30 MB DataFrames/bucket) via copy-on-write; only small picklable args cross the Pipe.
+        - THREAD pool (process pool disabled — e.g. macOS dev, where fork after grpc/GCS init dies
+          → BrokenProcessPool): each category's dominant cost is ``_read_defi_merged_index`` — an
+          I/O-bound GCS download + pyarrow parse that RELEASES the GIL — so threading overlaps the
+          per-asset-group index loads even though the cell-grid compute stays GIL-serialised. That
+          collapses the cold ~5x (index load) serial cost to ~1x (the macOS slowness fix). Capped
+          at 4 workers to bound concurrent cell-grid memory on a wide date range.
+        - SERIAL: a single category — fan-out overhead would dwarf the work.
+        """
+        use_process_pool = (
+            len(cat_list) > 1
+            and not _dss._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            and not row_filters
+            and not pipeline_modes
+        )
+        if use_process_pool:
+            ctx = multiprocessing.get_context("fork")
+            with ProcessPoolExecutor(max_workers=min(len(cat_list), 5), mp_context=ctx) as pool:
+                pp_futures = {
+                    pool.submit(
+                        build_category_in_subprocess,
+                        service,
+                        cat,
+                        start_date,
+                        end_date,
+                        all_date_strs,
+                        total_days,
+                        cloud,
+                    ): cat
+                    for cat in cat_list
+                }
+                return {pp_futures[f]: f.result() for f in pp_futures}
+        if len(cat_list) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(cat_list), 4)) as tpool:
+                tp_futures = {
+                    tpool.submit(
+                        self._build_manifest_category,
+                        service,
+                        cat,
+                        start_date,
+                        end_date,
+                        all_date_strs,
+                        total_days,
+                        venue_mapping,
+                        row_filters=row_filters,
+                        cloud=cloud,
+                        pipeline_modes=pipeline_modes,
+                    ): cat
+                    for cat in cat_list
+                }
+                return {tp_futures[f]: f.result() for f in tp_futures}
+        return {
+            cat: self._build_manifest_category(
+                service,
+                cat,
+                start_date,
+                end_date,
+                all_date_strs,
+                total_days,
+                venue_mapping,
+                row_filters=row_filters,
+                cloud=cloud,
+                pipeline_modes=pipeline_modes,
+            )
+            for cat in cat_list
+        }
 
     def _build_manifest_category(
         self,

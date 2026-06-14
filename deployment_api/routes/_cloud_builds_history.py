@@ -12,9 +12,14 @@ import asyncio
 import concurrent.futures
 import logging
 from contextlib import suppress
+from itertools import islice
 from typing import TYPE_CHECKING
 
-from deployment_api.settings import GCS_REGION as DEFAULT_REGION
+# Cloud Build builds/triggers live in CLOUD_BUILD_REGION (asia-northeast1, operator
+# matched-region decision 2026-05-11) — NOT GCS_REGION (a storage region, e.g. us-central1).
+# Listing builds in the GCS region returns 400 InvalidArgument (no Cloud Build there), which
+# was swallowed → the repo-CI Image column showed nothing. Match the trigger module's region.
+from deployment_api.settings import CLOUD_BUILD_REGION as DEFAULT_REGION
 from deployment_api.settings import gcp_project_id as default_project_id
 
 from ._cloud_builds_types import (
@@ -103,7 +108,10 @@ async def _get_recent_builds_for_triggers(
             request = _cb.ListBuildsRequest(
                 parent=parent,
                 page_size=1,
-                filter=f'build_trigger_id="{trigger_id}"',
+                # Filter field is `trigger_id` — `build_trigger_id` (the proto FIELD name) is
+                # not a valid FILTER token and 400s "invalid argument" (diagnosed live
+                # 2026-06-11; this was the dev-stack "Image column unknown" root cause).
+                filter=f'trigger_id="{trigger_id}"',
             )
             # Use next(iter(...)) to get only the first build without exhausting the pager
             build = next(iter(client.list_builds(request=request)), None)  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
@@ -135,4 +143,49 @@ async def _get_recent_builds_for_triggers(
 
     except (OSError, ValueError, RuntimeError) as e:
         logger.warning("Error getting recent builds: %s", e)
+        return {}
+
+
+async def _recent_builds_by_repo_name(
+    max_scan: int = 400,
+) -> dict[str, tuple[BuildInfoDict, BuildInfoDict | None]]:
+    """repo_name -> (latest build, last SUCCESSFUL build | None), grouped from recent builds
+    via the REPO_NAME substitution that every Cloud Build carries.
+
+    Robust where the per-trigger path is not: the per-trigger filter token is `trigger_id`
+    (`build_trigger_id` is the proto field name, not a filter token — using it 400s; corrected
+    2026-06-11), and a build's trigger id drifts whenever a trigger is recreated. REPO_NAME maps 1:1 to
+    the repo, so fetch recent builds ONCE (newest-first by create_time) and, per repo, keep the
+    first build seen (= latest) AND the first SUCCESS seen (= last good build, so a red latest
+    build doesn't hide the last green image). Scans up to max_scan builds; repos with no build in
+    that window stay honestly-absent, and last-success is None when no SUCCESS is in the window.
+    """
+
+    def _fetch_sync() -> dict[str, tuple[BuildInfoDict, BuildInfoDict | None]]:
+        _cb = get_cloudbuild_v1()
+        client = get_gcp_build_client()
+        parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
+        request = _cb.ListBuildsRequest(parent=parent, page_size=100)  # default order: create_time desc
+        latest: dict[str, BuildInfoDict] = {}
+        success: dict[str, BuildInfoDict] = {}
+        for build in islice(client.list_builds(request=request), max_scan):  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
+            substitutions: object = getattr(build, "substitutions", None)
+            repo = ""
+            if substitutions is not None:
+                sub_get = getattr(substitutions, "get", None)
+                if callable(sub_get):
+                    repo = str(sub_get("REPO_NAME") or "")
+            if not repo:
+                continue
+            info = _format_build_info(build)
+            if repo not in latest:  # first occurrence = newest build for that repo
+                latest[repo] = info
+            if repo not in success and info.get("status") == "SUCCESS":  # first SUCCESS = last good build
+                success[repo] = info
+        return {repo: (info, success.get(repo)) for repo, info in latest.items()}
+
+    try:
+        return await asyncio.to_thread(_fetch_sync)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("Error getting recent builds by repo: %s", e)
         return {}

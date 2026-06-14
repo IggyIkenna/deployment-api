@@ -90,7 +90,7 @@ def _resolve_env_tier() -> EnvironmentTier:
 # ---------------------------------------------------------------------------
 
 
-class ScheduledJobEntry(BaseModel):
+class ScheduledJobEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """One row in the /api/monitor/scheduled response."""
 
     deployment_id: str
@@ -108,7 +108,7 @@ class ScheduledJobEntry(BaseModel):
     lifecycle_class: str = "SCHEDULED_RECURRING"
 
 
-class ScheduledMonitorResponse(BaseModel):
+class ScheduledMonitorResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from GET /api/monitor/scheduled."""
 
     jobs: list[ScheduledJobEntry]
@@ -119,7 +119,7 @@ class ScheduledMonitorResponse(BaseModel):
     phase_d_registry_available: bool
 
 
-class DeployMissingEntryResult(BaseModel):
+class DeployMissingEntryResult(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Per-entry result for POST /api/monitor/scheduled/deploy-missing."""
 
     name: str
@@ -131,7 +131,7 @@ class DeployMissingEntryResult(BaseModel):
     error: str | None = None
 
 
-class DeployMissingResponse(BaseModel):
+class DeployMissingResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from POST /api/monitor/scheduled/deploy-missing."""
 
     results: list[DeployMissingEntryResult]
@@ -144,7 +144,7 @@ class DeployMissingResponse(BaseModel):
     executed_at: str
 
 
-class SchedulerActionResponse(BaseModel):
+class SchedulerActionResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Response from POST /api/monitor/scheduled/{name}/pause|resume."""
 
     name: str

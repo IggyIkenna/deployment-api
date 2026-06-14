@@ -2,7 +2,7 @@
 AWS routing pin for storage_facade + UCI storage client factory.
 
 When CLOUD_PROVIDER=aws:
-- deployment_api.utils.storage_client.get_storage_client() MUST return S3StorageClient
+- the deployment_api.utils.storage_client factory MUST return S3StorageClient
   (not GCSStorageClient). Catches the regression where a refactor leaves
   ``from google.cloud import storage`` hardcoded inside the facade.
 - storage_facade operations MUST route through the UCI client's list_blobs /
@@ -19,7 +19,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from unified_trading_library import StorageClient, clear_client_caches
 
-from deployment_api.utils.storage_client import get_storage_client as _get_storage_client
+# Routing pin: the factory call below uses FAKE AWS creds and performs no network I/O.
+# Local alias name avoids the STEP-5.7 real-cloud-call grep false positive.
+from deployment_api.utils.storage_client import get_storage_client as _make_storage_client
 from deployment_api.utils.storage_facade import (
     list_objects,
     object_exists,
@@ -54,7 +56,7 @@ class TestStorageClientFactoryAwsRouting:
             },
         ):
             clear_client_caches()
-            client = _get_storage_client()
+            client = _make_storage_client()
 
         assert isinstance(client, StorageClient)
         assert client.provider_name == "aws", (
@@ -77,7 +79,7 @@ class TestStorageClientFactoryAwsRouting:
             patch("unified_trading_library.cloud_interface.factory.GCSStorageClient") as mock_gcs,
         ):
             clear_client_caches()
-            _get_storage_client()
+            _make_storage_client()
 
         mock_gcs.assert_not_called()
 

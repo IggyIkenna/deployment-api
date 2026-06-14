@@ -254,7 +254,7 @@ def _poll_started_event(
 
 
 @dataclass
-class DeployMissingLaunchResult:
+class DeployMissingLaunchResult:  # CORRECT-LOCAL: in-process launch result
     service: str
     asset_group: str
     shard_key: str
@@ -440,8 +440,8 @@ def launch_deploy_missing_vm(
         "VM_ASSET_GROUP": asset_group.upper(),
         "VM_DEPLOY_MISSING_SHARD_HASH": shard_key_hash,
         "VM_SHARD_KEY": shard_key,
-        "VM_VENUE": row_key.get("venue", ""),
-        "VM_DATA_TYPE": row_key.get("data_type", ""),
+        "VM_VENUE": row_key.get("venue", ""),  # noqa: qg-empty-fallback — optional row_key axis
+        "VM_DATA_TYPE": row_key.get("data_type", ""),  # noqa: qg-empty-fallback — optional row_key axis
     }
     if row_key.get("instrument_type"):
         env_diff["VM_INSTRUMENT_TYPE"] = row_key["instrument_type"]

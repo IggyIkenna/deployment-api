@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from deployment_api.routes._repo_ci_manifest import manifest_view_from_raw
+from deployment_api.routes.repo_ci import _build_promotion_blocked
 
 _FIXTURE: dict[str, object] = {
     "repositories": {
@@ -87,3 +88,68 @@ class TestManifestView:
         assert view.breaking_pending == []
         assert not view.staging_locked
         assert view.ci_status_for("anything") == "UNKNOWN"
+        assert view.promotion_failures() == {}
+        assert view.promotion_quarantine() == {}
+
+
+_PROMOTION_FIXTURE: dict[str, object] = {
+    "repositories": {"execution-service": {"type": "service"}, "greeks-service": {"type": "service"}},
+    "promotion_failures": {"execution-service": 1, "greeks-service": 2, "bad": "x", "bool-skip": True},
+    "promotion_quarantine": {
+        "greeks-service": {"since": "2026-06-11T08:00:00Z", "attempts": 2, "escalated": True},
+        "bad-detail": "not-a-dict",
+    },
+}
+
+
+class TestPromotionBlocked:
+    def test_promotion_failures_typed_and_tolerant(self) -> None:
+        view = manifest_view_from_raw(_PROMOTION_FIXTURE)
+        f = view.promotion_failures()
+        assert f == {"execution-service": 1, "greeks-service": 2}  # "x" dropped, True (bool) skipped
+
+    def test_promotion_quarantine_tolerant(self) -> None:
+        view = manifest_view_from_raw(_PROMOTION_FIXTURE)
+        q = view.promotion_quarantine()
+        assert q["greeks-service"]["escalated"] is True
+        assert q["bad-detail"] == {}  # non-dict detail → empty
+
+    def test_build_promotion_blocked_union_and_sort(self) -> None:
+        blocked = _build_promotion_blocked(manifest_view_from_raw(_PROMOTION_FIXTURE))
+        # Union of failures + quarantine; sort = quarantined first, then failures desc.
+        # greeks-service (quarantined, 2 fails) → bad-detail (quarantined via key, 0 fails) →
+        # execution-service (not quarantined, 1 fail).
+        assert [b["repo"] for b in blocked] == ["greeks-service", "bad-detail", "execution-service"]
+        gs = blocked[0]
+        assert gs["quarantined"] is True and gs["failures"] == 2
+        assert gs["since"] == "2026-06-11T08:00:00Z" and gs["attempts"] == 2 and gs["escalated"] is True
+        bad = blocked[1]
+        assert bad["quarantined"] is True and bad["failures"] == 0 and "since" not in bad
+        ex = blocked[2]
+        assert ex["quarantined"] is False and ex["failures"] == 1
+
+    def test_build_promotion_blocked_empty(self) -> None:
+        assert _build_promotion_blocked(manifest_view_from_raw({})) == []
+
+
+_SEMVER_FIXTURE: dict[str, object] = {
+    "versions": {"_note": "x", "a-svc": "0.4.0", "b-svc": "1.2.0", "c-svc": "0.9.0", "pm": "1.2.86"},
+    "staging_versions": {
+        "_note": "x",
+        "a-svc": "0.5.0",  # ahead → pending
+        "b-svc": "1.2.0",  # equal → not pending
+        "c-svc": "0.10.0",  # ahead (10 > 9 numerically, not string-wise) → pending
+        "pm": "1.2.45",  # BEHIND main (vestigial) → not pending
+    },
+}
+
+
+class TestPendingVersionBumps:
+    def test_pending_version_bumps_semver_aware(self) -> None:
+        view = manifest_view_from_raw(_SEMVER_FIXTURE)
+        # a-svc (0.4→0.5) + c-svc (0.9→0.10, numeric not lexical) are ahead; b-svc equal,
+        # pm behind, _note skipped.
+        assert view.pending_version_bumps() == ["a-svc", "c-svc"]
+
+    def test_pending_version_bumps_empty_manifest(self) -> None:
+        assert manifest_view_from_raw({}).pending_version_bumps() == []

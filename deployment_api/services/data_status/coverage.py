@@ -57,9 +57,16 @@ class CoverageStatusMixin(VenueResolutionMixin):
 
         See plan: ``data_status_offline_rollup_2026_05_06.md``.
         """
-        rollup = await asyncio.to_thread(read_coverage_rollup_if_fresh, service)
-        if rollup is not None:
-            return filter_coverage_to_asset_groups(rollup, asset_groups)
+        # CF-20 beta mode bypasses the LIVE-derived rollup fast-path (same rule as
+        # get_manifest_status — the coverage rollup is precomputed from the live
+        # index by the Cloud Run cron; serving it in a beta eyeball session would
+        # quietly render live data).
+        from deployment_api.services.manifest_source import is_beta_mode
+
+        if not is_beta_mode():
+            rollup = await asyncio.to_thread(read_coverage_rollup_if_fresh, service)
+            if rollup is not None:
+                return filter_coverage_to_asset_groups(rollup, asset_groups)
         return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups, cloud)
 
     def _resolve_coverage_cat_list(self, service: str, asset_groups: list[str] | None) -> list[str]:
@@ -305,10 +312,18 @@ class CoverageStatusMixin(VenueResolutionMixin):
         # the UI renders the axis selector with an "expected, no data yet"
         # placeholder rather than hiding the dropdown.
         breakdowns = self._build_breakdowns(service, cat, date_index, group_axis)
+        # Deduplicated identity count from the lifecycle catalogue — the manifest
+        # only carries per-shard counts, so every other total here multi-counts
+        # across days/venues; this is the "how many distinct instruments exist"
+        # figure (None when the AG has no catalogue, e.g. the SHARED pseudo-key).
+        from deployment_api.services.manifest_source import read_unique_instrument_count
+
+        unique_instruments = read_unique_instrument_count(cat) if cat.upper() != "SHARED" else None
         return {
             "total_shards": shards,
             "total_instrument_rows": shards,
             "total_instruments": total_instruments,
+            "unique_instruments": unique_instruments,
             "unique_dates": len(unique_dates),
             "unique_venues": len(unique_groups_list),
             "group_axis": group_axis,
@@ -335,6 +350,7 @@ class CoverageStatusMixin(VenueResolutionMixin):
         total_instrument_rows = 0
         all_dates: set[str] = set()
         total_latest_day_instruments = 0
+        total_unique_instruments = 0
         # B1: aggregate the per-cat 4-state so the service-level totals carry an
         # honest completion%, not the self-referential shards count.
         total_capture_status: dict[str, int] = {
@@ -364,6 +380,9 @@ class CoverageStatusMixin(VenueResolutionMixin):
             total_shards += shards_int
             total_instrument_rows += shards_int
             total_latest_day_instruments += ld_total_int
+            uniq = entry.get("unique_instruments")
+            if isinstance(uniq, int):
+                total_unique_instruments += uniq
 
         cov_total = sum(total_capture_status.values())
         completion_pct = round(total_capture_status["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
@@ -375,6 +394,7 @@ class CoverageStatusMixin(VenueResolutionMixin):
                 "instrument_rows": total_instrument_rows,
                 "dates_across_categories": len(all_dates),
                 "latest_day_instruments": total_latest_day_instruments,
+                "unique_instruments": total_unique_instruments,
                 "capture_status_counts": total_capture_status,
                 "completion_pct": completion_pct,
             },

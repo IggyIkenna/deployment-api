@@ -97,7 +97,7 @@ def _ensure_audit_writer_attached(bus: KillSwitchBus) -> None:
 # ---------------------------------------------------------------------------
 
 
-class ArmRequestBody(BaseModel):
+class ArmRequestBody(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """HTTP body for the arm/disarm endpoints.
 
     ``requested_by`` carries the operator identity for the audit log + the UAC
@@ -111,7 +111,7 @@ class ArmRequestBody(BaseModel):
     metadata: dict[str, str] | None = Field(default=None)
 
 
-class KillSwitchStateEntry(BaseModel):
+class KillSwitchStateEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """One row in the ``GET /`` (and ``GET /state``) response.
 
     Carries the operator-facing ``KillSwitchId`` plus the wire ``(scope,
@@ -130,7 +130,7 @@ class KillSwitchStateEntry(BaseModel):
     metadata: dict[str, str]
 
 
-class KillSwitchStateResponse(BaseModel):
+class KillSwitchStateResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Read-only state of the bus at request time."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -139,7 +139,7 @@ class KillSwitchStateResponse(BaseModel):
     queried_at: datetime
 
 
-class KillSwitchAuditEntry(BaseModel):
+class KillSwitchAuditEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """One row in the ``GET /audit-log`` response.
 
     Mirrors the deployment-ui ``AuditLogViewer`` contract: a normalised view of
@@ -159,7 +159,7 @@ class KillSwitchAuditEntry(BaseModel):
     metadata: dict[str, str]
 
 
-class KillSwitchAuditResponse(BaseModel):
+class KillSwitchAuditResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """Paginated audit-log response."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")

@@ -6,6 +6,7 @@ and instrument availability queries.
 """
 
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
@@ -422,8 +423,6 @@ class DataQueryService:
         ``{canonical_id, venue, instrument_type}`` — the search filter applies
         token-AND substring matching on top.
         """
-        import time
-
         now = time.monotonic()
         cached = self._corpus_cache.get(category)
         if cached is not None and (now - cached[0]) < self._CORPUS_TTL_SECONDS:
@@ -567,12 +566,15 @@ class DataQueryService:
         Uses pyarrow + gcsfs locally. Failures (network, schema mismatch,
         missing column) return None so the caller can fall back gracefully.
         """
-        import gcsfs  # pyright: ignore[reportMissingModuleSource]
-        import pyarrow.parquet as pq  # pyright: ignore[reportMissingModuleSource]
+        # Lazy heavy/optional GCS+parquet SDKs — module-level import would slow API startup
+        import gcsfs  # pyright: ignore[reportMissingModuleSource]  # noqa: imports-inside-functions
 
-        if not gs_uri.startswith("gs://"):
+        # Lazy heavy/optional GCS+parquet SDKs — module-level import would slow API startup
+        import pyarrow.parquet as pq  # pyright: ignore[reportMissingModuleSource]  # noqa: imports-inside-functions
+
+        if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
             return None
-        bucket_key = gs_uri[len("gs://") :]
+        bucket_key = gs_uri[len("gs://") :]  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         try:
             fs = gcsfs.GCSFileSystem()
             with fs.open(bucket_key, "rb") as fh:  # type: ignore[reportUnknownMemberType]

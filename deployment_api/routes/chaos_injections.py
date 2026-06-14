@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _active_injections: dict[str, ChaosInjectionSpec] = {}
 
 
-class CreateInjectionRequest(BaseModel):
+class CreateInjectionRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
     """Request body for POST /chaos/injections."""
 
     point: ChaosInjectionPoint
@@ -55,11 +55,11 @@ class CreateInjectionRequest(BaseModel):
     created_by: str = Field(..., min_length=1)
 
 
-class InjectionResponse(BaseModel):
+class InjectionResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     injection: ChaosInjectionSpec
 
 
-class InjectionListResponse(BaseModel):
+class InjectionListResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     injections: list[ChaosInjectionSpec]
 
 

@@ -36,7 +36,24 @@ MAX_DURATION=700
 # after the treasury NAV-rollup relocation dropped the last import; the PM manifest edge is now
 # removed, so the measured honest count is back at 24 (QG_SLICE=lint-codex verified). Budgets only
 # ratchet DOWN from here — the ≤5 ceiling drive continues under the plan above.
-CODEX_MAX_VIOLATIONS=24
+# Ratcheted 24→22 on 2026-06-11 (codex_violations_ratchet_to_five_2026_06_10 Phase-1 P2 + Phase-2b):
+# (1) file-size class CLEARED — the last four >900-line files split into facade packages with
+#     byte-identical route tables / public surfaces (routes/data_status 2,550 → 6-module package;
+#     services/data_status_drilldown 2,586 → 6-module package; services/shard_detail 1,777 →
+#     5-module package; routes/deployments 968 → 3-module package; every module ≤ 731 lines).
+# (2) deep-import class CLEARED — all 8 two-level `unified_api_contracts.registry.<X>` call sites
+#     flipped to the one-level facade (`from unified_api_contracts.registry import <X>`; facade
+#     re-exports landed at UAC@c8287d3). This also satisfies + supersedes the plan's
+#     "budget 23→24 revert" item (we land at 22 < 23).
+# Honest measured count 22 (QG_SLICE=lint-codex verified 2026-06-11). Next classes to clear per the
+# plan: function-size (deployment_state/data_analytics/deployment_manager + data_status mixins),
+# os.getenv, Any-types, schema-provenance.
+# 2026-06-12 (codex ratchet plan Phase 4): os.getenv + comment-false-positive + empty-fallback
+# sites cleared across 17 files -> honest measured V=16. Ratcheted 22 -> 16.
+# 2026-06-12 (codex ratchet plan Phase 3+4): wave-4b agent cleared 10 classes (schema-provenance
+# CORRECT-LOCAL triage, os.getenv, Any-types, imports-in-fn, empty-fallbacks et al) -> honest
+# measured V=6. Ratcheted 16 -> 6.
+CODEX_MAX_VIOLATIONS=6
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
@@ -51,6 +68,16 @@ EMPTY_DICT_LIST_EXCLUDE_GLOBS=()
 
 # Function/method size: deployment-api has large orchestration and analytics methods
 FUNCTION_SIZE_EXTRA_EXCLUDES=()
+
+# STEP 5.11/5.12 protocol-symbol excludes: monitor_live.py + monitor_scheduled.py match ONLY on
+# `CloudTarget` — the UAC canonical StrEnum (unified_api_contracts.canonical.crosscutting.cloud_target)
+# used as the LIVE_CLUSTER_REGISTRY cloud axis. That is contract usage, not a raw GCS/BigQuery
+# protocol call (the legit case the base-service.sh comment names). Documented in
+# QUALITY_GATE_BYPASS_AUDIT.md § "STEP 5.11/5.12 protocol-symbol exceptions" (2026-06-12).
+HARDCODED_PROTO_EXCLUDE_GLOBS=(
+    "--glob=!**/routes/monitor_live.py"
+    "--glob=!**/routes/monitor_scheduled.py"
+)
 WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 source "${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
 
