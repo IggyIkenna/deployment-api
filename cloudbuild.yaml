@@ -45,12 +45,14 @@ steps:
         BRANCH="${_BRANCH:-${BRANCH_NAME:-live-defi-rollout}}"
         echo "Cloning deployment-ui (private) at branch=$$BRANCH (fallback main) into ./ui"
         # deployment-ui is a PRIVATE repo — auth via the GH_PAT secret (the default
-        # Cloud Build SA has secretAccessor). Token is passed as an http extraheader
-        # (kept out of the URL so it never lands in git's log output).
+        # Cloud Build SA has secretAccessor). Token is passed as an http Basic
+        # extraheader (the format GitHub accepts for a PAT) so it never lands in
+        # git's URL/log output.
         TOKEN="$$(gcloud secrets versions access latest --secret=GH_PAT)"
-        git -c http.extraheader="AUTHORIZATION: bearer $$TOKEN" clone --depth 1 \
+        AUTH="$$(printf 'x-access-token:%s' "$$TOKEN" | base64 | tr -d '\n')"
+        git -c http.extraheader="AUTHORIZATION: basic $$AUTH" clone --depth 1 \
           --branch "$$BRANCH" https://github.com/IggyIkenna/deployment-ui ./ui \
-          || git -c http.extraheader="AUTHORIZATION: bearer $$TOKEN" clone --depth 1 \
+          || git -c http.extraheader="AUTHORIZATION: basic $$AUTH" clone --depth 1 \
           --branch main https://github.com/IggyIkenna/deployment-ui ./ui
         echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
     waitFor: ["-"]
