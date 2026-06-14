@@ -295,6 +295,15 @@ class DefiStatusMixin(DataStatusCliMixin):
         # cell-grid.
         if service == "market-tick-data-service" and cat.lower() == "defi" and not merged.empty:
             merged = self._filter_to_canonical_defi_venues(merged)
+            # Reconstruct the canonical ``PROTOCOL-CHAIN`` venue id from the
+            # stored bare-protocol ``venue`` + ``chain`` columns. MUST run
+            # AFTER the whitelist (which matches the bare ``(venue, chain)``
+            # pair). Without this the honest-coverage drilldown matches raw
+            # ``UNISWAP_V3`` against the UAC-canonical expected universe
+            # (``UNISWAP_V3-ETHEREUM``) and finds nothing — the 3.2%-vs-97.6%
+            # surface split. Also lets the per-chain genesis / protocol-launch
+            # clip parse the chain out of the venue id.
+            merged = self._canonicalise_defi_venue_column(merged)
 
         # v9 prediction: promote ``instrument_id`` → ``canonical_question_group`` so
         # the ``_apply_row_filters(canonical_question_group=...)`` and the turbo
@@ -362,6 +371,41 @@ class DefiStatusMixin(DataStatusCliMixin):
         if dropped > 0:
             logger.debug("DEFI venue whitelist dropped %d non-DeFi rows from merged index", dropped)
         return index.loc[keep].copy()
+
+    def _canonicalise_defi_venue_column(self, index: pd.DataFrame) -> pd.DataFrame:
+        """Rewrite the DeFi ``venue`` column to canonical ``PROTOCOL-CHAIN`` form.
+
+        The manifest stores the venue split as a bare protocol id (``venue``)
+        plus a separate ``chain`` column; the canonical UAC venue identity is
+        the reconstructed pair (``UNISWAP_V3`` + ``ETHEREUM`` →
+        ``UNISWAP_V3-ETHEREUM``). The coverage card reconstructs this implicitly
+        via its ``(venue, chain)`` whitelist, but the honest-coverage drilldown
+        matcher joins the raw ``venue`` string against the canonical expected
+        universe — so without canonicalisation it finds zero overlap (the
+        3.2%-vs-97.6% surface split for DeFi; 99.5% of captured DeFi rows carry
+        a bare-protocol venue). Runs after :meth:`_filter_to_canonical_defi_venues`
+        so the bare-pair whitelist is unaffected. Already-canonical rows pass
+        through unchanged (``normalize_defi_venue`` is idempotent). Vectorised
+        over the unique ``(venue, chain)`` pairs (~70 for DeFi).
+        """
+        if "venue" not in index.columns or "chain" not in index.columns or index.empty:
+            return index
+        from deployment_api.services.data_status.mtds import shared_venue_mapping  # noqa: qg-inside-import
+
+        vm = shared_venue_mapping()
+        pairs = index[["venue", "chain"]].drop_duplicates()
+        mapping: dict[tuple[str, str], str] = {}
+        for v, c in zip(pairs["venue"].astype(str), pairs["chain"].astype(str), strict=True):
+            try:
+                mapping[(v, c)] = str(vm.normalize_defi_venue(v, c if c.strip() else None))
+            except Exception:
+                mapping[(v, c)] = v
+        index = index.copy()
+        index["venue"] = [
+            mapping.get((str(v), str(c)), str(v))
+            for v, c in zip(index["venue"].tolist(), index["chain"].tolist(), strict=True)  # pyright: ignore[reportUnknownArgumentType,reportUnknownMemberType]
+        ]
+        return index
 
     def _filter_legacy_defi_rows(self, index: pd.DataFrame, cat: str) -> pd.DataFrame:
         """Drop pre-canonicalisation DeFi venue-alias rows.
