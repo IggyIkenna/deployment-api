@@ -511,28 +511,48 @@ class DomainBreakdownsMixin(SportsStatusMixin):
         if not has_underlying:
             return {}
 
-        underlyings = sorted(ul for ul in df["underlying"].unique() if ul and str(ul).strip())  # pyright: ignore[reportAny]
-        if not underlyings:
-            return {}
-
         ul_dict: dict[str, object] = {}
+        has_venue = "venue" in df.columns
+        has_itype = "instrument_type" in df.columns
 
-        for ul in underlyings:  # pyright: ignore[reportAny]
-            ul_mask = df["underlying"] == ul  # pyright: ignore[reportAny]
-            ul_df = df[ul_mask]  # pyright: ignore[reportUnknownVariableType]
+        # Per-(venue, eff_start) expected-dates cache. Venues repeat across the
+        # thousands of underlyings a large asset_group carries, so the prior
+        # per-underlying ``df["underlying"] == ul`` scan + uncached
+        # ``get_expected_trading_dates`` was O(unique_underlyings x rows) —
+        # pathological on a multi-million-row beta projected index (the >400s
+        # operator-beta drilldown hang). One ``groupby`` pass + this cache
+        # collapses it to a single scan; the cache key (v, eff_start) keeps
+        # the fallback (missing venue-start → per-underlying min-date) exact.
+        _vexp_cache: dict[tuple[str, str], set[str]] = {}
+
+        def _venue_expected(v: str, eff_start: str) -> set[str]:
+            key = (v, eff_start)
+            cached = _vexp_cache.get(key)
+            if cached is not None:
+                return cached
+            v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
+            if not v_expected:
+                v_expected = {d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")}
+            _vexp_cache[key] = v_expected
+            return v_expected
+
+        for ul_raw, ul_df in df.groupby("underlying", sort=False):  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+            ul = str(ul_raw)
+            if not ul.strip():
+                continue
             ul_dates = {str(d) for d in ul_df["date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
 
             # Venues that carry this underlying
             ul_venues = (
                 sorted(str(v) for v in ul_df["venue"].unique() if v and str(v).strip())  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
-                if "venue" in ul_df.columns  # pyright: ignore[reportUnknownMemberType]
+                if has_venue
                 else []
             )
 
             # Instrument types that carry this underlying
             ul_itypes = (
                 sorted(str(it) for it in ul_df["instrument_type"].unique() if it and str(it).strip())  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
-                if "instrument_type" in ul_df.columns  # pyright: ignore[reportUnknownMemberType]
+                if has_itype
                 else []
             )
 
@@ -542,14 +562,10 @@ class DomainBreakdownsMixin(SportsStatusMixin):
             for v in ul_venues:
                 vs = venue_mapping.get_venue_start_date(v)  # pyright: ignore[reportAny]
                 if not vs:
-                    v_mask = ul_df["venue"] == v  # pyright: ignore[reportUnknownVariableType]
-                    v_dates = {str(d) for d in ul_df.loc[v_mask, "date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
+                    v_dates = {str(d) for d in ul_df.loc[ul_df["venue"] == v, "date"].unique()}  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType,reportUnknownMemberType]
                     vs = min(v_dates) if v_dates else start_date
                 eff_start = max(start_date, vs) if vs else start_date
-                v_expected = set(venue_mapping.get_expected_trading_dates(v, eff_start, end_date))
-                if not v_expected:
-                    v_expected = {d.strftime("%Y-%m-%d") for d in pd.date_range(eff_start, end_date, freq="D")}
-                ul_expected_dates |= v_expected
+                ul_expected_dates |= _venue_expected(v, eff_start)
 
             if not ul_expected_dates:
                 # Fallback when no venues are present

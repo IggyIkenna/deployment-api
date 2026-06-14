@@ -11,7 +11,7 @@ import logging
 from typing import cast
 
 import pandas as pd
-from unified_api_contracts import is_out_of_coverage_window
+from unified_api_contracts import OUT_OF_COVERAGE_WINDOW_REASONS
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     get_breakdown_axes,
@@ -206,10 +206,18 @@ class CoverageStatusMixin(VenueResolutionMixin):
                     if v and v > 0  # pyright: ignore[reportAny]
                 }
             else:
-                axis_counts = {}
-                for v in values.unique():  # pyright: ignore[reportAny]
-                    key = v if v.strip() else "__legacy__"  # pyright: ignore[reportAny]
-                    axis_counts[str(key)] = int((values == v).sum())  # pyright: ignore[reportAny]
+                # Vectorised value-counts (single O(n) pass). The prior
+                # ``for v in values.unique(): (values == v).sum()`` was
+                # O(unique x rows) — pathological on a high-cardinality axis
+                # (e.g. instrument_id) of a multi-million-row beta projected
+                # index, which lacks ``instrument_count`` so always lands here
+                # (minutes per asset_group; the operator-beta-eyeball slowness).
+                vc = values.value_counts()
+                axis_counts = {
+                    (str(k) if str(k).strip() else "__legacy__"): int(v)  # pyright: ignore[reportAny]
+                    for k, v in vc.items()  # pyright: ignore[reportAny]
+                    if v > 0  # pyright: ignore[reportAny]
+                }
             breakdowns[axis] = axis_counts
         return breakdowns
 
@@ -251,15 +259,14 @@ class CoverageStatusMixin(VenueResolutionMixin):
             grouped = latest.groupby(group_axis)["instrument_count"].sum()
             counts = {str(v): int(c) for v, c in grouped.items() if c > 0 and str(v).strip()}  # pyright: ignore[reportAny]
             return counts, total  # pyright: ignore[reportUnknownVariableType]
-        # No instrument_count column -> fall back to row-count.
+        # No instrument_count column -> fall back to row-count. Vectorised
+        # value-counts (single O(n) pass) — the prior per-unique-value
+        # ``(latest[group_axis] == v).sum()`` loop was O(unique x rows).
         total = len(latest)
         if group_axis not in latest.columns:
             return {}, total
-        counts = {}
-        for v in latest[group_axis].unique():  # pyright: ignore[reportAny]
-            if not str(v).strip():  # pyright: ignore[reportAny]
-                continue
-            counts[str(v)] = int((latest[group_axis] == v).sum())  # pyright: ignore[reportAny]
+        vc = latest[group_axis].astype(str).value_counts()
+        counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}  # pyright: ignore[reportAny]
         return counts, total  # pyright: ignore[reportUnknownVariableType]
 
     def _build_coverage_for_cat(self, service: str, cat: str, cloud: str = "gcp") -> dict[str, object] | None:
@@ -288,10 +295,18 @@ class CoverageStatusMixin(VenueResolutionMixin):
             cs = index["capture_status"].astype(str)
             total_empty = int((cs == "empty_confirmed").sum())
             # Compute out-of-window subset of empty_confirmed rows.
-            if total_empty > 0 and "error_reason" in index.columns:
+            # Accept both "error_reason" (live consolidated index schema) and "reason"
+            # (projected / beta index schema written by the CF-20 dry-run builder).
+            _cols = index.columns
+            _reason_col = "error_reason" if "error_reason" in _cols else ("reason" if "reason" in _cols else None)
+            if total_empty > 0 and _reason_col is not None:
                 empty_mask = cs == "empty_confirmed"
-                reasons = index.loc[empty_mask, "error_reason"].fillna("").astype(str).str.strip()
-                oow_count = int(reasons.apply(is_out_of_coverage_window).sum())  # pyright: ignore[reportUnknownMemberType]
+                reasons = index.loc[empty_mask, _reason_col].fillna("").astype(str).str.strip()
+                # Vectorised set-membership: ~6x faster than a per-row
+                # ``.apply(is_out_of_coverage_window)`` over the ~1.2M empty rows a
+                # large asset_group carries — same verdict (the frozenset IS the
+                # canonical set the helper checks). Blank/calendar reasons stay False.
+                oow_count = int(reasons.isin(OUT_OF_COVERAGE_WINDOW_REASONS).sum())  # pyright: ignore[reportUnknownMemberType]
             else:
                 oow_count = 0
             within_window_empty = total_empty - oow_count
