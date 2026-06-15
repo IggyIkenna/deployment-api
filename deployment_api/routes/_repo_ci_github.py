@@ -598,6 +598,37 @@ async def head_check_rollup(
     return failed, v2_present
 
 
+async def head_blocking_status_contexts(
+    session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str
+) -> list[dict[str, str]]:
+    """Non-success CLASSIC commit-status contexts on a PR head — the human blocker reason.
+
+    ``head_check_rollup`` only sees Actions WORKFLOW runs; a required check posted as a
+    classic STATUS CONTEXT (AWS CodeBuild, any external CI) is invisible to it — so a PR
+    BLOCKED purely on a failing CodeBuild status read as a clean "draining" PR on the
+    dashboard, and the operator had to escalate to find out why (2026-06-15: two LDR→staging
+    drain PRs stuck on CodeBuild's "Pull request approval required for starting a build" with
+    no on-screen reason). This reads ``/commits/{sha}/status`` (Statuses:read — granted to the
+    GH_PAT) and returns the failure/error/pending contexts + their description (the exact
+    reason string GitHub shows), worst-first (failure/error before pending)."""
+    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/commits/{sha}/status")
+    data = _as_dict(payload)
+    out: list[dict[str, str]] = []
+    for st in _as_list(data.get("statuses")):
+        st_d = _as_dict(st)
+        state = str(st_d.get("state") or "")
+        if state in ("failure", "error", "pending"):
+            out.append(
+                {
+                    "name": str(st_d.get("context") or ""),
+                    "state": state,
+                    "description": str(st_d.get("description") or ""),
+                }
+            )
+    out.sort(key=lambda c: c["state"] == "pending")  # failure/error first, pending last
+    return out
+
+
 async def last_workflow_run(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, workflow_file: str
 ) -> tuple[str | None, int | None]:

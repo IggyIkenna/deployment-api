@@ -11,6 +11,7 @@ from deployment_api.settings import GITHUB_ORG
 
 from ._repo_ci_alerts import AlertEntryDict, AlertsPayloadDict, derive_streams
 from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
+    BlockingCheckDict,
     BranchCommitsDict,
     BranchDeltaDict,
     BranchHeadDict,
@@ -76,6 +77,19 @@ def _mock_pr(repo: str, number: int, base: str, stuck_class: str | None, state: 
         failed_check=stuck_class == "failing_check",
         v2_present=stuck_class in (None, "failing_check", "automerge_stuck"),
         stuck_class=stuck_class,  # pyright: ignore[reportArgumentType]  # fixture literal is within StuckClass
+        # A failing-check PR carries the human reason (the AWS-CodeBuild PR-approval gate
+        # that stranded two drain PRs invisibly on 2026-06-15).
+        blocking_checks=(
+            [
+                BlockingCheckDict(
+                    name=f"AWS CodeBuild ap-northeast-1 ({repo})",
+                    state="failure",
+                    description="Pull request approval required for starting a build",
+                )
+            ]
+            if stuck_class == "failing_check"
+            else []
+        ),
     )
 
 

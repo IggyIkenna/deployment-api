@@ -60,6 +60,14 @@ class CommitEntryDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shap
     v2_conclusion: str | None  # quality-gates-v2 check conclusion for this sha (None = not run)
 
 
+class BlockingCheckDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """A non-success required check on a stuck PR head — the on-screen blocker reason."""
+
+    name: str  # the check/status context, e.g. "AWS CodeBuild ap-northeast-1 (deployment-service)"
+    state: str  # failure | error | pending
+    description: str  # GitHub's reason string, e.g. "Pull request approval required for starting a build"
+
+
 class RepoPrDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """An open PR into a promotion base, with stuck classification."""
 
@@ -75,6 +83,9 @@ class RepoPrDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api respo
     failed_check: bool
     v2_present: bool
     stuck_class: StuckClass | None
+    # Non-success required checks blocking the merge (classic status contexts like AWS
+    # CodeBuild that the Actions-run rollup is blind to) — the on-screen "why is this stuck".
+    blocking_checks: list[BlockingCheckDict]
 
 
 class SitStateDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

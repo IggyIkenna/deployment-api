@@ -76,7 +76,7 @@ class TestStorageClientFactoryAwsRouting:
                     "AWS_DEFAULT_REGION": "us-east-1",
                 },
             ),
-            patch("unified_trading_library.cloud_interface.factory.GCSStorageClient") as mock_gcs,
+            patch("unified_trading_library.cloud_interface.providers.gcp.GCSStorageClient") as mock_gcs,
         ):
             clear_client_caches()
             _make_storage_client()

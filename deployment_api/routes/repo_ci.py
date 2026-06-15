@@ -38,6 +38,7 @@ from ._repo_ci_github import (
     branch_head,
     compare_branches,
     gh_get_json,
+    head_blocking_status_contexts,
     head_check_rollup,
     head_commit_message,
     last_green_for_branch,
@@ -59,6 +60,7 @@ from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
 from ._repo_ci_stuck import classify_stuck_pr, derive_sit_state, is_promotion_contract_pr
 from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     PROMOTION_BRANCHES,
+    BlockingCheckDict,
     BranchCommitsDict,
     BranchDeltaDict,
     BranchHeadDict,
@@ -224,6 +226,7 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
         failed_check = False
         v2_present = True
         head_message = ""
+        blocking_checks: list[BlockingCheckDict] = []
         if merge_state.lower() in ("blocked", "dirty", "conflicting") and head_sha:
             # Shard-level isolation: any per-PR rollup error (a transient 4xx/5xx on one
             # repo) degrades THIS PR's classification to conservative defaults — it must
@@ -231,6 +234,12 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
             # now reads the Actions API, which the GH_PAT can access — no Checks:read 403.)
             try:
                 failed_check, v2_present = await head_check_rollup(session, token, GITHUB_ORG, repo, head_sha)
+                # Classic status contexts (AWS CodeBuild etc.) the Actions rollup can't see —
+                # the on-screen "why is this stuck" (operator escalation 2026-06-15).
+                blocking_checks = [
+                    BlockingCheckDict(name=c["name"], state=c["state"], description=c["description"])
+                    for c in await head_blocking_status_contexts(session, token, GITHUB_ORG, repo, head_sha)
+                ]
                 if not v2_present:
                     head_message = await head_commit_message(session, token, GITHUB_ORG, repo, head_sha)
             except HTTPException as exc:
@@ -258,6 +267,7 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
                 failed_check=failed_check,
                 v2_present=v2_present,
                 stuck_class=stuck,
+                blocking_checks=blocking_checks,
             )
         )
     return out
