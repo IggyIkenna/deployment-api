@@ -43,7 +43,6 @@ import gzip
 import io
 import json
 import logging
-import os
 import sys
 import time
 from typing import Any
@@ -53,14 +52,6 @@ from unified_trading_library import GcsEventSink, get_storage_client, log_event,
 from deployment_api.services.data_status_service import DataStatusService
 
 logger = logging.getLogger(__name__)
-
-
-def _bisect(msg: str) -> None:
-    """[BISECT-2026-06-15] TEMPORARY R6 diagnostic — write to the stderr fd (2). The
-    cloud job captures ONLY stderr (stdout/INFO logs never reach Cloud Logging — that
-    IS the R6 "suppression"), so stderr is the only way to surface the swallowed
-    exception crashing the cloud beta rollup. Remove once diagnosed."""
-    os.write(2, f"[BISECT] {msg}\n".encode())
 
 
 # Services to roll up — every service whose ``/api/data-status/manifest``
@@ -145,24 +136,12 @@ def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: st
     vs fake placeholders" — a partial / errored rollup is worse than no
     rollup, since the slicer would silently slice garbage).
     """
-    # [BISECT-2026-06-15] TEMPORARY R6 diagnostic — surface the swallowed exception
-    # crashing the cloud beta rollup (stdout survives the job's suppressed logging).
-    import traceback as _tb
-
-    _bisect(f"enter _get_manifest_status_sync service={service}")
-    try:
-        _result = dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
-            service=service,
-            start_date=_ROLLUP_START_DATE,
-            end_date=end_date,
-            asset_groups=None,
-        )
-    except BaseException as _exc:
-        _bisect(f"EXCEPTION service={service}: {type(_exc).__module__}.{type(_exc).__name__}: {_exc}")
-        _bisect(_tb.format_exc())
-        raise
-    _bisect(f"done _get_manifest_status_sync service={service}")
-    return _result
+    return dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
+        service=service,
+        start_date=_ROLLUP_START_DATE,
+        end_date=end_date,
+        asset_groups=None,
+    )
 
 
 def _build_one_service_coverage(dss: DataStatusService, service: str) -> dict[str, Any]:
@@ -350,8 +329,6 @@ def main() -> int:
         )
         services = _filtered
 
-    # [BISECT-2026-06-15] TEMPORARY R6 diagnostic — confirm beta-mode + final service list.
-    _bisect(f"beta_mode={_ms.is_beta_mode()} final_services={services}")
 
     with run_lifecycle(
         service_name="data-status-rollup-worker",
