@@ -181,4 +181,4 @@ def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
     assert captured["services"] == list(worker.DEFAULT_SERVICES)
     assert "data-status-rollups" in str(captured["bucket"])
     # the service-wide pool flag must be restored after the call
-    assert dss_mod._PROCESS_POOL_DISABLED == _before  # pyright: ignore[reportPrivateUsage]
+    assert _before == dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
