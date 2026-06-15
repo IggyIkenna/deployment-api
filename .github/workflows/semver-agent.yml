@@ -38,6 +38,15 @@ on:
     workflows: ["quality-gates-v2"]
     types: [completed]
     branches: [staging]
+  # The LDR-trunk decoupling (2026-06-10) dropped push:[staging] quality-gates-v2
+  # — v2 now runs on the LDR→staging PR (base=staging), NOT on the staging branch
+  # itself — so the workflow_run trigger above stopped firing and the staging→main
+  # promotion + version-bump dispatch went DEAD fleet-wide (idle since v2@staging
+  # last ran). Also fire on a direct push to staging (the LDR→staging Tier-C drain
+  # and reconcile update staging via push), so promotion resumes. The job gate
+  # OR's the push path and every head_sha ref falls back to github.sha under push.
+  push:
+    branches: [staging]
 
 env:
   GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -58,14 +67,16 @@ jobs:
     name: Semver Agent — deployment-api
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Only run when Quality Gates passed — never on failure
-    if: github.event.workflow_run.conclusion == 'success'
+    # Only run when Quality Gates passed (workflow_run path) — never on failure;
+    # the push:[staging] path is implicitly gated (staging is only updated by a
+    # green LDR→staging promotion / admin reconcile).
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'push'
 
     steps:
       - name: Checkout repo at staging commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
@@ -148,7 +159,7 @@ jobs:
           set -euo pipefail
 
           echo "=== Semver Agent: deployment-api ==="
-          echo "Triggered by Quality Gates passing on staging (SHA: ${{ github.event.workflow_run.head_sha }})"
+          echo "Triggered by Quality Gates passing on staging (SHA: ${{ github.event.workflow_run.head_sha || github.sha }})"
 
           # ── semver_policy check: read from PM manifest ──
           PM_MANIFEST_POLICY=$(gh api "repos/${GH_ORG}/unified-trading-pm/contents/workspace-manifest.json" \
@@ -184,7 +195,7 @@ jobs:
             echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "bump=patch" >> "$GITHUB_OUTPUT"
             echo "bump_reason=always_patch policy (no label check)" >> "$GITHUB_OUTPUT"
-            SHA="${{ github.event.workflow_run.head_sha }}"
+            SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
             OWNER="${{ github.repository_owner }}"
             gh api POST "/repos/${OWNER}/deployment-api/statuses/${SHA}" \
               --field state=success \
@@ -395,7 +406,7 @@ jobs:
           echo "Resolved bump category: $BUMP"
 
           # ── Label vs API diff mismatch check ──
-          SHA="${{ github.event.workflow_run.head_sha }}"
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
           OWNER="${{ github.repository_owner }}"
 
           # Determine what the commit message signals
@@ -513,7 +524,7 @@ jobs:
           **Current version:** \`$CURRENT\`
           **Proposed version:** \`$NEXT\`
           **Reason:** $BUMP_REASON
-          **Triggered by:** Quality Gates passing on \`staging\` (SHA: \`${{ github.event.workflow_run.head_sha }}\`)
+          **Triggered by:** Quality Gates passing on \`staging\` (SHA: \`${{ github.event.workflow_run.head_sha || github.sha }}\`)
 
           ---
 
@@ -630,7 +641,7 @@ jobs:
           REPO="deployment-api"
           VERSION="${{ steps.compute.outputs.new_version }}"
           BRANCH="staging"
-          COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+          COMMIT_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
           OWNER="${{ github.repository_owner }}"
 
           IS_BREAKING="${{ steps.compute.outputs.is_breaking }}"
