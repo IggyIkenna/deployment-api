@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 _BETA_INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _BETA_INDEX_TTL_SECONDS = 300.0
 
+# The canonical consolidated availability index blob — read directly (no live freshness
+# gate) as the stale-tolerant fallback for the data-status MONITORING view (see
+# read_manifest_index docstring + plan proper_instrument_catalogue_lifecycle_rollup §R5).
+_CONSOLIDATED_INDEX_BLOB = "_index/availability_index.parquet"
+
 # Bucket tag → canonical asset_group (the env-tiered bucket names abbreviate prediction).
 _TAG_TO_ASSET_GROUP: dict[str, str] = {
     "pred": "prediction",
@@ -68,9 +73,52 @@ def read_manifest_index(bucket: str) -> pd.DataFrame:
     CF-20 projected (beta) index when ``DATA_STATUS_BETA_MANIFEST_BLOB`` is set.
 
     Beta mode FAILS LOUD on a missing projection (no silent fallback to the live index —
-    a beta render quietly showing live data would defeat the whole pre-apply eyeball)."""
+    a beta render quietly showing live data would defeat the whole pre-apply eyeball).
+
+    STALE-TOLERANT MONITORING READ (2026-06-15): the data-status is a MONITORING view, not
+    a live-trading read. UTL ``read_availability_index`` applies a ~120 s live staleness
+    gate — when the consolidated ``_index/availability_index.parquet`` is older than that
+    AND the per-VM shard dir holds only seed shards, it drops the (valid) consolidated index
+    and returns ~empty. Correct for trading; but for data-status it shows 0 instruments when
+    a stale-but-valid catalogue exists — the failure the operator saw while the manifest
+    consolidators are paused by the held pre-migration drain (plan
+    ``proper_instrument_catalogue_lifecycle_rollup_2026_06_04`` §R5). So when the live read
+    yields empty (or raises) we read the consolidated blob DIRECTLY (no freshness gate) and
+    surface the stale rows + their ``written_at`` age rather than 0. Live trading readers do
+    not call this path — their 120 s gate is unchanged."""
     if not DATA_STATUS_BETA_MANIFEST_BLOB:
-        return read_availability_index(bucket)
+        try:
+            live = read_availability_index(bucket)
+        except Exception as _live_err:  # monitoring read degrades to stale, never hard-fails the UI
+            logger.warning(
+                "data-status: live read_availability_index(%s) raised %s — falling back to the consolidated blob",
+                bucket,
+                type(_live_err).__name__,
+            )
+            live = None
+        if live is not None and not live.empty:
+            return live
+        # Stale-tolerant fallback: the live gate dropped a stale-but-valid consolidated
+        # index (consolidator paused). Read it directly for the monitoring view.
+        try:
+            raw = get_storage_client().download_bytes(bucket, _CONSOLIDATED_INDEX_BLOB)
+            stale = pd.read_parquet(io.BytesIO(raw))
+            if not stale.empty:
+                logger.warning(
+                    "data-status STALE-TOLERANT read: %s live index empty; using %s directly "
+                    "(%d rows — consolidator paused/stale, monitoring view)",
+                    bucket,
+                    _CONSOLIDATED_INDEX_BLOB,
+                    len(stale),
+                )
+                return stale
+        except Exception as _stale_err:  # genuinely-empty bucket -> empty df, not an error
+            logger.debug(
+                "data-status stale-tolerant read: no consolidated blob for %s (%s)",
+                bucket,
+                type(_stale_err).__name__,
+            )
+        return live if live is not None else pd.DataFrame()
     cached = _BETA_INDEX_CACHE.get(bucket)
     if cached is not None and time.monotonic() - cached[0] < _BETA_INDEX_TTL_SECONDS:
         return cached[1]
@@ -81,6 +129,7 @@ def read_manifest_index(bucket: str) -> pd.DataFrame:
     df = pd.read_parquet(io.BytesIO(raw))
     _BETA_INDEX_CACHE[bucket] = (time.monotonic(), df)
     return df
+
 
 def is_beta_mode() -> bool:
     """True when the CF-20 beta-manifest preview is active (every data-status read
