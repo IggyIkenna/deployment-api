@@ -23,6 +23,10 @@ substitutions:
   # trigger leaves it false so the deploy step (above `images:`) is a no-op.
   _DEPLOY: "false"
   _ROLLUP_JOB: "uts-prod-data-status-rollup"
+  # In-image QG toggle — the auto-deploy trigger sets this false (QG already
+  # enforced at promotion; the harness isn't in the image). Default true keeps
+  # feature-build / LDR behaviour unchanged.
+  _RUN_INIMAGE_QG: "true"
 
 steps:
   # ── Fetch deployment-ui (SPA bundle source) — deployment-api ONLY ──────────
@@ -191,6 +195,18 @@ steps:
       - "-c"
       - |
         set -e
+        # The in-image QG re-runs the repo's quality-gates.sh inside the built
+        # image. It needs the PM harness (base-service.sh / log_section) + a .git
+        # in the image; the auto-deploy path (main-deploy trigger) builds from
+        # already-promoted main code whose QG was ALREADY enforced locally at
+        # quickmerge + by quality-gates-v2 at the LDR→staging→main PR — so re-running
+        # it here is redundant AND impossible (no harness in the image → exit 127).
+        # The deploy trigger sets _RUN_INIMAGE_QG=false to skip; feature-build/LDR
+        # leave it true (unchanged). Mirrors why cloudbuild-tier3.yaml drops this step.
+        if [ "${_RUN_INIMAGE_QG}" != "true" ]; then
+          echo "quality-gates: skipped (_RUN_INIMAGE_QG=${_RUN_INIMAGE_QG}) — QG already enforced at promotion"
+          exit 0
+        fi
         docker run --rm \
           --entrypoint "" \
           -e CLOUD_BUILD=true \
