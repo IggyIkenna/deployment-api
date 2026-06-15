@@ -31,6 +31,17 @@ on:
   push:
     branches:
       - staging
+  # Drift-tick (2026-06-15): bot promotes to `staging` are pushed with GITHUB_TOKEN, and GitHub
+  # SUPPRESSES workflow triggers on GITHUB_TOKEN pushes (recursion prevention) — so this push
+  # trigger NEVER fired for the Tier-C drain's own staging merges, leaving staging-only commits
+  # (semver `chore(release)` version bumps) permanently unreconciled to LDR. That permanent
+  # version divergence was the fuel for the Tier-C promote loop (LDR always "ahead" → promote →
+  # bump → diverge → repeat → runaway breaker). A scheduled run is NOT GITHUB_TOKEN-gated, so it
+  # sweeps the drift regardless of who pushed — the staging-axis mirror of main-backmerge-to-ldr's
+  # drift-tick (which exists for the identical reason on the main axis).
+  schedule:
+    - cron: "10 * * * *" # hourly, offset from main-backmerge's :00 — convergence safety-net
+  workflow_dispatch: {}
 
 concurrency:
   group: backmerge-to-ldr
