@@ -20,7 +20,6 @@ from unified_api_contracts import (
 from unified_api_contracts.internal import MarketCategory
 
 import deployment_api.services.data_status_service as _dss
-from deployment_api.services import manifest_source
 from deployment_api.services.data_status_drilldown import (
     COMMODITY_BUCKET_TEMPLATE,
     PREDICTION_KIND_MAP,
@@ -150,12 +149,16 @@ class ManifestStatusMixin(MissingShardsMixin):
         any_row_filter = any(
             f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
         ) or bool(pipeline_modes)
-        # CF-20 beta preview: the offline rollup is computed from the LIVE
-        # index, so serving it in beta mode would quietly render live data —
-        # exactly what the beta eyeball must never do (see
-        # ``services/manifest_source.py``). Beta mode always takes the
-        # on-demand path, which reads through the beta-aware seam.
-        if not any_row_filter and not manifest_source.DATA_STATUS_BETA_MANIFEST_BLOB:
+        # CF-20 beta preview: the rollup is now BETA-NAMESPACED (the worker writes
+        # ``{service}/full.beta.json.gz`` when it runs with the beta env;
+        # ``_read_rollup_if_fresh`` reads the same beta blob in beta mode — see
+        # ``rollup_cache.rollup_blob_path``). So serving it in beta mode renders
+        # BETA-derived data, not live — the invariant holds, and the all-asset-group
+        # beta view is served from cache instead of live-computing every AG per
+        # request (which exceeds the Cloud Run request timeout -> HTTP 503). If the
+        # beta rollup hasn't been written yet, the read returns None and we fall
+        # through to the (slower) beta-aware on-demand compute.
+        if not any_row_filter:
             rollup = await asyncio.to_thread(_dss._read_rollup_if_fresh, service)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             if rollup is not None:
                 response = slice_rollup_to_window(rollup, start_date, end_date, asset_groups)
@@ -518,9 +521,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         # pre-genesis calendar days drop out of ``dates_expected``. A configured launch
         # date still wins when it is LATER. The raw manifest data is untouched (display-only).
         _svc_dates = (
-            index.loc[index["service_name"] == service, "date"]
-            if "service_name" in index.columns
-            else index["date"]
+            index.loc[index["service_name"] == service, "date"] if "service_name" in index.columns else index["date"]
         )
         if len(_svc_dates) > 0:
             _genesis = str(_svc_dates.min())

@@ -85,13 +85,23 @@ def _today_iso() -> str:
 
 
 def _rollup_blob_path(service: str) -> str:
-    """Canonical GCS object path for a service's manifest rollup blob."""
-    return f"{service}/full.json.gz"
+    """GCS object path for a service's manifest rollup blob.
+
+    Beta-namespaced when this worker runs with ``DATA_STATUS_BETA_MANIFEST_BLOB``
+    set (writes ``{service}/full.beta.json.gz``) so the beta rollup never mixes
+    with the live one — the service reads the same beta blob in beta mode. SSOT:
+    ``rollup_cache.rollup_blob_path``.
+    """
+    from deployment_api.services.data_status.rollup_cache import rollup_blob_path
+
+    return rollup_blob_path(service, "full")
 
 
 def _coverage_blob_path(service: str) -> str:
-    """Canonical GCS object path for a service's coverage-summary rollup blob."""
-    return f"{service}/coverage.json.gz"
+    """GCS object path for a service's coverage-summary rollup blob (beta-namespaced)."""
+    from deployment_api.services.data_status.rollup_cache import rollup_blob_path
+
+    return rollup_blob_path(service, "coverage")
 
 
 def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: str) -> dict[str, Any]:

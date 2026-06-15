@@ -52,6 +52,29 @@ def rollup_bucket() -> str:
     return ROLLUP_BUCKET_TEMPLATE.format(pid=_pid)
 
 
+def rollup_blob_path(service: str, kind: str = "full") -> str:
+    """GCS object path for a service's rollup blob — beta-namespaced in beta mode.
+
+    ``kind`` is ``"full"`` (manifest rollup) or ``"coverage"`` (coverage-summary).
+
+    In CF-20 beta-manifest mode the rollup is computed from the PROJECTED v9 index,
+    not the live one, so it MUST live in a distinct blob (``{service}/{kind}.beta.json.gz``)
+    that never mixes with / overwrites the live rollup (``{service}/{kind}.json.gz``).
+    The worker (running with ``DATA_STATUS_BETA_MANIFEST_BLOB`` set) WRITES the beta
+    blob; the service (in beta mode) READS it. This is what lets the all-asset-group
+    beta view be served from cache — without it the service live-computes every AG on
+    each request and exceeds the Cloud Run request timeout (HTTP 503). The beta blob is
+    beta-derived, so reading it in beta mode preserves the "never serve live-derived
+    data in beta" invariant.
+    """
+    # Lazy import avoids an import cycle (manifest_source -> settings; rollup_cache is
+    # imported by the facade + manifest at module load).
+    from deployment_api.services import manifest_source
+
+    suffix = ".beta" if manifest_source.is_beta_mode() else ""
+    return f"{service}/{kind}{suffix}.json.gz"
+
+
 def filter_dates_in_window(dates: list[str] | None, start_date: str, end_date: str) -> list[str]:
     if not dates:
         return []
@@ -260,7 +283,7 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
 
         client = get_storage_client(project_id=_pid)
         bucket_name = rollup_bucket()
-        blob_path = f"{service}/coverage.json.gz"
+        blob_path = rollup_blob_path(service, "coverage")
         if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
