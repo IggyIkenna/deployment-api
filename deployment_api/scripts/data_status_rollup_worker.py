@@ -53,6 +53,15 @@ from deployment_api.services.data_status_service import DataStatusService
 
 logger = logging.getLogger(__name__)
 
+
+def _bisect(msg: str) -> None:
+    """[BISECT-2026-06-15] TEMPORARY R6 diagnostic — write to stdout (which Cloud Run
+    captures regardless of the job's suppressed logging config) to surface the swallowed
+    exception crashing the cloud beta rollup. Remove once diagnosed."""
+    sys.stdout.write(f"[BISECT] {msg}\n")
+    sys.stdout.flush()
+
+
 # Services to roll up — every service whose ``/api/data-status/manifest``
 # response would otherwise compute on demand. Sourced from
 # ``DataStatusService._BUCKET_TEMPLATES.keys()`` minus the ones that don't
@@ -135,12 +144,24 @@ def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: st
     vs fake placeholders" — a partial / errored rollup is worse than no
     rollup, since the slicer would silently slice garbage).
     """
-    return dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
-        service=service,
-        start_date=_ROLLUP_START_DATE,
-        end_date=end_date,
-        asset_groups=None,
-    )
+    # [BISECT-2026-06-15] TEMPORARY R6 diagnostic — surface the swallowed exception
+    # crashing the cloud beta rollup (stdout survives the job's suppressed logging).
+    import traceback as _tb
+
+    _bisect(f"enter _get_manifest_status_sync service={service}")
+    try:
+        _result = dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
+            service=service,
+            start_date=_ROLLUP_START_DATE,
+            end_date=end_date,
+            asset_groups=None,
+        )
+    except BaseException as _exc:
+        _bisect(f"EXCEPTION service={service}: {type(_exc).__module__}.{type(_exc).__name__}: {_exc}")
+        _bisect(_tb.format_exc())
+        raise
+    _bisect(f"done _get_manifest_status_sync service={service}")
+    return _result
 
 
 def _build_one_service_coverage(dss: DataStatusService, service: str) -> dict[str, Any]:
@@ -327,6 +348,9 @@ def main() -> int:
             len(services),
         )
         services = _filtered
+
+    # [BISECT-2026-06-15] TEMPORARY R6 diagnostic — confirm beta-mode + final service list.
+    _bisect(f"beta_mode={_ms.is_beta_mode()} final_services={services}")
 
     with run_lifecycle(
         service_name="data-status-rollup-worker",
