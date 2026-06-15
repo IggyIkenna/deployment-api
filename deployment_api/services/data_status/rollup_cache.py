@@ -139,6 +139,7 @@ def slice_rollup_to_window(
     overall_expected = 0
     overall_shards_found = 0
     overall_shards_expected = 0
+    overall_attempt_weighted = 0.0  # sum(per-cat attempt_coverage_pct * cat venue-expected) — R7 headline
 
     asset_groups = rollup.get("asset_groups")
     if not isinstance(asset_groups, dict):
@@ -159,8 +160,14 @@ def slice_rollup_to_window(
         sliced_asset_groups[cat] = sliced_cat
         overall_found += int(cast(int, sliced_cat.get("dates_found", 0)))
         overall_expected += int(cast(int, sliced_cat.get("dates_expected", 0)))
+        _cat_venue_expected = int(cast(int, sliced_cat.get("_venue_expected_sliced", 0)))
         overall_shards_found += int(cast(int, sliced_cat.get("_venue_found_sliced", 0)))
-        overall_shards_expected += int(cast(int, sliced_cat.get("_venue_expected_sliced", 0)))
+        overall_shards_expected += _cat_venue_expected
+        # attempt_coverage_pct is carried from the rollup cat payload (dict(cat_payload)
+        # in slice_asset_group); venue-expected-weight it to recompute the overall.
+        overall_attempt_weighted += (
+            float(cast(float, sliced_cat.get("attempt_coverage_pct", 0.0) or 0.0)) * _cat_venue_expected
+        )
         sliced_cat.pop("_venue_found_sliced", None)
         sliced_cat.pop("_venue_expected_sliced", None)
 
@@ -169,6 +176,15 @@ def slice_rollup_to_window(
     )
     overall_pct_shards = (
         min(round(overall_shards_found / overall_shards_expected * 100, 2), 100.0)
+        if overall_shards_expected > 0
+        else overall_pct_dates
+    )
+    # R7 headline: capture = shards-weighted capture; attempt = venue-expected-weighted
+    # mean of per-cat attempt_coverage_pct (empty_confirmed counts as covered). Mirrors
+    # _get_manifest_status_sync so the rollup-served path matches the on-demand path.
+    overall_capture_coverage_pct = overall_pct_shards
+    overall_attempt_coverage_pct = (
+        min(round(overall_attempt_weighted / overall_shards_expected, 2), 100.0)
         if overall_shards_expected > 0
         else overall_pct_dates
     )
@@ -183,6 +199,8 @@ def slice_rollup_to_window(
         "overall_completion_pct": overall_pct_shards,
         "overall_completion_pct_dates": overall_pct_dates,
         "overall_completion_pct_shards_weighted": overall_pct_shards,
+        "overall_capture_coverage_pct": overall_capture_coverage_pct,
+        "overall_attempt_coverage_pct": overall_attempt_coverage_pct,
         "overall_dates_found": overall_found,
         "overall_dates_expected": overall_expected,
         "overall_shards_found": overall_shards_found,

@@ -56,3 +56,48 @@ def test_build_cli_cmd_passes_config_dir_before_subcommand() -> None:
     # The value is the resolved pm-configs mirror, and precedes the subcommand args.
     assert Path(cmd[cmd.index("--config-dir") + 1]).name == "pm-configs"
     assert cmd.index("--config-dir") < cmd.index("-s")
+
+
+def test_slice_rollup_emits_r7_overall_capture_attempt() -> None:
+    """The rollup-served path must carry the R7 capture/attempt split, not just
+    overall_completion_pct — else the headline loses the split when a fresh rollup
+    exists (regression guard for slice_rollup_to_window dropping the new fields)."""
+    rollup: dict = {
+        "service": "instruments-service",
+        "asset_groups": {
+            "PREDICTION": {
+                "attempt_coverage_pct": 100.0,
+                "venues": {
+                    "POLYMARKET": {
+                        "dates_found_list": ["2025-03-14", "2025-03-15"],
+                        "missing_dates": ["2025-03-16"],
+                        "dates_expected_list": ["2025-03-14", "2025-03-15", "2025-03-16"],
+                    }
+                },
+            }
+        },
+    }
+    out = rollup_cache.slice_rollup_to_window(rollup, "2025-03-14", "2025-03-16", None)
+    assert "overall_capture_coverage_pct" in out
+    assert "overall_attempt_coverage_pct" in out
+    # capture = 2 found / 3 expected shards == overall_completion_pct; attempt == 100 (only cat).
+    assert out["overall_capture_coverage_pct"] == out["overall_completion_pct"]
+    assert out["overall_attempt_coverage_pct"] == 100.0
+
+
+def test_beta_eligible_filters_to_projected_services() -> None:
+    """In beta mode the rollup worker must sweep ONLY services with a v9 projected
+    index (instruments-service) — else the loud-failing beta read on a non-projected
+    service (mtds/features) crashes the whole job (regression guard for the cloud
+    beta job exit-1 incident, 2026-06-15)."""
+    import deployment_api.scripts.data_status_rollup_worker as worker
+
+    assert set(worker.BETA_ELIGIBLE_SERVICES) == {"instruments-service"}
+    full = [
+        "instruments-service",
+        "market-tick-data-service",
+        "features-delta-one-service",
+        "strategy-service",
+    ]
+    assert worker.beta_eligible(full) == ["instruments-service"]
+    assert worker.beta_eligible(["market-tick-data-service"]) == []
