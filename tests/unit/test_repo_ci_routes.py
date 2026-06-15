@@ -127,6 +127,19 @@ class TestOverviewMock:
         classes = {pr["stuck_class"] for pr in body["stuck_prs"]}
         assert classes == {"conflicting", "v2_never_reported", "skip_ci_jammed", "failing_check", "automerge_stuck"}
 
+    def test_blocking_checks_surface_the_codebuild_reason(self, client_repo_ci: TestClient) -> None:
+        # 2026-06-15 escalation: a drain PR stuck purely on a failing AWS CodeBuild required
+        # check (a classic status context the Actions rollup can't see) showed no on-screen
+        # reason. The failing_check PR now carries blocking_checks with the human reason string.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        failing = next(pr for pr in body["stuck_prs"] if pr["stuck_class"] == "failing_check")
+        assert failing["blocking_checks"], "failing_check PR must carry the blocking reason"
+        codebuild = failing["blocking_checks"][0]
+        assert "CodeBuild" in codebuild["name"]
+        assert codebuild["state"] == "failure"
+        assert codebuild["description"] == "Pull request approval required for starting a build"
+
     def test_stuck_in_sit_present(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):
             body = client_repo_ci.get("/api/repo-ci/overview").json()

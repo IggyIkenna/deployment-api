@@ -300,7 +300,7 @@ class TestHierarchicalDrilldownAwsNoGcsDispatch:
                 "deployment_api.services.data_status_hierarchical.build_bucket_name",
                 return_value=_AWS_BUCKET,
             ),
-            patch("unified_trading_library.cloud_interface.factory.GCSStorageClient") as mock_gcs,
+            patch("unified_trading_library.cloud_interface.providers.gcp.GCSStorageClient") as mock_gcs,
         ):
             get_hierarchical_drilldown(
                 service="instruments-service",
