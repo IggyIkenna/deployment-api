@@ -152,3 +152,33 @@ def test_live_rollup_respects_staleness() -> None:
     ):
         out = dss_mod._read_rollup_if_fresh("instruments-service")  # pyright: ignore[reportPrivateUsage]
     assert out is None  # stale + live → fall through
+
+
+def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
+    """POST /api/data-status/rollup-run runs the worker's run_rollup IN the gen1 service
+    (the gen2 Cloud Run Job crashes natively — R7 follow-up #4). Asserts the handler
+    dispatches to run_rollup with the default services + restores _PROCESS_POOL_DISABLED."""
+    import asyncio
+
+    import deployment_api.scripts.data_status_rollup_worker as worker
+    import deployment_api.services.data_status_service as dss_mod
+    from deployment_api.routes.data_status import _rollup
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_rollup(project: str, bucket: str, services: list[str]) -> int:
+        captured["project"] = project
+        captured["bucket"] = bucket
+        captured["services"] = list(services)
+        return 0
+
+    monkeypatch.setattr(worker, "run_rollup", _fake_run_rollup)
+    _before = dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
+    out = asyncio.run(_rollup.run_data_status_rollup(services=None))
+
+    assert out["status"] == "ok"
+    assert out["exit_code"] == 0
+    assert captured["services"] == list(worker.DEFAULT_SERVICES)
+    assert "data-status-rollups" in str(captured["bucket"])
+    # the service-wide pool flag must be restored after the call
+    assert _before == dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]

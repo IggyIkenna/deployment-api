@@ -89,6 +89,7 @@ from deployment_api.routes.data_status import _deploy_turbo
 from deployment_api.routes.data_status import _query_meta
 from deployment_api.routes.data_status import _downloads
 from deployment_api.routes.data_status import _live_coverage
+from deployment_api.routes.data_status import _rollup
 
 # isort: on
 

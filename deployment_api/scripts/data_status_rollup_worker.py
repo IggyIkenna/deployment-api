@@ -53,6 +53,7 @@ from deployment_api.services.data_status_service import DataStatusService
 
 logger = logging.getLogger(__name__)
 
+
 # Services to roll up — every service whose ``/api/data-status/manifest``
 # response would otherwise compute on demand. Sourced from
 # ``DataStatusService._BUCKET_TEMPLATES.keys()`` minus the ones that don't
@@ -74,6 +75,10 @@ _DEFAULT_SERVICES: tuple[str, ...] = (
     "strategy-service",
     "execution-service",
 )
+
+# Public alias — imported by the in-service rollup endpoint (routes/data_status/_rollup.py),
+# which runs this worker's compute in the gen1 service (the gen2 Job crashes natively).
+DEFAULT_SERVICES: tuple[str, ...] = _DEFAULT_SERVICES
 
 # Services with a CF-20 v9 PROJECTED index (so a beta rollup is meaningful). Only the
 # instruments-store AGs were projected → only ``instruments-service`` reads them. In beta
