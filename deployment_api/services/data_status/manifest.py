@@ -213,6 +213,10 @@ class ManifestStatusMixin(MissingShardsMixin):
 
         overall_shards_found = 0
         overall_shards_expected = 0
+        # sum(attempt_coverage_pct * expected_cells) per category -> the overall
+        # attempt-coverage (shards-weighted). Lets the UI show an explicit
+        # capture-vs-attempt split instead of one ambiguous "completion %". (R7, 2026-06-15)
+        overall_attempt_weighted = 0.0
 
         # Pack secondary-axis filter params into a dict the per-category builder
         # applies after the date mask but before the cell-grid compute. Empty/None
@@ -245,6 +249,9 @@ class ManifestStatusMixin(MissingShardsMixin):
             overall_expected += int(cat_result.get("dates_expected", 0))  # pyright: ignore[reportArgumentType]
             overall_shards_found += int(cat_result.get("_venue_found", 0))  # pyright: ignore[reportArgumentType]
             overall_shards_expected += int(cat_result.get("_venue_expected", 0))  # pyright: ignore[reportArgumentType]
+            overall_attempt_weighted += float(cat_result.get("attempt_coverage_pct", 0.0)) * int(  # pyright: ignore[reportArgumentType]
+                cat_result.get("_venue_expected", 0)
+            )
             del cat_result["_venue_found"]
             del cat_result["_venue_expected"]
 
@@ -259,6 +266,17 @@ class ManifestStatusMixin(MissingShardsMixin):
         # sub-rows use the same metric. Where no shards denominator exists we
         # fall back to the date-based figure so the number is still meaningful.
         overall_pct = overall_pct_shards
+        # Explicit capture-vs-attempt coverage (R7, 2026-06-15) so the UI headline can
+        # drop the ambiguous "completion %": CAPTURE = captured / could-exist (==
+        # overall_pct_shards); ATTEMPT = (captured + empty_confirmed + failed) / could-exist,
+        # shards-weighted across categories — "could-exist cells we have an HONEST answer
+        # for" (empty_confirmed counts as covered, the operator-correct reading).
+        overall_capture_coverage_pct = overall_pct_shards
+        overall_attempt_coverage_pct = (
+            min(round(overall_attempt_weighted / overall_shards_expected, 2), 100.0)
+            if overall_shards_expected > 0
+            else overall_pct_dates
+        )
         # Flag migrations in progress so the UI can explain a suspiciously-low
         # overall number without the user having to cross-check running VMs.
         # Heuristic: overall < 10% of shards expected AND a backfill/migration
@@ -278,6 +296,8 @@ class ManifestStatusMixin(MissingShardsMixin):
             "overall_completion_pct": overall_pct,
             "overall_completion_pct_dates": overall_pct_dates,
             "overall_completion_pct_shards_weighted": overall_pct_shards,
+            "overall_capture_coverage_pct": overall_capture_coverage_pct,
+            "overall_attempt_coverage_pct": overall_attempt_coverage_pct,
             "overall_dates_found": overall_found,
             "overall_dates_expected": overall_expected,
             "overall_shards_found": overall_shards_found,
@@ -489,6 +509,23 @@ class ManifestStatusMixin(MissingShardsMixin):
         # — they never existed. Only the aggregation math is clamped; the raw
         # manifest data is untouched.
         effective_start = _dss.get_effective_start_date(start_date, service, cat)
+        # Genesis clip (R7, 2026-06-15): expected_start_dates.yaml has no launch date
+        # for most instruments-service asset_groups, so a YOUNG asset_group was charged
+        # for every day back to the search-horizon start — e.g. PREDICTION showed
+        # dates 436/3088 = 14% purely from pre-launch days, while its shards were 95%.
+        # Clamp ``effective_start`` to ALSO be >= the category's DATA-OBSERVED genesis
+        # (the earliest manifest date for this service+category, already loaded above) so
+        # pre-genesis calendar days drop out of ``dates_expected``. A configured launch
+        # date still wins when it is LATER. The raw manifest data is untouched (display-only).
+        _svc_dates = (
+            index.loc[index["service_name"] == service, "date"]
+            if "service_name" in index.columns
+            else index["date"]
+        )
+        if len(_svc_dates) > 0:
+            _genesis = str(_svc_dates.min())
+            if _genesis > effective_start:
+                effective_start = _genesis
         cat_date_strs = [d for d in all_date_strs if d >= effective_start]
         cat_total_days = len(cat_date_strs)
 
