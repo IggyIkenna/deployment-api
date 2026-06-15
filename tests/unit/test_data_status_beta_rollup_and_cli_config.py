@@ -101,3 +101,54 @@ def test_beta_eligible_filters_to_projected_services() -> None:
     ]
     assert worker.beta_eligible(full) == ["instruments-service"]
     assert worker.beta_eligible(["market-tick-data-service"]) == []
+
+
+def test_beta_rollup_served_despite_staleness() -> None:
+    """The beta rollup (static projected-v9 index) must serve regardless of age — the
+    30-min staleness gate must NOT force a fall-through (which would 503 the all-AG
+    beta view). Regression guard for the beta staleness exemption (2026-06-15)."""
+    import gzip
+    import json as _json
+    from unittest.mock import MagicMock, patch
+
+    import pandas as pd
+
+    import deployment_api.services.data_status_service as dss_mod
+
+    client = MagicMock()
+    client.blob_exists.return_value = True
+    meta = MagicMock()
+    meta.updated = pd.Timestamp("2020-01-01", tz="UTC")  # ~years stale
+    client.get_blob_metadata.return_value = meta
+    payload = {"asset_groups": {}, "beta": True}
+    client.download_bytes.return_value = gzip.compress(_json.dumps(payload).encode())
+    dss_mod._ROLLUP_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+    with (
+        patch.object(dss_mod, "get_storage_client", return_value=client),
+        patch.object(dss_mod, "_is_beta_mode", return_value=True),
+    ):
+        out = dss_mod._read_rollup_if_fresh("instruments-service")  # pyright: ignore[reportPrivateUsage]
+    assert out == payload  # served despite staleness because beta
+
+
+def test_live_rollup_respects_staleness() -> None:
+    """Live mode keeps the staleness gate (regression guard — beta exemption must not
+    leak into live mode)."""
+    from unittest.mock import MagicMock, patch
+
+    import pandas as pd
+
+    import deployment_api.services.data_status_service as dss_mod
+
+    client = MagicMock()
+    client.blob_exists.return_value = True
+    meta = MagicMock()
+    meta.updated = pd.Timestamp("2020-01-01", tz="UTC")  # stale
+    client.get_blob_metadata.return_value = meta
+    dss_mod._ROLLUP_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+    with (
+        patch.object(dss_mod, "get_storage_client", return_value=client),
+        patch.object(dss_mod, "_is_beta_mode", return_value=False),
+    ):
+        out = dss_mod._read_rollup_if_fresh("instruments-service")  # pyright: ignore[reportPrivateUsage]
+    assert out is None  # stale + live → fall through

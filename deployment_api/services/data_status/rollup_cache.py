@@ -299,13 +299,18 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
     try:
         from unified_trading_library import get_storage_client
 
+        from deployment_api.services import manifest_source
+
         client = get_storage_client(project_id=_pid)
         bucket_name = rollup_bucket()
         blob_path = rollup_blob_path(service, "coverage")
         if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
-        if meta is not None and getattr(meta, "updated", None) is not None:
+        # BETA exemption: the beta rollup is from the STATIC projected-v9 index, never
+        # "stale" in the live sense — skip the gate so it serves regardless of age
+        # (mirrors _read_rollup_if_fresh).
+        if meta is not None and getattr(meta, "updated", None) is not None and not manifest_source.is_beta_mode():
             age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > ROLLUP_STALENESS_SEC:
                 logger.info(
