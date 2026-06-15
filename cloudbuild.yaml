@@ -61,6 +61,48 @@ steps:
         echo "deployment-ui HEAD: $$(cd ui && git rev-parse --short HEAD)"
     waitFor: ["-"]
 
+  # ── Vendor sibling-repo deps into the build context (trigger path) ──────────
+  # The Dockerfile COPYs _unified-api-contracts/ _deployment-service/
+  # _strategy-service/ (sibling-repo source pip-installed --no-deps) + the
+  # codex-data/pm-plans/pm-configs symlinks. A git-source TRIGGER build (unlike
+  # the local deploy-shared.sh rsync) has none of these. Mirror buildspec.aws.yaml:
+  # clone each sibling at live-defi-rollout (their integration SSOT) into the
+  # _-prefixed dirs, and replace the PM symlinks with empty dirs (the image needs
+  # no PM content baked in — data-status reads GCS at runtime). Skipped for any
+  # non-deployment-api repo using this shared template.
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "vendor-deps"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        if [ "${_SERVICE_NAME}" != "deployment-api" ]; then
+          echo "vendor-deps: ${_SERVICE_NAME} has no vendored sibling deps — skipping"
+          exit 0
+        fi
+        TOKEN="$$(gcloud secrets versions access latest --secret=GH_PAT)"
+        AUTH="$$(printf 'x-access-token:%s' "$$TOKEN" | base64 | tr -d '\n')"
+        clone_dep() {
+          repo="$$1"; dest="$$2"
+          if [ -d "$$dest" ]; then echo "vendor-deps: $$dest present — skipping"; return 0; fi
+          echo "vendor-deps: cloning $$repo @ live-defi-rollout → $$dest"
+          git -c http.extraheader="AUTHORIZATION: basic $$AUTH" clone --depth 1 \
+            --branch live-defi-rollout "https://github.com/IggyIkenna/$$repo" "$$dest" \
+            || git -c http.extraheader="AUTHORIZATION: basic $$AUTH" clone --depth 1 \
+            --branch main "https://github.com/IggyIkenna/$$repo" "$$dest"
+          rm -rf "$$dest/.git"
+          echo "vendor-deps: $$dest $$(du -sh "$$dest" | cut -f1)"
+        }
+        clone_dep unified-api-contracts _unified-api-contracts
+        clone_dep deployment-service   _deployment-service
+        clone_dep strategy-service     _strategy-service
+        for d in codex-data pm-plans pm-configs; do
+          rm -rf "$$d"; mkdir -p "$$d"; touch "$$d/.gitkeep"
+        done
+        echo "vendor-deps: done"
+    waitFor: ["-"]
+
   # ── Auth pre-check: fail fast if SA lacks AR access ─
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:alpine"
     id: "auth-precheck"
@@ -140,7 +182,7 @@ steps:
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "."
-    waitFor: ["pull-base-image", "ensure-repo", "fetch-ui"]
+    waitFor: ["pull-base-image", "ensure-repo", "fetch-ui", "vendor-deps"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "quality-gates"
@@ -226,7 +268,9 @@ steps:
         else
           echo "deploy: rollup Job ${_ROLLUP_JOB} not found — skipping rollup sync"
         fi
-    waitFor: ["push"]
+    # waitFor scan-check (NOT push) so we never roll a revision onto an image the
+    # vuln scan would reject — deploy is the last gate-passing step before images:.
+    waitFor: ["scan-check"]
 
 images:
   - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
