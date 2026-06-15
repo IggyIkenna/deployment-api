@@ -405,7 +405,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                     for cat in cat_list
                 }
                 return {pp_futures[f]: f.result() for f in pp_futures}
-        if len(cat_list) > 1:
+        if len(cat_list) > 1 and not _dss._THREAD_POOL_DISABLED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             with ThreadPoolExecutor(max_workers=min(len(cat_list), 4)) as tpool:
                 tp_futures = {
                     tpool.submit(

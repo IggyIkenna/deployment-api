@@ -38,19 +38,30 @@ async def run_data_status_rollup(services: list[str] | None = Query(None)) -> di
     ``status="partial"`` and the next scheduler tick recomputes.
     """
     import deployment_api.services.data_status_service as _dss_mod
-    from deployment_api.scripts.data_status_rollup_worker import DEFAULT_SERVICES, run_rollup
+    import deployment_api.services.manifest_source as _ms
+    from deployment_api.scripts.data_status_rollup_worker import DEFAULT_SERVICES, beta_eligible, run_rollup
 
     svc_list: list[str] = list(services) if services else list(DEFAULT_SERVICES)
+    # Mirror the worker's main(): in CF-20 beta mode only roll up services that have a
+    # v9 projected index (instruments-service) — the beta read fails LOUD on a missing
+    # projection, so sweeping a non-projected service (mtds/features) would crash it.
+    if _ms.is_beta_mode():
+        svc_list = beta_eligible(svc_list)
     bucket = f"{gcp_project_id}-data-status-rollups"
     logger.info("data-status rollup (service path): computing %d service(s) -> gs://%s", len(svc_list), bucket)
 
-    # ``run_rollup`` flips the module-level ``_PROCESS_POOL_DISABLED`` to avoid
-    # fork-after-grpc; save/restore so we don't leave the service-wide flag toggled
-    # for subsequent on-demand API requests on this instance.
-    _prev_pool = _dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
+    # Force FULLY-SERIAL per-AG compute: ``run_rollup`` disables the ProcessPool, and we
+    # also disable the ThreadPool here. Running all asset groups in PARALLEL threads holds
+    # every AG's cell-grid intermediate at once and OOMs the 8 GiB service ("Memory limit of
+    # 8192 MiB exceeded with 8435 MiB used"); serial holds one AG at a time (~1.7 GiB) so it
+    # fits. Save/restore both flags so we don't leave them toggled for on-demand API requests.
+    _prev_proc = _dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
+    _prev_thread = _dss_mod._THREAD_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
+    _dss_mod._THREAD_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
     try:
         rc = await asyncio.to_thread(run_rollup, gcp_project_id, bucket, svc_list)
     finally:
-        _dss_mod._PROCESS_POOL_DISABLED = _prev_pool  # pyright: ignore[reportPrivateUsage]
+        _dss_mod._PROCESS_POOL_DISABLED = _prev_proc  # pyright: ignore[reportPrivateUsage]
+        _dss_mod._THREAD_POOL_DISABLED = _prev_thread  # pyright: ignore[reportPrivateUsage]
 
     return {"status": "ok" if rc == 0 else "partial", "services": svc_list, "exit_code": rc, "bucket": bucket}
