@@ -241,6 +241,7 @@ from deployment_api.services.data_status.sports_helpers import (
     sports_trigger_dates_for_window as _sports_trigger_dates_for_window,
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
+from deployment_api.services.manifest_source import is_beta_mode as _is_beta_mode
 from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import DATA_STATUS_DISABLE_PROCESS_POOL as _DISABLE_PROCESS_POOL
 from deployment_api.settings import deployment_env_short as _env_short
@@ -477,7 +478,12 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
         # on backend). Treat missing/parse-errors as "fresh enough" to read.
-        if meta is not None and getattr(meta, "updated", None) is not None:
+        # BETA exemption: the beta rollup is derived from the STATIC projected-v9
+        # index (a migration preview, not a live feed), so it never goes "stale" in
+        # the live sense — the staleness gate would force a fall-through to the
+        # all-asset-group live-compute (HTTP 503). Skip the gate in beta mode; the
+        # beta blob is refreshed on demand when the projection changes.
+        if meta is not None and getattr(meta, "updated", None) is not None and not _is_beta_mode():
             age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
