@@ -43,6 +43,7 @@ import gzip
 import io
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any
@@ -55,11 +56,11 @@ logger = logging.getLogger(__name__)
 
 
 def _bisect(msg: str) -> None:
-    """[BISECT-2026-06-15] TEMPORARY R6 diagnostic — write to stdout (which Cloud Run
-    captures regardless of the job's suppressed logging config) to surface the swallowed
+    """[BISECT-2026-06-15] TEMPORARY R6 diagnostic — write to the stderr fd (2). The
+    cloud job captures ONLY stderr (stdout/INFO logs never reach Cloud Logging — that
+    IS the R6 "suppression"), so stderr is the only way to surface the swallowed
     exception crashing the cloud beta rollup. Remove once diagnosed."""
-    sys.stdout.write(f"[BISECT] {msg}\n")
-    sys.stdout.flush()
+    os.write(2, f"[BISECT] {msg}\n".encode())
 
 
 # Services to roll up — every service whose ``/api/data-status/manifest``
