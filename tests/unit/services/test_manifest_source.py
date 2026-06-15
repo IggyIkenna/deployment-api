@@ -34,6 +34,52 @@ def test_live_mode_delegates_to_utl_reader() -> None:
     assert out is live_df
 
 
+def test_live_empty_falls_back_to_consolidated_blob() -> None:
+    """When the UTL live read returns EMPTY (stale gate dropped a valid index), the
+    monitoring read must surface the consolidated blob directly — not 0 rows. (§R5)"""
+    stale_df = pd.DataFrame({"date": ["2026-06-11"], "venue": ["DERIBIT"], "capture_status": ["captured"]})
+    client = MagicMock()
+    client.download_bytes.return_value = _parquet_bytes(stale_df)
+    with (
+        patch.object(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", ""),
+        patch.object(manifest_source, "read_availability_index", return_value=pd.DataFrame()),
+        patch.object(manifest_source, "get_storage_client", return_value=client),
+    ):
+        out = manifest_source.read_manifest_index("instruments-store-cefi-prd-p")
+    client.download_bytes.assert_called_once_with(
+        "instruments-store-cefi-prd-p", manifest_source._CONSOLIDATED_INDEX_BLOB
+    )
+    assert out["venue"].tolist() == ["DERIBIT"]
+
+
+def test_live_stale_error_falls_back_to_consolidated_blob() -> None:
+    """A raising UTL read (e.g. ManifestConsolidatorStaleError) also degrades to the
+    consolidated blob for the monitoring view rather than 500-ing the UI."""
+    stale_df = pd.DataFrame({"date": ["2026-06-11"], "instrument_count": [42]})
+    client = MagicMock()
+    client.download_bytes.return_value = _parquet_bytes(stale_df)
+    with (
+        patch.object(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", ""),
+        patch.object(manifest_source, "read_availability_index", side_effect=RuntimeError("consolidator stale")),
+        patch.object(manifest_source, "get_storage_client", return_value=client),
+    ):
+        out = manifest_source.read_manifest_index("instruments-store-defi-prd-p")
+    assert out["instrument_count"].tolist() == [42]
+
+
+def test_live_empty_and_no_consolidated_blob_returns_empty() -> None:
+    """A genuinely-empty bucket (no consolidated blob either) → empty df, not an error."""
+    client = MagicMock()
+    client.download_bytes.side_effect = FileNotFoundError("no index")
+    with (
+        patch.object(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", ""),
+        patch.object(manifest_source, "read_availability_index", return_value=pd.DataFrame()),
+        patch.object(manifest_source, "get_storage_client", return_value=client),
+    ):
+        out = manifest_source.read_manifest_index("instruments-store-sports-prd-p")
+    assert out.empty
+
+
 def test_beta_mode_reads_projected_blob() -> None:
     beta_df = pd.DataFrame({"date": ["2026-02-02"], "capture_status": ["captured"]})
     client = MagicMock()
