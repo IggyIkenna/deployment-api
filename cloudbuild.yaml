@@ -19,6 +19,10 @@ substitutions:
   # triggers set BRANCH_NAME automatically; manual `gcloud builds submit` runs
   # pass --substitutions=_BRANCH=<name>. Only deployment-api consumes it.
   _BRANCH: "live-defi-rollout"
+  # Deploy gate — the main-deploy trigger sets _DEPLOY=true; every build-only
+  # trigger leaves it false so the deploy step (above `images:`) is a no-op.
+  _DEPLOY: "false"
+  _ROLLUP_JOB: "uts-prod-data-status-rollup"
 
 steps:
   # ── Fetch deployment-ui (SPA bundle source) — deployment-api ONLY ──────────
@@ -189,6 +193,39 @@ steps:
         done
         echo "WARNING: Vulnerability scan timed out — proceeding"
         exit 0
+    waitFor: ["push"]
+
+  # ── Deploy to Cloud Run (gated: deployment-api + _DEPLOY=true) ──────────────
+  # Runs ONLY for the main-deploy trigger (which sets _DEPLOY=true); a guarded
+  # NO-OP for the build-only triggers (feat/* / live-defi-rollout, _DEPLOY unset)
+  # and for every non-deployment-api repo using this shared template. Rolls the
+  # shared `uts-shared-deployment-api` Cloud Run revision to the freshly-built
+  # image (a bare --image deploy preserves all existing service config) + syncs
+  # the data-status rollup Job to the SAME image so live data-status reflects new
+  # code (mirrors deployment-service/scripts/cloud-run/deploy-shared.sh). Operator
+  # decision 2026-06-15: auto-deploy deployment-api/ui on main.
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "deploy"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        if [ "${_SERVICE_NAME}" != "deployment-api" ] || [ "${_DEPLOY}" != "true" ]; then
+          echo "deploy: skipped (_SERVICE_NAME=${_SERVICE_NAME} _DEPLOY=${_DEPLOY})"
+          exit 0
+        fi
+        IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+        echo "deploy: rolling uts-shared-deployment-api → $$IMG"
+        gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
+          --region asia-northeast1 --project "$PROJECT_ID" --quiet
+        if gcloud run jobs describe "${_ROLLUP_JOB}" --region asia-northeast1 --project "$PROJECT_ID" --format='value(name)' >/dev/null 2>&1; then
+          gcloud run jobs update "${_ROLLUP_JOB}" --image "$$IMG" --region asia-northeast1 --project "$PROJECT_ID" --quiet
+          gcloud run jobs execute "${_ROLLUP_JOB}" --region asia-northeast1 --project "$PROJECT_ID" --async
+          echo "deploy: rollup Job ${_ROLLUP_JOB} synced to new image + executed"
+        else
+          echo "deploy: rollup Job ${_ROLLUP_JOB} not found — skipping rollup sync"
+        fi
     waitFor: ["push"]
 
 images:
