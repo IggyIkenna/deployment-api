@@ -248,3 +248,18 @@ class TestFleetGitHealthDegrade:
         assert result["data"] is None
         assert "token" in result["reason"]
         assert result["orchestrator_url"].startswith("http")
+
+
+def test_has_unpromoted_content_ignores_squash_skew() -> None:
+    # The promotion-lag age MUST be gated on real file content (files_changed>0), NOT ahead_by:
+    # a squash-merged repo stays ahead-by-commit-count forever even though its tree is identical to
+    # main, so an ahead_by gate would phantom-age a long-promoted commit and redden a drained row.
+    from deployment_api.routes._repo_ci_types import BranchDeltaDict  # pyright: ignore[reportPrivateUsage]
+    from deployment_api.routes.repo_ci import _has_unpromoted_content  # pyright: ignore[reportPrivateUsage]
+
+    squash_skew = BranchDeltaDict(base="main", head="live-defi-rollout", ahead_by=21, behind_by=0, files_changed=0)
+    real_delta = BranchDeltaDict(base="main", head="live-defi-rollout", ahead_by=1, behind_by=0, files_changed=1)
+
+    assert _has_unpromoted_content(squash_skew) is False  # 21 commits, 0 files → no lag
+    assert _has_unpromoted_content(real_delta) is True  # genuine unpromoted content → lag applies
+    assert _has_unpromoted_content(None) is False  # in sync → no delta → no lag

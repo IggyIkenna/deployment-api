@@ -405,6 +405,16 @@ def _image_signal(
     )
 
 
+def _has_unpromoted_content(ldr_main: BranchDeltaDict | None) -> bool:
+    """True only when LDR has REAL file content not yet on main — gate the promotion-lag age on
+    this, NOT on ahead_by. Squash-merges keep LDR perpetually ahead-by-commit-count even when the
+    tree content is byte-identical to main (`ahead_by>0, files_changed=0` = "squash skew"), so an
+    ahead_by gate phantom-ages the oldest squashed commit (e.g. a 4-day-old commit whose content
+    already promoted) and reddens the lag chip on a fully-drained repo. files_changed>0 is the same
+    real-content signal `drain_stalled` already uses — keep the two consistent."""
+    return ldr_main is not None and ldr_main["files_changed"] > 0
+
+
 async def _overview_row(
     session: aiohttp.ClientSession,
     token: str,
@@ -471,11 +481,13 @@ async def _overview_row(
         if lg is not None:
             last_green_main = LastGreenDict(sha=lg[0], at=lg[1])
     # G6: promotion-lag age — the age of the OLDEST LDR commit not yet on main (the lag the
-    # promotion-lag-monitor pages on at >60min). Only when there's a real LDR→main delta (a repo
-    # in sync has no lag → no extra API call); reuses the compare API for the oldest commit only.
+    # promotion-lag-monitor pages on at >60min). Gated on REAL content delta (files_changed>0, via
+    # _has_unpromoted_content), NOT ahead_by: a squash-skew repo (ahead_by>0, files_changed=0) has
+    # already promoted its content and must show NO lag (else a 4-day-old squashed commit reddens a
+    # fully-drained row). A repo in sync has no lag → no extra API call.
     main_lag_age_min: int | None = None
     ldr_main = next((d for d in deltas if d["base"] == "main" and d["head"] == "live-defi-rollout"), None)
-    if ldr_main is not None and ldr_main["ahead_by"] > 0:
+    if _has_unpromoted_content(ldr_main):
         try:
             oldest_at = await oldest_unpromoted_commit_at(
                 session, token, GITHUB_ORG, meta.name, "main", "live-defi-rollout"
