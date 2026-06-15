@@ -59,7 +59,7 @@ jobs:
       # Used for `gh pr create` (conflict PR) + the repository_dispatch; an App token CAN
       # open PRs and trigger downstream workflows (the repo-scoped GITHUB_TOKEN cannot).
       # App perms: Contents+PullRequests+Actions R/W; owner: IggyIkenna (fleet-wide).
-      - uses: actions/create-github-app-token@v1
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ secrets.GH_APP_CI_POLLER_APP_ID }}
