@@ -202,6 +202,9 @@ from deployment_api.services.data_status.rollup_cache import (
     read_coverage_rollup_if_fresh as _read_coverage_rollup_if_fresh,
 )
 from deployment_api.services.data_status.rollup_cache import (
+    rollup_blob_path as _rollup_blob_path,
+)
+from deployment_api.services.data_status.rollup_cache import (
     rollup_bucket as _rollup_bucket,
 )
 from deployment_api.services.data_status.rollup_cache import (
@@ -464,7 +467,7 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
     try:
         client = get_storage_client(project_id=_pid)
         bucket_name = _rollup_bucket()
-        blob_path = f"{service}/full.json.gz"
+        blob_path = _rollup_blob_path(service, "full")
         # Unified cloud_interface flat API (NOT raw google-cloud-storage Blob):
         #   blob_exists(bucket, blob_path) -> bool
         #   get_blob_metadata(bucket, blob_path) -> BlobMetadata | None

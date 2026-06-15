@@ -125,6 +125,11 @@ def read_manifest_index(bucket: str) -> pd.DataFrame:
     asset_group = _asset_group_from_bucket(bucket)
     blob_name = DATA_STATUS_BETA_MANIFEST_BLOB.format(asset_group=asset_group)
     logger.info("BETA manifest mode: reading gs://%s/%s (asset_group=%s)", bucket, blob_name, asset_group)
+    # Fail LOUD on a missing projected index (honest absence — see
+    # test_beta_mode_fails_loud_on_missing_projection): if a beta query targets a
+    # bucket with no v9 projection, surface it rather than silently rendering empty.
+    # The rollup worker only sweeps beta-eligible services in beta mode (see
+    # ``BETA_ELIGIBLE_SERVICES`` in data_status_rollup_worker), so it never hits this.
     raw = get_storage_client().download_bytes(bucket, blob_name)
     df = pd.read_parquet(io.BytesIO(raw))
     _BETA_INDEX_CACHE[bucket] = (time.monotonic(), df)

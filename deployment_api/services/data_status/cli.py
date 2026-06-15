@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import cast
 
 from unified_api_contracts.internal import MarketCategory
@@ -23,6 +24,27 @@ from deployment_api.services.data_status_drilldown import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_cli_config_dir() -> str | None:
+    """Resolve the ``deployment_service`` CLI ``--config-dir`` for the subprocess.
+
+    The CLI is invoked as ``python -m deployment_service ...`` from an installed
+    wheel, so its own ``get_config_dir()`` walk (relative to the package source /
+    CWD) fails inside the Cloud Run image — ``configs/`` lives at the
+    deployment-service REPO ROOT, is not package data, and ``pip install --no-deps``
+    drops it (the source 500: "Could not find configs directory"). The deployment-api
+    image, however, bundles the byte-identical mirror as ``pm-configs/`` (Dockerfile
+    "COPY pm-configs/ ./pm-configs/"; SSOT ``unified-trading-pm/configs/``), so we
+    point the CLI at it explicitly: ``<deployment_api repo/app root>/pm-configs``.
+    Returns ``None`` when it doesn't exist, so ``_build_cli_cmd`` omits the flag and
+    lets the CLI fall back to its own discovery (e.g. a dev run from deployment-service).
+    """
+    # cli.py == deployment_api/services/data_status/cli.py → parents[3] == repo/app root.
+    pm_configs = Path(__file__).resolve().parents[3] / "pm-configs"
+    if pm_configs.is_dir():
+        return str(pm_configs)
+    return None
 
 
 class DataStatusCliMixin:
@@ -59,6 +81,14 @@ class DataStatusCliMixin:
             sys.executable,
             "-m",
             "deployment_service",
+        ]
+        # ``--config-dir`` is a GROUP-level option (must precede the subcommand).
+        # Point the in-image CLI at the bundled pm-configs mirror so it doesn't
+        # die with "Could not find configs directory" (see _resolve_cli_config_dir).
+        _config_dir = _resolve_cli_config_dir()
+        if _config_dir is not None:
+            cmd.extend(["--config-dir", _config_dir])
+        cmd += [
             "data-status",
             "-s",
             service,

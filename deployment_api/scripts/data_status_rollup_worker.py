@@ -75,6 +75,23 @@ _DEFAULT_SERVICES: tuple[str, ...] = (
     "execution-service",
 )
 
+# Services with a CF-20 v9 PROJECTED index (so a beta rollup is meaningful). Only the
+# instruments-store AGs were projected → only ``instruments-service`` reads them. In beta
+# mode the worker restricts to this set: the beta read fails LOUD on a missing projection
+# (honest absence), so sweeping a non-projected service (mtds/features/…) would crash the
+# job. Live mode is unaffected (sweeps every service).
+BETA_ELIGIBLE_SERVICES: frozenset[str] = frozenset({"instruments-service"})
+
+
+def beta_eligible(services: list[str]) -> list[str]:
+    """Keep only services with a v9 projected index (``BETA_ELIGIBLE_SERVICES``).
+
+    Used in beta mode so the worker never sweeps a non-projected service whose
+    loud-failing beta read would crash the job.
+    """
+    return [s for s in services if s in BETA_ELIGIBLE_SERVICES]
+
+
 # Compute starts from this fixed date — covers every service's launch.
 _ROLLUP_START_DATE = "2018-01-01"
 
@@ -85,13 +102,23 @@ def _today_iso() -> str:
 
 
 def _rollup_blob_path(service: str) -> str:
-    """Canonical GCS object path for a service's manifest rollup blob."""
-    return f"{service}/full.json.gz"
+    """GCS object path for a service's manifest rollup blob.
+
+    Beta-namespaced when this worker runs with ``DATA_STATUS_BETA_MANIFEST_BLOB``
+    set (writes ``{service}/full.beta.json.gz``) so the beta rollup never mixes
+    with the live one — the service reads the same beta blob in beta mode. SSOT:
+    ``rollup_cache.rollup_blob_path``.
+    """
+    from deployment_api.services.data_status.rollup_cache import rollup_blob_path
+
+    return rollup_blob_path(service, "full")
 
 
 def _coverage_blob_path(service: str) -> str:
-    """Canonical GCS object path for a service's coverage-summary rollup blob."""
-    return f"{service}/coverage.json.gz"
+    """GCS object path for a service's coverage-summary rollup blob (beta-namespaced)."""
+    from deployment_api.services.data_status.rollup_cache import rollup_blob_path
+
+    return rollup_blob_path(service, "coverage")
 
 
 def _build_one_service_rollup(dss: DataStatusService, service: str, end_date: str) -> dict[str, Any]:
@@ -287,11 +314,25 @@ def main() -> int:
         )
         setup_events(service_name="data-status-rollup-worker", mode="batch", sink=_sink)
 
+    services: list[str] = list(args.services)  # pyright: ignore[reportAny]
+    # In beta mode only roll up services that have a v9 projected index (else the
+    # loud-failing beta read crashes the sweep). Live mode rolls up everything.
+    from deployment_api.services import manifest_source as _ms
+
+    if _ms.is_beta_mode():
+        _filtered = beta_eligible(services)
+        logger.info(
+            "BETA mode: restricting rollup to beta-eligible services %s (from %d tracked)",
+            _filtered,
+            len(services),
+        )
+        services = _filtered
+
     with run_lifecycle(
         service_name="data-status-rollup-worker",
         details={"project_id": args.project, "bucket": args.bucket},
     ):
-        return run_rollup(args.project, args.bucket, list(args.services))  # pyright: ignore[reportAny]
+        return run_rollup(args.project, args.bucket, services)
 
 
 if __name__ == "__main__":

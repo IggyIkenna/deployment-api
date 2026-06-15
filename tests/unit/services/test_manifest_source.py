@@ -119,31 +119,41 @@ def test_beta_mode_fails_loud_on_missing_projection() -> None:
             pass
 
 
-def test_beta_mode_bypasses_rollup_fast_path() -> None:
-    """In beta mode get_manifest_status must NEVER serve the offline rollup.
+def test_beta_mode_uses_beta_namespaced_rollup() -> None:
+    """In beta mode get_manifest_status reads the BETA-NAMESPACED rollup.
 
-    The rollup blob is computed from the LIVE index by the Cloud Run cron, so
-    serving it while ``DATA_STATUS_BETA_MANIFEST_BLOB`` is set would quietly
-    render live data in a beta eyeball session (CF-20/V5).
+    Previously beta bypassed the rollup entirely because it was live-derived (serving
+    it in beta would quietly render live data — CF-20/V5). Now the worker writes a
+    beta-namespaced rollup (``{service}/full.beta.json.gz``) computed from the
+    projected v9 index, and ``_read_rollup_if_fresh`` reads that same beta blob in
+    beta mode — so the all-asset-group beta view is served from cache instead of
+    live-computing every asset group per request (which exceeded the Cloud Run request
+    timeout -> HTTP 503). The "never serve live-derived data in beta" invariant is now
+    preserved by the blob NAMESPACING (see
+    ``test_data_status_beta_rollup_and_cli_config.test_rollup_blob_path_live_vs_beta``),
+    not by bypassing the fast-path.
     """
     import asyncio
 
     import deployment_api.services.data_status_service as dss_mod
+    from deployment_api.services.data_status import manifest as manifest_mod
 
     svc = dss_mod.DataStatusService()
-    sentinel: dict[str, object] = {"asset_groups": {}, "beta": True}
+    rollup_payload: dict[str, object] = {"asset_groups": {}, "beta_rollup": True}
+    sliced: dict[str, object] = {"asset_groups": {}, "sliced": True}
     with (
         patch.object(
             manifest_source,
             "DATA_STATUS_BETA_MANIFEST_BLOB",
             "_index/audit/projected_index_{asset_group}.parquet",
         ),
-        patch.object(dss_mod, "_read_rollup_if_fresh") as rollup_read,
-        patch.object(type(svc), "_get_manifest_status_sync", return_value=sentinel),
+        patch.object(dss_mod, "_read_rollup_if_fresh", return_value=rollup_payload) as rollup_read,
+        patch.object(manifest_mod, "slice_rollup_to_window", return_value=sliced) as slicer,
     ):
         out = asyncio.run(svc.get_manifest_status("market-tick-data-service", "2026-01-01", "2026-01-02"))
-    rollup_read.assert_not_called()
-    assert out is sentinel
+    rollup_read.assert_called_once_with("market-tick-data-service")
+    slicer.assert_called_once()
+    assert out is sliced
 
 
 def test_live_mode_still_uses_rollup_fast_path() -> None:
