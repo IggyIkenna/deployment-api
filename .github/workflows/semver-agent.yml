@@ -156,7 +156,7 @@ jobs:
       - name: Compute next semver via diff analysis
         id: compute
         env:
-          # Pass the triggering commit message via env — never inline ${{ }} in run:
+          # Pass the triggering commit message via env — never inline $\{\{ \}\} in run:
           # (a multi-line / quoted commit message would break the shell or inject).
           TRIGGER_COMMIT_MSG: ${{ github.event.head_commit.message || github.event.workflow_run.head_commit.message }}
         run: |
