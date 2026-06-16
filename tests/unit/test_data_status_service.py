@@ -695,6 +695,112 @@ class TestFourStateClassification:
         assert result["trades"]["dates_blocked_on_raw"] == 0
 
 
+class TestReferenceDataBundleScope:
+    """instruments-service / corporate-actions reference-data scope (audit §B).
+
+    The bundled reference row has no market-data ``data_type``, so the
+    market-data ``EXPECTED_COVERAGE`` registry flagged EVERY reference row
+    ``out_of_scope``. For ``REFERENCE_BUNDLE_SERVICES`` the scope must come
+    from the instruments-service catalogue (configured venue + genesis), at
+    venue/day grain. A market-data service (MTDS) stays on the registry path.
+    """
+
+    def setup_method(self):
+        self.svc = DataStatusService(project_id="test-proj")
+        # Genesis map is cached process-wide; force a reload so these tests
+        # read the real catalogue rather than a stale empty map.
+        from deployment_api.services.data_status import reference_scope
+
+        reference_scope.reset_genesis_cache()
+
+    def _build(self, df, venue, start, end, *, service, category):
+        vm = MagicMock()
+        # Expect a contiguous range so the bundle row owns the days in [start,end].
+        vm.get_expected_trading_dates.return_value = sorted({str(d) for d in df["date"].tolist()} | {start, end})
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["instruments"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+        ):
+            return self.svc._build_data_type_breakdown(df, venue, start, end, vm, service=service, category=category)
+
+    def test_instruments_service_within_coverage_is_in_scope(self):
+        """CEFI BINANCE-SPOT (genesis 2019-03-30), day 2024-01-01 -> out_of_scope=False."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["BINANCE-SPOT"],
+                "data_type": ["instruments"],
+            }
+        )
+        result = self._build(
+            df, "BINANCE-SPOT", "2024-01-01", "2024-01-01", service="instruments-service", category="CEFI"
+        )
+        assert "instruments" in result
+        assert result["instruments"]["out_of_scope"] is False
+        assert result["instruments"]["in_expected_coverage"] is True
+
+    def test_instruments_service_pre_genesis_day_is_out_of_scope(self):
+        """HYPERLIQUID genesis 2023-05-01; a 2022 row owns no covered day -> out_of_scope=True."""
+        df = pd.DataFrame(
+            {
+                "date": ["2022-01-01"],
+                "venue": ["HYPERLIQUID"],
+                "data_type": ["instruments"],
+            }
+        )
+        result = self._build(
+            df, "HYPERLIQUID", "2022-01-01", "2022-01-01", service="instruments-service", category="CEFI"
+        )
+        assert "instruments" in result
+        assert result["instruments"]["out_of_scope"] is True
+        assert result["instruments"]["in_expected_coverage"] is False
+
+    def test_instruments_service_unlisted_venue_is_out_of_scope(self):
+        """A venue absent from the IS catalogue -> out_of_scope=True."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["MADEUP-VENUE"],
+                "data_type": ["instruments"],
+            }
+        )
+        result = self._build(
+            df, "MADEUP-VENUE", "2024-01-01", "2024-01-01", service="instruments-service", category="CEFI"
+        )
+        assert "instruments" in result
+        assert result["instruments"]["out_of_scope"] is True
+        assert result["instruments"]["in_expected_coverage"] is False
+
+    def test_market_data_service_unaffected_by_reference_scope(self):
+        """MTDS NASDAQ trades still uses the market-data scope path (out_of_scope=True)."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["NASDAQ"],
+                "data_type": ["trades"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01"]
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["trades"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                df,
+                "NASDAQ",
+                "2024-01-01",
+                "2024-01-01",
+                vm,
+                service="market-tick-data-service",
+                category="TRADFI",
+            )
+        # NASDAQ + trades is out_of_scope per the EXISTING market-data policy —
+        # proving the reference branch did NOT hijack a market-data service.
+        assert result["trades"]["out_of_scope"] is True
+        assert result["trades"]["in_expected_coverage"] is False
+
+
 class TestPhantomExpectedClamp:
     """Tests for the 2026-04-19 phantom-expected denominator clamp.
 

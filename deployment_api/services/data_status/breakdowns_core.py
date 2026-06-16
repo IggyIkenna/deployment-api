@@ -38,6 +38,10 @@ from deployment_api.services.data_status.coverage_metrics import (
     derive_capture_status_rates,
 )
 from deployment_api.services.data_status.mtds import TRADFI_TICK_ONLY_DATA_TYPES
+from deployment_api.services.data_status.reference_scope import (
+    is_reference_bundle_service,
+    is_reference_venue_day_in_scope,
+)
 
 
 class CoreBreakdownsMixin(DomainBreakdownsMixin):
@@ -615,6 +619,8 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
                 data_type=dt,
                 missing_dates=dt_missing_dates,
                 venue_df=venue_df,
+                service=service,
+                expected_dates=sorted(dt_expected),  # pyright: ignore[reportUnknownArgumentType]
             )
 
             pct = round(len(dt_found) / max(1, len(dt_expected)) * 100, 2)  # pyright: ignore[reportUnknownArgumentType]
@@ -644,10 +650,26 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
         data_type: str,
         missing_dates: list[str],
         venue_df: pd.DataFrame,
+        service: str = "",
+        expected_dates: list[str] | None = None,
     ) -> tuple[bool, bool, list[str], list[str]]:
         """Apply the four-state classification to a (venue, data_type) row.
 
         Returns ``(scope_in, is_processed, actionable_missing, blocked_dates)``.
+
+        **Reference-data bundle services** (``instruments-service`` /
+        ``corporate-actions`` — ``reference_scope.REFERENCE_BUNDLE_SERVICES``)
+        emit REFERENCE data on a ``data_type=""`` bundle row that is in NEITHER
+        the market-data ``EXPECTED_COVERAGE`` registry nor
+        ``PROCESSED_REQUIRES_RAW``. Scoping them against the market-data
+        registry flags every row ``out_of_scope``. So for those services we
+        branch the scope onto a REFERENCE expectation source (the
+        instruments-service catalogue): in-scope ⟺ ``(asset_group, venue)`` is
+        a configured IS venue AND the row covers a day on/after that venue's
+        genesis. A configured venue missing data stays in-scope + missing (a
+        real gap in the denominator); an unlisted venue or a purely pre-genesis
+        row is out_of_scope. Grain = venue/day (per-instrument_type scoping is a
+        separate follow-on tied to a manifest-schema change).
 
         Four states (Phase 1 of the unified data-status work):
 
@@ -670,6 +692,17 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
         ``ohlcv_15m`` natively while CeFi MDPS derives ``ohlcv_15m`` from
         trades — same token, different role per venue).
         """
+        # Reference-data bundle services scope off the instruments-service
+        # catalogue (venue/day grain), NOT the market-data registry — the
+        # bundled reference row has no market-data data_type so the registry
+        # would always flag it out_of_scope (the audit §B bug).
+        if is_reference_bundle_service(service):
+            scope_days = expected_dates if expected_dates is not None else list(missing_dates)
+            ref_scope_in = is_reference_venue_day_in_scope(category, venue, scope_days)
+            # Reference rows are never "processed" candles; a missing day on a
+            # configured venue is a genuine actionable gap (never blocked-on-raw).
+            return ref_scope_in, False, list(missing_dates), []
+
         scope_in = is_expected(category, venue, data_type) if category and venue else True
         dt_is_processed = is_processed_data_type(data_type)
         apply_precondition = dt_is_processed and not scope_in
