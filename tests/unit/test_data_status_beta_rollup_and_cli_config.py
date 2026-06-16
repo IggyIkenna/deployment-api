@@ -248,6 +248,31 @@ def test_is_service_beta_semantics(monkeypatch) -> None:
     assert manifest_source.is_service_beta("market-tick-data-service") is False  # beta but not eligible
 
 
+def test_coverage_summary_uses_rollup_in_beta_mode() -> None:
+    """coverage-summary must use the rollup fast-path EVEN in beta mode (2026-06-16 fix) —
+    the old ``if not is_beta_mode()`` guard skipped it for every service, forcing a multi-
+    minute live compute that 503'd the market-tick-data-service coverage panel. The per-
+    service blob path keeps the beta invariant (mtds → coverage.json.gz, instruments →
+    coverage.beta.json.gz)."""
+    import asyncio
+    from unittest.mock import patch
+
+    import deployment_api.services.data_status.coverage as coverage_mod
+    import deployment_api.services.data_status_service as dss_mod
+
+    svc = dss_mod.DataStatusService()
+    cov_rollup: dict[str, object] = {"asset_groups": {}, "coverage_rollup": True}
+    with (
+        patch.object(
+            manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", "_index/audit/projected_index_{asset_group}.parquet"
+        ),
+        patch.object(coverage_mod, "read_coverage_rollup_if_fresh", return_value=cov_rollup) as cov_read,
+    ):
+        out = asyncio.run(svc.get_coverage_summary("market-tick-data-service"))
+    cov_read.assert_called_once_with("market-tick-data-service")  # rollup used, NOT live-computed
+    assert out.get("served_from") == "rollup"
+
+
 def test_thread_pool_disabled_forces_serial(monkeypatch) -> None:
     """_THREAD_POOL_DISABLED=True bypasses the ThreadPoolExecutor (fully serial per-AG
     compute) — running all AGs in parallel threads OOMs the 8 GiB service (R7 follow-up
