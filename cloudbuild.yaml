@@ -102,7 +102,20 @@ steps:
         clone_dep unified-api-contracts _unified-api-contracts
         clone_dep deployment-service   _deployment-service
         clone_dep strategy-service     _strategy-service
-        for d in codex-data pm-plans pm-configs; do
+        # pm-configs is the operational-config SSOT mirror (unified-trading-pm/configs/):
+        # get_config_dir() reads sharding.<service>.yaml from it for the capabilities
+        # route (/api/capabilities/service-asset-groups/<service>) and the data-status
+        # CLI points --config-dir at it. It MUST be populated in the image, NEVER emptied
+        # (emptying 404'd every service-asset-groups lookup). On the trigger path the
+        # pm-configs symlink can't be followed, so clone the PM SSOT and copy configs/ in;
+        # a local deploy-shared.sh rsync already materialises a real pm-configs (keep it).
+        if [ ! -f pm-configs/sharding_config.yaml ]; then
+          clone_dep unified-trading-pm _unified-trading-pm
+          rm -rf pm-configs && cp -a _unified-trading-pm/configs pm-configs
+        fi
+        echo "vendor-deps: pm-configs has $$(ls pm-configs/sharding.*.yaml 2>/dev/null | wc -l) sharding configs"
+        # codex-data / pm-plans are runtime-GCS-backed — empty placeholders are fine.
+        for d in codex-data pm-plans; do
           rm -rf "$$d"; mkdir -p "$$d"; touch "$$d/.gitkeep"
         done
         echo "vendor-deps: done"

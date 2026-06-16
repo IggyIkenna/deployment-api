@@ -38,13 +38,18 @@ class TestSingleSourceCalculator:
         assert result == ["2024-04-13", "2024-04-20", "2024-04-27"]
 
     def test_pre_launch_clipped_to_zero(self) -> None:
-        """Pre-2018-01-01 (api_football coverage start) → clipped window
-        empty, no expected dates."""
+        """Pre-2015-01-01 (api_football coverage start) → clipped window
+        empty, no expected dates.
+
+        Coverage start tracks UAC SOURCE_COVERAGE_START, reconciled 2018→2015
+        (unified-api-contracts@bb7bf64, real archive start); a pre-2015 window
+        is the post-reconcile clipping case.
+        """
         result = _features_sports_expected_dates_for_calculator(
             calc_name="team_form",
             league_id="EPL",
-            start_date="2017-01-01",
-            end_date="2017-12-31",
+            start_date="2014-01-01",
+            end_date="2014-12-31",
         )
         assert result == []
 

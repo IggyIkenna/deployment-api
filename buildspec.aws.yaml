@@ -42,10 +42,20 @@ phases:
           cp -r deployment-ui ui || true
         fi
         # codex-data/pm-plans/pm-configs are repo symlinks pointing to ../unified-trading-pm/*
-        # They are dangling in CodeBuild — replace with empty placeholder dirs
+        # They are dangling in CodeBuild — replace codex-data/pm-plans with empty
+        # placeholder dirs (runtime reads GCS). pm-configs is the operational-config SSOT
+        # mirror (unified-trading-pm/configs/): get_config_dir() reads sharding.<service>.yaml
+        # from it for /api/capabilities/service-asset-groups/<service>, so it MUST be
+        # populated from the cloned PM repo, NEVER emptied (emptying 404'd every lookup).
         rm -f codex-data pm-plans pm-configs 2>/dev/null || true
-        mkdir -p codex-data pm-plans pm-configs
-        touch codex-data/.gitkeep pm-plans/.gitkeep pm-configs/.gitkeep
+        mkdir -p codex-data pm-plans
+        touch codex-data/.gitkeep pm-plans/.gitkeep
+        if [ -d unified-trading-pm/configs ]; then
+          cp -a unified-trading-pm/configs pm-configs
+        else
+          echo "WARNING: unified-trading-pm/configs absent — pm-configs left empty (sharding routes will 404)"
+          mkdir -p pm-configs && touch pm-configs/.gitkeep
+        fi
 
   build:
     commands:
