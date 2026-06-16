@@ -99,6 +99,18 @@ class TestLeafProvenance:
         prov = {row["pipeline_mode"]: row for row in result["provenance"]}  # pyright: ignore[reportGeneralTypeIssues,reportArgumentType]
         assert set(prov) == {"batch_binance", "replay_binance", "live_binance"}
 
+    def test_leaf_provenance_surfaces_cadence_dimension(self) -> None:
+        """A cell carrying a cadence column exposes it in the per-mode breakdown (M5b)."""
+        df = _multi_mode_manifest()
+        df["cadence"] = ["daily", "daily", ""]  # live row predates cadence → blank, no break
+        result = _call(df)
+        leaves = _leaves(result["tree"])  # pyright: ignore[reportArgumentType]
+        assert len(leaves) == 1
+        prov = {row["pipeline_mode"]: row for row in leaves[0]["provenance"]}  # pyright: ignore[reportGeneralTypeIssues,reportArgumentType]
+        assert prov["batch_binance"]["cadence"] == "daily"
+        assert prov["replay_binance"]["cadence"] == "daily"
+        assert prov["live_binance"]["cadence"] == ""  # blank cadence handled gracefully
+
 
 class TestPipelineModeFilter:
     def test_filter_to_single_mode_scopes_the_tree(self) -> None:
