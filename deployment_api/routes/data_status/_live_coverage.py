@@ -55,10 +55,11 @@ class LiveStatusRow(BaseModel):  # CORRECT-LOCAL: deployment-ui Live-tab respons
 
     Phase 11.1 endpoint contract per
     ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11. The
-    endpoint pivots the availability manifest by
-    ``pipeline_mode=live_websocket`` and joins per-shard health from the
-    Health-API endpoints (Phase 8 already shipped at UTL@54d658e8 +
-    UTL@908b1647).
+    endpoint pivots the availability manifest by the live-pipeline-mode
+    family (any ``pipeline_mode`` whose value begins with ``live`` —
+    ``live_<source>`` such as ``live_binance``, plus the legacy alias)
+    and joins per-shard health from the Health-API endpoints (Phase 8
+    already shipped at UTL@54d658e8 + UTL@908b1647).
 
     Shard-key axes mirror the v5 manifest row key (per CLAUDE.md
     "Shard-granularity SSOT"). Per-shard health metrics are sourced from
@@ -137,15 +138,32 @@ class LiveStatusResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui Live-tab re
     refreshed_at: datetime
 
 
-_LIVE_PIPELINE_MODE: Final[str] = "live_websocket"
-"""Manifest ``pipeline_mode`` column value tagging live-pipeline shards.
+_LIVE_PIPELINE_MODE_PREFIX: Final[str] = "live"
+"""Manifest ``pipeline_mode`` STRING-PREFIX tagging live-pipeline shards.
 
-Mirrors UAC ``PipelineMode.LIVE_WEBSOCKET`` (in
-``unified_api_contracts.canonical.crosscutting.pipeline_mode``) without
-importing the StrEnum — the manifest carries the string-valued form per
-the v8 schema. When UAC ships a Literal-typed alias, swap the
-``Final[str]`` to it.
+``pipeline_mode`` is SOURCE-AWARE (``{mode}_{source}`` — e.g.
+``live_binance`` / ``live_databento``) per the G0 standardisation. The
+manifest carries it as a STRING, and OLD live parquets still hold the
+legacy ``live``-prefixed transitional alias string. So we MATCH ON THE
+``live`` PREFIX (``pipeline_mode.startswith("live")``) to capture BOTH
+that legacy alias AND every ``live_<source>`` value in one read — an
+exact-equality filter would silently DROP all ``live_<source>`` rows.
 """
+
+
+def _is_live_mode(pipeline_mode: object) -> bool:
+    """True when a manifest ``pipeline_mode`` cell is a live-pipeline mode.
+
+    String-prefix match (``startswith("live")``) so it captures every
+    ``live_<source>`` value (``live_binance`` / ``live_databento`` / …)
+    AND the legacy ``live`` alias carried by old parquets — never an
+    exact-equality compare against a single literal (that would drop all
+    ``live_<source>`` rows). Non-string / NaN cells are not live.
+    """
+    if not isinstance(pipeline_mode, str):
+        return False
+    return pipeline_mode.strip().lower().startswith(_LIVE_PIPELINE_MODE_PREFIX)
+
 
 _ASSET_GROUPS: Final[tuple[str, ...]] = ("cefi", "defi", "tradfi", "sports", "prediction")
 """Closed set of asset_groups the live-status endpoint scans.
@@ -159,7 +177,7 @@ _LIVE_STATUS_SERVICE: Final[str] = "market-tick-data-service"
 ``data_status_drilldown._BUCKET_TEMPLATES`` (both resolve to
 ``market-data-tick-{asset_group}-{pid}``). Reading the manifest via
 ``market-tick-data-service`` covers both raw-tick + MDPS-candle
-``pipeline_mode=live_websocket`` shards in one read.
+live-pipeline (``live_<source>``) shards in one read.
 """
 
 
@@ -404,7 +422,7 @@ def _staleness_seconds_from_health(
 
 
 def _read_live_manifest_rows(asset_group: str) -> list[object]:
-    """Read MTDS manifest for one asset_group, filtered to ``pipeline_mode=live_websocket``.
+    """Read MTDS manifest for one asset_group, filtered to live-pipeline (``live_<source>``) rows.
 
     Returns an empty list when the manifest is unreachable, missing the
     ``pipeline_mode`` column (pre-v8 manifest), or contains no live
@@ -440,7 +458,11 @@ def _read_live_manifest_rows(asset_group: str) -> list[object]:
         # Pre-v8 manifest (no pipeline_mode column) → no live shards by
         # definition; return empty.
         return []
-    live_df = df[df["pipeline_mode"] == _LIVE_PIPELINE_MODE]
+    # STRING-PREFIX match (not exact-equality) so we capture every
+    # ``live_<source>`` value AND the legacy ``live``-prefixed alias
+    # string in old parquets — an exact filter would drop all
+    # ``live_<source>`` rows.
+    live_df = df[df["pipeline_mode"].map(_is_live_mode)]  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
     if len(live_df) == 0:
         return []
     return list(live_df.to_dict(orient="records"))
@@ -455,13 +477,15 @@ async def get_live_data_status(
         ),
     ),
 ) -> LiveStatusResponse:
-    """Live-pipeline data-status pivoted by ``pipeline_mode=live_websocket``.
+    """Live-pipeline data-status pivoted by the ``live_<source>`` mode family.
 
     Phase 11.1 endpoint per
     ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11. Reads
-    the v8 availability manifest for each requested asset_group, filters
-    to ``pipeline_mode == "live_websocket"``, and returns one
-    :class:`LiveStatusRow` per shard.
+    the availability manifest for each requested asset_group, filters to
+    rows whose ``pipeline_mode`` STRING begins with ``live`` (every
+    ``live_<source>`` value plus the legacy alias, via a prefix match —
+    never an exact-equality compare that would drop ``live_<source>``
+    rows), and returns one :class:`LiveStatusRow` per shard.
 
     Sources:
 
