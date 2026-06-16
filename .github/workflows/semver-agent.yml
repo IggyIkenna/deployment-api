@@ -155,8 +155,27 @@ jobs:
 
       - name: Compute next semver via diff analysis
         id: compute
+        env:
+          # Pass the triggering commit message via env — never inline ${{ }} in run:
+          # (a multi-line / quoted commit message would break the shell or inject).
+          TRIGGER_COMMIT_MSG: ${{ github.event.head_commit.message || github.event.workflow_run.head_commit.message }}
         run: |
           set -euo pipefail
+
+          # ── HEAD-commit re-entry brake (semver_version_bump_skip_ci_promotion_block §15 P1) ──
+          # If the commit that triggered this run is ITSELF a semver-agent release bump,
+          # the run was fired by our own previous bump → re-bumping on top of it is the
+          # runaway re-bump loop. Skip immediately — independent of the bump-rate circuit
+          # breaker above (which only CAPS a runaway at ≥3/hr, never prevents it at source).
+          # Reuses the existing `skip` output that gates every downstream step.
+          FIRST_LINE="${TRIGGER_COMMIT_MSG%%$'\n'*}"
+          case "$FIRST_LINE" in
+            "chore(release): bump version to "*)
+              echo "Re-entry brake: triggering HEAD commit is a release bump ('${FIRST_LINE}') — skipping to prevent the re-bump loop."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
 
           echo "=== Semver Agent: deployment-api ==="
           echo "Triggered by Quality Gates passing on staging (SHA: ${{ github.event.workflow_run.head_sha || github.sha }})"
