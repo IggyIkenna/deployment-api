@@ -78,6 +78,10 @@ HARDCODED_PROTO_EXCLUDE_GLOBS=(
     "--glob=!**/routes/monitor_live.py"
     "--glob=!**/routes/monitor_scheduled.py"
 )
+# vm_utils.py uses google.cloud.compute_v1 for GCE instance listing — the Compute API has no
+# unified_cloud_interface equivalent (UCI covers storage/secrets) and deployment-api is GCP-specific
+# deploy tooling. Exclude from the cloud-SDK gate (parallels execution-service's cloud_kms.py exclusion).
+CLOUD_SDK_EXCLUDE_GLOBS=("!**/vm_utils.py")
 WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 source "${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
 

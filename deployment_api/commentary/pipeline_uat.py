@@ -164,7 +164,7 @@ async def _assemble_context(
     # Instruments coverage
     try:
         raw_bytes = storage.download_bytes(
-            f"instruments-store-{project_id}",  # CORRECT-LOCAL
+            f"instruments-store-{project_id}",  # QG-allow: legacy-bucket-name-migration
             "instruments/latest/manifest.json",
         )
         manifest = cast(dict[str, object], json.loads(raw_bytes))
