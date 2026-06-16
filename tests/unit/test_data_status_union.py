@@ -220,6 +220,40 @@ class TestProvenanceBreakdown:
         df = pd.DataFrame([{**_CELL, "capture_status": "captured", "error_reason": ""}])
         assert provenance_breakdown(df) == []
 
+    def test_breakdown_includes_cadence_dimension(self) -> None:
+        """A row carrying cadence surfaces it in the per-mode/source breakdown (M5b)."""
+        df = pd.DataFrame(
+            [
+                _row(
+                    source="databento",
+                    pipeline_mode="batch_databento",
+                    capture_status="captured",
+                    cadence="daily",
+                ),
+            ]
+        )
+        breakdown = provenance_breakdown(df)
+        assert len(breakdown) == 1
+        assert breakdown[0]["cadence"] == "daily"
+        assert breakdown[0]["captured"] == 1
+
+    def test_breakdown_blank_cadence_does_not_break(self) -> None:
+        """Older rows carry a blank cadence — the breakdown stays honest, cadence=''."""
+        df = pd.DataFrame(
+            [
+                _row(
+                    source="databento",
+                    pipeline_mode="batch_databento",
+                    capture_status="captured",
+                    cadence="",
+                ),
+            ]
+        )
+        breakdown = provenance_breakdown(df)
+        assert len(breakdown) == 1
+        assert breakdown[0]["cadence"] == ""
+        assert breakdown[0]["captured"] == 1
+
 
 class TestM4ModePrecedenceTiebreak:
     """M4 mode-precedence (live > replay > batch) is a TIEBREAK for the

@@ -70,6 +70,7 @@ _ERROR_REASON_COL = "error_reason"
 _PIPELINE_MODE_COL = "pipeline_mode"
 _SOURCE_COL = "source"
 _TRANSPORT_COL = "transport"
+_CADENCE_COL = "cadence"
 _EXPECTED_PREFIX = "EXPECTED_"
 # Legacy / NaN capture_status coerces to ``captured`` — matches UTL
 # ``ManifestWriter.lookup`` legacy-read semantics + ``_aggregate_counts``.
@@ -204,6 +205,7 @@ def provenance_breakdown(df: pd.DataFrame) -> list[dict[str, object]]:
     if not has_pm and not has_src:
         return []
     has_transport = _TRANSPORT_COL in df.columns
+    has_cadence = _CADENCE_COL in df.columns
     group_cols = [c for c in (_PIPELINE_MODE_COL, _SOURCE_COL) if c in df.columns]
 
     work = df.copy()
@@ -228,6 +230,7 @@ def provenance_breakdown(df: pd.DataFrame) -> list[dict[str, object]]:
                 "pipeline_mode": value_by_col.get(_PIPELINE_MODE_COL, ""),
                 "source": value_by_col.get(_SOURCE_COL, ""),
                 "transport": _provenance_value(has_transport, cells, _TRANSPORT_COL),
+                "cadence": _provenance_value(has_cadence, cells, _CADENCE_COL),
                 "captured": int((cs == "captured").sum()),
                 "empty_confirmed": int((cs == "empty_confirmed").sum()),
                 "attempted_failed": int((cs == "attempted_failed").sum()),
