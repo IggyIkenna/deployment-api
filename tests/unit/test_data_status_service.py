@@ -3057,3 +3057,112 @@ class TestTradFiVenueAccessorFlag4:
                 f"{required} missing from TRADFI denominator via {accessor!r}: {venues} — "
                 "VIX(CBOE/Barchart) / forex(FX/Yahoo) coverage would be undercounted (FLAG-4)."
             )
+
+
+class TestManifestStatusVenueFilter:
+    """Venue filter on the manifest status fast-path.
+
+    Root cause (data_status venue chip did not narrow): ``get_manifest_status``
+    exposed ``league_id`` / ``chain`` / ``job_id`` / ... but had NO ``venue``
+    parameter, so the manifest fast-path that powers the data-status tab
+    ignored the chip entirely. These tests assert that:
+
+    1. passing ``venue=["BINANCE-FUTURES"]`` narrows the filtered manifest
+       slice to that venue (case-insensitively) BEFORE the per-venue
+       breakdown is computed, and
+    2. omitting ``venue`` preserves the all-venue behaviour, and
+    3. a non-empty ``venue`` engages the ``any_row_filter`` gate so the
+       request bypasses the filter-free rollup fast-path and takes the
+       on-demand filtered compute.
+    """
+
+    @staticmethod
+    def _cefi_index() -> pd.DataFrame:
+        # Two CeFi venues across the same day; only BINANCE-FUTURES should
+        # survive a ``venue=["BINANCE-FUTURES"]`` filter.
+        return pd.DataFrame(
+            {
+                "date": ["2025-03-14", "2025-03-14", "2025-03-14"],
+                "venue": ["BINANCE-FUTURES", "BYBIT", "binance-futures"],
+                "data_type": ["funding_rate", "funding_rate", "funding_rate"],
+                "instrument_id": ["BTCUSDT", "BTCUSDT", "ETHUSDT"],
+                "service_name": ["market-tick-data-service"] * 3,
+                "capture_status": ["captured", "captured", "captured"],
+                "asset_group": ["cefi", "cefi", "cefi"],
+                "row_count": [100, 100, 100],
+            }
+        )
+
+    def _build_with(self, venue: list[str] | None) -> pd.DataFrame:
+        """Run ``_build_manifest_category`` capturing the DataFrame that reaches
+        ``_build_venue_breakdown`` (i.e. the slice AFTER the venue mask)."""
+        svc = _make_svc()
+        captured: dict[str, pd.DataFrame] = {}
+
+        def _capture(filtered: pd.DataFrame, *args: object, **kwargs: object):
+            captured["df"] = filtered.copy()
+            return ({}, 0, 0)
+
+        with (
+            patch.object(svc, "_read_defi_merged_index", return_value=self._cefi_index()),
+            patch.object(svc, "_build_venue_breakdown", side_effect=_capture),
+            patch.object(svc, "_build_v4_sub_dimensions", return_value={}),
+            patch.object(_dss_mod, "get_effective_start_date", return_value="2025-03-14"),
+        ):
+            vm = MagicMock()
+            svc._build_manifest_category(
+                service="market-tick-data-service",
+                cat="CEFI",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                all_date_strs=["2025-03-14"],
+                total_days=1,
+                venue_mapping=vm,
+                venue=venue,
+            )
+        return captured["df"]
+
+    def test_venue_filter_narrows_to_requested_venue(self) -> None:
+        df = self._build_with(["BINANCE-FUTURES"])
+        survived = {str(v).upper() for v in df["venue"].tolist()}
+        # Only BINANCE-FUTURES rows (both exact + the lower-cased duplicate via
+        # the case-insensitive match) survive; BYBIT is dropped.
+        assert survived == {"BINANCE-FUTURES"}, survived
+        assert "BYBIT" not in survived
+        # Both BINANCE-FUTURES rows (BTCUSDT + ETHUSDT, mixed case) kept.
+        assert len(df) == 2
+
+    def test_no_venue_filter_preserves_all_venues(self) -> None:
+        df = self._build_with(None)
+        survived = {str(v).upper() for v in df["venue"].tolist()}
+        assert "BINANCE-FUTURES" in survived
+        assert "BYBIT" in survived
+        assert len(df) == 3
+
+    async def test_venue_engages_any_row_filter_gate_and_bypasses_rollup(self) -> None:
+        """A non-empty ``venue`` must NOT take the filter-free rollup fast-path."""
+        svc = _make_svc()
+        sentinel: dict[str, object] = {"on_demand": True}
+        with (
+            patch.object(
+                _dss_mod,
+                "_read_rollup_if_fresh",
+                return_value={"should": "not be read"},
+            ) as mock_rollup,
+            patch.object(
+                svc,
+                "_get_manifest_status_sync",
+                return_value=sentinel,
+            ) as mock_sync,
+        ):
+            result = await svc.get_manifest_status(
+                service="market-tick-data-service",
+                start_date="2025-03-14",
+                end_date="2025-03-14",
+                venue=["BINANCE-FUTURES"],
+            )
+        # Rollup fast-path skipped; on-demand sync path taken with venue threaded.
+        mock_rollup.assert_not_called()
+        mock_sync.assert_called_once()
+        assert ["BINANCE-FUTURES"] in mock_sync.call_args.args
+        assert result is sentinel
