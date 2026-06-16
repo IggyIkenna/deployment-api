@@ -413,6 +413,17 @@ def _features_sports_expected_dates_for_calculator(
 # so tests/scripts can still patch it.
 _PROCESS_POOL_DISABLED = _DISABLE_PROCESS_POOL
 
+# ThreadPool toggle — when True the per-asset-group build runs FULLY SERIAL (no
+# ProcessPool AND no ThreadPool). Default False: API requests keep the thread pool
+# (overlaps the I/O-bound index loads → fast responses). The in-service rollup
+# endpoint (routes/data_status/_rollup.py) sets it True: computing all asset groups
+# in PARALLEL threads holds every AG's cell-grid intermediate at once and blew the
+# 8 GiB service memory limit ("Memory limit of 8192 MiB exceeded with 8435 MiB used");
+# serial holds one AG at a time (~1.7 GiB peak) so it fits. (The standalone Cloud Run
+# Job is unusable regardless — gen2-forced native crash; R7 follow-up #4.) Module-level
+# so tests/scripts can patch it.
+_THREAD_POOL_DISABLED = False
+
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL = 300  # 5 minutes
 

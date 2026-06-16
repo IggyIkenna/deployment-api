@@ -182,3 +182,38 @@ def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
     assert "data-status-rollups" in str(captured["bucket"])
     # the service-wide pool flag must be restored after the call
     assert _before == dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
+
+
+def test_thread_pool_disabled_forces_serial(monkeypatch) -> None:
+    """_THREAD_POOL_DISABLED=True bypasses the ThreadPoolExecutor (fully serial per-AG
+    compute) — running all AGs in parallel threads OOMs the 8 GiB service (R7 follow-up
+    #4); the in-service rollup endpoint sets this so the compute fits. The API path keeps
+    it False (fast responses)."""
+    from unittest.mock import MagicMock, patch
+
+    import deployment_api.services.data_status_service as dss_mod
+    from deployment_api.services.data_status import manifest as manifest_mod
+
+    assert dss_mod._THREAD_POOL_DISABLED is False  # pyright: ignore[reportPrivateUsage]
+    svc = dss_mod.DataStatusService(project_id="test")
+    monkeypatch.setattr(dss_mod, "_PROCESS_POOL_DISABLED", True)
+    monkeypatch.setattr(dss_mod, "_THREAD_POOL_DISABLED", True)
+    tpe = MagicMock(side_effect=AssertionError("ThreadPoolExecutor used despite _THREAD_POOL_DISABLED"))
+    with (
+        patch.object(manifest_mod, "ThreadPoolExecutor", tpe),
+        patch.object(type(svc), "_build_manifest_category", return_value={"ok": True}),
+    ):
+        out = svc._dispatch_category_builds(  # pyright: ignore[reportPrivateUsage]
+            ["CEFI", "DEFI"],
+            "instruments-service",
+            "2025-01-01",
+            "2025-01-02",
+            ["2025-01-01", "2025-01-02"],
+            2,
+            dss_mod.VenueMapping(),
+            row_filters=None,
+            cloud="gcp",
+            pipeline_modes=None,
+        )
+    assert set(out.keys()) == {"CEFI", "DEFI"}
+    tpe.assert_not_called()
