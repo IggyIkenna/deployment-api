@@ -22,7 +22,8 @@ substitutions:
   # Deploy gate — the main-deploy trigger sets _DEPLOY=true; every build-only
   # trigger leaves it false so the deploy step (above `images:`) is a no-op.
   _DEPLOY: "false"
-  _ROLLUP_JOB: "uts-prod-data-status-rollup"
+  _ROLLUP_JOB: "uts-prod-data-status-rollup" # RETIRED (gen2-only native crash) — kept for ref; deploy syncs _ROLLUP_SVC
+  _ROLLUP_SVC: "uts-prod-data-status-rollup-svc" # dedicated gen1/16Gi/scale-to-zero rollup service (R7 follow-up #4)
   # In-image QG toggle — the auto-deploy trigger sets this false (QG already
   # enforced at promotion; the harness isn't in the image). Default true keeps
   # feature-build / LDR behaviour unchanged.
@@ -277,12 +278,17 @@ steps:
         echo "deploy: rolling uts-shared-deployment-api → $$IMG"
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
-        if gcloud run jobs describe "${_ROLLUP_JOB}" --region asia-northeast1 --project "$PROJECT_ID" --format='value(name)' >/dev/null 2>&1; then
-          gcloud run jobs update "${_ROLLUP_JOB}" --image "$$IMG" --region asia-northeast1 --project "$PROJECT_ID" --quiet
-          gcloud run jobs execute "${_ROLLUP_JOB}" --region asia-northeast1 --project "$PROJECT_ID" --async
-          echo "deploy: rollup Job ${_ROLLUP_JOB} synced to new image + executed"
+        # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the
+        # new image — it runs the rollup compute via POST /api/data-status/rollup-run, hit
+        # by the Cloud Scheduler. The standalone Cloud Run JOB (${_ROLLUP_JOB}) is RETIRED:
+        # Cloud Run Jobs are gen2-only and the native pyarrow/pandas compute crashes on gen2
+        # (R7 follow-up #4); the gen1 service runs it fine. Bare --image preserves the 16Gi /
+        # min-scale-0 / max-scale-1 config set at create time.
+        if gcloud run services describe "${_ROLLUP_SVC}" --region asia-northeast1 --project "$PROJECT_ID" --format='value(metadata.name)' >/dev/null 2>&1; then
+          gcloud run services update "${_ROLLUP_SVC}" --image "$$IMG" --region asia-northeast1 --project "$PROJECT_ID" --quiet
+          echo "deploy: rollup service ${_ROLLUP_SVC} synced to new image"
         else
-          echo "deploy: rollup Job ${_ROLLUP_JOB} not found — skipping rollup sync"
+          echo "deploy: rollup service ${_ROLLUP_SVC} not found — skipping rollup-service sync"
         fi
     # waitFor scan-check (NOT push) so we never roll a revision onto an image the
     # vuln scan would reject — deploy is the last gate-passing step before images:.
