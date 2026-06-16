@@ -173,6 +173,14 @@ async def get_data_status_manifest(
         None,
         description="Filter DeFi manifest rows to one chain (e.g. 'ETHEREUM', 'ARBITRUM').",
     ),
+    venue: list[str] | None = Query(
+        None,
+        description=(
+            "Filter manifest rows to one or more venues (repeatable, OR semantics, "
+            "case-insensitive — e.g. 'BINANCE-FUTURES'). Narrows the data-status "
+            "venue-filter chip on the manifest fast-path."
+        ),
+    ),
     cloud: Literal["gcp", "aws"] = Query("gcp", description="Cloud provider for bucket reads"),
 ):
     """Get data status from manifest availability indices (fastest path).
@@ -209,6 +217,7 @@ async def get_data_status_manifest(
             canonical_question_group=canonical_question_group,
             job_id=job_id,
             chain=chain,
+            venue=venue,
         )
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
