@@ -176,16 +176,16 @@ class TestChainBreakdownHeadlineIsShardsNotDates:
     def test_pipeline_mode_rows_do_not_double_count_shards(self) -> None:
         """Post the 2026-05-19 pipeline_mode migration, the same shard atom
         ``(chain, venue, data_type, instrument_id, day)`` can carry MULTIPLE
-        manifest rows — one per ``pipeline_mode=batch_*`` / ``live_websocket``.
+        manifest rows — one per ``pipeline_mode=batch_*`` / ``live_*``.
         ``pipeline_mode`` is NOT part of the DeFi shard atom, so a shard with
         both a batch row and a live row must count ONCE, not twice. Guards the
         raw-``len()`` numerator double-count fix in ``_build_chain_breakdown``.
         """
         rows: list[dict[str, object]] = []
         # 5 days, each shard atom captured under BOTH batch_databento AND
-        # live_websocket — 10 raw rows, but only 5 distinct shard atoms.
+        # live_onchain_rpc — 10 raw rows, but only 5 distinct shard atoms.
         for i in range(5):
-            for pipeline_mode in ("batch_databento", "live_websocket"):
+            for pipeline_mode in ("batch_databento", "live_onchain_rpc"):
                 row = _row(
                     venue="AAVE_V3-OPTIMISM",
                     chain="OPTIMISM",

@@ -95,15 +95,18 @@ _STATUS_RANK: dict[str, int] = {
 # share the winning status. Data-status uses the live-consumer order
 # (live > replay > batch — live is real-time truth, replay fills gaps, batch
 # backs history); the symmetric batch-consumer order lives in the live read-path
-# resolver (batch-live-reconciliation-service), out of scope here. ``live_websocket``
-# is the transitional alias for ``live_*``.
+# resolver (batch-live-reconciliation-service), out of scope here. The
+# ``live`` prefix (``_mode_of``) reduces every ``live_<source>`` value (and
+# the legacy transitional alias) to the ``live`` mode.
 _MODE_RANK: dict[str, int] = {"live": 0, "replay": 1, "batch": 2}
 _MODE_RANK_UNKNOWN = 3
 
 
 def _mode_of(pipeline_mode: str) -> str:
     """Extract the reconciliation mode ({live,replay,batch}) from a
-    ``{mode}_{source}`` pipeline_mode (``live_websocket`` → ``live``)."""
+    ``{mode}_{source}`` pipeline_mode (``live_binance`` → ``live``). The
+    ``live`` prefix match also reduces the legacy transitional alias to
+    ``live``."""
     pm = pipeline_mode.strip().lower()
     if pm.startswith("live"):
         return "live"
