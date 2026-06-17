@@ -66,6 +66,13 @@ from deployment_api.services.deploy_missing import (
     list_supported_services as deploy_missing_supported_services,
 )
 
+# Stale-tolerant MONITORING read: on an EMPTY live result the data-status surfaces fall
+# back to the consolidated ``_index`` blob directly (no live freshness gate) so a
+# paused/stale consolidator does not blank the board. Module-level alias so the coverage
+# routes resolve it through the facade (``_ds._read_manifest_index``) and the test patch
+# surface keeps intercepting. SSOT: ``services/manifest_source.py``.
+from deployment_api.services.manifest_source import read_manifest_index as _read_manifest_index
+
 _cfg = DeploymentApiConfig()
 
 logger = logging.getLogger(__name__)
@@ -126,6 +133,8 @@ from deployment_api.routes.data_status._downloads import (
     get_shard_info_endpoint,
 )
 from deployment_api.routes.data_status._live_coverage import (
+    ConfigVersionTriple,
+    CoverageScope,
     LiveCaptureStatus,
     LiveStatusResponse,
     LiveStatusRow,
