@@ -143,13 +143,19 @@ def is_beta_mode() -> bool:
     return bool(DATA_STATUS_BETA_MANIFEST_BLOB)
 
 
-# Services with a CF-20 v9 PROJECTED index (so a beta rollup is meaningful). Only the
-# instruments-store AGs were projected → only ``instruments-service`` reads them. The
-# beta index read FAILS LOUD on a missing projection (honest absence), so a non-eligible
-# service (mtds/features/…) has NO beta rollup — and beta is therefore a PER-SERVICE
-# concept, NOT a global one (see ``is_service_beta``). SSOT lives here (the beta module);
-# the rollup worker + the rollup blob-path resolver + the in-service endpoint all import it.
-BETA_ELIGIBLE_SERVICES: frozenset[str] = frozenset({"instruments-service"})
+# Services with a CF-20 v9 PROJECTED index (so a beta rollup is meaningful). Both the
+# instruments-store AGs AND the market-data-tick AGs are now projected — every asset_group
+# has ``_index/audit/projected_index_<ag>.parquet`` (defi/cefi/tradfi/sports/prediction) —
+# so both ``instruments-service`` and ``market-tick-data-service`` read the projected v9
+# index in beta mode. The beta index read FAILS LOUD on a missing projection (honest
+# absence), so a service is added here ONLY once EVERY asset_group it serves has a
+# projection; a still-unprojected service (features/strategy/…) has NO beta rollup and
+# keeps its LIVE rollup. Beta is therefore a PER-SERVICE concept, NOT a global one (see
+# ``is_service_beta``). The two-phase rollup worker writes each eligible service's
+# ``.beta`` rollup in phase 2, so an eligible service's beta read always finds its blob
+# (no 503). SSOT lives here (the beta module); the rollup worker + the rollup blob-path
+# resolver + the in-service endpoint all import it.
+BETA_ELIGIBLE_SERVICES: frozenset[str] = frozenset({"instruments-service", "market-tick-data-service"})
 
 
 def beta_eligible(services: list[str]) -> list[str]:
