@@ -231,7 +231,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
             # Cloud Run memory ceiling.
             del payload, metrics
             successes += 1
-        except (RuntimeError, ValueError, OSError) as e:
+        except Exception as e:  # per-service shard isolation — one bad service must NOT abort the sweep
             elapsed = time.monotonic() - t0
             failures.append((service, f"manifest: {e}"))
             log_event(
@@ -263,7 +263,7 @@ def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
                     "size_compressed": cov_metrics["size_compressed"],
                 },
             )
-        except (RuntimeError, ValueError, OSError) as e:
+        except Exception as e:  # per-service shard isolation — one bad service must NOT abort the sweep
             failures.append((service, f"coverage: {e}"))
             log_event(
                 "SERVICE_FAILED",
