@@ -87,18 +87,21 @@ def test_slice_rollup_emits_r7_overall_capture_attempt() -> None:
 
 def test_beta_eligible_filters_to_projected_services() -> None:
     """In beta mode the rollup worker must sweep ONLY services with a v9 projected
-    index (instruments-service) — else the loud-failing beta read on a non-projected
-    service (mtds/features) crashes the whole job (regression guard for the cloud
-    beta job exit-1 incident, 2026-06-15)."""
-    assert set(manifest_source.BETA_ELIGIBLE_SERVICES) == {"instruments-service"}
+    index (instruments-service + market-tick-data-service, both now projected across all
+    asset_groups) — else the loud-failing beta read on a still-non-projected service
+    (features/strategy) crashes the whole job (regression guard for the cloud beta job
+    exit-1 incident, 2026-06-15)."""
+    assert set(manifest_source.BETA_ELIGIBLE_SERVICES) == {"instruments-service", "market-tick-data-service"}
     full = [
         "instruments-service",
         "market-tick-data-service",
         "features-delta-one-service",
         "strategy-service",
     ]
-    assert manifest_source.beta_eligible(full) == ["instruments-service"]
-    assert manifest_source.beta_eligible(["market-tick-data-service"]) == []
+    # Order-preserving filter to the projected services.
+    assert manifest_source.beta_eligible(full) == ["instruments-service", "market-tick-data-service"]
+    # A still-non-projected service is filtered out (no beta rollup → would loud-fail).
+    assert manifest_source.beta_eligible(["features-delta-one-service"]) == []
 
 
 def test_beta_rollup_served_despite_staleness() -> None:
@@ -216,23 +219,31 @@ def test_rollup_endpoint_two_phase_live_then_beta(monkeypatch) -> None:
     # Phase 1: LIVE, all services, beta OFF.
     assert calls[0][0] == list(worker.DEFAULT_SERVICES)
     assert calls[0][1] is False
-    # Phase 2: BETA, beta-eligible only, beta ON.
-    assert calls[1][0] == ["instruments-service"]
+    # Phase 2: BETA, beta-eligible only (the projected services, order-preserved), beta ON.
+    expected_beta = manifest_source.beta_eligible(list(worker.DEFAULT_SERVICES))
+    assert calls[1][0] == expected_beta
     assert calls[1][1] is True
-    assert out["beta_services"] == ["instruments-service"]
+    assert out["beta_services"] == expected_beta
+    # Sanity: market-tick-data-service is now among the projected/eligible services.
+    assert "market-tick-data-service" in expected_beta
     # The global beta flag is restored to the configured value after the run.
     assert manifest_source.DATA_STATUS_BETA_MANIFEST_BLOB == "_index/audit/projected_index_{asset_group}.parquet"
 
 
 def test_rollup_blob_path_non_beta_eligible_stays_live_in_beta_mode(monkeypatch) -> None:
-    """Beta is PER-SERVICE: a non-beta-eligible service (market-tick-data-service) keeps its
-    LIVE blob even in beta mode — namespacing it to a non-existent .beta blob is what 503'd
-    the mtds data-status page (2026-06-16). The eligible service still flips to .beta."""
+    """Beta is PER-SERVICE: a non-beta-eligible service (still-non-projected, e.g.
+    features-delta-one-service) keeps its LIVE blob even in beta mode — namespacing a
+    service to a non-existent .beta blob is what 503'd the data-status page (2026-06-16).
+    The eligible/projected services (instruments-service + market-tick-data-service) flip
+    to .beta."""
     monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: True)
-    # Eligible → beta-namespaced.
+    # Eligible (projected) → beta-namespaced.
     assert rollup_cache.rollup_blob_path("instruments-service", "full") == "instruments-service/full.beta.json.gz"
-    # NON-eligible → stays live even in beta mode.
-    assert rollup_cache.rollup_blob_path("market-tick-data-service", "full") == "market-tick-data-service/full.json.gz"
+    assert (
+        rollup_cache.rollup_blob_path("market-tick-data-service", "full")
+        == "market-tick-data-service/full.beta.json.gz"
+    )
+    # NON-eligible (still-non-projected) → stays live even in beta mode.
     assert (
         rollup_cache.rollup_blob_path("features-delta-one-service", "coverage")
         == "features-delta-one-service/coverage.json.gz"
@@ -245,15 +256,16 @@ def test_is_service_beta_semantics(monkeypatch) -> None:
     assert manifest_source.is_service_beta("instruments-service") is False  # not in beta mode
     monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: True)
     assert manifest_source.is_service_beta("instruments-service") is True  # eligible + beta
-    assert manifest_source.is_service_beta("market-tick-data-service") is False  # beta but not eligible
+    assert manifest_source.is_service_beta("market-tick-data-service") is True  # now projected → eligible + beta
+    assert manifest_source.is_service_beta("features-delta-one-service") is False  # beta but not yet projected
 
 
 def test_coverage_summary_uses_rollup_in_beta_mode() -> None:
     """coverage-summary must use the rollup fast-path EVEN in beta mode (2026-06-16 fix) —
     the old ``if not is_beta_mode()`` guard skipped it for every service, forcing a multi-
     minute live compute that 503'd the market-tick-data-service coverage panel. The per-
-    service blob path keeps the beta invariant (mtds → coverage.json.gz, instruments →
-    coverage.beta.json.gz)."""
+    service blob path keeps the beta invariant (a projected/eligible service →
+    coverage.beta.json.gz; a still-non-projected service → coverage.json.gz)."""
     import asyncio
     from unittest.mock import patch
 
