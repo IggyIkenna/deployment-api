@@ -247,6 +247,14 @@ class DefiStatusMixin(DataStatusCliMixin):
             if kind is None:
                 return pd.DataFrame()
             ag = cat.lower() or None
+            if ag == "shared":
+                # SHARED pseudo-key (cross-asset services — features-calendar / ml-service)
+                # has no per-asset-group bucket. Absent a (service, 'shared') override there
+                # is nothing to read via the per-AG path → return empty (honest skip) rather
+                # than calling resolve_bucket_name(asset_group='shared'), which raises
+                # BucketNamingError and previously crashed the ENTIRE rollup sweep (phase-1
+                # aborted before phase-2 → beta rollup blobs silently froze, 2026-06-16→17).
+                return pd.DataFrame()
             if ag == "prediction":
                 pred_kind = PREDICTION_KIND_MAP.get(kind)
                 main_bucket = _dss.resolve_bucket_name(cloud=cast(object, cloud), kind=pred_kind if pred_kind else kind)  # pyright: ignore[reportArgumentType]
