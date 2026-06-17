@@ -800,6 +800,35 @@ class TestReferenceDataBundleScope:
         assert result["trades"]["out_of_scope"] is True
         assert result["trades"]["in_expected_coverage"] is False
 
+    def test_reference_genesis_tolerates_market_role_suffix(self):
+        """IS catalogue lists base exchanges (COINBASE/OKX/DERIBIT); the manifest
+        qualifies them by role (COINBASE-SPOT/OKX-SWAP/DERIBIT-COMBO). The genesis
+        lookup must fall back to the base token so a role-qualified row is NOT
+        flagged out_of_scope on the instruments-service view (2026-06-17 fix)."""
+        from deployment_api.services.data_status import reference_scope
+
+        reference_scope.reset_genesis_cache()
+        with patch.object(
+            reference_scope,
+            "_load_genesis_map",
+            return_value={
+                ("CEFI", "COINBASE"): "2019-03-30",
+                ("CEFI", "OKX"): "2019-03-30",
+                ("CEFI", "DERIBIT"): "2019-03-30",
+                ("CEFI", "BITFINEX-SPOT"): "2020-01-01",
+            },
+        ):
+            # Role-qualified tokens resolve via base-token fallback.
+            assert reference_scope.reference_genesis("cefi", "COINBASE-SPOT") == "2019-03-30"
+            assert reference_scope.reference_genesis("cefi", "OKX-FUTURES") == "2019-03-30"
+            assert reference_scope.reference_genesis("cefi", "OKX-SWAP") == "2019-03-30"
+            assert reference_scope.reference_genesis("cefi", "DERIBIT-COMBO") == "2019-03-30"
+            # An exact role-qualified catalogue entry still wins directly.
+            assert reference_scope.reference_genesis("cefi", "BITFINEX-SPOT") == "2020-01-01"
+            # A genuinely unlisted venue stays out_of_scope (no false positives).
+            assert reference_scope.reference_genesis("cefi", "KRAKEN-SPOT") is None
+        reference_scope.reset_genesis_cache()
+
 
 class TestPhantomExpectedClamp:
     """Tests for the 2026-04-19 phantom-expected denominator clamp.
