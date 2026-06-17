@@ -157,21 +157,23 @@ def test_gcs_metadata_does_not_classify_captured_rows() -> None:
 
 
 def test_lookup_capture_status_classifies_legacy_empty_sports_pre_coverage() -> None:
-    # api_football coverage starts 2018-01-01 per UAC SOURCE_COVERAGE_START.
+    # api_football coverage starts 2015-01-01 per UAC SOURCE_COVERAGE_START
+    # (reconciled 2018→2015, unified-api-contracts@bb7bf64). A pre-2015 date is
+    # the post-reconcile pre-source-coverage case.
     # ``lookup_capture_status_for_shard`` uppercases the venue filter, so
     # the manifest stub mirrors that — the classifier itself lowercases
     # before looking the source up.
     fake_manifest = pd.DataFrame(
         [
             {
-                "date": "2017-06-15",
+                "date": "2014-06-15",
                 "service_name": "instruments-service",
                 "venue": "API_FOOTBALL",
                 "data_type": "FIXTURES",
                 "capture_status": "empty_confirmed",
                 "error_reason": "",
-                "attempted_at": "2017-06-15T12:00:00Z",
-                "written_at": "2017-06-15T12:00:00Z",
+                "attempted_at": "2014-06-15T12:00:00Z",
+                "written_at": "2014-06-15T12:00:00Z",
             }
         ]
     )
@@ -188,7 +190,7 @@ def test_lookup_capture_status_classifies_legacy_empty_sports_pre_coverage() -> 
         result = lookup_capture_status_for_shard(
             service="instruments-service",
             asset_group="sports",
-            day="2017-06-15",
+            day="2014-06-15",
             venue="API_FOOTBALL",
             data_type="FIXTURES",
         )

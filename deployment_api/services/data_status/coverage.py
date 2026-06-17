@@ -58,16 +58,19 @@ class CoverageStatusMixin(VenueResolutionMixin):
 
         See plan: ``data_status_offline_rollup_2026_05_06.md``.
         """
-        # CF-20 beta mode bypasses the LIVE-derived rollup fast-path (same rule as
-        # get_manifest_status — the coverage rollup is precomputed from the live
-        # index by the Cloud Run cron; serving it in a beta eyeball session would
-        # quietly render live data).
-        from deployment_api.services.manifest_source import is_beta_mode
-
-        if not is_beta_mode():
-            rollup = await asyncio.to_thread(read_coverage_rollup_if_fresh, service)
-            if rollup is not None:
-                return filter_coverage_to_asset_groups(rollup, asset_groups)
+        # Rollup fast-path — ALWAYS attempted (mirrors get_manifest_status post-2026-06-16).
+        # The coverage rollup is PER-SERVICE beta-namespaced: ``read_coverage_rollup_if_fresh``
+        # → ``rollup_blob_path(service, "coverage")`` reads ``coverage.beta.json.gz`` for a
+        # beta-eligible service (instruments-service, projected-v9 derived) and the live
+        # ``coverage.json.gz`` for every other service — so the "never serve live-derived data
+        # in beta" invariant holds via the blob NAMESPACING, not by skipping the fast-path. The
+        # old ``if not is_beta_mode()`` guard skipped the rollup for EVERY service in beta mode,
+        # forcing a multi-minute live compute that 503'd the market-tick-data-service coverage
+        # panel (2026-06-16). A non-eligible service whose live blob is stale falls through
+        # (staleness gate enforced for it) — honest, not a fake.
+        rollup = await asyncio.to_thread(read_coverage_rollup_if_fresh, service)
+        if rollup is not None:
+            return filter_coverage_to_asset_groups(rollup, asset_groups)
         return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups, cloud)
 
     def _resolve_coverage_cat_list(self, service: str, asset_groups: list[str] | None) -> list[str]:
@@ -162,6 +165,23 @@ class CoverageStatusMixin(VenueResolutionMixin):
             return filtered.iloc[0:0].copy()
         mode_set = set(pipeline_modes)
         return filtered.loc[filtered["pipeline_mode"].fillna("").astype(str).isin(mode_set)].copy()
+
+    @staticmethod
+    def _apply_venue_filter(filtered: pd.DataFrame, venue: list[str]) -> pd.DataFrame:
+        """Filter manifest slice to rows whose venue is in ``venue`` (case-insensitive).
+
+        OR semantics: any row whose ``venue`` (upper-cased) matches at least one
+        of the requested venues (upper-cased) is kept. Applied by the data-status
+        tab's venue filter chip on ``/api/data-status/manifest``. A manifest slice
+        without a ``venue`` column narrows to zero rows — correct: no shard can
+        match the requested venue.
+        """
+        if filtered.empty or not venue:
+            return filtered
+        if "venue" not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        wanted = {v.upper() for v in venue}
+        return filtered.loc[filtered["venue"].fillna("").astype(str).str.upper().isin(wanted)].copy()
 
     def _build_breakdowns(
         self,

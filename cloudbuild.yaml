@@ -22,7 +22,8 @@ substitutions:
   # Deploy gate — the main-deploy trigger sets _DEPLOY=true; every build-only
   # trigger leaves it false so the deploy step (above `images:`) is a no-op.
   _DEPLOY: "false"
-  _ROLLUP_JOB: "uts-prod-data-status-rollup"
+  _ROLLUP_JOB: "uts-prod-data-status-rollup" # RETIRED (gen2-only native crash) — kept for ref; deploy syncs _ROLLUP_SVC
+  _ROLLUP_SVC: "uts-prod-data-status-rollup-svc" # dedicated gen1/16Gi/scale-to-zero rollup service (R7 follow-up #4)
   # In-image QG toggle — the auto-deploy trigger sets this false (QG already
   # enforced at promotion; the harness isn't in the image). Default true keeps
   # feature-build / LDR behaviour unchanged.
@@ -101,7 +102,20 @@ steps:
         clone_dep unified-api-contracts _unified-api-contracts
         clone_dep deployment-service   _deployment-service
         clone_dep strategy-service     _strategy-service
-        for d in codex-data pm-plans pm-configs; do
+        # pm-configs is the operational-config SSOT mirror (unified-trading-pm/configs/):
+        # get_config_dir() reads sharding.<service>.yaml from it for the capabilities
+        # route (/api/capabilities/service-asset-groups/<service>) and the data-status
+        # CLI points --config-dir at it. It MUST be populated in the image, NEVER emptied
+        # (emptying 404'd every service-asset-groups lookup). On the trigger path the
+        # pm-configs symlink can't be followed, so clone the PM SSOT and copy configs/ in;
+        # a local deploy-shared.sh rsync already materialises a real pm-configs (keep it).
+        if [ ! -f pm-configs/sharding_config.yaml ]; then
+          clone_dep unified-trading-pm _unified-trading-pm
+          rm -rf pm-configs && cp -a _unified-trading-pm/configs pm-configs
+        fi
+        echo "vendor-deps: pm-configs has $$(ls pm-configs/sharding.*.yaml 2>/dev/null | wc -l) sharding configs"
+        # codex-data / pm-plans are runtime-GCS-backed — empty placeholders are fine.
+        for d in codex-data pm-plans; do
           rm -rf "$$d"; mkdir -p "$$d"; touch "$$d/.gitkeep"
         done
         echo "vendor-deps: done"
@@ -277,12 +291,17 @@ steps:
         echo "deploy: rolling uts-shared-deployment-api → $$IMG"
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
-        if gcloud run jobs describe "${_ROLLUP_JOB}" --region asia-northeast1 --project "$PROJECT_ID" --format='value(name)' >/dev/null 2>&1; then
-          gcloud run jobs update "${_ROLLUP_JOB}" --image "$$IMG" --region asia-northeast1 --project "$PROJECT_ID" --quiet
-          gcloud run jobs execute "${_ROLLUP_JOB}" --region asia-northeast1 --project "$PROJECT_ID" --async
-          echo "deploy: rollup Job ${_ROLLUP_JOB} synced to new image + executed"
+        # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the
+        # new image — it runs the rollup compute via POST /api/data-status/rollup-run, hit
+        # by the Cloud Scheduler. The standalone Cloud Run JOB (${_ROLLUP_JOB}) is RETIRED:
+        # Cloud Run Jobs are gen2-only and the native pyarrow/pandas compute crashes on gen2
+        # (R7 follow-up #4); the gen1 service runs it fine. Bare --image preserves the 16Gi /
+        # min-scale-0 / max-scale-1 config set at create time.
+        if gcloud run services describe "${_ROLLUP_SVC}" --region asia-northeast1 --project "$PROJECT_ID" --format='value(metadata.name)' >/dev/null 2>&1; then
+          gcloud run services update "${_ROLLUP_SVC}" --image "$$IMG" --region asia-northeast1 --project "$PROJECT_ID" --quiet
+          echo "deploy: rollup service ${_ROLLUP_SVC} synced to new image"
         else
-          echo "deploy: rollup Job ${_ROLLUP_JOB} not found — skipping rollup sync"
+          echo "deploy: rollup service ${_ROLLUP_SVC} not found — skipping rollup-service sync"
         fi
     # waitFor scan-check (NOT push) so we never roll a revision onto an image the
     # vuln scan would reject — deploy is the last gate-passing step before images:.

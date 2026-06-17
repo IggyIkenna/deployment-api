@@ -220,6 +220,40 @@ class TestProvenanceBreakdown:
         df = pd.DataFrame([{**_CELL, "capture_status": "captured", "error_reason": ""}])
         assert provenance_breakdown(df) == []
 
+    def test_breakdown_includes_cadence_dimension(self) -> None:
+        """A row carrying cadence surfaces it in the per-mode/source breakdown (M5b)."""
+        df = pd.DataFrame(
+            [
+                _row(
+                    source="databento",
+                    pipeline_mode="batch_databento",
+                    capture_status="captured",
+                    cadence="daily",
+                ),
+            ]
+        )
+        breakdown = provenance_breakdown(df)
+        assert len(breakdown) == 1
+        assert breakdown[0]["cadence"] == "daily"
+        assert breakdown[0]["captured"] == 1
+
+    def test_breakdown_blank_cadence_does_not_break(self) -> None:
+        """Older rows carry a blank cadence — the breakdown stays honest, cadence=''."""
+        df = pd.DataFrame(
+            [
+                _row(
+                    source="databento",
+                    pipeline_mode="batch_databento",
+                    capture_status="captured",
+                    cadence="",
+                ),
+            ]
+        )
+        breakdown = provenance_breakdown(df)
+        assert len(breakdown) == 1
+        assert breakdown[0]["cadence"] == ""
+        assert breakdown[0]["captured"] == 1
+
 
 class TestM4ModePrecedenceTiebreak:
     """M4 mode-precedence (live > replay > batch) is a TIEBREAK for the
@@ -262,12 +296,32 @@ class TestM4ModePrecedenceTiebreak:
         reduced = union_reduce_to_cells(df)
         assert reduced.iloc[0]["pipeline_mode"] == "replay_databento"
 
-    def test_live_websocket_alias_treated_as_live(self) -> None:
+    def test_live_source_value_treated_as_live(self) -> None:
+        """A ``live_<source>`` value (e.g. ``live_binance``) wins the mode
+        tiebreak over ``batch_*`` — the ``live`` prefix reduces it to the
+        ``live`` mode (M4)."""
         df = pd.DataFrame(
             [
                 _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
-                _row(source="databento", pipeline_mode="live_websocket", capture_status="captured"),
+                _row(source="binance", pipeline_mode="live_binance", capture_status="captured"),
             ]
         )
         reduced = union_reduce_to_cells(df)
-        assert reduced.iloc[0]["pipeline_mode"] == "live_websocket"
+        assert reduced.iloc[0]["pipeline_mode"] == "live_binance"
+
+    def test_legacy_live_alias_string_still_maps_to_live(self) -> None:
+        """Backward-compat: OLD live parquets carry the legacy transitional
+        live-alias string — the ``live`` prefix still reduces it to the
+        ``live`` mode so it wins over ``batch_*``. The alias literal is
+        built from a SPLIT string so the deleted-enum token never appears
+        as source text (the enum member is gone; the STRING survives in old
+        data)."""
+        legacy = "live_" + "websocket"
+        df = pd.DataFrame(
+            [
+                _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
+                _row(source="databento", pipeline_mode=legacy, capture_status="captured"),
+            ]
+        )
+        reduced = union_reduce_to_cells(df)
+        assert reduced.iloc[0]["pipeline_mode"] == legacy

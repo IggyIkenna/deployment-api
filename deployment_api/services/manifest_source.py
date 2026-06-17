@@ -143,6 +143,37 @@ def is_beta_mode() -> bool:
     return bool(DATA_STATUS_BETA_MANIFEST_BLOB)
 
 
+# Services with a CF-20 v9 PROJECTED index (so a beta rollup is meaningful). Only the
+# instruments-store AGs were projected → only ``instruments-service`` reads them. The
+# beta index read FAILS LOUD on a missing projection (honest absence), so a non-eligible
+# service (mtds/features/…) has NO beta rollup — and beta is therefore a PER-SERVICE
+# concept, NOT a global one (see ``is_service_beta``). SSOT lives here (the beta module);
+# the rollup worker + the rollup blob-path resolver + the in-service endpoint all import it.
+BETA_ELIGIBLE_SERVICES: frozenset[str] = frozenset({"instruments-service"})
+
+
+def beta_eligible(services: list[str]) -> list[str]:
+    """Keep only services with a v9 projected index (``BETA_ELIGIBLE_SERVICES``).
+
+    Used when computing the beta rollup so the worker never sweeps a non-projected
+    service whose loud-failing beta read would crash the run.
+    """
+    return [s for s in services if s in BETA_ELIGIBLE_SERVICES]
+
+
+def is_service_beta(service: str) -> bool:
+    """True when THIS specific service should read/write the beta-namespaced rollup.
+
+    Beta is PER-SERVICE, not global: only a beta-eligible service has a v9 projection.
+    A non-eligible service (mtds/features/…) keeps its LIVE rollup (``{service}/full.json.gz``)
+    even while the deployment is in beta-preview mode — otherwise its beta blob never
+    exists, the manifest read finds nothing, and it falls through to a multi-minute all-
+    asset-group live compute on the 8 GiB service → HTTP 503 (the failure the operator hit
+    on the market-tick-data-service data-status page, 2026-06-16). Only the eligible
+    service(s) flip to the projected-v9 view in beta mode."""
+    return is_beta_mode() and service in BETA_ELIGIBLE_SERVICES
+
+
 _UNIQUE_COUNT_CACHE: dict[str, int] = {}
 
 

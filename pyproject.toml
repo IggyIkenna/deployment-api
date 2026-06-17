@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deployment-api"
-version = "0.11.0"
+version = "0.16.0"
 description = "Standalone FastAPI API for the deployment monitoring dashboard"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -36,8 +36,8 @@ dependencies = [
     # LLM commentary (pipeline UAT — optional at runtime, required as dep)
     "anthropic>=0.87.0,<1.0.0",
     # Internal libraries
-    "unified-trading-library>=0.10.0,<1.0.0",
-    "unified-api-contracts>=0.10.0,<1.0.0",
+    "unified-trading-library>=0.12.0,<1.0.0",
+    "unified-api-contracts>=0.19.0,<1.0.0",
     "deployment-service>=0.8.0,<1.0.0",
     "pytest>=9.0.3,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",

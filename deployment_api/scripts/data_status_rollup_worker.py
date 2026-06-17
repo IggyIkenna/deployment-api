@@ -51,6 +51,11 @@ from unified_trading_library import GcsEventSink, get_storage_client, log_event,
 
 from deployment_api.services.data_status_service import DataStatusService
 
+# Beta-eligibility SSOT lives in manifest_source (the beta module). beta_eligible is used by
+# main() (beta-mode CLI/local runs); BETA_ELIGIBLE_SERVICES + is_service_beta live there too
+# (the rollup blob-path resolver reads them). Import from manifest_source, not from here.
+from deployment_api.services.manifest_source import beta_eligible
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,22 +85,7 @@ _DEFAULT_SERVICES: tuple[str, ...] = (
 # which runs this worker's compute in the gen1 service (the gen2 Job crashes natively).
 DEFAULT_SERVICES: tuple[str, ...] = _DEFAULT_SERVICES
 
-# Services with a CF-20 v9 PROJECTED index (so a beta rollup is meaningful). Only the
-# instruments-store AGs were projected → only ``instruments-service`` reads them. In beta
-# mode the worker restricts to this set: the beta read fails LOUD on a missing projection
-# (honest absence), so sweeping a non-projected service (mtds/features/…) would crash the
-# job. Live mode is unaffected (sweeps every service).
-BETA_ELIGIBLE_SERVICES: frozenset[str] = frozenset({"instruments-service"})
-
-
-def beta_eligible(services: list[str]) -> list[str]:
-    """Keep only services with a v9 projected index (``BETA_ELIGIBLE_SERVICES``).
-
-    Used in beta mode so the worker never sweeps a non-projected service whose
-    loud-failing beta read would crash the job.
-    """
-    return [s for s in services if s in BETA_ELIGIBLE_SERVICES]
-
+# ``BETA_ELIGIBLE_SERVICES`` + ``beta_eligible`` are imported from manifest_source (SSOT) above.
 
 # Compute starts from this fixed date — covers every service's launch.
 _ROLLUP_START_DATE = "2018-01-01"

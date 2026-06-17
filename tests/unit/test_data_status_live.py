@@ -1,9 +1,11 @@
 """Unit tests for ``/api/data-status/live`` endpoint (Phase 11.1 real wiring).
 
 Promoted 2026-05-11 from stub-only smoke to manifest-derived contract:
-the endpoint reads the v8 availability manifest, filters
-``pipeline_mode=live_websocket``, builds :class:`LiveStatusRow` per
-shard. Health-API HTTP join still deferred (depends on per-service URL
+the endpoint reads the availability manifest, filters to the live
+pipeline-mode family (any ``pipeline_mode`` whose STRING begins with
+``live`` — every ``live_<source>`` value such as ``live_binance``, plus
+the legacy alias string), builds :class:`LiveStatusRow` per shard.
+Health-API HTTP join still deferred (depends on per-service URL
 registry); manifest-derived staleness is the implemented signal.
 
 Plan: ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11.1.
@@ -61,7 +63,7 @@ def _mk_manifest_rows(
 
 
 def test_live_status_returns_empty_envelope_when_no_live_shards() -> None:
-    """No ``pipeline_mode=live_websocket`` rows → empty envelope."""
+    """No ``live_<source>`` rows → empty envelope."""
 
     def _empty_read(bucket):
         return _mk_manifest_rows(pipeline_modes=["batch_databento", "batch_tardis"])
@@ -78,10 +80,10 @@ def test_live_status_returns_empty_envelope_when_no_live_shards() -> None:
 
 
 def test_live_status_returns_populated_rows_when_manifest_has_live_shards() -> None:
-    """Manifest with ``pipeline_mode=live_websocket`` rows → populated response."""
+    """Manifest with ``live_<source>`` rows → populated response."""
 
     cefi_rows = _mk_manifest_rows(
-        pipeline_modes=["live_websocket", "live_websocket", "batch_databento"],
+        pipeline_modes=["live_binance", "live_binance", "batch_databento"],
         venues=["binance", "bybit", "binance"],
     )
     empty_rows = _mk_manifest_rows(pipeline_modes=[])
@@ -97,9 +99,39 @@ def test_live_status_returns_populated_rows_when_manifest_has_live_shards() -> N
 
     assert response.status_code == 200
     payload = response.json()
-    # 2 live_websocket rows in cefi, 1 batch_databento dropped.
+    # 2 live_binance rows in cefi, 1 batch_databento dropped.
     assert len(payload["rows"]) == 2
     assert payload["asset_groups"] == ["cefi"]
+    venues_returned = {row["venue"] for row in payload["rows"]}
+    assert venues_returned == {"binance", "bybit"}
+
+
+def test_live_status_captures_live_source_and_legacy_alias_via_prefix() -> None:
+    """Regression: the live reader is a STRING-PREFIX match on ``live``, so
+    it captures every ``live_<source>`` value AND the legacy transitional
+    live-alias string carried by OLD parquets, while dropping ``batch_*``.
+    The alias literal is built from a SPLIT string (the enum member is
+    deleted; only the STRING survives in old data)."""
+    legacy = "live_" + "websocket"
+    cefi_rows = _mk_manifest_rows(
+        pipeline_modes=["live_binance", legacy, "batch_databento"],
+        venues=["binance", "bybit", "binance"],
+    )
+
+    def _read(bucket):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read):
+        response = client.get("/api/data-status/live?asset_group=cefi")
+
+    assert response.status_code == 200
+    payload = response.json()
+    # Both the live_<source> row AND the legacy-alias row are captured; the
+    # batch_databento row is dropped.
+    assert len(payload["rows"]) == 2
     venues_returned = {row["venue"] for row in payload["rows"]}
     assert venues_returned == {"binance", "bybit"}
 
@@ -107,8 +139,8 @@ def test_live_status_returns_populated_rows_when_manifest_has_live_shards() -> N
 def test_live_status_filters_by_asset_group_query_param() -> None:
     """Endpoint honours ``?asset_group=`` filter."""
 
-    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["binance"])
-    defi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["uniswap_v3"])
+    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_binance"], venues=["binance"])
+    defi_rows = _mk_manifest_rows(pipeline_modes=["live_onchain_rpc"], venues=["uniswap_v3"])
 
     def _read_per_bucket(bucket):
         if "cefi" in bucket:
@@ -134,7 +166,7 @@ def test_live_status_derives_staleness_from_attempted_at() -> None:
     # Use a 90s-old tz-aware UTC attempted_at so the assertion is deterministic.
     old_attempted = datetime.now(UTC) - timedelta(seconds=90)
     cefi_rows = _mk_manifest_rows(
-        pipeline_modes=["live_websocket"],
+        pipeline_modes=["live_binance"],
         attempted_ats=[old_attempted],
     )
 
@@ -198,7 +230,7 @@ def test_live_status_capture_status_preserves_4_state_taxonomy() -> None:
     """All 4 writegate Phase 3.D.5 capture_status values pass through."""
 
     cefi_rows = _mk_manifest_rows(
-        pipeline_modes=["live_websocket"] * 4,
+        pipeline_modes=["live_binance"] * 4,
         capture_statuses=[
             "captured",
             "empty_confirmed",
@@ -229,9 +261,9 @@ def test_live_status_capture_status_preserves_4_state_taxonomy() -> None:
 def test_live_status_aggregates_across_multiple_asset_groups() -> None:
     """When the filter is omitted, the endpoint reads ALL 5 asset_groups."""
 
-    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["binance"])
-    defi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["uniswap_v3"])
-    tradfi_rows = _mk_manifest_rows(pipeline_modes=["live_websocket"], venues=["cme"])
+    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_binance"], venues=["binance"])
+    defi_rows = _mk_manifest_rows(pipeline_modes=["live_onchain_rpc"], venues=["uniswap_v3"])
+    tradfi_rows = _mk_manifest_rows(pipeline_modes=["live_databento"], venues=["cme"])
 
     def _read(bucket):
         if "cefi" in bucket:
@@ -277,7 +309,7 @@ def test_live_status_health_api_http_join_overrides_staleness() -> None:
     """When config has service URLs, /health response overrides manifest staleness."""
 
     cefi_rows = _mk_manifest_rows(
-        pipeline_modes=["live_websocket"],
+        pipeline_modes=["live_binance"],
         venues=["binance"],
         attempted_ats=[datetime.now(UTC) - timedelta(seconds=300)],  # 5 min stale per manifest
     )
@@ -323,7 +355,7 @@ def test_live_status_health_api_http_failure_falls_back_to_manifest_staleness() 
     """/health call failure → manifest-derived staleness used (no exception bubbles)."""
 
     cefi_rows = _mk_manifest_rows(
-        pipeline_modes=["live_websocket"],
+        pipeline_modes=["live_binance"],
         attempted_ats=[datetime.now(UTC) - timedelta(seconds=45)],
     )
 
@@ -361,7 +393,7 @@ def test_live_status_health_api_empty_registry_uses_manifest_staleness() -> None
     """Empty URL registry → no HTTP calls; manifest-derived staleness."""
 
     cefi_rows = _mk_manifest_rows(
-        pipeline_modes=["live_websocket"],
+        pipeline_modes=["live_binance"],
         attempted_ats=[datetime.now(UTC) - timedelta(seconds=20)],
     )
 

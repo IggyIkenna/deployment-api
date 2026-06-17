@@ -346,7 +346,7 @@ async def get_data_status_turbo(
         None,
         description=(
             "Filter by pipeline_mode (OR semantics). Accepts canonical PipelineMode values "
-            "e.g. 'batch_tardis', 'batch_databento', 'live_websocket'. "
+            "e.g. 'batch_tardis', 'batch_databento', 'live_binance'. "
             "Bypasses rollup cache; forces on-demand manifest read."
         ),
     ),

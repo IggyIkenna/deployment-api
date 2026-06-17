@@ -21,6 +21,17 @@ from pydantic import BaseModel, Field
 
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
+from deployment_api.routes.data_status._coverage_scope import (
+    ConfigVersionTriple,
+    CoverageScope,
+    config_versions,
+    filter_to_mvp,
+)
+from deployment_api.services.data_status_union import (
+    has_provenance_columns,
+    provenance_breakdown,
+    union_reduce_to_cells,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +66,11 @@ class LiveStatusRow(BaseModel):  # CORRECT-LOCAL: deployment-ui Live-tab respons
 
     Phase 11.1 endpoint contract per
     ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11. The
-    endpoint pivots the availability manifest by
-    ``pipeline_mode=live_websocket`` and joins per-shard health from the
-    Health-API endpoints (Phase 8 already shipped at UTL@54d658e8 +
-    UTL@908b1647).
+    endpoint pivots the availability manifest by the live-pipeline-mode
+    family (any ``pipeline_mode`` whose value begins with ``live`` —
+    ``live_<source>`` such as ``live_binance``, plus the legacy alias)
+    and joins per-shard health from the Health-API endpoints (Phase 8
+    already shipped at UTL@54d658e8 + UTL@908b1647).
 
     Shard-key axes mirror the v5 manifest row key (per CLAUDE.md
     "Shard-granularity SSOT"). Per-shard health metrics are sourced from
@@ -137,15 +149,32 @@ class LiveStatusResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui Live-tab re
     refreshed_at: datetime
 
 
-_LIVE_PIPELINE_MODE: Final[str] = "live_websocket"
-"""Manifest ``pipeline_mode`` column value tagging live-pipeline shards.
+_LIVE_PIPELINE_MODE_PREFIX: Final[str] = "live"
+"""Manifest ``pipeline_mode`` STRING-PREFIX tagging live-pipeline shards.
 
-Mirrors UAC ``PipelineMode.LIVE_WEBSOCKET`` (in
-``unified_api_contracts.canonical.crosscutting.pipeline_mode``) without
-importing the StrEnum — the manifest carries the string-valued form per
-the v8 schema. When UAC ships a Literal-typed alias, swap the
-``Final[str]`` to it.
+``pipeline_mode`` is SOURCE-AWARE (``{mode}_{source}`` — e.g.
+``live_binance`` / ``live_databento``) per the G0 standardisation. The
+manifest carries it as a STRING, and OLD live parquets still hold the
+legacy ``live``-prefixed transitional alias string. So we MATCH ON THE
+``live`` PREFIX (``pipeline_mode.startswith("live")``) to capture BOTH
+that legacy alias AND every ``live_<source>`` value in one read — an
+exact-equality filter would silently DROP all ``live_<source>`` rows.
 """
+
+
+def _is_live_mode(pipeline_mode: object) -> bool:
+    """True when a manifest ``pipeline_mode`` cell is a live-pipeline mode.
+
+    String-prefix match (``startswith("live")``) so it captures every
+    ``live_<source>`` value (``live_binance`` / ``live_databento`` / …)
+    AND the legacy ``live`` alias carried by old parquets — never an
+    exact-equality compare against a single literal (that would drop all
+    ``live_<source>`` rows). Non-string / NaN cells are not live.
+    """
+    if not isinstance(pipeline_mode, str):
+        return False
+    return pipeline_mode.strip().lower().startswith(_LIVE_PIPELINE_MODE_PREFIX)
+
 
 _ASSET_GROUPS: Final[tuple[str, ...]] = ("cefi", "defi", "tradfi", "sports", "prediction")
 """Closed set of asset_groups the live-status endpoint scans.
@@ -159,7 +188,7 @@ _LIVE_STATUS_SERVICE: Final[str] = "market-tick-data-service"
 ``data_status_drilldown._BUCKET_TEMPLATES`` (both resolve to
 ``market-data-tick-{asset_group}-{pid}``). Reading the manifest via
 ``market-tick-data-service`` covers both raw-tick + MDPS-candle
-``pipeline_mode=live_websocket`` shards in one read.
+live-pipeline (``live_<source>``) shards in one read.
 """
 
 
@@ -404,7 +433,7 @@ def _staleness_seconds_from_health(
 
 
 def _read_live_manifest_rows(asset_group: str) -> list[object]:
-    """Read MTDS manifest for one asset_group, filtered to ``pipeline_mode=live_websocket``.
+    """Read MTDS manifest for one asset_group, filtered to live-pipeline (``live_<source>``) rows.
 
     Returns an empty list when the manifest is unreachable, missing the
     ``pipeline_mode`` column (pre-v8 manifest), or contains no live
@@ -440,7 +469,11 @@ def _read_live_manifest_rows(asset_group: str) -> list[object]:
         # Pre-v8 manifest (no pipeline_mode column) → no live shards by
         # definition; return empty.
         return []
-    live_df = df[df["pipeline_mode"] == _LIVE_PIPELINE_MODE]
+    # STRING-PREFIX match (not exact-equality) so we capture every
+    # ``live_<source>`` value AND the legacy ``live``-prefixed alias
+    # string in old parquets — an exact filter would drop all
+    # ``live_<source>`` rows.
+    live_df = df[df["pipeline_mode"].map(_is_live_mode)]  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
     if len(live_df) == 0:
         return []
     return list(live_df.to_dict(orient="records"))
@@ -455,13 +488,15 @@ async def get_live_data_status(
         ),
     ),
 ) -> LiveStatusResponse:
-    """Live-pipeline data-status pivoted by ``pipeline_mode=live_websocket``.
+    """Live-pipeline data-status pivoted by the ``live_<source>`` mode family.
 
     Phase 11.1 endpoint per
     ``live_pipeline_mtds_mdps_features_2026_05_08.md`` Phase 11. Reads
-    the v8 availability manifest for each requested asset_group, filters
-    to ``pipeline_mode == "live_websocket"``, and returns one
-    :class:`LiveStatusRow` per shard.
+    the availability manifest for each requested asset_group, filters to
+    rows whose ``pipeline_mode`` STRING begins with ``live`` (every
+    ``live_<source>`` value plus the legacy alias, via a prefix match —
+    never an exact-equality compare that would drop ``live_<source>``
+    rows), and returns one :class:`LiveStatusRow` per shard.
 
     Sources:
 
@@ -630,6 +665,16 @@ class VenueYearCoverageResponse(
     rows: list[VenueYearRow]
     asset_groups_loaded: list[str]
     asset_groups_failed: list[str]
+    scope: CoverageScope = "could_exist"
+    config_versions: dict[str, ConfigVersionTriple] = Field(default_factory=config_versions)
+    source_breakdown: list[dict[str, object]] = Field(
+        default_factory=list,
+        description=(
+            "FLAG-1 per-(pipeline_mode, source) capture-status CELL breakdown across the "
+            "loaded asset_groups (CeFi multi-source UNION provenance). Empty on a v8 "
+            "manifest carrying no source/pipeline_mode columns."
+        ),
+    )
 
 
 @router.get("/venue-year-coverage", response_model=VenueYearCoverageResponse)
@@ -637,6 +682,15 @@ async def get_venue_year_coverage(
     asset_groups: str = Query(
         "cefi,tradfi,defi",
         description="Comma-separated asset groups (cefi/tradfi/defi/sports/prediction)",
+    ),
+    scope: CoverageScope = Query(
+        "could_exist",
+        description=(
+            "Coverage scope (denominator filter). 'could_exist' (DEFAULT — current "
+            "behaviour) = the full 4-state could-exist denominator. 'all' = the full "
+            "universe (== could_exist at this endpoint). 'mvp' = restrict to cells where "
+            "UAC is_mvp(...) is True (MVP-readiness board)."
+        ),
     ),
 ) -> VenueYearCoverageResponse:
     """Per-venue x year capture-status breakdown from the MTDS availability manifest.
@@ -654,6 +708,22 @@ async def get_venue_year_coverage(
     * **remaining** (derived) = total - captured - empty_confirmed - expected_unattempted.
 
     Source: ``_index/availability_index.parquet`` per MTDS bucket.
+
+    Stale-tolerant read (item 5a): the manifest is read via the stale-tolerant
+    monitoring reader — on an EMPTY live result it falls back to the consolidated
+    ``_index`` blob DIRECTLY (no live-freshness gate), so a paused/stale
+    consolidator does not blank the board (migration-safe, read-only).
+
+    FLAG-1 multi-source UNION (item 5b): when the manifest carries provenance
+    columns (``source`` / ``pipeline_mode`` — CeFi multi-source), the rows are
+    UNION-reduced to ONE honest cell first (≥1 source ``captured`` ⇒ the cell is
+    ``captured``), and a per-(pipeline_mode, source) ``source_breakdown`` is
+    surfaced alongside the counts.
+
+    Scope toggle (Item 4): ``scope=mvp`` restricts the denominator + numerator to
+    UAC ``is_mvp(...)`` cells; ``could_exist`` (default) / ``all`` keep the full
+    universe. The per-config ``config_versions`` triples are returned so a
+    coverage delta attributes to a scope-change vs a data-change.
     """
     requested_ags = [ag.strip().lower() for ag in asset_groups.split(",") if ag.strip()]
     requested_ags = [ag for ag in requested_ags if ag in _VENUE_YEAR_COVERAGE_ASSET_GROUPS]
@@ -661,11 +731,15 @@ async def get_venue_year_coverage(
     rows: list[VenueYearRow] = []
     loaded: list[str] = []
     failed: list[str] = []
+    source_breakdown: list[dict[str, object]] = []
 
     for ag in requested_ags:
         try:
             bucket = _ds.build_bucket_name("market-tick-data-service", ag)
-            df: pd.DataFrame = _ds._read_availability_index(bucket)  # pyright: ignore[reportPrivateUsage]
+            # Stale-tolerant monitoring read (item 5a): empty live → consolidated
+            # ``_index`` blob directly. Resolved through the facade so the test
+            # patch surface intercepts.
+            df: pd.DataFrame = _ds._read_manifest_index(bucket)  # pyright: ignore[reportPrivateUsage]
         except Exception as exc:
             logger.warning("venue-year-coverage: failed to read manifest for %s: %s", ag, exc)
             failed.append(ag)
@@ -674,6 +748,28 @@ async def get_venue_year_coverage(
         if df.empty or "date" not in df.columns:
             loaded.append(ag)
             continue
+
+        # FLAG-1 (item 5b): per-(pipeline_mode, source) breakdown BEFORE the union
+        # collapse, so a multi-source CeFi cell surfaces each source's answer.
+        if has_provenance_columns(df):
+            for entry in provenance_breakdown(df):
+                entry["asset_group"] = ag.upper()
+                source_breakdown.append(entry)
+            # UNION-reduce multi-(source, pipeline_mode) rows to ONE honest cell so
+            # the venue x year counts are cell-grain (≥1 source captured ⇒ captured),
+            # never row-grain double-counted across provenance rows.
+            df = union_reduce_to_cells(df)
+            if df.empty or "date" not in df.columns:
+                loaded.append(ag)
+                continue
+
+        # Scope filter (Item 4): mvp → keep only UAC is_mvp cells. could_exist / all
+        # keep the full enumerated universe (the manifest IS that universe).
+        if scope == "mvp":
+            df = filter_to_mvp(df, ag)
+            if df.empty:
+                loaded.append(ag)
+                continue
 
         # Derive year from date column (YYYY-MM-DD or datetime).
         df = df.copy()
@@ -744,4 +840,7 @@ async def get_venue_year_coverage(
         rows=rows,
         asset_groups_loaded=loaded,
         asset_groups_failed=failed,
+        scope=scope,
+        config_versions=config_versions(),
+        source_breakdown=source_breakdown,
     )

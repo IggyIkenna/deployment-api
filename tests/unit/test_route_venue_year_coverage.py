@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 _PATCH_DISABLE_AUTH = "deployment_api.rbac.DISABLE_AUTH"
 _PATCH_CFG = "deployment_api.routes.data_status._cfg"
-_PATCH_READ_INDEX = "deployment_api.routes.data_status._read_availability_index"
+_PATCH_READ_INDEX = "deployment_api.routes.data_status._read_manifest_index"
 _PATCH_BUILD_BUCKET = "deployment_api.routes.data_status.build_bucket_name"
 
 

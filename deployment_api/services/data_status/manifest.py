@@ -126,6 +126,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         job_id: str | None = None,
         chain: str | None = None,
         pipeline_modes: list[str] | None = None,
+        venue: list[str] | None = None,
     ) -> dict[str, object]:
         """Return data status from manifest indices in TurboDataStatusResponse shape.
 
@@ -146,9 +147,11 @@ class ManifestStatusMixin(MissingShardsMixin):
         (Cloud Run Job + ``*/5 * * * *`` Scheduler cron). See plan:
         ``data_status_offline_rollup_2026_05_06.md``.
         """
-        any_row_filter = any(
-            f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
-        ) or bool(pipeline_modes)
+        any_row_filter = (
+            any(f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain))
+            or bool(pipeline_modes)
+            or bool(venue)
+        )
         # CF-20 beta preview: the rollup is now BETA-NAMESPACED (the worker writes
         # ``{service}/full.beta.json.gz`` when it runs with the beta env;
         # ``_read_rollup_if_fresh`` reads the same beta blob in beta mode — see
@@ -179,6 +182,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             chain,
             cloud,
             pipeline_modes,
+            venue,
         )
 
     def _get_manifest_status_sync(
@@ -195,6 +199,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         chain: str | None = None,
         cloud: str = "gcp",
         pipeline_modes: list[str] | None = None,
+        venue: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = asset_groups or [str(c) for c in MarketCategory]
@@ -243,6 +248,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             row_filters=row_filters,
             cloud=cloud,
             pipeline_modes=pipeline_modes,
+            venue=venue,
         )
 
         for cat in cat_list:
@@ -369,6 +375,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         row_filters: dict[str, str] | None,
         cloud: str,
         pipeline_modes: list[str] | None,
+        venue: list[str] | None = None,
     ) -> dict[str, dict[str, object]]:
         """Build every category's manifest entry, returning ``{cat: result}``. Three paths:
 
@@ -387,6 +394,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             and not _dss._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             and not row_filters
             and not pipeline_modes
+            and not venue
         )
         if use_process_pool:
             ctx = multiprocessing.get_context("fork")
@@ -420,6 +428,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                         row_filters=row_filters,
                         cloud=cloud,
                         pipeline_modes=pipeline_modes,
+                        venue=venue,
                     ): cat
                     for cat in cat_list
                 }
@@ -436,6 +445,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 row_filters=row_filters,
                 cloud=cloud,
                 pipeline_modes=pipeline_modes,
+                venue=venue,
             )
             for cat in cat_list
         }
@@ -452,6 +462,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         row_filters: dict[str, str] | None = None,
         cloud: str = "gcp",
         pipeline_modes: list[str] | None = None,
+        venue: list[str] | None = None,
     ) -> dict[str, object]:
         """Build a single category entry for manifest status.
 
@@ -466,6 +477,12 @@ class ManifestStatusMixin(MissingShardsMixin):
         ``pipeline_modes`` narrows the manifest slice to rows whose
         ``pipeline_mode`` column matches any of the supplied values (OR semantics).
         Used by the deployment-ui pipeline_mode filter chip.
+
+        ``venue`` narrows the manifest slice to rows whose ``venue`` column
+        matches any of the supplied values (OR semantics, case-insensitive).
+        Applied AFTER the bare-alias fold so the filter value is the canonical
+        venue (e.g. ``BINANCE-FUTURES``). Used by the data-status tab's venue
+        filter chip.
         """
         empty: dict[str, object] = {
             "category": cat,
@@ -546,6 +563,12 @@ class ManifestStatusMixin(MissingShardsMixin):
         # Fold bare venue aliases (e.g. "OKX" → "OKX-SPOT", "COINBASE" → "COINBASE-SPOT")
         if "venue" in filtered.columns and not filtered.empty:
             filtered["venue"] = filtered["venue"].replace(self._VENUE_ALIASES)
+
+        # Apply the venue filter (data-status tab venue chip) AFTER the bare-alias
+        # fold so the requested value matches the canonical venue. OR semantics
+        # across the requested venues; case-insensitive (the UI may send any case).
+        if venue:
+            filtered = self._apply_venue_filter(filtered, venue)
 
         # Drop pre-canonicalisation DeFi venue-alias rows (e.g.
         # ``venue='AAVE_V3-ETHEREUM' chain=''``) so they don't inflate

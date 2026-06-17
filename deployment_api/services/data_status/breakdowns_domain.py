@@ -393,7 +393,7 @@ class DomainBreakdownsMixin(SportsStatusMixin):
             # shard atom is ``(chain, venue, data_type, instrument_id, day)``
             # — ``pipeline_mode`` is NOT part of it. Post the 2026-05-19
             # pipeline_mode migration the same shard atom can carry multiple
-            # rows (one per ``pipeline_mode=batch_*`` / ``live_websocket``), so
+            # rows (one per ``pipeline_mode=batch_*`` / ``live_*``), so
             # a raw ``len()`` double-counts a shard that has both a batch and a
             # live row and inflates ``shards_found`` past the dedup'd
             # ``shards_expected`` denominator. De-duplicate on the shard-atom

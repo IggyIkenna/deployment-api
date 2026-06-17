@@ -102,11 +102,11 @@ class ShardGcsMetadata(BaseModel):  # CORRECT-LOCAL — API response shape
     error_reason: str | None = None
 
     pipeline_mode: str | None = None
-    """Source-and-mode tag from UAC ``PipelineMode`` enum (one of the
-    ``batch_*`` source values or ``live_websocket``). The UI renders this as a
-    small badge next to ``capture_status`` (e.g. ``batch_databento`` /
-    ``live_websocket``). ``None`` on pre-v8 manifest rows or when the writer
-    did not stamp the column."""
+    """Source-and-mode tag from UAC ``PipelineMode`` enum (a
+    ``{mode}_{source}`` value — a ``batch_*`` or ``live_*`` source value).
+    The UI renders this as a small badge next to ``capture_status`` (e.g.
+    ``batch_databento`` / ``live_binance``). ``None`` on pre-v8 manifest
+    rows or when the writer did not stamp the column."""
 
     service_emission_state: ServiceEmissionStateLiteral | None = None
     """Service-output emission-policy state from UAC

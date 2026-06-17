@@ -70,6 +70,7 @@ _ERROR_REASON_COL = "error_reason"
 _PIPELINE_MODE_COL = "pipeline_mode"
 _SOURCE_COL = "source"
 _TRANSPORT_COL = "transport"
+_CADENCE_COL = "cadence"
 _EXPECTED_PREFIX = "EXPECTED_"
 # Legacy / NaN capture_status coerces to ``captured`` — matches UTL
 # ``ManifestWriter.lookup`` legacy-read semantics + ``_aggregate_counts``.
@@ -94,15 +95,18 @@ _STATUS_RANK: dict[str, int] = {
 # share the winning status. Data-status uses the live-consumer order
 # (live > replay > batch — live is real-time truth, replay fills gaps, batch
 # backs history); the symmetric batch-consumer order lives in the live read-path
-# resolver (batch-live-reconciliation-service), out of scope here. ``live_websocket``
-# is the transitional alias for ``live_*``.
+# resolver (batch-live-reconciliation-service), out of scope here. The
+# ``live`` prefix (``_mode_of``) reduces every ``live_<source>`` value (and
+# the legacy transitional alias) to the ``live`` mode.
 _MODE_RANK: dict[str, int] = {"live": 0, "replay": 1, "batch": 2}
 _MODE_RANK_UNKNOWN = 3
 
 
 def _mode_of(pipeline_mode: str) -> str:
     """Extract the reconciliation mode ({live,replay,batch}) from a
-    ``{mode}_{source}`` pipeline_mode (``live_websocket`` → ``live``)."""
+    ``{mode}_{source}`` pipeline_mode (``live_binance`` → ``live``). The
+    ``live`` prefix match also reduces the legacy transitional alias to
+    ``live``."""
     pm = pipeline_mode.strip().lower()
     if pm.startswith("live"):
         return "live"
@@ -204,6 +208,7 @@ def provenance_breakdown(df: pd.DataFrame) -> list[dict[str, object]]:
     if not has_pm and not has_src:
         return []
     has_transport = _TRANSPORT_COL in df.columns
+    has_cadence = _CADENCE_COL in df.columns
     group_cols = [c for c in (_PIPELINE_MODE_COL, _SOURCE_COL) if c in df.columns]
 
     work = df.copy()
@@ -228,6 +233,7 @@ def provenance_breakdown(df: pd.DataFrame) -> list[dict[str, object]]:
                 "pipeline_mode": value_by_col.get(_PIPELINE_MODE_COL, ""),
                 "source": value_by_col.get(_SOURCE_COL, ""),
                 "transport": _provenance_value(has_transport, cells, _TRANSPORT_COL),
+                "cadence": _provenance_value(has_cadence, cells, _CADENCE_COL),
                 "captured": int((cs == "captured").sum()),
                 "empty_confirmed": int((cs == "empty_confirmed").sum()),
                 "attempted_failed": int((cs == "attempted_failed").sum()),

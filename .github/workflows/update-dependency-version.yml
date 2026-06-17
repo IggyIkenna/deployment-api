@@ -3,11 +3,15 @@ name: update-dependency-version
 # Receives repository_dispatch from unified-trading-pm after a dependency's version-bump.
 # Updates pyproject.toml to pin the new minimum version for the changed dependency.
 #
-# Routing logic (based on bump_type in payload):
-#   MAJOR bump -> create branch + PR targeting staging (quality gates required -- breaking change)
-#   MINOR/PATCH -> direct commit to staging (compatible update; the reusable QG fast-paths this
-#                  metadata-only pin to GREEN so it carries a check for the promotion PR without
-#                  a full run -- NO [skip ci]; plan semver_version_bump_skip_ci_promotion_block)
+# Routing logic (based on bump_type / is_breaking in payload):
+#   MAJOR or breaking -> create branch + PR targeting staging (quality gates required; the consumer
+#                  explicitly opts into the new floor, v2-gated -- a breaking change forces a re-pin)
+#   MINOR/PATCH non-breaking -> DIGEST-ONLY (2026-06-17): the internal range pin (`>=0.x,<1.0.0`)
+#                  already absorbs the bump (pull-not-push, CLAUDE.md), so NO floor rewrite. Only the
+#                  Dockerfile ARG BASE_IMAGE_DIGEST refresh rides (direct commit to staging if it
+#                  changed; nothing at all otherwise). Eliminates the per-minor-bump staging churn
+#                  that staleness-walled the breaking dep-update PRs
+#                  (promotion_queue_conflict_wall_pileup_2026_06_17.md).
 #
 # Dispatch payload:
 #   {dep_name, dep_version, constraint, bump_type, is_breaking, chain_depth}
@@ -73,6 +77,32 @@ jobs:
 
           if ! grep -q "\"${DEP_NAME}" pyproject.toml; then
             echo "$DEP_NAME not found in pyproject.toml -- skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # -- Digest-only on a NON-breaking MINOR/PATCH internal bump (2026-06-17) --
+          # An internal dep is range-pinned (`>=0.x,<1.0.0`) with an editable path source, so a
+          # non-breaking minor/patch bump ALREADY satisfies the existing floor — the consumer needs
+          # NO floor rewrite (range absorbs it; the path source resolves the actual version). This is
+          # the range-pin / pull-not-push model (CLAUDE.md "Range pins absorb minor/patch; only MAJOR
+          # forces a consumer rebuild"). Rewriting the floor on every minor release was unnecessary
+          # push-churn that advanced `staging` on every bump and staleness-walled the (legitimately
+          # PR-gated) breaking dep-update PRs. So here we set skip=true → the floor rewrite + uv lock
+          # are skipped, the digest-refresh step below STILL rides (and the commit step commits ONLY a
+          # digest change — nothing at all if the payload carried no digest). dep-alignment is
+          # unaffected: internal deps are presence-checked, NOT floor-matched
+          # (scripts/manifest/check-dependency-alignment.py treats internal deps presence-only;
+          # external deps keep their canonical floor match). The MAJOR/breaking path below keeps the
+          # floor re-pin + PR (the consumer explicitly opts into the breaking/major version, v2-gated).
+          # SSOT: plans/active/issues/promotion_queue_conflict_wall_pileup_2026_06_17.md +
+          # dependency_promotion_range_pins_and_major_bump_sit_2026_06_09.md.
+          if [ "$BUMP_TYPE" != "major" ] && [ "$IS_BREAKING" != "true" ]; then
+            echo "Non-breaking minor/patch internal bump ($DEP_NAME -> $DEP_VERSION): digest-only (range absorbs it; pull-not-push). Skipping pyproject floor rewrite + uv lock."
+            echo "dep_name=$DEP_NAME" >> "$GITHUB_OUTPUT"
+            echo "dep_version=$DEP_VERSION" >> "$GITHUB_OUTPUT"
+            echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
+            echo "is_breaking=$IS_BREAKING" >> "$GITHUB_OUTPUT"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
