@@ -17,25 +17,19 @@ from deployment_api.routes._repo_ci_stuck import (
 class TestClassifyStuckPr:
     def test_clean_pr_not_stuck(self) -> None:
         assert (
-            classify_stuck_pr(
-                merge_state="clean", age_min=500, v2_present=True, failed_check=False, head_message=""
-            )
+            classify_stuck_pr(merge_state="clean", age_min=500, v2_present=True, failed_check=False, head_message="")
             is None
         )
 
     def test_under_age_threshold_not_stuck(self) -> None:
         assert (
-            classify_stuck_pr(
-                merge_state="blocked", age_min=5, v2_present=False, failed_check=False, head_message=""
-            )
+            classify_stuck_pr(merge_state="blocked", age_min=5, v2_present=False, failed_check=False, head_message="")
             is None
         )
 
     def test_conflicting(self) -> None:
         assert (
-            classify_stuck_pr(
-                merge_state="dirty", age_min=60, v2_present=True, failed_check=False, head_message=""
-            )
+            classify_stuck_pr(merge_state="dirty", age_min=60, v2_present=True, failed_check=False, head_message="")
             == "conflicting"
         )
         assert (
@@ -47,9 +41,7 @@ class TestClassifyStuckPr:
 
     def test_failing_check_takes_precedence_over_v2_absent(self) -> None:
         assert (
-            classify_stuck_pr(
-                merge_state="blocked", age_min=60, v2_present=False, failed_check=True, head_message=""
-            )
+            classify_stuck_pr(merge_state="blocked", age_min=60, v2_present=False, failed_check=True, head_message="")
             == "failing_check"
         )
 
@@ -76,10 +68,38 @@ class TestClassifyStuckPr:
 
     def test_automerge_stuck(self) -> None:
         assert (
-            classify_stuck_pr(
-                merge_state="blocked", age_min=60, v2_present=True, failed_check=False, head_message=""
-            )
+            classify_stuck_pr(merge_state="blocked", age_min=60, v2_present=True, failed_check=False, head_message="")
             == "automerge_stuck"
+        )
+
+    def test_content_identical_short_circuits_blocked(self) -> None:
+        # base tree == head tree → nothing to promote (squash-accounting noise). A BLOCKED
+        # promote PR with no v2 must NOT enter the triage queue — it is closeable, not a wall.
+        assert (
+            classify_stuck_pr(
+                merge_state="blocked",
+                age_min=600,
+                v2_present=False,
+                failed_check=False,
+                head_message="feat: x",
+                content_identical=True,
+            )
+            is None
+        )
+
+    def test_content_identical_short_circuits_conflicting(self) -> None:
+        # Even CONFLICTING/DIRTY off a stale squash merge-base (the deployment-api #101 case)
+        # is noise when the trees are identical — the guard outranks the conflicting class.
+        assert (
+            classify_stuck_pr(
+                merge_state="dirty",
+                age_min=600,
+                v2_present=True,
+                failed_check=False,
+                head_message="",
+                content_identical=True,
+            )
+            is None
         )
 
 

@@ -360,8 +360,12 @@ def _as_list(value: object) -> list[object]:
 
 async def branch_head(
     session: aiohttp.ClientSession, token: str, org: str, repo: str, branch: str
-) -> tuple[str | None, str | None]:
-    """(sha, committed_at) of a branch head; (None, None) when the branch is absent."""
+) -> tuple[str | None, str | None, str | None]:
+    """(sha, committed_at, tree_sha) of a branch head; (None, None, None) when absent.
+
+    tree_sha (`commit.commit.tree.sha`) is the CONTENT fingerprint — base.tree_sha ==
+    head.tree_sha ⟺ a promote PR has nothing to promote (squash-accounting noise).
+    """
     payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/branches/{branch}")
     data = _as_dict(payload)
     commit = _as_dict(data.get("commit"))
@@ -369,7 +373,9 @@ async def branch_head(
     inner = _as_dict(commit.get("commit"))
     committer = _as_dict(inner.get("committer"))
     committed_at = str(committer.get("date")) if committer.get("date") else None
-    return sha, committed_at
+    tree = _as_dict(inner.get("tree"))
+    tree_sha = str(tree.get("sha")) if tree.get("sha") else None
+    return sha, committed_at, tree_sha
 
 
 async def compare_branches(
