@@ -34,6 +34,12 @@ class BranchHeadDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape
     branch: str
     sha: str | None  # None = branch absent (e.g. agent-orchestrator has no staging yet)
     committed_at: str | None
+    # Git TREE sha of the head commit — the CONTENT fingerprint. Two commits with the same
+    # tree_sha are byte-identical in content regardless of commit history, so base.tree_sha ==
+    # head.tree_sha ⟺ a promote PR has nothing to promote (squash-accounting noise). None =
+    # branch absent. This is the ONLY reliable content-identity signal: the compare API's
+    # three-dot `files` is inflated by a stale squash merge-base (37 "files" for an identical tree).
+    tree_sha: str | None
 
 
 class BranchDeltaDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -82,6 +88,9 @@ class RepoPrDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api respo
     merge_state: str  # GitHub mergeable_state (clean/blocked/dirty/behind/unstable/unknown)
     failed_check: bool
     v2_present: bool
+    # base tree == head tree → nothing to promote (squash-accounting noise; safe to CLOSE).
+    # When True, stuck_class is forced None so the PR never enters the triage queue.
+    content_identical: bool
     stuck_class: StuckClass | None
     # Non-success required checks blocking the merge (classic status contexts like AWS
     # CodeBuild that the Actions-run rollup is blind to) — the on-screen "why is this stuck".

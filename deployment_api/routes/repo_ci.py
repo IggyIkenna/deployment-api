@@ -195,8 +195,8 @@ async def _repo_branches_and_deltas(
 ) -> tuple[list[BranchHeadDict], list[BranchDeltaDict]]:
     heads = await asyncio.gather(*[branch_head(session, token, GITHUB_ORG, repo, b) for b in PROMOTION_BRANCHES])
     branches = [
-        BranchHeadDict(branch=b, sha=sha, committed_at=committed_at)
-        for b, (sha, committed_at) in zip(PROMOTION_BRANCHES, heads, strict=True)
+        BranchHeadDict(branch=b, sha=sha, committed_at=committed_at, tree_sha=tree_sha)
+        for b, (sha, committed_at, tree_sha) in zip(PROMOTION_BRANCHES, heads, strict=True)
     ]
     pairs = [("staging", "live-defi-rollout"), ("main", "staging"), ("main", "live-defi-rollout")]
     compares = await asyncio.gather(
@@ -211,11 +211,14 @@ async def _repo_branches_and_deltas(
     return branches, deltas
 
 
-async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) -> list[RepoPrDict]:
+async def _repo_open_prs(
+    session: aiohttp.ClientSession, token: str, repo: str, branch_trees: dict[str, str | None]
+) -> list[RepoPrDict]:
     raw_prs = await list_open_promotion_prs(session, token, GITHUB_ORG, repo)
     out: list[RepoPrDict] = []
     for pr in raw_prs:
         head_ref = str(pr.get("head") or "")
+        base_ref = str(pr.get("base") or "")
         auto_merge = bool(pr.get("auto_merge"))
         if not is_promotion_contract_pr(head_ref, auto_merge):
             continue
@@ -223,6 +226,12 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
         created_at = str(pr.get("created_at") or "")
         merge_state = str(pr.get("mergeable_state") or "unknown")
         age_min = age_minutes(created_at) if created_at else 0
+        # Content-identity: base TREE == head TREE → nothing to promote (squash-accounting noise),
+        # even when GitHub reports CONFLICTING/BLOCKED off a stale squash merge-base. Short-circuits
+        # the stuck classification so the triage queue never shows a phantom-stuck promote PR.
+        base_tree = branch_trees.get(base_ref)
+        head_tree = branch_trees.get(head_ref)
+        content_identical = base_tree is not None and base_tree == head_tree
         failed_check = False
         v2_present = True
         head_message = ""
@@ -252,6 +261,7 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
             v2_present=v2_present,
             failed_check=failed_check,
             head_message=head_message,
+            content_identical=content_identical,
         )
         out.append(
             RepoPrDict(
@@ -266,6 +276,7 @@ async def _repo_open_prs(session: aiohttp.ClientSession, token: str, repo: str) 
                 merge_state=merge_state,
                 failed_check=failed_check,
                 v2_present=v2_present,
+                content_identical=content_identical,
                 stuck_class=stuck,
                 blocking_checks=blocking_checks,
             )
@@ -430,7 +441,8 @@ async def _overview_row(
     async with semaphore:
         try:
             branches, deltas = await _repo_branches_and_deltas(session, token, meta.name)
-            prs = await _repo_open_prs(session, token, meta.name)
+            branch_trees = {b["branch"]: b["tree_sha"] for b in branches}
+            prs = await _repo_open_prs(session, token, meta.name, branch_trees)
         except HTTPException as exc:
             if exc.status_code == 503:
                 raise  # rate-limit is global — surface it honestly
@@ -631,7 +643,8 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
             await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SIT_WORKFLOW_FILE)
         )
         branches, deltas = await _repo_branches_and_deltas(session, token, repo)
-        prs = await _repo_open_prs(session, token, repo)
+        branch_trees = {b["branch"]: b["tree_sha"] for b in branches}
+        prs = await _repo_open_prs(session, token, repo, branch_trees)
 
         history: list[BranchCommitsDict] = []
         for branch in branches:

@@ -76,6 +76,7 @@ def _mock_pr(repo: str, number: int, base: str, stuck_class: str | None, state: 
         merge_state=state,
         failed_check=stuck_class == "failing_check",
         v2_present=stuck_class in (None, "failing_check", "automerge_stuck"),
+        content_identical=False,  # fixture models a real (content-bearing) stuck PR, not squash-noise
         stuck_class=stuck_class,  # pyright: ignore[reportArgumentType]  # fixture literal is within StuckClass
         # A failing-check PR carries the human reason (the AWS-CodeBuild PR-approval gate
         # that stranded two drain PRs invisibly on 2026-06-15).
@@ -101,9 +102,11 @@ def _mock_row(
     sit: SitStateDict,
 ) -> RepoOverviewDict:
     branches = [
-        BranchHeadDict(branch="live-defi-rollout", sha="abc1234", committed_at="2026-06-10T08:00:00Z"),
-        BranchHeadDict(branch="staging", sha="abc1200", committed_at="2026-06-10T07:30:00Z"),
-        BranchHeadDict(branch="main", sha="abc1100", committed_at="2026-06-10T06:00:00Z"),
+        BranchHeadDict(
+            branch="live-defi-rollout", sha="abc1234", committed_at="2026-06-10T08:00:00Z", tree_sha="tree_ldr"
+        ),
+        BranchHeadDict(branch="staging", sha="abc1200", committed_at="2026-06-10T07:30:00Z", tree_sha="tree_stg"),
+        BranchHeadDict(branch="main", sha="abc1100", committed_at="2026-06-10T06:00:00Z", tree_sha="tree_main"),
     ]
     deltas = [
         BranchDeltaDict(base="staging", head="live-defi-rollout", ahead_by=2, behind_by=0, files_changed=3),

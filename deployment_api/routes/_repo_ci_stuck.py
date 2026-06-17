@@ -56,11 +56,19 @@ def classify_stuck_pr(
     v2_present: bool,
     failed_check: bool,
     head_message: str,
+    content_identical: bool = False,
     stuck_minutes: int = DEFAULT_STUCK_MINUTES,
 ) -> StuckClass | None:
     """Classify one promotion-contract PR into the closed stuck set (None = not stuck).
 
     Precedence (most-actionable first, mirroring the watcher's recovery mechanisms):
+    0. content_identical— base tree == head tree: NOTHING to promote. The ahead_by /
+                          mergeable_state (even CONFLICTING/DIRTY from a stale squash
+                          merge-base) is history divergence, not content — squash-accounting
+                          noise to CLOSE, not a wall. Short-circuits ALL stuck classes so the
+                          triage queue never shows a phantom-stuck promote PR (the operator
+                          "doing nothing faster than we clear it" illusion). SSOT:
+                          promotion_queue_conflict_wall_pileup_2026_06_17.md § Class D.
     1. conflicting      — CONFLICTING/DIRTY: a worker must rebase (escalation class).
     2. failing_check    — BLOCKED with a genuinely FAILED required check: fix the content.
     3. skip_ci_jammed   — BLOCKED + v2 absent + [skip ci] head: close+reopen CANNOT re-fire
@@ -69,6 +77,8 @@ def classify_stuck_pr(
                           auto-recoverable (close+reopen re-fires pull_request).
     5. automerge_stuck  — in a stuck state past threshold with none of the above.
     """
+    if content_identical:
+        return None
     state = merge_state.lower()
     if state not in STUCK_MERGE_STATES:
         return None
