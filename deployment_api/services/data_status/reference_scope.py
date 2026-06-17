@@ -102,13 +102,42 @@ def reset_genesis_cache() -> None:
     _genesis_by_venue = None
 
 
+# Market-role suffixes the market-data manifest appends to a base exchange
+# (``COINBASE-SPOT``/``OKX-FUTURES``/``OKX-SWAP``). The IS catalogue thinks in
+# BASE venues (``COINBASE``/``OKX``), so a role-qualified manifest token must be
+# matched against its base before we declare the venue unlisted.
+_VENUE_ROLE_SUFFIXES: tuple[str, ...] = ("-SPOT", "-FUTURES", "-SWAP", "-PERP", "-PERPETUAL", "-COMBO")
+
+
+def _base_venue_token(venue_upper: str) -> str:
+    """Strip a trailing market-role suffix → the base exchange token."""
+    for suffix in _VENUE_ROLE_SUFFIXES:
+        if venue_upper.endswith(suffix):
+            return venue_upper[: -len(suffix)]
+    return venue_upper
+
+
 def reference_genesis(asset_group: str, venue: str) -> str | None:
     """Return the IS genesis ``start_date`` for ``(asset_group, venue)``.
 
     ``None`` ⟺ the venue is NOT a configured instruments-service venue for the
     asset_group (an unlisted venue → out_of_scope).
+
+    The IS catalogue lists base exchanges (``COINBASE``/``OKX``) while the
+    market-data manifest qualifies them by role (``COINBASE-SPOT``/
+    ``OKX-FUTURES``); try the exact token first, then fall back to the base so a
+    configured venue isn't flagged out_of_scope merely for the role suffix.
     """
-    return _load_genesis_map().get((asset_group.upper(), venue.upper()))
+    genesis_map = _load_genesis_map()
+    ag = asset_group.upper()
+    venue_upper = venue.upper()
+    genesis = genesis_map.get((ag, venue_upper))
+    if genesis is not None:
+        return genesis
+    base = _base_venue_token(venue_upper)
+    if base != venue_upper:
+        return genesis_map.get((ag, base))
+    return None
 
 
 def is_reference_venue_day_in_scope(asset_group: str, venue: str, days: list[str]) -> bool:
