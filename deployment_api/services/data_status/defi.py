@@ -255,10 +255,14 @@ class DefiStatusMixin(DataStatusCliMixin):
                 # BucketNamingError and previously crashed the ENTIRE rollup sweep (phase-1
                 # aborted before phase-2 → beta rollup blobs silently froze, 2026-06-16→17).
                 return pd.DataFrame()
-            if ag == "prediction":
-                pred_kind = PREDICTION_KIND_MAP.get(kind)
-                main_bucket = _dss.resolve_bucket_name(cloud=cast(object, cloud), kind=pred_kind if pred_kind else kind)  # pyright: ignore[reportArgumentType]
+            if ag == "prediction" and PREDICTION_KIND_MAP.get(kind):
+                # Prediction-SPECIAL single-bucket kind (its own KIND, resolved kind-only).
+                main_bucket = _dss.resolve_bucket_name(cloud=cast(object, cloud), kind=PREDICTION_KIND_MAP[kind])  # pyright: ignore[reportArgumentType]
             else:
+                # Normal per-asset_group kind — incl. a per-AG kind that merely serves
+                # prediction as one of its asset_groups (e.g. features-cross-instrument, which
+                # has NO PREDICTION_KIND_MAP entry). Resolve WITH asset_group; resolving such a
+                # per-AG kind kind-only raised "asset_group= is required" (rollup SERVICE_FAILED).
                 main_bucket = _dss.resolve_bucket_name(
                     cloud=cast(object, cloud),  # pyright: ignore[reportArgumentType]
                     kind=kind,
