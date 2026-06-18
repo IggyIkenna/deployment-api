@@ -191,6 +191,38 @@ class TestDrilldownNodeShape:
         assert d["completion_pct"] == 0.0
 
 
+class TestAggregateCountsLegacyCoercion:
+    """_aggregate_counts must coerce legacy non-4-state capture_status to captured.
+
+    Regression (data-status audit 2026-06-18): a legacy v4 row whose
+    capture_status is a literal ``"None"`` / NaN / blank survived
+    ``.astype(str)`` and was DROPPED from every drilldown-tree count, under-
+    reporting the tree denominator (sports prd carried 17,288 such rows). The
+    fix coerces any non-4-state token to ``captured`` (SSOT parity with
+    ``coverage_metrics.compute_capture_status_counts`` + UTL lookup)."""
+
+    def test_literal_none_and_nan_coerce_to_captured(self) -> None:
+        df = pd.DataFrame(
+            {
+                "capture_status": ["captured", "None", "nan", "empty_confirmed", "attempted_failed"],
+            }
+        )
+        captured, empty, failed, exp = _hier._aggregate_counts(df)  # pyright: ignore[reportPrivateUsage]
+        # 1 real captured + "None" + "nan" = 3 captured (not 1).
+        assert captured == 3
+        assert empty == 1
+        assert failed == 1
+        assert exp == 0
+
+    def test_real_nan_value_coerces_to_captured(self) -> None:
+        df = pd.DataFrame({"capture_status": ["captured", None, "empty_confirmed"]})
+        captured, empty, failed, exp = _hier._aggregate_counts(df)  # pyright: ignore[reportPrivateUsage]
+        assert captured == 2  # explicit captured + the None/NaN row
+        assert empty == 1
+        assert failed == 0
+        assert exp == 0
+
+
 class TestHierarchicalDrilldown:
     def _patch_manifest(self, df: pd.DataFrame):
         return patch.object(_hier, "read_availability_index", return_value=df)

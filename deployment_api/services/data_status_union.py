@@ -225,6 +225,14 @@ def provenance_breakdown(df: pd.DataFrame) -> list[dict[str, object]]:
             if _CAPTURE_STATUS_COL in cells.columns
             else pd.Series(_LEGACY_DEFAULT, index=cells.index)
         )
+        # Legacy coercion: ``fillna`` only catches a true NaN — a legacy v4 row
+        # whose capture_status is a literal ``"None"`` / ``"nan"`` / any
+        # non-4-state token survives ``.astype(str)`` and would be DROPPED from
+        # every per-source 4-state count below. Coerce such tokens to the legacy
+        # default ``captured`` (SSOT parity with
+        # ``coverage_metrics.compute_capture_status_counts`` + UTL lookup).
+        _valid_4state = ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted")
+        cs = cs.where(cs.isin(_valid_4state), _LEGACY_DEFAULT)
         # groupby on a list of columns yields tuple keys (one element per
         # group column), zipped back to their column names.
         value_by_col = dict(zip(group_cols, (str(v) for v in group_vals), strict=True))  # pyright: ignore[reportAny]
