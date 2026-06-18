@@ -13,6 +13,7 @@ Uses boto3 CodeBuild client. All functions are sync (run via asyncio.to_thread).
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,7 +28,11 @@ else:
     CodeBuildClient = object
     STSClient = object
 
-from deployment_api.settings import CLOUD_PROVIDER
+from deployment_api.settings import (
+    AWS_CODEBUILD_READER_ROLE_ARN,
+    AWS_CODEBUILD_REGION,
+    CLOUD_PROVIDER,
+)
 
 from ._cloud_builds_types import (
     ALL_REPOS_WITH_TRIGGERS,
@@ -37,14 +42,87 @@ from ._cloud_builds_types import (
 
 logger = logging.getLogger(__name__)
 
-# AWS region for CodeBuild — matches GCP asia-northeast1
-_AWS_REGION = "ap-northeast-1"
+# AWS region for CodeBuild — matches GCP asia-northeast1 (config-driven, same default).
+_AWS_REGION = AWS_CODEBUILD_REGION
+
+# Keyless GCP->AWS WIF credential cache. The assumed-role creds are valid 1h; refresh at 50min so a
+# request never races the expiry. Module-global (process-wide) — the reader is read-only + idempotent.
+_WIF_CACHE_TTL_SECONDS = 50 * 60
+_wif_creds_cache: tuple[float, dict[str, str]] | None = None
+
+
+def _import_boto3():  # type: ignore[reportAny]
+    """Deferred boto3 import — the single AWS-SDK-boundary site shared by WIF + client construction."""
+    import boto3  # Deferred — AWS SDK boundary
+
+    return boto3  # type: ignore[reportUnknownVariableType, reportAny]
+
+
+def _assume_codebuild_reader_role() -> dict[str, str]:
+    """Mint short-lived AWS creds via keyless GCP->AWS Workload Identity Federation.
+
+    Flow (no static AWS key anywhere): (1) mint a Google OIDC ID token for the Cloud Run service
+    account from the metadata server; (2) exchange it for short-lived STS creds via
+    ``AssumeRoleWithWebIdentity`` against ``AWS_CODEBUILD_READER_ROLE_ARN`` (the role's trust policy
+    is locked to this SA's OIDC subject + grants read-only CodeBuild). Returns boto3 client kwargs
+    (``aws_access_key_id``/``aws_secret_access_key``/``aws_session_token``); cached ~50min.
+    """
+    global _wif_creds_cache
+    now = time.monotonic()
+    if _wif_creds_cache is not None and now < _wif_creds_cache[0]:
+        return _wif_creds_cache[1]
+
+    boto3 = _import_boto3()
+    import google.auth.transport.requests  # Deferred — Google auth boundary
+    import google.oauth2.id_token  # Deferred — Google auth boundary
+
+    # The role trust conditions only on the SA's OIDC subject, so any stable audience works; the role
+    # ARN is a convenient, self-documenting choice.
+    id_token: str = cast(
+        str,
+        google.oauth2.id_token.fetch_id_token(  # type: ignore[reportUnknownMemberType]
+            google.auth.transport.requests.Request(), AWS_CODEBUILD_READER_ROLE_ARN
+        ),
+    )
+    # AssumeRoleWithWebIdentity needs NO existing AWS credentials (the web-identity token IS the auth),
+    # so a plain STS client works even on a host with no AWS creds (the GCP-hosted dashboard).
+    sts: STSClient = boto3.client("sts", region_name=_AWS_REGION)  # type: ignore[reportUnknownMemberType, reportAny]
+    resp: dict[str, object] = cast(
+        dict[str, object],
+        sts.assume_role_with_web_identity(  # type: ignore[reportUnknownMemberType]
+            RoleArn=AWS_CODEBUILD_READER_ROLE_ARN,
+            RoleSessionName="repo-ci-codebuild",
+            WebIdentityToken=id_token,
+        ),
+    )
+    creds: dict[str, object] = cast(dict[str, object], resp["Credentials"])
+    out = {
+        "aws_access_key_id": str(creds["AccessKeyId"]),
+        "aws_secret_access_key": str(creds["SecretAccessKey"]),
+        "aws_session_token": str(creds["SessionToken"]),
+    }
+    _wif_creds_cache = (now + _WIF_CACHE_TTL_SECONDS, out)
+    return out
 
 
 def _get_codebuild_client() -> CodeBuildClient:  # type: ignore[reportAny]
-    """Return a boto3 CodeBuild client for ap-northeast-1."""
-    import boto3  # Deferred — AWS SDK boundary
+    """Return a boto3 CodeBuild client for the configured region.
 
+    When ``AWS_CODEBUILD_READER_ROLE_ARN`` is set (the GCP-hosted dashboard reading AWS build status),
+    auth is keyless GCP->AWS WIF — short-lived assumed-role creds via a per-request boto3 Session, no
+    static AWS key. When unset (native-AWS deployment / local AWS profile), the default boto3
+    credential chain is used.
+    """
+    boto3 = _import_boto3()
+
+    if AWS_CODEBUILD_READER_ROLE_ARN:
+        creds = _assume_codebuild_reader_role()
+        session = boto3.Session(  # type: ignore[reportUnknownMemberType, reportAny]
+            aws_access_key_id=creds["aws_access_key_id"],
+            aws_secret_access_key=creds["aws_secret_access_key"],
+            aws_session_token=creds["aws_session_token"],
+        )
+        return session.client("codebuild", region_name=_AWS_REGION)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAny]
     return boto3.client("codebuild", region_name=_AWS_REGION)  # type: ignore[reportUnknownVariableType, reportAny]
 
 

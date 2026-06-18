@@ -245,3 +245,96 @@ class TestStartCodebuild:
             projectName="instruments-service-build",
             sourceVersion="live-defi-rollout",
         )
+
+
+class TestWifCodebuildClient:
+    """Keyless GCP->AWS WIF auth for the CodeBuild reader (Option B): with a role ARN configured the
+    client is built from short-lived AssumeRoleWithWebIdentity creds (no static AWS key anywhere);
+    without one the default boto3 credential chain is used; assumed creds are cached ~50min."""
+
+    def _reset_cache(self) -> None:
+        import deployment_api.routes._code_builds_aws as mod
+
+        mod._wif_creds_cache = None  # pyright: ignore[reportPrivateUsage]
+
+    def test_role_arn_set_assumes_role_keyless(self) -> None:
+        import deployment_api.routes._code_builds_aws as mod
+
+        self._reset_cache()
+        fake_sts = MagicMock()
+        fake_sts.assume_role_with_web_identity.return_value = {
+            "Credentials": {
+                "AccessKeyId": "AKIA_TMP",
+                "SecretAccessKey": "SECRET_TMP",
+                "SessionToken": "TOKEN_TMP",
+            }
+        }
+        fake_codebuild = MagicMock()
+        fake_session = MagicMock()
+        fake_session.client.return_value = fake_codebuild
+        role_arn = "arn:aws:iam::427895769566:role/gcp-cloudrun-codebuild-reader"
+
+        with (
+            patch.object(mod, "AWS_CODEBUILD_READER_ROLE_ARN", role_arn),
+            patch("boto3.client", return_value=fake_sts) as boto_client,
+            patch("boto3.Session", return_value=fake_session) as session_ctor,
+            patch("google.oauth2.id_token.fetch_id_token", return_value="google-oidc-token"),
+            patch("google.auth.transport.requests.Request", return_value=MagicMock()),
+        ):
+            client = mod._get_codebuild_client()  # pyright: ignore[reportPrivateUsage]
+            self._reset_cache()
+
+        # STS client built for the unsigned web-identity call; the role assumed with the OIDC token.
+        assert boto_client.call_args.args[0] == "sts"
+        fake_sts.assume_role_with_web_identity.assert_called_once()
+        kw = fake_sts.assume_role_with_web_identity.call_args.kwargs
+        assert kw["RoleArn"] == role_arn
+        assert kw["WebIdentityToken"] == "google-oidc-token"
+        assert kw["RoleSessionName"] == "repo-ci-codebuild"
+        # Session built from the SHORT-LIVED assumed creds — never a stored static key.
+        session_ctor.assert_called_once_with(
+            aws_access_key_id="AKIA_TMP",
+            aws_secret_access_key="SECRET_TMP",
+            aws_session_token="TOKEN_TMP",
+        )
+        assert client is fake_codebuild
+
+    def test_role_arn_unset_uses_default_chain(self) -> None:
+        import deployment_api.routes._code_builds_aws as mod
+
+        self._reset_cache()
+        fake_codebuild = MagicMock()
+        with (
+            patch.object(mod, "AWS_CODEBUILD_READER_ROLE_ARN", ""),
+            patch("boto3.client", return_value=fake_codebuild) as boto_client,
+            patch("boto3.Session") as session_ctor,
+        ):
+            client = mod._get_codebuild_client()  # pyright: ignore[reportPrivateUsage]
+
+        # Default chain: a plain codebuild client, no WIF session.
+        boto_client.assert_called_once()
+        assert boto_client.call_args.args[0] == "codebuild"
+        session_ctor.assert_not_called()
+        assert client is fake_codebuild
+
+    def test_wif_creds_cached_no_reassume_on_second_call(self) -> None:
+        import deployment_api.routes._code_builds_aws as mod
+
+        self._reset_cache()
+        fake_sts = MagicMock()
+        fake_sts.assume_role_with_web_identity.return_value = {
+            "Credentials": {"AccessKeyId": "A", "SecretAccessKey": "S", "SessionToken": "T"}
+        }
+        with (
+            patch.object(mod, "AWS_CODEBUILD_READER_ROLE_ARN", "arn:aws:iam::1:role/r"),
+            patch("boto3.client", return_value=fake_sts),
+            patch("boto3.Session", return_value=MagicMock()),
+            patch("google.oauth2.id_token.fetch_id_token", return_value="tok"),
+            patch("google.auth.transport.requests.Request", return_value=MagicMock()),
+        ):
+            mod._get_codebuild_client()  # pyright: ignore[reportPrivateUsage]
+            mod._get_codebuild_client()  # pyright: ignore[reportPrivateUsage]
+            self._reset_cache()
+
+        # The role is assumed ONCE; the second client reuses the cached short-lived creds.
+        assert fake_sts.assume_role_with_web_identity.call_count == 1
