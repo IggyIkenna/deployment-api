@@ -391,12 +391,17 @@ def _mtds_shard_path(
 ) -> tuple[str, str] | None:
     """MTDS-family parquet path resolution — isolated for complexity budget.
 
-    Tries canonical ``asset_group=`` hive key first; falls back to legacy
-    ``category=`` for parquets written before the asset_group vocabulary
-    migration (UAC partition_paths.py: "Legacy on-disk objects use
-    ``category=`` — readers that need both should try canonical first then
-    fall back").
+    Reads the canonical ``asset_group=`` hive key only by default
+    (``DATA_STATUS_CANONICAL_PATHS_ONLY=True``, post-v9 canonicalisation
+    2026-06-18 — zero ``category=`` objects remain). Setting the flag False
+    appends the retired legacy ``category=`` probe (canonical first, then
+    fall back) for operator inspection of an un-migrated bucket. This is a
+    single-object existence probe that returns the FIRST shape found, so it
+    never double-counts — the flag keeps it canonical-only for consistency
+    with ``storage_facade.list_objects``.
     """
+    from deployment_api.settings import DATA_STATUS_CANONICAL_PATHS_ONLY
+
     it_disk = (instrument_type or "").lower()
     dt_disk = (data_type or "").lower()
     venue_disk = (venue or "").upper()
@@ -406,7 +411,12 @@ def _mtds_shard_path(
         "futures_chain",
     }
 
-    for hive_key in (f"asset_group={cat_lower}", f"category={cat_lower}"):
+    hive_keys = (
+        (f"asset_group={cat_lower}",)
+        if DATA_STATUS_CANONICAL_PATHS_ONLY
+        else (f"asset_group={cat_lower}", f"category={cat_lower}")
+    )
+    for hive_key in hive_keys:
         prefix = (
             f"raw_tick_data/by_date/day={day}/{hive_key}/"
             f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"

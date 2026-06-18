@@ -50,7 +50,8 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
       columns inside the parquet. Sports additionally groups by league.
     * ``market-tick-data-service`` / ``market-data-processing-service`` —
       ``raw_tick_data/by_date/day=.../asset_group=.../venue=.../instrument_type=<lower>/data_type=<lower>/``
-      (v9 canonical; ``storage_facade.list_objects`` transparently also probes the legacy ``category=`` prefix).
+      (v9 canonical; ``storage_facade.list_objects`` reads this canonical ``asset_group=`` shape only by
+      default — the legacy ``category=`` fan-out is gated off post-v9 canonicalisation to avoid double-count).
       MTDS writes the ``instrument_type`` / ``data_type`` axis values in
       lower case on disk (e.g. ``instrument_type=spot``), so we normalise
       the UI's upper-case inputs before building the prefix.

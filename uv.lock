@@ -633,7 +633,7 @@ wheels = [
 
 [[package]]
 name = "deployment-api"
-version = "0.6.0"
+version = "0.17.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -679,7 +679,7 @@ requires-dist = [
     { name = "cachetools", specifier = ">=5.0.0,<6.0.0" },
     { name = "cryptography", specifier = ">=46.0.7,<47.0.0" },
     { name = "deployment-service", editable = "../deployment-service" },
-    { name = "fastapi", specifier = ">=0.115.0,<1.0.0" },
+    { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "google-auth", specifier = ">=2.40.0,<3.0.0" },
     { name = "gunicorn", specifier = ">=22.0.0,<23.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
@@ -708,7 +708,7 @@ requires-dist = [
 
 [[package]]
 name = "deployment-service"
-version = "0.8.1"
+version = "0.13.0"
 source = { editable = "../deployment-service" }
 dependencies = [
     { name = "aiohttp" },
@@ -747,7 +747,7 @@ requires-dist = [
     { name = "bandit", specifier = ">=1.7.0,<2.0.0" },
     { name = "basedpyright", specifier = "==1.38.2" },
     { name = "botocore", specifier = ">=1.34.0,<2.0.0" },
-    { name = "fastapi", specifier = ">=0.115.0,<1.0.0" },
+    { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "flask", specifier = ">=3.0.0,<4.0.0" },
     { name = "functions-framework", specifier = ">=3.8.0,<4.0.0" },
     { name = "google-cloud-compute", specifier = ">=1.45.0,<2.0.0" },
@@ -3248,7 +3248,7 @@ wheels = [
 
 [[package]]
 name = "unified-api-contracts"
-version = "0.6.0"
+version = "0.19.0"
 source = { editable = "../unified-api-contracts" }
 dependencies = [
     { name = "bandit" },
@@ -3296,7 +3296,7 @@ requires-dist = [
     { name = "pip-audit", specifier = ">=2.7.0,<3.0.0" },
     { name = "polars", specifier = ">=1.37.0,<2.0.0" },
     { name = "prek", specifier = ">=0.3.0,<1.0.0" },
-    { name = "pyarrow", specifier = ">=23.0.0,<24.0.0" },
+    { name = "pyarrow", specifier = ">=23.0.1,<24.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3.0.0" },
     { name = "pytest", specifier = ">=9.0.3,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.25.0,<2.0.0" },
@@ -3315,7 +3315,7 @@ requires-dist = [
 
 [[package]]
 name = "unified-trading-library"
-version = "0.7.0"
+version = "0.13.0"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "aiohttp" },
@@ -3391,7 +3391,7 @@ requires-dist = [
     { name = "databento", specifier = ">=0.32.0,<1.0.0" },
     { name = "duckdb", specifier = ">=1.5.0,<2.0.0" },
     { name = "fakeredis", specifier = ">=2.20.0,<3.0.0" },
-    { name = "fastapi", specifier = ">=0.115.0,<1.0.0" },
+    { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "freezegun", specifier = ">=1.2.2,<2.0.0" },
     { name = "fsspec", specifier = ">=2025.2.0,<2026.0.0" },
     { name = "gcsfs", specifier = ">=2025.5.0,<2026.0.0" },
@@ -3418,7 +3418,7 @@ requires-dist = [
     { name = "prek", specifier = ">=0.3.0,<1.0.0" },
     { name = "prometheus-client", specifier = ">=0.20.0,<1.0.0" },
     { name = "psutil", specifier = ">=6.0.0,<7.0.0" },
-    { name = "pyarrow", specifier = ">=23.0.0,<24.0.0" },
+    { name = "pyarrow", specifier = ">=23.0.1,<24.0.0" },
     { name = "pyarrow-stubs", specifier = ">=20.0.0,<21.0.0" },
     { name = "pyasn1", specifier = ">=0.6.3,<0.7.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3.0.0" },
@@ -3437,7 +3437,7 @@ requires-dist = [
     { name = "ruff", specifier = "==0.15.0" },
     { name = "scikit-learn", specifier = ">=1.5.0,<2.0.0" },
     { name = "scipy", specifier = ">=1.15.0,<2.0.0" },
-    { name = "starlette", specifier = ">=1.0.1" },
+    { name = "starlette", specifier = ">=1.1.0,<1.3.0" },
     { name = "unified-api-contracts", editable = "../unified-api-contracts" },
     { name = "urllib3", specifier = ">=2.7.0,<3.0.0" },
     { name = "vulture", specifier = ">=2.0,<3.0.0" },

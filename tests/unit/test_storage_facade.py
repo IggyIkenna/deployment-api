@@ -173,6 +173,84 @@ class TestListObjectsViaApi:
         assert results == []
 
 
+class TestListObjectsCanonicalPathsOnly:
+    """Regression: the v9-canonicalised hive listing must NOT double-count across
+    the canonical ``asset_group=`` and legacy ``category=`` path shapes.
+
+    Post the 2026-06-18 manifest/GCS canonicalisation a logically-identical shard
+    can (transiently) exist under both physical shapes. The legacy fan-out listed
+    BOTH and merged — and because ``category=X/...`` and ``asset_group=X/...`` are
+    DIFFERENT object names, the name-dedup did not collapse them, so a cell's
+    parquet was counted twice in drilldown file lists. Canonical-only (default)
+    reads the single ``asset_group=`` shape → each cell's file counted once.
+    """
+
+    @patch("deployment_api.utils.storage_facade.DATA_STATUS_CANONICAL_PATHS_ONLY", True)
+    @patch("deployment_api.utils.storage_facade._use_gcs_fuse", return_value=False)
+    @patch("deployment_api.utils.storage_facade._is_bucket_mounted", return_value=False)
+    @patch("deployment_api.utils.storage_client.get_storage_client")
+    def test_canonical_only_lists_asset_group_once_no_double_count(
+        self, mock_client_fn, mock_mounted, mock_fuse
+    ):
+        # The SAME logical shard's parquet exists under both physical shapes.
+        def list_blobs(bucket_name, prefix, max_results=None, delimiter=None):
+            if "asset_group=defi/" in prefix:
+                b = MagicMock()
+                b.name = "raw_tick_data/by_date/day=2020-01-01/asset_group=defi/venue=VAULT/x.parquet"
+                b.size = 100
+                return [b]
+            if "category=defi/" in prefix:  # legacy copy of the SAME cell
+                b = MagicMock()
+                b.name = "raw_tick_data/by_date/day=2020-01-01/category=defi/venue=VAULT/x.parquet"
+                b.size = 100
+                return [b]
+            return []
+
+        mock_client = MagicMock()
+        mock_client.list_blobs.side_effect = list_blobs
+        mock_client_fn.return_value = mock_client
+
+        results = list_objects(
+            "market-data-tick-defi-prd",
+            "raw_tick_data/by_date/day=2020-01-01/asset_group=defi/venue=VAULT/",
+        )
+        # The cell is counted ONCE — canonical shape only, no category= fan-out.
+        assert len(results) == 1
+        assert "asset_group=defi/" in results[0].name
+        # category= must NOT have been queried at all.
+        queried = [str(c.kwargs.get("prefix", c.args[1] if len(c.args) > 1 else "")) for c in mock_client.list_blobs.call_args_list]
+        assert all("category=" not in q for q in queried)
+
+    @patch("deployment_api.utils.storage_facade.DATA_STATUS_CANONICAL_PATHS_ONLY", False)
+    @patch("deployment_api.utils.storage_facade._use_gcs_fuse", return_value=False)
+    @patch("deployment_api.utils.storage_facade._is_bucket_mounted", return_value=False)
+    @patch("deployment_api.utils.storage_client.get_storage_client")
+    def test_flag_off_restores_legacy_dual_shape_fan_out(self, mock_client_fn, mock_mounted, mock_fuse):
+        def list_blobs(bucket_name, prefix, max_results=None, delimiter=None):
+            if "asset_group=defi/" in prefix:
+                b = MagicMock()
+                b.name = "raw_tick_data/by_date/day=2020-01-01/asset_group=defi/venue=VAULT/x.parquet"
+                b.size = 100
+                return [b]
+            if "category=defi/" in prefix:
+                b = MagicMock()
+                b.name = "raw_tick_data/by_date/day=2020-01-01/category=defi/venue=VAULT/x.parquet"
+                b.size = 100
+                return [b]
+            return []
+
+        mock_client = MagicMock()
+        mock_client.list_blobs.side_effect = list_blobs
+        mock_client_fn.return_value = mock_client
+
+        results = list_objects(
+            "market-data-tick-defi-prd",
+            "raw_tick_data/by_date/day=2020-01-01/asset_group=defi/venue=VAULT/",
+        )
+        # Reversible: flag off → legacy merge of both shapes (the double-count path).
+        assert len(results) == 2
+
+
 class TestObjectExistsViaApi:
     """Tests for object_exists using GCS API."""
 
