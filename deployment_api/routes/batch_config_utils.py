@@ -91,9 +91,10 @@ SERVICE_CONFIG = {
         "sub_pattern": r"data_type=([^/]+)",
         # Instrument type breakdown: directory level below data_type
         "supports_instrument_types": True,
-        # Venue breakdown: fast directory listing
-        # Path: .../data_type={dt}/instrument_type={folder}/venue={venue}/
-        #       instrument_key={instrument}.parquet
+        # Venue breakdown: fast directory listing. Regex venue=/data_type= extraction
+        # is hive-key-positional, so it matches the canonical post-v9 shape
+        # .../day={d}/pipeline_mode={mode}_{src}/asset_group={ag}/venue={venue}/
+        #       instrument_type={folder}/data_type={dt}/{instrument}.parquet
         "venue_extraction": "from_path_parsing",
     },
     "market-data-processing-service": {

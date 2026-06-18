@@ -21,20 +21,30 @@ from deployment_api.utils.path_combinatorics import (
 class TestCombinatoricEntry:
     """Tests for CombinatoricEntry dataclass."""
 
-    def test_to_gcs_prefix_basic(self):
+    def test_to_gcs_prefixes_basic(self):
         entry = CombinatoricEntry(
             asset_group="CEFI",
             venue="BINANCE-FUTURES",
             folder="perpetuals",
             data_type="trades",
         )
-        prefix = entry.to_gcs_prefix("2024-01-15", "raw_tick_data/by_date")
-        assert "day=2024-01-15" in prefix
-        assert "data_type=trades" in prefix
-        assert "instrument_type=perpetuals" in prefix
-        assert "venue=BINANCE-FUTURES" in prefix
+        prefixes = entry.to_gcs_prefixes("2024-01-15", "raw_tick_data/by_date")
+        # Canonical pipeline_mode={mode}_{source}/ shape: one prefix per batch
+        # pipeline_mode of the asset_group (fan-out), pipeline_mode= LEFT of asset_group=.
+        assert len(prefixes) >= 1
+        for prefix in prefixes:
+            assert "day=2024-01-15" in prefix
+            assert "pipeline_mode=batch_" in prefix
+            assert "asset_group=cefi" in prefix
+            assert "venue=BINANCE-FUTURES" in prefix
+            assert "instrument_type=perpetuals" in prefix
+            assert "data_type=trades" in prefix
+            # pipeline_mode= must sit LEFT of asset_group= (canonical order)
+            assert prefix.index("pipeline_mode=") < prefix.index("asset_group=")
+            # No legacy bare twin (would double-count vs un-migrated copy)
+            assert "by_date/day=2024-01-15/data_type=" not in prefix
 
-    def test_to_gcs_prefix_with_timeframe(self):
+    def test_to_gcs_prefixes_with_timeframe(self):
         entry = CombinatoricEntry(
             asset_group="CEFI",
             venue="BINANCE",
@@ -42,12 +52,16 @@ class TestCombinatoricEntry:
             data_type="trades",
             timeframe="1h",
         )
-        prefix = entry.to_gcs_prefix("2024-01-15", "processed_candles/by_date")
+        prefixes = entry.to_gcs_prefixes("2024-01-15", "processed_candles/by_date")
+        # Processing service: single flat prefix, unaffected by pipeline_mode migration.
+        assert len(prefixes) == 1
+        prefix = prefixes[0]
         assert "day=2024-01-15" in prefix
         assert "timeframe=1h" in prefix
         assert "data_type=trades" in prefix
-        # Flat path for processing service — no venue/instrument_type
+        # Flat path for processing service — no venue/instrument_type/pipeline_mode
         assert "BINANCE" not in prefix
+        assert "pipeline_mode=" not in prefix
 
     def test_hash_consistency(self):
         e1 = CombinatoricEntry("CEFI", "BINANCE", "spot", "trades")

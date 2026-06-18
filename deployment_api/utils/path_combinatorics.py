@@ -44,6 +44,8 @@ from unified_api_contracts.registry import (
     is_in_tradfi_tick_window,
 )
 
+from deployment_api.utils.pipeline_mode_paths import canonical_pipeline_mode_segments
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,27 +118,42 @@ class CombinatoricEntry:  # CORRECT-LOCAL: in-process path-combinatorics entry
     def __hash__(self):
         return hash((self.asset_group, self.venue, self.folder, self.data_type, self.timeframe))
 
-    def to_gcs_prefix(self, date_str: str, base_prefix: str = "raw_tick_data/by_date") -> str:
-        """Generate GCS prefix for this combinatoric and date.
+    def to_gcs_prefixes(self, date_str: str, base_prefix: str = "raw_tick_data/by_date") -> list[str]:
+        """Generate the canonical GCS prefix(es) for this combinatoric and date.
 
         Uses key=value format for BigQuery hive partitioning:
-        - market-tick-data-handler:
-          {base}/day={date}/data_type={dt}/instrument_type={folder}/venue={venue}/
-        - market-data-processing-service: {base}/day={date}/timeframe={tf}/data_type={dt}/
-          (flat path, no instrument_type/venue folders)
+        - market-tick-data-handler (raw_tick_data): the CANONICAL post-v9
+          ``pipeline_mode={mode}_{source}/`` shape (the key sits LEFT of
+          ``asset_group=``; matches the data-status drilldown readers' SSOT
+          ``canonical_pipeline_mode_segments`` — cut over @0e267be):
+          ``{base}/day={D}/pipeline_mode={mode}_{src}/asset_group={ag}/venue={V}/
+          instrument_type={IT}/data_type={DT}/``. One prefix per batch pipeline_mode
+          of the asset_group (a single combo fans out across its registered sources),
+          so this returns a LIST. The legacy pre-``pipeline_mode=`` / pre-``asset_group=``
+          twins (``day=/data_type=/instrument_type=/venue=``) are NOT emitted — probing
+          them too would double-count the same shard against its un-migrated copy.
+        - market-data-processing-service: flat path (``processed_candles``), one prefix,
+          unaffected by the raw-tick pipeline_mode migration.
         """
         if self.timeframe:
             # market-data-processing-service: flat path
             # processed_candles/by_date/day=.../timeframe=.../data_type=.../{instrument}.parquet
-            return f"{base_prefix}/day={date_str}/timeframe={self.timeframe}/data_type={self.data_type}/"
-        else:
-            # market-tick-data-handler: key=value for hive partitioning
-            # raw_tick_data/by_date/day=.../data_type=.../instrument_type=equities/
-            # venue=NYSE/instrument_key=*.parquet
-            return (
-                f"{base_prefix}/day={date_str}/data_type={self.data_type}"
-                f"/instrument_type={self.folder}/venue={self.venue}/"
+            return [f"{base_prefix}/day={date_str}/timeframe={self.timeframe}/data_type={self.data_type}/"]
+
+        # market-tick-data-handler: canonical pipeline_mode= hive partitioning.
+        # raw_tick_data/by_date/day=.../pipeline_mode=batch_<src>/asset_group=<ag>/
+        # venue=NYSE/instrument_type=equities/data_type=trades/*.parquet
+        ag_disk = self.asset_group.lower()
+        venue_disk = self.venue.upper()
+        it_disk = self.folder.lower()
+        dt_disk = self.data_type.lower()
+        return [
+            (
+                f"{base_prefix}/day={date_str}/{pmode_seg}asset_group={ag_disk}/"
+                f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"
             )
+            for pmode_seg in canonical_pipeline_mode_segments(ag_disk)
+        ]
 
 
 @dataclass
@@ -595,8 +612,8 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
                 continue
             valid_combos.append(c)
 
-        # Generate prefixes
-        prefixes: list[str] = [c.to_gcs_prefix(date_str, base_prefix) for c in valid_combos]
+        # Generate prefixes (a single combo fans out across its batch pipeline_modes)
+        prefixes: list[str] = [p for c in valid_combos for p in c.to_gcs_prefixes(date_str, base_prefix)]
 
         logger.debug(
             "Generated %s prefixes for date=%s, asset_group=%s, venues=%s, service=%s",

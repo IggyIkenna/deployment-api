@@ -80,8 +80,10 @@ def _build_prefixes_by_date(
                     logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
             if combo.tick_window_only and not in_tick_window:
                 continue
-            prefix = combo.to_gcs_prefix(date_str, base_prefix)
-            prefixes.append((prefix, combo))
+            # One combo fans out across its asset_group's batch pipeline_modes
+            # (canonical pipeline_mode={mode}_{source}/ shape; @0e267be reader cutover).
+            for prefix in combo.to_gcs_prefixes(date_str, base_prefix):
+                prefixes.append((prefix, combo))
         if prefixes:
             prefixes_by_date[date_str] = prefixes
     return prefixes_by_date
