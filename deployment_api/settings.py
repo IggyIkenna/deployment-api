@@ -39,6 +39,11 @@ GITHUB_TOKEN_SA = _config.effective_github_token_sa
 # Cloud provider
 CLOUD_PROVIDER = _config.cloud_provider
 
+# AWS CodeBuild build-status reader (repo-CI Image column, ?provider=aws). Region matches the GCP
+# build region; the role ARN drives keyless GCP->AWS WIF (empty = default boto3 credential chain).
+AWS_CODEBUILD_REGION = _config.aws_codebuild_region
+AWS_CODEBUILD_READER_ROLE_ARN = _config.aws_codebuild_reader_role_arn
+
 # =============================================================================
 # STATE FILE ENVIRONMENT SEPARATION
 # =============================================================================
