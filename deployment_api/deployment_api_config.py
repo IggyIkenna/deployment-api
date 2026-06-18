@@ -75,6 +75,27 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Service account email for deployments",
     )
 
+    # AWS CodeBuild build-status reader (repo-CI Image column, ?provider=aws). Config, not secrets.
+    aws_codebuild_region: str = Field(
+        default="ap-northeast-1",
+        validation_alias=AliasChoices("AWS_CODEBUILD_REGION"),
+        description=(
+            "AWS region the CodeBuild build-status reader queries for the repo-CI Image column "
+            "when provider=aws. Matches the GCP asia-northeast1 build region."
+        ),
+    )
+    aws_codebuild_reader_role_arn: str = Field(
+        default="",
+        validation_alias=AliasChoices("AWS_CODEBUILD_READER_ROLE_ARN"),
+        description=(
+            "ARN of the keyless GCP->AWS Workload-Identity-Federation role the Cloud Run service "
+            "account assumes (AssumeRoleWithWebIdentity) for READ-ONLY CodeBuild access. The role's "
+            "trust policy is locked to this SA's OIDC subject - no static AWS key anywhere. Empty = "
+            "use the default boto3 credential chain (native-AWS task role / local AWS profile). "
+            "Config, not a secret."
+        ),
+    )
+
     # =========================================================================
     # DEPLOYMENT CONCURRENCY LIMITS
     # =========================================================================

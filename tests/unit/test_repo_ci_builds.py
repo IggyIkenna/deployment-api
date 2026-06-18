@@ -20,8 +20,8 @@ _MOD = "deployment_api.routes.repo_ci"
 
 @pytest.fixture(autouse=True)
 def _reset_builds_cache() -> None:
-    """The fetcher memoises in a module global — clear it so each test fetches fresh."""
-    repo_ci._builds_cache = None  # pyright: ignore[reportPrivateUsage]
+    """The fetcher memoises per-provider in a module global — clear it so each test fetches fresh."""
+    repo_ci._builds_cache = {}  # pyright: ignore[reportPrivateUsage]
 
 
 class TestGcpBuildSignal:
@@ -230,6 +230,83 @@ class TestBuildSignalDegradesHonestly:
         assert signal["last_success_log_url"] == "https://console.cloud.google.com/cloud-build/builds/ok"
         # main HEAD == last-success sha → the running image is up to date despite the failed latest.
         assert signal["image_stale"] is False
+
+
+class TestProviderParamRouting:
+    """The ?provider= toggle (Option B): the requested provider — NOT the server's CLOUD_PROVIDER —
+    selects which cloud's build status to read, with an independent cache per provider so toggling
+    never returns the other cloud's stale data. provider=None falls back to the server provider."""
+
+    async def test_explicit_aws_reads_codebuild_even_on_gcp_server(self) -> None:
+        # Server is GCP (is_aws_provider False) but provider="aws" MUST hit the CodeBuild path.
+        projects = [{"trigger_id": "deployment-api-build", "service": "deployment-api"}]
+        builds = {
+            "deployment-api-build": {
+                "status": "SUCCESS",
+                "commit_sha": "aws1234",
+                "finish_time": "2026-06-18T06:00:00Z",
+                "log_url": None,
+            }
+        }
+        with (
+            patch(f"{_MOD}.is_aws_provider", return_value=False),
+            patch(f"{_MOD}.list_codebuild_projects_sync", return_value=projects) as aws_list,
+            patch(f"{_MOD}.get_recent_builds_for_projects_sync", return_value=builds),
+            patch(f"{_MOD}._recent_builds_by_repo_name") as gcp_fetch,
+        ):
+            result = await repo_ci._latest_builds_by_repo("aws")  # pyright: ignore[reportPrivateUsage]
+        assert aws_list.called  # AWS path taken
+        assert not gcp_fetch.called  # GCP path NOT taken
+        assert result["deployment-api"].sha == "aws1234"
+
+    async def test_explicit_gcp_reads_cloudbuild_even_on_aws_server(self) -> None:
+        # Server is AWS but provider="gcp" MUST hit the Cloud Build path.
+        async def _fake_by_repo(max_scan: int = 400) -> dict[str, tuple[dict[str, str | None], dict[str, str | None]]]:
+            _ = max_scan
+            return {"mtds": ({"status": "SUCCESS", "commit_sha": "gcp9", "finish_time": None, "log_url": None}, {})}
+
+        with (
+            patch(f"{_MOD}.is_aws_provider", return_value=True),
+            patch(f"{_MOD}._recent_builds_by_repo_name", side_effect=_fake_by_repo) as gcp_fetch,
+            patch(f"{_MOD}.list_codebuild_projects_sync") as aws_list,
+        ):
+            result = await repo_ci._latest_builds_by_repo("gcp")  # pyright: ignore[reportPrivateUsage]
+        assert gcp_fetch.called and not aws_list.called
+        assert result["mtds"].sha == "gcp9"
+
+    async def test_none_falls_back_to_server_provider(self) -> None:
+        # provider=None → resolve to the server's own provider (here AWS).
+        with (
+            patch(f"{_MOD}.is_aws_provider", return_value=True),
+            patch(f"{_MOD}.list_codebuild_projects_sync", return_value=[]) as aws_list,
+            patch(f"{_MOD}.get_recent_builds_for_projects_sync", return_value={}),
+            patch(f"{_MOD}._recent_builds_by_repo_name") as gcp_fetch,
+        ):
+            await repo_ci._latest_builds_by_repo(None)  # pyright: ignore[reportPrivateUsage]
+        assert aws_list.called and not gcp_fetch.called
+
+    async def test_per_provider_cache_does_not_cross_contaminate(self) -> None:
+        # A gcp fetch then an aws fetch must each hit their own cloud — the gcp cache entry must NOT
+        # short-circuit the aws request (the bug a single global cache would cause under a toggle).
+        async def _fake_gcp(max_scan: int = 400) -> dict[str, tuple[dict[str, str | None], dict[str, str | None]]]:
+            _ = max_scan
+            return {"r": ({"status": "SUCCESS", "commit_sha": "G", "finish_time": None, "log_url": None}, {})}
+
+        with (
+            patch(f"{_MOD}.is_aws_provider", return_value=False),
+            patch(f"{_MOD}._recent_builds_by_repo_name", side_effect=_fake_gcp),
+        ):
+            gcp_res = await repo_ci._latest_builds_by_repo("gcp")  # pyright: ignore[reportPrivateUsage]
+        with (
+            patch(f"{_MOD}.list_codebuild_projects_sync", return_value=[{"trigger_id": "r-build", "service": "r"}]),
+            patch(
+                f"{_MOD}.get_recent_builds_for_projects_sync",
+                return_value={"r-build": {"status": "FAILED", "commit_sha": "A", "finish_time": None, "log_url": None}},
+            ),
+        ):
+            aws_res = await repo_ci._latest_builds_by_repo("aws")  # pyright: ignore[reportPrivateUsage]
+        assert gcp_res["r"].sha == "G"  # gcp cache served the gcp build
+        assert aws_res["r"].sha == "A"  # aws request was NOT short-circuited by the gcp cache entry
 
 
 class TestRecentBuildsByRepoName:

@@ -14,13 +14,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 import aiohttp
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.settings import CLOUD_PROVIDER, GITHUB_ORG
+from deployment_api.settings import GITHUB_ORG
 from deployment_api.settings import gcp_project_id as default_project_id
 
 from ._cloud_builds_history import (
@@ -304,8 +304,12 @@ class BuildSignal:
     success_log_url: str | None = None  # console log URL of that successful build
 
 
-_builds_cache: tuple[float, dict[str, BuildSignal]] | None = None
-_BUILDS_CACHE_TTL = 300.0  # mirrors the cloud-builds TTL pattern
+_BuildProvider = Literal["gcp", "aws"]
+
+# Build-signal cache keyed by RESOLVED provider, so a ?provider= toggle never returns the other
+# cloud's stale data (gcp + aws are cached independently). Mirrors the cloud-builds TTL pattern.
+_builds_cache: dict[str, tuple[float, dict[str, BuildSignal]]] = {}
+_BUILDS_CACHE_TTL = 300.0
 
 
 async def _gcp_builds_by_repo() -> dict[str, BuildSignal]:
@@ -357,30 +361,32 @@ async def _aws_builds_by_repo() -> dict[str, BuildSignal]:
     return result
 
 
-async def _latest_builds_by_repo() -> dict[str, BuildSignal]:
-    """repo -> (last_build_status, last_build_sha) via the cloud-builds plumbing,
-    dispatched on the active cloud provider (parity with the Cloud Builds tab).
+async def _latest_builds_by_repo(provider: _BuildProvider | None = None) -> dict[str, BuildSignal]:
+    """repo -> BuildSignal via the cloud-builds plumbing, dispatched on the REQUESTED provider.
 
-    GCP reuses the Cloud Build trigger plumbing; AWS reuses the CodeBuild project
-    plumbing. The GitHub/manifest half of the aggregator is cloud-agnostic — only the
-    image/build signal follows the toggle. Best-effort: any cloud failure (missing
-    perms, inactive/unavailable provider) yields {} — the image signal then reads
-    honestly-unknown (None) for that repo, never fabricated.
+    ``provider`` selects whose build status to read (the repo-CI GCP/AWS toggle, ?provider=). When
+    None it falls back to the server's own provider (``is_aws_provider()``) so a single-cloud
+    deployment keeps its default view. GCP reuses the Cloud Build trigger plumbing; AWS reuses the
+    CodeBuild project plumbing (keyless GCP->AWS WIF). The GitHub/manifest half of the aggregator is
+    cloud-agnostic — only the image/build signal follows the toggle. Best-effort: any cloud failure
+    (missing perms, inactive/unavailable provider) yields {} — the image signal then reads
+    honestly-unknown (None) for that repo, never fabricated. Cached per resolved provider.
     """
-    global _builds_cache
+    resolved: _BuildProvider = provider or ("aws" if is_aws_provider() else "gcp")
     now = asyncio.get_running_loop().time()
-    if _builds_cache is not None and now - _builds_cache[0] < _BUILDS_CACHE_TTL:
-        return _builds_cache[1]
+    cached = _builds_cache.get(resolved)
+    if cached is not None and now - cached[0] < _BUILDS_CACHE_TTL:
+        return cached[1]
     try:
-        result = await (_aws_builds_by_repo() if is_aws_provider() else _gcp_builds_by_repo())
+        result = await (_aws_builds_by_repo() if resolved == "aws" else _gcp_builds_by_repo())
     except Exception as exc:
         # boto3 / google.api_core exceptions (e.g. InvalidArgument on a region/project mismatch,
         # NoCredentialsError) outside the OSError/ValueError family; ANY failure here must degrade
         # to honest-unknown, never kill the overview (live 500, 2026-06-10). Rate limits don't
         # apply (cloud-build APIs, not GitHub).
-        logger.warning("[REPO-CI] cloud-builds image signal unavailable (provider=%s): %s", CLOUD_PROVIDER, exc)
+        logger.warning("[REPO-CI] cloud-builds image signal unavailable (provider=%s): %s", resolved, exc)
         result = {}
-    _builds_cache = (now, result)
+    _builds_cache[resolved] = (now, result)
     return result
 
 
@@ -567,7 +573,15 @@ def _build_promotion_blocked(view: ManifestView) -> list[PromotionBlockedDict]:
 
 
 @router.get("/overview")
-async def get_overview() -> OverviewResponseDict:
+async def get_overview(
+    provider: _BuildProvider | None = Query(
+        default=None,
+        description=(
+            "Cloud whose build status to read for the Image column (repo-CI GCP/AWS toggle). "
+            "Omitted = the server's own provider. 'aws' reads CodeBuild via keyless WIF."
+        ),
+    ),
+) -> OverviewResponseDict:
     """Fleet matrix: every repo's branch heads, deltas, CI status, PRs, SIT + deploy state."""
     cfg = DeploymentApiConfig()
     if cfg.is_mock_mode():
@@ -589,7 +603,7 @@ async def get_overview() -> OverviewResponseDict:
         )
         # Semver-agent standing health (G2) — one more global query (not per-repo).
         semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
-        builds = await _latest_builds_by_repo()
+        builds = await _latest_builds_by_repo(provider)
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
             *[_overview_row(session, token, view, meta, sit_run, builds, semaphore) for meta in view.repos]
@@ -622,7 +636,13 @@ async def get_overview() -> OverviewResponseDict:
 
 
 @router.get("/{repo}/detail")
-async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
+async def get_repo_detail(
+    repo: str,
+    provider: _BuildProvider | None = Query(
+        default=None,
+        description="Cloud whose build status to read for the Image signal (repo-CI GCP/AWS toggle).",
+    ),
+) -> RepoDetailResponseDict:
     """Drill-down: per-branch SHA history with v2 conclusions, PRs, SIT, image signal."""
     cfg = DeploymentApiConfig()
     if cfg.is_mock_mode():
@@ -721,7 +741,7 @@ async def get_repo_detail(repo: str) -> RepoDetailResponseDict:
         history=history,
         open_prs=prs,
         sit=sit,
-        image=_image_signal(view, repo, main_sha, await _latest_builds_by_repo()),
+        image=_image_signal(view, repo, main_sha, await _latest_builds_by_repo(provider)),
         last_green=last_green,
     )
 
