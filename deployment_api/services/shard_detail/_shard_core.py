@@ -35,6 +35,7 @@ from deployment_api.types.shard_detail import (
     ShardSchema,
     ShardSchemaColumn,
 )
+from deployment_api.utils.pipeline_mode_paths import canonical_pipeline_mode_segments
 
 logger = logging.getLogger(__name__)
 
@@ -391,17 +392,14 @@ def _mtds_shard_path(
 ) -> tuple[str, str] | None:
     """MTDS-family parquet path resolution — isolated for complexity budget.
 
-    Reads the canonical ``asset_group=`` hive key only by default
-    (``DATA_STATUS_CANONICAL_PATHS_ONLY=True``, post-v9 canonicalisation
-    2026-06-18 — zero ``category=`` objects remain). Setting the flag False
-    appends the retired legacy ``category=`` probe (canonical first, then
-    fall back) for operator inspection of an un-migrated bucket. This is a
-    single-object existence probe that returns the FIRST shape found, so it
-    never double-counts — the flag keeps it canonical-only for consistency
-    with ``storage_facade.list_objects``.
+    Reads the CANONICAL ``pipeline_mode={mode}_{source}/asset_group={ag}/`` shape
+    only (post-v9 GCS object migration 2026-06-18 — the ``pipeline_mode={mode}_{source}/``
+    key sits LEFT of ``asset_group=``). The pipeline_mode segments are DERIVED from
+    the UAC source SSOT, never hand-listed. This is a single-object existence probe
+    that returns the FIRST canonical shape found across the source-keyed layers, so
+    it never double-counts; the legacy bare / ``category=`` / top-level ``day=`` twins
+    are NOT probed (no legacy fallback — one canonical SSOT shape).
     """
-    from deployment_api.settings import DATA_STATUS_CANONICAL_PATHS_ONLY
-
     it_disk = (instrument_type or "").lower()
     dt_disk = (data_type or "").lower()
     venue_disk = (venue or "").upper()
@@ -411,14 +409,9 @@ def _mtds_shard_path(
         "futures_chain",
     }
 
-    hive_keys = (
-        (f"asset_group={cat_lower}",)
-        if DATA_STATUS_CANONICAL_PATHS_ONLY
-        else (f"asset_group={cat_lower}", f"category={cat_lower}")
-    )
-    for hive_key in hive_keys:
+    for pmode_seg in canonical_pipeline_mode_segments(cat_lower):
         prefix = (
-            f"raw_tick_data/by_date/day={day}/{hive_key}/"
+            f"raw_tick_data/by_date/day={day}/{pmode_seg}asset_group={cat_lower}/"
             f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"
         )
         if leaf and is_derivative_bundle:

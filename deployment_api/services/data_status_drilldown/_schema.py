@@ -19,6 +19,7 @@ from unified_api_contracts.internal.schemas.contracts import (
 )
 
 import deployment_api.services.data_status_drilldown as _dd
+from deployment_api.utils.pipeline_mode_paths import canonical_pipeline_mode_segments
 
 logger = logging.getLogger(__name__)
 
@@ -383,16 +384,19 @@ def _build_leaf_parquet_candidates(
     feature_group = (axes.get("feature_group") or "").lower()
     timeframe = (axes.get("timeframe") or "").lower()
 
-    if data_type_value and venue:
-        prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"  # noqa: gs-uri  — URI composer, bucket already resolved
+    if data_type_value and venue and instrument_type:
         venue_partition = f"venue={venue.upper()}"
         if chain:
             venue_partition = f"venue={venue.upper()}-{chain}"
-        if instrument_type:
-            partitions = (
-                f"asset_group={asset_group}/{venue_partition}/instrument_type={instrument_type}"
-                f"/data_type={data_type_value}"
-            )
+        leaf_suffix = f"{venue_partition}/instrument_type={instrument_type}/data_type={data_type_value}"
+        # Canonical-only: the raw-tick parquet lives under
+        # ``raw_tick_data/by_date/day={D}/pipeline_mode={mode}_{source}/asset_group={ag}/…``.
+        # Probe each canonical pipeline_mode layer (DERIVED from the UAC source SSOT) —
+        # the legacy bare / ``category=`` twins are NOT probed (no double-SSOT). First
+        # hit wins on the projection.
+        for pmode_seg in canonical_pipeline_mode_segments(asset_group):
+            partitions = f"{pmode_seg}asset_group={asset_group}/{leaf_suffix}"
+            prefix_root = f"gs://{bucket}/raw_tick_data/by_date/day={day}"  # noqa: gs-uri  — URI composer, bucket already resolved
             if instrument_id:
                 candidates.append(f"{prefix_root}/{partitions}/instrument_id={instrument_id}/{instrument_id}.parquet")
                 candidates.append(f"{prefix_root}/{partitions}/{instrument_id}.parquet")
