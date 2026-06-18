@@ -312,7 +312,21 @@ class CoverageStatusMixin(VenueResolutionMixin):
         # ``out_of_window`` bucket and exclude them from the denominator so
         # the completion-% reflects only genuinely actionable absences.
         if "capture_status" in index.columns:
-            cs = index["capture_status"].astype(str)
+            # Legacy/NaN coercion (SSOT parity with
+            # ``coverage_metrics.compute_capture_status_counts`` + UTL
+            # ``ManifestWriter.lookup``): a blank / NaN / ``"None"`` / ``"nan"`` /
+            # any non-4-state capture_status is a legacy pre-v5 row that means
+            # "captured". WITHOUT this coercion ``(cs == "captured")`` silently
+            # DROPS those rows from BOTH numerator and denominator (they match
+            # none of the four literal states), under-reporting coverage and
+            # diverging from the per-venue breakdown which DOES coerce — the same
+            # manifest then yields two different completion_pct values per
+            # endpoint (sports prd: 17,288 legacy v4 ``"None"`` rows dropped from
+            # the denominator, 2026-06-18 audit). Coerce here so the
+            # coverage-summary denominator is identical to the breakdown SSOT.
+            _valid_4state = ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted")
+            _cs_raw = index["capture_status"].astype(str).str.lower()
+            cs = _cs_raw.where(_cs_raw.isin(_valid_4state), "captured")
             total_empty = int((cs == "empty_confirmed").sum())
             # Compute out-of-window subset of empty_confirmed rows.
             # Accept both "error_reason" (live consolidated index schema) and "reason"

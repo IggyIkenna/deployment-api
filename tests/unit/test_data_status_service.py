@@ -1225,6 +1225,39 @@ class TestGetCoverageSummary:
         assert "AAVE_V3-POLYGON" not in cat["latest_day_instruments"]
         assert cat["total_shards"] == 1
 
+    @pytest.mark.asyncio
+    async def test_legacy_none_capture_status_counts_as_captured(self):
+        """Regression (data-status audit 2026-06-18): a legacy pre-v5 manifest row
+        whose ``capture_status`` is a blank / NaN / literal ``"None"`` / ``"nan"``
+        / any non-4-state token must COERCE to ``captured`` in the coverage-summary
+        denominator — matching ``coverage_metrics.compute_capture_status_counts``
+        + UTL ``ManifestWriter.lookup``. Before the fix ``(cs == "captured")``
+        silently DROPPED these rows from BOTH numerator and denominator (e.g.
+        sports prd carried 17,288 legacy v4 ``"None"`` rows), under-reporting
+        completion_pct and diverging from the per-venue breakdown SSOT. Here a
+        50/50 split of one real ``captured`` row + one legacy ``"None"`` row must
+        report 100% (both counted as captured), NOT 100% over a denom of 1."""
+        svc = _make_svc()
+        index = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-02"],
+                "venue": ["BINANCE", "BINANCE"],
+                "service_name": ["instruments-service", "instruments-service"],
+                # One real captured row + one legacy row with literal "None".
+                "capture_status": ["captured", "None"],
+            }
+        )
+        with patch.object(_dss_mod, "_read_index_cached", return_value=index):
+            result = await svc.get_coverage_summary("instruments-service", asset_groups=["CEFI"])
+
+        cat = result["asset_groups"]["CEFI"]
+        counts = cat["capture_status_counts"]
+        # Both rows count as captured; denominator = 2; completion = 100%.
+        assert counts["captured"] == 2
+        assert counts["empty_confirmed"] == 0
+        assert counts["attempted_failed"] == 0
+        assert cat["completion_pct"] == 100.0
+
 
 class TestGetManifestStatus:
     """Tests for DataStatusService.get_manifest_status."""
