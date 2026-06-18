@@ -45,6 +45,23 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         ),
     )
 
+    data_status_canonical_paths_only: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("DATA_STATUS_CANONICAL_PATHS_ONLY"),
+        description=(
+            "Canonical-only GCS path reads for data-status (default True, post-v9 "
+            "manifest canonicalisation 2026-06-18). When True, GCS object listings under a "
+            "hive ``asset_group=`` segment read ONLY the canonical ``asset_group=`` prefix; "
+            "the legacy ``category=`` fan-out (which merged a logically-identical shard's "
+            "two physical path shapes into one listing and DOUBLE-COUNTED drilldown file "
+            "counts/sizes) is dropped. The v9 migration canonicalised every shard to "
+            "``asset_group=`` (zero ``category=`` objects remain), so the fan-out is pure "
+            "double-count risk. Set False ONLY to temporarily restore the dual-shape "
+            "(``category=`` + ``asset_group=``) listing for operator inspection of any "
+            "un-migrated legacy bucket — reversible, no code change."
+        ),
+    )
+
     data_status_disable_process_pool: bool = Field(
         default=False,
         validation_alias=AliasChoices("DATA_STATUS_DISABLE_PROCESS_POOL"),

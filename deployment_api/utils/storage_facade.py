@@ -15,15 +15,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from deployment_api.settings import DEPLOYMENT_ENV, STATE_BUCKET
+from deployment_api.settings import (
+    DATA_STATUS_CANONICAL_PATHS_ONLY,
+    DEPLOYMENT_ENV,
+    STATE_BUCKET,
+)
 
 logger = logging.getLogger(__name__)
 
 # Asset-group hive vocabulary regex.  Per workspace SSOT (CLAUDE.md):
-# ``asset_group=`` is canonical for new MTDS writes; ``category=`` is the
-# legacy on-disk form preserved without a re-keying migration.  Drill-down
-# probes must list under BOTH variants and merge so historical + new shards
-# are both visible in the deployment UI.
+# ``asset_group=`` is canonical; ``category=`` is the retired legacy on-disk form.
+# Post the v9 manifest canonicalisation (2026-06-18) every shard was migrated to
+# ``asset_group=`` and ZERO ``category=`` objects remain, so by DEFAULT
+# (``DATA_STATUS_CANONICAL_PATHS_ONLY=True``) a listing under a hive segment reads
+# ONLY the canonical ``asset_group=`` prefix. The legacy ``category=`` fan-out
+# below double-counted (a logically-identical shard living under both physical
+# shapes was listed twice and merged, inflating drilldown file counts/sizes);
+# it is retained only behind the flag for operator inspection of an un-migrated
+# bucket. The regex also recognises a canonical prefix that needs no rewrite.
 _HIVE_VOCAB_RE = re.compile(r"(?:category|asset_group)=(cefi|defi|tradfi|sports|prediction)/")
 
 
@@ -93,18 +102,23 @@ def list_objects(
     Returns list of ObjectInfo with name (full path), updated, size.
 
     When the prefix contains a hive segment of the form
-    ``(category|asset_group)={cefi|defi|tradfi|sports|prediction}/`` the
-    listing transparently fans out to both vocabularies (canonical
-    ``asset_group=`` AND legacy ``category=``) and merges results.  Per
-    workspace SSOT (CLAUDE.md): ``asset_group=`` is canonical for new
-    MTDS writes; ``category=`` is the legacy on-disk form preserved
-    without re-keying.  Callers don't need to know which form the data
-    actually lives under.
+    ``(category|asset_group)={cefi|defi|tradfi|sports|prediction}/`` the prefix
+    is normalised to the canonical ``asset_group=`` form and listed ONCE
+    (``DATA_STATUS_CANONICAL_PATHS_ONLY=True``, the post-v9-canonicalisation
+    default).  Setting the flag False restores the legacy fan-out that lists
+    BOTH the canonical ``asset_group=`` and legacy ``category=`` prefixes and
+    merges — kept only for operator inspection of an un-migrated bucket, because
+    a logically-identical shard present under both physical shapes is listed
+    twice and DOUBLE-COUNTS in drilldown file counts/sizes.
     """
     m = _HIVE_VOCAB_RE.search(prefix)
     if m:
         ag = m.group(1)
         canonical_prefix = _HIVE_VOCAB_RE.sub(f"asset_group={ag}/", prefix, count=1)
+        if DATA_STATUS_CANONICAL_PATHS_ONLY:
+            # Canonical-only: read the single ``asset_group=`` shape — no
+            # ``category=`` fan-out, so no double-count across path shapes.
+            return _list_one(bucket_name, canonical_prefix, max_results, delimiter)
         legacy_prefix = _HIVE_VOCAB_RE.sub(f"category={ag}/", prefix, count=1)
         if canonical_prefix == legacy_prefix:
             return _list_one(bucket_name, canonical_prefix, max_results, delimiter)

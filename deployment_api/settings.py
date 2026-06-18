@@ -52,6 +52,11 @@ DEPLOYMENT_ENV = _config.deployment_env
 # CF-20 beta-manifest preview (see services/manifest_source.py) — empty = live index.
 DATA_STATUS_BETA_MANIFEST_BLOB = _config.data_status_beta_manifest_blob
 
+# Canonical-only GCS path reads (default True) — drops the legacy ``category=`` fan-out
+# that double-counted drilldown file listings post-v9 canonicalisation. See
+# deployment_api_config.data_status_canonical_paths_only.
+DATA_STATUS_CANONICAL_PATHS_ONLY = _config.data_status_canonical_paths_only
+
 # Serial-path toggle for the data-status manifest build (macOS dev hosts — see
 # deployment_api_config.data_status_disable_process_pool for the spawn/OOM rationale).
 DATA_STATUS_DISABLE_PROCESS_POOL = _config.data_status_disable_process_pool
