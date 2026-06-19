@@ -19,6 +19,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     DepBlockerDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
+    InfraVmHealthProxyDict,
     LastGreenDict,
     OverviewResponseDict,
     PromoteRunDict,
@@ -34,6 +35,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     SitJobDict,
     SitLastRunDict,
     SitStateDict,
+    VmCensusProxyDict,
     _now_iso,
 )
 
@@ -490,4 +492,67 @@ def _mock_fleet_git_health() -> FleetGitHealthProxyDict:
             ],
             "vm_errors": [],
         },
+    }
+
+
+def _mock_infra_vm_health() -> InfraVmHealthProxyDict:
+    """Mock infra-VM health — two AO VMs (one healthy, one stale) so UI/playwright
+    can assert the proxied-data path and the stale chip renders."""
+    return {
+        "available": True,
+        "reason": "",
+        "orchestrator_url": "https://api.agent-orchestrator.odum-research.com",
+        "data": {
+            "vms": [
+                {
+                    "id": "planning",
+                    "label": "agent-orchestrator-vm-1",
+                    "url": "https://api.agent-orchestrator.odum-research.com",
+                    "summary": {"active_slots": 3, "queued_tasks": 1},
+                    "error": None,
+                    "stale": False,
+                    "last_heartbeat_seconds_ago": 8,
+                },
+                {
+                    "id": "human-planning",
+                    "label": "human-planning-vm",
+                    "url": "http://35.76.120.160:8765",
+                    "summary": {"active_slots": 1, "queued_tasks": 0},
+                    "error": None,
+                    "stale": True,
+                    "last_heartbeat_seconds_ago": 720,
+                },
+            ]
+        },
+    }
+
+
+def _mock_vm_census() -> VmCensusProxyDict:
+    """Mock VM census — two VMs total (1 healthy, 1 stale) for the census tile."""
+    return {
+        "available": True,
+        "reason": "",
+        "orchestrator_url": "https://api.agent-orchestrator.odum-research.com",
+        "total": 2,
+        "healthy": 1,
+        "stale": 1,
+        "error": 0,
+        "vms": [
+            {
+                "id": "planning",
+                "label": "agent-orchestrator-vm-1",
+                "url": "https://api.agent-orchestrator.odum-research.com",
+                "status": "healthy",
+                "last_heartbeat_seconds_ago": 8,
+                "error": None,
+            },
+            {
+                "id": "human-planning",
+                "label": "human-planning-vm",
+                "url": "http://35.76.120.160:8765",
+                "status": "stale",
+                "last_heartbeat_seconds_ago": 720,
+                "error": None,
+            },
+        ],
     }

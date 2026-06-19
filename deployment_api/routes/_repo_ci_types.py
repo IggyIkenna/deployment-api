@@ -326,6 +326,49 @@ class RepoDetailResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api respon
     last_green: dict[str, LastGreenDict | None]
 
 
+class VmCensusEntryDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """One VM in the infra-VM census (derived from AO /api/fleet/summary)."""
+
+    id: str
+    label: str
+    url: str
+    status: str  # "healthy" | "stale" | "error"
+    last_heartbeat_seconds_ago: int | None
+    error: str | None
+
+
+class InfraVmHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """GET /api/repo-ci/fleet/infra-vm-health — proxied AO /api/fleet/summary.
+
+    Surfaces per-VM liveness for the central/planning orchestrator VMs. Honest
+    degradation: available=False + reason when the orchestrator is unreachable.
+    orchestrator_url always present for the UI deep-link.
+    """
+
+    available: bool
+    reason: str  # "" when available; failure reason otherwise
+    orchestrator_url: str  # always present → AO deep-link
+    data: dict[str, object] | None  # raw AO /api/fleet/summary payload, or None
+
+
+class VmCensusProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """GET /api/repo-ci/fleet/vm-census — running-vs-stale-vs-error census for AO-registered VMs.
+
+    Derived from AO /api/fleet/summary. Renders the vm-0 OOM / stale class that was
+    previously invisible: total (expected count) = healthy + stale + error. A stale VM
+    has not sent a heartbeat within the AO's configured threshold.
+    """
+
+    available: bool
+    reason: str
+    orchestrator_url: str
+    total: int
+    healthy: int
+    stale: int
+    error: int
+    vms: list[VmCensusEntryDict]
+
+
 class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """GET /api/repo-ci/fleet-git-health — proxied agent-orchestrator fleet git-health.
 

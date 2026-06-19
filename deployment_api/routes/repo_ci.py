@@ -50,12 +50,15 @@ from ._repo_ci_github import (
     v2_conclusion_for_branch,
     v2_conclusion_for_sha,
 )
+from ._repo_ci_infra_vm import fetch_infra_vm_health, fetch_vm_census
 from ._repo_ci_manifest import ManifestView, RepoMeta, load_manifest_view
 from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
     _mock_alerts,
     _mock_detail,
     _mock_fleet_git_health,
+    _mock_infra_vm_health,
     _mock_overview,
+    _mock_vm_census,
 )
 from ._repo_ci_stuck import classify_stuck_pr, derive_sit_state, is_promotion_contract_pr
 from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
@@ -68,6 +71,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     DepBlockerDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
+    InfraVmHealthProxyDict,
     LastGreenDict,
     OverviewResponseDict,
     PromoteRunDict,
@@ -82,6 +86,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     SemverHealthDict,
     SitJobDict,
     SitLastRunDict,
+    VmCensusProxyDict,
     _now_iso,
 )
 
@@ -911,6 +916,27 @@ async def get_fleet_git_health() -> FleetGitHealthProxyDict:
     if cfg.is_mock_mode():
         return _mock_fleet_git_health()
     return await fetch_fleet_git_health(default_project_id or "")
+
+
+@router.get("/fleet/infra-vm-health")
+async def get_infra_vm_health() -> InfraVmHealthProxyDict:
+    """Proxy the agent-orchestrator's /api/fleet/summary for the infra-VM health tile.
+    Surfaces all AO-registered VMs (healthy/stale/error) so vm-0 OOM-class staleness is visible.
+    Degrades honestly when AO is unreachable; always returns orchestrator_url for deep-link."""
+    cfg = DeploymentApiConfig()
+    if cfg.is_mock_mode():
+        return _mock_infra_vm_health()
+    return await fetch_infra_vm_health(default_project_id or "")
+
+
+@router.get("/fleet/vm-census")
+async def get_vm_census() -> VmCensusProxyDict:
+    """Running-vs-stale-vs-error census derived from AO /api/fleet/summary.
+    Returns aggregate counts + per-VM list for the census tile chip-through to AO."""
+    cfg = DeploymentApiConfig()
+    if cfg.is_mock_mode():
+        return _mock_vm_census()
+    return await fetch_vm_census(default_project_id or "")
 
 
 # Re-export for tests that patch the shared JSON getter.
