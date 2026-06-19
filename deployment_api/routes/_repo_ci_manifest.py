@@ -135,6 +135,49 @@ class ManifestView:
                 return repo_name
         return None
 
+    def dependencies_for(self, repo: str) -> list[str]:
+        """The dep repo NAMES declared by one repo (repositories[repo].dependencies[].name).
+
+        Mirrors the STAGE 1.8 dep-order gate's dep extraction: each dependency entry is a dict
+        `{"name", "version", "required"}` (a bare string is tolerated too). Returns [] when the
+        repo has no manifest entry or no declared deps (fail-open: a repo with no deps is never
+        held). Self-references and blank names are dropped."""
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return []
+        meta_obj = cast(dict[str, object], repositories).get(repo)
+        if not isinstance(meta_obj, dict):
+            return []
+        deps_obj = cast(dict[str, object], meta_obj).get("dependencies")
+        if not isinstance(deps_obj, list):
+            return []
+        out: list[str] = []
+        for dep in cast(list[object], deps_obj):
+            if isinstance(dep, dict):
+                name = cast(dict[str, object], dep).get("name")
+                dep_name = str(name) if name else ""
+            elif isinstance(dep, str):
+                dep_name = dep
+            else:
+                dep_name = ""
+            if dep_name and dep_name != repo:
+                out.append(dep_name)
+        return out
+
+    def tier_for(self, repo: str) -> str:
+        """workspace-manifest.json.repositories[repo].tier, stringified.
+
+        The manifest stores tier as a value like `0`/`1`/`3`/`"service"`; the response shape
+        carries it as a string (stringify whatever is present). Empty string when absent."""
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return ""
+        meta_obj = cast(dict[str, object], repositories).get(repo)
+        if not isinstance(meta_obj, dict):
+            return ""
+        tier = cast(dict[str, object], meta_obj).get("tier")
+        return str(tier) if tier is not None else ""
+
     def deployed_version_for(self, repo: str) -> str | None:
         """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal)."""
         deployed = self._raw.get("deployed_versions")

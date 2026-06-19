@@ -179,6 +179,12 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     # (>45min = 3 missed 15-min ticks) — the bug-#11 class where content piles on LDR with a dead
     # drain, invisible today. False when content is draining healthily or there's no real delta.
     drain_stalled: bool
+    # Dep-order promotion HOLD (mirrors staging-to-main.yml STAGE 1.8) — distinct from drain_stalled
+    # (a stuck PR) and promotion_blocked (a failure quarantine). A tiered promotion holds this repo
+    # until every dep is on main; blocked_by non-empty ⟺ HELD.
+    tier: str  # dependency layer from manifest (stringified)
+    blocked_by: list[DepBlockerDict]  # deps NOT on main holding THIS repo's promotion (empty = clear)
+    blocking: list[str]  # repos held because THIS repo isn't on main yet (empty = not a blocker)
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
@@ -190,6 +196,32 @@ class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape,
 
     repo: str
     error: str
+
+
+class DepBlockerDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape
+    """A dependency not yet on main that holds a repo's staging→main promotion (dep-order)."""
+
+    name: str  # dep repo, e.g. "unified-api-contracts"
+    tier: str  # the dep's tier (manifest tier, stringified)
+    ci_status: str  # the dep's current ci_status, e.g. "STAGING_GREEN"
+
+
+class RootBlockerDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape
+    """A not-on-main repo holding >=1 other repo from main — the cause of the dep-order hold."""
+
+    repo: str
+    tier: str
+    ci_status: str
+    blocking_count: int  # how many repos are held waiting on this one
+    main_files_behind: int  # this repo's own staging-ahead-of-main files_changed (content stuck)
+
+
+class PromotionHeldDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape
+    """Aggregate for the 'Promotion held - dependency order' card + the stalled banner.
+    Dep-order HOLDS (a clean wait), distinct from promotion_blocked (failure-quarantine)."""
+
+    held_repos: list[str]  # repos currently held by dep-order
+    root_blockers: list[RootBlockerDict]  # the not-on-main repos causing the holds, lowest tier first
 
 
 class PromotionBlockedDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api response shape
@@ -261,6 +293,9 @@ class OverviewResponseDict(TypedDict):  # CORRECT-LOCAL: deployment-api response
     # Semver-agent standing health (G2) — last bump run + pending-bump count + breaker-armed flag.
     # None when the semver-agent run can't be fetched.
     semver_health: SemverHealthDict | None
+    # Dep-order promotion holds (mirrors STAGE 1.8): held repos + the root not-on-main blockers
+    # causing them. Distinct from promotion_blocked (failure-quarantine). None only if uncomputable.
+    promotion_held: PromotionHeldDict | None
 
 
 class BranchCommitsDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
