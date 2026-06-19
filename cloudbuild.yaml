@@ -230,6 +230,23 @@ steps:
           /bin/bash -c "bash scripts/quality-gates.sh --no-fix --quick"
     waitFor: ["build"]
 
+  # ── STEP 5.5: REQUIRED — Operability smoke (import probe) ───────────────
+  # API service — gunicorn entrypoint ≠ --help; import probe verifies the
+  # package loads without crashing (credentials-free env).
+  - name: "gcr.io/cloud-builders/docker"
+    id: "operability-probe"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+        echo "=== Operability probe: IMPORT deployment_api ==="
+        docker run --rm --entrypoint python "$$IMG" \
+          -c "import deployment_api; print('IMPORT OK')"
+        echo "=== Operability probe PASSED ==="
+    waitFor: ["quality-gates"]
+
   - name: "gcr.io/cloud-builders/docker"
     id: "push"
     args:
@@ -238,7 +255,7 @@ steps:
         "--all-tags",
         "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}",
       ]
-    waitFor: ["quality-gates"]
+    waitFor: ["operability-probe"]
 
   - name: "gcr.io/cloud-builders/gcloud"
     id: "scan-check"
