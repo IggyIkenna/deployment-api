@@ -6,15 +6,19 @@ Tests cover:
 - _populate_trigger_cache / _get_cached_trigger_id
 """
 
+import asyncio
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deployment_api.routes.cloud_builds import (
+from deployment_api.routes._cloud_builds_history import (
+    _build_history_for_repo,
     _format_build_info,
+)
+from deployment_api.routes._cloud_builds_trigger import (
     _get_cached_trigger_id,
     _populate_trigger_cache,
     _trigger_id_cache,
@@ -127,3 +131,55 @@ class TestTriggerCache:
         _populate_trigger_cache(triggers)
         _populate_trigger_cache([])
         assert _get_cached_trigger_id("trigger-a") is None
+
+
+class TestBuildHistoryForRepo:
+    """Tests for _build_history_for_repo — trigger-AGNOSTIC REPO_NAME filter (regional)."""
+
+    _HIST = "deployment_api.routes._cloud_builds_history"
+
+    def _build(self, repo: str, build_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=build_id,
+            status=SimpleNamespace(name="SUCCESS"),
+            create_time=None,
+            finish_time=None,
+            substitutions={"REPO_NAME": repo, "BRANCH_NAME": "live-defi-rollout"},
+            log_url="https://log",
+        )
+
+    def _patches(self, builds: list[SimpleNamespace]):
+        mock_client = MagicMock()
+        mock_client.list_builds.return_value = builds
+        mock_cb = MagicMock()  # _cb.ListBuildsRequest(...) → MagicMock; the mocked client ignores it
+        return (
+            patch(f"{self._HIST}.get_gcp_build_client", return_value=mock_client),
+            patch(f"{self._HIST}.get_cloudbuild_v1", return_value=mock_cb),
+        )
+
+    def test_filters_by_repo_name_and_caps_limit(self):
+        # Mixed-repo, newest-first list (as Cloud Build returns); only matching REPO_NAME, capped.
+        builds = [
+            self._build("market-tick-data-service", "mtds-1"),
+            self._build("other-service", "x-1"),
+            self._build("market-tick-data-service", "mtds-2"),
+            self._build("market-tick-data-service", "mtds-3"),
+        ]
+        p_client, p_cb = self._patches(builds)
+        with p_client, p_cb:
+            result = asyncio.run(_build_history_for_repo("market-tick-data-service", limit=2))
+        assert [b["build_id"] for b in result] == ["mtds-1", "mtds-2"]
+
+    def test_captures_builds_from_any_trigger_via_repo_name(self):
+        # The bug this fixes: an LDR-built repo's builds carry REPO_NAME, regardless of trigger.
+        builds = [self._build("unified-trading-library", "utl-1")]
+        p_client, p_cb = self._patches(builds)
+        with p_client, p_cb:
+            result = asyncio.run(_build_history_for_repo("unified-trading-library", limit=5))
+        assert [b["build_id"] for b in result] == ["utl-1"]
+
+    def test_no_matching_repo_returns_empty(self):
+        p_client, p_cb = self._patches([self._build("other", "x")])
+        with p_client, p_cb:
+            result = asyncio.run(_build_history_for_repo("market-tick-data-service", limit=5))
+        assert result == []

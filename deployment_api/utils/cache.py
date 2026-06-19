@@ -61,6 +61,7 @@ def deserialize(value: object) -> object:
     return cast(object, json.loads(value))
 
 
+from redis.exceptions import RedisError
 from unified_trading_library import AsyncRedisProvider
 
 REDIS_AVAILABLE = True
@@ -163,7 +164,10 @@ class RedisCache(CacheBackend):
                 await get_client_fn()
             self._provider = provider
             logger.info("Connected to Redis at %s", self.redis_url)
-        except (OSError, ValueError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError, RedisError) as e:
+            # RedisError (redis-py) is NOT an OSError subclass — without it a dropped/unreachable
+            # Redis connection propagates out of get_or_fetch and 500s the endpoint (e.g. the
+            # deployment-ui /api/cloud-builds/triggers pane). The cache is best-effort: degrade.
             logger.warning("Failed to connect to Redis: %s", e)
             self._provider = None
 
@@ -185,7 +189,7 @@ class RedisCache(CacheBackend):
             if value is None:
                 return None
             return deserialize(value)
-        except (OSError, ValueError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError, RedisError) as e:
             logger.error("Redis GET error for %s: %s", key, e)
             return None
 
@@ -195,7 +199,7 @@ class RedisCache(CacheBackend):
 
         try:
             await self._provider.set(key, serialize(value).encode("utf-8"), ttl_seconds=ttl)
-        except (OSError, ValueError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError, RedisError) as e:
             logger.error("Redis SET error for %s: %s", key, e)
 
     async def delete(self, key: str) -> None:
@@ -204,7 +208,7 @@ class RedisCache(CacheBackend):
 
         try:
             await self._provider.delete(key)
-        except (OSError, ValueError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError, RedisError) as e:
             logger.error("Redis DELETE error for %s: %s", key, e)
 
     async def clear_pattern(self, pattern: str) -> int:
@@ -238,7 +242,7 @@ class RedisCache(CacheBackend):
             if keys:
                 await del_fn(*keys)
             return len(keys)
-        except (OSError, ValueError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError, RedisError) as e:
             logger.error("Redis CLEAR_PATTERN error for %s: %s", pattern, e)
             return 0
 

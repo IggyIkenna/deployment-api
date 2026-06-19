@@ -189,3 +189,40 @@ async def _recent_builds_by_repo_name(
     except (OSError, ValueError, RuntimeError) as e:
         logger.warning("Error getting recent builds by repo: %s", e)
         return {}
+
+
+async def _build_history_for_repo(service: str, limit: int) -> list[BuildInfoDict]:
+    """Recent builds for one repo (newest-first), keyed by the REPO_NAME substitution.
+
+    Trigger-AGNOSTIC on purpose: a repo builds under MULTIPLE triggers (e.g. ``<svc>-build``
+    on main AND ``<svc>-live-defi-rollout`` on LDR) and a trigger_id drifts when a trigger is
+    recreated — so the old single-trigger_id filter MISSED the LDR-built repos (they showed no
+    history at all). REPO_NAME maps 1:1 to the repo and every Cloud Build carries it. Regional
+    parent (CLOUD_BUILD_REGION) — a global ``project_id`` scope returns NOTHING for
+    regionally-triggered builds (that was the always-empty-history bug).
+    """
+
+    def _fetch_sync() -> list[BuildInfoDict]:
+        _cb = get_cloudbuild_v1()
+        client = get_gcp_build_client()
+        parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
+        request = _cb.ListBuildsRequest(parent=parent, page_size=100)  # default order: create_time desc
+        out: list[BuildInfoDict] = []
+        for build in islice(client.list_builds(request=request), 400):  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
+            substitutions: object = getattr(build, "substitutions", None)
+            repo = ""
+            if substitutions is not None:
+                sub_get = getattr(substitutions, "get", None)
+                if callable(sub_get):
+                    repo = str(sub_get("REPO_NAME") or "")
+            if repo == service:
+                out.append(_format_build_info(build))
+                if len(out) >= limit:
+                    break
+        return out
+
+    try:
+        return await asyncio.to_thread(_fetch_sync)
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("Error getting build history for %s: %s", service, e)
+        return []
