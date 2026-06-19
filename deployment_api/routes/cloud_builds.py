@@ -34,16 +34,13 @@ from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
 
 from ._cloud_builds_history import (  # pyright: ignore[reportPrivateUsage]
-    _format_build_info,  # pyright: ignore[reportPrivateUsage]
+    _build_history_for_repo,  # pyright: ignore[reportPrivateUsage]
     _get_recent_builds_for_triggers,  # pyright: ignore[reportPrivateUsage]
 )
 from ._cloud_builds_trigger import (  # pyright: ignore[reportPrivateUsage]
     _build_trigger_list_sync,  # pyright: ignore[reportPrivateUsage]
     _find_recent_build_sync,  # pyright: ignore[reportPrivateUsage]
-    _get_cached_trigger_id,  # pyright: ignore[reportPrivateUsage]
-    _populate_trigger_cache,  # pyright: ignore[reportPrivateUsage]
     _run_trigger_operation_sync,  # pyright: ignore[reportPrivateUsage]
-    _trigger_id_cache,  # pyright: ignore[reportPrivateUsage]
 )
 from ._cloud_builds_types import (
     ALL_REPOS_WITH_TRIGGERS,
@@ -58,7 +55,6 @@ from ._cloud_builds_types import (
     TriggerBuildResponse,
     TriggersResponseDict,
     _ensure_gcp,  # type: ignore[reportPrivateUsage]
-    get_cloudbuild_v1,
     get_gcp_build_client,
 )
 from ._code_builds_aws import (
@@ -359,51 +355,19 @@ async def get_build_history(service: str, limit: int = 10) -> BuildHistoryRespon
             logger.exception("Error getting CodeBuild history for %s: %s", service, e)
             raise HTTPException(status_code=500, detail=f"CodeBuild API error: {e}") from e
 
-    # GCP Cloud Build path
+    # GCP Cloud Build path — trigger-AGNOSTIC + regional (delegated to _build_history_for_repo).
+    # A repo builds under multiple triggers (`<svc>-build` on main AND `<svc>-live-defi-rollout`
+    # on LDR), so query by the REPO_NAME substitution (every build carries it) under the regional
+    # parent. The prior single-trigger_id + global-project_id scope returned nothing — regional
+    # builds are invisible to a global list_builds, and LDR-built repos never hit `<svc>-build`.
     try:
-
-        def _get_history_sync() -> list[object]:
-            _cb = get_cloudbuild_v1()
-            client = get_gcp_build_client()
-            parent = f"projects/{default_project_id}/locations/{DEFAULT_REGION}"
-            from itertools import islice
-
-            # Try cached trigger ID first (avoids re-listing all triggers)
-            trigger_id = _get_cached_trigger_id(trigger_name)
-
-            if not trigger_id:
-                # Cache miss - fetch from API and populate cache
-                triggers_request = _cb.ListBuildTriggersRequest(
-                    parent=parent,
-                )
-                triggers = list(client.list_build_triggers(request=triggers_request))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
-                _populate_trigger_cache(triggers)
-                trigger_id = _trigger_id_cache.get(trigger_name)
-
-            if not trigger_id:
-                return []
-
-            # Use project_id (v1 API style) — regional parent path fails with 400 on REST transport
-            builds_request = _cb.ListBuildsRequest(
-                project_id=default_project_id,
-                page_size=limit,
-                filter=f'trigger_id="{trigger_id}"',
-            )
-            # Use islice to stop after getting 'limit' results (avoids exhausting pager)
-            builds = list(islice(client.list_builds(request=builds_request), limit))  # pyright: ignore[reportUnknownMemberType]  # CloudBuild stubs incomplete
-
-            return builds  # pyright: ignore[reportReturnType]
-
-        raw_builds = await asyncio.to_thread(_get_history_sync)
-        history = [_format_build_info(b) for b in raw_builds]
-
+        history = await _build_history_for_repo(service, limit)
         return {
             "service": service,
             "trigger_name": trigger_name,
             "builds": history,
             "total": len(history),
         }
-
     except Exception as e:
         logger.exception("Error getting build history for %s: %s", service, e)
         raise HTTPException(status_code=500, detail=f"Cloud Build API error: {e}") from e

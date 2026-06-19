@@ -4,9 +4,27 @@ Unit tests for UnifiedCache in cache.py.
 Tests use in-memory only mode (no Redis, no GCS).
 """
 
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
-from deployment_api.utils.cache import UnifiedCache
+import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
+
+from deployment_api.utils.cache import RedisCache, UnifiedCache
+
+
+@pytest.mark.asyncio
+async def test_rediscache_get_degrades_on_redis_error() -> None:
+    """A redis-py RedisError (NOT an OSError subclass) must degrade to a cache-miss, never propagate.
+
+    Regression: a Redis outage 500-ed cached endpoints (e.g. /api/cloud-builds/triggers) because
+    RedisCache.get caught only (OSError, ValueError, RuntimeError) — RedisError slipped through.
+    """
+    rc = RedisCache("redis://localhost:6379/0")
+    provider = MagicMock()
+    provider.get = AsyncMock(side_effect=RedisConnectionError("redis unreachable"))
+    rc._provider = provider  # pyright: ignore[reportPrivateUsage]
+
+    assert await rc.get("any-key") is None  # degraded to a miss, not raised
 
 
 def _make_cache() -> UnifiedCache:
