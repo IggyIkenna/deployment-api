@@ -82,8 +82,20 @@ HARDCODED_PROTO_EXCLUDE_GLOBS=(
 # unified_cloud_interface equivalent (UCI covers storage/secrets) and deployment-api is GCP-specific
 # deploy tooling. Exclude from the cloud-SDK gate (parallels execution-service's cloud_kms.py exclusion).
 CLOUD_SDK_EXCLUDE_GLOBS=("!**/vm_utils.py")
-WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
-source "${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
+WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." && pwd)}"
+BASE_QG_SCRIPT="${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
+if [ ! -f "${BASE_QG_SCRIPT}" ]; then
+    # In-image (CI test-in-image) runs have no PM repo / no git → the base script is absent.
+    # Mirror the fleet-canonical mtds guard: skip the in-image gate pass gracefully rather than
+    # crashing on a `//unified-trading-pm/...` path (the real gate ran locally + at the staging PR).
+    if [ "${CLOUD_BUILD:-false}" = "true" ]; then
+        echo "quality-gates base script unavailable in image; skipping in-image gate pass"
+        exit 0
+    fi
+    echo "Missing base quality-gates script: ${BASE_QG_SCRIPT}" >&2
+    exit 1
+fi
+source "${BASE_QG_SCRIPT}"
 
 # Codex enforcement: lifecycle triple (STARTED / STOPPED / FAILED) via UTL — not duplicated in service code.
 # See: unified-trading-pm/codex/03-observability/lifecycle-events.md § Lifecycle Event QG Enforcement
