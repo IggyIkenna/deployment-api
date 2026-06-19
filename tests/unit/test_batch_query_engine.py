@@ -72,7 +72,7 @@ class TestQuerySpecificPrefixesForAssetGroup:
         combo.timeframe = timeframe
         combo.start_date = start_date
         combo.tick_window_only = tick_window_only
-        combo.to_gcs_prefix.return_value = f"prefix/{venue}/{data_type}"
+        combo.to_gcs_prefixes.return_value = [f"prefix/{venue}/{data_type}"]
         return combo
 
     def test_returns_error_when_no_bucket(self):
@@ -130,7 +130,7 @@ class TestQuerySpecificPrefixesForAssetGroup:
         mock_pc._get_base_prefix.return_value = ""
 
         blob = SimpleNamespace(updated=None, name="some/file.parquet")
-        combo.to_gcs_prefix.return_value = "BINANCE/trades"
+        combo.to_gcs_prefixes.return_value = ["BINANCE/trades"]
 
         with (
             patch(
@@ -204,7 +204,7 @@ class TestQuerySpecificPrefixesForAssetGroup:
         mock_pc.get_combinatorics.return_value = [combo]
         mock_pc.is_in_tick_window.return_value = False
         mock_pc._get_base_prefix.return_value = ""
-        combo.to_gcs_prefix.return_value = "NYSE/ohlcv"
+        combo.to_gcs_prefixes.return_value = ["NYSE/ohlcv"]
 
         blob = SimpleNamespace(updated=None, name="data.parquet")
 

@@ -22,7 +22,7 @@ repos:
         name: Enforce slot·host commit identity
         entry:
           bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
-          pwd)}/unified-trading-pm/scripts/hooks/fix-commit-identity.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
+          pwd)}/unified-trading-pm/scripts/hooks/fix-commit-identity.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK"'
         language: system
         always_run: true
         pass_filenames: false
@@ -34,7 +34,7 @@ repos:
         name: Check branch drift (are you behind origin?)
         entry:
           bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
-          pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] && bash "$HOOK" || exit 0'
+          pwd)}/unified-trading-pm/scripts/hooks/check-branch-drift.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK"'
         language: system
         always_run: true
         pass_filenames: false
@@ -57,8 +57,7 @@ repos:
         name: Format with Prettier (auto-stage)
         entry:
           bash -c 'HOOK="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." &&
-          pwd)}/unified-trading-pm/scripts/hooks/prettier-autostage.sh"; [ -f "$HOOK" ] && bash "$HOOK" "$@" || exit 0'
-          --
+          pwd)}/unified-trading-pm/scripts/hooks/prettier-autostage.sh"; [ -f "$HOOK" ] || exit 0; bash "$HOOK" "$@"' --
         language: system
         types_or: [ts, tsx, javascript, jsx, json, markdown, yaml]
 

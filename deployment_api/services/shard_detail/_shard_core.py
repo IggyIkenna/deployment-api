@@ -35,6 +35,7 @@ from deployment_api.types.shard_detail import (
     ShardSchema,
     ShardSchemaColumn,
 )
+from deployment_api.utils.pipeline_mode_paths import canonical_pipeline_mode_segments
 
 logger = logging.getLogger(__name__)
 
@@ -391,11 +392,13 @@ def _mtds_shard_path(
 ) -> tuple[str, str] | None:
     """MTDS-family parquet path resolution — isolated for complexity budget.
 
-    Tries canonical ``asset_group=`` hive key first; falls back to legacy
-    ``category=`` for parquets written before the asset_group vocabulary
-    migration (UAC partition_paths.py: "Legacy on-disk objects use
-    ``category=`` — readers that need both should try canonical first then
-    fall back").
+    Reads the CANONICAL ``pipeline_mode={mode}_{source}/asset_group={ag}/`` shape
+    only (post-v9 GCS object migration 2026-06-18 — the ``pipeline_mode={mode}_{source}/``
+    key sits LEFT of ``asset_group=``). The pipeline_mode segments are DERIVED from
+    the UAC source SSOT, never hand-listed. This is a single-object existence probe
+    that returns the FIRST canonical shape found across the source-keyed layers, so
+    it never double-counts; the legacy bare / ``category=`` / top-level ``day=`` twins
+    are NOT probed (no legacy fallback — one canonical SSOT shape).
     """
     it_disk = (instrument_type or "").lower()
     dt_disk = (data_type or "").lower()
@@ -406,9 +409,9 @@ def _mtds_shard_path(
         "futures_chain",
     }
 
-    for hive_key in (f"asset_group={cat_lower}", f"category={cat_lower}"):
+    for pmode_seg in canonical_pipeline_mode_segments(cat_lower):
         prefix = (
-            f"raw_tick_data/by_date/day={day}/{hive_key}/"
+            f"raw_tick_data/by_date/day={day}/{pmode_seg}asset_group={cat_lower}/"
             f"venue={venue_disk}/instrument_type={it_disk}/data_type={dt_disk}/"
         )
         if leaf and is_derivative_bundle:

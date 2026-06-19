@@ -367,18 +367,22 @@ def _list_defi_objects_with_aliases(*, bucket: str, day: str, venue_chain: str) 
     chain_part = ""
     if "-" in venue_chain:
         _, _, chain_part = venue_chain.rpartition("-")
+    # Canonical-only: emit the ``asset_group=defi/`` shape. ``storage_facade.list_objects``
+    # fans this out across the canonical ``pipeline_mode={mode}_{source}/`` layers and
+    # never reads the legacy bare / ``category=`` twins — so no double-count. (The
+    # explicit ``category=`` candidate loop was removed: the migration copied every
+    # legacy twin to the canonical shape, so canonical-only never misses a cell.)
     candidates: list[str] = []
     for alias in _defi_venue_chain_aliases(venue_chain):
         protocol_only = alias.split("-")[0]
-        for hive_key in ("asset_group", "category"):
-            # Combined-partition layout (single-chain protocols)
-            candidates.append(f"raw_tick_data/by_date/day={day}/{hive_key}=defi/venue={alias}/")
-            # Separated-partition layout (multi-chain protocols) — only
-            # makes sense when we have a chain part to put under chain=.
-            if chain_part:
-                candidates.append(
-                    f"raw_tick_data/by_date/day={day}/{hive_key}=defi/venue={protocol_only}/chain={chain_part}/"
-                )
+        # Combined-partition layout (single-chain protocols)
+        candidates.append(f"raw_tick_data/by_date/day={day}/asset_group=defi/venue={alias}/")
+        # Separated-partition layout (multi-chain protocols) — only makes sense
+        # when we have a chain part to put under chain=.
+        if chain_part:
+            candidates.append(
+                f"raw_tick_data/by_date/day={day}/asset_group=defi/venue={protocol_only}/chain={chain_part}/"
+            )
     for prefix in candidates:
         try:
             found = _list_objects(bucket, prefix, max_results=DEFAULT_INSTRUMENT_LIMIT)

@@ -221,7 +221,16 @@ def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int, int]:
         return len(rows), 0, 0, 0
     if has_provenance_columns(rows):
         rows = union_reduce_to_cells(rows)
-    cs = rows["capture_status"].astype(str)
+    # Legacy/NaN coercion (SSOT parity with
+    # ``coverage_metrics.compute_capture_status_counts`` + UTL
+    # ``ManifestWriter.lookup``): a blank / NaN / ``"None"`` / ``"nan"`` / any
+    # non-4-state token is a legacy pre-v5 row meaning "captured". A bare
+    # ``(cs == "captured")`` would DROP such rows from the drilldown tree
+    # counts entirely (e.g. sports prd's 17,288 legacy v4 ``"None"`` rows),
+    # under-counting the tree denominator — so coerce them to captured here.
+    _valid = ("captured", "empty_confirmed", "attempted_failed", "expected_unattempted")
+    cs = rows["capture_status"].astype(str).str.lower()
+    cs = cs.where(cs.isin(_valid), "captured")
     captured = int((cs == "captured").sum())
     empty_confirmed = int((cs == "empty_confirmed").sum())
     attempted_failed = int((cs == "attempted_failed").sum())

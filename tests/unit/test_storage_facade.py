@@ -173,6 +173,97 @@ class TestListObjectsViaApi:
         assert results == []
 
 
+class TestListObjectsCanonicalPathsOnly:
+    """Regression: a bare ``raw_tick_data`` hive listing must read ONLY the canonical
+    ``pipeline_mode={mode}_{source}/asset_group={ag}/`` shapes and NEVER the legacy
+    duplicate twins (bare ``asset_group=`` / ``category=`` / top-level ``day=``).
+
+    Post the 2026-06-18 manifest/GCS object migration every raw-tick parquet was
+    COPIED to the canonical ``pipeline_mode=…/asset_group=…`` shape (the legacy twins
+    still physically exist on GCS — delete is operator-gated). A reader that walked
+    BOTH the bare and canonical shapes DOUBLE-COUNTED. The reader is now canonical-only
+    UNCONDITIONALLY: a bare ``asset_group=``/``category=`` raw-tick prefix is fanned out
+    across the canonical pipeline_mode layers (one per UAC batch source) and the bare /
+    legacy shapes are never queried — each cell's file is counted exactly once.
+    """
+
+    @patch("deployment_api.utils.storage_facade._use_gcs_fuse", return_value=False)
+    @patch("deployment_api.utils.storage_facade._is_bucket_mounted", return_value=False)
+    @patch("deployment_api.utils.storage_client.get_storage_client")
+    def test_bare_prefix_fans_out_to_pipeline_mode_canonical_only(self, mock_client_fn, mock_mounted, mock_fuse):
+        # The cell exists under a CANONICAL pipeline_mode= shape AND under the legacy
+        # bare/category= twins. Only the canonical shape must be read.
+        def list_blobs(bucket_name, prefix, max_results=None, delimiter=None):
+            # Canonical pipeline_mode-keyed shape (what the reader must query).
+            if "pipeline_mode=" in prefix and "asset_group=defi/" in prefix:
+                b = MagicMock()
+                b.name = (
+                    "raw_tick_data/by_date/day=2020-01-01/pipeline_mode=batch_chainlink/"
+                    "asset_group=defi/venue=VAULT/x.parquet"
+                )
+                b.size = 100
+                return [b]
+            # Legacy twins (bare asset_group= / category=) — must NOT be queried, but
+            # if they were they'd return a duplicate, surfacing the double-count.
+            if "pipeline_mode=" not in prefix:
+                b = MagicMock()
+                b.name = "raw_tick_data/by_date/day=2020-01-01/asset_group=defi/venue=VAULT/x.parquet"
+                b.size = 100
+                return [b]
+            return []
+
+        mock_client = MagicMock()
+        mock_client.list_blobs.side_effect = list_blobs
+        mock_client_fn.return_value = mock_client
+
+        results = list_objects(
+            "market-data-tick-defi-prd",
+            "raw_tick_data/by_date/day=2020-01-01/asset_group=defi/venue=VAULT/",
+        )
+        # The cell is counted ONCE — one canonical pipeline_mode shape per source,
+        # disjoint object sets, deduped.
+        assert len(results) == 1
+        assert "pipeline_mode=batch_chainlink/asset_group=defi/" in results[0].name
+        queried = [
+            str(c.kwargs.get("prefix", c.args[1] if len(c.args) > 1 else ""))
+            for c in mock_client.list_blobs.call_args_list
+        ]
+        # Every query carried a canonical pipeline_mode segment; the bare / category=
+        # twins were NEVER queried.
+        assert queried, "expected at least one canonical pipeline_mode query"
+        assert all("pipeline_mode=" in q for q in queried)
+        assert all("category=" not in q for q in queried)
+        # The fan-out probes the per-source canonical layers (>1 defi batch source).
+        assert any("pipeline_mode=batch_chainlink/" in q for q in queried)
+
+    @patch("deployment_api.utils.storage_facade._use_gcs_fuse", return_value=False)
+    @patch("deployment_api.utils.storage_facade._is_bucket_mounted", return_value=False)
+    @patch("deployment_api.utils.storage_client.get_storage_client")
+    def test_already_pipeline_mode_keyed_prefix_listed_verbatim(self, mock_client_fn, mock_mounted, mock_fuse):
+        # A prefix that ALREADY carries pipeline_mode= is canonical → single list,
+        # no fan-out (queried verbatim).
+        def list_blobs(bucket_name, prefix, max_results=None, delimiter=None):
+            b = MagicMock()
+            b.name = (
+                "raw_tick_data/by_date/day=2020-01-01/pipeline_mode=batch_chainlink/"
+                "asset_group=defi/venue=VAULT/x.parquet"
+            )
+            b.size = 100
+            return [b]
+
+        mock_client = MagicMock()
+        mock_client.list_blobs.side_effect = list_blobs
+        mock_client_fn.return_value = mock_client
+
+        results = list_objects(
+            "market-data-tick-defi-prd",
+            "raw_tick_data/by_date/day=2020-01-01/pipeline_mode=batch_chainlink/asset_group=defi/venue=VAULT/",
+        )
+        assert len(results) == 1
+        # Exactly one query — verbatim, no fan-out.
+        assert mock_client.list_blobs.call_count == 1
+
+
 class TestObjectExistsViaApi:
     """Tests for object_exists using GCS API."""
 
