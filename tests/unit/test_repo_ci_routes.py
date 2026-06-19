@@ -48,6 +48,9 @@ class TestOverviewMock:
             "image",
             "last_green_main",
             "drain_stalled",
+            "tier",
+            "blocked_by",
+            "blocking",
         } <= set(row)
         assert [b["branch"] for b in row["branches"]] == ["live-defi-rollout", "staging", "main"]
 
@@ -120,6 +123,35 @@ class TestOverviewMock:
         # breaker_armed is exactly pending_bump_count >= breaker_threshold.
         assert health["breaker_armed"] == (health["pending_bump_count"] >= health["breaker_threshold"])
         assert health["breaker_armed"] is True  # mock seeds the armed case
+
+    def test_promotion_held_dep_order(self, client_repo_ci: TestClient) -> None:
+        # Dep-order HOLD (STAGE 1.8 mirror): the tier-0 unified-api-contracts at STAGING_GREEN holds
+        # >=2 dependent service repos. root_blockers has 1 entry (blocking_count >= 2), and the held
+        # rows carry blocked_by pointing at it. Distinct from promotion_blocked (failure-quarantine).
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        held = body["promotion_held"]
+        assert held is not None
+        assert {"held_repos", "root_blockers"} <= set(held)
+        assert len(held["held_repos"]) >= 2
+        assert len(held["root_blockers"]) == 1
+        root = held["root_blockers"][0]
+        assert {"repo", "tier", "ci_status", "blocking_count", "main_files_behind"} <= set(root)
+        assert root["repo"] == "unified-api-contracts"
+        assert root["tier"] == "0"
+        assert root["blocking_count"] >= 2
+        # Every row carries tier + blocked_by + blocking; the root's blocking lists the held repos.
+        for row in body["repos"]:
+            assert {"tier", "blocked_by", "blocking"} <= set(row)
+        root_row = next(r for r in body["repos"] if r["repo"] == "unified-api-contracts")
+        assert sorted(root_row["blocking"]) == sorted(held["held_repos"])
+        # Each held repo's blocked_by points at the root, with the dep's tier + ci_status.
+        for held_repo in held["held_repos"]:
+            row = next(r for r in body["repos"] if r["repo"] == held_repo)
+            assert row["blocked_by"], f"{held_repo} must carry a blocked_by entry"
+            blocker = row["blocked_by"][0]
+            assert blocker["name"] == "unified-api-contracts"
+            assert {"name", "tier", "ci_status"} <= set(blocker)
 
     def test_all_stuck_classes_present(self, client_repo_ci: TestClient) -> None:
         with patch(_PATCH_MOCK_MODE, return_value=True):

@@ -65,6 +65,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     BranchDeltaDict,
     BranchHeadDict,
     CommitEntryDict,
+    DepBlockerDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
     LastGreenDict,
@@ -72,10 +73,12 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     PromoteRunDict,
     PromotionBlockedDict,
     PromotionDrainDict,
+    PromotionHeldDict,
     RepoDetailResponseDict,
     RepoErrorDict,
     RepoOverviewDict,
     RepoPrDict,
+    RootBlockerDict,
     SemverHealthDict,
     SitJobDict,
     SitLastRunDict,
@@ -102,6 +105,18 @@ _SEMVER_BREAKER_THRESHOLD = 3
 # false-flagged the entire fleet. The auto-recoverable classes (v2_never_reported / automerge_stuck
 # self-heal in-band) are deliberately EXCLUDED so the signal doesn't cry wolf.
 _BLOCKING_STUCK_CLASSES = frozenset({"conflicting", "failing_check", "skip_ci_jammed"})
+
+# Dep-order HOLD (STAGE 1.8 mirror). A dep is "on main" iff its ci_status is one of these — the
+# exact ON_MAIN_STATUSES set the staging-to-main.yml dep-order gate uses. A repo with a pending
+# promotion (ci_status NOT in this set) is HELD until every dep is on main; the gate (and this
+# computation) fails OPEN on missing data (no manifest entry / no deps / blank ci_status → never
+# held). Tier sorts ascending (lowest/most-foundational first) so the root blocker surfaces first.
+_ON_MAIN_STATUSES = frozenset({"MAIN_GREEN", "SIT_VALIDATED"})
+# Absence sentinels: ci_status values that carry NO real on-main signal (a dep not tracked /
+# ci_status not set). STAGE 1.8 does `if not dep_status: continue` (blank → safe-default PASS);
+# ManifestView.ci_status_for renders a missing/blank ci_status as "NOT_CONFIGURED"/"UNKNOWN", so
+# those are the same fail-open case here — treated as on-main (NOT a blocker), never held on.
+_CI_STATUS_ABSENCE_SENTINELS = frozenset({"", "NOT_CONFIGURED", "UNKNOWN"})
 
 
 _DETAIL_COMMITS_PER_BRANCH = 8
@@ -538,6 +553,12 @@ async def _overview_row(
         last_green_main=last_green_main,
         main_lag_age_min=main_lag_age_min,
         drain_stalled=drain_stalled,
+        # tier from the manifest now; blocked_by/blocking are the CROSS-repo dep-order fields filled
+        # by _compute_dep_order in get_overview once every row exists (they need the whole fleet's
+        # ci_status). Seed empty here so the row shape is always complete.
+        tier=view.tier_for(meta.name),
+        blocked_by=[],
+        blocking=[],
     )
 
 
@@ -570,6 +591,124 @@ def _build_promotion_blocked(view: ManifestView) -> list[PromotionBlockedDict]:
         blocked.append(entry)
     blocked.sort(key=lambda e: (not e.get("quarantined", False), -e.get("failures", 0)))
     return blocked
+
+
+def _tier_rank(tier: str) -> tuple[int, str]:
+    """Order key for a (stringified) tier: numeric tiers ascending and BEFORE non-numeric ones.
+
+    `0`/`1`/`3` sort by their int value (lowest = most foundational = first); a non-numeric tier
+    (`"service"`, `""`) sorts after all numeric tiers, then lexically — deterministic, never raises.
+    """
+    if tier.isdigit():
+        return (int(tier), "")
+    return (1 << 30, tier)
+
+
+def _compute_dep_order(
+    rows: list[RepoOverviewDict],
+    view: ManifestView,
+) -> tuple[dict[str, list[DepBlockerDict]], dict[str, list[str]], PromotionHeldDict]:
+    """Cross-repo dep-order HOLD computation (mirrors staging-to-main.yml STAGE 1.8).
+
+    Pure function — depends only on the already-built rows (each carrying ci_status + the
+    staging→main delta) and the manifest view (dep names + tiers). Returns:
+      - blocked_by: repo -> the DepBlockerDicts (deps NOT on main) holding its promotion. A repo
+        on main (no pending promotion) maps to []; blocked_by non-empty ⟺ that repo is HELD.
+      - blocking: repo -> sorted repo names held because THIS repo isn't on main (the inverse map).
+      - promotion_held: held_repos (sorted) + root_blockers (the bottom-of-stack not-on-main repos
+        causing the holds, lowest tier first then blocking_count desc).
+
+    Fail-OPEN on missing data exactly like STAGE 1.8: a repo with no manifest deps is never held;
+    a dep whose ci_status is unknown/blank is treated as on-main (does not block). Never raises.
+    """
+    # ci_status of every repo: prefer the row's value (the live/Firestore-overlaid status the
+    # overview already resolved), fall back to the manifest for any dep that isn't a rendered row.
+    status_by_repo: dict[str, str] = {row["repo"]: row["ci_status"] for row in rows}
+
+    def status_of(repo: str) -> str:
+        return status_by_repo.get(repo) or view.ci_status_for(repo)
+
+    def on_main(repo: str) -> bool:
+        # On main (= NOT a blocker) when the status is a real on-main signal OR an absence sentinel
+        # (blank / NOT_CONFIGURED / UNKNOWN) — the latter is STAGE 1.8's fail-open "ci_status not set
+        # → safe-default pass". Only a real non-on-main status (STAGING_GREEN / FAILING / …) blocks.
+        status = status_of(repo)
+        return status in _ON_MAIN_STATUSES or status in _CI_STATUS_ABSENCE_SENTINELS
+
+    def deps_of(repo: str) -> list[str]:
+        return view.dependencies_for(repo)
+
+    def deps_not_on_main(repo: str) -> list[str]:
+        """The dep names of `repo` that are themselves NOT on main (the blockers of `repo`)."""
+        return [dep for dep in deps_of(repo) if not on_main(dep)]
+
+    # blocked_by(R): a repo with a PENDING promotion (its own ci_status not on main) is held by each
+    # dep that is itself not on main. A repo already on main has no pending promotion → blocked_by=[].
+    blocked_by: dict[str, list[DepBlockerDict]] = {}
+    for row in rows:
+        repo = row["repo"]
+        if on_main(repo):
+            blocked_by[repo] = []
+            continue
+        blockers = [
+            DepBlockerDict(name=dep, tier=view.tier_for(dep), ci_status=status_of(dep))
+            for dep in deps_not_on_main(repo)
+        ]
+        blocked_by[repo] = blockers
+
+    # blocking(X) = inverse of blocked_by: every R such that X appears in blocked_by(R).
+    blocking: dict[str, list[str]] = {row["repo"]: [] for row in rows}
+    for held_repo, blockers in blocked_by.items():
+        for blocker in blockers:
+            blocking.setdefault(blocker["name"], []).append(held_repo)
+    blocking = {repo: sorted(held) for repo, held in blocking.items()}
+
+    held_repos = sorted(repo for repo, blockers in blocked_by.items() if blockers)
+
+    # The candidate root blockers = every dep name that appears in ANY blocked_by AND is itself not
+    # on main. The TRUE roots are the bottom of the stack: those whose OWN blocked_by is empty (they
+    # are not themselves held by a dep). Degenerate fallback (a dep cycle / all blockers themselves
+    # held): keep the lowest-tier blockers so the card never renders empty while a hold exists.
+    candidate_blockers = {b["name"] for blockers in blocked_by.values() for b in blockers if not on_main(b["name"])}
+
+    def own_blocked_by_empty(repo: str) -> bool:
+        # A blocker that is itself a rendered row uses its computed blocked_by; one that isn't a row
+        # (an external/untracked dep) is re-derived from the manifest (same fail-open rules).
+        if repo in blocked_by:
+            return not blocked_by[repo]
+        return not deps_not_on_main(repo)
+
+    root_names = {b for b in candidate_blockers if own_blocked_by_empty(b)}
+    if not root_names and candidate_blockers:
+        lowest = min(_tier_rank(view.tier_for(b)) for b in candidate_blockers)
+        root_names = {b for b in candidate_blockers if _tier_rank(view.tier_for(b)) == lowest}
+
+    root_blockers = [
+        RootBlockerDict(
+            repo=name,
+            tier=view.tier_for(name),
+            ci_status=status_of(name),
+            blocking_count=len(blocking.get(name, [])),
+            main_files_behind=_staging_main_files_behind(rows, name),
+        )
+        for name in root_names
+    ]
+    # Lowest/most-foundational tier first, then most-blocking first (blocking_count desc).
+    root_blockers.sort(key=lambda rb: (_tier_rank(rb["tier"]), -rb["blocking_count"], rb["repo"]))
+
+    return blocked_by, blocking, PromotionHeldDict(held_repos=held_repos, root_blockers=root_blockers)
+
+
+def _staging_main_files_behind(rows: list[RepoOverviewDict], repo: str) -> int:
+    """A repo's staging→main delta files_changed (base=main, head=staging), 0 when absent.
+
+    The "content stuck behind main" signal for a root blocker: how much real file content sits on
+    staging not yet on main (squash-skew-aware — files_changed, not ahead_by)."""
+    row = next((r for r in rows if r["repo"] == repo), None)
+    if row is None:
+        return 0
+    delta = next((d for d in row["deltas"] if d["base"] == "main" and d["head"] == "staging"), None)
+    return delta["files_changed"] if delta is not None else 0
 
 
 @router.get("/overview")
@@ -621,6 +760,12 @@ async def get_overview(
         ldr_to_staging=_to_promote_run(staging_drain_raw),
         ldr_to_main=_to_promote_run(main_drain_raw),
     )
+    # Dep-order HOLD (STAGE 1.8 mirror) — computed AFTER all rows exist (it needs the whole fleet's
+    # ci_status). Patches each row's blocked_by/blocking in place, then yields the top-level aggregate.
+    blocked_by_map, blocking_map, promotion_held = _compute_dep_order(rows, view)
+    for row in rows:
+        row["blocked_by"] = blocked_by_map.get(row["repo"], [])
+        row["blocking"] = blocking_map.get(row["repo"], [])
     return OverviewResponseDict(
         generated_at=_now_iso(),
         source="live",
@@ -632,6 +777,7 @@ async def get_overview(
         promotion_blocked=_build_promotion_blocked(view),
         promotion_drain=promotion_drain,
         semver_health=_to_semver_health(semver_raw, view),
+        promotion_held=promotion_held,
     )
 
 
