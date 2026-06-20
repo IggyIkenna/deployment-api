@@ -344,8 +344,8 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
 
 
 def _mock_alerts() -> AlertsPayloadDict:
-    """Mock alert ledger — a lifecycle pair (FAILED -> RESOLVED) + a live CRITICAL, so the
-    UI/playwright can assert current-vs-previous traceability."""
+    """Mock alert ledger — CI/CD lifecycle pair + non-CI watcher alerts (worker_liveness,
+    git_health) so the UI/playwright can assert all alert classes render in the unified pane."""
     entries: list[AlertEntryDict] = [
         AlertEntryDict(
             kind="alert",
@@ -356,6 +356,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="failure",
             message="CI REGRESSION: deployment-api is now FAILING (was MAIN_GREEN)",
             run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/1",
+            alert_class=None,
         ),
         AlertEntryDict(
             kind="alert",
@@ -366,6 +367,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="success",
             message="RESOLVED: deployment-api recovered (FAILING -> MAIN_GREEN)",
             run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/2",
+            alert_class=None,
         ),
         AlertEntryDict(
             kind="alert",
@@ -376,6 +378,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="success",
             message="SIT PASSED — staging UNLOCKED, breaking_pending cleared. Promotion queue flowing.",
             run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/3",
+            alert_class=None,
         ),
         AlertEntryDict(
             kind="alert",
@@ -386,6 +389,31 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="failure",
             message="quality-gates-v2 FAILED on main",
             run_url="https://github.com/IggyIkenna/execution-service/actions/runs/4",
+            alert_class=None,
+        ),
+        # Non-CI watcher alerts — emitted by agent-orchestrator/server/notifications/slack.py
+        # via _persist_to_gcs() with alert_class set. These exercise the unified ledger path.
+        AlertEntryDict(
+            kind="worker_liveness",
+            timestamp="2026-06-10T13:10:00Z",
+            repo="agent-orchestrator",
+            workflow_name="worker-liveness-watchdog",
+            severity="WARNING",
+            conclusion="killed",
+            message="WorkerLivenessWatchdog: slot-4 killed (heartbeat silent >900s). kills_today=2/20",
+            run_url=None,
+            alert_class="worker_liveness",
+        ),
+        AlertEntryDict(
+            kind="git_health",
+            timestamp="2026-06-10T13:15:00Z",
+            repo="agent-orchestrator",
+            workflow_name="git-health-guard",
+            severity="CRITICAL",
+            conclusion="stale",
+            message="git-health RED: slot-3 dirty for 45min (threshold 30min), 12 commits behind LDR",
+            run_url=None,
+            alert_class="git_health",
         ),
     ]
     ordered = sorted(entries, key=lambda e: e["timestamp"], reverse=True)
