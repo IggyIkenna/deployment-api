@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import cast
 
-from google.cloud import compute_v1
+from google.cloud import compute_v1  # noqa: TID251 — google.cloud.compute_v1 has no UTL cloud-interface abstraction
 
 logger = logging.getLogger(__name__)
 

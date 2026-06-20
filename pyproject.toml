@@ -21,6 +21,8 @@ dependencies = [
     "sse-starlette<2.0.0,>=1.6.1",
     # Auth
     "google-auth>=2.40.0,<3.0.0",
+    # Firestore — ci_status side-store Phase-2 reader (ci_status_firestore_side_store_2026_06_10.md)
+    "google-cloud-firestore>=2.16.0,<3.0.0",
     # Metrics
     "prometheus-client>=0.20.0,<1.0.0",
     # HTTP client

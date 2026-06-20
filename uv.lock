@@ -645,6 +645,7 @@ dependencies = [
     { name = "deployment-service" },
     { name = "fastapi" },
     { name = "google-auth" },
+    { name = "google-cloud-firestore" },
     { name = "gunicorn" },
     { name = "httpx" },
     { name = "jsonpickle" },
@@ -681,6 +682,7 @@ requires-dist = [
     { name = "deployment-service", editable = "../deployment-service" },
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "google-auth", specifier = ">=2.40.0,<3.0.0" },
+    { name = "google-cloud-firestore", specifier = ">=2.16.0,<3.0.0" },
     { name = "gunicorn", specifier = ">=22.0.0,<23.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "jsonpickle", specifier = ">=3.0.0,<4.0.0" },
@@ -1248,6 +1250,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a8/dd/1eef226e470369b26824a505c34482c0b493bc35fe8e0c6b003b5feca21a/google_cloud_core-2.6.0.tar.gz", hash = "sha256:e76149739f90fac1fc6757c09f47eaccb3145b54adbd7759b0f7c4b235f46c83", size = 36001, upload-time = "2026-05-07T08:04:04.124Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/4a/98da8930ab109c73d9a5d13782a9ebb81ea8c111f6d534a567b71d23e52b/google_cloud_core-2.6.0-py3-none-any.whl", hash = "sha256:6d63ac8e5eca6d9e4319d0a1e2265fadcd7f1049904378caecfa01cf52dd869e", size = 29390, upload-time = "2026-05-07T08:02:34.672Z" },
+]
+
+[[package]]
+name = "google-cloud-firestore"
+version = "2.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "google-cloud-core" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/83/bdfd4387fadc5f44de1d0f97b456c648b6f87ec0b1818a9f7f477e6e6eab/google_cloud_firestore-2.27.0.tar.gz", hash = "sha256:5633cb164ef56ca6c73a807822191a56a98f6f10e76978c4f2eb197ae03383d2", size = 649244, upload-time = "2026-04-13T22:55:43.931Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/db/fc72c4279887cc95011f16e70200d021030f0261e6391fa52e3adfaaea25/google_cloud_firestore-2.27.0-py3-none-any.whl", hash = "sha256:cc2ea78bc2d4dcc928016d56802deacfda3c9bbda0a7d691ee73b41a2f1a80d7", size = 429806, upload-time = "2026-04-13T22:55:41.726Z" },
 ]
 
 [[package]]
@@ -3250,7 +3269,7 @@ wheels = [
 
 [[package]]
 name = "unified-api-contracts"
-version = "0.24.0"
+version = "0.26.0"
 source = { editable = "../unified-api-contracts" }
 dependencies = [
     { name = "bandit" },

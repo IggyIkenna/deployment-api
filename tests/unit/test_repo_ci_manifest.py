@@ -59,6 +59,25 @@ class TestManifestView:
         assert view.ci_status_for("greeks-service") == "STAGING_GREEN"
         assert view.ci_status_for("nonexistent") == "UNKNOWN"
 
+    def test_ci_status_for_firestore_map_overrides_manifest(self) -> None:
+        # Firestore overlay: greeks-service promoted to MAIN_GREEN (manifest shows STAGING_GREEN),
+        # new-repo present only in Firestore, existing UTL unchanged, unknown repo absent from both.
+        firestore_map = {
+            "greeks-service": "MAIN_GREEN",
+            "new-repo": "STAGING_GREEN",
+        }
+        view = manifest_view_from_raw(_FIXTURE, ci_status_map=firestore_map)
+        assert view.ci_status_for("greeks-service") == "MAIN_GREEN"  # Firestore wins
+        assert view.ci_status_for("new-repo") == "STAGING_GREEN"  # Firestore-only repo
+        assert view.ci_status_for("unified-trading-library") == "NOT_CONFIGURED"  # not in map
+        assert view.ci_status_for("nonexistent") == "NOT_CONFIGURED"  # absent → NOT_CONFIGURED
+
+    def test_ci_status_for_empty_firestore_map_not_configured(self) -> None:
+        # An injected empty map → all repos return NOT_CONFIGURED (Firestore wins, no manifest fallback)
+        view = manifest_view_from_raw(_FIXTURE, ci_status_map={})
+        assert view.ci_status_for("unified-trading-library") == "NOT_CONFIGURED"
+        assert view.ci_status_for("nonexistent") == "NOT_CONFIGURED"
+
     def test_breaking_pending(self) -> None:
         view = manifest_view_from_raw(_FIXTURE)
         assert view.breaking_pending == ["greeks-service", "unified-trading-library"]

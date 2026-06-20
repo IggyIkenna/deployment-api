@@ -13,6 +13,7 @@ cache mirroring the _cloud_builds TTL pattern.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -21,7 +22,8 @@ from typing import cast
 
 import aiohttp
 
-from deployment_api.settings import GITHUB_ORG
+from deployment_api.ci_status_store import resolve_ci_status_map
+from deployment_api.settings import GITHUB_ORG, gcp_project_id
 
 from ._repo_ci_github import gh_raw_file
 from ._repo_ci_types import DepBlockerDict, PromotionHeldDict, RepoOverviewDict, RootBlockerDict
@@ -33,6 +35,8 @@ _MANIFEST_PATH = "workspace-manifest.json"
 _MANIFEST_TTL_SECONDS = 120.0
 
 _manifest_cache: tuple[float, dict[str, object]] | None = None
+_ci_status_map_cache: tuple[float, dict[str, str]] | None = None
+_CI_STATUS_MAP_TTL_SECONDS = 15.0
 
 
 def _semver_tuple(version: str) -> tuple[int, ...]:
@@ -62,8 +66,9 @@ class RepoMeta:
 class ManifestView:
     """Typed read surface over the raw manifest dict."""
 
-    def __init__(self, raw: dict[str, object]) -> None:
+    def __init__(self, raw: dict[str, object], ci_status_map: dict[str, str] | None = None) -> None:
         self._raw = raw
+        self._ci_status_map = ci_status_map
 
     @property
     def repos(self) -> list[RepoMeta]:
@@ -86,9 +91,13 @@ class ManifestView:
     def ci_status_for(self, repo: str) -> str:
         """The 9-state ci_status lifecycle value for one repo.
 
-        THE Firestore swap point: when the ci_status side-store cuts over, this method
-        reads the store instead of the manifest — no other consumer changes.
+        Phase 2 cutover: reads from the Firestore-overlaid map when available (injected
+        by ``load_manifest_view``), falling back to the manifest for unknown repos or
+        when no map was injected (pre-cutover / test seam with no Firestore).
         """
+        if self._ci_status_map is not None:
+            return self._ci_status_map.get(repo) or "NOT_CONFIGURED"
+        # Manifest-only fallback (pre-cutover or test seam without injected map)
         repositories = self._raw.get("repositories")
         if not isinstance(repositories, dict):
             return "UNKNOWN"
@@ -246,23 +255,47 @@ class ManifestView:
 
 
 async def load_manifest_view(session: aiohttp.ClientSession, token: str) -> ManifestView:
-    """Fetch (or serve cached) workspace-manifest.json from PM `main` and wrap it."""
-    global _manifest_cache
+    """Fetch (or serve cached) workspace-manifest.json from PM `main` and wrap it.
+
+    The manifest itself is cached for ``_MANIFEST_TTL_SECONDS`` (120 s). The ci_status
+    map is resolved separately at a shorter ``_CI_STATUS_MAP_TTL_SECONDS`` (15 s) TTL so
+    the dashboard reflects Firestore-authoritative ci_status much sooner than the manifest
+    would naturally expire.
+    """
+    global _manifest_cache, _ci_status_map_cache
     now = time.monotonic()
-    if _manifest_cache is not None and now - _manifest_cache[0] < _MANIFEST_TTL_SECONDS:
-        return ManifestView(_manifest_cache[1])
-    raw_text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, _MANIFEST_PATH, ref="main")
-    parsed = cast(object, json.loads(raw_text))
-    if not isinstance(parsed, dict):
-        raise ValueError("workspace-manifest.json did not parse to an object")
-    manifest = cast(dict[str, object], parsed)
-    _manifest_cache = (now, manifest)
-    return ManifestView(manifest)
+
+    # Manifest cache (120 s TTL — GitHub API budget)
+    if _manifest_cache is None or now - _manifest_cache[0] >= _MANIFEST_TTL_SECONDS:
+        raw_text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, _MANIFEST_PATH, ref="main")
+        parsed = cast(object, json.loads(raw_text))
+        if not isinstance(parsed, dict):
+            raise ValueError("workspace-manifest.json did not parse to an object")
+        manifest = cast(dict[str, object], parsed)
+        _manifest_cache = (now, manifest)
+    else:
+        manifest = _manifest_cache[1]
+
+    # ci_status map cache (15 s TTL — Firestore-authoritative, manifest fallback)
+    if _ci_status_map_cache is None or now - _ci_status_map_cache[0] >= _CI_STATUS_MAP_TTL_SECONDS:
+        project_id: str | None = gcp_project_id if gcp_project_id else None
+        ci_status_map = await asyncio.to_thread(resolve_ci_status_map, manifest, project_id=project_id)
+        _ci_status_map_cache = (now, ci_status_map)
+    else:
+        ci_status_map = _ci_status_map_cache[1]
+
+    return ManifestView(manifest, ci_status_map=ci_status_map)
 
 
-def manifest_view_from_raw(raw: dict[str, object]) -> ManifestView:
-    """Test seam: build a ManifestView from an in-memory manifest dict."""
-    return ManifestView(raw)
+def manifest_view_from_raw(
+    raw: dict[str, object],
+    ci_status_map: dict[str, str] | None = None,
+) -> ManifestView:
+    """Test seam: build a ManifestView from an in-memory manifest dict.
+
+    Pass ``ci_status_map`` to simulate a Firestore-overlaid view in tests.
+    """
+    return ManifestView(raw, ci_status_map=ci_status_map)
 
 
 # ---------------------------------------------------------------------------
