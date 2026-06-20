@@ -23,6 +23,7 @@ import aiohttp
 
 from deployment_api.settings import GITHUB_ORG
 
+from ._ci_status_firestore_store import resolve_ci_status_map
 from ._repo_ci_github import gh_raw_file
 from ._repo_ci_types import DepBlockerDict, PromotionHeldDict, RepoOverviewDict, RootBlockerDict
 
@@ -32,7 +33,9 @@ _PM_REPO = "unified-trading-pm"
 _MANIFEST_PATH = "workspace-manifest.json"
 _MANIFEST_TTL_SECONDS = 120.0
 
-_manifest_cache: tuple[float, dict[str, object]] | None = None
+# Cache stores (timestamp, raw_manifest, firestore_ci_status_overlay) so the Firestore
+# read is amortised over the same 120 s window as the manifest fetch.
+_manifest_cache: tuple[float, dict[str, object], dict[str, str]] | None = None
 
 
 def _semver_tuple(version: str) -> tuple[int, ...]:
@@ -62,8 +65,12 @@ class RepoMeta:
 class ManifestView:
     """Typed read surface over the raw manifest dict."""
 
-    def __init__(self, raw: dict[str, object]) -> None:
+    def __init__(self, raw: dict[str, object], *, ci_status_override: dict[str, str] | None = None) -> None:
         self._raw = raw
+        # When provided, ci_status_override is the Firestore-authoritative map
+        # (manifest as fallback) produced by resolve_ci_status_map — checked first in
+        # ci_status_for so the dashboard reflects the same source as the promoter gate.
+        self._ci_status_override = ci_status_override
 
     @property
     def repos(self) -> list[RepoMeta]:
@@ -86,9 +93,12 @@ class ManifestView:
     def ci_status_for(self, repo: str) -> str:
         """The 9-state ci_status lifecycle value for one repo.
 
-        THE Firestore swap point: when the ci_status side-store cuts over, this method
-        reads the store instead of the manifest — no other consumer changes.
+        Phase-2 Firestore swap: reads the Firestore-authoritative map (manifest as
+        fallback) when load_manifest_view has resolved it; falls back to the manifest
+        dict directly (test seam / no-Firestore path via manifest_view_from_raw).
         """
+        if self._ci_status_override is not None:
+            return self._ci_status_override.get(repo, "UNKNOWN")
         repositories = self._raw.get("repositories")
         if not isinstance(repositories, dict):
             return "UNKNOWN"
@@ -246,18 +256,24 @@ class ManifestView:
 
 
 async def load_manifest_view(session: aiohttp.ClientSession, token: str) -> ManifestView:
-    """Fetch (or serve cached) workspace-manifest.json from PM `main` and wrap it."""
+    """Fetch (or serve cached) workspace-manifest.json from PM `main` and wrap it.
+
+    On each cache miss also resolves the Firestore ci_status overlay (Firestore-authoritative
+    per-repo, manifest as fallback cache) so the dashboard reflects the same source as the
+    promoter gate. The overlay is cached for the same 120 s window as the manifest.
+    """
     global _manifest_cache
     now = time.monotonic()
     if _manifest_cache is not None and now - _manifest_cache[0] < _MANIFEST_TTL_SECONDS:
-        return ManifestView(_manifest_cache[1])
+        return ManifestView(_manifest_cache[1], ci_status_override=_manifest_cache[2])
     raw_text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, _MANIFEST_PATH, ref="main")
     parsed = cast(object, json.loads(raw_text))
     if not isinstance(parsed, dict):
         raise ValueError("workspace-manifest.json did not parse to an object")
     manifest = cast(dict[str, object], parsed)
-    _manifest_cache = (now, manifest)
-    return ManifestView(manifest)
+    ci_override = resolve_ci_status_map(manifest)
+    _manifest_cache = (now, manifest, ci_override)
+    return ManifestView(manifest, ci_status_override=ci_override)
 
 
 def manifest_view_from_raw(raw: dict[str, object]) -> ManifestView:
