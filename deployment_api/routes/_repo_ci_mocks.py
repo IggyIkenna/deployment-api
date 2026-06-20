@@ -344,8 +344,9 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
 
 
 def _mock_alerts() -> AlertsPayloadDict:
-    """Mock alert ledger — a lifecycle pair (FAILED -> RESOLVED) + a live CRITICAL, so the
-    UI/playwright can assert current-vs-previous traceability."""
+    """Mock alert ledger — CI lifecycle pair + live CRITICAL + non-CI ops kinds,
+    so the UI/playwright can assert current-vs-previous traceability AND
+    that non-CI kinds (git_health, worker_liveness, vm_down) render correctly."""
     entries: list[AlertEntryDict] = [
         AlertEntryDict(
             kind="alert",
@@ -386,6 +387,37 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="failure",
             message="quality-gates-v2 FAILED on main",
             run_url="https://github.com/IggyIkenna/execution-service/actions/runs/4",
+        ),
+        # Non-CI ops alert kinds (INFRA P1: unified ledger across domains).
+        AlertEntryDict(
+            kind="git_health",
+            timestamp="2026-06-10T13:10:00Z",
+            repo="agent-orchestrator",
+            workflow_name="ops-git_health",
+            severity="WARNING",
+            conclusion=None,
+            message="Slot 3 git-health RED: dirty 35m, 2 commits behind",
+            run_url=None,
+        ),
+        AlertEntryDict(
+            kind="worker_liveness",
+            timestamp="2026-06-10T13:15:00Z",
+            repo="agent-orchestrator",
+            workflow_name="ops-worker_liveness",
+            severity="WARNING",
+            conclusion=None,
+            message="Slot 2 watchdog-killed: heartbeat_silent_900s",
+            run_url=None,
+        ),
+        AlertEntryDict(
+            kind="vm_down",
+            timestamp="2026-06-10T13:20:00Z",
+            repo="vm-watchdog",
+            workflow_name="ops-vm_down",
+            severity="CRITICAL",
+            conclusion=None,
+            message="VM agent-orchestrator-vm-1 DOWN: health-check timed out after 60s",
+            run_url=None,
         ),
     ]
     ordered = sorted(entries, key=lambda e: e["timestamp"], reverse=True)
