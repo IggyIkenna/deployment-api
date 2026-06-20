@@ -1,11 +1,14 @@
 """
 GET /api/alerts — unified alert ledger (all alert classes, not just CI/CD).
 
-Currently surfaces CI/CD alerts only (same backend as /api/repo-ci/alerts).
-When INFRA P1 lands (alert_quality_overhaul_2026_06_18.md), non-CI watchers
-(VM-down, consolidator-down, git-health-guard, worker-liveness, data-pipeline)
-will emit into the shared store and new `kind` values will appear in the response
-(e.g. "vm_down", "consolidator_down", "git_health", "worker_liveness").
+Non-CI watchers (VM-down, consolidator-down, git-health-guard, worker-liveness) persist
+alerts via `_persist_to_gcs()` in agent-orchestrator/server/notifications/slack.py.
+They write to the same `cicd/alerts/{date}/alerts.jsonl` GCS store as `notify-slack.yml`,
+but include an `alert_class` field ("worker_liveness", "git_health", "vm_down",
+"consolidator_down") that `_parse_line()` maps to the entry `kind`.
+
+The `alerts` list includes all non-"event" kinds (CI "alert" + all non-CI kinds).
+The `streams` list groups all kinds into (repo, workflow) lifecycle pairs.
 
 Plan: deployment_ui_monitoring_pane_2026_06_19.md (unified ledger UI P1).
 """
