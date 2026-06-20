@@ -19,8 +19,9 @@ dependencies = [
     "gunicorn>=22.0.0,<23.0.0",
     "pydantic>=2.12.5,<3.0.0",
     "sse-starlette<2.0.0,>=1.6.1",
-    # Auth
+    # Auth + Firestore (ci_status side-store Phase-2 reader)
     "google-auth>=2.40.0,<3.0.0",
+    "google-cloud-firestore>=2.0.0,<3.0.0",
     # Metrics
     "prometheus-client>=0.20.0,<1.0.0",
     # HTTP client
@@ -84,6 +85,9 @@ max-complexity = 26
 "tests/*" = ["F401", "F841", "F811"]
 "tests/conftest.py" = ["E402"]
 "deployment_api/gunicorn.conf.py" = ["N999"]
+# TID251 noqa is consumed by the ratchet's --isolated run (check_ruff_rule_ratchet.py) which
+# selects TID251 directly; regular ruff doesn't select TID251 → the directive appears unused.
+"deployment_api/routes/_ci_status_firestore_store.py" = ["RUF100"]
 "deployment_api/main.py" = ["E402"]
 "deployment_api/routes/service_status_fast_data.py" = ["E402"]
 "deployment_api/routes/deployment_state.py" = ["C901"]
