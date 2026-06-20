@@ -3,6 +3,7 @@ API Routes Package
 """
 
 from . import (
+    alerts,
     backfill_launch,
     builds,
     capabilities,
@@ -35,6 +36,7 @@ from . import (
 )
 
 __all__ = [
+    "alerts",
     "backfill_launch",
     "builds",
     "capabilities",
