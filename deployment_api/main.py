@@ -43,6 +43,7 @@ from deployment_api.middleware import (
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
+    alerts_unified,
     backfill_launch,
     builds,
     builds_history,
@@ -201,6 +202,7 @@ _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
+_authenticated_router.include_router(alerts_unified.router)  # Has its own prefix /api/alerts
 _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_gh_rate_limit.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(scenarios.router, prefix="/api/scenarios", tags=["Scenarios"])
