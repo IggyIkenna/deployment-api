@@ -90,6 +90,7 @@ from .routes import (
     subscriptions,
     treasury,
     treasury_routes,
+    unified_alerts,
     user_management,
     venue_credentials,
     venue_date_ranges,
@@ -201,6 +202,7 @@ _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
+_authenticated_router.include_router(unified_alerts.router, prefix="/api", tags=["Alerts"])  # GET /api/alerts
 _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_gh_rate_limit.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(scenarios.router, prefix="/api/scenarios", tags=["Scenarios"])

@@ -53,7 +53,9 @@ MAX_DURATION=700
 # 2026-06-12 (codex ratchet plan Phase 3+4): wave-4b agent cleared 10 classes (schema-provenance
 # CORRECT-LOCAL triage, os.getenv, Any-types, imports-in-fn, empty-fallbacks et al) -> honest
 # measured V=6. Ratcheted 16 -> 6.
-CODEX_MAX_VIOLATIONS=6
+# 2026-06-19: cleared the deep-UAC-import in utils/pipeline_mode_paths.py (now the facade
+# `from unified_api_contracts import Mode`) -> honest measured V=5. Ratcheted 6 -> 5.
+CODEX_MAX_VIOLATIONS=5
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 

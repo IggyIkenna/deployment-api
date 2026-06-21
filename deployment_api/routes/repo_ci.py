@@ -50,7 +50,12 @@ from ._repo_ci_github import (
     v2_conclusion_for_branch,
     v2_conclusion_for_sha,
 )
-from ._repo_ci_manifest import ManifestView, RepoMeta, load_manifest_view
+from ._repo_ci_manifest import (  # pyright: ignore[reportPrivateUsage]
+    ManifestView,
+    RepoMeta,
+    _compute_dep_order,
+    load_manifest_view,
+)
 from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
     _mock_alerts,
     _mock_detail,
@@ -102,7 +107,6 @@ _SEMVER_BREAKER_THRESHOLD = 3
 # false-flagged the entire fleet. The auto-recoverable classes (v2_never_reported / automerge_stuck
 # self-heal in-band) are deliberately EXCLUDED so the signal doesn't cry wolf.
 _BLOCKING_STUCK_CLASSES = frozenset({"conflicting", "failing_check", "skip_ci_jammed"})
-
 
 _DETAIL_COMMITS_PER_BRANCH = 8
 _DETAIL_V2_LOOKUPS_PER_BRANCH = 5
@@ -538,6 +542,12 @@ async def _overview_row(
         last_green_main=last_green_main,
         main_lag_age_min=main_lag_age_min,
         drain_stalled=drain_stalled,
+        # tier from the manifest now; blocked_by/blocking are the CROSS-repo dep-order fields filled
+        # by _compute_dep_order in get_overview once every row exists (they need the whole fleet's
+        # ci_status). Seed empty here so the row shape is always complete.
+        tier=view.tier_for(meta.name),
+        blocked_by=[],
+        blocking=[],
     )
 
 
@@ -621,6 +631,12 @@ async def get_overview(
         ldr_to_staging=_to_promote_run(staging_drain_raw),
         ldr_to_main=_to_promote_run(main_drain_raw),
     )
+    # Dep-order HOLD (STAGE 1.8 mirror) — computed AFTER all rows exist (it needs the whole fleet's
+    # ci_status). Patches each row's blocked_by/blocking in place, then yields the top-level aggregate.
+    blocked_by_map, blocking_map, promotion_held = _compute_dep_order(rows, view)
+    for row in rows:
+        row["blocked_by"] = blocked_by_map.get(row["repo"], [])
+        row["blocking"] = blocking_map.get(row["repo"], [])
     return OverviewResponseDict(
         generated_at=_now_iso(),
         source="live",
@@ -632,6 +648,7 @@ async def get_overview(
         promotion_blocked=_build_promotion_blocked(view),
         promotion_drain=promotion_drain,
         semver_health=_to_semver_health(semver_raw, view),
+        promotion_held=promotion_held,
     )
 
 

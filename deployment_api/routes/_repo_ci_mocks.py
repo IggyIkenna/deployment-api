@@ -16,6 +16,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     BranchDeltaDict,
     BranchHeadDict,
     CommitEntryDict,
+    DepBlockerDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
     LastGreenDict,
@@ -23,10 +24,12 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     PromoteRunDict,
     PromotionBlockedDict,
     PromotionDrainDict,
+    PromotionHeldDict,
     RepoDetailResponseDict,
     RepoErrorDict,
     RepoOverviewDict,
     RepoPrDict,
+    RootBlockerDict,
     SemverHealthDict,
     SitJobDict,
     SitLastRunDict,
@@ -100,6 +103,10 @@ def _mock_row(
     ci_status: str,
     prs: list[RepoPrDict],
     sit: SitStateDict,
+    *,
+    tier: str = "3",
+    blocked_by: list[DepBlockerDict] | None = None,
+    blocking: list[str] | None = None,
 ) -> RepoOverviewDict:
     branches = [
         BranchHeadDict(
@@ -148,18 +155,39 @@ def _mock_row(
         # market-tick-data-service: conflicting → both stalled. v2_never_reported / automerge_stuck
         # are auto-recoverable → NOT stalled.)
         drain_stalled=any(pr.get("stuck_class") in {"conflicting", "failing_check", "skip_ci_jammed"} for pr in prs),
+        # Dep-order HOLD (STAGE 1.8 mirror). tier from the manifest layer; blocked_by/blocking
+        # default empty (clear) and are seeded explicitly in _mock_overview for the held scenario.
+        tier=tier,
+        blocked_by=blocked_by if blocked_by is not None else [],
+        blocking=blocking if blocking is not None else [],
     )
 
 
 def _mock_overview() -> OverviewResponseDict:
+    # Dep-order HOLD scenario (STAGE 1.8 mirror): the tier-0 dep `unified-api-contracts` lags at
+    # STAGING_GREEN (NOT on main), so every dependent service above it is HELD. Two dependents
+    # (market-tick-data-service + strategy-service) point at it via blocked_by, and it carries them
+    # in `blocking` — so root_blockers has 1 entry (blocking_count == 2) and ≥2 rows are held.
+    _uac_blocker = DepBlockerDict(name="unified-api-contracts", tier="0", ci_status="STAGING_GREEN")
     rows = [
-        _mock_row("unified-trading-library", "library", "MAIN_GREEN", [], _mock_sit(False, False)),
+        _mock_row("unified-trading-library", "library", "MAIN_GREEN", [], _mock_sit(False, False), tier="0"),
+        # The tier-0 root blocker itself: at STAGING_GREEN (not on main), holding the two dependents.
+        _mock_row(
+            "unified-api-contracts",
+            "library",
+            "STAGING_GREEN",
+            [],
+            _mock_sit(False, False),
+            tier="0",
+            blocking=["market-tick-data-service", "strategy-service"],
+        ),
         _mock_row(
             "market-tick-data-service",
             "service",
             "STAGING_GREEN",
             [_mock_pr("market-tick-data-service", 41, "main", "conflicting", "dirty")],
             _mock_sit(False, False),
+            blocked_by=[_uac_blocker],
         ),
         _mock_row(
             "instruments-service",
@@ -184,6 +212,7 @@ def _mock_overview() -> OverviewResponseDict:
             "STAGING_GREEN",
             [_mock_pr("strategy-service", 52, "main", "automerge_stuck", "blocked")],
             _mock_sit(False, False),
+            blocked_by=[_uac_blocker],
         ),
         _mock_row("greeks-service", "service", "STAGING_GREEN", [], _mock_sit(True, True)),
     ]
@@ -250,6 +279,22 @@ def _mock_overview() -> OverviewResponseDict:
             breaker_armed=True,
             breaker_threshold=3,
         ),
+        # Dep-order HOLD aggregate (STAGE 1.8 mirror) — the tier-0 unified-api-contracts at
+        # STAGING_GREEN holds 2 dependents from main. Consistent with the per-row blocked_by/blocking
+        # above: held_repos == the 2 dependents; root_blockers has the single tier-0 cause
+        # (blocking_count == 2, main_files_behind == 1 from its staging→main delta).
+        promotion_held=PromotionHeldDict(
+            held_repos=["market-tick-data-service", "strategy-service"],
+            root_blockers=[
+                RootBlockerDict(
+                    repo="unified-api-contracts",
+                    tier="0",
+                    ci_status="STAGING_GREEN",
+                    blocking_count=2,
+                    main_files_behind=1,
+                )
+            ],
+        ),
     )
 
 
@@ -299,8 +344,8 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
 
 
 def _mock_alerts() -> AlertsPayloadDict:
-    """Mock alert ledger — a lifecycle pair (FAILED -> RESOLVED) + a live CRITICAL, so the
-    UI/playwright can assert current-vs-previous traceability."""
+    """Mock alert ledger — CI/CD lifecycle pair + non-CI watcher alerts (worker_liveness,
+    git_health) so the UI/playwright can assert all alert classes render in the unified pane."""
     entries: list[AlertEntryDict] = [
         AlertEntryDict(
             kind="alert",
@@ -311,6 +356,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="failure",
             message="CI REGRESSION: deployment-api is now FAILING (was MAIN_GREEN)",
             run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/1",
+            alert_class=None,
         ),
         AlertEntryDict(
             kind="alert",
@@ -321,6 +367,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="success",
             message="RESOLVED: deployment-api recovered (FAILING -> MAIN_GREEN)",
             run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/2",
+            alert_class=None,
         ),
         AlertEntryDict(
             kind="alert",
@@ -331,6 +378,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="success",
             message="SIT PASSED — staging UNLOCKED, breaking_pending cleared. Promotion queue flowing.",
             run_url="https://github.com/IggyIkenna/unified-trading-pm/actions/runs/3",
+            alert_class=None,
         ),
         AlertEntryDict(
             kind="alert",
@@ -341,6 +389,31 @@ def _mock_alerts() -> AlertsPayloadDict:
             conclusion="failure",
             message="quality-gates-v2 FAILED on main",
             run_url="https://github.com/IggyIkenna/execution-service/actions/runs/4",
+            alert_class=None,
+        ),
+        # Non-CI watcher alerts — emitted by agent-orchestrator/server/notifications/slack.py
+        # via _persist_to_gcs() with alert_class set. These exercise the unified ledger path.
+        AlertEntryDict(
+            kind="worker_liveness",
+            timestamp="2026-06-10T13:10:00Z",
+            repo="agent-orchestrator",
+            workflow_name="worker-liveness-watchdog",
+            severity="WARNING",
+            conclusion="killed",
+            message="WorkerLivenessWatchdog: slot-4 killed (heartbeat silent >900s). kills_today=2/20",
+            run_url=None,
+            alert_class="worker_liveness",
+        ),
+        AlertEntryDict(
+            kind="git_health",
+            timestamp="2026-06-10T13:15:00Z",
+            repo="agent-orchestrator",
+            workflow_name="git-health-guard",
+            severity="CRITICAL",
+            conclusion="stale",
+            message="git-health RED: slot-3 dirty for 45min (threshold 30min), 12 commits behind LDR",
+            run_url=None,
+            alert_class="git_health",
         ),
     ]
     ordered = sorted(entries, key=lambda e: e["timestamp"], reverse=True)

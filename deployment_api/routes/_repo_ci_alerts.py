@@ -35,7 +35,7 @@ _cache: tuple[float, AlertsPayloadDict] | None = None
 class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
     """One ledger entry (a Slack alert or a persisted workflow state event)."""
 
-    kind: str  # "alert" | "event"
+    kind: str  # "alert" | "event" | "vm_down" | "worker_liveness" | "git_health" | "consolidator_down"
     timestamp: str
     repo: str
     workflow_name: str
@@ -43,6 +43,7 @@ class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (
     conclusion: str | None
     message: str | None  # alerts only
     run_url: str | None
+    alert_class: str | None  # non-CI watcher class ("worker_liveness", "git_health", etc.)
 
 
 class AlertStreamDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
@@ -75,8 +76,13 @@ def _parse_line(line: str) -> AlertEntryDict | None:
     obj = cast(dict[str, object], raw)
     event_type = str(obj.get("event_type") or "")
     if event_type == "slack_alert":
+        # Non-CI watcher entries carry an `alert_class` field (e.g. "worker_liveness",
+        # "git_health", "vm_down", "consolidator_down"). Use it as the kind directly so
+        # the unified ledger surfaces all alert domains, not just CI/CD.
+        alert_class = str(obj.get("alert_class") or "")
+        kind = alert_class if alert_class else "alert"
         return AlertEntryDict(
-            kind="alert",
+            kind=kind,
             timestamp=str(obj.get("timestamp") or ""),
             repo=str(obj.get("repo") or ""),
             workflow_name=str(obj.get("workflow_name") or ""),
@@ -84,6 +90,7 @@ def _parse_line(line: str) -> AlertEntryDict | None:
             conclusion=str(obj.get("conclusion")) if obj.get("conclusion") else None,
             message=str(obj.get("message") or ""),
             run_url=str(obj.get("run_url")) if obj.get("run_url") else None,
+            alert_class=alert_class if alert_class else None,
         )
     if event_type == "github_workflow_event":
         return AlertEntryDict(
@@ -95,6 +102,7 @@ def _parse_line(line: str) -> AlertEntryDict | None:
             conclusion=str(obj.get("conclusion")) if obj.get("conclusion") else None,
             message=None,
             run_url=None,
+            alert_class=None,
         )
     return None
 
@@ -176,10 +184,13 @@ async def load_alerts_payload(source: str = "live", days: int = _DEFAULT_DAYS) -
         return _cache[1]
     entries = await asyncio.to_thread(_read_ledgers_sync, days)
     entries.sort(key=lambda e: e["timestamp"], reverse=True)
+    # Include all alert-class entries (CI "alert" + non-CI kinds) in the alerts list.
+    # "event" (promotion workflow state) entries are streams-only, not alerts.
+    alerts = [e for e in entries if e["kind"] != "event"][:_MAX_ITEMS]
     payload = AlertsPayloadDict(
         generated_at=dt.datetime.now(dt.UTC).isoformat(),
         source=source,
-        alerts=[e for e in entries if e["kind"] == "alert"][:_MAX_ITEMS],
+        alerts=alerts,
         streams=derive_streams(entries[:_MAX_ITEMS]),
     )
     _cache = (now, payload)
