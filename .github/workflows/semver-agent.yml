@@ -126,11 +126,38 @@ jobs:
             esac
           done < <(git log -10 --format=%s "$SCAN_REF" 2>/dev/null || true)
 
-          echo "Pending-bump scan on ${SCAN_REF}: ${RECENT_BUMPS} bump commit(s) in the last hour; ${CONSECUTIVE} consecutive at tip"
+          # Adjacent re-bump PAIRS in the last-hour window — a bump commit whose
+          # immediately-newer neighbour is ALSO a bump (no content commit between)
+          # is the genuine runaway signature (the baseline never recorded, so the
+          # bump re-fires on itself). A HEALTHY high-velocity repo bumps ONCE per
+          # LDR->staging drain — each bump preceded by a real `feat:`/`fix:` drain
+          # commit — yielding a strictly-climbing version sequence with ZERO
+          # adjacent bump pairs. The */15 drain cadence alone produces up to ~4
+          # legitimate bumps/hr, so the pre-2026-06-21 raw `RECENT_BUMPS>=3/hr`
+          # count false-tripped on exactly that interleaved climb (incident:
+          # deployment-service 0.15->0.16->0.17, 1-consecutive-at-tip, 2026-06-21).
+          # SSOT: plans/active/issues/staging_to_main_promotion_starvation_2026_06_19.md.
+          REBUMP_PAIRS=0
+          PREV_WAS_BUMP=0
+          while IFS= read -r msg; do
+            case "$msg" in
+              "chore(release): bump version to "*)
+                [ "$PREV_WAS_BUMP" -eq 1 ] && REBUMP_PAIRS=$((REBUMP_PAIRS + 1))
+                PREV_WAS_BUMP=1 ;;
+              *) PREV_WAS_BUMP=0 ;;
+            esac
+          done < <(git log --since="1 hour ago" --format=%s "$SCAN_REF" 2>/dev/null || true)
 
-          if [ "$RECENT_BUMPS" -ge 3 ] || [ "$CONSECUTIVE" -ge 3 ]; then
+          echo "Pending-bump scan on ${SCAN_REF}: ${RECENT_BUMPS} bump(s)/hr; ${CONSECUTIVE} consecutive at tip; ${REBUMP_PAIRS} adjacent re-bump pair(s)"
+
+          # Trip ONLY on a genuine runaway: >=2 adjacent re-bump pairs (>=3 bumps
+          # with no content between, anywhere in the window) OR >=3 consecutive at
+          # the tip OR an absurd raw rate (>=6/hr, well above the ~4/hr drain
+          # ceiling — a safety backstop even if every bump were content-backed).
+          # A content-backed climbing sequence has 0 re-bump pairs => never trips.
+          if [ "$REBUMP_PAIRS" -ge 2 ] || [ "$CONSECUTIVE" -ge 3 ] || [ "$RECENT_BUMPS" -ge 6 ]; then
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            TEXT=":rotating_light: *CRITICAL — semver-agent BUMP-RATE CIRCUIT BREAKER tripped* | deployment-api | ${RECENT_BUMPS} chore(release) bump commit(s) on staging in the last hour (${CONSECUTIVE} consecutive at tip; threshold 3). Runaway re-bump loop suspected — check the PM baseline writer (update-repo-version.yml) health + staging_versions[deployment-api]. REFUSING to dispatch another bump. ${RUN_URL}"
+            TEXT=":rotating_light: *CRITICAL — semver-agent BUMP-RATE CIRCUIT BREAKER tripped* | deployment-api | runaway re-bump signature on staging: ${REBUMP_PAIRS} adjacent re-bump pair(s) / ${CONSECUTIVE} consecutive at tip / ${RECENT_BUMPS} bump(s)/hr (trip: pairs>=2 OR consecutive>=3 OR rate>=6). A bump with NO content commit between it and the prior bump => the baseline never recorded. Check the PM baseline writer (update-repo-version.yml) health + staging_versions[deployment-api]. REFUSING to dispatch another bump. ${RUN_URL}"
             # Best-effort page on the canonical #ci-failures webhook; the loud signal is
             # the run failure either way (a missing webhook must not mask the halt).
             case "${SLACK_WEBHOOK_URL:-}" in
@@ -147,7 +174,7 @@ jobs:
                 severity:"CRITICAL", conclusion:"", run_url:$ru, message:$t}' \
               >> "$RUNNER_TEMP/semver_alert_ledger.jsonl" || true
             echo "SEMVER_ALERT_EMITTED=1" >> "$GITHUB_ENV"
-            echo "::error::Bump-rate circuit breaker: ${RECENT_BUMPS} pending bumps in the last hour / ${CONSECUTIVE} consecutive at staging tip (threshold 3). Refusing to dispatch another bump."
+            echo "::error::Bump-rate circuit breaker: ${REBUMP_PAIRS} adjacent re-bump pair(s) / ${CONSECUTIVE} consecutive at staging tip / ${RECENT_BUMPS} bumps/hr (trip: pairs>=2 OR consecutive>=3 OR rate>=6). Refusing to dispatch another bump."
             exit 1
           fi
 
