@@ -471,13 +471,15 @@ async def _overview_row(
     )
     main_sha = next((b["sha"] for b in branches if b["branch"] == "main"), None)
     ci_status = view.ci_status_for(meta.name)
-    # Per-branch v2 conclusion so the UI can annotate WHICH branch is red. ONLY fetched for
-    # non-MAIN_GREEN repos: a fully-green repo needs no branch annotation, and skipping it keeps
-    # the overview's GitHub-API budget bounded (3 Actions-API calls for only the handful of red
-    # repos, not for all 25 — the cold-overview rate-limit guard). Degrades to None per-branch on a
-    # fetch failure; never fails the row.
-    branch_ci: dict[str, str | None] = {}
-    if ci_status != "MAIN_GREEN":
+    # Per-branch v2 conclusion so the UI can colour-code WHICH branch is red/green.
+    # MAIN_GREEN repos are synthesised (all branches last-passed → all "success") without any
+    # extra API calls, preserving the GitHub-API budget bound for the majority of green repos.
+    # All other repos fetch live from the Actions API. Degrades to None per-branch on a fetch
+    # failure; never fails the row.
+    branch_ci: dict[str, str | None]
+    if ci_status == "MAIN_GREEN":
+        branch_ci = dict.fromkeys(PROMOTION_BRANCHES, "success")
+    else:
         try:
             conclusions = await asyncio.gather(
                 *[v2_conclusion_for_branch(session, token, GITHUB_ORG, meta.name, b) for b in PROMOTION_BRANCHES]
