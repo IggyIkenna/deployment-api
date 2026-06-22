@@ -8,8 +8,9 @@ registry) classified under exactly one live/batch/paper/experiment **umbrella** 
 cloud x service x asset_group, with live status / last-run / exit_code / heartbeat.
 
 The ``/repos`` page is the gold standard (overview + per-target detail); this is its
-deployments-axis equivalent. GCP first (operator); AWS items are an empty stub until
-Phase 5.
+deployments-axis equivalent. GCP (VMs + Cloud Run jobs) and AWS (EC2 backfill VMs +
+Batch Fargate jobs, ``cloud=AWS``) ride the same ``DeploymentItem`` contract so the UI
+renders both clouds uniformly (Phase 5 parity).
 
 Routes (collision-free with the existing ``routes/deployments/`` service-deploy CRUD
 package that already owns ``GET /api/deployments`` + ``/api/deployments/{id}``):
@@ -56,6 +57,7 @@ from unified_api_contracts import (
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.routes._aws_deployments import load_aws_inventory
 from deployment_api.routes._cloud_run_executions import (
     CloudRunExecutionStatus,
     latest_execution_by_job,
@@ -423,29 +425,91 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             captured_progress=None,
             run_log_uri="",
         ),
+        # AWS estate (Phase 5 parity) — an EC2 backfill VM + a Batch Fargate job,
+        # cloud=AWS, classified under the SAME umbrellas as the GCP items.
+        DeploymentItem(
+            name="mtds-backfill-cefi-20260622-aws",
+            kind="VM",
+            umbrella="BATCH",
+            cloud="AWS",
+            service="mtds-backfill",
+            asset_group="cefi",
+            status="running",
+            last_run_at="2026-06-22T11:30:00Z",
+            exit_code=None,
+            heartbeat_age_seconds=None,
+            captured_progress=None,
+            run_log_uri="",
+        ),
+        DeploymentItem(
+            name="manifest-consolidator-aws",
+            kind="CLOUD_RUN_JOB",
+            umbrella="BATCH",
+            cloud="AWS",
+            service="manifest-consolidator",
+            asset_group="cefi",
+            status="succeeded",
+            last_run_at="2026-06-22T06:05:00Z",
+            exit_code=0,
+            heartbeat_age_seconds=None,
+            captured_progress=None,
+            run_log_uri="",
+        ),
     ]
 
 
-def _load_inventory(now: datetime) -> list[DeploymentItem]:
-    """Load the live inventory (registry VMs + Cloud Run executions), or mock."""
+def _load_aws_items(now: datetime) -> list[DeploymentItem]:
+    """Census + classify the live AWS estate into inventory items (Phase 5 parity).
+
+    Reuses the curated ``_vm_lifecycle_class`` prefix resolver so AWS umbrella
+    derivation matches GCP exactly. The census itself degrades to an empty list on any
+    AWS error (no creds / boto3 absent / API down), so a missing AWS estate never
+    blocks the GCP inventory — AWS rides the same ``DeploymentItem`` contract.
+    """
+    region = _cfg.aws_codebuild_region or "ap-northeast-1"
+    item_dicts = load_aws_inventory(
+        region=region,
+        aws_account_id=_cfg.aws_account_id or "",
+        lifecycle_for_name=_vm_lifecycle_class,
+    )
+    return [DeploymentItem(**d) for d in item_dicts]  # type: ignore[arg-type]
+
+
+def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentItem]:
+    """Load the live inventory (registry VMs + Cloud Run executions + AWS), or mock.
+
+    GCP items load unless the caller filters ``cloud=aws``; AWS items load unless the
+    caller filters ``cloud=gcp`` (so an unset / ``aws`` filter includes the AWS estate).
+    The GCP path is unchanged — AWS items are appended.
+    """
     if _cfg.is_mock_mode():
         return _mock_inventory(now)
 
-    project_id = _cfg.require_gcp_project_id()
-    registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-    try:
-        vm_details = get_vm_instance_details(project_id)
-        running_vm_names = set(vm_details.keys())
-        all_active = registry.list_active()
-        active = [e for e in all_active if e.vm_name in running_vm_names]
-        recent = registry.list_recent_archive(days=7)
-        vm_entries = active + recent
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.exception("inventory: VM registry read failed: %s", exc)
-        raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
+    want_gcp = cloud is None or cloud.upper() == DeploymentCloud.GCP.value
+    want_aws = cloud is None or cloud.upper() == DeploymentCloud.AWS.value
 
-    cloud_run_status = latest_execution_by_job(project_id)
-    return build_inventory(vm_entries, cloud_run_status, now)
+    items: list[DeploymentItem] = []
+    if want_gcp:
+        project_id = _cfg.require_gcp_project_id()
+        registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
+        try:
+            vm_details = get_vm_instance_details(project_id)
+            running_vm_names = set(vm_details.keys())
+            all_active = registry.list_active()
+            active = [e for e in all_active if e.vm_name in running_vm_names]
+            recent = registry.list_recent_archive(days=7)
+            vm_entries = active + recent
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("inventory: VM registry read failed: %s", exc)
+            raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
+
+        cloud_run_status = latest_execution_by_job(project_id)
+        items.extend(build_inventory(vm_entries, cloud_run_status, now))
+
+    if want_aws:
+        items.extend(_load_aws_items(now))
+
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -466,12 +530,13 @@ def get_deployment_inventory(
 ) -> DeploymentInventoryResponse:
     """Unified deployment inventory: every VM + Cloud Run job, classified by umbrella.
 
-    GCP first; AWS items are an empty stub until Phase 5. Each item carries its
+    GCP **and** AWS (Phase 5 parity) — AWS EC2 backfill VMs + Batch Fargate jobs ride
+    the same ``DeploymentItem`` contract with ``cloud=AWS``. Each item carries its
     umbrella/cloud/service/asset_group classification + live status / last-run /
     exit_code / heartbeat / captured-progress.
     """
     now = datetime.now(UTC)
-    items = _load_inventory(now)
+    items = _load_inventory(now, cloud=cloud)
     filtered = _filter_items(
         items,
         umbrella=umbrella,
