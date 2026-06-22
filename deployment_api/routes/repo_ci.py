@@ -443,7 +443,8 @@ async def _overview_row(
     view: ManifestView,
     meta: RepoMeta,
     sit_run: tuple[str | None, int | None],
-    builds: dict[str, BuildSignal],
+    builds_gcp: dict[str, BuildSignal],
+    builds_aws: dict[str, BuildSignal],
     semaphore: asyncio.Semaphore,
 ) -> RepoOverviewDict | RepoErrorDict:
     """Aggregate one repo's row. On a per-repo (non-rate-limit) failure return a typed
@@ -541,6 +542,11 @@ async def _overview_row(
     codebase_health: CodebaseHealthDict | None = (
         cast(CodebaseHealthDict, raw_health) if raw_health is not None else None
     )
+    # Dual-cloud image: per-cloud build signal (both rendered side-by-side, no provider switch);
+    # `image` stays the active provider's (deployed_version / image_stale source).
+    image_gcp = _image_signal(view, meta.name, main_sha, builds_gcp)
+    image_aws = _image_signal(view, meta.name, main_sha, builds_aws)
+    image_active = image_aws if is_aws_provider() else image_gcp
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
@@ -550,7 +556,9 @@ async def _overview_row(
         deltas=deltas,
         open_prs=prs,
         sit=sit,
-        image=_image_signal(view, meta.name, main_sha, builds),
+        image=image_active,
+        image_gcp=image_gcp,
+        image_aws=image_aws,
         last_green_main=last_green_main,
         main_lag_age_min=main_lag_age_min,
         main_unpromoted_commits=main_unpromoted_commits,
@@ -597,15 +605,7 @@ def _build_promotion_blocked(view: ManifestView) -> list[PromotionBlockedDict]:
 
 
 @router.get("/overview")
-async def get_overview(
-    provider: _BuildProvider | None = Query(
-        default=None,
-        description=(
-            "Cloud whose build status to read for the Image column (repo-CI GCP/AWS toggle). "
-            "Omitted = the server's own provider. 'aws' reads CodeBuild via keyless WIF."
-        ),
-    ),
-) -> OverviewResponseDict:
+async def get_overview() -> OverviewResponseDict:
     """Fleet matrix: every repo's branch heads, deltas, CI status, PRs, SIT + deploy state."""
     cfg = DeploymentApiConfig()
     if cfg.is_mock_mode():
@@ -627,10 +627,17 @@ async def get_overview(
         )
         # Semver-agent standing health (G2) — one more global query (not per-repo).
         semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
-        builds = await _latest_builds_by_repo(provider)
+        # Dual-cloud image: fetch GCP + AWS in parallel (each already degrades to {} if its build
+        # API is unreachable) so every row shows both side-by-side — no provider toggle.
+        builds_gcp, builds_aws = await asyncio.gather(
+            _latest_builds_by_repo("gcp"), _latest_builds_by_repo("aws")
+        )
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
-            *[_overview_row(session, token, view, meta, sit_run, builds, semaphore) for meta in view.repos]
+            *[
+                _overview_row(session, token, view, meta, sit_run, builds_gcp, builds_aws, semaphore)
+                for meta in view.repos
+            ]
         )
     rows: list[RepoOverviewDict] = []
     errors: list[RepoErrorDict] = []

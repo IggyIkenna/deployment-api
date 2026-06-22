@@ -9,7 +9,7 @@ short TTL cache + workspace-manifest.json for the repo registry / ci_status / st
 from __future__ import annotations
 
 import datetime as dt
-from typing import Literal, Required, TypedDict
+from typing import Literal, NotRequired, Required, TypedDict
 
 # The three branches of the promotion contract (LDR -> staging -> SIT -> main).
 INTEGRATION_BRANCH = "live-defi-rollout"
@@ -183,6 +183,11 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     open_prs: list[RepoPrDict]
     sit: SitStateDict
     image: ImageSignalDict
+    # Dual-cloud image status (side-by-side, no provider switch): per-cloud build signal so the UI
+    # shows GCP + AWS at once. `image` stays the active-provider one (deployed_version / image_stale).
+    # Omitted/None for a cloud whose build API isn't reachable (creds/role) → UI renders "—".
+    image_gcp: NotRequired[ImageSignalDict | None]
+    image_aws: NotRequired[ImageSignalDict | None]
     # N2: most-recent GREEN main sha + time ("green as of <sha> · <age>"), distinct from the head.
     last_green_main: LastGreenDict | None
     # G6: age (minutes) of the oldest DIVERGED FILE's last LDR change — the true promotion lag
