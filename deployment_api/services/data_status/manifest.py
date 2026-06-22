@@ -385,8 +385,9 @@ class ManifestStatusMixin(MissingShardsMixin):
           → BrokenProcessPool): each category's dominant cost is ``_read_defi_merged_index`` — an
           I/O-bound GCS download + pyarrow parse that RELEASES the GIL — so threading overlaps the
           per-asset-group index loads even though the cell-grid compute stays GIL-serialised. That
-          collapses the cold ~5x (index load) serial cost to ~1x (the macOS slowness fix). Capped
-          at 4 workers to bound concurrent cell-grid memory on a wide date range.
+          collapses the cold ~5x (index load) serial cost to ~1x (the macOS slowness fix). Both
+          pools cap at ``_dss._MAX_BUILD_WORKERS`` to bound concurrent cell-grid memory (the OOM fix
+          — fanning all 5 AGs out at once peaked at 8604 MiB and killed the 8 GiB instance).
         - SERIAL: a single category — fan-out overhead would dwarf the work.
         """
         use_process_pool = (
@@ -398,7 +399,10 @@ class ManifestStatusMixin(MissingShardsMixin):
         )
         if use_process_pool:
             ctx = multiprocessing.get_context("fork")
-            with ProcessPoolExecutor(max_workers=min(len(cat_list), 5), mp_context=ctx) as pool:
+            with ProcessPoolExecutor(
+                max_workers=min(len(cat_list), _dss._MAX_BUILD_WORKERS),  # pyright: ignore[reportPrivateUsage]  # memory-budget cap (OOM fix)
+                mp_context=ctx,
+            ) as pool:
                 pp_futures = {
                     pool.submit(
                         build_category_in_subprocess,
@@ -414,7 +418,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 }
                 return {pp_futures[f]: f.result() for f in pp_futures}
         if len(cat_list) > 1 and not _dss._THREAD_POOL_DISABLED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
-            with ThreadPoolExecutor(max_workers=min(len(cat_list), 4)) as tpool:
+            with ThreadPoolExecutor(max_workers=min(len(cat_list), _dss._MAX_BUILD_WORKERS)) as tpool:  # pyright: ignore[reportPrivateUsage]  # memory-budget cap (OOM fix)
                 tp_futures = {
                     tpool.submit(
                         self._build_manifest_category,
