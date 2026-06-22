@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import Mapping
 from typing import cast
+from urllib.parse import quote
 
 import aiohttp
 import jwt
@@ -397,22 +398,52 @@ async def compare_branches(
     )
 
 
-async def oldest_unpromoted_commit_at(
-    session: aiohttp.ClientSession, token: str, org: str, repo: str, base: str, head: str
-) -> str | None:
-    """Commit time (ISO-8601) of the OLDEST commit in `head` not yet in `base` — the START of the
-    promotion lag (G6: "oldest unpromoted commit age", the signal `promotion-lag-monitor` pages on
-    at >60min). The compare API orders `commits` oldest→newest, so `per_page=1` returns just the
-    oldest. None when a ref is absent or `head` is not ahead of `base`."""
+async def diverged_content_lag(
+    session: aiohttp.ClientSession,
+    token: str,
+    org: str,
+    repo: str,
+    base: str,
+    head: str,
+    *,
+    max_files: int = 40,
+) -> tuple[str | None, int]:
+    """(oldest_iso, distinct_commit_count) for the CONTENT currently diverged between `base` and
+    `head`, computed from the changed FILES — NOT the commit graph.
+
+    The commit-graph `compare` is polluted by squash-originals (content already promoted, the SHA
+    lingers "ahead") and `main-backmerge-to-ldr` merge nodes (LDR-only by construction), so its
+    oldest commit phantom-ages to days (incident 2026-06-22: ui read 7d3h on a repo whose real
+    un-promoted content was ~2.5h old — the oldest "ahead" commit was a June-15 backmerge node).
+    Instead, for each currently-diverged file ask "when was its head-side version last set?"
+    (`GET /commits?sha={head}&path={file}&per_page=1`); the OLDEST across the diverged files is the
+    true content lag, and the count of DISTINCT last-setting commits is the real (squash-free) commit
+    count. Bounded to `max_files` per repo (a deeply-drifted repo's exact age matters less than the
+    >threshold signal). Returns (None, 0) when nothing is diverged."""
     payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/compare/{base}...{head}?per_page=1")
-    data = _as_dict(payload)
-    for commit_obj in _as_list(data.get("commits")):
-        commit = _as_dict(commit_obj)
-        inner = _as_dict(commit.get("commit"))
-        committer = _as_dict(inner.get("committer"))
+    files = [str(_as_dict(f).get("filename") or "") for f in _as_list(_as_dict(payload).get("files"))]
+    files = [f for f in files if f][:max_files]
+    if not files:
+        return None, 0
+
+    async def _last_set(path: str) -> tuple[str | None, str | None]:
+        rows = _as_list(
+            await gh_get_json(
+                session, token, f"/repos/{org}/{repo}/commits?sha={head}&path={quote(path, safe='/')}&per_page=1"
+            )
+        )
+        if not rows:
+            return None, None
+        entry = _as_dict(rows[0])
+        committer = _as_dict(_as_dict(entry.get("commit")).get("committer"))
         when = committer.get("date")
-        return when if isinstance(when, str) else None
-    return None
+        sha = entry.get("sha")
+        return (when if isinstance(when, str) else None), (str(sha) if sha else None)
+
+    results = await asyncio.gather(*[_last_set(f) for f in files])
+    dates = [d for d, _ in results if d]
+    shas = {s for _, s in results if s}
+    return (min(dates) if dates else None), len(shas)
 
 
 async def list_branch_commits(

@@ -37,6 +37,7 @@ from ._repo_ci_github import (
     age_minutes,
     branch_head,
     compare_branches,
+    diverged_content_lag,
     gh_get_json,
     head_blocking_status_contexts,
     head_check_rollup,
@@ -45,7 +46,6 @@ from ._repo_ci_github import (
     latest_workflow_run_with_jobs,
     list_branch_commits,
     list_open_promotion_prs,
-    oldest_unpromoted_commit_at,
     resolve_gh_token,
     v2_conclusion_for_branch,
     v2_conclusion_for_sha,
@@ -505,23 +505,26 @@ async def _overview_row(
             lg = None
         if lg is not None:
             last_green_main = LastGreenDict(sha=lg[0], at=lg[1])
-    # G6: promotion-lag age — the age of the OLDEST LDR commit not yet on main (the lag the
-    # promotion-lag-monitor pages on at >60min). Gated on REAL content delta (files_changed>0, via
-    # _has_unpromoted_content), NOT ahead_by: a squash-skew repo (ahead_by>0, files_changed=0) has
-    # already promoted its content and must show NO lag (else a 4-day-old squashed commit reddens a
-    # fully-drained row). A repo in sync has no lag → no extra API call.
+    # G6: promotion-lag age + real commit count — computed from the DIVERGED FILES, not the commit
+    # graph. The commit graph is polluted by squash-originals (content already promoted, SHA lingers
+    # ahead) and main-backmerge-to-ldr merge nodes (LDR-only by construction), so its oldest commit
+    # phantom-ages to days (2026-06-22: ui showed 7d3h on content that was really ~2.5h old). Gated on
+    # REAL content delta (files_changed>0): a squash-skew repo (files_changed=0) shows NO lag. A repo
+    # in sync makes no extra API call.
     main_lag_age_min: int | None = None
+    main_unpromoted_commits: int | None = None
     ldr_main = next((d for d in deltas if d["base"] == "main" and d["head"] == "live-defi-rollout"), None)
     if _has_unpromoted_content(ldr_main):
         try:
-            oldest_at = await oldest_unpromoted_commit_at(
+            oldest_at, commit_count = await diverged_content_lag(
                 session, token, GITHUB_ORG, meta.name, "main", "live-defi-rollout"
             )
         except (TimeoutError, aiohttp.ClientError, ValueError, HTTPException) as exc:
             logger.warning("[REPO-CI] %s lag-age fetch degraded: %s", meta.name, exc)
-            oldest_at = None
+            oldest_at, commit_count = None, 0
         if oldest_at is not None:
             main_lag_age_min = age_minutes(oldest_at)
+        main_unpromoted_commits = commit_count or None
     # promotion-drain follow-up: drain-stalled = real content ahead of staging/main (files_changed,
     # NOT ahead_by — squash-merges keep LDR perpetually ahead-by-commit-count even when content
     # matches) AND this repo's own standing promotion PR is stuck on a BLOCKING class. A fleet-wide
@@ -550,6 +553,7 @@ async def _overview_row(
         image=_image_signal(view, meta.name, main_sha, builds),
         last_green_main=last_green_main,
         main_lag_age_min=main_lag_age_min,
+        main_unpromoted_commits=main_unpromoted_commits,
         drain_stalled=drain_stalled,
         # tier from the manifest now; blocked_by/blocking are the CROSS-repo dep-order fields filled
         # by _compute_dep_order in get_overview once every row exists (they need the whole fleet's
