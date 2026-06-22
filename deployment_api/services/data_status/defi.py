@@ -361,24 +361,34 @@ class DefiStatusMixin(DataStatusCliMixin):
     def _filter_to_canonical_defi_venues(self, index: pd.DataFrame) -> pd.DataFrame:
         """Keep rows whose ``(venue, chain)`` is a canonical DeFi pair.
 
-        Rows missing one or both axes are kept (defensive — better to
-        let the downstream legacy-row filter clean them than to drop
-        valid rows that just predate the chain split).
+        Rows with a truly empty *venue* are kept (they cannot be classified
+        here and are handled downstream).  Rows with a non-empty DeFi protocol
+        venue but a blank *chain* are intentionally dropped: they are
+        sub-bucket phantom rows (e.g. from oracle-prices / perp-funding shards
+        that pre-date the chain split) that are NOT in the canonical
+        ``(venue, chain)`` whitelist.  If kept, they reach
+        :meth:`_canonicalise_defi_venue_column` where
+        ``normalize_defi_venue(venue, None)`` returns the bare protocol string
+        (e.g. ``TRADER_JOE_V2``), producing a duplicate bare-protocol entry
+        alongside the canonical ``TRADER_JOE_V2-AVALANCHE`` entry.
+        ``_filter_legacy_defi_rows`` only catches *hyphenated* venue names like
+        ``AAVE_V3-ETHEREUM`` and does not close this gap.
         """
         if "venue" not in index.columns or "chain" not in index.columns:
             return index
         allowed = self._allowed_defi_venue_chain_pairs()
         venues = index["venue"].fillna("").astype(str).str.upper()
         chains = index["chain"].fillna("").astype(str).str.upper()
-        # Keep rows with empty venue OR empty chain — those are caught by
-        # the downstream ``_filter_legacy_defi_rows`` pass; we don't want
-        # to drop them here without context.
-        empty_axis = (venues == "") | (chains == "")
+        # Keep rows with genuinely empty venue (no venue axis) — truly
+        # ambiguous rows we cannot classify here.  Rows with a blank *chain*
+        # but a real DeFi protocol venue are NOT passed through: they are not
+        # in the whitelist and would produce bare-protocol duplicate entries.
+        empty_venue = venues == ""
         in_whitelist = pd.Series(
             [(v, c) in allowed for v, c in zip(venues.tolist(), chains.tolist(), strict=True)],
             index=index.index,
         )
-        keep = empty_axis | in_whitelist
+        keep = empty_venue | in_whitelist
         dropped = int((~keep).sum())
         if dropped > 0:
             logger.debug("DEFI venue whitelist dropped %d non-DeFi rows from merged index", dropped)

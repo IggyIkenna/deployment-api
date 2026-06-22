@@ -177,29 +177,16 @@ class DataAnalyticsService:
         service: str,
         start_date: str,
         end_date: str,
-        from_data_status_service: Callable[  # Callable to get fresh data
-            ..., Coroutine[Any, Any, dict[str, object]]
-        ],
+        from_data_status_service: Callable[..., Coroutine[Any, Any, dict[str, object]]],
         asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
         pipeline_modes: list[str] | None = None,
     ) -> dict[str, object]:
-        """
-        Get data status with turbo mode caching.
+        """Return data status with turbo-mode rollup cache.
 
-        Args:
-            service: Service name
-            start_date: Start date
-            end_date: End date
-            asset_groups: Asset groups filter
-            venues: Venues filter
-            pipeline_modes: Pipeline mode filter (OR semantics, bypasses rollup cache)
-            from_data_status_service: Callable to get fresh data
-
-        Returns:
-            Data status result (cached or fresh)
+        ``pipeline_modes`` is OR-semantics and bypasses the rollup cache
+        (produces a per-mode breakdown not held in the fleet-wide cache).
         """
-        # Generate cache key
         cache_key = self._generate_cache_key(
             service=service,
             start_date=start_date,
@@ -208,16 +195,11 @@ class DataAnalyticsService:
             venues=venues,
             pipeline_modes=",".join(sorted(pipeline_modes)) if pipeline_modes else None,
         )
-
-        # Check cache first
         cached_result = self.get_cached_result(cache_key)
         if cached_result is not None:
-            # Add turbo indicator
             cached_result["turbo_mode"] = True
             cached_result["from_cache"] = True
             return cached_result
-
-        # Get fresh data
         fresh_result = await from_data_status_service(
             service=service,
             start_date=start_date,
@@ -225,13 +207,10 @@ class DataAnalyticsService:
             asset_groups=asset_groups,
             venues=venues,
         )
-
-        # Cache the result if successful
         if "error" not in fresh_result:
             fresh_result["turbo_mode"] = True
             fresh_result["from_cache"] = False
             self.cache_result(cache_key, fresh_result)
-
         return fresh_result
 
     async def get_cache_stats(self) -> dict[str, object]:

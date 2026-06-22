@@ -14,20 +14,23 @@ Honest-degradation contract (this is a read-only monitoring endpoint):
   registry of the live-today prefixes and route through the UAC ``classify_vm_name``
   longest-prefix matcher. An unknown prefix degrades to ``EPHEMERAL_BATCH`` (the safe
   default — the overwhelming majority of unregistered VM names are batch pipeline jobs).
-* **zombie / OOM** — the canonical detector is the deployment-service ``vm_zombie_watchdog``
-  (``WatchdogVerdict``). It computes verdicts in-memory each poll cycle but does NOT persist
-  a readable census/verdict snapshot to GCS (its only non-heartbeat upload is forensic
-  log/serial-console archival at kill time). With no snapshot to read, ``zombie``/``oom``
-  degrade HONESTLY to ``False`` / ``0`` rather than being fabricated. (OOM is not a watchdog
-  verdict at all — there is no readable OOM signal in the fleet today.)
+* **zombie / OOM** — sourced from the GCS census snapshot written by deployment-service's
+  ``vm_zombie_watchdog`` after each poll cycle (``vm-census/watchdog-census.json`` in the
+  deployment-scripts bucket). ``load_watchdog_census`` reads the blob, checks staleness
+  (>``_CENSUS_STALE_MINUTES``), and returns ``(zombie_names, oom_names)`` frozensets;
+  absent/stale → ``(frozenset(), frozenset())`` so the census degrades honestly to 0 rather
+  than fabricating data. OOM is always ``[]`` in the snapshot (no OOM detection exists today
+  — honest absence).
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from unified_api_contracts import LifecycleClass, VmPrefixSpec, classify_vm_name
+from unified_trading_library import get_storage_client
 
 from deployment_api.routes._fleet_types import (
     VmCensusEntry,
@@ -68,6 +71,10 @@ _CENSUS_PREFIX_REGISTRY: dict[str, VmPrefixSpec] = {
 # Unknown prefix → batch. The honest default: an unregistered VM is almost always an
 # ephemeral data-pipeline backfill (cefi-*/defi-*/tradfi-*/etc.), which IS EPHEMERAL_BATCH.
 _DEFAULT_LIFECYCLE = LifecycleClass.EPHEMERAL_BATCH
+
+# GCS census snapshot written by vm_zombie_watchdog.py after each poll cycle.
+_CENSUS_BLOB = "vm-census/watchdog-census.json"
+_CENSUS_STALE_MINUTES = 30  # watchdog runs ~15 min; stale after 2 missed cycles → degrade
 
 # GCE instance.status values → our 4-state wire literal. GCE has more states
 # (PROVISIONING / STAGING / REPAIRING / SUSPENDED) — map them honestly to the nearest
@@ -125,9 +132,46 @@ def _age_min(creation_timestamp: str, now: datetime) -> int | None:
     return max(0, int(delta_s // 60))
 
 
+def load_watchdog_census(
+    project_id: str,
+    now: datetime,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Read the watchdog census JSON written by vm_zombie_watchdog.py.
+
+    Returns ``(zombie_names, oom_names)`` — both are frozensets of VM names.
+    Degrades to ``(frozenset(), frozenset())`` when the blob is absent, unreadable,
+    or stale (older than ``_CENSUS_STALE_MINUTES``) so the census never fabricates data.
+    """
+    bucket_name = f"deployment-scripts-{project_id}"
+    try:
+        storage = get_storage_client(project_id=project_id)
+        bucket = storage.bucket(bucket_name)
+        blob = bucket.blob(_CENSUS_BLOB)
+        raw = blob.download_as_bytes()
+        data = json.loads(raw)
+        ts_str = str(data.get("ts", ""))  # noqa: qg-empty-fallback — absent ts → stale
+        ts = datetime.fromisoformat(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if (now - ts) > timedelta(minutes=_CENSUS_STALE_MINUTES):
+            logger.warning(
+                "vm-census: watchdog census stale (age=%.0f min > %d min threshold) — degrading zombie/OOM to 0",
+                (now - ts).total_seconds() / 60,
+                _CENSUS_STALE_MINUTES,
+            )
+            return frozenset(), frozenset()
+        zombie_names = frozenset(str(n) for n in data.get("zombies", []))  # noqa: qg-empty-fallback — absent key → empty
+        oom_names = frozenset(str(n) for n in data.get("oom", []))  # noqa: qg-empty-fallback — absent key → empty
+        return zombie_names, oom_names
+    except Exception as exc:
+        logger.warning("vm-census: failed to load watchdog census (degrading to 0): %s", exc)
+        return frozenset(), frozenset()
+
+
 def build_vm_census(
     vm_details: dict[str, dict[str, object]],
     now: datetime,
+    watchdog_census: tuple[frozenset[str], frozenset[str]] | None = None,
 ) -> VmCensusResponse:
     """Roll a GCE instance-details map into the VM-census response.
 
@@ -137,13 +181,18 @@ def build_vm_census(
             result of a compute-API failure) yields all-zero counts + an empty ``vms`` list
             — never a crash.
         now: UTC "now" for age computation (injected for deterministic tests).
+        watchdog_census: ``(zombie_names, oom_names)`` frozensets from
+            ``load_watchdog_census``. ``None`` or an absent/stale snapshot degrades
+            honestly to ``zombie=0 / oom=False`` — never fabricated.
 
     Returns:
-        A :class:`VmCensusResponse`. ``zombie``/``oom`` are honestly ``0`` / ``False``
-        (no readable watchdog snapshot exists — see module docstring).
+        A :class:`VmCensusResponse` with live zombie/OOM counts when the watchdog
+        census snapshot is present and fresh; degraded all-zero counts otherwise.
     """
+    zombie_names, oom_names = watchdog_census if watchdog_census is not None else (frozenset(), frozenset())
+
     entries: list[VmCensusEntry] = []
-    running = expected = stopped = 0
+    running = expected = stopped = zombie_count = oom_count = 0
 
     for name in sorted(vm_details):
         details = vm_details[name]
@@ -153,6 +202,8 @@ def build_vm_census(
 
         lifecycle = _classify_lifecycle(name)
         status = _map_status(raw_status)
+        is_zombie = name in zombie_names
+        is_oom = name in oom_names
 
         if status == "RUNNING":
             running += 1
@@ -160,6 +211,10 @@ def build_vm_census(
             stopped += 1
         if lifecycle in _EXPECTED_LIFECYCLES:
             expected += 1
+        if is_zombie:
+            zombie_count += 1
+        if is_oom:
+            oom_count += 1
 
         entries.append(
             VmCensusEntry(
@@ -167,9 +222,8 @@ def build_vm_census(
                 prefix=_vm_prefix(name),
                 lifecycle_class=lifecycle,
                 status=status,
-                # No readable watchdog verdict snapshot → honest defaults (NEVER fabricated).
-                zombie=False,
-                oom=False,
+                zombie=is_zombie,
+                oom=is_oom,
                 age_min=_age_min(creation_timestamp, now),
                 zone=zone,
             )
@@ -179,11 +233,11 @@ def build_vm_census(
         generated_at=now.isoformat(),
         running=running,
         expected=expected,
-        zombie=0,
-        oom=0,
+        zombie=zombie_count,
+        oom=oom_count,
         stopped=stopped,
         vms=entries,
     )
 
 
-__all__ = ["build_vm_census"]
+__all__ = ["build_vm_census", "load_watchdog_census"]
