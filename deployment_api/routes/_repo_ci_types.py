@@ -153,6 +153,20 @@ class LastGreenDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape,
     at: str
 
 
+class CodebaseHealthDict(TypedDict, total=False):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """Per-repo QG health snapshot: coverage, failing gate, file-debt (Cov%/QG-reason/File-debt columns).
+
+    Sourced from Firestore ``ci_status/{repo}.codebase_health`` (authoritative) with manifest
+    ``repositories[repo].codebase_health`` as the offline fallback.  All fields are optional so
+    absent / partial data still serialises cleanly — the frontend renders "—" for None.
+    """
+
+    coverage_pct: float | None  # pytest coverage percentage (0.0-100.0); None = not yet captured
+    qg_red_reason: str | None  # e.g. "pytest" / "basedpyright" / "ruff" / "bandit"; None = passed
+    large_file_count: int | None  # files >= 900 lines (hard QG limit)
+    warn_file_count: int | None  # files 700..899 lines (warn zone)
+
+
 class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
     """One row of the fleet overview matrix."""
 
@@ -185,6 +199,8 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     tier: str  # dependency layer from manifest (stringified)
     blocked_by: list[DepBlockerDict]  # deps NOT on main holding THIS repo's promotion (empty = clear)
     blocking: list[str]  # repos held because THIS repo isn't on main yet (empty = not a blocker)
+    # QG health snapshot for the Cov%/QG-reason/File-debt columns — None when not yet captured.
+    codebase_health: CodebaseHealthDict | None
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

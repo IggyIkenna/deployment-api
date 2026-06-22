@@ -1857,6 +1857,50 @@ class TestDefiLegacyVenueFilter:
         assert "BINANCE-FUTURES" in seen_venues
         assert "OKX-SWAP" in seen_venues
 
+    def test_blank_chain_protocol_row_does_not_produce_bare_protocol_duplicate(self):
+        """Regression: blank-chain DeFi protocol row must not produce a bare PROTOCOL
+        duplicate entry alongside the canonical PROTOCOL-CHAIN entry.
+
+        Scenario: consolidated index contains
+          (venue=TRADER_JOE_V2, chain='')       — sub-bucket phantom row (blank chain)
+          (venue=TRADER_JOE_V2, chain=AVALANCHE) — canonical row
+
+        Expected: after _filter_to_canonical_defi_venues + _canonicalise_defi_venue_column
+          only 'TRADER_JOE_V2-AVALANCHE' appears; bare 'TRADER_JOE_V2' is absent.
+        """
+        svc = _make_svc()
+
+        # Synthetic index: one phantom blank-chain row + two canonical rows.
+        mixed_df = pd.DataFrame(
+            {
+                "date": ["2026-04-17", "2026-04-17", "2026-04-17"],
+                "venue": ["TRADER_JOE_V2", "TRADER_JOE_V2", "AAVE_V3"],
+                "chain": ["", "AVALANCHE", "AVALANCHE"],
+                "service_name": ["market-tick-data-service"] * 3,
+                "data_type": ["ohlcv"] * 3,
+                "capture_status": ["captured"] * 3,
+                "row_count": [50, 100, 200],
+            }
+        )
+
+        # Step 1: whitelist filter — blank-chain phantom must be dropped.
+        filtered = svc._filter_to_canonical_defi_venues(mixed_df)
+        filtered_venues_chains = list(zip(filtered["venue"].tolist(), filtered["chain"].tolist(), strict=True))
+        assert ("TRADER_JOE_V2", "") not in filtered_venues_chains, (
+            "blank-chain TRADER_JOE_V2 row should have been dropped by whitelist filter"
+        )
+        assert ("TRADER_JOE_V2", "AVALANCHE") in filtered_venues_chains, (
+            "canonical (TRADER_JOE_V2, AVALANCHE) row must survive the whitelist filter"
+        )
+
+        # Step 2: canonicalise — venue column must be PROTOCOL-CHAIN, no bare PROTOCOL.
+        canonicalised = svc._canonicalise_defi_venue_column(filtered)
+        result_venues = set(canonicalised["venue"].tolist())
+        assert "TRADER_JOE_V2" not in result_venues, "bare TRADER_JOE_V2 must not appear after canonicalisation"
+        assert "TRADER_JOE_V2-AVALANCHE" in result_venues, (
+            "canonical TRADER_JOE_V2-AVALANCHE must be present after canonicalisation"
+        )
+
 
 class TestMTDSHonestCoverage:
     """MTDS honest-coverage aggregator (Phase 6c).
