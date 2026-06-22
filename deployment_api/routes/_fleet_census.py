@@ -147,9 +147,9 @@ def build_vm_census(
 
     for name in sorted(vm_details):
         details = vm_details[name]
-        raw_status = str(details.get("status", ""))
-        zone = str(details.get("zone", ""))
-        creation_timestamp = str(details.get("creation_timestamp", ""))
+        raw_status = str(details.get("status", ""))  # noqa: qg-empty-fallback — GCE field absent → census default
+        zone = str(details.get("zone", ""))  # noqa: qg-empty-fallback — GCE field absent → census default
+        creation_timestamp = str(details.get("creation_timestamp", ""))  # noqa: qg-empty-fallback — GCE field default
 
         lifecycle = _classify_lifecycle(name)
         status = _map_status(raw_status)

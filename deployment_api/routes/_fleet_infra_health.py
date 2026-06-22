@@ -116,8 +116,8 @@ def _parse_alerts(raw: object) -> list[InfraVmAlert]:
         out.append(
             InfraVmAlert(
                 severity=cast(AlertSeverity, severity),  # constrained to _VALID_SEVERITIES above
-                kind=str(alert.get("kind", "")),
-                detail=str(alert.get("detail", "")),
+                kind=str(alert.get("kind", "")),  # noqa: qg-empty-fallback — AO payload field → proxy default
+                detail=str(alert.get("detail", "")),  # noqa: qg-empty-fallback — AO payload field → proxy default
             )
         )
     return out
@@ -134,7 +134,7 @@ def _parse_summary(raw: object) -> InfraVmSummary | None:
         role = "unknown"
     label_raw = s.get("label")
     return InfraVmSummary(
-        vm_id=str(s.get("vm_id", "")),
+        vm_id=str(s.get("vm_id", "")),  # noqa: qg-empty-fallback — AO payload field → proxy default
         role=cast(VmRole, role),  # constrained to _VALID_ROLES above
         label=str(label_raw) if label_raw is not None else None,
         slots_total=_coerce_int(s.get("slots_total")),
@@ -155,13 +155,13 @@ def _parse_slot(raw: object) -> InfraVmSlot | None:
     if not isinstance(raw, dict):
         return None
     entry = cast(dict[str, object], raw)
-    vm_id = str(entry.get("id", ""))
+    vm_id = str(entry.get("id", ""))  # noqa: qg-empty-fallback — AO payload field → proxy default
     error_raw = entry.get("error")
     summary = _parse_summary(entry.get("summary"))
     return InfraVmSlot(
         id=vm_id,
         label=str(entry.get("label", vm_id)),
-        url=str(entry.get("url", "")),
+        url=str(entry.get("url", "")),  # noqa: qg-empty-fallback — AO payload field → proxy default
         # A VM is "available" iff it returned a usable summary (the orchestrator sets
         # error+summary=None for an unreachable backend) — derive it, don't trust a field.
         available=summary is not None,
