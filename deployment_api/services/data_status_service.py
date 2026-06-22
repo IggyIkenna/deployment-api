@@ -241,7 +241,6 @@ from deployment_api.services.data_status.sports_helpers import (
     sports_trigger_dates_for_window as _sports_trigger_dates_for_window,
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
-from deployment_api.services.manifest_source import is_service_beta as _is_service_beta
 from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import DATA_STATUS_DISABLE_PROCESS_POOL as _DISABLE_PROCESS_POOL
 from deployment_api.settings import deployment_env_short as _env_short
@@ -424,6 +423,18 @@ _PROCESS_POOL_DISABLED = _DISABLE_PROCESS_POOL
 # so tests/scripts can patch it.
 _THREAD_POOL_DISABLED = False
 
+# Build fan-out cap — the MAX concurrent per-asset-group cell-grid builds in the
+# Process/Thread pool of ``build_all_categories``. Each parallel worker holds a full
+# AG cell-grid intermediate (~1.4 GiB peak for the big market-tick-data-service index),
+# so fanning out all 5 asset groups at once peaked at 8604 MiB and OOM-killed the 8 GiB
+# Cloud Run instance (the per-request ``/data-status/turbo`` "Unknown error" — the OOM
+# returns no JSON body, so the UI's ``response.json().catch`` falls back to that string).
+# Capping at 3 bounds the peak to ~base + 3x grid (~5.7 GiB) so a per-request fresh compute
+# fits even the old 8 GiB box. The rollup endpoint runs FULLY serial via the two toggles
+# above; this caps the on-demand API path race-free (no per-request global mutation, which
+# would race under concurrency=80). Module-level so tests/scripts can patch it.
+_MAX_BUILD_WORKERS = 3
+
 _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL = 300  # 5 minutes
 
@@ -488,13 +499,10 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
-        # on backend). Treat missing/parse-errors as "fresh enough" to read.
-        # BETA exemption is PER-SERVICE: a beta-eligible service's blob is derived from the
-        # STATIC projected-v9 index (a migration preview, not a live feed), so it never goes
-        # "stale" — skip the gate (else it 503s into an all-AG live compute). A NON-eligible
-        # service reads its LIVE blob even in beta mode, so it MUST still respect staleness —
-        # otherwise a frozen live blob (e.g. the worker stalled) is served indefinitely.
-        if meta is not None and getattr(meta, "updated", None) is not None and not _is_service_beta(service):
+        # on backend). Treat missing/parse-errors as "fresh enough" to read. Respect
+        # staleness — otherwise a frozen live blob (e.g. the worker stalled) is served
+        # indefinitely.
+        if meta is not None and getattr(meta, "updated", None) is not None:
             age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
