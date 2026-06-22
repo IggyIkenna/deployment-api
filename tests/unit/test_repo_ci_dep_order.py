@@ -55,10 +55,12 @@ def _row(repo: str, ci_status: str, *, staging_main_files: int = 0) -> RepoOverv
         },
         last_green_main=None,
         main_lag_age_min=None,
+        main_unpromoted_commits=None,
         drain_stalled=False,
         tier="",
         blocked_by=[],
         blocking=[],
+        codebase_health=None,
     )
 
 

@@ -185,9 +185,13 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     image: ImageSignalDict
     # N2: most-recent GREEN main sha + time ("green as of <sha> · <age>"), distinct from the head.
     last_green_main: LastGreenDict | None
-    # G6: age (minutes) of the oldest LDR commit not yet on main — the promotion lag the
-    # promotion-lag-monitor pages on (>60min). None when LDR is in sync with main (no lag).
+    # G6: age (minutes) of the oldest DIVERGED FILE's last LDR change — the true promotion lag
+    # (>60min pages). Files-based, NOT the commit graph (squash-originals + backmerge merge-nodes
+    # phantom-age the oldest "ahead" commit to days). None when LDR is in sync with main (no lag).
     main_lag_age_min: int | None
+    # Real (squash-free) commit count carrying the LDR→main delta — distinct last-setting commits of
+    # the diverged files; the trustworthy replacement for the squash-inflated ahead_by in the UI.
+    main_unpromoted_commits: int | None
     # promotion-drain follow-up: True when this repo has REAL file-content ahead of staging or main
     # (files_changed > 0, not squash skew) AND the corresponding global drain leg is failing/stale
     # (>45min = 3 missed 15-min ticks) — the bug-#11 class where content piles on LDR with a dead

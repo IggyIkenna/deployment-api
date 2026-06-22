@@ -149,6 +149,8 @@ def _mock_row(
         # G6: every mock row is LDR-ahead-of-main (delta ahead_by=3) so it has a lag; FAILING
         # repos sit longer (the drain is stuck). >60min so the lag-chip renders prominently.
         main_lag_age_min=185 if ci_status == "FAILING" else 95,
+        # real (squash-free) commit count behind the LDR→main delta
+        main_unpromoted_commits=3 if ci_status == "FAILING" else 2,
         # promotion-drain follow-up: drain-stalled = content ahead (every mock row is) AND a
         # BLOCKING stuck PR (conflicting / failing_check / skip_ci_jammed). Derived from prs so the
         # mock can't drift from the real contract. (execution-service: skip_ci_jammed + failing_check;
