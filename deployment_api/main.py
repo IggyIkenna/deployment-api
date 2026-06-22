@@ -63,6 +63,7 @@ from .routes import (
     epics,
     execution_backtest_launch,
     fixtures,
+    fleet,
     infra_health,
     kill_switch_routes,
     log_stream,
@@ -202,6 +203,7 @@ _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
+_authenticated_router.include_router(fleet.router)  # Has its own prefix /api/fleet
 _authenticated_router.include_router(unified_alerts.router, prefix="/api", tags=["Alerts"])  # GET /api/alerts
 _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_gh_rate_limit.router, prefix="/api/repos", tags=["Repos"])
