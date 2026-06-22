@@ -19,11 +19,12 @@
 # context that bypasses the ghost cache (Option D).
 #
 # ## Trigger surface:
-#   push to [main, staging] + pull_request to [main, staging] + workflow_dispatch
-#   (live-defi-rollout removed from triggers — post-cutover scope; no remote CI on LDR)
+#   push to [main] + pull_request to [main, staging] + workflow_dispatch
+#   (live-defi-rollout never triggers — no remote CI on the gateless trunk;
+#    push:[staging] dropped 2026-06-10 A3 — staging-green inherits from the LDR→staging PR's v2)
 #
 # ## Substitution placeholders (rendered by rollout-workflow-templates.sh):
-#   - unified-trading-library unified-api-contracts deployment-service strategy-service market-tick-data-service   — transitive editable closure from the repo's pyproject
+#   - unified-trading-library unified-api-contracts deployment-service   — transitive editable closure from the repo's pyproject
 #                       `path = "../<repo>"` deps (manifest fallback if no pyproject)
 #   - deployment-api   — repo name (e.g. alerting-service)
 #   - deployment_api  — Python source dir (e.g. alerting_service) [reserved; derived
@@ -32,6 +33,11 @@
 name: quality-gates-v2
 
 on:
+  # A3 (ldr_trunk_promotion_decoupling_2026_06_10): NO QG on push:[staging]. The LDR→staging promote
+  # PR's v2 (pull_request below, head=LDR base=staging) runs on the exact tree that lands on staging
+  # and IS the staging gate; STAGING_GREEN inherits from that PR's pass (A1), so a second
+  # push:[staging] run is redundant. push:[main] stays (records MAIN_GREEN post-merge);
+  # pull_request:[main,staging] stays (the actual gates).
   push:
     branches: [main]
   pull_request:
@@ -53,19 +59,88 @@ jobs:
     name: Quality Gates (deployment-api)
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates-v2.yml@live-defi-rollout
     with:
-      dep_repos: "unified-trading-library unified-api-contracts deployment-service strategy-service market-tick-data-service"
+      dep_repos: "unified-trading-library unified-api-contracts deployment-service"
     secrets: inherit
     # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
     # are derived inside the reusable workflow from github.repository (caller's repo name)
     # and the conventional `<repo>_<underscored>` source-dir layout per workspace SSOT.
     # See `.github/workflows/python-quality-gates-v2.yml` in unified-trading-pm.
 
-  # Dispatch qg-passed to PM cloud-build-router on staging merge so Cloud Build runs the image build.
-  # cloud-build-router.yml in PM listens for this event and triggers the GCP Cloud Build pipeline.
-  dispatch-cloud-build:
-    name: Dispatch cloud-build trigger (staging only)
+  # Escalate a FAILED promotion-gate run to the orchestrator (event-driven LDR-QG-failure escalation).
+  # When quality-gates-v2 FAILS on an LDR→staging / LDR→main promotion PR, the deterministic CI/CD
+  # pipeline has hit a JUDGMENT wall it cannot fix itself (the promote PR is now red + blocked). Hand
+  # it to the agent-orchestrator via the canonical escalate-to-orchestrator.yml reusable workflow
+  # (repository_dispatch into PM, which owns that workflow), with wall_type=ldr_qg_failure — the
+  # orchestrator already recognises this wall (server/escalation.py WALL_TYPES) and spawns a $0-API
+  # setup-token worker that fixes the gate on live-defi-rollout and pings the authoring slot.
+  # Best-effort: a notify failure must NEVER fail the build further (the gate already failed). SSOT:
+  #   orchestrator_master.md (item P2 "event-driven LDR-QG-failure escalation") +
+  #   server/escalation.py + .github/workflows/escalate-to-orchestrator.yml (in unified-trading-pm).
+  escalate-ldr-qg-failure:
+    name: Escalate LDR-QG failure to orchestrator (promotion PR only)
     needs: quality-gates-v2
-    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    # Fire ONLY when (a) the gate FAILED, (b) this is a pull_request run, and (c) the PR targets a
+    # promotion branch (staging or main) — i.e. an LDR→staging / →main promotion gate. A PR into any
+    # other base, a push run, or a green gate never escalates. `always()` so the `failure()` of the
+    # needed job doesn't also skip THIS job.
+    if: >-
+      always() && needs.quality-gates-v2.result == 'failure'
+      && github.event_name == 'pull_request'
+      && (github.base_ref == 'staging' || github.base_ref == 'main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch escalate-to-orchestrator (ldr_qg_failure → orchestrator worker)
+        env:
+          # MUST be GH_PAT: a repository_dispatch fired with the default GITHUB_TOKEN does NOT trigger
+          # workflows (so escalate-to-orchestrator.yml in PM would never fire). GH_PAT also carries the
+          # cross-repo scope needed to dispatch into unified-trading-pm from a service repo.
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_ORG: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # `|| true` on the step (and set +e) → a dispatch failure (missing PAT, API hiccup) is logged
+        # but never reddens the run; the gate's own failure remains the actionable signal.
+        run: |
+          set +e
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "[escalate] no GH_PAT — cannot dispatch escalate-to-orchestrator; skipping (gate failure stands)."
+            exit 0
+          fi
+          CTX="quality-gates-v2 FAILED on promotion PR ${REPO}#${PR_NUMBER} (LDR -> ${BASE_REF}). The promote gate is red + the PR is blocked. Fix the gate failure ON live-defi-rollout (re-run the failing quality-gates.sh leg locally, fix root cause, ship via quickmerge), then the promotion re-gates green. Failing run: ${RUN_URL}"
+          # repository_dispatch into unified-trading-pm (it owns escalate-to-orchestrator.yml), exactly
+          # like the dispatch-cloud-build step targets PM's cloud-build-router. client_payload mirrors
+          # the escalate-to-orchestrator inputs (server/models/escalation.py EscalateRequest).
+          gh api "repos/${GH_ORG}/unified-trading-pm/dispatches" \
+            -f event_type=escalate-to-orchestrator \
+            -f "client_payload[repo]=${REPO}" \
+            -f "client_payload[pr_number]=${PR_NUMBER}" \
+            -f 'client_payload[wall_type]=ldr_qg_failure' \
+            -f "client_payload[context]=${CTX}" \
+            -f 'client_payload[authoring_slot]=ci' \
+            -f 'client_payload[model]=sonnet' \
+            && echo "[escalate] dispatched ldr_qg_failure for ${REPO}#${PR_NUMBER} -> orchestrator (via PM escalate-to-orchestrator)." \
+            || echo "[escalate] repository_dispatch failed (best-effort) — gate failure stands; check GH_PAT / PM dispatch perms."
+          exit 0
+
+  # Dispatch qg-passed to PM cloud-build-router on the MAIN QG run after promotion so Cloud Build
+  # runs the release image build. cloud-build-router.yml in PM listens for this event and triggers
+  # the GCP Cloud Build pipeline (branch=main → tag {version} / :latest, ENV=prod).
+  #
+  # FIRES ON push:[main] — NOT staging. A3 (ldr_trunk_promotion_decoupling_2026_06_10) dropped
+  # push:[staging] from the trigger surface above, which orphaned the prior `refs/heads/staging`
+  # condition (its only firing event was removed) → the image-build dispatch went DEAD fleet-wide
+  # (no qg-passed since 2026-06-10; :latest had to be hand-built off-pipeline). The reusable
+  # workflow's main push run records MAIN_GREEN AFTER the staging→main promotion merges, so this is
+  # the correct + only surviving point to fire the prod image build. SSOT: plan
+  # semver_version_bump_skip_ci_promotion_block + ldr_trunk_promotion_decoupling_2026_06_10 A3.
+  dispatch-cloud-build:
+    name: Dispatch cloud-build trigger (main release)
+    needs: quality-gates-v2
+    # Skip for a metadata-only commit (version bump or dep pin, fast-pathed by the reusable
+    # workflow): no code changed, so no image to rebuild.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.quality-gates-v2.outputs.metadata_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch qg-passed → cloud-build-router
