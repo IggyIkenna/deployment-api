@@ -53,30 +53,11 @@ def rollup_bucket() -> str:
 
 
 def rollup_blob_path(service: str, kind: str = "full") -> str:
-    """GCS object path for a service's rollup blob — beta-namespaced in beta mode.
+    """GCS object path for a service's rollup blob.
 
     ``kind`` is ``"full"`` (manifest rollup) or ``"coverage"`` (coverage-summary).
-
-    In CF-20 beta-manifest mode a BETA-ELIGIBLE service's rollup is computed from the
-    PROJECTED v9 index, not the live one, so it MUST live in a distinct blob
-    (``{service}/{kind}.beta.json.gz``) that never mixes with / overwrites the live rollup
-    (``{service}/{kind}.json.gz``). The worker WRITES the beta blob; the service (in beta
-    mode) READS it. This is what lets the all-asset-group beta view be served from cache —
-    without it the service live-computes every AG on each request and exceeds the Cloud Run
-    request timeout (HTTP 503).
-
-    Beta is PER-SERVICE (``manifest_source.is_service_beta``): only a beta-eligible service
-    (instruments-service) has a v9 projection. A non-eligible service (mtds/features/…) keeps
-    its LIVE ``{service}/{kind}.json.gz`` blob even while the deployment is in beta-preview
-    mode — namespacing it to a non-existent ``.beta`` blob is exactly what 503'd the
-    market-tick-data-service data-status page (2026-06-16).
     """
-    # Lazy import avoids an import cycle (manifest_source -> settings; rollup_cache is
-    # imported by the facade + manifest at module load).
-    from deployment_api.services import manifest_source
-
-    suffix = ".beta" if manifest_source.is_service_beta(service) else ""
-    return f"{service}/{kind}{suffix}.json.gz"
+    return f"{service}/{kind}.json.gz"
 
 
 def filter_dates_in_window(dates: list[str] | None, start_date: str, end_date: str) -> list[str]:
@@ -303,23 +284,15 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
     try:
         from unified_trading_library import get_storage_client
 
-        from deployment_api.services import manifest_source
-
         client = get_storage_client(project_id=_pid)
         bucket_name = rollup_bucket()
         blob_path = rollup_blob_path(service, "coverage")
         if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
-        # BETA exemption is PER-SERVICE: a beta-eligible service's blob is from the STATIC
-        # projected-v9 index, never "stale" in the live sense — skip the gate. A non-eligible
-        # service reads its LIVE blob even in beta mode, so it MUST still respect staleness
-        # (mirrors _read_rollup_if_fresh). is_service_beta = is_beta_mode AND beta-eligible.
-        if (
-            meta is not None
-            and getattr(meta, "updated", None) is not None
-            and not manifest_source.is_service_beta(service)
-        ):
+        # Respect staleness: a frozen live blob (e.g. the worker stalled) must not be served
+        # indefinitely — fall through to the on-demand compute (mirrors _read_rollup_if_fresh).
+        if meta is not None and getattr(meta, "updated", None) is not None:
             age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > ROLLUP_STALENESS_SEC:
                 logger.info(

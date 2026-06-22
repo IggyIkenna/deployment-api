@@ -35,16 +35,6 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="GCS bucket for deployment state storage",
     )
 
-    data_status_beta_manifest_blob: str = Field(
-        default="",
-        validation_alias=AliasChoices("DATA_STATUS_BETA_MANIFEST_BLOB"),
-        description=(
-            "CF-20 beta-manifest preview: blob template (formatted with {asset_group}) "
-            "read INSTEAD of the live availability _index by every data-status surface, "
-            "e.g. '_index/audit/projected_index_{asset_group}.parquet'. Empty = live index."
-        ),
-    )
-
     data_status_disable_process_pool: bool = Field(
         default=False,
         validation_alias=AliasChoices("DATA_STATUS_DISABLE_PROCESS_POOL"),

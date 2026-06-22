@@ -48,8 +48,7 @@ async def prewarm_indexes(service: str, *, days: int = 7, cloud: str = "gcp") ->
     loads and caches (5-min TTL) every asset-group index the Data Status landing page
     needs, with negligible cell-grid compute. The user's first real query then hits warm
     cache (~10s) instead of the cold ~50s/asset-group transpacific GCS fetch. Best-effort:
-    raises nothing the caller must handle (the lifespan wrapper logs + swallows). Honours
-    beta mode (reads through the same beta-aware seam)."""
+    raises nothing the caller must handle (the lifespan wrapper logs + swallows)."""
     end = dt.datetime.now(dt.UTC).date()
     start = end - dt.timedelta(days=days)
     svc = _dss.DataStatusService()
@@ -152,15 +151,11 @@ class ManifestStatusMixin(MissingShardsMixin):
             or bool(pipeline_modes)
             or bool(venue)
         )
-        # CF-20 beta preview: the rollup is now BETA-NAMESPACED (the worker writes
-        # ``{service}/full.beta.json.gz`` when it runs with the beta env;
-        # ``_read_rollup_if_fresh`` reads the same beta blob in beta mode — see
-        # ``rollup_cache.rollup_blob_path``). So serving it in beta mode renders
-        # BETA-derived data, not live — the invariant holds, and the all-asset-group
-        # beta view is served from cache instead of live-computing every AG per
-        # request (which exceeds the Cloud Run request timeout -> HTTP 503). If the
-        # beta rollup hasn't been written yet, the read returns None and we fall
-        # through to the (slower) beta-aware on-demand compute.
+        # The all-asset-group view is served from the precomputed rollup cache
+        # (``{service}/full.json.gz`` via ``_read_rollup_if_fresh``) instead of
+        # live-computing every AG per request (which exceeds the Cloud Run request
+        # timeout -> HTTP 503). If the rollup hasn't been written yet, the read
+        # returns None and we fall through to the (slower) on-demand compute.
         if not any_row_filter:
             rollup = await asyncio.to_thread(_dss._read_rollup_if_fresh, service)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             if rollup is not None:

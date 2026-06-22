@@ -58,16 +58,10 @@ class CoverageStatusMixin(VenueResolutionMixin):
 
         See plan: ``data_status_offline_rollup_2026_05_06.md``.
         """
-        # Rollup fast-path — ALWAYS attempted (mirrors get_manifest_status post-2026-06-16).
-        # The coverage rollup is PER-SERVICE beta-namespaced: ``read_coverage_rollup_if_fresh``
-        # → ``rollup_blob_path(service, "coverage")`` reads ``coverage.beta.json.gz`` for a
-        # beta-eligible service (instruments-service, projected-v9 derived) and the live
-        # ``coverage.json.gz`` for every other service — so the "never serve live-derived data
-        # in beta" invariant holds via the blob NAMESPACING, not by skipping the fast-path. The
-        # old ``if not is_beta_mode()`` guard skipped the rollup for EVERY service in beta mode,
-        # forcing a multi-minute live compute that 503'd the market-tick-data-service coverage
-        # panel (2026-06-16). A non-eligible service whose live blob is stale falls through
-        # (staleness gate enforced for it) — honest, not a fake.
+        # Rollup fast-path — ALWAYS attempted (mirrors get_manifest_status post-2026-06-16):
+        # ``read_coverage_rollup_if_fresh`` reads the precomputed ``coverage.json.gz``. A
+        # service whose live blob is stale falls through (staleness gate enforced) to the
+        # on-demand compute — honest, not a fake.
         rollup = await asyncio.to_thread(read_coverage_rollup_if_fresh, service)
         if rollup is not None:
             return filter_coverage_to_asset_groups(rollup, asset_groups)

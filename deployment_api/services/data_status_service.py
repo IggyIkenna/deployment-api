@@ -241,7 +241,6 @@ from deployment_api.services.data_status.sports_helpers import (
     sports_trigger_dates_for_window as _sports_trigger_dates_for_window,
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
-from deployment_api.services.manifest_source import is_service_beta as _is_service_beta
 from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import DATA_STATUS_DISABLE_PROCESS_POOL as _DISABLE_PROCESS_POOL
 from deployment_api.settings import deployment_env_short as _env_short
@@ -500,13 +499,10 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
-        # on backend). Treat missing/parse-errors as "fresh enough" to read.
-        # BETA exemption is PER-SERVICE: a beta-eligible service's blob is derived from the
-        # STATIC projected-v9 index (a migration preview, not a live feed), so it never goes
-        # "stale" — skip the gate (else it 503s into an all-AG live compute). A NON-eligible
-        # service reads its LIVE blob even in beta mode, so it MUST still respect staleness —
-        # otherwise a frozen live blob (e.g. the worker stalled) is served indefinitely.
-        if meta is not None and getattr(meta, "updated", None) is not None and not _is_service_beta(service):
+        # on backend). Treat missing/parse-errors as "fresh enough" to read. Respect
+        # staleness — otherwise a frozen live blob (e.g. the worker stalled) is served
+        # indefinitely.
+        if meta is not None and getattr(meta, "updated", None) is not None:
             age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
