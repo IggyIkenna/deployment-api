@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.routes._fleet_census import build_vm_census
+from deployment_api.routes._fleet_census import build_vm_census, load_watchdog_census
 from deployment_api.routes._fleet_infra_health import fetch_infra_vm_health
 from deployment_api.routes._fleet_mocks import mock_infra_vm_health, mock_vm_census
 from deployment_api.routes._fleet_types import InfraVmHealthResponse, VmCensusResponse
@@ -52,8 +52,10 @@ def get_vm_census() -> VmCensusResponse:
         logger.warning("vm-census: no gcp_project_id configured; returning empty census")
         return build_vm_census({}, datetime.now(UTC))
 
+    now = datetime.now(UTC)
+    watchdog_census = load_watchdog_census(project_id, now)
     vm_details = get_vm_instance_details(project_id)
-    return build_vm_census(vm_details, datetime.now(UTC))
+    return build_vm_census(vm_details, now, watchdog_census)
 
 
 @router.get("/infra-vm-health", response_model=InfraVmHealthResponse)
