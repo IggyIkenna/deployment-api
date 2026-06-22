@@ -136,3 +136,73 @@ def resolve_ci_status_map(
         if isinstance(status, str) and status:
             base[repo] = status
     return base
+
+
+# ── codebase_health helpers ─────────────────────────────────────────────────────
+
+_CodebaseHealthDict = dict[str, object]
+"""The raw codebase_health sub-dict from a Firestore ci_status doc or manifest entry.
+
+Keys (all optional): coverage_pct (float), qg_red_reason (str), large_file_count (int),
+warn_file_count (int).  None / missing keys stay absent; consumers validate per-field.
+"""
+
+
+def _manifest_codebase_health_map(manifest: dict[str, object]) -> dict[str, _CodebaseHealthDict]:
+    """Map repo-name → codebase_health from the manifest (fallback cache).
+
+    Mirrors ``_manifest_ci_status_map`` — tolerates dict-keyed or list ``repositories``.
+    Repos with no ``codebase_health`` key are omitted.
+    """
+    repos = manifest.get("repositories")
+    items: list[tuple[str, object]] = []
+    if isinstance(repos, dict):
+        items = [(str(k), v) for k, v in cast("dict[str, object]", repos).items()]
+    elif isinstance(repos, list):
+        for r in cast("list[object]", repos):
+            if isinstance(r, dict):
+                r_d = cast("dict[str, object]", r)
+                name = r_d.get("name")
+                if isinstance(name, str) and name:
+                    items.append((name, r_d))
+    out: dict[str, _CodebaseHealthDict] = {}
+    for name, value in items:
+        if isinstance(value, dict):
+            health = cast("dict[str, object]", value).get("codebase_health")
+            if isinstance(health, dict):
+                out[name] = cast("_CodebaseHealthDict", health)
+    return out
+
+
+def resolve_codebase_health_map(
+    manifest: dict[str, object],
+    *,
+    project_id: str | None = None,
+    firestore_module_factory: FirestoreModuleFactory = _default_firestore_module,
+) -> dict[str, _CodebaseHealthDict]:
+    """Repo → codebase_health dict: **Firestore-authoritative per-repo, manifest as fallback**.
+
+    Mirrors ``resolve_ci_status_map`` exactly:
+      * Start from the manifest ``codebase_health`` sub-field per repo.
+      * OVERLAY the Firestore ``ci_status/{repo}`` doc's ``codebase_health`` sub-field.
+      * On ANY Firestore unavailability: warn loudly + return the manifest-only map.
+
+    Reuses the same ``_get_all`` call (same Firestore collection, same SDK machinery) — no
+    separate collection query.  Returns an empty dict when a repo has no health data in
+    either source.
+    """
+    base = _manifest_codebase_health_map(manifest)
+    try:
+        fs_data = _get_all(project_id=project_id, firestore_module_factory=firestore_module_factory)
+    except Exception as err:
+        logging.getLogger(__name__).warning(
+            "codebase_health Firestore read unavailable (%s: %s) — using manifest fallback cache",
+            type(err).__name__,
+            err,
+        )
+        return base
+    for repo, doc in fs_data.items():
+        health = doc.get("codebase_health")
+        if isinstance(health, dict):
+            base[repo] = cast("_CodebaseHealthDict", health)
+    return base
