@@ -225,13 +225,18 @@ def test_inventory_route_umbrella_filter(client_inventory: TestClient) -> None:
     assert all(i["umbrella"] == "LIVE" for i in body["items"])
 
 
-def test_inventory_route_cloud_filter_aws_empty_stub(client_inventory: TestClient) -> None:
-    """AWS is an empty stub until Phase 5 — cloud=aws filters to 0 GCP-only items."""
+def test_inventory_route_cloud_filter_aws(client_inventory: TestClient) -> None:
+    """AWS parity (Phase 5) — cloud=aws returns the AWS items, all cloud=AWS."""
     with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
         mock_cfg.is_mock_mode.return_value = True
         resp = client_inventory.get("/api/deployments/inventory", params={"cloud": "aws"})
     assert resp.status_code == 200
-    assert resp.json()["total"] == 0
+    body = resp.json()
+    assert body["total"] >= 1
+    assert all(i["cloud"] == "AWS" for i in body["items"])
+    # An AWS EC2 backfill VM + a Batch job are present (the mock AWS estate).
+    kinds = {i["kind"] for i in body["items"]}
+    assert "VM" in kinds and "CLOUD_RUN_JOB" in kinds
 
 
 def test_summary_route_mock(client_inventory: TestClient) -> None:

@@ -1,0 +1,288 @@
+# Epic: observability_master
+# Lifecycle: permanent
+"""AWS compute census → classified deployment-inventory items (Phase 5 parity).
+
+The unified deployment inventory (``GET /api/deployments/inventory``) shows GCP VMs +
+Cloud Run jobs today; this helper adds the AWS estate under the SAME live/batch/paper
+umbrellas with ``cloud=AWS`` so the ``/deployments`` UI renders GCP **and** AWS
+uniformly. AWS rides the identical ``DeploymentTarget`` / ``classify_deployment_target``
+contract — GCP behaviour is untouched.
+
+Two compute kinds, mirroring the GCP shape:
+
+* **EC2 backfill VMs** (``deployment_service.backends.aws_census.list_ec2_census``) →
+  ``DeploymentItem(kind="VM", cloud="AWS")``. Status from the EC2 instance state;
+  ``exit_code`` from the durable ``s3://unified-trading-deployment-scripts-{account}/
+  vm-logs/{name}/EXIT_STATUS`` blob the AWS launchers stream (survives the VM's
+  self-delete — the AWS twin of the GCP ``read_terminal_exit_code``).
+* **AWS Batch Fargate jobs** (``list_batch_census``, the Cloud-Run analogue) →
+  ``DeploymentItem(kind="CLOUD_RUN_JOB", cloud="AWS")``. Status + exit_code from the
+  Batch job description directly (Batch reports a container exit code).
+
+Cloud-agnostic boundaries: the AWS control plane is reached ONLY through the sanctioned
+``deployment_service.backends.aws_census`` seam (deferred boto3) — never an inline
+``import boto3`` here; the durable EXIT_STATUS blob is read through the cloud-agnostic
+``unified_trading_library.get_storage_client(provider="aws")`` S3 client — never
+``boto3.client("s3")`` directly. Honest degradation: a census / S3 read failure is
+logged and yields no items / ``exit_code=None`` so the inventory never crashes and the
+GCP path is unaffected.
+
+SSOT: ``plans/active/deployment_observability_parity_live_batch_paper_2026_06_22.md``
+Phase 5 + ``codex/05-infrastructure/deployment-observability.md``.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from deployment_service.deployment_classification import (
+    UnclassifiedDeploymentError,
+    classify_deployment_target,
+)
+from unified_api_contracts import (
+    DeploymentCloud,
+    DeploymentKind,
+    DeploymentTarget,
+)
+from unified_trading_library import StorageClient, get_storage_client
+
+if TYPE_CHECKING:
+    from deployment_service.backends.aws_census import (
+        AwsBatchJobCensus,
+        AwsInstanceCensus,
+    )
+
+logger = logging.getLogger(__name__)
+
+# The ``deployment_service.backends`` + ``data_pipeline_monitors`` sub-packages are
+# imported LAZILY inside ``load_aws_inventory`` (the same deferred pattern
+# ``_cloud_run_executions`` uses for ``_gcp_sdk``): they pull boto3 / sub-package
+# machinery that need only exist at call time, so a top-level import is avoided —
+# this also keeps the route importable in environments that resolve
+# ``deployment_service`` as a namespace package at collection time.
+
+# A VM/job name → ``lifecycle_class`` string resolver (the inventory route passes its
+# curated prefix-registry resolver so AWS reuses the SAME umbrella derivation as GCP).
+LifecycleResolver = Callable[[str], str]
+
+# One classified inventory item as a plain dict (the route turns these into
+# ``DeploymentItem`` models — keeping this module free of the route's pydantic model
+# avoids a circular import: deployments_inventory imports this module).
+DeploymentItemDict = dict[str, object]
+
+# The durable VM log/EXIT_STATUS bucket on AWS (mirrors the launcher trap block
+# ``lc_aws_log_upload_trap_block`` in aws_ec2_launch_lib.sh:
+# s3://unified-trading-deployment-scripts-{account}/vm-logs/{vm}/EXIT_STATUS).
+_AWS_LOG_BUCKET_TPL = "unified-trading-deployment-scripts-{account}"
+
+# EC2 instance-state → inventory wire status. ``terminated``/``stopped`` are resolved
+# against the durable EXIT_STATUS blob (0 → succeeded, non-zero → failed); a terminal
+# instance with no durable code reads as ``stopped`` (gone, exit unknown — never a
+# fabricated success).
+_EC2_RUNNING_STATES = frozenset({"pending", "running", "shutting-down", "stopping"})
+_EC2_TERMINAL_STATES = frozenset({"terminated", "stopped"})
+
+# AWS Batch status → inventory wire status (the Cloud-Run-job analogue).
+_BATCH_STATUS_MAP: dict[str, str] = {
+    "SUBMITTED": "pending",
+    "PENDING": "pending",
+    "RUNNABLE": "pending",
+    "STARTING": "running",
+    "RUNNING": "running",
+    "SUCCEEDED": "succeeded",
+    "FAILED": "failed",
+}
+
+
+def _aws_storage_client(region: str) -> StorageClient | None:
+    """An S3 ``StorageClient`` for the durable EXIT_STATUS reads, or ``None`` on failure.
+
+    Cloud-agnostic: ``get_storage_client(provider="aws")`` — never ``boto3.client("s3")``.
+    A construction failure (no creds / boto3 absent) degrades to ``None`` so exit codes
+    read as unknown rather than crashing the inventory.
+    """
+    try:
+        return get_storage_client(provider="aws", region_name=region)
+    except Exception as exc:
+        logger.warning("AWS storage client unavailable (exit codes degrade to unknown): %s", exc)
+        return None
+
+
+def _ec2_status_and_exit(
+    inst: AwsInstanceCensus,
+    storage_client: StorageClient | None,
+    log_bucket: str,
+) -> tuple[str, int | None]:
+    """Resolve the wire status + exit_code for one EC2 instance.
+
+    Running states map straight through. A terminal state (``terminated``/``stopped``)
+    reads the durable EXIT_STATUS blob: 0 → ``succeeded``, non-zero (incl. 137 OOM) →
+    ``failed``; absent → ``stopped`` with ``exit_code=None`` (gone, never a fabricated
+    success — the same honesty the GCP fleet monitor uses).
+    """
+    state = inst.state
+    if state in _EC2_RUNNING_STATES:
+        return ("running" if state in ("running", "shutting-down") else "pending"), None
+    if state in _EC2_TERMINAL_STATES:
+        exit_code: int | None = None
+        if storage_client is not None:
+            try:
+                from deployment_service.data_pipeline_monitors._gcs import read_terminal_exit_code
+
+                exit_code = read_terminal_exit_code(storage_client, log_bucket, inst.name)
+            except Exception as exc:
+                logger.warning("EXIT_STATUS read failed for %s: %s", inst.name, exc)
+        if exit_code is None:
+            return "stopped", None
+        return ("succeeded" if exit_code == 0 else "failed"), exit_code
+    return state or "unknown", None
+
+
+def _ec2_item(
+    inst: AwsInstanceCensus,
+    storage_client: StorageClient | None,
+    log_bucket: str,
+    lifecycle_for_name: LifecycleResolver,
+) -> DeploymentItemDict | None:
+    """Classify one EC2 instance into an inventory item dict, or ``None`` if unclassifiable."""
+    try:
+        target: DeploymentTarget = classify_deployment_target(
+            inst.name,
+            lifecycle_class=lifecycle_for_name(inst.name),
+            cloud=DeploymentCloud.AWS,
+            kind=DeploymentKind.VM,
+            asset_group=inst.asset_group or None,
+        )
+    except UnclassifiedDeploymentError as exc:
+        logger.warning("AWS inventory: skipping unclassifiable EC2 instance %r: %s", inst.name, exc)
+        return None
+    status, exit_code = _ec2_status_and_exit(inst, storage_client, log_bucket)
+    return {
+        "name": inst.name,
+        "kind": target.kind.value,
+        "umbrella": target.umbrella.value,
+        "cloud": target.cloud.value,
+        "service": target.service,
+        "asset_group": target.asset_group,
+        "status": status,
+        "last_run_at": inst.launch_time.isoformat() if inst.launch_time else None,
+        "exit_code": exit_code,
+        "heartbeat_age_seconds": None,
+        "captured_progress": None,
+        "run_log_uri": "",
+    }
+
+
+def _batch_item(
+    job: AwsBatchJobCensus,
+    lifecycle_for_name: LifecycleResolver,
+) -> DeploymentItemDict | None:
+    """Classify one AWS Batch (Fargate) job into an inventory item dict (Cloud-Run analogue)."""
+    try:
+        target: DeploymentTarget = classify_deployment_target(
+            job.name,
+            lifecycle_class=lifecycle_for_name(job.name),
+            cloud=DeploymentCloud.AWS,
+            kind=DeploymentKind.CLOUD_RUN_JOB,
+            asset_group=job.asset_group or None,
+        )
+    except UnclassifiedDeploymentError as exc:
+        logger.warning("AWS inventory: skipping unclassifiable Batch job %r: %s", job.name, exc)
+        return None
+    status = _BATCH_STATUS_MAP.get(job.status, "unknown")
+    last_run = job.stopped_at or job.created_at
+    exit_code = job.exit_code
+    # A FAILED Batch job with no container exit code (e.g. infra/timeout failure) still
+    # reports failed — synthesise a non-zero so the UI shows it red (mirrors the GCP
+    # Cloud-Run 0/1 synthesis from succeeded/failed counts).
+    if status == "failed" and exit_code is None:
+        exit_code = 1
+    if status == "succeeded" and exit_code is None:
+        exit_code = 0
+    return {
+        "name": job.name,
+        "kind": target.kind.value,
+        "umbrella": target.umbrella.value,
+        "cloud": target.cloud.value,
+        "service": target.service,
+        "asset_group": target.asset_group,
+        "status": status,
+        "last_run_at": last_run.isoformat() if last_run else None,
+        "exit_code": exit_code,
+        "heartbeat_age_seconds": None,
+        "captured_progress": None,
+        "run_log_uri": "",
+    }
+
+
+def build_aws_inventory(
+    instances: list[AwsInstanceCensus],
+    batch_jobs: list[AwsBatchJobCensus],
+    lifecycle_for_name: LifecycleResolver,
+    storage_client: StorageClient | None,
+    log_bucket: str,
+) -> list[DeploymentItemDict]:
+    """Assemble AWS inventory item dicts (EC2 VMs + Batch jobs), classified by umbrella.
+
+    Pure over its inputs (the census lists + a lifecycle resolver + the EXIT_STATUS
+    storage client) so it is moto-testable without a live route. An unclassifiable
+    name is logged + skipped per-row (never crashes the inventory).
+    """
+    items: list[DeploymentItemDict] = []
+    for inst in instances:
+        item = _ec2_item(inst, storage_client, log_bucket, lifecycle_for_name)
+        if item is not None:
+            items.append(item)
+    for job in batch_jobs:
+        item = _batch_item(job, lifecycle_for_name)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def load_aws_inventory(
+    *,
+    region: str,
+    aws_account_id: str,
+    lifecycle_for_name: LifecycleResolver,
+) -> list[DeploymentItemDict]:
+    """Census + classify the live AWS estate into inventory item dicts.
+
+    Calls the sanctioned ``aws_census`` seam (deferred boto3) for the EC2 + Batch
+    census, resolves the durable-log S3 bucket from the account id, and builds the
+    classified items. The census itself degrades to an empty list on any AWS error
+    (no creds / boto3 absent / API down), so the GCP inventory is never blocked.
+
+    The census import is deferred (not a top-level import) to match the
+    ``_cloud_run_executions`` ``_gcp_sdk`` pattern: ``deployment_service.backends`` pulls
+    boto3 / sub-package machinery only needed at call time. ``find_spec`` gates the
+    import (no try/except-ImportError shim) — an absent seam degrades to no AWS items.
+    """
+    import importlib
+    import importlib.util
+
+    if importlib.util.find_spec("deployment_service.backends.aws_census") is None:
+        logger.warning("AWS census seam unavailable (degrading to no AWS items)")
+        return []
+    from deployment_service.backends.aws_census import list_batch_census, list_ec2_census
+
+    instances = list_ec2_census(region=region)
+    batch_jobs = list_batch_census(region=region)
+    if not instances and not batch_jobs:
+        return []
+    log_bucket = _AWS_LOG_BUCKET_TPL.format(account=aws_account_id)
+    # Only construct an S3 client when there is a terminal instance whose exit code we
+    # actually need (running-only census needs no EXIT_STATUS read).
+    needs_exit_read = any(i.state in _EC2_TERMINAL_STATES for i in instances)
+    storage_client = _aws_storage_client(region) if needs_exit_read else None
+    return build_aws_inventory(instances, batch_jobs, lifecycle_for_name, storage_client, log_bucket)
+
+
+__all__ = [
+    "DeploymentItemDict",
+    "LifecycleResolver",
+    "build_aws_inventory",
+    "load_aws_inventory",
+]
