@@ -69,6 +69,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     BranchCommitsDict,
     BranchDeltaDict,
     BranchHeadDict,
+    CodebaseHealthDict,
     CommitEntryDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
@@ -531,6 +532,12 @@ async def _overview_row(
     )
     has_blocking_pr = any(pr.get("stuck_class") in _BLOCKING_STUCK_CLASSES for pr in prs)
     drain_stalled = content_ahead and has_blocking_pr
+    # codebase_health: Firestore-authoritative (via ManifestView overlay), manifest fallback.
+    # Cast to CodebaseHealthDict for type correctness — raw dict from the store matches the shape.
+    raw_health = view.codebase_health_for(meta.name)
+    codebase_health: CodebaseHealthDict | None = (
+        cast(CodebaseHealthDict, raw_health) if raw_health is not None else None
+    )
     return RepoOverviewDict(
         repo=meta.name,
         repo_type=meta.repo_type,
@@ -550,6 +557,7 @@ async def _overview_row(
         tier=view.tier_for(meta.name),
         blocked_by=[],
         blocking=[],
+        codebase_health=codebase_health,
     )
 
 

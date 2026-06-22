@@ -160,6 +160,8 @@ def _mock_row(
         tier=tier,
         blocked_by=blocked_by if blocked_by is not None else [],
         blocking=blocking if blocking is not None else [],
+        # QG health snapshot — mock rows have no live QG data; frontend renders "—" for None.
+        codebase_health=None,
     )
 
 

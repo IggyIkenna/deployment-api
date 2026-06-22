@@ -23,7 +23,11 @@ import aiohttp
 
 from deployment_api.settings import GITHUB_ORG
 
-from ._ci_status_firestore_store import resolve_ci_status_map
+from ._ci_status_firestore_store import (  # pyright: ignore[reportPrivateUsage]
+    _CodebaseHealthDict,
+    resolve_ci_status_map,
+    resolve_codebase_health_map,
+)
 from ._repo_ci_github import gh_raw_file
 from ._repo_ci_types import DepBlockerDict, PromotionHeldDict, RepoOverviewDict, RootBlockerDict
 
@@ -33,9 +37,9 @@ _PM_REPO = "unified-trading-pm"
 _MANIFEST_PATH = "workspace-manifest.json"
 _MANIFEST_TTL_SECONDS = 120.0
 
-# Cache stores (timestamp, raw_manifest, firestore_ci_status_overlay) so the Firestore
-# read is amortised over the same 120 s window as the manifest fetch.
-_manifest_cache: tuple[float, dict[str, object], dict[str, str]] | None = None
+# Cache stores (timestamp, raw_manifest, firestore_ci_status_overlay, codebase_health_overlay) so
+# the Firestore reads are amortised over the same 120 s window as the manifest fetch.
+_manifest_cache: tuple[float, dict[str, object], dict[str, str], dict[str, _CodebaseHealthDict]] | None = None
 
 
 def _semver_tuple(version: str) -> tuple[int, ...]:
@@ -65,12 +69,21 @@ class RepoMeta:
 class ManifestView:
     """Typed read surface over the raw manifest dict."""
 
-    def __init__(self, raw: dict[str, object], *, ci_status_override: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        raw: dict[str, object],
+        *,
+        ci_status_override: dict[str, str] | None = None,
+        codebase_health_override: dict[str, _CodebaseHealthDict] | None = None,
+    ) -> None:
         self._raw = raw
         # When provided, ci_status_override is the Firestore-authoritative map
         # (manifest as fallback) produced by resolve_ci_status_map — checked first in
         # ci_status_for so the dashboard reflects the same source as the promoter gate.
         self._ci_status_override = ci_status_override
+        # When provided, codebase_health_override is the Firestore-authoritative map
+        # (manifest as fallback) produced by resolve_codebase_health_map.
+        self._codebase_health_override = codebase_health_override
 
     @property
     def repos(self) -> list[RepoMeta]:
@@ -106,6 +119,26 @@ class ManifestView:
         if not isinstance(meta_obj, dict):
             return "UNKNOWN"
         return str(cast(dict[str, object], meta_obj).get("ci_status") or "NOT_CONFIGURED")
+
+    def codebase_health_for(self, repo: str) -> _CodebaseHealthDict | None:
+        """Per-repo QG health snapshot (coverage_pct / qg_red_reason / large_file_count / warn_file_count).
+
+        Firestore-authoritative when load_manifest_view has resolved the overlay;
+        falls back to the manifest ``repositories[repo].codebase_health`` sub-dict.
+        Returns None when no data is available for the repo in either source.
+        """
+        if self._codebase_health_override is not None:
+            return self._codebase_health_override.get(repo)
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return None
+        meta_obj = cast(dict[str, object], repositories).get(repo)
+        if not isinstance(meta_obj, dict):
+            return None
+        health = cast(dict[str, object], meta_obj).get("codebase_health")
+        if not isinstance(health, dict):
+            return None
+        return cast(_CodebaseHealthDict, health)
 
     @property
     def breaking_pending(self) -> list[str]:
@@ -258,22 +291,27 @@ class ManifestView:
 async def load_manifest_view(session: aiohttp.ClientSession, token: str) -> ManifestView:
     """Fetch (or serve cached) workspace-manifest.json from PM `main` and wrap it.
 
-    On each cache miss also resolves the Firestore ci_status overlay (Firestore-authoritative
-    per-repo, manifest as fallback cache) so the dashboard reflects the same source as the
-    promoter gate. The overlay is cached for the same 120 s window as the manifest.
+    On each cache miss also resolves the Firestore ci_status and codebase_health overlays
+    (Firestore-authoritative per-repo, manifest as fallback cache) so the dashboard reflects
+    the same source as the promoter gate. Both overlays are cached for the same 120 s window.
     """
     global _manifest_cache
     now = time.monotonic()
     if _manifest_cache is not None and now - _manifest_cache[0] < _MANIFEST_TTL_SECONDS:
-        return ManifestView(_manifest_cache[1], ci_status_override=_manifest_cache[2])
+        return ManifestView(
+            _manifest_cache[1],
+            ci_status_override=_manifest_cache[2],
+            codebase_health_override=_manifest_cache[3],
+        )
     raw_text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, _MANIFEST_PATH, ref="main")
     parsed = cast(object, json.loads(raw_text))
     if not isinstance(parsed, dict):
         raise ValueError("workspace-manifest.json did not parse to an object")
     manifest = cast(dict[str, object], parsed)
     ci_override = resolve_ci_status_map(manifest)
-    _manifest_cache = (now, manifest, ci_override)
-    return ManifestView(manifest, ci_status_override=ci_override)
+    health_override = resolve_codebase_health_map(manifest)
+    _manifest_cache = (now, manifest, ci_override, health_override)
+    return ManifestView(manifest, ci_status_override=ci_override, codebase_health_override=health_override)
 
 
 def manifest_view_from_raw(raw: dict[str, object]) -> ManifestView:
