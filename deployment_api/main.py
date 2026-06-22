@@ -60,6 +60,7 @@ from .routes import (
     deploy_events_sse,
     deployment_diff,
     deployments,
+    deployments_inventory,
     epics,
     execution_backtest_launch,
     fixtures,
@@ -157,6 +158,9 @@ async def standard_error_handler(request: Request, exc: HTTPException) -> JSONRe
 _authenticated_router = APIRouter(dependencies=[Depends(verify_any_auth)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
 _authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
+_authenticated_router.include_router(
+    deployments_inventory.router, prefix="/api", tags=["Deployment Inventory"]
+)
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
 _authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
 _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])

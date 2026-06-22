@@ -367,6 +367,25 @@ def _ensure_external_packages_mocked() -> None:
                 setattr(sub_mod, attr, val)
             sys.modules[full] = sub_mod
 
+        # The deployment-observability classification spine (cloud_run_job_registry +
+        # deployment_classification) is PURE-python (UAC-only deps, no cloud SDK), so
+        # load the REAL modules from the editable deployment-service source rather than
+        # stub them — the inventory route's classification MUST exercise the real
+        # resolver. With the parent `deployment_service` package stubbed (__path__=[]),
+        # normal import won't reach them, so load by file spec.
+        import importlib.util as _ilu
+        from pathlib import Path as _Path
+
+        _ds_src = _Path(__file__).resolve().parents[3] / "deployment-service" / "deployment_service"
+        for _real_sub in ("deployment_classification", "cloud_run_job_registry"):
+            _real_path = _ds_src / f"{_real_sub}.py"
+            if _real_path.exists():
+                _spec = _ilu.spec_from_file_location(f"deployment_service.{_real_sub}", _real_path)
+                if _spec is not None and _spec.loader is not None:
+                    _real_mod = _ilu.module_from_spec(_spec)
+                    sys.modules[f"deployment_service.{_real_sub}"] = _real_mod
+                    _spec.loader.exec_module(_real_mod)
+
 
 # Set required env vars before any routes are imported.  deployment_api/routes/__init__.py
 # eagerly imports ALL route modules, each creating a DeploymentApiConfig() singleton at
