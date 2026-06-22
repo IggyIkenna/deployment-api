@@ -1,10 +1,8 @@
-"""Regression guards for two data-status fixes (2026-06-15):
+"""Regression guards for data-status rollup + CLI fixes:
 
-1. **Beta-aware rollup blob path** (503 fix): in CF-20 beta-manifest mode the
-   rollup is computed from the projected v9 index, so it must live in a distinct
-   ``{service}/{kind}.beta.json.gz`` blob — never mixing with the live rollup.
-   The worker writes it and the service reads it, so the all-asset-group beta
-   view is served from cache instead of live-computing every request (HTTP 503).
+1. **Rollup blob path** (503 fix): the all-asset-group view is served from the
+   precomputed ``{service}/{kind}.json.gz`` rollup blob instead of live-computing
+   every request (HTTP 503).
 
 2. **CLI ``--config-dir`` resolution** (P2 / 500 fix): the in-image
    ``python -m deployment_service data-status`` subprocess could not find its
@@ -21,19 +19,11 @@ from pathlib import Path
 import deployment_api.services.data_status.cli as cli_mod
 import deployment_api.services.data_status.rollup_cache as rollup_cache
 import deployment_api.services.data_status_service as dss_mod
-import deployment_api.services.manifest_source as manifest_source
 
 
-def test_rollup_blob_path_live_vs_beta(monkeypatch) -> None:
-    monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: False)
+def test_rollup_blob_path_live() -> None:
     assert rollup_cache.rollup_blob_path("instruments-service", "full") == "instruments-service/full.json.gz"
     assert rollup_cache.rollup_blob_path("instruments-service", "coverage") == "instruments-service/coverage.json.gz"
-
-    monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: True)
-    assert rollup_cache.rollup_blob_path("instruments-service", "full") == "instruments-service/full.beta.json.gz"
-    assert (
-        rollup_cache.rollup_blob_path("instruments-service", "coverage") == "instruments-service/coverage.beta.json.gz"
-    )
 
 
 def test_resolve_cli_config_dir_finds_pm_configs() -> None:
@@ -85,58 +75,10 @@ def test_slice_rollup_emits_r7_overall_capture_attempt() -> None:
     assert out["overall_attempt_coverage_pct"] == 100.0
 
 
-def test_beta_eligible_filters_to_projected_services() -> None:
-    """In beta mode the rollup worker must sweep ONLY services with a v9 projected
-    index (instruments-service + market-tick-data-service, both now projected across all
-    asset_groups) — else the loud-failing beta read on a still-non-projected service
-    (features/strategy) crashes the whole job (regression guard for the cloud beta job
-    exit-1 incident, 2026-06-15)."""
-    assert set(manifest_source.BETA_ELIGIBLE_SERVICES) == {"instruments-service", "market-tick-data-service"}
-    full = [
-        "instruments-service",
-        "market-tick-data-service",
-        "features-delta-one-service",
-        "strategy-service",
-    ]
-    # Order-preserving filter to the projected services.
-    assert manifest_source.beta_eligible(full) == ["instruments-service", "market-tick-data-service"]
-    # A still-non-projected service is filtered out (no beta rollup → would loud-fail).
-    assert manifest_source.beta_eligible(["features-delta-one-service"]) == []
-
-
-def test_beta_rollup_served_despite_staleness() -> None:
-    """The beta rollup (static projected-v9 index) must serve regardless of age — the
-    30-min staleness gate must NOT force a fall-through (which would 503 the all-AG
-    beta view). Regression guard for the beta staleness exemption (2026-06-15)."""
-    import gzip
-    import json as _json
-    from unittest.mock import MagicMock, patch
-
-    import pandas as pd
-
-    import deployment_api.services.data_status_service as dss_mod
-
-    client = MagicMock()
-    client.blob_exists.return_value = True
-    meta = MagicMock()
-    meta.updated = pd.Timestamp("2020-01-01", tz="UTC")  # ~years stale
-    client.get_blob_metadata.return_value = meta
-    payload = {"asset_groups": {}, "beta": True}
-    client.download_bytes.return_value = gzip.compress(_json.dumps(payload).encode())
-    dss_mod._ROLLUP_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
-    with (
-        patch.object(dss_mod, "get_storage_client", return_value=client),
-        patch.object(dss_mod, "_is_service_beta", return_value=True),
-    ):
-        out = dss_mod._read_rollup_if_fresh("instruments-service")  # pyright: ignore[reportPrivateUsage]
-    assert out == payload  # served despite staleness because beta-eligible (is_service_beta)
-
-
 def test_live_rollup_respects_staleness() -> None:
-    """A service reading its LIVE blob keeps the staleness gate (regression guard — the beta
-    exemption must not leak to live blobs). Covers BOTH live mode AND a non-beta-eligible
-    service in beta mode: both resolve ``is_service_beta``→False, so both must fall through
-    on a stale blob (the market-tick-data-service path)."""
+    """A service reading its rollup blob respects the staleness gate — a frozen blob
+    (e.g. the worker stalled) must not be served indefinitely; it falls through to the
+    on-demand compute."""
     from unittest.mock import MagicMock, patch
 
     import pandas as pd
@@ -149,12 +91,9 @@ def test_live_rollup_respects_staleness() -> None:
     meta.updated = pd.Timestamp("2020-01-01", tz="UTC")  # stale
     client.get_blob_metadata.return_value = meta
     dss_mod._ROLLUP_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
-    with (
-        patch.object(dss_mod, "get_storage_client", return_value=client),
-        patch.object(dss_mod, "_is_service_beta", return_value=False),
-    ):
+    with patch.object(dss_mod, "get_storage_client", return_value=client):
         out = dss_mod._read_rollup_if_fresh("market-tick-data-service")  # pyright: ignore[reportPrivateUsage]
-    assert out is None  # stale + live blob → fall through
+    assert out is None  # stale blob → fall through
 
 
 def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
@@ -176,113 +115,16 @@ def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(worker, "run_rollup", _fake_run_rollup)
-    # Non-beta deployment: only the LIVE phase runs, over ALL default services.
-    monkeypatch.setattr(manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", "")
     _before = dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
     out = asyncio.run(_rollup.run_data_status_rollup(services=None))
 
     assert out["status"] == "ok"
     assert out["exit_code_live"] == 0
     assert out["live_services"] == list(worker.DEFAULT_SERVICES)
-    assert out["beta_services"] == []  # no beta phase when not in beta mode
     assert captured["services"] == list(worker.DEFAULT_SERVICES)
     assert "data-status-rollups" in str(captured["bucket"])
     # the service-wide pool flag must be restored after the call
     assert _before == dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
-
-
-def test_rollup_endpoint_two_phase_live_then_beta(monkeypatch) -> None:
-    """In beta mode the endpoint runs BOTH phases (2026-06-16 503 fix): phase 1 = LIVE for
-    EVERY service with beta forced OFF (→ full.json.gz, so mtds/features stay fresh), phase
-    2 = BETA for the beta-eligible service(s) with beta forced ON (→ full.beta.json.gz).
-    Captures is_beta_mode() at each run_rollup call to prove the per-phase toggle, and that
-    DATA_STATUS_BETA_MANIFEST_BLOB is restored afterwards."""
-    import asyncio
-
-    import deployment_api.scripts.data_status_rollup_worker as worker
-    from deployment_api.routes.data_status import _rollup
-
-    calls: list[tuple[list[str], bool]] = []
-
-    def _fake_run_rollup(project: str, bucket: str, services: list[str]) -> int:
-        calls.append((list(services), manifest_source.is_beta_mode()))
-        return 0
-
-    monkeypatch.setattr(worker, "run_rollup", _fake_run_rollup)
-    monkeypatch.setattr(
-        manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", "_index/audit/projected_index_{asset_group}.parquet"
-    )
-
-    out = asyncio.run(_rollup.run_data_status_rollup(services=None))
-
-    assert out["status"] == "ok"
-    # Phase 1: LIVE, all services, beta OFF.
-    assert calls[0][0] == list(worker.DEFAULT_SERVICES)
-    assert calls[0][1] is False
-    # Phase 2: BETA, beta-eligible only (the projected services, order-preserved), beta ON.
-    expected_beta = manifest_source.beta_eligible(list(worker.DEFAULT_SERVICES))
-    assert calls[1][0] == expected_beta
-    assert calls[1][1] is True
-    assert out["beta_services"] == expected_beta
-    # Sanity: market-tick-data-service is now among the projected/eligible services.
-    assert "market-tick-data-service" in expected_beta
-    # The global beta flag is restored to the configured value after the run.
-    assert manifest_source.DATA_STATUS_BETA_MANIFEST_BLOB == "_index/audit/projected_index_{asset_group}.parquet"
-
-
-def test_rollup_blob_path_non_beta_eligible_stays_live_in_beta_mode(monkeypatch) -> None:
-    """Beta is PER-SERVICE: a non-beta-eligible service (still-non-projected, e.g.
-    features-delta-one-service) keeps its LIVE blob even in beta mode — namespacing a
-    service to a non-existent .beta blob is what 503'd the data-status page (2026-06-16).
-    The eligible/projected services (instruments-service + market-tick-data-service) flip
-    to .beta."""
-    monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: True)
-    # Eligible (projected) → beta-namespaced.
-    assert rollup_cache.rollup_blob_path("instruments-service", "full") == "instruments-service/full.beta.json.gz"
-    assert (
-        rollup_cache.rollup_blob_path("market-tick-data-service", "full")
-        == "market-tick-data-service/full.beta.json.gz"
-    )
-    # NON-eligible (still-non-projected) → stays live even in beta mode.
-    assert (
-        rollup_cache.rollup_blob_path("features-delta-one-service", "coverage")
-        == "features-delta-one-service/coverage.json.gz"
-    )
-
-
-def test_is_service_beta_semantics(monkeypatch) -> None:
-    """is_service_beta = is_beta_mode AND beta-eligible (the per-service beta gate)."""
-    monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: False)
-    assert manifest_source.is_service_beta("instruments-service") is False  # not in beta mode
-    monkeypatch.setattr(manifest_source, "is_beta_mode", lambda: True)
-    assert manifest_source.is_service_beta("instruments-service") is True  # eligible + beta
-    assert manifest_source.is_service_beta("market-tick-data-service") is True  # now projected → eligible + beta
-    assert manifest_source.is_service_beta("features-delta-one-service") is False  # beta but not yet projected
-
-
-def test_coverage_summary_uses_rollup_in_beta_mode() -> None:
-    """coverage-summary must use the rollup fast-path EVEN in beta mode (2026-06-16 fix) —
-    the old ``if not is_beta_mode()`` guard skipped it for every service, forcing a multi-
-    minute live compute that 503'd the market-tick-data-service coverage panel. The per-
-    service blob path keeps the beta invariant (a projected/eligible service →
-    coverage.beta.json.gz; a still-non-projected service → coverage.json.gz)."""
-    import asyncio
-    from unittest.mock import patch
-
-    import deployment_api.services.data_status.coverage as coverage_mod
-    import deployment_api.services.data_status_service as dss_mod
-
-    svc = dss_mod.DataStatusService()
-    cov_rollup: dict[str, object] = {"asset_groups": {}, "coverage_rollup": True}
-    with (
-        patch.object(
-            manifest_source, "DATA_STATUS_BETA_MANIFEST_BLOB", "_index/audit/projected_index_{asset_group}.parquet"
-        ),
-        patch.object(coverage_mod, "read_coverage_rollup_if_fresh", return_value=cov_rollup) as cov_read,
-    ):
-        out = asyncio.run(svc.get_coverage_summary("market-tick-data-service"))
-    cov_read.assert_called_once_with("market-tick-data-service")  # rollup used, NOT live-computed
-    assert out.get("served_from") == "rollup"
 
 
 def test_thread_pool_disabled_forces_serial(monkeypatch) -> None:

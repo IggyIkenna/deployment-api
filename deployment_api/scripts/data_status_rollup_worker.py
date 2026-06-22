@@ -51,11 +51,6 @@ from unified_trading_library import GcsEventSink, get_storage_client, log_event,
 
 from deployment_api.services.data_status_service import DataStatusService
 
-# Beta-eligibility SSOT lives in manifest_source (the beta module). beta_eligible is used by
-# main() (beta-mode CLI/local runs); BETA_ELIGIBLE_SERVICES + is_service_beta live there too
-# (the rollup blob-path resolver reads them). Import from manifest_source, not from here.
-from deployment_api.services.manifest_source import beta_eligible
-
 logger = logging.getLogger(__name__)
 
 
@@ -85,8 +80,6 @@ _DEFAULT_SERVICES: tuple[str, ...] = (
 # which runs this worker's compute in the gen1 service (the gen2 Job crashes natively).
 DEFAULT_SERVICES: tuple[str, ...] = _DEFAULT_SERVICES
 
-# ``BETA_ELIGIBLE_SERVICES`` + ``beta_eligible`` are imported from manifest_source (SSOT) above.
-
 # Compute starts from this fixed date — covers every service's launch.
 _ROLLUP_START_DATE = "2018-01-01"
 
@@ -99,10 +92,7 @@ def _today_iso() -> str:
 def _rollup_blob_path(service: str) -> str:
     """GCS object path for a service's manifest rollup blob.
 
-    Beta-namespaced when this worker runs with ``DATA_STATUS_BETA_MANIFEST_BLOB``
-    set (writes ``{service}/full.beta.json.gz``) so the beta rollup never mixes
-    with the live one — the service reads the same beta blob in beta mode. SSOT:
-    ``rollup_cache.rollup_blob_path``.
+    SSOT: ``rollup_cache.rollup_blob_path``.
     """
     from deployment_api.services.data_status.rollup_cache import rollup_blob_path
 
@@ -110,7 +100,7 @@ def _rollup_blob_path(service: str) -> str:
 
 
 def _coverage_blob_path(service: str) -> str:
-    """GCS object path for a service's coverage-summary rollup blob (beta-namespaced)."""
+    """GCS object path for a service's coverage-summary rollup blob."""
     from deployment_api.services.data_status.rollup_cache import rollup_blob_path
 
     return rollup_blob_path(service, "coverage")
@@ -310,18 +300,6 @@ def main() -> int:
         setup_events(service_name="data-status-rollup-worker", mode="batch", sink=_sink)
 
     services: list[str] = list(args.services)  # pyright: ignore[reportAny]
-    # In beta mode only roll up services that have a v9 projected index (else the
-    # loud-failing beta read crashes the sweep). Live mode rolls up everything.
-    from deployment_api.services import manifest_source as _ms
-
-    if _ms.is_beta_mode():
-        _filtered = beta_eligible(services)
-        logger.info(
-            "BETA mode: restricting rollup to beta-eligible services %s (from %d tracked)",
-            _filtered,
-            len(services),
-        )
-        services = _filtered
 
     with run_lifecycle(
         service_name="data-status-rollup-worker",

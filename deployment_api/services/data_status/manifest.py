@@ -48,8 +48,7 @@ async def prewarm_indexes(service: str, *, days: int = 7, cloud: str = "gcp") ->
     loads and caches (5-min TTL) every asset-group index the Data Status landing page
     needs, with negligible cell-grid compute. The user's first real query then hits warm
     cache (~10s) instead of the cold ~50s/asset-group transpacific GCS fetch. Best-effort:
-    raises nothing the caller must handle (the lifespan wrapper logs + swallows). Honours
-    beta mode (reads through the same beta-aware seam)."""
+    raises nothing the caller must handle (the lifespan wrapper logs + swallows)."""
     end = dt.datetime.now(dt.UTC).date()
     start = end - dt.timedelta(days=days)
     svc = _dss.DataStatusService()
@@ -152,15 +151,11 @@ class ManifestStatusMixin(MissingShardsMixin):
             or bool(pipeline_modes)
             or bool(venue)
         )
-        # CF-20 beta preview: the rollup is now BETA-NAMESPACED (the worker writes
-        # ``{service}/full.beta.json.gz`` when it runs with the beta env;
-        # ``_read_rollup_if_fresh`` reads the same beta blob in beta mode — see
-        # ``rollup_cache.rollup_blob_path``). So serving it in beta mode renders
-        # BETA-derived data, not live — the invariant holds, and the all-asset-group
-        # beta view is served from cache instead of live-computing every AG per
-        # request (which exceeds the Cloud Run request timeout -> HTTP 503). If the
-        # beta rollup hasn't been written yet, the read returns None and we fall
-        # through to the (slower) beta-aware on-demand compute.
+        # The all-asset-group view is served from the precomputed rollup cache
+        # (``{service}/full.json.gz`` via ``_read_rollup_if_fresh``) instead of
+        # live-computing every AG per request (which exceeds the Cloud Run request
+        # timeout -> HTTP 503). If the rollup hasn't been written yet, the read
+        # returns None and we fall through to the (slower) on-demand compute.
         if not any_row_filter:
             rollup = await asyncio.to_thread(_dss._read_rollup_if_fresh, service)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
             if rollup is not None:
@@ -385,8 +380,9 @@ class ManifestStatusMixin(MissingShardsMixin):
           → BrokenProcessPool): each category's dominant cost is ``_read_defi_merged_index`` — an
           I/O-bound GCS download + pyarrow parse that RELEASES the GIL — so threading overlaps the
           per-asset-group index loads even though the cell-grid compute stays GIL-serialised. That
-          collapses the cold ~5x (index load) serial cost to ~1x (the macOS slowness fix). Capped
-          at 4 workers to bound concurrent cell-grid memory on a wide date range.
+          collapses the cold ~5x (index load) serial cost to ~1x (the macOS slowness fix). Both
+          pools cap at ``_dss._MAX_BUILD_WORKERS`` to bound concurrent cell-grid memory (the OOM fix
+          — fanning all 5 AGs out at once peaked at 8604 MiB and killed the 8 GiB instance).
         - SERIAL: a single category — fan-out overhead would dwarf the work.
         """
         use_process_pool = (
@@ -398,7 +394,10 @@ class ManifestStatusMixin(MissingShardsMixin):
         )
         if use_process_pool:
             ctx = multiprocessing.get_context("fork")
-            with ProcessPoolExecutor(max_workers=min(len(cat_list), 5), mp_context=ctx) as pool:
+            with ProcessPoolExecutor(
+                max_workers=min(len(cat_list), _dss._MAX_BUILD_WORKERS),  # pyright: ignore[reportPrivateUsage]  # memory-budget cap (OOM fix)
+                mp_context=ctx,
+            ) as pool:
                 pp_futures = {
                     pool.submit(
                         build_category_in_subprocess,
@@ -414,7 +413,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 }
                 return {pp_futures[f]: f.result() for f in pp_futures}
         if len(cat_list) > 1 and not _dss._THREAD_POOL_DISABLED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
-            with ThreadPoolExecutor(max_workers=min(len(cat_list), 4)) as tpool:
+            with ThreadPoolExecutor(max_workers=min(len(cat_list), _dss._MAX_BUILD_WORKERS)) as tpool:  # pyright: ignore[reportPrivateUsage]  # memory-budget cap (OOM fix)
                 tp_futures = {
                     tpool.submit(
                         self._build_manifest_category,

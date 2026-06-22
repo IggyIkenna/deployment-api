@@ -2000,3 +2000,34 @@ class TestCoverageSemantics:
         attempt_found, attempt_expected = _compute_attempt_coverage(df, "PREDICTION")
         assert attempt_found == 0
         assert attempt_expected == 0
+
+
+class TestBuildFanOutMemoryCap:
+    """Regression guard for the data-status OOM fix.
+
+    Fanning all 5 asset_groups out at once in the Process/Thread pool of
+    ``_dispatch_category_builds`` peaked at 8604 MiB and OOM-killed the 8 GiB
+    Cloud Run instance — the per-request ``/data-status/turbo`` "Unknown error"
+    (the OOM returns no JSON body, so the UI falls back to that string). The
+    builds are capped at ``_MAX_BUILD_WORKERS`` to bound the peak. These tests
+    fail if the cap is removed or the pools are reverted to a hardcoded fan-out.
+    """
+
+    def test_max_build_workers_is_a_bounded_positive_int(self):
+        from deployment_api.services.data_status_service import _MAX_BUILD_WORKERS
+
+        assert isinstance(_MAX_BUILD_WORKERS, int)
+        # Must stay small enough that base + Nx cell-grid fits even the old 8 GiB box.
+        assert 1 <= _MAX_BUILD_WORKERS <= 4
+
+    def test_both_pools_cap_fan_out_with_max_build_workers(self):
+        import inspect
+
+        from deployment_api.services.data_status.manifest import ManifestStatusMixin
+
+        src = inspect.getsource(ManifestStatusMixin._dispatch_category_builds)
+        # Both the ProcessPool and the ThreadPool must derive max_workers from the cap…
+        assert src.count("_MAX_BUILD_WORKERS") >= 2
+        # …and must NOT re-introduce the old unbounded hardcoded fan-out.
+        assert "min(len(cat_list), 5)" not in src
+        assert "min(len(cat_list), 4)" not in src
