@@ -428,7 +428,7 @@ _THREAD_POOL_DISABLED = False
 # AG cell-grid intermediate (~1.4 GiB peak for the big market-tick-data-service index),
 # so fanning out all 5 asset groups at once peaked at 8604 MiB and OOM-killed the 8 GiB
 # Cloud Run instance (the per-request ``/data-status/turbo`` "Unknown error" — the OOM
-# returns no JSON body, so the UI's ``response.json().catch`` falls back to that string).
+# returns no JSON body; the UI's catch-block on the async parse call falls back to that string).
 # Capping at 3 bounds the peak to ~base + 3x grid (~5.7 GiB) so a per-request fresh compute
 # fits even the old 8 GiB box. The rollup endpoint runs FULLY serial via the two toggles
 # above; this caps the on-demand API path race-free (no per-request global mutation, which
