@@ -181,10 +181,18 @@ steps:
           docker pull "$${BASE}@$${PIN}"
         fi
         docker pull "$${BASE}:latest" || true
+        # Layer-cache seed: pull our OWN previous :latest so the build step's
+        # --cache-from can reuse unchanged layers (UI dist, deps) — a small
+        # code change then only rebuilds the late COPY+install layers (~10min → ~2-3min).
+        # Best-effort: first-ever build / cache miss → || true, full build.
+        docker pull "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest" || true
     waitFor: ["configure-docker"]
 
   - name: "gcr.io/cloud-builders/docker"
     id: "build"
+    # BuildKit + inline cache: BUILDKIT_INLINE_CACHE=1 bakes the layer-cache
+    # metadata INTO the pushed image so the NEXT build's --cache-from can read it.
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - "build"
       - "-f"
@@ -195,6 +203,11 @@ steps:
       # the base FROM expands to an invalid reference.
       - "--build-arg"
       - "PROJECT_ID=$PROJECT_ID"
+      - "--build-arg"
+      - "BUILDKIT_INLINE_CACHE=1"
+      # Reuse unchanged layers from the previous :latest (pulled above).
+      - "--cache-from"
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
       - "-t"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
       - "-t"
