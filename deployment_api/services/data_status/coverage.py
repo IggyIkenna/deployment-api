@@ -11,7 +11,16 @@ import logging
 from typing import cast
 
 import pandas as pd
-from unified_api_contracts import OUT_OF_COVERAGE_WINDOW_REASONS
+from unified_api_contracts import (
+    OUT_OF_COVERAGE_WINDOW_REASONS,
+    SCHEDULE_DEFINING_DATA_TYPES,
+    EmptyConfirmedReason,
+)
+
+# DATA-TYPE-AWARE schedule-empty resolution (operator direction 2026-06-23):
+# the only empty reason a schedule-defining data_type (FIXTURES) resolves to
+# out-of-window. Mirrors UAC ``is_resolved_schedule_empty``.
+_SCHEDULE_EMPTY_RESOLVED_REASON = EmptyConfirmedReason.SOURCE_RETURNED_ZERO.value
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     get_breakdown_axes,
@@ -334,7 +343,21 @@ class CoverageStatusMixin(VenueResolutionMixin):
                 # ``.apply(is_out_of_coverage_window)`` over the ~1.2M empty rows a
                 # large asset_group carries — same verdict (the frozenset IS the
                 # canonical set the helper checks). Blank/calendar reasons stay False.
-                oow_count = int(reasons.isin(OUT_OF_COVERAGE_WINDOW_REASONS).sum())  # pyright: ignore[reportUnknownMemberType]
+                oow_reason_mask = reasons.isin(OUT_OF_COVERAGE_WINDOW_REASONS)  # pyright: ignore[reportUnknownMemberType]
+                # DATA-TYPE-AWARE schedule-empty resolution (operator direction
+                # 2026-06-23): a schedule-DEFINING data_type (sports FIXTURES — the
+                # API-Football schedule) that is empty_confirmed with
+                # SOURCE_RETURNED_ZERO means "no matches that day = complete" →
+                # RESOLVED, out-of-window. Still vectorised: FIXTURES rows that
+                # carry SOURCE_RETURNED_ZERO. An ENRICHMENT data_type's
+                # SOURCE_RETURNED_ZERO is NOT excluded (its zero may be a real gap).
+                if "data_type" in index.columns:
+                    dtypes = index.loc[empty_mask, "data_type"].fillna("").astype(str).str.strip().str.upper()
+                    schedule_empty_mask = dtypes.isin(SCHEDULE_DEFINING_DATA_TYPES) & (
+                        reasons == _SCHEDULE_EMPTY_RESOLVED_REASON
+                    )
+                    oow_reason_mask = oow_reason_mask | schedule_empty_mask
+                oow_count = int(oow_reason_mask.sum())  # pyright: ignore[reportUnknownMemberType]
             else:
                 oow_count = 0
             within_window_empty = total_empty - oow_count
