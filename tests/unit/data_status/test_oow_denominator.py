@@ -208,3 +208,102 @@ class TestCoveragePctDenominatorExclusion:
         # empty_confirmed in counts_dict still reflects all empty rows (UAC
         # CaptureStatusCounts doesn't split), but out_of_window surfaces the split
         assert counts.get("out_of_window", 0) == 3
+
+
+# ---------------------------------------------------------------------------
+# Schedule-defining FIXTURES empties resolved as out-of-window (data-type-aware)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleDefiningFixturesEmptyResolved:
+    """A schedule-defining FIXTURES SOURCE_RETURNED_ZERO (no matches that day) is
+    RESOLVED → out-of-window, but an enrichment SOURCE_RETURNED_ZERO still counts.
+
+    Operator direction 2026-06-23: FIXTURES IS the schedule source-of-truth, so a
+    zero-row fixtures response means "no matches" = complete, not a gap.
+    """
+
+    def test_fixtures_source_returned_zero_is_out_of_window(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
+                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
+                {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"},
+            ]
+        )
+        # Both FIXTURES no-match-day empties are now out-of-window (resolved).
+        assert compute_out_of_window_count(df) == 2
+
+    def test_enrichment_source_returned_zero_still_in_window(self) -> None:
+        """An enrichment data_type's SOURCE_RETURNED_ZERO is NOT excluded."""
+        df = pd.DataFrame(
+            [
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "FIXTURE_STATS",
+                },
+                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "ODDS"},
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "PLAYER_STATS",
+                },
+            ]
+        )
+        assert compute_out_of_window_count(df) == 0
+
+    def test_mixed_fixtures_and_enrichment_zero(self) -> None:
+        """Only the FIXTURES SRZ rows are resolved; enrichment SRZ rows stay gaps."""
+        df = pd.DataFrame(
+            [
+                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "FIXTURE_STATS",
+                },
+                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_NO_FIXTURE", "data_type": "FIXTURES"},
+            ]
+        )
+        # FIXTURES SRZ (resolved) + EXPECTED_NO_FIXTURE (lifecycle OOW) = 2; the
+        # FIXTURE_STATS SRZ stays in-window.
+        assert compute_out_of_window_count(df) == 2
+
+    def test_no_data_type_column_falls_back_to_reason_only(self) -> None:
+        """Without a data_type column, FIXTURES SRZ is NOT resolved (legacy path)."""
+        df = pd.DataFrame(
+            [
+                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO"},
+                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_NO_FIXTURE"},
+            ]
+        )
+        # Only the lifecycle reason counts when data_type is unavailable.
+        assert compute_out_of_window_count(df) == 1
+
+    def test_fixtures_completion_pct_lifts_to_100(self) -> None:
+        """Golden-window shape: all FIXTURES empties resolve → completion ~100%.
+
+        3445 captured + 233 SOURCE_RETURNED_ZERO (no-match-day) + 7732
+        EXPECTED_NO_FIXTURE (already OOW). After the data-type-aware fix every
+        empty is out-of-window → denominator == captured == 100%.
+        """
+        rows = []
+        rows += [{"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"} for _ in range(3445)]
+        rows += [
+            {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"}
+            for _ in range(233)
+        ]
+        rows += [
+            {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_NO_FIXTURE", "data_type": "FIXTURES"}
+            for _ in range(7732)
+        ]
+        df = pd.DataFrame(rows)
+        oow_n = compute_out_of_window_count(df)
+        # All 233 SRZ + 7732 EXPECTED_NO_FIXTURE empties are out-of-window.
+        assert oow_n == 233 + 7732
+        total_empty = 233 + 7732
+        within_window_empty = total_empty - oow_n
+        denominator = 3445 + within_window_empty  # captured + in-window gaps
+        completion_pct = 3445 / denominator * 100 if denominator else 0.0
+        assert completion_pct == pytest.approx(100.0)
