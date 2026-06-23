@@ -33,25 +33,30 @@ class TestIsLiveClusterRef:
         assert _is_live_cluster_ref("mtds-cefi-2026-05-15") is False
 
 
-class TestStreamLogsLiveClusterRaises501:
-    def test_live_cluster_raises_501(self) -> None:
+class TestStreamLogsLiveClusterStreams:
+    """The live-cluster 501 is CLOSED — live clusters now stream lifecycle/log
+    events via the GCS events bucket keyed by the cluster's service name (no
+    direct ``google.cloud.logging`` dependency)."""
+
+    def test_live_cluster_streams(self) -> None:
         import asyncio
+
+        from sse_starlette.sse import EventSourceResponse
 
         from deployment_api.routes.log_stream import stream_logs
 
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(stream_logs("strategy-live-csb-001"))
-        assert exc_info.value.status_code == 501
-        assert "target_ref" in exc_info.value.detail
+        result = asyncio.run(stream_logs("strategy-live-csb-001"))
+        assert isinstance(result, EventSourceResponse)
 
-    def test_execution_service_raises_501(self) -> None:
+    def test_execution_service_streams(self) -> None:
         import asyncio
+
+        from sse_starlette.sse import EventSourceResponse
 
         from deployment_api.routes.log_stream import stream_logs
 
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(stream_logs("execution-service"))
-        assert exc_info.value.status_code == 501
+        result = asyncio.run(stream_logs("execution-service"))
+        assert isinstance(result, EventSourceResponse)
 
 
 class TestMockSseGenerator:

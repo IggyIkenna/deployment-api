@@ -2253,9 +2253,11 @@ class TestMTDSHonestCoverage:
         assert "POLYMARKET" in result["expected_venues"]
         assert "KALSHI" in result["missing_venues"]
         poly = result["venues"]["POLYMARKET"]
-        assert sorted(poly["expected_data_types"]) == sorted(["trades", "book_snapshot", "market_metadata", "fills"])
-        # Only ``trades`` has rows in the fixture -- the other 3 are missing.
-        assert sorted(poly["missing_data_types"]) == sorted(["book_snapshot", "market_metadata", "fills"])
+        assert sorted(poly["expected_data_types"]) == sorted(
+            ["trades", "book_snapshot", "book_snapshot_5", "fills", "market_metadata"]
+        )
+        # ``trades`` + ``book_snapshot_5`` have rows in the fixture -- the other 3 are missing.
+        assert sorted(poly["missing_data_types"]) == sorted(["book_snapshot", "fills", "market_metadata"])
         assert poly["dates_found"] == 1
 
     @pytest.mark.parametrize(
