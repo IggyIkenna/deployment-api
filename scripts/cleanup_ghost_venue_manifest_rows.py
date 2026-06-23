@@ -1,3 +1,6 @@
+# Epic: deployment_and_user_management_master
+# Lifecycle: oneoff
+# Delete-when: after prod-run completed + manifest orphan-sweep=0
 """One-shot script: strip ghost DeFi venue rows from all MTDS DeFi bucket manifest indexes.
 
 Ghost venues are Era-2 capabilities-era names (no underscore, no chain suffix) that have been

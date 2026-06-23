@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Epic: deployment_and_user_management_master
+# Lifecycle: permanent
+# Delete-when: NA
 """Generate static docs/specs/openapi.json from the FastAPI app.
 
 Usage:
