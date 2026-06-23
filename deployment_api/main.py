@@ -65,6 +65,8 @@ from .routes import (
     execution_backtest_launch,
     fixtures,
     fleet,
+    health_consolidator,
+    health_overview,
     infra_health,
     kill_switch_routes,
     log_stream,
@@ -158,9 +160,7 @@ async def standard_error_handler(request: Request, exc: HTTPException) -> JSONRe
 _authenticated_router = APIRouter(dependencies=[Depends(verify_any_auth)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
 _authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
-_authenticated_router.include_router(
-    deployments_inventory.router, prefix="/api", tags=["Deployment Inventory"]
-)
+_authenticated_router.include_router(deployments_inventory.router, prefix="/api", tags=["Deployment Inventory"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
 _authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
 _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])
@@ -209,6 +209,10 @@ _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos",
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
 _authenticated_router.include_router(fleet.router)  # Has its own prefix /api/fleet
 _authenticated_router.include_router(unified_alerts.router, prefix="/api", tags=["Alerts"])  # GET /api/alerts
+_authenticated_router.include_router(health_overview.router, prefix="/api", tags=["Health"])  # GET /api/health/overview
+_authenticated_router.include_router(
+    health_consolidator.router, prefix="/api", tags=["Health"]
+)  # GET /api/health/consolidator
 _authenticated_router.include_router(repo_coverage.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_gh_rate_limit.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(scenarios.router, prefix="/api/scenarios", tags=["Scenarios"])
