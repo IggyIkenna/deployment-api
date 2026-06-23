@@ -222,10 +222,10 @@ EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_NO_FUNDING_RATE_TICKS",
     "EXPECTED_NO_PNL_STREAM",
     "EXPECTED_PROTOCOL_PAUSED",
-    "EXPECTED_NOT_ENOUGH_TVL",  # DeFi pool below the TVL floor — legitimately-empty (UAC sync 2026-06-23)
     "EXPECTED_PAST_SOURCE_COVERAGE_END",
     "EXPECTED_BOOKMAKER_NO_LEAGUE_COVERAGE",
     "EXPECTED_NO_PROVIDER_COVERAGE",
+    "EXPECTED_NOT_ENOUGH_TVL",  # DeFi sub-TVL pool — outside MVP capture universe (UAC parity)
     "SOURCE_RETURNED_ZERO",
     "NO_INPUT_AVAILABLE",
     "LEG_ABSENT_LEFT",
@@ -274,13 +274,21 @@ def compute_empty_reason_counts(df: pd.DataFrame) -> dict[str, int]:
 
 
 def compute_out_of_window_count(df: pd.DataFrame) -> int:
-    """Count ``empty_confirmed`` rows whose ``error_reason`` marks them as out-of-coverage-window.
+    """Count ``empty_confirmed`` rows whose cell is out-of-coverage-window.
 
     Out-of-window cells (pre-genesis chains, pre-launch venues, delisted
     instruments, post/pre-season, deprecated data_types, etc.) carry one of the
-    15 lifecycle reasons in ``OUT_OF_COVERAGE_WINDOW_REASONS``.  They are
+    lifecycle reasons in ``OUT_OF_COVERAGE_WINDOW_REASONS``.  They are
     **never-collectable** — not gaps — and must be excluded from the
     completion-% denominator.
+
+    DATA-TYPE-AWARE (operator direction 2026-06-23): a schedule-DEFINING
+    data_type (sports ``FIXTURES`` — the API-Football schedule) that is
+    ``empty_confirmed`` with ``SOURCE_RETURNED_ZERO`` means "no matches that day
+    = complete" → RESOLVED, out-of-window. So when a ``data_type`` column is
+    present we pass it through ``is_out_of_coverage_window`` so FIXTURES
+    no-match-day empties stop counting as gaps. An ENRICHMENT data_type's
+    ``SOURCE_RETURNED_ZERO`` is NOT excluded (its zero may be a real miss).
 
     Within-window absences (weekends, holidays, paused leagues) and blank/None
     reasons still count in the denominator via ``is_out_of_coverage_window``
@@ -300,6 +308,15 @@ def compute_out_of_window_count(df: pd.DataFrame) -> int:
     if "error_reason" not in df.columns:
         return 0  # no reason column → assume within-window (conservative)
     reasons = df.loc[empty_mask, "error_reason"].fillna("").astype(str).str.strip()
+    if "data_type" in df.columns:
+        data_types = df.loc[empty_mask, "data_type"].fillna("").astype(str).str.strip()
+        reason_list: list[str] = [str(r) for r in reasons.tolist()]  # pyright: ignore[reportAny]
+        dtype_list: list[str] = [str(d) for d in data_types.tolist()]  # pyright: ignore[reportAny]
+        return sum(
+            1
+            for reason, data_type in zip(reason_list, dtype_list, strict=True)
+            if is_out_of_coverage_window(reason, data_type)
+        )
     return int(reasons.apply(is_out_of_coverage_window).sum())  # pyright: ignore[reportUnknownMemberType]
 
 
