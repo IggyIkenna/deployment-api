@@ -23,6 +23,9 @@ SSOT: ``plans/active/unified_deployment_health_cockpit_2026_06_23.md`` Phase 4.
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from deployment_service.cloud_run_job_registry import CLOUD_RUN_JOBS
@@ -57,6 +60,18 @@ _CONTROL_PLANE_PREFIXES = (
 # A noisy registry (un-reaped stale active entries) can yield thousands of EXPECTED-MISSING —
 # cap the returned ROWS for a responsive payload while the COUNTS stay exact (the true totals).
 _MAX_ROWS = 200
+
+# Stale-while-revalidate short-TTL cache (mirrors routes/deployments_inventory.py). The
+# reconciliation reads the full active registry (~2.4k entries) → ~13s cold; the cockpit's
+# Fleet tab polls repeatedly, so cache the assembled response so repeat visits are <0.2s.
+# Single cache slot — the endpoint takes no params (one cross-cloud reconciliation).
+_RECON_TTL_SEC = 45.0
+# (annotation is lazy under `from __future__ import annotations`, so the forward ref to the
+# below-defined FleetReconciliationResponse needs no quotes.)
+_recon_cache: tuple[float, FleetReconciliationResponse] | None = None
+_recon_lock = threading.Lock()
+_recon_refreshing = False
+_recon_refresh_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recon-refresh")
 
 
 class ReconciliationRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -199,17 +214,74 @@ def build_response(clouds: list[CloudReconciliation], now: datetime) -> FleetRec
     )
 
 
+def _compute_reconciliation() -> FleetReconciliationResponse:
+    """Assemble the live cross-cloud reconciliation (the heavy ~13s registry+census read)."""
+    return build_response([_gcp_reconciliation(), _aws_reconciliation()], datetime.now(UTC))
+
+
+def _refresh_reconciliation() -> None:
+    """Background cache refresh — recompute + store, then clear the in-flight flag."""
+    global _recon_cache, _recon_refreshing
+    try:
+        result = _compute_reconciliation()
+        with _recon_lock:
+            _recon_cache = (time.monotonic(), result)
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Keep the stale snapshot on a failed refresh — never poison the cache.
+        logger.warning("reconciliation: background refresh failed: %s", exc)
+    finally:
+        with _recon_lock:
+            _recon_refreshing = False
+
+
+def _kick_background_refresh() -> None:
+    """Schedule exactly one background reconciliation refresh (stale-while-revalidate)."""
+    global _recon_refreshing
+    with _recon_lock:
+        if _recon_refreshing:
+            return
+        _recon_refreshing = True
+    _recon_refresh_pool.submit(_refresh_reconciliation)
+
+
+def _load_reconciliation() -> FleetReconciliationResponse:
+    """Load the reconciliation, stale-while-revalidate cached (mirrors the inventory cache).
+
+    * **Fresh** (< TTL) → served instantly.
+    * **Stale** (> TTL) → the stale snapshot is served instantly AND one background refresh
+      is kicked off, so the Fleet tab never waits on the slow registry read after the first
+      load (the cockpit polls repeatedly → always warm).
+    * **Cold** (no snapshot) → computed synchronously under the lock so a burst of first-polls
+      collapses to ONE read, not N.
+    """
+    global _recon_cache
+    cached = _recon_cache
+    if cached is not None:
+        if (time.monotonic() - cached[0]) >= _RECON_TTL_SEC:
+            _kick_background_refresh()
+        return cached[1]
+
+    # Cold path — lock so concurrent first-polls trigger exactly ONE reconciliation.
+    with _recon_lock:
+        if _recon_cache is not None:
+            return _recon_cache[1]
+        result = _compute_reconciliation()
+        _recon_cache = (time.monotonic(), result)
+        return result
+
+
 @router.get("/fleet/reconciliation", response_model=FleetReconciliationResponse)
 def get_fleet_reconciliation() -> FleetReconciliationResponse:
     """Cross-cloud reconciliation: every RUNNING GCP+AWS instance accounted for, or flagged.
 
     UNKNOWN (running but unregistered) + EXPECTED-MISSING (registered but not running) per
     cloud. Read-only; AWS degrades to empty without creds — the GCP reconciliation always runs.
+    Stale-while-revalidate cached (45s TTL) so the Fleet tab's repeat visits are <0.2s — the
+    cold read is ~13s (full active registry), the same perf class the inventory endpoint fixed.
     """
-    now = datetime.now(UTC)
     if _cfg.is_mock_mode():
-        return _mock_response(now)
-    return build_response([_gcp_reconciliation(), _aws_reconciliation()], now)
+        return _mock_response(datetime.now(UTC))
+    return _load_reconciliation()
 
 
 __all__ = [

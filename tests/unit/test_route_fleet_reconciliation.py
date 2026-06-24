@@ -87,3 +87,45 @@ def test_build_response_overall_ok_when_clean() -> None:
     out = build_response([CloudReconciliation(cloud="GCP", running=10, registered=10)], _NOW)
     assert out.overall == "ok"
     assert out.unknown_total == 0
+
+
+# ── #6 stale-while-revalidate cache ──────────────────────────────────────────
+def test_load_reconciliation_caches_within_ttl() -> None:
+    """A second _load_reconciliation within TTL serves the cached object (computes once)."""
+    from deployment_api.routes import fleet_reconciliation as mod
+
+    mod._recon_cache = None
+    calls = {"n": 0}
+
+    def fake_compute() -> mod.FleetReconciliationResponse:
+        calls["n"] += 1
+        return mod.FleetReconciliationResponse(
+            generated_at="t", overall="ok", clouds=[], unknown_total=0, expected_missing_total=0
+        )
+
+    with patch.object(mod, "_compute_reconciliation", fake_compute):
+        r1 = mod._load_reconciliation()
+        r2 = mod._load_reconciliation()
+    assert calls["n"] == 1, "second call must be served from cache, not recomputed"
+    assert r1 is r2
+    mod._recon_cache = None  # don't leak the fake into other tests
+
+
+def test_load_reconciliation_recomputes_when_cold() -> None:
+    """A cold cache (None) computes synchronously and stores the snapshot."""
+    from deployment_api.routes import fleet_reconciliation as mod
+
+    mod._recon_cache = None
+    calls = {"n": 0}
+
+    def fake_compute() -> mod.FleetReconciliationResponse:
+        calls["n"] += 1
+        return mod.FleetReconciliationResponse(
+            generated_at="t", overall="ok", clouds=[], unknown_total=0, expected_missing_total=0
+        )
+
+    with patch.object(mod, "_compute_reconciliation", fake_compute):
+        mod._load_reconciliation()
+    assert calls["n"] == 1
+    assert mod._recon_cache is not None
+    mod._recon_cache = None
