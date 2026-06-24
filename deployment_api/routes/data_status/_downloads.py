@@ -409,6 +409,7 @@ async def download_shard_csv(
                 asset_group=asset_group,
                 venue=venue,
                 date=date,
+                chain=chain,
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
