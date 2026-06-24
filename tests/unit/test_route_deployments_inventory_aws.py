@@ -358,20 +358,12 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
             self.rows_out = 0
 
     gcp_entry = _FakeEntry("cefi-binance-spot-20260622-gcp")
-
-    class _Registry:
-        def __init__(self, *_a: object, **_k: object) -> None: ...
-
-        def list_active(self) -> list[_FakeEntry]:
-            return [gcp_entry]
-
-        def list_recent_archive(self, days: int = 7) -> list[_FakeEntry]:
-            return []
+    mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
 
     with (
         patch.object(mod, "_cfg") as mock_cfg,
-        patch.object(mod, "get_vm_instance_details", return_value={"cefi-binance-spot-20260622-gcp": {}}),
-        patch.object(mod, "DeploymentsRegistry", _Registry),
+        # The GCP VM census is read via the parallel loader seam — patch it directly.
+        patch.object(mod, "_load_gcp_vm_entries", return_value=[gcp_entry]),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         # AWS census degrades to empty (no creds / boto3) — returns no AWS items.
         patch.object(mod, "load_aws_inventory", return_value=[]),
@@ -417,19 +409,12 @@ def test_inventory_route_includes_aws_items() -> None:
         }
     ]
 
-    class _Registry:
-        def __init__(self, *_a: object, **_k: object) -> None: ...
-
-        def list_active(self) -> list[object]:
-            return []
-
-        def list_recent_archive(self, days: int = 7) -> list[object]:
-            return []
+    mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
 
     with (
         patch.object(mod, "_cfg") as mock_cfg,
-        patch.object(mod, "get_vm_instance_details", return_value={}),
-        patch.object(mod, "DeploymentsRegistry", _Registry),
+        # GCP VM census empty (no running VMs) — read via the parallel loader seam.
+        patch.object(mod, "_load_gcp_vm_entries", return_value=[]),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         patch.object(mod, "load_aws_inventory", return_value=aws_items),
     ):
