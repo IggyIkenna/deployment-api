@@ -263,7 +263,14 @@ def load_aws_inventory(
     import importlib
     import importlib.util
 
-    if importlib.util.find_spec("deployment_service.backends.aws_census") is None:
+    # find_spec RAISES ModuleNotFoundError (not returns None) when an intermediate parent
+    # package is itself absent (e.g. deployment_service stubbed without a real backends
+    # sub-package) — that is exactly "seam unavailable", so degrade rather than 500.
+    try:
+        census_spec = importlib.util.find_spec("deployment_service.backends.aws_census")
+    except ModuleNotFoundError:
+        census_spec = None
+    if census_spec is None:
         logger.warning("AWS census seam unavailable (degrading to no AWS items)")
         return []
     from deployment_service.backends.aws_census import list_batch_census, list_ec2_census

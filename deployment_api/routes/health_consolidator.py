@@ -156,6 +156,17 @@ def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> Consolida
         )
 
 
+def consolidator_posture(asset_group: AssetGroup, now: datetime) -> ConsolidatorAgHealth:
+    """Public per-asset_group manifest-index posture (index age / fallback / last run).
+
+    The availability-index heartbeat IS the manifest-derived freshness for an
+    asset_group's owned shards, so the per-deployment freshness endpoint
+    (``/api/deployments/{id}/freshness``) reuses this rather than re-walking the
+    manifest. Uses the canonical consolidated-staleness budget.
+    """
+    return _ag_health(asset_group, resolve_consolidated_staleness_sec(), now)
+
+
 def build_consolidator_health(ag_entries: list[ConsolidatorAgHealth], now: datetime) -> ConsolidatorHealthResponse:
     """Roll per-AG postures into the response with a worst-first overall."""
     overall = "ok"
@@ -218,5 +229,6 @@ __all__ = [
     "ConsolidatorAgHealth",
     "ConsolidatorHealthResponse",
     "build_consolidator_health",
+    "consolidator_posture",
     "router",
 ]

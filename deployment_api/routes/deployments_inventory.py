@@ -30,8 +30,13 @@ Phase 1.
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import UTC, datetime
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from functools import partial
 
 from deployment_service.cloud_run_job_registry import CLOUD_RUN_JOBS
 from deployment_service.deployment_classification import (
@@ -39,9 +44,10 @@ from deployment_service.deployment_classification import (
     classify_deployment_target,
 )
 from deployment_service.deployments_registry import (
+    ACTIVE_PREFIX,
+    ARCHIVE_PREFIX,
     DEFAULT_BUCKET,
     DeploymentRegistryEntry,
-    DeploymentsRegistry,
     vm_run_log_rolling_uri,
 )
 from fastapi import APIRouter, HTTPException, Query
@@ -55,6 +61,7 @@ from unified_api_contracts import (
     VmPrefixSpec,
     classify_vm_name,
 )
+from unified_trading_library import StorageClient, get_storage_client
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes._aws_deployments import load_aws_inventory
@@ -105,6 +112,25 @@ _VM_PREFIX_REGISTRY: dict[str, VmPrefixSpec] = {
 # Unknown prefix → batch (the honest default: an unregistered VM is almost always
 # an ephemeral data-pipeline backfill, which IS EPHEMERAL_BATCH → BATCH umbrella).
 _DEFAULT_LIFECYCLE = LifecycleClass.EPHEMERAL_BATCH
+
+# Registry-read parallelism + a short-TTL inventory cache.
+#
+# The naive path read ~hundreds of per-VM registry JSONs SEQUENTIALLY over a
+# transpacific GCS hop (291-VM census + 7-day archive) → >100s, so the cockpit
+# Live/Batch/Paper tabs timed out. Two compounding fixes:
+#   1. Parallel per-object reads (``_GCS_READ_WORKERS`` ThreadPool — the GCS-object-ops
+#      pattern: GCS REST releases the GIL → true thread parallelism on I/O), and
+#   2. a short-TTL in-process cache so the cockpit's repeated polls are instant and a
+#      thundering herd of concurrent loads collapses to ONE cold read (lock-guarded).
+_GCS_READ_WORKERS = 32
+_INVENTORY_TTL_SEC = 45.0
+_ARCHIVE_WINDOW_DAYS = 7
+
+_inventory_cache: dict[str, tuple[float, list[DeploymentItem]]] = {}
+_inventory_lock = threading.Lock()
+# cache keys with an in-flight background refresh (so we kick off exactly one).
+_inventory_refreshing: set[str] = set()
+_inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inv-refresh")
 
 
 class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -181,6 +207,16 @@ def _classify_vm(vm_name: str) -> DeploymentTarget:
         cloud=DeploymentCloud.GCP,
         kind=DeploymentKind.VM,
     )
+
+
+def classify_vm_target(vm_name: str) -> DeploymentTarget:
+    """Public: classify a VM/deployment name → its DeploymentTarget (umbrella/service/asset_group).
+
+    Reuses the inventory's curated lifecycle resolver + the single
+    ``classify_deployment_target`` resolver, so a consumer (the per-deployment
+    freshness endpoint) never re-derives classification.
+    """
+    return _classify_vm(vm_name)
 
 
 def _heartbeat_age_seconds(entry: DeploymentRegistryEntry, now: datetime) -> int | None:
@@ -475,30 +511,81 @@ def _load_aws_items(now: datetime) -> list[DeploymentItem]:
     return [DeploymentItem(**d) for d in item_dicts]  # type: ignore[arg-type]
 
 
-def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentItem]:
-    """Load the live inventory (registry VMs + Cloud Run executions + AWS), or mock.
+def _list_json_keys(client: StorageClient, bucket: str, prefix: str) -> list[str]:
+    """List the ``.json`` object keys under one registry prefix (honest-empty on error)."""
+    try:
+        return [b.name for b in client.list_blobs(bucket=bucket, prefix=prefix) if b.name.endswith(".json")]
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("inventory: list_blobs(%s) failed: %s", prefix, exc)
+        return []
 
-    GCP items load unless the caller filters ``cloud=aws``; AWS items load unless the
-    caller filters ``cloud=gcp`` (so an unset / ``aws`` filter includes the AWS estate).
-    The GCP path is unchanged — AWS items are appended.
+
+def _read_entry(client: StorageClient, bucket: str, key: str) -> DeploymentRegistryEntry | None:
+    """Download + parse ONE registry entry; return None on any read/parse error (per-key isolation)."""
+    try:
+        raw = client.download_bytes(bucket=bucket, blob_path=key).decode("utf-8")
+        return DeploymentRegistryEntry.from_json(raw)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("inventory: skipping unreadable registry entry %s: %s", key, exc)
+        return None
+
+
+def _download_entries_parallel(client: StorageClient, bucket: str, keys: list[str]) -> list[DeploymentRegistryEntry]:
+    """Download + parse many registry entries CONCURRENTLY (GCS-object-ops ThreadPool pattern).
+
+    The dominant cost of the inventory is per-object GCS reads over a transpacific hop;
+    reading them sequentially is the >100s the cockpit timed out on. GCS REST releases
+    the GIL, so a ThreadPool gives true I/O parallelism. Per-key failures degrade to
+    ``None`` (never crash the whole inventory).
     """
-    if _cfg.is_mock_mode():
-        return _mock_inventory(now)
+    if not keys:
+        return []
+    workers = min(_GCS_READ_WORKERS, len(keys))
+    read_one = partial(_read_entry, client, bucket)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = pool.map(read_one, keys)
+    return [entry for entry in results if entry is not None]
 
+
+def _load_gcp_vm_entries(now: datetime, project_id: str) -> list[DeploymentRegistryEntry]:
+    """Census the GCP VM registry (active running + 7-day archive) with parallel reads.
+
+    Runs the four coarse calls concurrently — the GCE aggregated-list, the active-key
+    list, the archive-key list, then a single parallel download pool over every key —
+    so the cold path is ~max(slowest single call) instead of their sum.
+    """
+    client = get_storage_client()
+    bucket = DEFAULT_BUCKET
+    today = now.date()
+    archive_prefixes = [
+        f"{ARCHIVE_PREFIX}{(today - timedelta(days=offset)).isoformat()}/" for offset in range(_ARCHIVE_WINDOW_DAYS)
+    ]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_vm = pool.submit(get_vm_instance_details, project_id)
+        f_active_keys = pool.submit(_list_json_keys, client, bucket, ACTIVE_PREFIX)
+        f_archive_keys = pool.submit(
+            lambda: [key for prefix in archive_prefixes for key in _list_json_keys(client, bucket, prefix)]
+        )
+        running_vm_names = set(f_vm.result().keys())
+        active_keys = f_active_keys.result()
+        archive_keys = f_archive_keys.result()
+
+    active = [e for e in _download_entries_parallel(client, bucket, active_keys) if e.vm_name in running_vm_names]
+    recent = _download_entries_parallel(client, bucket, archive_keys)
+    return active + recent
+
+
+def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]:
+    """Build the live inventory (registry VMs + Cloud Run executions + AWS) — the cold path."""
     want_gcp = cloud is None or cloud.upper() == DeploymentCloud.GCP.value
     want_aws = cloud is None or cloud.upper() == DeploymentCloud.AWS.value
 
     items: list[DeploymentItem] = []
     if want_gcp:
         project_id = _cfg.require_gcp_project_id()
-        registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
         try:
-            vm_details = get_vm_instance_details(project_id)
-            running_vm_names = set(vm_details.keys())
-            all_active = registry.list_active()
-            active = [e for e in all_active if e.vm_name in running_vm_names]
-            recent = registry.list_recent_archive(days=7)
-            vm_entries = active + recent
+            vm_entries = _load_gcp_vm_entries(now, project_id)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.exception("inventory: VM registry read failed: %s", exc)
             raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
@@ -510,6 +597,67 @@ def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentI
         items.extend(_load_aws_items(now))
 
     return items
+
+
+def _store_inventory(cache_key: str, items: list[DeploymentItem]) -> None:
+    """Atomically record a fresh inventory snapshot for ``cache_key``."""
+    with _inventory_lock:
+        _inventory_cache[cache_key] = (time.monotonic(), items)
+
+
+def _refresh_inventory(cache_key: str, cloud: str | None) -> None:
+    """Background cache refresh — recompute + store, then clear the in-flight flag."""
+    try:
+        _store_inventory(cache_key, _compute_inventory(datetime.now(UTC), cloud))
+    except (HTTPException, OSError, ValueError, RuntimeError) as exc:
+        # Keep the stale snapshot on a failed refresh — never poison the cache.
+        logger.warning("inventory: background refresh for %s failed: %s", cache_key, exc)
+    finally:
+        with _inventory_lock:
+            _inventory_refreshing.discard(cache_key)
+
+
+def _kick_background_refresh(cache_key: str, cloud: str | None) -> None:
+    """Schedule exactly one background refresh per cache key (stale-while-revalidate)."""
+    with _inventory_lock:
+        if cache_key in _inventory_refreshing:
+            return
+        _inventory_refreshing.add(cache_key)
+    _inventory_refresh_pool.submit(_refresh_inventory, cache_key, cloud)
+
+
+def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentItem]:
+    """Load the live inventory, stale-while-revalidate cached for a fast, smooth cockpit.
+
+    GCP items load unless the caller filters ``cloud=aws``; AWS items load unless the
+    caller filters ``cloud=gcp`` (so an unset / ``aws`` filter includes the AWS estate).
+    Cache policy (mock mode bypasses it — already cheap + deterministic):
+
+    * **Fresh** (< TTL) → served instantly.
+    * **Stale** (> TTL) → the stale snapshot is served instantly AND a single background
+      refresh is kicked off, so the operator never waits on the slow census after the
+      first ever load (the cockpit polls repeatedly → always warm).
+    * **Cold** (no snapshot) → computed synchronously, under a lock so a burst of polls
+      collapses to ONE census, not N.
+    """
+    if _cfg.is_mock_mode():
+        return _mock_inventory(now)
+
+    cache_key = (cloud or "all").upper()
+    cached = _inventory_cache.get(cache_key)
+    if cached is not None:
+        if (time.monotonic() - cached[0]) >= _INVENTORY_TTL_SEC:
+            _kick_background_refresh(cache_key, cloud)
+        return cached[1]
+
+    # Cold path — lock so concurrent first-polls trigger exactly ONE census.
+    with _inventory_lock:
+        cached = _inventory_cache.get(cache_key)
+        if cached is not None:
+            return cached[1]
+        items = _compute_inventory(now, cloud)
+        _inventory_cache[cache_key] = (time.monotonic(), items)
+        return items
 
 
 # ---------------------------------------------------------------------------
@@ -604,5 +752,6 @@ __all__ = [
     "UmbrellaSummaryResponse",
     "build_inventory",
     "build_umbrella_summary",
+    "classify_vm_target",
     "router",
 ]
