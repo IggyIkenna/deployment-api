@@ -4,7 +4,7 @@
 
 Replaces today's binary up/down (``CONSOLIDATOR_DOWN`` alert / ``assert_consolidator_healthy``
 raise) with a per-asset_group posture the cockpit Health pane can render: for each
-asset_group's ``raw_tick_data`` bucket we report the consolidated ``_index/
+asset_group's ``market-data`` bucket we report the consolidated ``_index/
 availability_index.parquet`` heartbeat age (the consolidator touches its mtime every
 cycle, incl. no-op cycles), whether per-VM shards exist behind a stale/missing index
 (= the consolidator is BEHIND or DOWN, the recovery-merge fallback would activate), and
@@ -46,9 +46,20 @@ logger = logging.getLogger(__name__)
 
 _cfg = DeploymentApiConfig()
 
-# The asset_groups whose raw_tick_data buckets carry an availability_index the
+# The asset_groups whose market-data buckets carry an availability_index the
 # consolidator maintains (the canonical lowercase set, UAC AssetGroup literals).
 _ASSET_GROUPS: tuple[AssetGroup, ...] = ("cefi", "defi", "tradfi", "sports", "prediction")
+
+# Per-asset_group market-data bucket KIND. cefi/defi/tradfi/sports live under the shared
+# ``market-data`` kind (the ``market-data-tick-<ag>-...`` buckets); prediction has its own
+# dedicated flat key ``market-data-tick-prediction`` (``market-data-tick-pred-...``), so the
+# shared ``market-data`` kind has no ``prediction`` entry. Resolve the right kind per AG.
+_MARKET_DATA_KIND: dict[str, str] = {"prediction": "market-data-tick-prediction"}
+
+
+def _market_data_kind(asset_group: str) -> str:
+    """Bucket kind for an asset_group's market-data store (prediction has a dedicated key)."""
+    return _MARKET_DATA_KIND.get(asset_group, "market-data")
 
 
 class ConsolidatorAgHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -102,7 +113,7 @@ def _classify_ag(age: float | None, budget: int, shards_exist: bool) -> tuple[st
 def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> ConsolidatorAgHealth:
     """Build the consolidator posture for one asset_group (honest per-AG degradation)."""
     try:
-        bucket = resolve_bucket_name(cloud="gcp", kind="raw_tick_data", asset_group=asset_group)
+        bucket = resolve_bucket_name(cloud="gcp", kind=_market_data_kind(asset_group), asset_group=asset_group)
     except (OSError, ValueError) as exc:
         logger.warning("consolidator-health: bucket resolution failed for %s: %s", asset_group, exc)
         return ConsolidatorAgHealth(
@@ -163,7 +174,7 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
     entries = [
         ConsolidatorAgHealth(
             asset_group="cefi",
-            bucket="raw-tick-data-cefi-mock",
+            bucket="market-data-cefi-mock",
             status="ok",
             index_age_seconds=42.0,
             staleness_budget_seconds=budget,
@@ -173,7 +184,7 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
         ),
         ConsolidatorAgHealth(
             asset_group="defi",
-            bucket="raw-tick-data-defi-mock",
+            bucket="market-data-defi-mock",
             status="critical",
             index_age_seconds=90000.0,
             staleness_budget_seconds=budget,
@@ -189,7 +200,7 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
 def get_consolidator_health() -> ConsolidatorHealthResponse:
     """Per-asset_group manifest-consolidator health drill-down.
 
-    For each asset_group's ``raw_tick_data`` bucket: the consolidated availability-index
+    For each asset_group's ``market-data`` bucket: the consolidated availability-index
     heartbeat age, whether the per-VM shard recovery-merge fallback is active (stale index
     + shards present = consolidator behind/down), the derived health status, and the last
     successful run timestamp. Read-only; degrades to ``status="unknown"`` per-AG on a read
