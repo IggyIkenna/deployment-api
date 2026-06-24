@@ -34,7 +34,6 @@ from deployment_api.services.data_status.coverage_metrics import (
     compute_capture_status_counts,
     compute_empty_reason_counts,
     compute_failure_pillar_counts,
-    compute_out_of_window_count,
     derive_capture_status_rates,
 )
 from deployment_api.services.data_status.mtds import TRADFI_TICK_ONLY_DATA_TYPES
@@ -109,8 +108,10 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
         v_empty_reasons = compute_empty_reason_counts(v_df)
         # OOW count: never-collectable cells surfaced as a distinct bucket so the
         # UI can display them as "outside window — not a gap" without counting
-        # them as coverage gaps.
-        v_oow_count = compute_out_of_window_count(v_df)
+        # them as coverage gaps. Read off ``v_capture_counts`` (populated by
+        # compute_capture_status_counts) so the count that clipped
+        # ``honest_coverage`` == the count displayed, with no second df walk.
+        v_oow_count = v_capture_counts.out_of_window
 
         venue_entry: dict[str, object] = {
             "dates_found": found,
