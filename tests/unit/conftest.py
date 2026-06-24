@@ -346,6 +346,8 @@ def _ensure_external_packages_mocked() -> None:
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
             "deployment.quota_broker_client": {"QuotaBrokerClient": MagicMock()},
             "deployments_registry": {
+                "ACTIVE_PREFIX": "deployments/active/",
+                "ARCHIVE_PREFIX": "deployments/archive/",
                 "DEFAULT_BUCKET": "test-deployments-bucket",
                 "DeploymentRegistryEntry": MagicMock(),
                 "DeploymentsRegistry": MagicMock(),
