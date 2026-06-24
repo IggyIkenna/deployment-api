@@ -209,6 +209,16 @@ def _classify_vm(vm_name: str) -> DeploymentTarget:
     )
 
 
+def classify_vm_target(vm_name: str) -> DeploymentTarget:
+    """Public: classify a VM/deployment name → its DeploymentTarget (umbrella/service/asset_group).
+
+    Reuses the inventory's curated lifecycle resolver + the single
+    ``classify_deployment_target`` resolver, so a consumer (the per-deployment
+    freshness endpoint) never re-derives classification.
+    """
+    return _classify_vm(vm_name)
+
+
 def _heartbeat_age_seconds(entry: DeploymentRegistryEntry, now: datetime) -> int | None:
     """Seconds since the registry entry's last heartbeat, or None if unparseable."""
     raw = entry.last_heartbeat_at
@@ -742,5 +752,6 @@ __all__ = [
     "UmbrellaSummaryResponse",
     "build_inventory",
     "build_umbrella_summary",
+    "classify_vm_target",
     "router",
 ]
