@@ -219,6 +219,18 @@ def classify_vm_target(vm_name: str) -> DeploymentTarget:
     return _classify_vm(vm_name)
 
 
+def active_registry_vm_names() -> set[str]:
+    """The set of VM names with an ACTIVE deployment-registry entry (parallel-read).
+
+    The "registered" set for cross-cloud reconciliation — a RUNNING GCE VM absent
+    from this set is UNKNOWN (running but unregistered); an entry here with no running
+    VM is EXPECTED-MISSING. Reuses the same parallel GCS reader as the inventory.
+    """
+    client = get_storage_client()
+    keys = _list_json_keys(client, DEFAULT_BUCKET, ACTIVE_PREFIX)
+    return {e.vm_name for e in _download_entries_parallel(client, DEFAULT_BUCKET, keys)}
+
+
 def _heartbeat_age_seconds(entry: DeploymentRegistryEntry, now: datetime) -> int | None:
     """Seconds since the registry entry's last heartbeat, or None if unparseable."""
     raw = entry.last_heartbeat_at
@@ -750,6 +762,7 @@ __all__ = [
     "DeploymentInventoryResponse",
     "DeploymentItem",
     "UmbrellaSummaryResponse",
+    "active_registry_vm_names",
     "build_inventory",
     "build_umbrella_summary",
     "classify_vm_target",
