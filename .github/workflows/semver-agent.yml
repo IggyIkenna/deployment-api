@@ -782,16 +782,24 @@ jobs:
             cat /tmp/schema_dispatch_response.json 2>/dev/null || true
           fi
 
-      # ── SLACK NOTIFY (#ci-failures) ──────────────────────────────────────────
-      - name: Notify Slack
-        if: always()
+      # ── SLACK NOTIFY (#ci-failures) — FAILURE-ONLY ───────────────────────────
+      # A routine pre-SIT SUCCESS post is pure lifecycle noise: semver-agent runs on EVERY staging
+      # promotion, so a green run carries no signal (operator 2026-06-24 — "don't tell me something
+      # succeeded if there was no previous failure"). The genuine semver failure modes (bump-rate
+      # circuit-breaker / schema-dispatch failure) already curl their own DETAILED severity:CRITICAL
+      # pages above; this failure-only step is the coarse catch-all for any OTHER job failure
+      # (version-compute / git push). `if: failure()` removes the success spam at the source.
+      - name: Notify Slack (failure-only)
+        if: failure()
         env:
           # Retired Telegram -> Slack #ci-failures (cicd #551). Prefer the dedicated valid webhook.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
           STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          # semver-agent always runs on staging branch
-          TEXT="*semver-agent* | deployment-api | ${STATUS} | branch: staging | triggered by QG pass on staging (pre-SIT)"
+          # semver-agent always runs on staging branch. Failure-only (see `if:` above) — STATUS is
+          # never `success` here, so the text is unambiguously a failure alert.
+          TEXT=":red_circle: *semver-agent FAILED* | deployment-api | ${STATUS} | branch: staging (pre-SIT) — version-bump / schema-dispatch / push step failed — ${RUN_URL}"
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
