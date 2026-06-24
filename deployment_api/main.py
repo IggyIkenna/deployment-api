@@ -66,6 +66,7 @@ from .routes import (
     execution_backtest_launch,
     fixtures,
     fleet,
+    fleet_reconciliation,
     health_consolidator,
     health_overview,
     infra_health,
@@ -220,6 +221,7 @@ _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tag
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
 _authenticated_router.include_router(fleet.router)  # Has its own prefix /api/fleet
+_authenticated_router.include_router(fleet_reconciliation.router, prefix="/api", tags=["Fleet Reconciliation"])
 _authenticated_router.include_router(unified_alerts.router, prefix="/api", tags=["Alerts"])  # GET /api/alerts
 _authenticated_router.include_router(health_overview.router, prefix="/api", tags=["Health"])  # GET /api/health/overview
 _authenticated_router.include_router(
