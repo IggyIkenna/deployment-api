@@ -218,3 +218,39 @@ def test_consolidator_route_mock_shape(client_consolidator: TestClient) -> None:
     assert ags["cefi"]["status"] == "ok"
     assert ags["defi"]["status"] == "critical"
     assert ags["defi"]["per_vm_shard_fallback_active"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regression — real-cloud bucket-kind resolution (caught 2026-06-24 verifying the
+# live deployment-api: the shipped endpoint passed kind="raw_tick_data" — not a valid
+# bucket kind — so EVERY AG 500'd; and prediction's market-data store is the dedicated
+# ``market-data-tick-prediction`` key, NOT the shared ``market-data`` kind which has no
+# prediction entry). The per-AG kind map below is the fix; the guard test proves the map
+# is COMPLETE so an unmapped AG can never reach production as a 5xx.
+# ---------------------------------------------------------------------------
+
+
+def test_market_data_kind_prediction_has_dedicated_key() -> None:
+    from deployment_api.routes.health_consolidator import _market_data_kind
+
+    # cefi/defi/tradfi/sports share the market-data kind; prediction has its own flat key.
+    assert _market_data_kind("cefi") == "market-data"
+    assert _market_data_kind("tradfi") == "market-data"
+    assert _market_data_kind("prediction") == "market-data-tick-prediction"
+
+
+def test_every_asset_group_resolves_a_market_data_bucket() -> None:
+    """Guard: every consolidator-tracked AG resolves a non-empty bucket via its kind map.
+
+    ``resolve_bucket_name`` is pure string templating (no network), so this is a fast
+    completeness check — adding an AG to ``_ASSET_GROUPS`` without a kind entry (the
+    real-cloud bug class where prediction had no ``market-data`` entry) fails HERE at
+    test time instead of 5xx-ing the live endpoint.
+    """
+    from unified_trading_library import resolve_bucket_name
+
+    from deployment_api.routes.health_consolidator import _ASSET_GROUPS, _market_data_kind
+
+    for ag in _ASSET_GROUPS:
+        bucket = resolve_bucket_name(cloud="gcp", kind=_market_data_kind(ag), asset_group=ag)
+        assert bucket, f"{ag} resolved an empty bucket via kind {_market_data_kind(ag)!r}"

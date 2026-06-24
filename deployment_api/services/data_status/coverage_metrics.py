@@ -127,6 +127,17 @@ def compute_capture_status_counts(df: pd.DataFrame) -> CaptureStatusCounts:
         attempted_failed=int((series == CAPTURE_STATUS_FAILED).sum()),
         expected_unattempted_known_empty=known_empty,
         expected_unattempted_pending_fetch=pending_fetch,
+        # OOW clip (operator direction 2026-06-23): the subset of
+        # ``empty_confirmed`` cells that are never-collectable (out-of-coverage
+        # lifecycle reasons + schedule-defining FIXTURES no-match-day empties).
+        # Populating it here makes ``compute_honest_coverage(counts)`` exclude
+        # those cells from BOTH numerator and denominator, so an out-of-life
+        # empty reads as a BLANK not a coverage success — matching the
+        # denominator math ``coverage.py`` already does. Every consumer that
+        # bases honest_coverage on ``compute_capture_status_counts``
+        # (``derive_capture_status_rates`` → panel rollup + per-venue breakdown)
+        # therefore returns the in-window-clipped %, consistent with coverage.py.
+        out_of_window=compute_out_of_window_count(df),
     )
 
 
@@ -372,8 +383,12 @@ def derive_capture_status_rates(
     ``empty_rate`` / ``failure_rate`` are rounded to 4 dp and clamped to
     ``[0, 1]``.  Returns 0.0 for all rates when ``total_expected_cells`` is
     0 so callers always get a well-formed dict.
-    ``honest_coverage`` uses the canonical 5-field formula (numerator =
-    captured + empty_confirmed + expected_unattempted_known_empty).
+    ``honest_coverage`` uses the canonical UAC formula
+    (``compute_honest_coverage``): numerator = captured +
+    (empty_confirmed - out_of_window) + expected_unattempted_known_empty. The
+    ``out_of_window`` subset is populated upstream by
+    ``compute_capture_status_counts`` so out-of-life empties are CLIPPED from
+    both numerator and denominator here — consistent with coverage.py.
     """
     captured = counts.captured
     empty = counts.empty_confirmed
@@ -517,8 +532,10 @@ def build_coverage_metrics(
     # cells. These are excluded from the completion-% denominator by the
     # coverage.py layer (which calls compute_out_of_window_count directly).
     # Surfaced here so the manifest.py path also exposes out_of_window in its
-    # capture_status_counts output.
-    oow_count = compute_out_of_window_count(filtered)
+    # capture_status_counts output. Read it off ``capture_counts`` (already
+    # populated by compute_capture_status_counts) so the value the honest-
+    # coverage clip used == the value displayed, with no second df walk.
+    oow_count = capture_counts.out_of_window
     counts_dict = {
         "captured": capture_counts.captured,
         "empty_confirmed": capture_counts.empty_confirmed,
