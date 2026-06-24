@@ -310,6 +310,7 @@ def build_instruments_shard_csv_export(
     asset_group: str,
     venue: str,
     date: str,
+    chain: str | None = None,
     project_id: str | None = None,
     max_rows: int = MAX_SHARD_CSV_ROWS,
 ) -> tuple[str, int, str]:
@@ -317,8 +318,9 @@ def build_instruments_shard_csv_export(
 
     instruments-service writes one parquet per ``(venue, day)`` at
     ``instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet``.
-    This endpoint reads that file and streams the entire shard as CSV so the
-    operator can inspect what instruments were captured on a given day.
+    For DeFi, ``venue`` is the combined ``{protocol}-{chain}`` token (e.g.
+    ``AAVE_V3-ARBITRUM``); pass the raw protocol as ``venue`` and the chain as
+    ``chain`` and this function assembles the combined key automatically.
 
     Only valid for services in ``_PER_VENUE_DAY_BUNDLE_SERVICES``
     (instruments-service, corporate-actions).
@@ -335,8 +337,9 @@ def build_instruments_shard_csv_export(
             f"Supported: {sorted(_PER_VENUE_DAY_BUNDLE_SERVICES)}"
         )
 
+    venue_key = f"{venue}-{chain}" if category.lower() == "defi" and chain else venue
     bucket = _dd.build_bucket_name(service, category, project_id)
-    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue}/instruments.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
+    gs_uri = f"gs://{bucket}/instrument_availability/by_date/day={date}/venue={venue_key}/instruments.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
 
     try:
         df = _dd._read_parquet_columns(gs_uri)  # pyright: ignore[reportPrivateUsage]

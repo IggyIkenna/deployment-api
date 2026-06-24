@@ -37,7 +37,9 @@ _SERVICE_BUNDLE_SYMBOL_COLUMN: dict[str, str] = {
 }
 
 
-def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrument_type: str, data_type: str) -> str:
+def _shard_prefix(
+    service: str, asset_group: str, venue: str, day: str, instrument_type: str, data_type: str, chain: str | None = None
+) -> str:
     """Build the GCS prefix for a shard, routed by service.
 
     Different services use different bucket layouts — the drill-down must
@@ -68,7 +70,8 @@ def _shard_prefix(service: str, asset_group: str, venue: str, day: str, instrume
             # league kwarg can be added when the UI learns to send one.
             league = instrument_type or ""
             return f"instrument_availability/by_date/day={day}/league={league}/venue={venue}/"
-        return f"instrument_availability/by_date/day={day}/venue={venue}/"
+        venue_key = f"{venue}-{chain}" if asset_group.lower() == "defi" and chain else venue
+        return f"instrument_availability/by_date/day={day}/venue={venue_key}/"
 
     if svc in {"market-tick-data-service", "market-data-processing-service"}:
         return (
@@ -304,6 +307,7 @@ def _list_instruments_full(
     day: str,
     instrument_type: str,
     data_type: str,
+    chain: str | None = None,
     project_id: str | None = None,
 ) -> dict[str, object]:
     """Return the full (un-paginated, un-searched) listing for a shard.
@@ -318,7 +322,7 @@ def _list_instruments_full(
         return cast_dict(cached)
 
     bucket = _dd.build_bucket_name(service, category, project_id)
-    prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type)
+    prefix = _shard_prefix(service, category, venue, day, instrument_type, data_type, chain)
     parquet_files = _collect_parquet_files(bucket, prefix)
     bundling = _bundling_mode(venue, instrument_type, service)
 
@@ -358,6 +362,7 @@ def list_instruments_for_shard(
     day: str,
     instrument_type: str,
     data_type: str,
+    chain: str | None = None,
     limit: int = DEFAULT_INSTRUMENT_LIMIT,
     offset: int = 0,
     search: str | None = None,
@@ -391,6 +396,7 @@ def list_instruments_for_shard(
         day=day,
         instrument_type=instrument_type,
         data_type=data_type,
+        chain=chain,
         project_id=project_id,
     )
 
