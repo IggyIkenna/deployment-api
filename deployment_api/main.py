@@ -159,8 +159,16 @@ async def standard_error_handler(request: Request, exc: HTTPException) -> JSONRe
 # --- Authenticated API routes (accept X-API-Key or Firebase Bearer token) ---
 _authenticated_router = APIRouter(dependencies=[Depends(verify_any_auth)])
 _authenticated_router.include_router(services.router, prefix="/api/services", tags=["Services"])
-_authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
+# Inventory router FIRST: its literal ``/deployments/inventory`` +
+# ``/deployments/umbrella/{umbrella}/summary`` routes MUST register before
+# deployments.router's parametric ``/deployments/{deployment_id}`` — FastAPI
+# matches in registration order, so the parametric route otherwise shadows the
+# literal (``GET /api/deployments/inventory`` → get_deployment_status("inventory")
+# → 404 state.json → 500, which broke the cockpit Live/Batch/Paper tabs;
+# caught on real cloud 2026-06-24). A real deployment id still falls through to
+# the parametric route (it doesn't match the literals).
 _authenticated_router.include_router(deployments_inventory.router, prefix="/api", tags=["Deployment Inventory"])
+_authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
 _authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
 _authenticated_router.include_router(epics.router, prefix="/api/epics", tags=["Epics"])
