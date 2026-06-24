@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from unified_api_contracts import compute_honest_coverage
 
 from deployment_api.services.data_status.coverage_metrics import (
     build_coverage_metrics,
+    compute_capture_status_counts,
     compute_out_of_window_count,
+    derive_capture_status_rates,
 )
 
 # ---------------------------------------------------------------------------
@@ -307,3 +310,115 @@ class TestScheduleDefiningFixturesEmptyResolved:
         denominator = 3445 + within_window_empty  # captured + in-window gaps
         completion_pct = 3445 / denominator * 100 if denominator else 0.0
         assert completion_pct == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# compute_capture_status_counts populates out_of_window (the clip source)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeCaptureStatusCountsPopulatesOOW:
+    """The 4-state counter now stamps ``out_of_window`` so every downstream
+    ``compute_honest_coverage(counts)`` clips out-of-life empties.
+    """
+
+    def test_oow_field_populated_from_reasons(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"capture_status": "captured", "error_reason": ""},
+                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PRE_GENESIS_CHAIN"},
+                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_INSTRUMENT_DELISTED"},
+                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_HOLIDAY"},
+            ]
+        )
+        counts = compute_capture_status_counts(df)
+        assert counts.empty_confirmed == 3
+        assert counts.out_of_window == 2  # pre_genesis + delisted (holiday is in-window)
+
+    def test_no_oow_leaves_field_zero(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"capture_status": "captured", "error_reason": ""},
+                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_HOLIDAY"},
+            ]
+        )
+        counts = compute_capture_status_counts(df)
+        assert counts.out_of_window == 0
+
+    def test_empty_df_oow_zero(self) -> None:
+        assert compute_capture_status_counts(pd.DataFrame()).out_of_window == 0
+
+    def test_fixtures_schedule_empty_is_oow(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"},
+                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
+            ]
+        )
+        counts = compute_capture_status_counts(df)
+        assert counts.out_of_window == 1
+
+
+# ---------------------------------------------------------------------------
+# derive_capture_status_rates honest_coverage is CLIPPED (the consumer fix)
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveCaptureStatusRatesClipsHonestCoverage:
+    """``honest_coverage`` from the panel rollup + per-venue breakdown path now
+    excludes out-of-life empties from both numerator and denominator, matching
+    coverage.py. Before the fix the empties were credited → inflated %.
+    """
+
+    def test_oow_empties_do_not_inflate_when_failures_present(self) -> None:
+        # 10 captured, 5 OOW empty, 5 attempted_failed.
+        # Legacy (out_of_window=0): (10+5)/(10+5+5) = 15/20 = 0.75 (inflated).
+        # Clipped: (10+0)/(10+0+5) = 10/15 = 0.6667 (true in-window coverage).
+        rows = []
+        rows += [{"capture_status": "captured", "error_reason": ""} for _ in range(10)]
+        rows += [{"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PRE_GENESIS_CHAIN"} for _ in range(5)]
+        rows += [{"capture_status": "attempted_failed", "error_reason": "TIMEOUT"} for _ in range(5)]
+        df = pd.DataFrame(rows)
+
+        counts = compute_capture_status_counts(df)
+        assert counts.out_of_window == 5
+
+        rates = derive_capture_status_rates(counts, total_expected_cells=20)
+        assert rates["honest_coverage"] == pytest.approx(10 / 15, abs=1e-6)
+
+        # Sanity: the legacy (unclipped) value would have been the inflated 0.75.
+        legacy = counts._replace(out_of_window=0)
+        assert compute_honest_coverage(legacy) == pytest.approx(0.75, abs=1e-6)
+
+    def test_within_window_empties_still_credited(self) -> None:
+        # In-window empties (holidays) are honest answers → stay in numerator.
+        rows = []
+        rows += [{"capture_status": "captured", "error_reason": ""} for _ in range(8)]
+        rows += [{"capture_status": "empty_confirmed", "error_reason": "EXPECTED_HOLIDAY"} for _ in range(2)]
+        rows += [{"capture_status": "attempted_failed", "error_reason": "TIMEOUT"} for _ in range(2)]
+        df = pd.DataFrame(rows)
+        counts = compute_capture_status_counts(df)
+        assert counts.out_of_window == 0
+        rates = derive_capture_status_rates(counts, total_expected_cells=12)
+        # (8 + 2 in-window-empty) / (8 + 2 + 2) = 10/12.
+        assert rates["honest_coverage"] == pytest.approx(10 / 12, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# build_coverage_metrics ``coverage`` field is clipped (panel rollup consumer)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCoverageMetricsCoverageClipped:
+    def test_coverage_field_excludes_oow(self) -> None:
+        rows = []
+        rows += [{"capture_status": "captured", "error_reason": ""} for _ in range(10)]
+        rows += [{"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PRE_GENESIS_CHAIN"} for _ in range(5)]
+        rows += [{"capture_status": "attempted_failed", "error_reason": "TIMEOUT"} for _ in range(5)]
+        df = pd.DataFrame(rows)
+        result = build_coverage_metrics(df, "DEFI", capture_coverage_pct=50.0, total_expected_cells=20)
+        # coverage = clipped honest_coverage = 10/15, NOT the inflated 15/20.
+        assert float(result["coverage"]) == pytest.approx(10 / 15, abs=1e-6)
+        counts = result["capture_status_counts"]
+        assert isinstance(counts, dict)
+        assert counts["out_of_window"] == 5
