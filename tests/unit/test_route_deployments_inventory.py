@@ -11,6 +11,7 @@ up counts/stale/last-failure correctly.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -265,7 +266,6 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
     from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
 
     entries = _vm_entries()
-    vm_details = {e.vm_name: {"status": "RUNNING"} for e in entries}
     cr_status = {
         "prd-manifest-consolidator-cefi": CloudRunExecutionStatus(
             job_name="prd-manifest-consolidator-cefi",
@@ -276,19 +276,15 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
         )
     }
 
-    class _Registry:
-        def __init__(self, *_a: object, **_k: object) -> None: ...
+    # The live path now reads the registry via a parallel GCS loader (``_load_gcp_vm_entries``)
+    # — patch that seam directly (the parallel reader itself is covered separately below).
+    from deployment_api.routes import deployments_inventory as _inv_mod
 
-        def list_active(self) -> list[_FakeEntry]:
-            return [e for e in entries if e.status == "running"]
-
-        def list_recent_archive(self, days: int = 7) -> list[_FakeEntry]:
-            return [e for e in entries if e.status != "running"]
+    _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
 
     with (
         patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
-        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value=vm_details),
-        patch("deployment_api.routes.deployments_inventory.DeploymentsRegistry", _Registry),
+        patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=entries),
         patch(
             "deployment_api.routes.deployments_inventory.latest_execution_by_job",
             return_value=cr_status,
@@ -316,6 +312,54 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
     ]
     assert consolidator
     assert any(c["status"] == "succeeded" for c in consolidator)
+
+
+# ---------------------------------------------------------------------------
+# parallel registry reader (the perf fix — concurrent GCS reads, per-key isolation)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ParsedEntry:
+    """A stand-in registry entry parsed from JSON (the real type is conftest-stubbed)."""
+
+    vm_name: str
+
+    @classmethod
+    def from_json(cls, raw: str) -> _ParsedEntry:
+        return cls(vm_name=json.loads(raw)["vm_name"])  # raises JSONDecodeError on corrupt input
+
+
+def test_download_entries_parallel_reads_concurrently_and_skips_unreadable() -> None:
+    """The parallel reader lists keys, downloads+parses each concurrently, skips bad ones."""
+    from deployment_api.routes.deployments_inventory import _download_entries_parallel, _list_json_keys
+
+    store = {
+        "deployments/active/a.json": '{"vm_name": "vm-a"}',
+        "deployments/active/b.json": '{"vm_name": "vm-b"}',
+        "deployments/active/bad.json": "{not-valid-json",  # corrupt → skipped, never crashes the batch
+    }
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            return [_Blob(name=k) for k in store if k.startswith(prefix)]
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            return store[blob_path].encode("utf-8")
+
+    fake = _FakeStorage()
+    # The real DeploymentRegistryEntry is conftest-stubbed (a MagicMock), so patch the
+    # parser the reader uses with a real one to exercise the parse + per-key skip logic.
+    with patch("deployment_api.routes.deployments_inventory.DeploymentRegistryEntry", _ParsedEntry):
+        keys = _list_json_keys(fake, "bkt", "deployments/active/")  # type: ignore[arg-type]
+        assert set(keys) == set(store)
+        entries = _download_entries_parallel(fake, "bkt", keys)  # type: ignore[arg-type]
+    # The two valid entries parse; the corrupt one is silently skipped (per-key isolation).
+    assert {e.vm_name for e in entries} == {"vm-a", "vm-b"}
 
 
 # ---------------------------------------------------------------------------

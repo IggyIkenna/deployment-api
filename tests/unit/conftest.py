@@ -346,6 +346,8 @@ def _ensure_external_packages_mocked() -> None:
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
             "deployment.quota_broker_client": {"QuotaBrokerClient": MagicMock()},
             "deployments_registry": {
+                "ACTIVE_PREFIX": "deployments/active/",
+                "ARCHIVE_PREFIX": "deployments/archive/",
                 "DEFAULT_BUCKET": "test-deployments-bucket",
                 "DeploymentRegistryEntry": MagicMock(),
                 "DeploymentsRegistry": MagicMock(),
@@ -377,7 +379,7 @@ def _ensure_external_packages_mocked() -> None:
         from pathlib import Path as _Path
 
         _ds_src = _Path(__file__).resolve().parents[3] / "deployment-service" / "deployment_service"
-        for _real_sub in ("deployment_classification", "cloud_run_job_registry"):
+        for _real_sub in ("deployment_classification", "cloud_run_job_registry", "deployment_cluster_registry"):
             _real_path = _ds_src / f"{_real_sub}.py"
             if _real_path.exists():
                 _spec = _ilu.spec_from_file_location(f"deployment_service.{_real_sub}", _real_path)
