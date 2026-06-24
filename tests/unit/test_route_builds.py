@@ -514,3 +514,47 @@ def test_list_ecr_tags_returns_tag_list() -> None:
 
     assert "1.0.0" in result
     assert "0.9.0" in result
+
+
+# ── #5 branch→image: LDR recognition + by-branch grouping ────────────────────
+class TestLdrBranchRecognition:
+    def test_ldr_tag_resolves_to_live_defi_rollout(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        entry = _tag_to_entry("1.3.0-live-defi-rollout")
+        assert entry.branch == "live-defi-rollout"
+        assert entry.display == "1.3.0 @ live-defi-rollout"
+
+    def test_ldr_short_slug_resolves(self) -> None:
+        from deployment_api.routes.builds import _tag_to_entry
+
+        assert _tag_to_entry("0.9.1-ldr").branch == "live-defi-rollout"
+
+
+def test_list_builds_by_branch_groups_latest_and_history(client_builds: TestClient) -> None:
+    """by-branch groups builds per branch with latest + full history, branches version-ordered."""
+    from unittest.mock import AsyncMock
+
+    from deployment_api.routes.builds import BuildEntry
+
+    entries = [
+        BuildEntry(tag="1.2.0", display="1.2.0 @ main", version="1.2.0", branch="main", is_v1=True),
+        BuildEntry(tag="1.1.0", display="1.1.0 @ main", version="1.1.0", branch="main", is_v1=True),
+        BuildEntry(
+            tag="1.3.0-live-defi-rollout",
+            display="1.3.0 @ live-defi-rollout",
+            version="1.3.0",
+            branch="live-defi-rollout",
+            is_v1=True,
+        ),
+    ]
+    with patch("deployment_api.routes.builds._resolve_build_entries", AsyncMock(return_value=entries)):
+        r = client_builds.get("/api/builds/svc/by-branch?env=prod")
+    assert r.status_code == 200
+    body = r.json()
+    by_branch = {g["branch"]: g for g in body["branches"]}
+    assert set(by_branch) == {"main", "live-defi-rollout"}
+    assert by_branch["main"]["latest"]["tag"] == "1.2.0"  # highest of [1.2.0, 1.1.0]
+    assert len(by_branch["main"]["builds"]) == 2  # full rollback history
+    # LDR (1.3.0) is the highest tip → its branch group sorts first.
+    assert body["branches"][0]["branch"] == "live-defi-rollout"

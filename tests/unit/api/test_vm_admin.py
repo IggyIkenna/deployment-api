@@ -139,3 +139,27 @@ class TestCancelProdMode:
         assert entry.status == "failed"
         assert entry.exit_code == -1
         assert entry.extras.get("cancel_reason") == "operator_cancel"
+
+
+# ── #7 restart (one-call stop + relaunch handle) ─────────────────────────────
+# Mock mode returns the restart-initiated envelope WITHOUT resolving the launcher (launcher
+# resolution is a non-mock, call-time lazy import — the deferred data_pipeline_monitors pattern
+# routes/_aws_deployments.py uses, untested at unit level like the AWS census path).
+class TestRestartMockMode:
+    def test_restart_returns_202(self, mock_client: TestClient) -> None:
+        r = mock_client.post("/vm/admin/cefi-binance-spot-20260624/restart")
+        assert r.status_code == 202
+        body = r.json()
+        assert body["action"] == "restart"
+        assert body["status"] == "restart_initiated"
+        assert body["cancelled"] is True
+
+    def test_restart_echoes_vm_name(self, mock_client: TestClient) -> None:
+        r = mock_client.post("/vm/admin/strategy-live-cefi-vm-1/restart")
+        assert r.json()["vm_name"] == "strategy-live-cefi-vm-1"
+
+    def test_restart_mock_does_not_resolve_launcher(self, mock_client: TestClient) -> None:
+        # Mock mode short-circuits before the (non-mock) launcher resolution.
+        body = mock_client.post("/vm/admin/cefi-binance-spot-vm-1/restart").json()
+        assert body["relaunchable"] is False
+        assert body["relaunch_launcher"] is None

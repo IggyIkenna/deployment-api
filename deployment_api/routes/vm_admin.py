@@ -44,6 +44,20 @@ class AdminActionResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     message: str
 
 
+class RestartActionResult(AdminActionResult):  # CORRECT-LOCAL: FastAPI API contract model
+    """A restart result — the stop half + the resolved relaunch handle.
+
+    ``relaunch_launcher`` is the ``scripts/vm/launch-*.sh`` the caller relaunches through
+    (or ``None`` when the VM has no deterministic relaunch — a singleton / one-off);
+    ``relaunchable`` mirrors that as a bool. ``cancelled`` is whether an active deployment
+    was stopped (a long-lived VM not in the active registry restarts via the launcher alone).
+    """
+
+    relaunch_launcher: str | None = None
+    relaunchable: bool = False
+    cancelled: bool = False
+
+
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -202,4 +216,97 @@ def resume_vm(
         action="resume",
         status="resumed",
         message=f"Pause signal cleared for '{vm_name}'. VM will resume processing.",
+    )
+
+
+@router.post("/vm/admin/{vm_name}/restart", response_model=RestartActionResult, status_code=202)
+def restart_vm(
+    vm_name: str,
+    _check: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
+) -> RestartActionResult:
+    """One-call restart = STOP the current deployment + resolve its relaunch launcher.
+
+    A genuine convenience over the prior two-step stop-then-relaunch (the gap the Phase-6
+    audit surfaced): it marks the active deployment cancelled (the same GCS-registry stop as
+    ``/cancel`` — composed, not duplicated) AND resolves the relaunch launcher via
+    deployment-service ``resolve_launcher_for_vm`` so the caller relaunches through the
+    VERIFIED Deploy/launcher path. **It does NOT itself spawn a VM** — a fire-and-forget
+    launch is banned (every VM launch needs STARTED+progress+STOPPED event verification), so
+    the actual relaunch goes through the launcher this response names. Cloud-agnostic: the
+    cancel + signals are GCS-based and polled identically by GCP and AWS VMs (so there is no
+    GCP-only control here needing AWS parity — the audit's other half).
+
+    202; 404 only when there is neither an active deployment to stop NOR a relaunch launcher.
+    """
+    if _cfg.is_mock_mode():
+        log_event(
+            "VM_RESTART_REQUESTED",
+            severity="WARNING",
+            details={"vm_name": vm_name, "mock": True},
+        )
+        return RestartActionResult(
+            vm_name=vm_name,
+            action="restart",
+            status="restart_initiated",
+            cancelled=True,
+            message=f"VM '{vm_name}' restart initiated (mock mode).",
+        )
+
+    # Lazy import — the deployment_service.data_pipeline_monitors sub-package is imported at
+    # CALL time (same deferred pattern as routes/_aws_deployments.py), so a top-level import
+    # doesn't break app import in environments that resolve only the base package.
+    from deployment_service.data_pipeline_monitors.launcher_registry import resolve_launcher_for_vm
+
+    launcher = resolve_launcher_for_vm(vm_name)
+    relaunchable = launcher is not None
+
+    registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
+    try:
+        entry = _find_active_by_vm_name(registry, vm_name)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.exception("Failed to read registry for restart: %s", exc)
+        raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
+
+    if entry is None and not relaunchable:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active deployment and no relaunch launcher for vm_name '{vm_name}' — nothing to restart",
+        )
+
+    cancelled = False
+    if entry is not None:
+        entry.status = "failed"
+        entry.exit_code = -1
+        entry.completed_at = _utcnow_iso()
+        entry.extras["cancel_reason"] = "operator_restart"
+        try:
+            registry.complete(entry)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("Failed to archive deployment for restart %s: %s", vm_name, exc)
+            raise HTTPException(status_code=502, detail="Failed to persist restart stop") from exc
+        cancelled = True
+
+    logger.info("restart requested vm_name=%s relaunch_launcher=%s cancelled=%s", vm_name, launcher, cancelled)
+    log_event(
+        "VM_RESTART_REQUESTED",
+        severity="WARNING",
+        details={
+            "vm_name": vm_name,
+            "deployment_id": entry.deployment_id if entry is not None else None,
+            "relaunch_launcher": launcher,
+            "cancelled": cancelled,
+            "mock": False,
+        },
+    )
+    relaunch_hint = (
+        f"relaunch via `{launcher}`" if relaunchable else "no deterministic relaunch — relaunch from the Deploy console"
+    )
+    return RestartActionResult(
+        vm_name=vm_name,
+        action="restart",
+        status="restart_initiated",
+        relaunch_launcher=launcher,
+        relaunchable=relaunchable,
+        cancelled=cancelled,
+        message=f"VM '{vm_name}' stopped ({cancelled=}); {relaunch_hint}.",
     )
