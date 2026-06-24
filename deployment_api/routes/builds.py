@@ -94,6 +94,11 @@ def _tag_to_entry(tag: str) -> BuildEntry:
         branch = "main"
     elif suffix == "staging":
         branch = "staging"
+    elif suffix in ("live-defi-rollout", "ldr"):
+        # LDR — the integration branch. cloud-build-router tags LDR builds
+        # {semver}-live-defi-rollout; recognise it as a first-class branch so the UI can
+        # offer "launch from LDR latest" alongside main / staging.
+        branch = "live-defi-rollout"
     else:
         # Reverse branch slug: feat-my-feature → feat/my-feature
         pm = _BRANCH_PREFIX_RE.match(suffix)
@@ -212,6 +217,62 @@ async def _list_ecr_tags(service: str) -> list[str]:
     return tags
 
 
+class BranchBuilds(BaseModel):  # CORRECT-LOCAL — API response schema local to this route; not a domain contract
+    """All builds for one branch + the latest (highest-version) of them.
+
+    The cockpit Deploy console reads ``latest`` for "launch from <branch> latest" and
+    ``builds`` for "rollback to <tag>" (the full descending-version history per branch).
+    """
+
+    branch: str = Field(..., description="Branch name (e.g. 'live-defi-rollout', 'main', 'staging')")
+    latest: BuildEntry = Field(..., description="Highest-version build on this branch")
+    builds: list[BuildEntry] = Field(..., description="All builds on this branch, version-descending")
+
+
+class BuildsByBranchResponse(BaseModel):  # CORRECT-LOCAL — API response schema local to this route
+    """Builds grouped by source branch — the branch→image resolution surface."""
+
+    service: str
+    env: Environment
+    branches: list[BranchBuilds] = Field(..., description="Per-branch build groups, branches sorted by latest version")
+
+
+async def _resolve_build_entries(service: str, env: Environment) -> list[BuildEntry]:
+    """Resolve all available build entries for a service (mock → AWS ECR → GCP AR).
+
+    The single source of truth for both ``list_builds`` and ``list_builds_by_branch`` —
+    returns version-descending ``BuildEntry`` rows (each carries its branch + tag/sha).
+    """
+    is_mock = CLOUD_MOCK_MODE or CLOUD_PROVIDER == "local"
+
+    if is_mock:
+        entries = _mock_builds_from_manifest(service, env)
+        if not entries:
+            logger.info("Mock mode: no deployed_versions entry for %s/%s", service, env)
+        return sorted(entries, key=_sort_key)
+
+    # AWS ECR path
+    if CLOUD_PROVIDER == "aws":
+        tags = await _list_ecr_tags(service)
+        if not tags:
+            logger.warning("No ECR tags for %s — falling back to manifest", service)
+            return sorted(_mock_builds_from_manifest(service, env), key=_sort_key)
+        return sorted([_tag_to_entry(t) for t in tags], key=_sort_key)
+
+    # GCP Artifact Registry path
+    project = default_project_id
+    if not project:
+        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")  # noqa: qg-gcp-project-id
+
+    tags = await _list_ar_tags(service, project)
+    if not tags:
+        # AR unavailable or no tags yet — fall back to manifest
+        logger.warning("No AR tags found for %s in %s — falling back to manifest", service, env)
+        return sorted(_mock_builds_from_manifest(service, env), key=_sort_key)
+
+    return sorted([_tag_to_entry(t) for t in tags], key=_sort_key)
+
+
 @router.get("/api/builds/{service}", response_model=list[BuildEntry], tags=["Builds"])
 async def list_builds(
     service: str,
@@ -226,37 +287,33 @@ async def list_builds(
     Build display format: "{version} @ {branch}" — human-readable and idempotent
     (same version + branch = same artifact, enforced by immutable AR tags).
     """
-    is_mock = CLOUD_MOCK_MODE or CLOUD_PROVIDER == "local"
+    return await _resolve_build_entries(service, env)
 
-    if is_mock:
-        entries = _mock_builds_from_manifest(service, env)
-        if not entries:
-            # Return empty with informative mock entry
-            logger.info("Mock mode: no deployed_versions entry for %s/%s", service, env)
-        return sorted(entries, key=_sort_key)
 
-    # AWS ECR path
-    if CLOUD_PROVIDER == "aws":
-        tags = await _list_ecr_tags(service)
-        if not tags:
-            logger.warning("No ECR tags for %s — falling back to manifest", service)
-            return sorted(_mock_builds_from_manifest(service, env), key=_sort_key)
-        entries = [_tag_to_entry(t) for t in tags]
-        return sorted(entries, key=_sort_key)
+@router.get("/api/builds/{service}/by-branch", response_model=BuildsByBranchResponse, tags=["Builds"])
+async def list_builds_by_branch(
+    service: str,
+    env: Environment = Query(..., description="Target environment: dev, staging, or prod"),
+) -> BuildsByBranchResponse:
+    """Branch→image resolution: the same builds, grouped by source branch.
 
-    # GCP Artifact Registry path
-    project = default_project_id
-    if not project:
-        raise HTTPException(status_code=400, detail="GCP_PROJECT_ID not configured")  # noqa: qg-gcp-project-id
-
-    tags = await _list_ar_tags(service, project)
-    if not tags:
-        # AR unavailable or no tags yet — fall back to manifest
-        logger.warning("No AR tags found for %s in %s — falling back to manifest", service, env)
-        return sorted(_mock_builds_from_manifest(service, env), key=_sort_key)
-
-    entries = [_tag_to_entry(t) for t in tags]
-    return sorted(entries, key=_sort_key)
+    Each group carries the **latest** (highest-version) build for "launch from <branch>
+    latest" + the **full** version-descending list for "rollback to <tag>". Branch groups
+    are themselves ordered by their latest version (so LDR/main/staging tips surface first).
+    Reuses the existing AR/ECR tag listing — no new data source.
+    """
+    entries = await _resolve_build_entries(service, env)
+    by_branch: dict[str, list[BuildEntry]] = {}
+    for e in entries:
+        by_branch.setdefault(e.branch, []).append(e)
+    groups = [
+        BranchBuilds(branch=branch, latest=builds[0], builds=builds)
+        for branch, builds in by_branch.items()
+        if builds  # builds[0] is the highest version — entries arrive version-descending
+    ]
+    # Order branch groups by their latest version (descending), like the flat list.
+    groups.sort(key=lambda g: _sort_key(g.latest))
+    return BuildsByBranchResponse(service=service, env=env, branches=groups)
 
 
 @router.post("/api/deployments/{service}/deploy", tags=["Builds"])
