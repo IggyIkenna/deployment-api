@@ -310,6 +310,7 @@ async def get_instruments_for_shard(
     day: str = Query(..., description="Day (YYYY-MM-DD)"),
     instrument_type: str = Query(..., description="Instrument type"),
     data_type: str = Query(..., description="Data type"),
+    chain: str | None = Query(None, description="DeFi chain leaf-axis filter"),
     limit: int = Query(
         DEFAULT_INSTRUMENT_LIMIT,
         ge=1,
@@ -346,7 +347,7 @@ async def get_instruments_for_shard(
         # failed) so the drill-down modal has every capture_status badge
         # on screen and the Retry button on the attempted_failed row is
         # exercised against the mock retryFailedShard round-trip.
-        _ = (limit, offset, search)
+        _ = (limit, offset, search, chain)
         return build_mock_shard_instruments(
             service=service,
             asset_group=asset_group,
@@ -363,6 +364,7 @@ async def get_instruments_for_shard(
             day=day,
             instrument_type=instrument_type,
             data_type=data_type,
+            chain=chain,
             limit=limit,
             offset=offset,
             search=search,
