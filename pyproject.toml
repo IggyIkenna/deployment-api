@@ -50,6 +50,7 @@ dependencies = [
     "ruff==0.15.0",
     "basedpyright==1.38.2",
     "pip-audit>=2.7.0,<3.0.0",
+    "pip>=26.1.2",  # PYSEC-2026-196 (pip transitive via pip-audit/pip-api; fix=26.1.2)
     "bandit>=1.7.0,<2.0.0",
     "pyjwt>=2.13.0,<3.0.0",
     "cryptography<47.0.0,>=46.0.7",
