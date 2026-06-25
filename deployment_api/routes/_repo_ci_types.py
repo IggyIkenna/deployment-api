@@ -202,6 +202,14 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     # (>45min = 3 missed 15-min ticks) — the bug-#11 class where content piles on LDR with a dead
     # drain, invisible today. False when content is draining healthily or there's no real delta.
     drain_stalled: bool
+    # Slack↔/repos parity: True when this repo has an OPEN promotion PR (LDR→staging / LDR→main /
+    # staging→main) stuck on a human-actionable BLOCKING class (conflicting / failing_check /
+    # skip_ci_jammed) — the repo-level mirror of the Slack `quality-gates-v2 ... PR #N FAILED`
+    # CRITICAL page. Distinct from drain_stalled (which ALSO requires real content ahead) and from
+    # ci_status (the branch-push value, which stays MAIN_GREEN off the last green main push while a
+    # promotion PR fails). promotion_blocked reads GitHub ground truth, so it can never go
+    # stale-green and never disagrees with Slack. SSOT: ci_status_repos_promotion_failure_parity.
+    promotion_blocked: bool
     # Dep-order promotion HOLD (mirrors staging-to-main.yml STAGE 1.8) — distinct from drain_stalled
     # (a stuck PR) and promotion_blocked (a failure quarantine). A tiered promotion holds this repo
     # until every dep is on main; blocked_by non-empty ⟺ HELD.
