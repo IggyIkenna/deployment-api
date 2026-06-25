@@ -96,6 +96,38 @@ def classify_stuck_pr(
     return "automerge_stuck"
 
 
+# A promotion PR's open stuck-class means the repo's PROMOTION (LDR→staging / LDR→main /
+# staging→main) is genuinely BLOCKED on a failing/jammed required check — the human-actionable
+# classes, NOT the auto-recoverable ones. This is the read-side parity signal for the Slack
+# `python-quality-gates-v2 ... PR #N FAILED` CRITICAL page: a promotion PR whose v2 failed pages
+# Slack but, because the repo's branch-push `ci_status` is still MAIN_GREEN (the LAST GREEN main
+# push), it reads green on /repos. `promotion_blocked` surfaces the failing promotion at the repo
+# level so the dashboard matches Slack. Excludes the self-healing classes (automerge_stuck /
+# v2_never_reported drain themselves) so the headline never cries wolf on an in-flight drain.
+PROMOTION_BLOCKING_STUCK_CLASSES = frozenset({"conflicting", "failing_check", "skip_ci_jammed"})
+
+
+def derive_promotion_blocked(open_prs: list[dict[str, object]]) -> bool:
+    """True iff ANY open promotion-contract PR is stuck on a human-actionable BLOCKING class.
+
+    The repo-level mirror of the Slack `quality-gates-v2 ... PR #N FAILED` CRITICAL page. Reads the
+    per-PR ``stuck_class`` the overview already classifies from GitHub ground truth (the SAME source
+    Slack pages off), so it can NEVER go stale-green and never disagrees with Slack — unlike the
+    branch-push ``ci_status`` (a MAIN_GREEN repo whose LDR→main promotion PR's v2 just failed).
+
+    A failing promotion PR keeps the repo at the last GREEN main-push status, so without this signal
+    a stuck/red promotion is invisible at a glance; ``promotion_blocked`` makes it a repo-level
+    headline. Only the human-actionable classes count (conflicting / failing_check / skip_ci_jammed);
+    the self-healing classes (automerge_stuck / v2_never_reported, which drain in-band) are excluded
+    so an in-flight drain never reads as blocked.
+    """
+    for pr in open_prs:
+        stuck = pr.get("stuck_class")
+        if isinstance(stuck, str) and stuck in PROMOTION_BLOCKING_STUCK_CLASSES:
+            return True
+    return False
+
+
 def derive_sit_state(
     *,
     repo: str,
