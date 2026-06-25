@@ -1,5 +1,6 @@
 # --- Keep these (do not ignore): uv.lock, package.json, .env.example, tsconfig.json ---
 # --- Repo-specific exceptions (add below; sync preserves this section) ---
+_deployment-service/
 
 # =============================================================================
 # Central .gitignore — workspace SSOT (Python + React/TS + security)
