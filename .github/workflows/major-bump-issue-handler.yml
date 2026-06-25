@@ -4,7 +4,7 @@ name: major-bump-issue-handler
 #
 # When a user with write access comments /approve:
 #   1. Parses repo/version metadata from issue body
-#   2. Bumps pyproject.toml version on the staging branch
+#   2. Bumps pyproject.toml version on live-defi-rollout (LDR is the SSOT; Tier-C drain promotes to staging)
 #   3. Dispatches version-bump to unified-trading-pm (updates staging_versions)
 #   4. Sends Slack success alert (#ci-failures)
 #   5. Closes issue as completed
@@ -138,7 +138,7 @@ jobs:
           echo "reason=$REASON" >> "$GITHUB_OUTPUT"
           echo "Parsed: repo=$REPO version=$VERSION current=$CURRENT"
 
-      - name: Bump pyproject.toml on staging branch
+      - name: Bump pyproject.toml on live-defi-rollout
         if: steps.cmd.outputs.action == 'approve'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -149,10 +149,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Bumping $REPO to v$VERSION on staging (approved by $APPROVER)"
+          echo "Bumping $REPO to v$VERSION on live-defi-rollout (approved by $APPROVER)"
 
-          # Clone the target repo at staging branch
-          git clone --depth=1 --branch staging \
+          # Clone the target repo at live-defi-rollout (LDR is the SSOT; staging is a projection)
+          git clone --depth=1 --branch live-defi-rollout \
             "https://${GH_TOKEN}@github.com/${ORG}/${REPO}.git" /tmp/target-repo
           cd /tmp/target-repo
 
@@ -180,8 +180,8 @@ jobs:
             exit 0
           fi
           git commit -m "chore: bump version to ${VERSION} [major-bump approved by ${APPROVER}]"
-          git push origin staging
-          echo "Bumped $REPO pyproject.toml to $VERSION on staging"
+          git push origin live-defi-rollout
+          echo "Bumped $REPO pyproject.toml to $VERSION on live-defi-rollout (Tier-C drain promotes to staging)"
 
       - name: Dispatch version-bump to unified-trading-pm
         if: steps.cmd.outputs.action == 'approve'
@@ -200,7 +200,7 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${ORG}/unified-trading-pm/dispatches" \
-            -d "{\"event_type\":\"version-bump\",\"client_payload\":{\"repo\":\"${REPO}\",\"version\":\"${VERSION}\",\"branch\":\"staging\",\"commit_sha\":\"major-bump-approved\",\"approved_by\":\"${APPROVER}\"}}")
+            -d "{\"event_type\":\"version-bump\",\"client_payload\":{\"repo\":\"${REPO}\",\"version\":\"${VERSION}\",\"branch\":\"live-defi-rollout\",\"commit_sha\":\"major-bump-approved\",\"approved_by\":\"${APPROVER}\"}}")
 
           if [ "$HTTP_STATUS" = "204" ]; then
             echo "Dispatched version-bump to unified-trading-pm: $REPO -> $VERSION"
@@ -222,7 +222,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
         run: |
           if [ "$ACTION" = "approve" ]; then
-            MSG="Major bump APPROVED: ${REPO} -> v${VERSION} on staging (by @${APPROVER})\n${ISSUE_URL}"
+            MSG="Major bump APPROVED: ${REPO} -> v${VERSION} on live-defi-rollout (by @${APPROVER})\n${ISSUE_URL}"
           else
             MSG="Major bump REJECTED: ${REPO} -> v${VERSION} (by @${APPROVER})\n${ISSUE_URL}"
           fi
@@ -251,7 +251,7 @@ jobs:
           TODAY=$(date +%Y-%m-%d)
 
           if [ "$ACTION" = "approve" ]; then
-            COMMENT="**APPROVED** by @${APPROVER} on ${TODAY}\n\nVersion \`${VERSION}\` has been bumped in \`${REPO}\` pyproject.toml on \`staging\`.\nPM workspace-manifest.json \`staging_versions\` updated via version-bump dispatch."
+            COMMENT="**APPROVED** by @${APPROVER} on ${TODAY}\n\nVersion \`${VERSION}\` has been bumped in \`${REPO}\` pyproject.toml on \`live-defi-rollout\` (Tier-C drain promotes to staging automatically).\nPM workspace-manifest.json \`staging_versions\` updated via version-bump dispatch."
             STATE_REASON="completed"
             NEW_LABEL="major-bump-approved"
           else
