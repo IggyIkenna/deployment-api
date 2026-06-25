@@ -157,6 +157,13 @@ def _mock_row(
         # market-tick-data-service: conflicting → both stalled. v2_never_reported / automerge_stuck
         # are auto-recoverable → NOT stalled.)
         drain_stalled=any(pr.get("stuck_class") in {"conflicting", "failing_check", "skip_ci_jammed"} for pr in prs),
+        # Slack↔/repos parity: promotion-blocked = an open promotion PR stuck on a BLOCKING class.
+        # Same per-PR derivation as drain_stalled but WITHOUT the content-ahead requirement, so a
+        # MAIN_GREEN repo whose LDR→main PR's v2 failed (content already squash-merged) still reads
+        # blocked — the masked stale-green case this parity fix targets.
+        promotion_blocked=any(
+            pr.get("stuck_class") in {"conflicting", "failing_check", "skip_ci_jammed"} for pr in prs
+        ),
         # Dep-order HOLD (STAGE 1.8 mirror). tier from the manifest layer; blocked_by/blocking
         # default empty (clear) and are seeded explicitly in _mock_overview for the held scenario.
         tier=tier,

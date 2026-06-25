@@ -62,7 +62,12 @@ from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
     _mock_fleet_git_health,
     _mock_overview,
 )
-from ._repo_ci_stuck import classify_stuck_pr, derive_sit_state, is_promotion_contract_pr
+from ._repo_ci_stuck import (
+    classify_stuck_pr,
+    derive_promotion_blocked,
+    derive_sit_state,
+    is_promotion_contract_pr,
+)
 from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     PROMOTION_BRANCHES,
     BlockingCheckDict,
@@ -536,6 +541,14 @@ async def _overview_row(
     )
     has_blocking_pr = any(pr.get("stuck_class") in _BLOCKING_STUCK_CLASSES for pr in prs)
     drain_stalled = content_ahead and has_blocking_pr
+    # Slack↔/repos parity (ci_status_repos_promotion_failure_parity): a promotion PR stuck on a
+    # human-actionable BLOCKING class makes the repo PROMOTION-BLOCKED at the headline level, even
+    # when the branch-push ci_status is still MAIN_GREEN (off the last green main push) and there is
+    # NO content-ahead delta (a squash-merged drained repo shows files_changed=0). Distinct from
+    # drain_stalled, which additionally requires real content ahead — so a failing LDR→main PR whose
+    # content already squash-merged still surfaces here. Reuses the same per-PR GitHub-ground-truth
+    # stuck_class the overview classified, so it can never disagree with Slack.
+    promotion_blocked = derive_promotion_blocked(cast("list[dict[str, object]]", prs))
     # codebase_health: Firestore-authoritative (via ManifestView overlay), manifest fallback.
     # Cast to CodebaseHealthDict for type correctness — raw dict from the store matches the shape.
     raw_health = view.codebase_health_for(meta.name)
@@ -563,6 +576,7 @@ async def _overview_row(
         main_lag_age_min=main_lag_age_min,
         main_unpromoted_commits=main_unpromoted_commits,
         drain_stalled=drain_stalled,
+        promotion_blocked=promotion_blocked,
         # tier from the manifest now; blocked_by/blocking are the CROSS-repo dep-order fields filled
         # by _compute_dep_order in get_overview once every row exists (they need the whole fleet's
         # ci_status). Seed empty here so the row shape is always complete.
@@ -629,9 +643,7 @@ async def get_overview() -> OverviewResponseDict:
         semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
         # Dual-cloud image: fetch GCP + AWS in parallel (each already degrades to {} if its build
         # API is unreachable) so every row shows both side-by-side — no provider toggle.
-        builds_gcp, builds_aws = await asyncio.gather(
-            _latest_builds_by_repo("gcp"), _latest_builds_by_repo("aws")
-        )
+        builds_gcp, builds_aws = await asyncio.gather(_latest_builds_by_repo("gcp"), _latest_builds_by_repo("aws"))
         semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
         rows_raw = await asyncio.gather(
             *[

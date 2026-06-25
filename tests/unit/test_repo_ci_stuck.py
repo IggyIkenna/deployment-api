@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from deployment_api.routes._repo_ci_stuck import (
     classify_stuck_pr,
+    derive_promotion_blocked,
     derive_sit_state,
     head_message_suppresses_ci,
     is_promotion_contract_pr,
@@ -191,3 +192,40 @@ class TestDeriveSitState:
             last_sit_run_age_min=None,
         )
         assert sit["staging_locked_reason"] is None
+
+
+class TestDerivePromotionBlocked:
+    """Slack↔/repos parity: a failing promotion PR surfaces at the repo level
+    (ci_status_repos_promotion_failure_parity_2026_06_25)."""
+
+    def test_failing_check_promotion_pr_is_blocked(self) -> None:
+        # THE PM #547 CASE: an LDR→main promotion PR whose required quality-gates-v2 FAILED.
+        # The repo's ci_status stays MAIN_GREEN (last green main push) — this flag is what
+        # makes the failing promotion visible on /repos, matching the Slack CRITICAL page.
+        prs = [{"head": "live-defi-rollout", "base": "main", "stuck_class": "failing_check"}]
+        assert derive_promotion_blocked(prs) is True
+
+    def test_conflicting_and_skip_ci_jammed_are_blocked(self) -> None:
+        assert derive_promotion_blocked([{"stuck_class": "conflicting"}]) is True
+        assert derive_promotion_blocked([{"stuck_class": "skip_ci_jammed"}]) is True
+
+    def test_self_healing_classes_are_not_blocked(self) -> None:
+        # automerge_stuck / v2_never_reported drain in-band → not a human-actionable block;
+        # the headline must not cry wolf on an in-flight self-healing drain.
+        assert derive_promotion_blocked([{"stuck_class": "automerge_stuck"}]) is False
+        assert derive_promotion_blocked([{"stuck_class": "v2_never_reported"}]) is False
+
+    def test_no_open_prs_is_not_blocked(self) -> None:
+        assert derive_promotion_blocked([]) is False
+
+    def test_unstuck_pr_is_not_blocked(self) -> None:
+        # An open promotion PR that is NOT stuck (stuck_class None / clean) doesn't block.
+        assert derive_promotion_blocked([{"head": "live-defi-rollout", "stuck_class": None}]) is False
+
+    def test_any_blocking_pr_among_several_blocks(self) -> None:
+        prs = [
+            {"stuck_class": "automerge_stuck"},  # self-healing
+            {"stuck_class": None},  # clean
+            {"stuck_class": "failing_check"},  # blocking → repo is blocked
+        ]
+        assert derive_promotion_blocked(prs) is True
