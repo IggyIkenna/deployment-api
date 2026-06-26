@@ -222,6 +222,21 @@ class ManifestView:
         tier = cast(dict[str, object], meta_obj).get("tier")
         return str(tier) if tier is not None else ""
 
+    def promotion_model_for(self, repo: str) -> str | None:
+        """workspace-manifest.json.repositories[repo].promotion_model (e.g. "ldr_main").
+
+        Returns None when the field is absent (the default promotion path, staging→main).
+        "ldr_main" indicates the repo promotes live-defi-rollout→main directly, so staging
+        being ahead of main is the EXPECTED steady state — not a stall."""
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return None
+        meta_obj = cast(dict[str, object], repositories).get(repo)
+        if not isinstance(meta_obj, dict):
+            return None
+        value = cast(dict[str, object], meta_obj).get("promotion_model")
+        return str(value) if value else None
+
     def deployed_version_for(self, repo: str) -> str | None:
         """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal)."""
         deployed = self._raw.get("deployed_versions")

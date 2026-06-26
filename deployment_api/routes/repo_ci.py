@@ -584,6 +584,8 @@ async def _overview_row(
         blocked_by=[],
         blocking=[],
         codebase_health=codebase_health,
+        # WS-L: promotion path (e.g. "ldr_main" = promotes LDR→main directly). None = default.
+        promotion_model=view.promotion_model_for(meta.name),
     )
 
 

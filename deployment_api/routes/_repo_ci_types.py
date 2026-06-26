@@ -218,6 +218,11 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     blocking: list[str]  # repos held because THIS repo isn't on main yet (empty = not a blocker)
     # QG health snapshot for the Cov%/QG-reason/File-debt columns — None when not yet captured.
     codebase_health: CodebaseHealthDict | None
+    # WS-L: promotion path from the manifest (e.g. "ldr_main" = promotes LDR→main directly,
+    # skipping staging→main). None = default path (staging→main). The UI suppresses the
+    # staging→main stall classification for "ldr_main" repos because staging being ahead of
+    # main is the expected steady state, not a stall.
+    promotion_model: NotRequired[str | None]
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
