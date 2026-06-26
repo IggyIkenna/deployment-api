@@ -153,3 +153,34 @@ class TestPendingVersionBumps:
 
     def test_pending_version_bumps_empty_manifest(self) -> None:
         assert manifest_view_from_raw({}).pending_version_bumps() == []
+
+
+_PROMOTION_MODEL_FIXTURE: dict[str, object] = {
+    "repositories": {
+        "deployment-api": {
+            "type": "service",
+            "promotion_model": "ldr_main",
+        },
+        "unified-trading-library": {
+            "type": "library",
+            # no promotion_model field — default staging→main path
+        },
+    },
+}
+
+
+class TestPromotionModel:
+    def test_promotion_model_for_ldr_main(self) -> None:
+        view = manifest_view_from_raw(_PROMOTION_MODEL_FIXTURE)
+        assert view.promotion_model_for("deployment-api") == "ldr_main"
+
+    def test_promotion_model_for_absent_returns_none(self) -> None:
+        view = manifest_view_from_raw(_PROMOTION_MODEL_FIXTURE)
+        assert view.promotion_model_for("unified-trading-library") is None
+
+    def test_promotion_model_for_nonexistent_repo_returns_none(self) -> None:
+        view = manifest_view_from_raw(_PROMOTION_MODEL_FIXTURE)
+        assert view.promotion_model_for("does-not-exist") is None
+
+    def test_promotion_model_for_empty_manifest_returns_none(self) -> None:
+        assert manifest_view_from_raw({}).promotion_model_for("any-repo") is None
