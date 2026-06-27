@@ -248,6 +248,15 @@ class ManifestView:
         value = cast(dict[str, object], meta_obj).get("promotion_model")
         return str(value) if value else None
 
+    def staging_dormant_mode(self) -> bool:
+        """workspace-manifest.json top-level `staging_dormant_mode` (WS-L operator toggle).
+
+        When true the fleet promotes LDR→main directly and STAGING is dormant, so the dashboard +
+        alerts suppress every staging-direction signal (LDR→staging drain behind / staging→main not
+        promoting / the stg→main hop / drain-stalled) for ALL repos — only the LDR→main signal stays
+        actionable. Absent/false = the normal staging-in-the-flow display. Reversible (flip the flag)."""
+        return bool(self._raw.get("staging_dormant_mode"))
+
     def version_source_for(self, repo: str) -> str:
         """workspace-manifest.json.repositories[repo].version_source (e.g. "git-tag").
 
