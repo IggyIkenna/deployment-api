@@ -248,6 +248,24 @@ class ManifestView:
         value = cast(dict[str, object], meta_obj).get("promotion_model")
         return str(value) if value else None
 
+    def version_source_for(self, repo: str) -> str:
+        """workspace-manifest.json.repositories[repo].version_source (e.g. "git-tag").
+
+        Mirrors `promotion_model_for`. Returns the repo's declared version source: "git-tag" (the
+        Phase-2/D13 dynamic model — version resolved from the git tag + Firestore registry, no
+        committed version line and no staging→main bump path) or a static line source
+        ("pyproject.toml"/"package.json"/"version-file"). Defaults to "pyproject.toml" (the
+        fleet-typical static case) when absent — matching the PM `assert_version_coherence._version_source`
+        default so the two readers agree on what "static" means."""
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return "pyproject.toml"
+        meta_obj = cast(dict[str, object], repositories).get(repo)
+        if not isinstance(meta_obj, dict):
+            return "pyproject.toml"
+        value = cast(dict[str, object], meta_obj).get("version_source")
+        return str(value) if value else "pyproject.toml"
+
     def deployed_version_for(self, repo: str) -> str | None:
         """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal).
 
@@ -327,6 +345,14 @@ class ManifestView:
         The main version is read from `_versions_main_map` (the Firestore release overlay when
         resolved, manifest `versions{}` otherwise) so the comparison uses the same LIVE released
         version as the promoter gate; `staging_versions` stays manifest-sourced (no Firestore writer).
+
+        **git-tag repos are skipped** (F5): a `version_source=git-tag` repo (Phase-2/D13) has NO
+        staging→main bump path — its version SSOT is the git tag / Firestore registry and its
+        `staging_versions` entry is vestigial (no live writer keeps it current; staging_versions is
+        retiring), so a stale staging value above main is never a real pending bump and must not arm
+        the semver circuit-breaker. Mirrors the PM `assert_version_coherence` git-tag branch ("staging
+        is not the source"). The whole-map-absent / per-repo-absent fail-open paths stay intact, so a
+        fully-retired staging_versions block yields `[]`, not a crash.
         """
         staging = self._raw.get("staging_versions")
         if not isinstance(staging, dict):
@@ -337,6 +363,8 @@ class ManifestView:
         for repo, staging_v in staging_d.items():
             if repo.startswith("_"):
                 continue
+            if self.version_source_for(repo) == "git-tag":
+                continue  # no staging→main bump path; staging entry is vestigial (F5)
             main_v = versions_d.get(repo)
             if not isinstance(staging_v, str) or not isinstance(main_v, str):
                 continue

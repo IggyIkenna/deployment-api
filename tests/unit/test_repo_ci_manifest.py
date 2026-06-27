@@ -172,6 +172,34 @@ class TestPendingVersionBumps:
     def test_pending_version_bumps_empty_manifest(self) -> None:
         assert manifest_view_from_raw({}).pending_version_bumps() == []
 
+    def test_pending_version_bumps_skips_git_tag_repos(self) -> None:
+        """F5: a version_source=git-tag repo whose staging is AHEAD of main is NOT a pending bump.
+
+        A git-tag repo has no staging→main path (version SSOT = git tag / Firestore registry, staging
+        entry vestigial), so it must never be flagged / arm the circuit-breaker — even when its stale
+        staging value exceeds main. A sibling pyproject repo ahead IS still flagged.
+        """
+        fixture: dict[str, object] = {
+            "repositories": {
+                "git-tag-svc": {"version_source": "git-tag"},
+                "static-svc": {"version_source": "pyproject.toml"},
+                "default-svc": {},  # version_source absent → defaults to pyproject.toml → compared
+            },
+            "versions": {"git-tag-svc": "0.17.0", "static-svc": "1.0.0", "default-svc": "2.0.0"},
+            "staging_versions": {
+                "git-tag-svc": "0.18.0",  # AHEAD of main but git-tag → skipped
+                "static-svc": "1.1.0",  # ahead, pyproject → pending
+                "default-svc": "2.1.0",  # ahead, absent-source default pyproject → pending
+            },
+        }
+        view = manifest_view_from_raw(fixture)
+        assert view.pending_version_bumps() == ["default-svc", "static-svc"]
+        # The accessor itself: explicit git-tag, explicit static, and absent-default.
+        assert view.version_source_for("git-tag-svc") == "git-tag"
+        assert view.version_source_for("static-svc") == "pyproject.toml"
+        assert view.version_source_for("default-svc") == "pyproject.toml"
+        assert view.version_source_for("nonexistent") == "pyproject.toml"
+
     def test_pending_version_bumps_uses_firestore_versions_override(self) -> None:
         """The main version is read from the Firestore release overlay (not the manifest cache).
 
