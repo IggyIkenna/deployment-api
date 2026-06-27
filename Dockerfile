@@ -52,6 +52,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ripgrep tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
+ARG SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEPLOYMENT_API
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEPLOYMENT_API=${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEPLOYMENT_API:-}
 # UTL base image already has unified-trading-library + unified-api-contracts +
 # unified-cloud-interface preinstalled. deployment-api just adds its web /
 # auth / cache extras. We install them explicitly rather than via

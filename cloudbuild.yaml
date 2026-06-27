@@ -205,6 +205,8 @@ steps:
       - "PROJECT_ID=$PROJECT_ID"
       - "--build-arg"
       - "BUILDKIT_INLINE_CACHE=1"
+      - "--build-arg"
+      - "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DEPLOYMENT_API=$SHORT_SHA"
       # Reuse unchanged layers from the previous :latest (pulled above).
       - "--cache-from"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
