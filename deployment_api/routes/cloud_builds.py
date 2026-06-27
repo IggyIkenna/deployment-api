@@ -15,9 +15,8 @@ Sub-modules:
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import logging
-import tomllib
-from pathlib import Path
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query
@@ -28,7 +27,6 @@ from deployment_api.settings import (
     CLOUD_MOCK_MODE,
     CLOUD_PROVIDER,
     GITHUB_ORG,
-    WORKSPACE_ROOT,
 )
 from deployment_api.settings import gcp_project_id as default_project_id
 from deployment_api.utils.cache import TTL_BUILD_INFO, cache
@@ -406,20 +404,15 @@ async def get_library_status(library: str) -> LibraryStatusDict:
         "quality_gates_status": None,
     }
 
-    # Get package version from pyproject.toml (local workspace)
+    # Get installed version from dist metadata (L1356 / API-1 pre-audit for WS-L Phase 2).
+    # Previously this read pyproject.toml::project.version, which silently becomes None once
+    # version is moved to git-tags (dynamic).  importlib.metadata.version() reads the installed
+    # dist and is Phase-2-safe: it stays valid regardless of pyproject.toml shape.
     try:
-        pyproject_path = Path(WORKSPACE_ROOT) / library / "pyproject.toml" if WORKSPACE_ROOT else None
-        if pyproject_path and pyproject_path.exists():
-            with open(pyproject_path, "rb") as f:
-                pyproject: dict[str, object] = cast(dict[str, object], tomllib.load(f))
-                project_section_raw: object = pyproject.get("project") or {}
-                if isinstance(project_section_raw, dict):
-                    project_section = cast(dict[str, object], project_section_raw)
-                    version_raw = project_section.get("version")
-                    result["package_version"] = str(version_raw) if version_raw is not None else None
-    except (OSError, ValueError, KeyError) as e:
-        logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
-        pass
+        pkg_name = library.replace("-", "_")
+        result["package_version"] = importlib.metadata.version(pkg_name)
+    except importlib.metadata.PackageNotFoundError:
+        result["package_version"] = None
 
     # Try to get version from installed package
     try:
