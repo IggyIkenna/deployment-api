@@ -589,6 +589,8 @@ async def _overview_row(
         codebase_health=codebase_health,
         # WS-L: promotion path (e.g. "ldr_main" = promotes LDR→main directly). None = default.
         promotion_model=view.promotion_model_for(meta.name),
+        # WS-L staging-dormant toggle (fleet-wide): suppress every staging-direction signal in the UI.
+        staging_dormant_mode=view.staging_dormant_mode(),
     )
 
 

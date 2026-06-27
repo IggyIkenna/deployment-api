@@ -223,6 +223,10 @@ class RepoOverviewDict(TypedDict):  # CORRECT-LOCAL: deployment-api response sha
     # staging→main stall classification for "ldr_main" repos because staging being ahead of
     # main is the expected steady state, not a stall.
     promotion_model: NotRequired[str | None]
+    # WS-L staging-dormant toggle (workspace-manifest.json top-level `staging_dormant_mode`): when
+    # true the fleet is LDR→main-direct and staging is dormant, so the UI suppresses every
+    # staging-direction signal for ALL repos (only LDR→main stays actionable). Reversible.
+    staging_dormant_mode: NotRequired[bool | None]
 
 
 class RepoErrorDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
