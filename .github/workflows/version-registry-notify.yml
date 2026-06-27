@@ -1,0 +1,48 @@
+name: version-registry-notify
+
+# Phase-2 (version-out-of-source / D13) — per-repo EVENT trigger for the version registry
+# (foundation item B). Fires on a release tag push (`v*`) and forwards {repo, version, sha} to
+# unified-trading-pm's version-registry-update.yml, which does the CAS Firestore write (the GCP
+# creds + the store script live in PM, so the write is centralised — mirrors how the per-repo
+# quality-gates-v2 forwards ci-status to ci-status-update.yml).
+#
+# PURELY ADDITIVE: it only POSTs a repository_dispatch; it writes nothing locally and gates
+# nothing. The Firestore version registry it populates is a read-mirror that no reader consults
+# authoritatively until the Phase-2 finalize lane, so rolling this out is safe (a dual-write ramp).
+#
+# Canonical SSOT template — rolled out per-repo via rollout-workflow-templates.sh. Do NOT hand-edit
+# a per-repo copy; edit THIS file and re-roll. SSOT: plans/active/cicd_phase2_foundation_2026_06_27.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  notify-version-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Forward release tag to the PM version registry
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY#*/}"
+          # Strip the leading v from the tag name (refs/tags/vX.Y.Z → X.Y.Z).
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA="${GITHUB_SHA}"
+          # Plain 3-part X.Y.Z ONLY — never forward a dev/pre-release/local-suffix tag to the
+          # registry (publish-only-plain-3-part guard; PM re-checks and the store re-checks).
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Tag ${GITHUB_REF_NAME} → version '${VERSION}' is not plain 3-part X.Y.Z; not forwarding."
+            exit 0
+          fi
+          echo "Forwarding ${REPO} v${VERSION} @ ${SHA} to the PM version registry."
+          curl -s -X POST \
+            -H "Authorization: token ${GH_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/dispatches" \
+            -d "{\"event_type\": \"version-registry-update\", \"client_payload\": {\"repo\": \"${REPO}\", \"version\": \"${VERSION}\", \"sha\": \"${SHA}\"}}"
