@@ -148,6 +148,21 @@ jobs:
             esac
           done < <(git log --since="1 hour ago" --format=%s "$SCAN_REF" 2>/dev/null || true)
 
+          # Phase-2 (D13) dynamic repo: with version_source=git-tag the writer mints a TAG, not a
+          # `chore(release)` COMMIT, so the commit-based counters above are all 0 → the breaker would
+          # go inert and the runaway class re-opens (ordering hazard "breaker goes inert"). Re-derive
+          # the rate from `v*` TAG mints in the last hour; the adjacent-pair signature doesn't apply to
+          # tags, so the >=6/hr rate backstop carries the runaway protection. Inert for legacy repos.
+          VERSION_SOURCE="git-tag"
+          if [ "$VERSION_SOURCE" = "git-tag" ]; then
+            git fetch origin --tags --quiet 2>/dev/null || true
+            NOW_EPOCH=$(date +%s)
+            RECENT_BUMPS=$(git for-each-ref --format='%(creatordate:unix)' 'refs/tags/v[0-9]*' 2>/dev/null \
+              | awk -v n="$NOW_EPOCH" '($1 != "" && $1 > n - 3600)' | wc -l | tr -d ' ')
+            RECENT_BUMPS="${RECENT_BUMPS:-0}"
+            echo "Dynamic repo (version_source=git-tag): counted ${RECENT_BUMPS} v* tag mint(s) in the last hour (commit-pair signature N/A)."
+          fi
+
           echo "Pending-bump scan on ${SCAN_REF}: ${RECENT_BUMPS} bump(s)/hr; ${CONSECUTIVE} consecutive at tip; ${REBUMP_PAIRS} adjacent re-bump pair(s)"
 
           # Trip ONLY on a genuine runaway: >=2 adjacent re-bump pairs (>=3 bumps
@@ -188,6 +203,10 @@ jobs:
           TRIGGER_COMMIT_MSG: ${{ github.event.head_commit.message || github.event.workflow_run.head_commit.message }}
         run: |
           set -euo pipefail
+
+          # Phase-2 (D13) flag: "git-tag" → version resolved from v* tags (zero pyproject commits);
+          # anything else → legacy pyproject.toml sed path. Substituted at rollout time per repo.
+          VERSION_SOURCE="git-tag"
 
           # ── HEAD-commit re-entry brake (semver_version_bump_skip_ci_promotion_block §15 P1) ──
           # If the commit that triggered this run is ITSELF a semver-agent release bump,
@@ -323,13 +342,17 @@ jobs:
             # release/version commit reachable from HEAD. Only if NONE exists is this a genuine first
             # release → then all-history is correct (no prior release to bound to; the 0.0.0 first-bump
             # rule governs the version anyway). Closes the 0.0.0-branch gap in the 2026-06-09 bounded-scan fix.
-            BASELINE_SHA=$(git log --oneline | grep -m1 -E "chore\((release|version)\):" | awk '{print $1}' 2>/dev/null || echo "")
+            if [ "$VERSION_SOURCE" = "git-tag" ]; then
+              BASELINE_SHA=$(git tag --list 'v*' --sort=-version:refname | head -1 | xargs -I{} git rev-list -n 1 {} 2>/dev/null || echo "")
+            else
+              BASELINE_SHA=$(git log --oneline | grep -m1 -E "chore\((release|version)\):" | awk '{print $1}' 2>/dev/null || echo "")
+            fi
             if [ -n "$BASELINE_SHA" ]; then
               COMMITS=$(git log --oneline "${BASELINE_SHA}..HEAD" 2>/dev/null || echo "")
-              echo "BASELINE=0.0.0 but a prior release/version commit exists ($BASELINE_SHA) → SPURIOUS 0.0.0; BOUNDED scan (fail-safe; was all-history — the 2026-06-09 spurious-cascade bug)"
+              echo "BASELINE=0.0.0 but a prior baseline exists ($BASELINE_SHA) → SPURIOUS 0.0.0; BOUNDED scan (fail-safe)"
             else
               COMMITS=$(git log --oneline 2>/dev/null || echo "")
-              echo "BASELINE=0.0.0 and no prior release commit → genuine first release; scanning all commits"
+              echo "BASELINE=0.0.0 and no prior baseline → genuine first release; scanning all commits"
             fi
           else
             # Resolve the baseline-version commit ROBUSTLY (incident 2026-06-09): UAC 0.3.0 was set by an
@@ -340,8 +363,12 @@ jobs:
             # `version = "X"` string in pyproject.toml — HEAD-ancestry ONLY (never `--all`, which can match a
             # divergent branch's release commit and poison both the label scan and the differ base). Keep the
             # message grep as a secondary, also HEAD-ancestry.
-            BASELINE_SHA=$(git log -1 --format=%H -S"version = \"${BASELINE}\"" -- pyproject.toml 2>/dev/null || echo "")
-            [ -z "$BASELINE_SHA" ] && BASELINE_SHA=$(git log --oneline | grep -m1 "bump version to ${BASELINE}" | awk '{print $1}' 2>/dev/null || echo "")
+            if [ "$VERSION_SOURCE" = "git-tag" ]; then
+              BASELINE_SHA=$(git rev-list -n 1 "v${BASELINE}" 2>/dev/null || echo "")
+            else
+              BASELINE_SHA=$(git log -1 --format=%H -S"version = \"${BASELINE}\"" -- pyproject.toml 2>/dev/null || echo "")
+              [ -z "$BASELINE_SHA" ] && BASELINE_SHA=$(git log --oneline | grep -m1 "bump version to ${BASELINE}" | awk '{print $1}' 2>/dev/null || echo "")
+            fi
             if [ -n "$BASELINE_SHA" ]; then
               COMMITS=$(git log --oneline "${BASELINE_SHA}..HEAD" 2>/dev/null || echo "")
               echo "Scanning commits from $BASELINE_SHA (version $BASELINE) to HEAD"
@@ -371,11 +398,19 @@ jobs:
           echo ""
           echo "--- Step 3: Classifying diff ---"
 
-          CURRENT=$(grep -oP '^version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' pyproject.toml 2>/dev/null || echo "")
-          if [ -z "$CURRENT" ]; then
-            echo "No version found in pyproject.toml — skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ "$VERSION_SOURCE" = "git-tag" ]; then
+            CURRENT=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//' || echo "")
+            if [ -z "$CURRENT" ]; then
+              echo "No v* git tag found — using 0.0.0 as initial version"
+              CURRENT="0.0.0"
+            fi
+          else
+            CURRENT=$(grep -oP '^version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' pyproject.toml 2>/dev/null || echo "")
+            if [ -z "$CURRENT" ]; then
+              echo "No version found in pyproject.toml — skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           echo "Current version: $CURRENT"
 
@@ -635,12 +670,15 @@ jobs:
       # check reports without a wasteful full run. The re-trigger loop is ALREADY prevented by the
       # chore-skip in the compute step (a `chore(release):` commit yields skip=true), so dropping
       # `[skip ci]` is loop-safe.
-      - name: Apply version bump to staging (chore(release))
+      - name: Apply version bump (tag mint for git-tag repos, chore(release) for legacy)
         id: apply
         if: steps.compute.outputs.skip != 'true' && steps.compute.outputs.bump != 'major_blocked'
         run: |
           set -euo pipefail
 
+          # Phase-2 (D13): "git-tag" repos mint a vX.Y.Z tag (zero pyproject commits);
+          # legacy repos write the version line to pyproject.toml on staging.
+          VERSION_SOURCE="git-tag"
           NEW_VERSION="${{ steps.compute.outputs.new_version }}"
           CURRENT="${{ steps.compute.outputs.current_version }}"
 
@@ -649,35 +687,50 @@ jobs:
             exit 1
           fi
 
-          # Replace the version line in pyproject.toml (anchored to the CURRENT value the
-          # compute step read, so we never touch a dependency version line by accident).
-          if ! grep -qE "^version = \"${CURRENT}\"" pyproject.toml; then
-            echo "FATAL: pyproject.toml version is not '${CURRENT}' (compute baseline) — refusing to sed." >&2
-            grep -E "^version = " pyproject.toml || true
-            exit 1
-          fi
-          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+          if [ "$VERSION_SOURCE" = "git-tag" ]; then
+            # Dynamic-versioned repo: mint a vX.Y.Z annotated tag — zero pyproject commits.
+            echo "version_source=git-tag — minting tag v${NEW_VERSION} (no pyproject commit)"
+            git config user.name "semver-agent[bot]"
+            git config user.email "semver-rollout[bot]@users.noreply.github.com"
+            if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
+              echo "Tag v${NEW_VERSION} already exists — idempotent, nothing to do."
+              exit 0
+            fi
+            git tag -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
+            git push origin "v${NEW_VERSION}"
+            echo "Tagged + pushed v${NEW_VERSION}"
+          else
+            # Legacy static-version repo: sed the version line + chore(release) commit to staging.
+            # Replace the version line in pyproject.toml (anchored to the CURRENT value the
+            # compute step read, so we never touch a dependency version line by accident).
+            if ! grep -qE "^version = \"${CURRENT}\"" pyproject.toml; then
+              echo "FATAL: pyproject.toml version is not '${CURRENT}' (compute baseline) — refusing to sed." >&2
+              grep -E "^version = " pyproject.toml || true
+              exit 1
+            fi
+            sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" pyproject.toml
 
-          if git diff --quiet pyproject.toml; then
-            echo "pyproject.toml already at ${NEW_VERSION} — nothing to commit (idempotent)."
-            exit 0
-          fi
+            if git diff --quiet pyproject.toml; then
+              echo "pyproject.toml already at ${NEW_VERSION} — nothing to commit (idempotent)."
+              exit 0
+            fi
 
-          git config user.name "semver-agent[bot]"
-          git config user.email "semver-rollout[bot]@users.noreply.github.com"
-          git add pyproject.toml
-          git commit -m "chore(release): bump version to ${NEW_VERSION}"
+            git config user.name "semver-agent[bot]"
+            git config user.email "semver-rollout[bot]@users.noreply.github.com"
+            git add pyproject.toml
+            git commit -m "chore(release): bump version to ${NEW_VERSION}"
 
-          # Push to staging. The job checked out the staging head_sha (detached); push the
-          # commit explicitly to refs/heads/staging. Retry once on a benign non-FF race
-          # (another commit landed on staging since checkout) by rebasing onto it.
-          git fetch origin staging --quiet
-          if ! git push origin "HEAD:refs/heads/staging"; then
-            echo "Non-FF push to staging — rebasing onto origin/staging and retrying once."
-            git rebase origin/staging
-            git push origin "HEAD:refs/heads/staging"
+            # Push to staging. The job checked out the staging head_sha (detached); push the
+            # commit explicitly to refs/heads/staging. Retry once on a benign non-FF race
+            # (another commit landed on staging since checkout) by rebasing onto it.
+            git fetch origin staging --quiet
+            if ! git push origin "HEAD:refs/heads/staging"; then
+              echo "Non-FF push to staging — rebasing onto origin/staging and retrying once."
+              git rebase origin/staging
+              git push origin "HEAD:refs/heads/staging"
+            fi
+            echo "Committed + pushed chore(release): bump version to ${NEW_VERSION} on staging."
           fi
-          echo "Committed + pushed chore(release): bump version to ${NEW_VERSION} on staging."
 
       - name: Dispatch version-bump to unified-trading-pm
         if: steps.compute.outputs.skip != 'true' && steps.compute.outputs.bump != 'major_blocked'
