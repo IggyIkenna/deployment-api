@@ -27,6 +27,7 @@ from ._ci_status_firestore_store import (  # pyright: ignore[reportPrivateUsage]
     _CodebaseHealthDict,
     resolve_ci_status_map,
     resolve_codebase_health_map,
+    resolve_release_version_map,
 )
 from ._repo_ci_github import gh_raw_file
 from ._repo_ci_types import DepBlockerDict, PromotionHeldDict, RepoOverviewDict, RootBlockerDict
@@ -37,9 +38,12 @@ _PM_REPO = "unified-trading-pm"
 _MANIFEST_PATH = "workspace-manifest.json"
 _MANIFEST_TTL_SECONDS = 120.0
 
-# Cache stores (timestamp, raw_manifest, firestore_ci_status_overlay, codebase_health_overlay) so
-# the Firestore reads are amortised over the same 120 s window as the manifest fetch.
-_manifest_cache: tuple[float, dict[str, object], dict[str, str], dict[str, _CodebaseHealthDict]] | None = None
+# Cache stores (timestamp, raw_manifest, firestore_ci_status_overlay, codebase_health_overlay,
+# released_version_overlay) so the Firestore reads are amortised over the same 120 s window as the
+# manifest fetch.
+_manifest_cache: (
+    tuple[float, dict[str, object], dict[str, str], dict[str, _CodebaseHealthDict], dict[str, str]] | None
+) = None
 
 
 def _semver_tuple(version: str) -> tuple[int, ...]:
@@ -75,6 +79,7 @@ class ManifestView:
         *,
         ci_status_override: dict[str, str] | None = None,
         codebase_health_override: dict[str, _CodebaseHealthDict] | None = None,
+        versions_override: dict[str, str] | None = None,
     ) -> None:
         self._raw = raw
         # When provided, ci_status_override is the Firestore-authoritative map
@@ -84,6 +89,12 @@ class ManifestView:
         # When provided, codebase_health_override is the Firestore-authoritative map
         # (manifest as fallback) produced by resolve_codebase_health_map.
         self._codebase_health_override = codebase_health_override
+        # When provided, versions_override is the Firestore-authoritative released-version map
+        # (manifest versions{} as fallback) produced by resolve_release_version_map — the LIVE git-tag
+        # registry, so release_version_for + the pending-bump comparison reflect Firestore truth
+        # without waiting for the hourly manifest consolidation. (staging_versions / deployed_versions
+        # have no Firestore writer — see _ci_status_firestore_store scope note — so they stay manifest.)
+        self._versions_override = versions_override
 
     @property
     def repos(self) -> list[RepoMeta]:
@@ -237,13 +248,66 @@ class ManifestView:
         value = cast(dict[str, object], meta_obj).get("promotion_model")
         return str(value) if value else None
 
+    def version_source_for(self, repo: str) -> str:
+        """workspace-manifest.json.repositories[repo].version_source (e.g. "git-tag").
+
+        Mirrors `promotion_model_for`. Returns the repo's declared version source: "git-tag" (the
+        Phase-2/D13 dynamic model — version resolved from the git tag + Firestore registry, no
+        committed version line and no staging→main bump path) or a static line source
+        ("pyproject.toml"/"package.json"/"version-file"). Defaults to "pyproject.toml" (the
+        fleet-typical static case) when absent — matching the PM `assert_version_coherence._version_source`
+        default so the two readers agree on what "static" means."""
+        repositories = self._raw.get("repositories")
+        if not isinstance(repositories, dict):
+            return "pyproject.toml"
+        meta_obj = cast(dict[str, object], repositories).get(repo)
+        if not isinstance(meta_obj, dict):
+            return "pyproject.toml"
+        value = cast(dict[str, object], meta_obj).get("version_source")
+        return str(value) if value else "pyproject.toml"
+
     def deployed_version_for(self, repo: str) -> str | None:
-        """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal)."""
+        """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal).
+
+        Stays manifest-sourced: deployed_versions is per-env image-deploy state committed to the
+        manifest by the cloudbuild post-build step — it has no Firestore writer (the version registry
+        tracks the RELEASED version, see release_version_for / the _ci_status_firestore_store scope note).
+        """
         deployed = self._raw.get("deployed_versions")
         if not isinstance(deployed, dict):
             return None
         value = cast(dict[str, object], deployed).get(repo)
         return str(value) if value else None
+
+    def release_version_for(self, repo: str) -> str | None:
+        """The repo's RELEASED version (git tag = SSOT), Firestore-authoritative with manifest fallback.
+
+        Phase-2 (D13): reads the resolve_release_version_map overlay (manifest versions{} as fallback)
+        when load_manifest_view has resolved it — the LIVE git-tag registry, not the up-to-an-hour
+        consolidated manifest cache; falls back to the manifest versions{} dict directly (test seam /
+        no-Firestore path via manifest_view_from_raw). None when the repo has no released version."""
+        if self._versions_override is not None:
+            return self._versions_override.get(repo)
+        versions = self._raw.get("versions")
+        if not isinstance(versions, dict):
+            return None
+        value = cast(dict[str, object], versions).get(repo)
+        return str(value) if value else None
+
+    def _versions_main_map(self) -> dict[str, str]:
+        """Repo → released (main) version: the Firestore overlay when resolved, else manifest versions{}.
+
+        The single source the pending-bump comparison reads, so it reflects the same LIVE released
+        version as release_version_for / the promoter gate."""
+        if self._versions_override is not None:
+            return self._versions_override
+        versions = self._raw.get("versions")
+        out: dict[str, str] = {}
+        if isinstance(versions, dict):
+            for k, v in cast(dict[str, object], versions).items():
+                if isinstance(v, str) and v:
+                    out[str(k)] = v
+        return out
 
     def promotion_failures(self) -> dict[str, int]:
         """workspace-manifest.json.promotion_failures (`{repo: consecutive-fail count}`)."""
@@ -274,20 +338,33 @@ class ManifestView:
         """Repos whose staging version is AHEAD of main (a bump promoted to staging but not
         yet to main — the "pending staging bump" the semver-agent circuit-breaker counts; G2).
 
-        Compares `staging_versions[repo]` vs `versions[repo]` by semver tuple; only a staging
+        Compares `staging_versions[repo]` vs the main version by semver tuple; only a staging
         version strictly greater than main counts (a staging version BEHIND main — e.g. PM's
         vestigial no-staging entry — is not a pending bump). `_note` keys are skipped.
+
+        The main version is read from `_versions_main_map` (the Firestore release overlay when
+        resolved, manifest `versions{}` otherwise) so the comparison uses the same LIVE released
+        version as the promoter gate; `staging_versions` stays manifest-sourced (no Firestore writer).
+
+        **git-tag repos are skipped** (F5): a `version_source=git-tag` repo (Phase-2/D13) has NO
+        staging→main bump path — its version SSOT is the git tag / Firestore registry and its
+        `staging_versions` entry is vestigial (no live writer keeps it current; staging_versions is
+        retiring), so a stale staging value above main is never a real pending bump and must not arm
+        the semver circuit-breaker. Mirrors the PM `assert_version_coherence` git-tag branch ("staging
+        is not the source"). The whole-map-absent / per-repo-absent fail-open paths stay intact, so a
+        fully-retired staging_versions block yields `[]`, not a crash.
         """
-        versions = self._raw.get("versions")
         staging = self._raw.get("staging_versions")
-        if not isinstance(versions, dict) or not isinstance(staging, dict):
+        if not isinstance(staging, dict):
             return []
-        versions_d = cast(dict[str, object], versions)
+        versions_d = self._versions_main_map()
         staging_d = cast(dict[str, object], staging)
         out: list[str] = []
         for repo, staging_v in staging_d.items():
             if repo.startswith("_"):
                 continue
+            if self.version_source_for(repo) == "git-tag":
+                continue  # no staging→main bump path; staging entry is vestigial (F5)
             main_v = versions_d.get(repo)
             if not isinstance(staging_v, str) or not isinstance(main_v, str):
                 continue
@@ -306,9 +383,9 @@ class ManifestView:
 async def load_manifest_view(session: aiohttp.ClientSession, token: str) -> ManifestView:
     """Fetch (or serve cached) workspace-manifest.json from PM `main` and wrap it.
 
-    On each cache miss also resolves the Firestore ci_status and codebase_health overlays
-    (Firestore-authoritative per-repo, manifest as fallback cache) so the dashboard reflects
-    the same source as the promoter gate. Both overlays are cached for the same 120 s window.
+    On each cache miss also resolves the Firestore ci_status, codebase_health and released-version
+    overlays (Firestore-authoritative per-repo, manifest as fallback cache) so the dashboard reflects
+    the same source as the promoter gate. All overlays are cached for the same 120 s window.
     """
     global _manifest_cache
     now = time.monotonic()
@@ -317,6 +394,7 @@ async def load_manifest_view(session: aiohttp.ClientSession, token: str) -> Mani
             _manifest_cache[1],
             ci_status_override=_manifest_cache[2],
             codebase_health_override=_manifest_cache[3],
+            versions_override=_manifest_cache[4],
         )
     raw_text = await gh_raw_file(session, token, GITHUB_ORG, _PM_REPO, _MANIFEST_PATH, ref="main")
     parsed = cast(object, json.loads(raw_text))
@@ -325,8 +403,14 @@ async def load_manifest_view(session: aiohttp.ClientSession, token: str) -> Mani
     manifest = cast(dict[str, object], parsed)
     ci_override = resolve_ci_status_map(manifest)
     health_override = resolve_codebase_health_map(manifest)
-    _manifest_cache = (now, manifest, ci_override, health_override)
-    return ManifestView(manifest, ci_status_override=ci_override, codebase_health_override=health_override)
+    versions_override = resolve_release_version_map(manifest)
+    _manifest_cache = (now, manifest, ci_override, health_override, versions_override)
+    return ManifestView(
+        manifest,
+        ci_status_override=ci_override,
+        codebase_health_override=health_override,
+        versions_override=versions_override,
+    )
 
 
 def manifest_view_from_raw(raw: dict[str, object]) -> ManifestView:

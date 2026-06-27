@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deployment_api.routes._repo_ci_manifest import manifest_view_from_raw
+from deployment_api.routes._repo_ci_manifest import ManifestView, manifest_view_from_raw
 from deployment_api.routes.repo_ci import _build_promotion_blocked
 
 _FIXTURE: dict[str, object] = {
@@ -72,6 +72,24 @@ class TestManifestView:
         view = manifest_view_from_raw(_FIXTURE)
         assert view.deployed_version_for("greeks-service") == "0.9.1"
         assert view.deployed_version_for("unified-trading-library") is None
+
+    def test_release_version_for_manifest_seam(self) -> None:
+        """No override (manifest_view_from_raw): release_version_for reads manifest versions{}."""
+        view = manifest_view_from_raw({"versions": {"greeks-service": "0.9.0"}})
+        assert view.release_version_for("greeks-service") == "0.9.0"
+        assert view.release_version_for("absent") is None
+        assert manifest_view_from_raw({}).release_version_for("any") is None
+
+    def test_release_version_for_firestore_override_wins(self) -> None:
+        """With versions_override (the resolve_release_version_map overlay), Firestore truth wins."""
+        view = ManifestView(
+            {"versions": {"greeks-service": "0.9.0"}},
+            versions_override={"greeks-service": "0.9.2"},
+        )
+        # Overlay value, not the (stale) manifest cache.
+        assert view.release_version_for("greeks-service") == "0.9.2"
+        # Override is the authoritative map: a repo absent from it is None even if in manifest.
+        assert view.release_version_for("not-in-override") is None
 
     def test_resolve_repo_exact_and_consolidated(self) -> None:
         # Canonical service→repo mapping = repositories[repo].consolidates[] (manifest-documented).
@@ -153,6 +171,48 @@ class TestPendingVersionBumps:
 
     def test_pending_version_bumps_empty_manifest(self) -> None:
         assert manifest_view_from_raw({}).pending_version_bumps() == []
+
+    def test_pending_version_bumps_skips_git_tag_repos(self) -> None:
+        """F5: a version_source=git-tag repo whose staging is AHEAD of main is NOT a pending bump.
+
+        A git-tag repo has no staging→main path (version SSOT = git tag / Firestore registry, staging
+        entry vestigial), so it must never be flagged / arm the circuit-breaker — even when its stale
+        staging value exceeds main. A sibling pyproject repo ahead IS still flagged.
+        """
+        fixture: dict[str, object] = {
+            "repositories": {
+                "git-tag-svc": {"version_source": "git-tag"},
+                "static-svc": {"version_source": "pyproject.toml"},
+                "default-svc": {},  # version_source absent → defaults to pyproject.toml → compared
+            },
+            "versions": {"git-tag-svc": "0.17.0", "static-svc": "1.0.0", "default-svc": "2.0.0"},
+            "staging_versions": {
+                "git-tag-svc": "0.18.0",  # AHEAD of main but git-tag → skipped
+                "static-svc": "1.1.0",  # ahead, pyproject → pending
+                "default-svc": "2.1.0",  # ahead, absent-source default pyproject → pending
+            },
+        }
+        view = manifest_view_from_raw(fixture)
+        assert view.pending_version_bumps() == ["default-svc", "static-svc"]
+        # The accessor itself: explicit git-tag, explicit static, and absent-default.
+        assert view.version_source_for("git-tag-svc") == "git-tag"
+        assert view.version_source_for("static-svc") == "pyproject.toml"
+        assert view.version_source_for("default-svc") == "pyproject.toml"
+        assert view.version_source_for("nonexistent") == "pyproject.toml"
+
+    def test_pending_version_bumps_uses_firestore_versions_override(self) -> None:
+        """The main version is read from the Firestore release overlay (not the manifest cache).
+
+        Manifest versions{} says a-svc is at 0.4.0 (stale → staging 0.5.0 would look pending), but
+        the LIVE registry says a-svc already released 0.5.0 — so it is NOT a pending bump. b-svc's
+        live version is still behind staging, so it IS pending.
+        """
+        view = ManifestView(
+            _SEMVER_FIXTURE,
+            versions_override={"a-svc": "0.5.0", "b-svc": "1.1.0", "c-svc": "0.9.0", "pm": "1.2.86"},
+        )
+        # a-svc no longer pending (live==staging); b-svc now pending (1.1.0 < staging 1.2.0); c-svc pending.
+        assert view.pending_version_bumps() == ["b-svc", "c-svc"]
 
 
 _PROMOTION_MODEL_FIXTURE: dict[str, object] = {
