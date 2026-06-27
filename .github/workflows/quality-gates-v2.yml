@@ -159,3 +159,38 @@ jobs:
             "https://api.github.com/repos/${GH_ORG}/unified-trading-pm/dispatches" \
             -d "{\"event_type\": \"qg-passed\", \"client_payload\": {\"repo\": \"${REPO}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\", \"repo_type\": \"service\"}}"
           echo "Dispatched qg-passed for ${REPO}@${COMMIT_SHA} on ${BRANCH}"
+
+  # Notify ci-failure-watcher (event-driven path, plan L1555 / L1557). When quality-gates-v2
+  # FAILS on any context (push or pull_request), fire a `ci-failure-alert` repository_dispatch
+  # into PM so ci-failure-watcher.yml wakes immediately instead of waiting up to 15 min for
+  # the */15 cron. Addresses L1557 as a corollary: the watcher's --auto-recover runs within
+  # seconds of a blocked promotion PR rather than on the next cron tick. The cron backstop
+  # remains for failures in workflows that do NOT dispatch (backmerge, semver-agent, etc.).
+  # Best-effort: a failed dispatch MUST NOT redden the run (gate already failed; cron catches it).
+  notify-ci-watcher:
+    name: Notify ci-failure-watcher (event-driven, plan L1555)
+    needs: quality-gates-v2
+    if: always() && needs.quality-gates-v2.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch ci-failure-alert → PM ci-failure-watcher
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_ORG: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "[notify-ci-watcher] no GH_PAT — skipping event-driven dispatch; cron backstop remains."
+            exit 0
+          fi
+          gh api "repos/${GH_ORG}/unified-trading-pm/dispatches" \
+            -f event_type=ci-failure-alert \
+            -f "client_payload[repo]=${REPO}" \
+            -f "client_payload[branch]=${BRANCH}" \
+            -f "client_payload[run_url]=${RUN_URL}" \
+            && echo "[notify-ci-watcher] dispatched ci-failure-alert for ${REPO}@${BRANCH} -> PM ci-failure-watcher." \
+            || echo "[notify-ci-watcher] dispatch failed (best-effort); cron backstop remains."
+          exit 0
