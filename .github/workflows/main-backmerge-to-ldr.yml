@@ -66,7 +66,7 @@ jobs:
           private-key: ${{ secrets.GH_APP_CI_POLLER_PRIVATE_KEY }}
           owner: IggyIkenna
       - name: Checkout (full history needed for merge + relationship check)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
