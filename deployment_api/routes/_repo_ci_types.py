@@ -380,6 +380,36 @@ class FleetGitHealthProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api respo
     data: dict[str, object] | None  # the orchestrator FleetGitHealthResponse payload, or None
 
 
+class EscalationEntryDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """One active escalation row from GET /api/escalations/active on the orchestrator.
+
+    Gap-4 (ci_pipeline_self_healing_gaps_2026_06_11): the orchestrator returns queued/dispatched
+    rows for stuck PRs under active recovery; deployment-ui renders per-repo working/pending state.
+    """
+
+    escalation_id: str
+    status: str  # "queued" (waiting for capacity) | "dispatched" (agent assigned, ≤2h window)
+    repo: str
+    pr_number: int
+    wall_type: str  # e.g. "conflicting"
+    slot_id: NotRequired[int | None]  # None for queued rows
+    created_at: NotRequired[str | None]
+    dispatched_at: NotRequired[str | None]
+    attempts: int
+
+
+class EscalationsProxyDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
+    """GET /api/repo-ci/escalations — proxied agent-orchestrator active escalations.
+
+    Honest degradation: available=False + reason when the orchestrator is unreachable; the board
+    shows no agent-state annotation instead of failing (shard-level failure isolation).
+    """
+
+    available: bool
+    reason: str  # "" when available; failure reason otherwise
+    escalations: list[EscalationEntryDict]
+
+
 def _now_iso() -> str:
     """UTC now in ISO-8601 (shared by the live aggregator + mock fixtures)."""
     return dt.datetime.now(dt.UTC).isoformat()
