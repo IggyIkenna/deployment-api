@@ -1,0 +1,23 @@
+name: image-build-gate
+
+# PR gate: both GCP and AWS images must build before staging→main merges.
+# Required status check on PRs targeting main.
+# Calls PM-hosted reusable workflow image-build-validate.yml.
+# SSOT: codex/05-infrastructure/dual-cloud-image-builds.md
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    uses: IggyIkenna/unified-trading-pm/.github/workflows/image-build-validate.yml@live-defi-rollout
+    with:
+      repo: ${{ github.event.repository.name }}
+      commit_sha: ${{ github.event.pull_request.head.sha }}
+      branch: ${{ github.head_ref }}
+    secrets: inherit

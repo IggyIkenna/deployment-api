@@ -17,6 +17,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     BranchHeadDict,
     CommitEntryDict,
     DepBlockerDict,
+    EscalationsProxyDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
     LastGreenDict,
@@ -529,4 +530,37 @@ def _mock_fleet_git_health() -> FleetGitHealthProxyDict:
             ],
             "vm_errors": [],
         },
+    }
+
+
+def _mock_escalations() -> EscalationsProxyDict:
+    """Gap-4 mock: one dispatched (working) + one queued (pending) escalation so both
+    states render in the Repos-CI playwright smoke suite."""
+    return {
+        "available": True,
+        "reason": "",
+        "escalations": [
+            {
+                "escalation_id": "esc-mock-001",
+                "status": "dispatched",
+                "repo": "greeks-service",
+                "pr_number": 547,
+                "wall_type": "conflicting",
+                "slot_id": 3,
+                "created_at": "2026-06-27T10:00:00Z",
+                "dispatched_at": "2026-06-27T10:01:00Z",
+                "attempts": 1,
+            },
+            {
+                "escalation_id": "esc-mock-002",
+                "status": "queued",
+                "repo": "execution-service",
+                "pr_number": 312,
+                "wall_type": "conflicting",
+                "slot_id": None,
+                "created_at": "2026-06-27T10:05:00Z",
+                "dispatched_at": None,
+                "attempts": 0,
+            },
+        ],
     }
