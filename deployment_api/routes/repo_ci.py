@@ -32,6 +32,7 @@ from ._code_builds_aws import (
     list_codebuild_projects_sync,
 )
 from ._repo_ci_alerts import AlertsPayloadDict, load_alerts_payload
+from ._repo_ci_escalations import fetch_active_escalations
 from ._repo_ci_fleet import fetch_fleet_git_health
 from ._repo_ci_github import (
     age_minutes,
@@ -59,6 +60,7 @@ from ._repo_ci_manifest import (  # pyright: ignore[reportPrivateUsage]
 from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
     _mock_alerts,
     _mock_detail,
+    _mock_escalations,
     _mock_fleet_git_health,
     _mock_overview,
 )
@@ -76,6 +78,7 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     BranchHeadDict,
     CodebaseHealthDict,
     CommitEntryDict,
+    EscalationsProxyDict,
     FleetGitHealthProxyDict,
     ImageSignalDict,
     LastGreenDict,
@@ -817,6 +820,18 @@ async def get_fleet_git_health() -> FleetGitHealthProxyDict:
     if cfg.is_mock_mode():
         return _mock_fleet_git_health()
     return await fetch_fleet_git_health(default_project_id or "")
+
+
+@router.get("/escalations")
+async def get_escalations() -> EscalationsProxyDict:
+    """Gap-4 (ci_pipeline_self_healing_gaps_2026_06_11): proxy the agent-orchestrator's
+    /api/escalations/active so the deployment-ui Repos-CI board can render per-repo
+    working/pending state (distinct from stuck). Degrades honestly when the orchestrator
+    is unreachable — the board shows no agent-state annotation, not an error."""
+    cfg = DeploymentApiConfig()
+    if cfg.is_mock_mode():
+        return _mock_escalations()
+    return await fetch_active_escalations(default_project_id or "")
 
 
 # Re-export for tests that patch the shared JSON getter.
