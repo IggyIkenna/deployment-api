@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout repo at staging commit
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           token: ${{ secrets.GH_PAT }}
@@ -83,10 +83,10 @@ jobs:
       # codex/ is folded into unified-trading-pm at codex/ — clone it for the
       # readiness checklist when this template is rolled out to a non-PM repo.
       - name: Checkout unified-trading-pm (readiness checklist; codex/ lives inside PM)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.GH_ORG }}/unified-trading-pm
-          # MUST be a workspace-internal path: actions/checkout@v5 rejects a path that
+          # MUST be a workspace-internal path: actions/checkout@v4 rejects a path that
           # escapes GITHUB_WORKSPACE ("Repository path ... is not under ...") — the
           # `../unified-trading-pm` form failed on EVERY repo's run, jamming staging→main
           # fleet-wide (2026-06-04). A subdir of the main checkout is fine (sparse, transient).
