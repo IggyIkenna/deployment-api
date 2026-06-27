@@ -34,12 +34,9 @@ on:
   push:
     branches:
       - main
-  # Drift-tick (2026-06-08): `[skip ci]` commits to main suppress ALL Actions triggers —
-  # including this push trigger — so main drifts ahead of LDR by automation commits. A
-  # scheduled run is NOT `[skip ci]`-suppressed, so it sweeps accumulated drift with no real
-  # commit, making "main never ahead of LDR" actually hold (not just eventually-converge).
-  schedule:
-    - cron: "0 * * * *" # hourly drift safety-net (push trigger handles common case); */20→hourly to cut Actions spend ~1152 runs/day fleet-wide (billing 2026-06-11)
+  # Drift-tick schedule REMOVED 2026-06-27: the hourly safety-net for [skip ci] drift is now
+  # handled by PM's branch-health.yml (every 30 min) which dispatches this workflow. For
+  # non-PM repos the push trigger covers the common case; LDR drift is acceptable within 30m.
   workflow_dispatch: {}
 
 concurrency:
