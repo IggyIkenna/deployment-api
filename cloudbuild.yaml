@@ -205,6 +205,13 @@ steps:
       - "PROJECT_ID=$PROJECT_ID"
       - "--build-arg"
       - "BUILDKIT_INLINE_CACHE=1"
+      # Vendored sibling repos (_unified-api-contracts/ _deployment-service/
+      # _strategy-service/) are hatch-vcs projects; the vendor-deps step strips
+      # their .git so setuptools-scm can't detect a version → install fails.
+      # Pin a PEP440-safe version for all in-image setuptools-scm builds (these
+      # are installed --no-deps, so the value is metadata-only). See Dockerfile.
+      - "--build-arg"
+      - "SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0"
       # Reuse unchanged layers from the previous :latest (pulled above).
       - "--cache-from"
       - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"

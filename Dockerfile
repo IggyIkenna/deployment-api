@@ -89,6 +89,19 @@ RUN uv pip install --system --no-cache-dir \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
 
+# The vendored sibling repos below (_unified-api-contracts/, _deployment-service/,
+# _strategy-service/) are hatchling+hatch-vcs projects (`[tool.hatch.version] source = "vcs"`).
+# On the GCP cloudbuild trigger path the `vendor-deps` step clones them --depth 1 and then
+# `rm -rf .git`, so setuptools-scm (hatch-vcs delegate) has NO git metadata → "unable to detect
+# version" and every `uv pip install` of them fails. SETUPTOOLS_SCM_PRETEND_VERSION pins the
+# version for ALL setuptools-scm builds in this stage (PEP440-safe constant; these are installed
+# --no-deps so the exact value is metadata-only). cloudbuild passes it via --build-arg; defaulted
+# here so AWS CodeBuild / local builds (which don't pass it) also resolve a version. The version
+# of THIS project (deployment-api) is never built in the image (deployment_api/ is COPYd, not
+# `pip install .`), so this only affects the vendored sibling installs.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${SETUPTOOLS_SCM_PRETEND_VERSION}
+
 # Full UAC reinstall from LDR-cloned source. buildspec.aws.yaml pre_build clones
 # unified-api-contracts@live-defi-rollout into _unified-api-contracts/ before
 # submitting the build context. This ensures registry/, crosscutting/, and all
