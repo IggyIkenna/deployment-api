@@ -27,7 +27,7 @@ RUN npm run build
 # Digest-pinned UTL base image (QG STEP 5.79 -- reproducible builds + UTL/UAC provenance).
 # Refreshed by the dependency-update fan-out (update-dependency-version.yml) on base-image
 # republish; cloudbuild may override at build time: --build-arg BASE_IMAGE_DIGEST=sha256:...
-ARG BASE_IMAGE_DIGEST=sha256:75926d35b5960cfc88eb3dd95e9498461857a5d6b0e8070880a35c951bafd4a8
+ARG BASE_IMAGE_DIGEST=sha256:84a1baaa01ef17c62d7cd976b713f0679a48054d2d32c85b18627cc6914d9423
 FROM --platform=linux/amd64 asia-northeast1-docker.pkg.dev/${PROJECT_ID}/unified-trading-library/unified-trading-library@${BASE_IMAGE_DIGEST} AS base
 
 # ── Stage 2: production API + bundled UI ──────────────────────────────────
