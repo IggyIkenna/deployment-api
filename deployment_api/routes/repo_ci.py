@@ -403,6 +403,19 @@ async def _latest_builds_by_repo(provider: _BuildProvider | None = None) -> dict
     return result
 
 
+# WS-L "track the deployed artifact" (operator 2026-06-29). By default a repo deploys its OWN image,
+# tracked by build signal keyed on the repo name. The exceptions below are NOT standalone-image deploys,
+# so tracking their per-repo image build is misleading (false "stale"/"no build"/"no access"):
+#   * _SOURCE_DEPLOYED — runs from SOURCE, no image build at all (agent-orchestrator on the VM).
+#   * _BUNDLED_IN      — has no standalone Cloud Run service; ships INSIDE the value repo's image
+#                        (deployment-ui's SPA is baked into the deployment-api image =
+#                        uts-shared-deployment-api). We surface the HOST image's build health + a
+#                        "bundled" label; per-repo staleness is not derivable (the host build signal
+#                        does not record the bundled repo's sha), so image_stale stays None.
+_SOURCE_DEPLOYED: frozenset[str] = frozenset({"agent-orchestrator"})
+_BUNDLED_IN: dict[str, str] = {"deployment-ui": "deployment-api"}
+
+
 def _image_signal(
     view: ManifestView,
     repo: str,
@@ -414,13 +427,36 @@ def _image_signal(
     image_stale = main HEAD sha differs from the last SUCCESSFUL build's sha — "is main's
     code built into the latest image". The comparison uses the last SUCCESS sha (not the latest
     build's), because a failed latest build produced no new image — the running image is still
-    from the last green build. None = honestly unknown (no successful build data)."""
-    sig = builds.get(repo)
+    from the last green build. None = honestly unknown (no successful build data).
+
+    Deploy-model aware: source-deployed repos report no image; bundled repos report their HOST
+    image's build health (see _SOURCE_DEPLOYED / _BUNDLED_IN)."""
+    if repo in _SOURCE_DEPLOYED:
+        # No image — runs from source. Report nothing-built + a "source" marker so the column reads
+        # "N/A — source-deployed" rather than a misleading "no access".
+        return ImageSignalDict(
+            last_build_status=None,
+            last_build_sha=None,
+            last_build_time=None,
+            last_build_log_url=None,
+            last_success_sha=None,
+            last_success_time=None,
+            last_success_log_url=None,
+            deployed_version=view.deployed_version_for(repo),
+            image_stale=None,
+            deploy_model="source",
+            deploy_host=None,
+        )
+    host = _BUNDLED_IN.get(repo)
+    # Bundled → read the HOST repo's build signal (the artifact that actually ships this repo).
+    sig = builds.get(host) if host else builds.get(repo)
     build_status = sig.status if sig else None
     build_sha = sig.sha if sig else None
     success_sha = sig.success_sha if sig else None
     stale: bool | None = None
-    if main_sha and success_sha:
+    # Staleness is only meaningful for a STANDALONE deploy (the build sha is this repo's sha). For a
+    # bundled deploy the host build sha is a different repo's sha → not comparable → leave None.
+    if host is None and main_sha and success_sha:
         stale = not main_sha.startswith(success_sha) and not success_sha.startswith(main_sha)
     return ImageSignalDict(
         last_build_status=build_status,
@@ -432,6 +468,8 @@ def _image_signal(
         last_success_log_url=sig.success_log_url if sig else None,
         deployed_version=view.deployed_version_for(repo),
         image_stale=stale,
+        deploy_model="bundled" if host else None,
+        deploy_host=host,
     )
 
 

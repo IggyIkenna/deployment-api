@@ -122,6 +122,14 @@ class ImageSignalDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shap
     last_success_log_url: str | None
     deployed_version: str | None  # workspace-manifest.json deployed_versions[repo]
     image_stale: bool | None  # main HEAD sha != last successful build sha (None = unknown)
+    # WS-L "track the deployed artifact" (operator 2026-06-29): which IMAGE actually ships this repo.
+    #   None/"standalone" = the repo deploys its OWN image (default; image_stale meaningful).
+    #   "source"          = runs from SOURCE (e.g. agent-orchestrator on the VM) — no image build.
+    #   "bundled"         = shipped INSIDE another repo's image (deploy_host) — the columns reflect that
+    #                       host image's BUILD HEALTH; image_stale is None (the host build signal does not
+    #                       record this repo's bundled sha, so per-repo staleness is not derivable).
+    deploy_model: NotRequired[str | None]
+    deploy_host: NotRequired[str | None]  # bundled host repo (e.g. "deployment-api"), else None
 
 
 class SitJobDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract
