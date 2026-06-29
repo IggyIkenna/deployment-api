@@ -174,7 +174,13 @@ async def _recent_builds_by_repo_name(
             if substitutions is not None:
                 sub_get = getattr(substitutions, "get", None)
                 if callable(sub_get):
-                    repo = str(sub_get("REPO_NAME") or "")
+                    # REPO_NAME is the trigger-build attribution key. MANUAL `gcloud builds submit`
+                    # cannot set it (it's a RESERVED automatic substitution), so the DEPLOYED tier-3
+                    # build (deploy-shared.sh → cloudbuild-tier3.yaml) carries _SERVICE_NAME instead.
+                    # Fall back to _SERVICE_NAME so the column tracks the real deployed artifact
+                    # (e.g. deployment-api's uts-shared-deployment-api build) rather than a stale
+                    # standalone trigger build (operator 2026-06-29 "fix deployment api").
+                    repo = str(sub_get("REPO_NAME") or sub_get("_SERVICE_NAME") or "")
             if not repo:
                 continue
             info = _format_build_info(build)
