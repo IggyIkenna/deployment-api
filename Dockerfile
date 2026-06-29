@@ -20,7 +20,7 @@ ARG PROJECT_ID
 # cloudbuild) does NOT pass --build-arg BASE_IMAGE_DIGEST. An ARG declared after a FROM is
 # stage-scoped and invisible to a later FROM → empty digest → "invalid reference format".
 # Refreshed by update-dependency-version.yml on base-image republish.
-ARG BASE_IMAGE_DIGEST=sha256:75926d35b5960cfc88eb3dd95e9498461857a5d6b0e8070880a35c951bafd4a8
+ARG BASE_IMAGE_DIGEST=sha256:84a1baaa01ef17c62d7cd976b713f0679a48054d2d32c85b18627cc6914d9423
 
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
 FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
@@ -88,6 +88,19 @@ RUN uv pip install --system --no-cache-dir \
       'google-cloud-compute>=1.45.0,<2.0.0' \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
+
+# The vendored sibling repos below (_unified-api-contracts/, _deployment-service/,
+# _strategy-service/) are hatchling+hatch-vcs projects (`[tool.hatch.version] source = "vcs"`).
+# On the GCP cloudbuild trigger path the `vendor-deps` step clones them --depth 1 and then
+# `rm -rf .git`, so setuptools-scm (hatch-vcs delegate) has NO git metadata → "unable to detect
+# version" and every `uv pip install` of them fails. SETUPTOOLS_SCM_PRETEND_VERSION pins the
+# version for ALL setuptools-scm builds in this stage (PEP440-safe constant; these are installed
+# --no-deps so the exact value is metadata-only). cloudbuild passes it via --build-arg; defaulted
+# here so AWS CodeBuild / local builds (which don't pass it) also resolve a version. The version
+# of THIS project (deployment-api) is never built in the image (deployment_api/ is COPYd, not
+# `pip install .`), so this only affects the vendored sibling installs.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${SETUPTOOLS_SCM_PRETEND_VERSION}
 
 # Full UAC reinstall from LDR-cloned source. buildspec.aws.yaml pre_build clones
 # unified-api-contracts@live-defi-rollout into _unified-api-contracts/ before
