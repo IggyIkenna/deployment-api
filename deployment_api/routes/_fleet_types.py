@@ -63,6 +63,79 @@ class VmCensusResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     vms: list[VmCensusEntry] = Field(default_factory=list)
 
 
+# Reap-verdict wire literal — mirrors deployment-service
+# vm_zombie_watchdog.ReapVerdict.verdict so the UI can render a reason per row.
+OrphanVerdict = Literal[
+    "reap",
+    "keep_within_grace",
+    "keep_not_ephemeral",
+    "keep_retained",
+    "keep_no_timestamp",
+]
+
+
+class OrphanEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
+    """One STOPPED/TERMINATED VM with the data an operator needs to act on it."""
+
+    name: str
+    zone: str
+    status: VmRunStatus
+    lifecycle_class: VmLifecycleClass
+    stopped_age_hours: float | None
+    boot_disk_gb: int | None
+    boot_disk_type: str | None
+    monthly_disk_usd: float  # ESTIMATE — asia-northeast1 list rate x GB
+    reapable: bool
+    verdict: OrphanVerdict
+
+
+class OrphanInventoryResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
+    """GET /api/fleet/orphans response — stopped-VM inventory + idle-spend rollup."""
+
+    generated_at: str  # ISO-8601 UTC
+    grace_hours: float
+    stopped_total: int
+    reapable_total: int
+    monthly_idle_usd: float  # all stopped boot disks (ESTIMATE)
+    monthly_reapable_usd: float  # only the reapable subset (ESTIMATE)
+    orphans: list[OrphanEntry] = Field(default_factory=list)
+
+
+class ReapRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
+    """POST /api/fleet/reap body — dry-run by default; mirrors the watchdog reaper gates."""
+
+    dry_run: bool = True
+    grace_hours: float = 24.0
+
+
+class ReapResultEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
+    """Per-VM outcome of a reap pass."""
+
+    name: str
+    zone: str
+    monthly_disk_usd: float
+    deleted: bool
+
+
+class ReapResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
+    """POST /api/fleet/reap response — candidates (dry-run) or deletion outcomes."""
+
+    dry_run: bool
+    grace_hours: float
+    candidate_total: int
+    reaped_total: int
+    monthly_reclaimed_usd: float  # ESTIMATE — disk $/mo of actually-reaped VMs
+    results: list[ReapResultEntry] = Field(default_factory=list)
+
+
+class DeleteInstanceResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
+    """DELETE /api/fleet/instances/{name} response."""
+
+    name: str
+    zone: str
+    deleted: bool
+
+
 class InfraVmAlert(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """A single notable condition surfaced from an orchestrator VM."""
 
@@ -127,11 +200,18 @@ class InfraVmHealthResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response
 
 __all__ = [
     "AlertSeverity",
+    "DeleteInstanceResponse",
     "InfraVmAlert",
     "InfraVmHealthResponse",
     "InfraVmSlot",
     "InfraVmSummary",
     "InfraVmWatchdog",
+    "OrphanEntry",
+    "OrphanInventoryResponse",
+    "OrphanVerdict",
+    "ReapRequest",
+    "ReapResponse",
+    "ReapResultEntry",
     "VmCensusEntry",
     "VmCensusResponse",
     "VmLifecycleClass",

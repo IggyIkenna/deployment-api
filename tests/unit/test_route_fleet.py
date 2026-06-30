@@ -309,3 +309,229 @@ def test_infra_health_route_mock_shape(client_fleet: TestClient) -> None:
     for vm in body["vms"]:
         assert vm["summary"] is not None
         assert vm["summary"]["watchdog"]["daily_cap"] == 20
+
+
+# ---------------------------------------------------------------------------
+# Orphan inventory builder — stopped-VM enrichment, verdicts, disk cost rollup
+# ---------------------------------------------------------------------------
+
+# Fixed "now" 5 days after the representative stop timestamps so the old ones are past a 24h grace.
+_ORPHAN_NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=UTC)
+
+
+def _orphan_details() -> dict[str, dict[str, object]]:
+    """GCE instance-details map with a mix of stopped + running VMs across lifecycle classes."""
+    return {
+        # EPHEMERAL_BATCH (unknown prefix), stopped 5 days ago → REAP.
+        "cefi-binance-spot-20260601": {
+            "status": "TERMINATED",
+            "zone": "asia-northeast1-c",
+            "creation_timestamp": "2026-05-01T00:00:00+00:00",
+            "last_stop_timestamp": "2026-06-25T12:00:00+00:00",
+            "boot_disk_name": "cefi-binance-spot-20260601",
+            "labels": {},
+        },
+        # EPHEMERAL_BATCH stopped only 2h ago → within 24h grace → KEEP.
+        "tradfi-databento-recent": {
+            "status": "STOPPED",
+            "zone": "asia-northeast1-c",
+            "creation_timestamp": "",
+            "last_stop_timestamp": "2026-06-30T10:00:00+00:00",
+            "boot_disk_name": "tradfi-databento-recent",
+            "labels": {},
+        },
+        # LONG_LIVED_LIVE stopped for days → never reapable (paused live VM).
+        "strategy-live-eth-20260601": {
+            "status": "TERMINATED",
+            "zone": "asia-northeast1-c",
+            "creation_timestamp": "",
+            "last_stop_timestamp": "2026-06-20T00:00:00+00:00",
+            "boot_disk_name": "strategy-live-eth-20260601",
+            "labels": {},
+        },
+        # Ephemeral + keep=true label → retained for forensics.
+        "cefi-keepme-20260601": {
+            "status": "TERMINATED",
+            "zone": "asia-northeast1-c",
+            "creation_timestamp": "",
+            "last_stop_timestamp": "2026-06-20T00:00:00+00:00",
+            "boot_disk_name": "cefi-keepme-20260601",
+            "labels": {"keep": "true"},
+        },
+        # RUNNING → excluded from the orphan inventory entirely.
+        "cefi-running-20260630": {
+            "status": "RUNNING",
+            "zone": "asia-northeast1-c",
+            "creation_timestamp": "2026-06-30T11:00:00+00:00",
+            "last_stop_timestamp": "",
+            "boot_disk_name": "cefi-running-20260630",
+            "labels": {},
+        },
+    }
+
+
+def _disks() -> dict[str, dict[str, object]]:
+    return {
+        "cefi-binance-spot-20260601": {"size_gb": 50, "type": "pd-standard"},
+        "tradfi-databento-recent": {"size_gb": 50, "type": "pd-standard"},
+        "strategy-live-eth-20260601": {"size_gb": 50, "type": "pd-ssd"},
+        "cefi-keepme-20260601": {"size_gb": 50, "type": "pd-standard"},
+        "cefi-running-20260630": {"size_gb": 50, "type": "pd-standard"},
+    }
+
+
+def test_orphan_inventory_counts_and_verdicts() -> None:
+    from deployment_api.routes._fleet_inventory import build_orphan_inventory
+
+    inv = build_orphan_inventory(_orphan_details(), _disks(), _ORPHAN_NOW, 24.0)
+    # 4 stopped (RUNNING excluded).
+    assert inv.stopped_total == 4
+    # Only the old ephemeral one is reapable.
+    assert inv.reapable_total == 1
+    by_name = {o.name: o for o in inv.orphans}
+    assert "cefi-running-20260630" not in by_name  # RUNNING excluded
+    assert by_name["cefi-binance-spot-20260601"].verdict == "reap"
+    assert by_name["cefi-binance-spot-20260601"].reapable is True
+    assert by_name["tradfi-databento-recent"].verdict == "keep_within_grace"
+    assert by_name["strategy-live-eth-20260601"].verdict == "keep_not_ephemeral"
+    assert by_name["cefi-keepme-20260601"].verdict == "keep_retained"
+
+
+def test_orphan_inventory_disk_cost_rollup() -> None:
+    from deployment_api.routes._fleet_inventory import build_orphan_inventory
+
+    inv = build_orphan_inventory(_orphan_details(), _disks(), _ORPHAN_NOW, 24.0)
+    # pd-standard 50GB = 50*0.052 = 2.6; pd-ssd 50GB = 50*0.221 = 11.05.
+    by_name = {o.name: o for o in inv.orphans}
+    assert by_name["cefi-binance-spot-20260601"].monthly_disk_usd == 2.6
+    assert by_name["strategy-live-eth-20260601"].monthly_disk_usd == 11.05
+    # idle = 3x 2.6 (standard) + 11.05 (ssd) = 18.85; reapable = just the one 2.6.
+    assert inv.monthly_idle_usd == 18.85
+    assert inv.monthly_reapable_usd == 2.6
+
+
+def test_orphan_inventory_grace_widens_reapable() -> None:
+    """A 0h grace makes the 'recent' stop reapable too (age-gate is the only blocker)."""
+    from deployment_api.routes._fleet_inventory import build_orphan_inventory
+
+    inv = build_orphan_inventory(_orphan_details(), _disks(), _ORPHAN_NOW, 0.0)
+    assert inv.reapable_total == 2  # both ephemeral, neither keep-labelled
+
+
+def test_orphan_inventory_empty_is_honest_zero() -> None:
+    from deployment_api.routes._fleet_inventory import build_orphan_inventory
+
+    inv = build_orphan_inventory({}, {}, _ORPHAN_NOW, 24.0)
+    assert inv.stopped_total == 0
+    assert inv.reapable_total == 0
+    assert inv.monthly_idle_usd == 0.0
+    assert inv.orphans == []
+
+
+# ---------------------------------------------------------------------------
+# Orphan / reap / delete routes
+# ---------------------------------------------------------------------------
+
+
+def test_orphans_route_mock_is_empty(client_fleet: TestClient) -> None:
+    with patch(_PATCH_MOCK_MODE, return_value=True):
+        resp = client_fleet.get("/api/fleet/orphans")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stopped_total"] == 0
+    assert body["orphans"] == []
+
+
+def test_orphans_route_live_delegates(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
+        patch("deployment_api.routes.fleet.get_disk_details", return_value=_disks()),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.get("/api/fleet/orphans?grace_hours=24")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stopped_total"] == 4
+    assert body["reapable_total"] == 1
+    assert body["monthly_reapable_usd"] == 2.6
+
+
+def test_reap_dry_run_lists_candidates_without_deleting(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
+        patch("deployment_api.routes.fleet.get_disk_details", return_value=_disks()),
+        patch("deployment_api.routes.fleet.delete_vm_instance") as mock_del,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.post("/api/fleet/reap", json={"dry_run": True, "grace_hours": 24.0})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["dry_run"] is True
+    assert body["candidate_total"] == 1
+    assert body["reaped_total"] == 0
+    mock_del.assert_not_called()
+
+
+def test_reap_execute_deletes_only_reapable(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
+        patch("deployment_api.routes.fleet.get_disk_details", return_value=_disks()),
+        patch("deployment_api.routes.fleet.delete_vm_instance", return_value=True) as mock_del,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.post("/api/fleet/reap", json={"dry_run": False, "grace_hours": 24.0})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reaped_total"] == 1
+    assert body["monthly_reclaimed_usd"] == 2.6
+    # Only the single reapable candidate is deleted (not the running/live/keep/recent VMs).
+    mock_del.assert_called_once_with("test-project", "cefi-binance-spot-20260601", "asia-northeast1-c")
+
+
+def test_delete_instance_refuses_running(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
+        patch("deployment_api.routes.fleet.delete_vm_instance") as mock_del,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.delete("/api/fleet/instances/cefi-running-20260630?zone=asia-northeast1-c")
+    assert resp.status_code == 409
+    mock_del.assert_not_called()
+
+
+def test_delete_instance_404_when_missing(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.delete("/api/fleet/instances/does-not-exist?zone=asia-northeast1-c")
+    assert resp.status_code == 404
+
+
+def test_delete_instance_deletes_stopped(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
+        patch("deployment_api.routes.fleet.delete_vm_instance", return_value=True) as mock_del,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.delete("/api/fleet/instances/cefi-binance-spot-20260601?zone=asia-northeast1-c")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    mock_del.assert_called_once_with("test-project", "cefi-binance-spot-20260601", "asia-northeast1-c")
