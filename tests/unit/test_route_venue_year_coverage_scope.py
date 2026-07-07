@@ -230,6 +230,126 @@ class TestCefiMultiSourceUnion:
         assert all(b["asset_group"] == "CEFI" for b in breakdown)
 
 
+class TestMvpFilterAxisPlumbing:
+    """Regression — the ``is_mvp`` predicate gates on more than
+    ``(venue, instrument_type, data_type)`` for four of the five asset groups
+    (cefi + tradfi need ``base_ccy``; sports needs ``league``; prediction is
+    market_group-gated). ``filter_to_mvp`` MUST plumb those axes through from
+    the manifest columns (``base_asset`` / ``league_id`` / ``market_group``) or
+    a captured MVP cefi spot cell reads NON-MVP → the MVP-view denominator
+    collapses to zero for four AGs (silent MVP-view breakage). Plan
+    ``is_catalogue_completion_2d_2026_07_06.md`` P2 gate: MVP-view numbers
+    correct on a spot slice.
+    """
+
+    def _cefi_spot_slice_df(self) -> pd.DataFrame:
+        """Cefi spot slice: 1 MVP cell (BINANCE-SPOT / SPOT_PAIR / trades / BTC)
+        + 2 non-MVP cells (unknown venue; unknown base_asset)."""
+        base = {"instrument_type": "SPOT_PAIR", "data_type": "trades"}
+        return pd.DataFrame(
+            [
+                # MVP — BINANCE-SPOT is in cefi rule + SPOT_PAIR + trades + BTC.
+                {
+                    "date": "2026-01-15",
+                    "venue": "BINANCE-SPOT",
+                    "base_asset": "BTC",
+                    "capture_status": "captured",
+                    **base,
+                },
+                # NON-MVP — venue not in cefi rule.
+                {
+                    "date": "2026-01-16",
+                    "venue": "MYSTERY-DEX",
+                    "base_asset": "BTC",
+                    "capture_status": "captured",
+                    **base,
+                },
+                # NON-MVP — base_asset not in the cefi base_ccys frozenset.
+                {
+                    "date": "2026-01-17",
+                    "venue": "BINANCE-SPOT",
+                    "base_asset": "MYSTERY_COIN",
+                    "capture_status": "captured",
+                    **base,
+                },
+            ]
+        )
+
+    def test_cefi_spot_mvp_denominator_shrinks_to_mvp_cell_only(self, client: TestClient) -> None:
+        """The plan gate — with MVP ON on a cefi spot slice: denominator counts
+        only the captured MVP cell; non-MVP cells are dropped. This exercises
+        base_ccy plumbing (cefi is base_ccy-gated); pre-fix the whole cefi
+        manifest filtered to EMPTY."""
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="bucket"),
+            patch(_PATCH_READ_INDEX, return_value=self._cefi_spot_slice_df()),
+        ):
+            resp = client.get(
+                "/data-status/venue-year-coverage",
+                params={"asset_groups": "cefi", "scope": "mvp"},
+            )
+        rows = resp.json()["rows"]
+        assert len(rows) == 1, "MVP scope must retain exactly the 1 MVP cell"
+        row = rows[0]
+        assert row["venue"] == "BINANCE-SPOT"
+        assert row["total"] == 1
+        assert row["captured"] == 1  # ~100% coverage for the MVP-captured cell
+
+    def test_cefi_spot_could_exist_keeps_all_rows(self, client: TestClient) -> None:
+        """Sanity — could_exist retains the full manifest (no MVP filter). Pins
+        that the MVP shrinkage is scope-driven, not a manifest side effect."""
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="bucket"),
+            patch(_PATCH_READ_INDEX, return_value=self._cefi_spot_slice_df()),
+        ):
+            resp = client.get(
+                "/data-status/venue-year-coverage",
+                params={"asset_groups": "cefi", "scope": "could_exist"},
+            )
+        total_denom = _total_denominator(resp.json())
+        assert total_denom == 3, "could_exist must keep all 3 manifest rows"
+
+    def test_tradfi_mvp_underlier_plumbed_via_base_asset(self, client: TestClient) -> None:
+        """Tradfi is underlier-gated (via ``base_ccy=`` in ``is_mvp``); the manifest
+        carries the underlier in ``base_asset``. Pins that a captured MVP CME/FUTURE/ES
+        cell survives MVP filter and an unknown-underlier cell is dropped."""
+        df = pd.DataFrame(
+            [
+                # MVP — CME + FUTURE + ohlcv_1m + ES (a canonical tradfi underlier).
+                {
+                    "date": "2026-01-15",
+                    "venue": "CME",
+                    "instrument_type": "FUTURE",
+                    "data_type": "ohlcv_1m",
+                    "base_asset": "ES",
+                    "capture_status": "captured",
+                },
+                # NON-MVP — unknown underlier.
+                {
+                    "date": "2026-01-16",
+                    "venue": "CME",
+                    "instrument_type": "FUTURE",
+                    "data_type": "ohlcv_1m",
+                    "base_asset": "UNKNOWN_UNDERLIER",
+                    "capture_status": "captured",
+                },
+            ]
+        )
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="bucket"),
+            patch(_PATCH_READ_INDEX, return_value=df),
+        ):
+            resp = client.get(
+                "/data-status/venue-year-coverage",
+                params={"asset_groups": "tradfi", "scope": "mvp"},
+            )
+        rows = resp.json()["rows"]
+        # Exactly the one MVP row survives.
+        assert len(rows) == 1
+        assert rows[0]["total"] == 1
+        assert rows[0]["captured"] == 1
+
+
 class TestStaleTolerantReadDelegation:
     """Item 5a — the route delegates to the stale-tolerant ``_read_manifest_index``
     (whose empty-live → consolidated ``_index`` fallback is unit-tested at the

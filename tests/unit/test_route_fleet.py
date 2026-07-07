@@ -443,11 +443,18 @@ def test_orphans_route_mock_is_empty(client_fleet: TestClient) -> None:
 
 
 def test_orphans_route_live_delegates(client_fleet: TestClient) -> None:
+    # Route reads ``datetime.now(UTC)`` for its grace window (fleet.py:101); pin it
+    # to the fixture's ``_ORPHAN_NOW`` so ``tradfi-databento-recent`` stays inside
+    # the 24h grace (it's `stop_time` is 12h before _ORPHAN_NOW). Without this the
+    # test-suite time-drifts as the wall clock moves past the fixture stop-times,
+    # flipping formerly-within-grace VMs to reap.
     with (
         patch("deployment_api.routes.fleet._cfg") as mock_cfg,
         patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
         patch("deployment_api.routes.fleet.get_disk_details", return_value=_disks()),
+        patch("deployment_api.routes.fleet.datetime") as mock_dt,
     ):
+        mock_dt.now.return_value = _ORPHAN_NOW
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.gcp_project_id = "test-project"
         resp = client_fleet.get("/api/fleet/orphans?grace_hours=24")
@@ -459,13 +466,17 @@ def test_orphans_route_live_delegates(client_fleet: TestClient) -> None:
 
 
 def test_reap_dry_run_lists_candidates_without_deleting(client_fleet: TestClient) -> None:
+    # Pin ``datetime.now`` to _ORPHAN_NOW so the grace window matches the fixture
+    # stop-times (see test_orphans_route_live_delegates rationale).
     with (
         patch("deployment_api.rbac.DISABLE_AUTH", True),
         patch("deployment_api.routes.fleet._cfg") as mock_cfg,
         patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
         patch("deployment_api.routes.fleet.get_disk_details", return_value=_disks()),
         patch("deployment_api.routes.fleet.delete_vm_instance") as mock_del,
+        patch("deployment_api.routes.fleet.datetime") as mock_dt,
     ):
+        mock_dt.now.return_value = _ORPHAN_NOW
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.gcp_project_id = "test-project"
         resp = client_fleet.post("/api/fleet/reap", json={"dry_run": True, "grace_hours": 24.0})
@@ -478,13 +489,17 @@ def test_reap_dry_run_lists_candidates_without_deleting(client_fleet: TestClient
 
 
 def test_reap_execute_deletes_only_reapable(client_fleet: TestClient) -> None:
+    # Pin ``datetime.now`` to _ORPHAN_NOW so the grace window matches the fixture
+    # stop-times (see test_orphans_route_live_delegates rationale).
     with (
         patch("deployment_api.rbac.DISABLE_AUTH", True),
         patch("deployment_api.routes.fleet._cfg") as mock_cfg,
         patch("deployment_api.routes.fleet.get_vm_instance_details", return_value=_orphan_details()),
         patch("deployment_api.routes.fleet.get_disk_details", return_value=_disks()),
         patch("deployment_api.routes.fleet.delete_vm_instance", return_value=True) as mock_del,
+        patch("deployment_api.routes.fleet.datetime") as mock_dt,
     ):
+        mock_dt.now.return_value = _ORPHAN_NOW
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.gcp_project_id = "test-project"
         resp = client_fleet.post("/api/fleet/reap", json={"dry_run": False, "grace_hours": 24.0})

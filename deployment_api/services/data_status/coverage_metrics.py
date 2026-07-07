@@ -239,6 +239,7 @@ EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_BOOKMAKER_NO_LEAGUE_COVERAGE",
     "EXPECTED_NO_PROVIDER_COVERAGE",
     "EXPECTED_NOT_ENOUGH_TVL",  # DeFi sub-TVL pool — outside MVP capture universe (UAC parity)
+    "EXPECTED_WRITE_GATE_NAN_THRESHOLD_EXCEEDED",  # write-gate NaN cap — feature-service parity (UAC)
     "SOURCE_RETURNED_ZERO",
     "NO_INPUT_AVAILABLE",
     "LEG_ABSENT_LEFT",
