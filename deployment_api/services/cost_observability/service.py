@@ -40,6 +40,52 @@ _MAX_DAYS = 366
 _DEFAULT_DAYS = 30
 _BREAKDOWN_LIMIT = 50
 
+# GCP bills storage as GiB-months; a day's usage_amount is that day's fraction of a
+# calendar month, so summing across the window and rescaling by the average days/month
+# recovers the average GB actually stored (365.25 / 12, not a fixed 30 — months vary 28-31).
+_AVG_DAYS_PER_MONTH = 30.44
+_GCP_STORAGE_CLASSES = ("Archive", "Coldline", "Nearline", "Standard")
+
+
+def _gcp_storage_class(sku: str) -> str | None:
+    """Storage-class label from a GCP storage SKU description, or None if not a volume SKU.
+
+    Only meaningful once the caller has already confirmed `usage_unit == "gibibyte month"` —
+    Operations/retrieval SKUs (billed in count/bytes-retrieved) can share these same class
+    words (e.g. "Regional Standard Class A Operations") without being a storage-volume charge.
+    """
+    low = sku.lower()
+    for cls in _GCP_STORAGE_CLASSES:
+        if cls.lower() in low:
+            return cls
+    return None
+
+
+def _aws_storage_class(usage_type: str) -> str | None:
+    """Storage-class label from an AWS S3 usage_type, or None if not a `TimedStorage-*` volume type.
+
+    Mapped onto the same 4 labels the UI already uses for GCP so bucket rows render one
+    consistent class axis cross-cloud: Glacier Deep Archive -> Archive, Glacier (flexible
+    retrieval) -> Coldline, *-IA (Standard/One Zone infrequent access) -> Nearline, else -> Standard.
+    """
+    if "TimedStorage" not in usage_type:
+        return None
+    if "GDA" in usage_type:
+        return "Archive"
+    if "Glacier" in usage_type:
+        return "Coldline"
+    if "IA" in usage_type:
+        return "Nearline"
+    return "Standard"
+
+
+def _storage_class(r: CostRecord) -> str | None:
+    if r.cloud == CLOUD_GCP:
+        return _gcp_storage_class(r.sku) if r.usage_unit == "gibibyte month" else None
+    if r.cloud == CLOUD_AWS:
+        return _aws_storage_class(r.sku)
+    return None
+
 
 def _net(r: CostRecord) -> float:
     """What you actually pay for a row: usage cost plus its credits (credits are ≤ 0).
@@ -163,7 +209,7 @@ class CostObservabilityService:
         if dimension == "day":
             rows = self._by_day(recs, dates)
         elif dimension == "bucket":
-            rows = self._by_resource(recs, KIND_BUCKET)
+            rows = self._by_resource(recs, KIND_BUCKET, window_days=len(dates))
         elif dimension == "resource":
             rows = self._by_resource(recs, None)
         elif dimension == "region":
@@ -234,7 +280,9 @@ class CostObservabilityService:
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]
 
-    def _by_resource(self, recs: list[CostRecord], kind: str | None) -> list[BreakdownRow]:
+    def _by_resource(
+        self, recs: list[CostRecord], kind: str | None, *, window_days: int | None = None
+    ) -> list[BreakdownRow]:
         net: dict[tuple[str, str], float] = {}
         gross: dict[tuple[str, str], float] = {}
         credit: dict[tuple[str, str], float] = {}
@@ -244,6 +292,7 @@ class CostObservabilityService:
         # Only the unfiltered "resource" dimension (kind=None) surfaces waste flags — the
         # bucket dimension never contains idle-IP/orphaned-disk rows, so skip the fleet lookup.
         running_vm_names = self._running_vm_names() if kind is None else frozenset()
+        storage_amt: dict[tuple[str, str], dict[str, float]] = {}
         for r in recs:
             if not r.resource_id:
                 continue
@@ -263,8 +312,14 @@ class CostObservabilityService:
                 )
                 if waste:
                     waste_of[k] = waste
-        rows = [
-            BreakdownRow(
+            if kind == KIND_BUCKET:
+                cls = _storage_class(r)
+                if cls is not None:
+                    by_class = storage_amt.setdefault(k, {})
+                    by_class[cls] = by_class.get(cls, 0.0) + r.usage_amount
+        rows = []
+        for (cloud, rid), v in net.items():
+            row = BreakdownRow(
                 label=rid,
                 cloud=cloud,
                 cost=round(v, 2),
@@ -275,8 +330,18 @@ class CostObservabilityService:
                 is_idle=(cloud, rid) in waste_of,
                 waste_kind=waste_of.get((cloud, rid), ""),
             )
-            for (cloud, rid), v in net.items()
-        ]
+            if window_days:
+                classes = storage_amt.get((cloud, rid))
+                if classes:
+                    gb_by_class = {
+                        cls: round(amt * _AVG_DAYS_PER_MONTH / window_days, 2) for cls, amt in classes.items()
+                    }
+                    total_gb = round(sum(gb_by_class.values()), 2)
+                    row.storage_gb = total_gb
+                    row.storage_class_gb = gb_by_class
+                    if total_gb > 0:
+                        row.cost_per_gb = round(row.cost / total_gb, 4)
+            rows.append(row)
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]
 

@@ -82,6 +82,12 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     is_provisional: bool = False
     is_idle: bool = False  # cost-waste flag (resource dimension only) — see services.cost_observability.waste
     waste_kind: str = ""  # "" | idle_static_ip | orphaned_disk | idle_elastic_ip
+    # Bucket-only (dimension=bucket rows): derived from the storage-volume SKUs' usage_amount,
+    # never Cloud Monitoring/CloudWatch. None when the row isn't a bucket or carries no storage-
+    # volume usage this window.
+    storage_gb: float | None = None  # avg GB stored over the window (GiB/GB-month -> avg GB)
+    storage_class_gb: dict[str, float] | None = None  # {"Standard"|"Nearline"|"Coldline"|"Archive": gb}
+    cost_per_gb: float | None = None  # net cost / storage_gb for the window
 
 
 class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

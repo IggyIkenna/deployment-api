@@ -576,6 +576,103 @@ def test_breakdown_bucket_dimension_skips_fleet_lookup(monkeypatch: pytest.Monke
     assert calls["n"] == 0  # bucket dimension never needs the running-VM cross-ref
 
 
+def _fake_gcp_storage(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """One bucket with a storage-volume SKU (Coldline) + an operations SKU (excluded — count unit)."""
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        iso = d.isoformat()
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=iso,
+                service="Cloud Storage",
+                resource_id="my-bucket",
+                resource_kind="bucket",
+                region="us",
+                cost=0.05,
+                sku="Coldline Storage US Regional",
+                usage_unit="gibibyte month",
+                usage_amount=1.0,
+            )
+        )
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=iso,
+                service="Cloud Storage",
+                resource_id="my-bucket",
+                resource_kind="bucket",
+                region="us",
+                cost=0.01,
+                sku="Regional Standard Class A Operations",
+                usage_unit="count",
+                usage_amount=500.0,
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_bucket_breakdown_adds_storage_gb_and_class_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_storage)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("bucket", "gcp", days=3)
+    row = next(row for row in r.rows if row.label == "my-bucket")
+
+    expected_gb = 3.0 * svc._AVG_DAYS_PER_MONTH / 3  # 3 days * 1.0 GiB-month / 3-day window
+    assert row.storage_gb == pytest.approx(expected_gb, abs=0.01)
+    assert row.storage_class_gb is not None
+    assert set(row.storage_class_gb) == {"Coldline"}  # operations SKU (count unit) excluded
+    assert row.storage_class_gb["Coldline"] == pytest.approx(expected_gb, abs=0.01)
+    assert row.cost == pytest.approx(0.18, abs=0.001)  # (0.05 + 0.01) * 3
+    assert row.cost_per_gb == pytest.approx(row.cost / row.storage_gb, abs=0.0005)
+
+
+def _fake_aws_storage(_db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: date) -> list[CostRecord]:
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="aws",
+                day=d.isoformat(),
+                service="Amazon Simple Storage Service",
+                resource_id="my-s3-bucket",
+                resource_kind="bucket",
+                region="us-east-1",
+                cost=0.02,
+                sku="TimedStorage-GlacierByteHrs",
+                usage_amount=2.0,
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_bucket_breakdown_classifies_aws_storage_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "aws_facts", _fake_aws_storage)
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("bucket", "aws", days=3)
+    row = next(row for row in r.rows if row.label == "my-s3-bucket")
+
+    expected_gb = 3.0 * 2.0 * svc._AVG_DAYS_PER_MONTH / 3  # 3 days * 2.0 usage_amount / 3-day window
+    assert row.storage_class_gb == {"Coldline": pytest.approx(expected_gb, abs=0.01)}
+
+
+def test_non_bucket_breakdown_rows_carry_no_storage_fields(service: CostObservabilityService) -> None:
+    r = service.breakdown("resource", "all", days=2)
+    assert all(row.storage_gb is None and row.storage_class_gb is None for row in r.rows)
+
+
 def test_cache_avoids_requery_until_forced(service: CostObservabilityService, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
