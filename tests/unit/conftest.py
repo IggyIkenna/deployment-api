@@ -91,6 +91,11 @@ def _ensure_services_mocked() -> None:
     # without hitting the fake services package's empty __path__.
     real_deploy_missing_launch = importlib.import_module("deployment_api.services.deploy_missing_launch")
 
+    # cost_observability is a pure UTL-analytics + pydantic consumer
+    # (cost_observability_ui_2026_07_08.md Phase A). No circular-import risk; its unit
+    # tests monkey-patch the provider functions on the real service module directly.
+    real_cost_observability = importlib.import_module("deployment_api.services.cost_observability")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -142,6 +147,10 @@ def _ensure_services_mocked() -> None:
     # Re-register deploy_missing_launch as a real module (Phase 2 auto-launch).
     sys.modules["deployment_api.services.deploy_missing_launch"] = real_deploy_missing_launch
     services_mod.deploy_missing_launch = real_deploy_missing_launch
+
+    # Re-register cost_observability as a real module (cost-observability plan Phase A).
+    # The sys.modules entry alone satisfies the dotted import its tests use.
+    sys.modules["deployment_api.services.cost_observability"] = real_cost_observability
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked

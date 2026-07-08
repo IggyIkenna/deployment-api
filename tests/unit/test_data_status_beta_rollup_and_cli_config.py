@@ -78,21 +78,54 @@ def test_slice_rollup_emits_r7_overall_capture_attempt() -> None:
 def test_live_rollup_respects_staleness() -> None:
     """A service reading its rollup blob respects the staleness gate — a frozen blob
     (e.g. the worker stalled) must not be served indefinitely; it falls through to the
-    on-demand compute."""
+    on-demand compute.
+
+    Regression guard (found 2026-07-08 investigating a live ASTER/MTDS false-failure
+    report): the real ``BlobMetadata`` (unified_trading_library.cloud_interface.
+    abstractions) field is ``last_modified``, not ``updated`` (that's the raw
+    google-cloud-storage ``Blob`` attribute name) — a prior version of this test used
+    ``meta.updated`` on a bare ``MagicMock``, which happily accepted the nonexistent
+    attribute and hid the fact that production's ``getattr(meta, "updated", None)``
+    always returned ``None``, permanently disabling the staleness gate (a rollup blob
+    frozen for days kept being served as if fresh). ``spec=BlobMetadata`` here ensures
+    only real fields can be set, so this class of drift fails loudly.
+    """
     from unittest.mock import MagicMock, patch
 
     import pandas as pd
+    from unified_trading_library import BlobMetadata
 
     import deployment_api.services.data_status_service as dss_mod
 
     client = MagicMock()
     client.blob_exists.return_value = True
-    meta = MagicMock()
-    meta.updated = pd.Timestamp("2020-01-01", tz="UTC")  # stale
+    meta = MagicMock(spec=BlobMetadata)
+    meta.last_modified = pd.Timestamp("2020-01-01", tz="UTC").isoformat()  # stale
     client.get_blob_metadata.return_value = meta
     dss_mod._ROLLUP_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
     with patch.object(dss_mod, "get_storage_client", return_value=client):
         out = dss_mod._read_rollup_if_fresh("market-tick-data-service")  # pyright: ignore[reportPrivateUsage]
+    assert out is None  # stale blob → fall through
+
+
+def test_coverage_rollup_respects_staleness() -> None:
+    """Sibling of ``test_live_rollup_respects_staleness`` for
+    ``read_coverage_rollup_if_fresh`` — same ``BlobMetadata.last_modified`` staleness
+    gate, copy-pasted into ``rollup_cache.py`` for the coverage-summary blob, carried
+    the identical ``meta.updated`` bug."""
+    from unittest.mock import MagicMock, patch
+
+    import pandas as pd
+    from unified_trading_library import BlobMetadata
+
+    client = MagicMock()
+    client.blob_exists.return_value = True
+    meta = MagicMock(spec=BlobMetadata)
+    meta.last_modified = pd.Timestamp("2020-01-01", tz="UTC").isoformat()  # stale
+    client.get_blob_metadata.return_value = meta
+    rollup_cache.ROLLUP_CACHE.clear()
+    with patch("unified_trading_library.get_storage_client", return_value=client):
+        out = rollup_cache.read_coverage_rollup_if_fresh("market-tick-data-service")
     assert out is None  # stale blob → fall through
 
 

@@ -292,8 +292,10 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
         # Respect staleness: a frozen live blob (e.g. the worker stalled) must not be served
         # indefinitely — fall through to the on-demand compute (mirrors _read_rollup_if_fresh).
-        if meta is not None and getattr(meta, "updated", None) is not None:
-            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
+        # BlobMetadata exposes ``last_modified`` (ISO string) — NOT ``updated`` (that's the
+        # raw google-cloud-storage Blob attribute name; the UTL wrapper renamed it).
+        if meta is not None and getattr(meta, "last_modified", None) is not None:
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.last_modified)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > ROLLUP_STALENESS_SEC:
                 logger.info(
                     "coverage rollup for %s is stale (%.0fs > %ds threshold) — falling through",

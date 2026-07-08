@@ -87,6 +87,41 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     )
 
     # =========================================================================
+    # COST OBSERVABILITY — billing export sources (/ops/costs)
+    # SSOT: codex/05-infrastructure/billing-cost-observability.md. Config, not secrets.
+    # =========================================================================
+    gcp_billing_dataset: str = Field(
+        default="billing_export",
+        validation_alias=AliasChoices("GCP_BILLING_DATASET"),
+        description="BigQuery dataset holding the GCP billing export tables.",
+    )
+    gcp_billing_resource_table: str = Field(
+        default="gcp_billing_export_resource_v1_016B25_109840_AF2ACB",
+        validation_alias=AliasChoices("GCP_BILLING_RESOURCE_TABLE"),
+        description="Resource-level GCP billing export table (per-VM / per-bucket rows).",
+    )
+    aws_cur_database: str = Field(
+        default="aws_billing",
+        validation_alias=AliasChoices("AWS_CUR_DATABASE"),
+        description="Glue database for the AWS CUR→Athena export.",
+    )
+    aws_cur_table: str = Field(
+        default="cur_uts_cost_usage",
+        validation_alias=AliasChoices("AWS_CUR_TABLE"),
+        description="Athena table (crawler-built) over the AWS Cost and Usage Report.",
+    )
+    aws_cur_region: str = Field(
+        default="us-east-1",
+        validation_alias=AliasChoices("AWS_CUR_REGION"),
+        description="Region the CUR + Athena workgroup live in (us-east-1, not the app default).",
+    )
+    aws_athena_output_bucket: str = Field(
+        default="uts-billing-cur-427895769566",
+        validation_alias=AliasChoices("AWS_ATHENA_OUTPUT_BUCKET"),
+        description="S3 bucket for Athena query results (the CUR delivery bucket's athena-results/ prefix).",
+    )
+
+    # =========================================================================
     # DEPLOYMENT CONCURRENCY LIMITS
     # =========================================================================
 
