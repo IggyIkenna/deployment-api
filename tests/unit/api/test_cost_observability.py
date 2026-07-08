@@ -34,6 +34,22 @@ def test_short_name_strips_gce_path() -> None:
     assert prov._short_name("mock-events-bucket") == "mock-events-bucket"
 
 
+def test_as_int_or_none_coerces_and_rejects_blank() -> None:
+    assert prov._as_int_or_none("16") == 16
+    assert prov._as_int_or_none(16) == 16
+    assert prov._as_int_or_none(None) is None
+    assert prov._as_int_or_none("") is None
+    assert prov._as_int_or_none("not-a-number") is None
+    assert prov._as_int_or_none(True) is None  # bool is not a valid core count
+
+
+def test_mib_to_gb_converts_and_handles_missing() -> None:
+    assert prov._mib_to_gb("2048") == 2.0
+    assert prov._mib_to_gb("131072") == 128.0  # n2-highmem-16, verified live
+    assert prov._mib_to_gb(None) is None
+    assert prov._mib_to_gb("") is None
+
+
 def test_kind_classification() -> None:
     assert prov._gcp_kind("Compute Engine", "vm-1") == "vm"
     assert prov._gcp_kind("Cloud Storage", "bkt") == "bucket"
@@ -110,6 +126,14 @@ def test_gcp_facts_sql_selects_sku_and_usage_columns() -> None:
     assert "GROUP BY day, service, resource_id, region, sku, usage_unit, zone" in sql
 
 
+def test_gcp_facts_sql_selects_machine_spec_system_labels() -> None:
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    assert "compute.googleapis.com/machine_spec" in sql
+    assert "compute.googleapis.com/cores" in sql
+    assert "compute.googleapis.com/memory" in sql
+    assert "UNNEST(system_labels)" in sql
+
+
 def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
     sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
     assert "line_item_usage_type" in sql
@@ -157,6 +181,50 @@ def test_gcp_facts_maps_sku_and_usage_onto_cost_record(monkeypatch: pytest.Monke
     assert rec.usage_unit == "gibibyte month"
     assert rec.usage_amount == 12.5
     assert rec.zone == "us-central1-a"
+
+
+def test_gcp_facts_maps_machine_spec_onto_cost_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        {
+            "day": "2026-07-01",
+            "service": "Compute Engine",
+            "resource_id": "projects/106/instances/n2-highmem-16-vm",
+            "region": "asia-northeast1",
+            "sku": "N2 Instance Core running in Tokyo",
+            "usage_unit": "",
+            "cost": 4.0,
+            "credit": 0.0,
+            "usage_amount": 16.0,
+            "machine_spec": "n2-highmem-16",
+            "machine_cores": "16",
+            "machine_memory_mib": "131072",
+        },
+        {
+            # Same VM's disk SKU row — no machine-spec system_labels (verified live).
+            "day": "2026-07-01",
+            "service": "Compute Engine",
+            "resource_id": "extraspace-disk",
+            "region": "asia-northeast1",
+            "sku": "Balanced PD Capacity",
+            "usage_unit": "gibibyte month",
+            "cost": 0.18,
+            "credit": 0.0,
+            "usage_amount": 10.0,
+            "machine_spec": None,
+            "machine_cores": None,
+            "machine_memory_mib": None,
+        },
+    ]
+    monkeypatch.setattr(prov, "get_analytics_client", lambda provider: _FakeAnalyticsClient(rows))
+    out = prov.gcp_facts("proj.dataset.table", date(2026, 7, 1), date(2026, 7, 4), date(2026, 7, 3))
+    assert len(out) == 2
+    vm_rec, disk_rec = out
+    assert vm_rec.machine_type == "n2-highmem-16"
+    assert vm_rec.vcpu == 16
+    assert vm_rec.memory_gb == 128.0
+    assert disk_rec.machine_type == ""
+    assert disk_rec.vcpu is None
+    assert disk_rec.memory_gb is None
 
 
 def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -548,6 +616,65 @@ def test_breakdown_resource_and_service_expose_purchase_option(monkeypatch: pyte
     by_service = {row.label: row.purchase_option for row in s.breakdown("service", "gcp", days=2).rows}
     assert by_service["Compute Engine"] == "spot"  # rolls up from vm-spot + vm-mixed
     assert by_service["Cloud Storage"] == "other"
+
+
+def test_breakdown_resource_carries_machine_spec_from_sibling_sku_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A VM's disk-SKU row has no machine_type; the resource row must still surface the spec
+    carried on its Core/Ram-SKU row (verified live: only the instance SKU rows have it)."""
+
+    def fake_gcp(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+        return [
+            CostRecord(
+                cloud="gcp",
+                day=start.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-1",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=4.0,
+                machine_type="e2-highmem-16",
+                vcpu=16,
+                memory_gb=128.0,
+            ),
+            CostRecord(
+                cloud="gcp",
+                day=start.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-1",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=0.5,  # e.g. the attached-disk SKU row for the same VM
+            ),
+            CostRecord(
+                cloud="gcp",
+                day=start.isoformat(),
+                service="Cloud Storage",
+                resource_id="bkt-1",
+                resource_kind="bucket",
+                region="asia-northeast1",
+                cost=1.0,
+            ),
+        ]
+
+    monkeypatch.setattr(svc, "gcp_facts", fake_gcp)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("resource", "all", days=1)
+    vm_row = next(row for row in r.rows if row.label == "vm-1")
+    assert vm_row.machine_type == "e2-highmem-16"
+    assert vm_row.vcpu == 16
+    assert vm_row.memory_gb == 128.0
+    assert vm_row.cost == 4.5  # both SKU rows for the resource rolled up
+
+    bkt_row = next(row for row in r.rows if row.label == "bkt-1")
+    assert bkt_row.machine_type == ""
+    assert bkt_row.vcpu is None
+    assert bkt_row.memory_gb is None
 
 
 def test_breakdown_cloud_filter(service: CostObservabilityService) -> None:

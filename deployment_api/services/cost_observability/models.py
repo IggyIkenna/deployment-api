@@ -50,6 +50,9 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     usage_unit: str = ""  # GCP usage.pricing_unit ("" for AWS — not in the export column set)
     zone: str = ""  # GCP location.zone / AWS line_item_availability_zone ("" — finer than region)
     purchase_option: str = PURCHASE_OTHER  # spot | on-demand | other, derived from sku (see providers._purchase_option)
+    machine_type: str = ""  # GCP system_labels compute.googleapis.com/machine_spec, e.g. "e2-highmem-16"
+    vcpu: int | None = None  # GCP system_labels compute.googleapis.com/cores
+    memory_gb: float | None = None  # GCP system_labels compute.googleapis.com/memory (MiB / 1024)
     is_provisional: bool = False  # recent day, still reconciling
     is_placeholder: bool = False  # dummy data (GitHub until PAT lands)
 
@@ -96,6 +99,9 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     storage_class_gb: dict[str, float] | None = None  # {"Standard"|"Nearline"|"Coldline"|"Archive": gb}
     cost_per_gb: float | None = None  # net cost / storage_gb for the window
     purchase_option: str = ""  # spot | on-demand | other; "" when the axis doesn't apply to this row
+    machine_type: str = ""  # VM rows only, e.g. "e2-highmem-16" (from GCP system_labels)
+    vcpu: int | None = None  # VM rows only
+    memory_gb: float | None = None  # VM rows only
 
 
 class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

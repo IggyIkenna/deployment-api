@@ -55,6 +55,27 @@ def _as_str(v: object) -> str:
     return "" if v is None else str(v)
 
 
+def _as_int_or_none(v: object) -> int | None:
+    """Parse a `system_labels` numeric string (`cores`); missing/blank → None, never 0."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.strip():
+        try:
+            return int(v)
+        except ValueError:
+            return None
+    return None
+
+
+def _mib_to_gb(v: object) -> float | None:
+    """`system_labels` compute.googleapis.com/memory is MiB (verified live: e2-small → 2048 →
+    2 GB; n2-highmem-16 → 131072 → 128 GB)."""
+    mib = _as_int_or_none(v)
+    return round(mib / 1024, 1) if mib is not None else None
+
+
 def _short_name(resource_id: str) -> str:
     """GCE/Cloud Run resource names arrive as ``projects/<n>/instances/<name>`` — the last
     path segment is the human-recognizable name (unique within our single project)."""
@@ -131,6 +152,9 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 usage_unit=_as_str(r.get("usage_unit")),
                 zone=_as_str(r.get("zone")),
                 purchase_option=_purchase_option(CLOUD_GCP, sku),
+                machine_type=_as_str(r.get("machine_spec")),
+                vcpu=_as_int_or_none(r.get("machine_cores")),
+                memory_gb=_mib_to_gb(r.get("machine_memory_mib")),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )

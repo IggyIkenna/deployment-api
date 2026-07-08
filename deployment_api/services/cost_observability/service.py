@@ -307,6 +307,7 @@ class CostObservabilityService:
         running_vm_names = self._running_vm_names() if kind is None else frozenset()
         storage_amt: dict[tuple[str, str], dict[str, float]] = {}
         purchase: dict[tuple[str, str], str] = {}
+        machine_of: dict[tuple[str, str], tuple[str, str, int | None, float | None]] = {}
         for r in recs:
             if not r.resource_id:
                 continue
@@ -333,8 +334,15 @@ class CostObservabilityService:
                     by_class[cls] = by_class.get(cls, 0.0) + r.usage_amount
             if _PURCHASE_RANK.get(r.purchase_option, 0) > _PURCHASE_RANK.get(purchase.get(k, PURCHASE_OTHER), 0):
                 purchase[k] = r.purchase_option
+            # A VM's disk/IP SKU rows carry no machine spec (only its Core/Ram rows do) — keep
+            # the latest-day non-empty spec seen across the resource's rows.
+            if r.machine_type:
+                prev_day = machine_of.get(k, ("", "", None, None))[0]
+                if r.day >= prev_day:
+                    machine_of[k] = (r.day, r.machine_type, r.vcpu, r.memory_gb)
         rows = []
         for (cloud, rid), v in net.items():
+            _, machine_type, vcpu, memory_gb = machine_of.get((cloud, rid), ("", "", None, None))
             row = BreakdownRow(
                 label=rid,
                 cloud=cloud,
@@ -346,6 +354,9 @@ class CostObservabilityService:
                 is_idle=(cloud, rid) in waste_of,
                 waste_kind=waste_of.get((cloud, rid), ""),
                 purchase_option=purchase.get((cloud, rid), PURCHASE_OTHER),
+                machine_type=machine_type,
+                vcpu=vcpu,
+                memory_gb=memory_gb,
             )
             if window_days:
                 classes = storage_amt.get((cloud, rid))

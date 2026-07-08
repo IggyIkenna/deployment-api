@@ -15,10 +15,26 @@ from datetime import date, timedelta
 # (~4x bytes; verified). Rows can land a couple days after usage, so pad the partition floor.
 _PARTITION_PAD_DAYS = 3
 
+# `system_labels` keys carrying the VM machine spec — present on the instance's Core/Ram SKU
+# rows only; disk, IP, and other per-resource SKU rows for the same VM have no machine-spec
+# labels (verified live), hence ANY_VALUE picks whichever of a group's rows has it. No Compute
+# API call.
+_MACHINE_SPEC_LABELS = (
+    ("machine_spec", "compute.googleapis.com/machine_spec"),
+    ("machine_cores", "compute.googleapis.com/cores"),
+    ("machine_memory_mib", "compute.googleapis.com/memory"),
+)
+
+
+def _system_label_col(alias: str, key: str) -> str:
+    # nosec B608 — alias/key come only from the hardcoded _MACHINE_SPEC_LABELS tuple, no user input
+    return f"  ANY_VALUE((SELECT value FROM UNNEST(system_labels)\n    WHERE key = '{key}' LIMIT 1)) AS {alias}"  # nosec B608
+
 
 def gcp_facts_sql(table: str, start: date, end: date) -> str:
     """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export."""
     part_floor = start - timedelta(days=_PARTITION_PAD_DAYS)
+    machine_spec_cols = ",\n".join(_system_label_col(alias, key) for alias, key in _MACHINE_SPEC_LABELS)
     return f"""
 SELECT
   FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time)) AS day,
@@ -30,7 +46,8 @@ SELECT
   COALESCE(location.zone, '') AS zone,
   ROUND(SUM(cost), 6) AS cost,
   ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit,
-  ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount
+  ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount,
+{machine_spec_cols}
 FROM `{table}`
 WHERE _PARTITIONTIME >= TIMESTAMP('{part_floor.isoformat()}')
   AND usage_start_time >= TIMESTAMP('{start.isoformat()}')
