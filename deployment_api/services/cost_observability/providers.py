@@ -94,6 +94,9 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
                 credit=_as_float(r.get("credit")),
+                sku=_as_str(r.get("sku")),
+                usage_amount=_as_float(r.get("usage_amount")),
+                usage_unit=_as_str(r.get("usage_unit")),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )
@@ -128,6 +131,8 @@ def aws_facts(
                 resource_kind=_aws_kind(service_code, resource_id),
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
+                sku=_as_str(r.get("usage_type")),
+                usage_amount=_as_float(r.get("usage_amount")),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )

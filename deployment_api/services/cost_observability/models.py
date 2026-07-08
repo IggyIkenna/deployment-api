@@ -39,6 +39,9 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     region: str
     cost: float
     credit: float = 0.0
+    sku: str = ""  # GCP sku.description / AWS line_item_usage_type ("" if not sourced)
+    usage_amount: float = 0.0  # GCP usage.amount_in_pricing_units / AWS line_item_usage_amount
+    usage_unit: str = ""  # GCP usage.pricing_unit ("" for AWS — not in the export column set)
     is_provisional: bool = False  # recent day, still reconciling
     is_placeholder: bool = False  # dummy data (GitHub until PAT lands)
 

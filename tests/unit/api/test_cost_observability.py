@@ -17,6 +17,7 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 from deployment_api.services.cost_observability import CostObservabilityService, CostRecord
 from deployment_api.services.cost_observability import providers as prov
 from deployment_api.services.cost_observability import service as svc
+from deployment_api.services.cost_observability.queries import aws_facts_sql, gcp_facts_sql
 
 
 # --- provider pure helpers ---------------------------------------------------
@@ -41,6 +42,82 @@ def test_kind_classification() -> None:
     assert prov._aws_kind("AmazonEC2", "i-0abc") == "vm"
     assert prov._aws_kind("AmazonS3", "my-bucket") == "bucket"
     assert prov._aws_kind("AmazonEC2", "not-an-instance") == "other"
+
+
+def test_gcp_facts_sql_selects_sku_and_usage_columns() -> None:
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    assert "sku.description" in sql
+    assert "usage.pricing_unit" in sql
+    assert "usage.amount_in_pricing_units" in sql
+    assert "GROUP BY day, service, resource_id, region, sku, usage_unit" in sql
+
+
+def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
+    sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
+    assert "line_item_usage_type" in sql
+    assert "line_item_usage_amount" in sql
+    assert "GROUP BY 1, 2, 3, 4, 5, 6" in sql
+
+
+class _FakeAnalyticsClient:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def execute_query(self, _sql: str) -> list[dict[str, object]]:
+        return self._rows
+
+
+def test_gcp_facts_maps_sku_and_usage_onto_cost_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        {
+            "day": "2026-07-01",
+            "service": "Cloud Storage",
+            "resource_id": "my-bucket",
+            "region": "us",
+            "sku": "Coldline Storage US Regional",
+            "usage_unit": "gibibyte month",
+            "cost": 1.5,
+            "credit": 0.0,
+            "usage_amount": 12.5,
+        }
+    ]
+    monkeypatch.setattr(prov, "get_analytics_client", lambda provider: _FakeAnalyticsClient(rows))
+    out = prov.gcp_facts("proj.dataset.table", date(2026, 7, 1), date(2026, 7, 4), date(2026, 7, 3))
+    assert len(out) == 1
+    rec = out[0]
+    assert rec.sku == "Coldline Storage US Regional"
+    assert rec.usage_unit == "gibibyte month"
+    assert rec.usage_amount == 12.5
+
+
+def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        {
+            "day": "2026-07-01",
+            "service": "Amazon EC2",
+            "service_code": "AmazonEC2",
+            "resource_id": "i-0abc",
+            "region": "us-east-1",
+            "usage_type": "BoxUsage:t3.micro",
+            "cost": 3.2,
+            "usage_amount": 24.0,
+        }
+    ]
+    monkeypatch.setattr(prov, "AWSAnalyticsClient", lambda region, output_bucket: _FakeAnalyticsClient(rows))
+    out = prov.aws_facts(
+        "aws_billing",
+        "cur_uts_cost_usage",
+        "us-east-1",
+        "uts-billing-cur",
+        date(2026, 7, 1),
+        date(2026, 7, 4),
+        date(2026, 7, 3),
+    )
+    assert len(out) == 1
+    rec = out[0]
+    assert rec.sku == "BoxUsage:t3.micro"  # AWS usage_type is the SKU analog
+    assert rec.usage_amount == 24.0
+    assert rec.usage_unit == ""  # not sourced from the AWS export
 
 
 def test_github_facts_deterministic_and_flagged() -> None:
