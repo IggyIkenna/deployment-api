@@ -61,6 +61,14 @@ def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
     assert "GROUP BY 1, 2, 3, 4, 5, 6, 7" in sql
 
 
+def test_aws_facts_sql_uses_net_cost_and_includes_tax_and_fee() -> None:
+    """Invoice reconciliation: net-of-discounts cost + Tax/Fee lines, not usage-only gross."""
+    sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
+    assert "line_item_net_unblended_cost" in sql
+    assert "line_item_unblended_cost" not in sql  # plain (non-net) column must not appear
+    assert "'Usage', 'DiscountedUsage', 'Tax', 'Fee'" in sql
+
+
 class _FakeAnalyticsClient:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
