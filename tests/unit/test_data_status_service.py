@@ -1396,6 +1396,22 @@ class TestDeriveUnderlyingFromInstrumentId:
     def test_whitespace_only(self):
         assert _derive("   ") == ""
 
+    # canonical_id_p0_strategy_reconciliation_2026_07_08 bug #5: real CeFi/
+    # TradFi manifest rows are venue-prefixed (VENUE:TYPE:SYMBOL[@SUFFIX]),
+    # not the bare BASE-QUOTE shape assumed above -- the old fallback would
+    # wrongly return "BINANCE-FUTURES" (the venue) instead of "BTC".
+    def test_venue_prefixed_perpetual_with_settlement_suffix(self):
+        assert _derive("BINANCE-FUTURES:PERPETUAL:BTC-USDT@LIN") == "BTC"
+
+    def test_venue_prefixed_inverse_perpetual(self):
+        assert _derive("DERIBIT:PERPETUAL:BTC-USD@INV") == "BTC"
+
+    def test_venue_prefixed_option_with_embedded_dashes(self):
+        assert _derive("DERIBIT:OPTION:BTC-9JUL26-56000-C") == "BTC"
+
+    def test_venue_prefixed_spot_pair(self):
+        assert _derive("OKX-SPOT:SPOT_PAIR:ETH-USDT") == "ETH"
+
 
 class TestEnsureUnderlyingColumn:
     """Tests for _ensure_underlying_column."""

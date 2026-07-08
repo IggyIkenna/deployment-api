@@ -31,6 +31,36 @@ DEFAULT_PER_INSTRUMENT_SENTINEL_CAP: int = 50
 PER_INSTRUMENT_BREAKDOWN_MAX_SIZE: int = 20
 
 
+def _normalize_instrument_id_for_match(instrument_id: str) -> str:
+    """Normalize an instrument_id for cross-service Tier-3 coverage matching.
+
+    instruments-service's catalog and MTDS's manifest are independently
+    written services whose ``instrument_id`` strings can diverge on
+    surface-level formatting even when they name the identical real
+    instrument (canonical_id_p0_strategy_reconciliation_2026_07_08 bug #4)
+    — e.g. casing, incidental whitespace, or one side carrying a
+    ``@SETTLEMENT``/``@CHAIN`` suffix (``@LIN``/``@INV``/``@ETHEREUM``) the
+    other omits. An un-normalized exact-string match can then report a real,
+    fully-captured instrument as phantom-missing.
+
+    This is a narrow, safe normalization of those KNOWN surface-level
+    divergences — NOT a full canonicalization. It deliberately does NOT
+    attempt venue-token spelling normalization (e.g. ``AAVE_V3`` vs
+    ``AAVEV3``) or any other semantic reconciliation; that is a much larger,
+    riskier decision reserved for the sequenced ground-up canonicalization
+    migration (UAC -> instruments-service -> MTDS -> strategy-service ->
+    deployment-api) called out in canonical_instrument_id_audit_2026_07_08.
+    A residual mismatch after this normalization is a genuine "still
+    doesn't match" case, not something this function tries to paper over.
+    """
+    if not instrument_id:
+        return ""
+    normalized = "".join(instrument_id.split()).upper()  # strip/collapse ALL whitespace
+    if "@" in normalized:
+        normalized = normalized.split("@", 1)[0]
+    return normalized
+
+
 def build_cefi_is_instruments_provider(
     cloud: object,
 ) -> Callable[[str, str], list[str] | None] | None:
@@ -254,8 +284,20 @@ def per_instrument_coverage(
     # ``instruments_with_shards`` as ``.keys()`` in one pass — replaces the
     # prior O(|instruments|*|pairs|) ``sum(1 for ...)`` loop below.
     iid_counts = Counter(iid for iid, _ in found_pairs)
-    instruments_with_shards = set(iid_counts)
-    missing_instruments = [iid for iid in expected_instruments if iid not in instruments_with_shards]
+    # bug #4: match on the NORMALIZED instrument_id (see
+    # _normalize_instrument_id_for_match) rather than the raw string, so a
+    # casing / whitespace / @SUFFIX divergence between instruments-service's
+    # catalog and MTDS's manifest doesn't show a real, fully-captured
+    # instrument as phantom-missing. iid_counts (raw-keyed) is preserved
+    # as-is for any other caller; matching/display below goes through the
+    # normalized counter.
+    normalized_iid_counts: Counter[str] = Counter()
+    for iid, count in iid_counts.items():
+        normalized_iid_counts[_normalize_instrument_id_for_match(iid)] += count
+    instruments_with_shards = set(normalized_iid_counts)
+    missing_instruments = [
+        iid for iid in expected_instruments if _normalize_instrument_id_for_match(iid) not in instruments_with_shards
+    ]
 
     entry: dict[str, object] = {
         "expected_shards": expected_count,
@@ -281,14 +323,14 @@ def per_instrument_coverage(
     # universe (<20). BINANCE-FUTURES with 50 perps would double the
     # response size per (venue, dt) pair otherwise.
     if n_instruments and n_instruments < PER_INSTRUMENT_BREAKDOWN_MAX_SIZE:
-        per_instrument: dict[str, dict[str, object]] = {
-            iid: {
-                "found": iid_counts.get(iid, 0),
+        per_instrument: dict[str, dict[str, object]] = {}
+        for iid in expected_instruments:
+            found = normalized_iid_counts.get(_normalize_instrument_id_for_match(iid), 0)
+            per_instrument[iid] = {
+                "found": found,
                 "expected": n_dates,
-                "completion_pct": min(round(iid_counts.get(iid, 0) / max(1, n_dates) * 100, 2), 100.0),
+                "completion_pct": min(round(found / max(1, n_dates) * 100, 2), 100.0),
             }
-            for iid in expected_instruments
-        }
         entry["per_instrument"] = per_instrument
 
     return entry
