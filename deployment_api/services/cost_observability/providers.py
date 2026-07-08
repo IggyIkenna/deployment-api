@@ -26,6 +26,9 @@ from deployment_api.services.cost_observability.models import (
     KIND_BUCKET,
     KIND_OTHER,
     KIND_VM,
+    PURCHASE_ON_DEMAND,
+    PURCHASE_OTHER,
+    PURCHASE_SPOT,
     CostRecord,
 )
 from deployment_api.services.cost_observability.queries import aws_facts_sql, gcp_facts_sql
@@ -76,6 +79,34 @@ def _aws_kind(service_code: str, resource_id: str) -> str:
     return KIND_OTHER
 
 
+def _purchase_option(cloud: str, sku: str) -> str:
+    """Classify a billing row's SKU (GCP) / usage_type (AWS) into spot | on-demand | other.
+
+    Neither export carries a dedicated purchase-option column — both encode it in the SKU/
+    usage-type text, so this is a text-pattern derivation, same spirit as `_gcp_kind`/`_aws_kind`.
+    "other" covers every non-compute-instance SKU (storage, network, licensing, …) — the
+    SPOT-VMs HARD RULE (codex/05-infrastructure/spot-vms-for-backfill.md) only concerns compute
+    instances, so this axis is deliberately silent for the rest.
+    """
+    s = sku.lower()
+    if cloud == CLOUD_GCP:
+        if "spot" in s or "preemptible" in s:
+            return PURCHASE_SPOT
+        if "instance core" in s or "instance ram" in s:
+            return PURCHASE_ON_DEMAND
+        return PURCHASE_OTHER
+    if cloud == CLOUD_AWS:
+        # EC2 usage_type embeds the purchase mode: "APN1-SpotUsage:c5.xlarge" (spot) vs.
+        # "APN1-BoxUsage:c5.xlarge" (on-demand) / "...HeavyUsage.../...DedicatedUsage..."
+        # (Reserved/Dedicated — grouped with on-demand here, neither is preemptible/spot).
+        if "spotusage" in s:
+            return PURCHASE_SPOT
+        if "boxusage" in s or "heavyusage" in s or "dedicatedusage" in s:
+            return PURCHASE_ON_DEMAND
+        return PURCHASE_OTHER
+    return PURCHASE_OTHER
+
+
 def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> list[CostRecord]:
     client = get_analytics_client(provider="gcp")
     rows = client.execute_query(gcp_facts_sql(table, start, end))
@@ -84,6 +115,7 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
         day = _as_str(r.get("day"))
         service = _as_str(r.get("service")) or "Unknown"
         resource_id = _short_name(_as_str(r.get("resource_id")))
+        sku = _as_str(r.get("sku"))
         out.append(
             CostRecord(
                 cloud=CLOUD_GCP,
@@ -94,10 +126,11 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
                 credit=_as_float(r.get("credit")),
-                sku=_as_str(r.get("sku")),
+                sku=sku,
                 usage_amount=_as_float(r.get("usage_amount")),
                 usage_unit=_as_str(r.get("usage_unit")),
                 zone=_as_str(r.get("zone")),
+                purchase_option=_purchase_option(CLOUD_GCP, sku),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )
@@ -123,6 +156,7 @@ def aws_facts(
         service = _as_str(r.get("service")) or "Unknown"
         service_code = _as_str(r.get("service_code"))
         resource_id = _as_str(r.get("resource_id"))
+        usage_type = _as_str(r.get("usage_type"))
         out.append(
             CostRecord(
                 cloud=CLOUD_AWS,
@@ -132,9 +166,10 @@ def aws_facts(
                 resource_kind=_aws_kind(service_code, resource_id),
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
-                sku=_as_str(r.get("usage_type")),
+                sku=usage_type,
                 usage_amount=_as_float(r.get("usage_amount")),
                 zone=_as_str(r.get("zone")),
+                purchase_option=_purchase_option(CLOUD_AWS, usage_type),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )

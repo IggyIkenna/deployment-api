@@ -21,6 +21,12 @@ KIND_VM = "vm"
 KIND_BUCKET = "bucket"
 KIND_OTHER = "other"
 
+# Purchase-option classification (derived from SKU/usage-type, not a billed-export column) —
+# "other" covers non-compute SKUs (storage, network, …) where the axis doesn't apply.
+PURCHASE_SPOT = "spot"
+PURCHASE_ON_DEMAND = "on-demand"
+PURCHASE_OTHER = "other"
+
 
 @dataclass
 class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-service contract
@@ -43,6 +49,7 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     usage_amount: float = 0.0  # GCP usage.amount_in_pricing_units / AWS line_item_usage_amount
     usage_unit: str = ""  # GCP usage.pricing_unit ("" for AWS — not in the export column set)
     zone: str = ""  # GCP location.zone / AWS line_item_availability_zone ("" — finer than region)
+    purchase_option: str = PURCHASE_OTHER  # spot | on-demand | other, derived from sku (see providers._purchase_option)
     is_provisional: bool = False  # recent day, still reconciling
     is_placeholder: bool = False  # dummy data (GitHub until PAT lands)
 
@@ -88,6 +95,7 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     storage_gb: float | None = None  # avg GB stored over the window (GiB/GB-month -> avg GB)
     storage_class_gb: dict[str, float] | None = None  # {"Standard"|"Nearline"|"Coldline"|"Archive": gb}
     cost_per_gb: float | None = None  # net cost / storage_gb for the window
+    purchase_option: str = ""  # spot | on-demand | other; "" when the axis doesn't apply to this row
 
 
 class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

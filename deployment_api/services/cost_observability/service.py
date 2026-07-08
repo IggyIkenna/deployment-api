@@ -20,6 +20,9 @@ from deployment_api.services.cost_observability.models import (
     KIND_BUCKET,
     KIND_OTHER,
     KIND_VM,
+    PURCHASE_ON_DEMAND,
+    PURCHASE_OTHER,
+    PURCHASE_SPOT,
     BreakdownResponse,
     BreakdownRow,
     CloudSummary,
@@ -85,6 +88,12 @@ def _storage_class(r: CostRecord) -> str | None:
     if r.cloud == CLOUD_AWS:
         return _aws_storage_class(r.sku)
     return None
+
+
+# Fold order for a group's purchase_option: "any spot line present" outranks "any on-demand
+# line present" outranks "other-only" — surfaces "this resource/service had SOME spot cost"
+# rather than an arbitrary last-seen value across its (usually many) underlying SKU lines.
+_PURCHASE_RANK = {PURCHASE_SPOT: 2, PURCHASE_ON_DEMAND: 1, PURCHASE_OTHER: 0}
 
 
 def _net(r: CostRecord) -> float:
@@ -231,12 +240,15 @@ class CostObservabilityService:
         gross: dict[tuple[str, str], float] = {}
         credit: dict[tuple[str, str], float] = {}
         prov: dict[tuple[str, str], bool] = {}
+        purchase: dict[tuple[str, str], str] = {}
         for r in recs:
             k = (r.cloud, key(r))
             net[k] = net.get(k, 0.0) + _net(r)
             gross[k] = gross.get(k, 0.0) + r.cost
             credit[k] = credit.get(k, 0.0) + r.credit
             prov[k] = prov.get(k, False) or r.is_provisional
+            if _PURCHASE_RANK.get(r.purchase_option, 0) > _PURCHASE_RANK.get(purchase.get(k, PURCHASE_OTHER), 0):
+                purchase[k] = r.purchase_option
         rows = [
             BreakdownRow(
                 label=label,
@@ -246,6 +258,7 @@ class CostObservabilityService:
                 credit=round(credit[(cloud, label)], 2),
                 detail=_CLOUD_LABEL.get(cloud, cloud),
                 is_provisional=prov[(cloud, label)],
+                purchase_option=purchase.get((cloud, label), PURCHASE_OTHER),
             )
             for (cloud, label), v in net.items()
         ]
@@ -293,6 +306,7 @@ class CostObservabilityService:
         # bucket dimension never contains idle-IP/orphaned-disk rows, so skip the fleet lookup.
         running_vm_names = self._running_vm_names() if kind is None else frozenset()
         storage_amt: dict[tuple[str, str], dict[str, float]] = {}
+        purchase: dict[tuple[str, str], str] = {}
         for r in recs:
             if not r.resource_id:
                 continue
@@ -317,6 +331,8 @@ class CostObservabilityService:
                 if cls is not None:
                     by_class = storage_amt.setdefault(k, {})
                     by_class[cls] = by_class.get(cls, 0.0) + r.usage_amount
+            if _PURCHASE_RANK.get(r.purchase_option, 0) > _PURCHASE_RANK.get(purchase.get(k, PURCHASE_OTHER), 0):
+                purchase[k] = r.purchase_option
         rows = []
         for (cloud, rid), v in net.items():
             row = BreakdownRow(
@@ -329,6 +345,7 @@ class CostObservabilityService:
                 resource_kind=kind_of[(cloud, rid)],
                 is_idle=(cloud, rid) in waste_of,
                 waste_kind=waste_of.get((cloud, rid), ""),
+                purchase_option=purchase.get((cloud, rid), PURCHASE_OTHER),
             )
             if window_days:
                 classes = storage_amt.get((cloud, rid))

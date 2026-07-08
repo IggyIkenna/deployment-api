@@ -44,6 +44,63 @@ def test_kind_classification() -> None:
     assert prov._aws_kind("AmazonEC2", "not-an-instance") == "other"
 
 
+def test_purchase_option_classification() -> None:
+    # GCP: spot/preemptible compute SKUs -> spot; other compute-core/ram SKUs -> on-demand;
+    # non-compute SKUs (storage, network, …) -> other, regardless of cloud.
+    assert prov._purchase_option("gcp", "Spot Preemptible N2 Instance Core running in Tokyo") == "spot"
+    assert prov._purchase_option("gcp", "N2 Instance Core running in Tokyo") == "on-demand"
+    assert prov._purchase_option("gcp", "N2 Instance Ram running in Tokyo") == "on-demand"
+    assert prov._purchase_option("gcp", "Coldline Storage US Regional") == "other"
+    # AWS: usage_type embeds the purchase mode as a text prefix.
+    assert prov._purchase_option("aws", "APN1-SpotUsage:c5.xlarge") == "spot"
+    assert prov._purchase_option("aws", "APN1-BoxUsage:c5.xlarge") == "on-demand"
+    assert prov._purchase_option("aws", "APN1-HeavyUsage:db.r5.large") == "on-demand"
+    assert prov._purchase_option("aws", "DataTransfer-Out-Bytes") == "other"
+
+
+def test_gcp_facts_and_aws_facts_populate_purchase_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    gcp_rows = [
+        {
+            "day": "2026-07-01",
+            "service": "Compute Engine",
+            "resource_id": "vm-1",
+            "region": "asia-northeast1",
+            "sku": "Spot Preemptible N2 Instance Core running in Tokyo",
+            "usage_unit": "hour",
+            "cost": 1.0,
+            "credit": 0.0,
+            "usage_amount": 1.0,
+        }
+    ]
+    monkeypatch.setattr(prov, "get_analytics_client", lambda provider: _FakeAnalyticsClient(gcp_rows))
+    gcp_out = prov.gcp_facts("proj.dataset.table", date(2026, 7, 1), date(2026, 7, 4), date(2026, 7, 3))
+    assert gcp_out[0].purchase_option == "spot"
+
+    aws_rows = [
+        {
+            "day": "2026-07-01",
+            "service": "Amazon EC2",
+            "service_code": "AmazonEC2",
+            "resource_id": "i-0abc",
+            "region": "us-east-1",
+            "usage_type": "BoxUsage:t3.micro",
+            "cost": 3.2,
+            "usage_amount": 24.0,
+        }
+    ]
+    monkeypatch.setattr(prov, "AWSAnalyticsClient", lambda region, output_bucket: _FakeAnalyticsClient(aws_rows))
+    aws_out = prov.aws_facts(
+        "aws_billing",
+        "cur_uts_cost_usage",
+        "us-east-1",
+        "uts-billing-cur",
+        date(2026, 7, 1),
+        date(2026, 7, 4),
+        date(2026, 7, 3),
+    )
+    assert aws_out[0].purchase_option == "on-demand"
+
+
 def test_gcp_facts_sql_selects_sku_and_usage_columns() -> None:
     sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
     assert "sku.description" in sql
@@ -423,6 +480,74 @@ def test_breakdown_resource_carries_kind_for_leaf_tables(service: CostObservabil
     kinds = {row.label: row.resource_kind for row in r.rows}
     assert kinds["vm-1"] == "vm"
     assert kinds["bkt-1"] == "bucket"
+
+
+def test_breakdown_resource_and_service_expose_purchase_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resource/service row folds to 'spot' if ANY of its underlying SKU lines is spot-priced —
+    the SPOT-VMs HARD RULE question is "did any spot cost show up here", not an arbitrary pick."""
+    recs = [
+        # vm-spot: entirely spot compute.
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Compute Engine",
+            resource_id="vm-spot",
+            resource_kind="vm",
+            region="asia-northeast1",
+            cost=1.0,
+            sku="Spot Preemptible N2 Instance Core running in Tokyo",
+            purchase_option="spot",
+        ),
+        # vm-mixed: one on-demand line + one spot line -> resource folds to spot.
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Compute Engine",
+            resource_id="vm-mixed",
+            resource_kind="vm",
+            region="asia-northeast1",
+            cost=2.0,
+            sku="N2 Instance Core running in Tokyo",
+            purchase_option="on-demand",
+        ),
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-02",
+            service="Compute Engine",
+            resource_id="vm-mixed",
+            resource_kind="vm",
+            region="asia-northeast1",
+            cost=1.0,
+            sku="Spot Preemptible N2 Instance Core running in Tokyo",
+            purchase_option="spot",
+        ),
+        # bkt-1: storage SKU, purchase-option axis doesn't apply -> other.
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Storage",
+            resource_id="bkt-1",
+            resource_kind="bucket",
+            region="asia-northeast1",
+            cost=0.5,
+            sku="Coldline Storage US Regional",
+            purchase_option="other",
+        ),
+    ]
+    monkeypatch.setattr(svc, "gcp_facts", lambda *a, **k: recs)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    by_resource = {row.label: row.purchase_option for row in s.breakdown("resource", "gcp", days=2).rows}
+    assert by_resource["vm-spot"] == "spot"
+    assert by_resource["vm-mixed"] == "spot"  # any spot line present -> spot
+    assert by_resource["bkt-1"] == "other"
+
+    by_service = {row.label: row.purchase_option for row in s.breakdown("service", "gcp", days=2).rows}
+    assert by_service["Compute Engine"] == "spot"  # rolls up from vm-spot + vm-mixed
+    assert by_service["Cloud Storage"] == "other"
 
 
 def test_breakdown_cloud_filter(service: CostObservabilityService) -> None:
