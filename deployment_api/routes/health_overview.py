@@ -13,7 +13,7 @@ one tile list (NO new data sources — pure reuse of the shipped route helpers):
   ``load_alerts_payload``: CI + vm_down + consolidator_down + git_health + worker_liveness).
 * **gh_budget** — the shared GitHub PAT REST budget (``repo_gh_rate_limit``); doubles as the
   **GH Actions / billing** surface (Phase-4 P3 — minutes/budget headroom).
-* **cost** — today's total cloud spend (``cost_daily``) + a GCP-billing-threshold flag.
+* **cost** — today's total cloud spend (``cost_observability``) + a billing-threshold flag.
 
 Rollup: each tile is ``ok|degraded|critical|unknown``; ``overall`` = the WORST tile
 (any critical → critical, else any degraded → degraded, else ok; ``unknown`` does not
@@ -301,53 +301,40 @@ def _extract_core(data: dict[str, object]) -> tuple[int, int] | None:
         return None
 
 
-def _cost_tile(now: datetime) -> HealthTile:
-    """Today's cloud spend tile + GCP billing-threshold flag (reuses cost_daily)."""
-    from deployment_api.routes import cost_daily
+def _cost_tile(_now: datetime) -> HealthTile:
+    """Today's cloud spend tile + billing-threshold flag (real billing exports).
 
-    date = now.strftime("%Y-%m-%d")
+    Backed by the cost-observability service (GCP BigQuery + AWS CUR/Athena), sharing its
+    cached window with the /ops/costs page. Today's figure is provisional by nature — the
+    exports lag intraday — so this reads low early in the day, which is honest.
+    """
+    from deployment_api.routes.costs import cost_service
+
     try:
-        if _cfg.is_mock_mode():
-            resp = cost_daily._mock_response(date)  # pyright: ignore[reportPrivateUsage]
-        else:
-            bucket = cost_daily._cost_bucket()  # pyright: ignore[reportPrivateUsage]
-            from unified_trading_library import get_storage_client
-
-            storage = get_storage_client(project_id=_cfg.gcp_project_id)
-            prefix = f"cost_summary/{date}/"
-            blobs = list(storage.list_blobs(bucket=bucket, prefix=prefix))  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportUnknownArgumentType]
-            vm_rows: list[cost_daily.VmCostRow] = []
-            for blob in blobs:
-                blob_name: str = blob.name  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
-                if not blob_name.endswith(".jsonl"):
-                    continue
-                raw: bytes = storage.download_bytes(bucket=bucket, blob_path=blob_name)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
-                parsed = cost_daily._parse_blob(raw, blob_name)  # pyright: ignore[reportPrivateUsage]
-                if parsed is not None:
-                    vm_rows.append(parsed)
-            resp = cost_daily._aggregate(vm_rows, date)  # pyright: ignore[reportPrivateUsage]
-    except (OSError, ValueError, RuntimeError) as exc:
+        summary = cost_service.summarize(days=1)
+    except Exception as exc:
         logger.warning("health-overview: cost tile failed: %s", exc)
         return HealthTile(
             id="cost",
             label="Daily Cost",
             status="unknown",
             value="cost data unavailable",
-            detail_href="/api/costs/daily",
+            detail_href="/api/costs/summary",
         )
-    total = resp.total_usd
+    total = summary.total
     if total >= _DAILY_COST_CRIT_USD:
         status = "critical"
     elif total >= _DAILY_COST_WARN_USD:
         status = "degraded"
     else:
         status = "ok"
+    active_clouds = sum(1 for c in summary.clouds if c.total > 0)
     return HealthTile(
         id="cost",
         label="Daily Cost",
         status=status,
-        value=f"${total:.2f} today ({len(resp.by_vm)} VMs)",
-        detail_href="/api/costs/daily",
+        value=f"${total:.2f} today ({active_clouds} cloud{'s' if active_clouds != 1 else ''})",
+        detail_href="/api/costs/summary",
     )
 
 
