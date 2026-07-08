@@ -259,6 +259,29 @@ def test_summary_and_breakdown_are_net_of_credits(monkeypatch: pytest.MonkeyPatc
     assert all(p.values["gcp"] == 8.0 for p in ts.points)
 
 
+def test_breakdown_rows_bifurcate_gross_credit_net(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each breakdown row must carry gross/credit alongside net, and roll up to the summary total."""
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_credited)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    summary = s.summarize(days=3)
+    gcp_summary = next(c for c in summary.clouds if c.cloud == "gcp")
+
+    for dimension in ("service", "resource", "region", "day", "sku"):
+        bd = s.breakdown(dimension, "gcp", days=3)
+        row_gross = round(sum(row.gross for row in bd.rows), 2)
+        row_credit = round(sum(row.credit for row in bd.rows), 2)
+        row_net = round(sum(row.cost for row in bd.rows), 2)
+        for row in bd.rows:
+            assert round(row.gross + row.credit, 2) == row.cost, f"{dimension} row {row.label} doesn't reconcile"
+        assert row_gross == gcp_summary.gross, dimension
+        assert row_credit == gcp_summary.credit, dimension
+        assert row_net == gcp_summary.total, dimension
+
+
 def test_breakdown_by_service_groups_and_sorts(service: CostObservabilityService) -> None:
     r = service.breakdown("service", "all", days=3)
     labels = [(row.cloud, row.label, row.cost) for row in r.rows]

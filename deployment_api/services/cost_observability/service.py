@@ -179,21 +179,27 @@ class CostObservabilityService:
         return BreakdownResponse(dimension=dimension, cloud=cloud, days=len(dates), total=total, rows=rows)
 
     def _grouped(self, recs: list[CostRecord], key: Callable[[CostRecord], str]) -> list[BreakdownRow]:
-        agg: dict[tuple[str, str], float] = {}
+        net: dict[tuple[str, str], float] = {}
+        gross: dict[tuple[str, str], float] = {}
+        credit: dict[tuple[str, str], float] = {}
         prov: dict[tuple[str, str], bool] = {}
         for r in recs:
             k = (r.cloud, key(r))
-            agg[k] = agg.get(k, 0.0) + _net(r)
+            net[k] = net.get(k, 0.0) + _net(r)
+            gross[k] = gross.get(k, 0.0) + r.cost
+            credit[k] = credit.get(k, 0.0) + r.credit
             prov[k] = prov.get(k, False) or r.is_provisional
         rows = [
             BreakdownRow(
                 label=label,
                 cloud=cloud,
                 cost=round(v, 2),
+                gross=round(gross[(cloud, label)], 2),
+                credit=round(credit[(cloud, label)], 2),
                 detail=_CLOUD_LABEL.get(cloud, cloud),
                 is_provisional=prov[(cloud, label)],
             )
-            for (cloud, label), v in agg.items()
+            for (cloud, label), v in net.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]
@@ -201,27 +207,35 @@ class CostObservabilityService:
     def _by_sku(self, recs: list[CostRecord]) -> list[BreakdownRow]:
         """SKU (GCP) / usage_type (AWS) breakdown — the "why is this service expensive" axis,
         e.g. Regional Coldline Class A Operations hidden inside "Cloud Storage"."""
-        agg: dict[tuple[str, str, str], float] = {}
+        net: dict[tuple[str, str, str], float] = {}
+        gross: dict[tuple[str, str, str], float] = {}
+        credit: dict[tuple[str, str, str], float] = {}
         prov: dict[tuple[str, str, str], bool] = {}
         for r in recs:
             k = (r.cloud, r.service, r.sku or "Unknown")
-            agg[k] = agg.get(k, 0.0) + _net(r)
+            net[k] = net.get(k, 0.0) + _net(r)
+            gross[k] = gross.get(k, 0.0) + r.cost
+            credit[k] = credit.get(k, 0.0) + r.credit
             prov[k] = prov.get(k, False) or r.is_provisional
         rows = [
             BreakdownRow(
                 label=sku,
                 cloud=cloud,
                 cost=round(v, 2),
+                gross=round(gross[(cloud, service, sku)], 2),
+                credit=round(credit[(cloud, service, sku)], 2),
                 detail=service,
                 is_provisional=prov[(cloud, service, sku)],
             )
-            for (cloud, service, sku), v in agg.items()
+            for (cloud, service, sku), v in net.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]
 
     def _by_resource(self, recs: list[CostRecord], kind: str | None) -> list[BreakdownRow]:
-        agg: dict[tuple[str, str], float] = {}
+        net: dict[tuple[str, str], float] = {}
+        gross: dict[tuple[str, str], float] = {}
+        credit: dict[tuple[str, str], float] = {}
         detail: dict[tuple[str, str], str] = {}
         kind_of: dict[tuple[str, str], str] = {}
         for r in recs:
@@ -230,7 +244,9 @@ class CostObservabilityService:
             if kind is not None and r.resource_kind != kind:
                 continue
             k = (r.cloud, r.resource_id)
-            agg[k] = agg.get(k, 0.0) + _net(r)
+            net[k] = net.get(k, 0.0) + _net(r)
+            gross[k] = gross.get(k, 0.0) + r.cost
+            credit[k] = credit.get(k, 0.0) + r.credit
             detail[k] = r.service
             # A resource keeps one kind; the VM/bucket split lets the UI drive its leaf tables.
             if r.resource_kind != KIND_OTHER or k not in kind_of:
@@ -240,23 +256,37 @@ class CostObservabilityService:
                 label=rid,
                 cloud=cloud,
                 cost=round(v, 2),
+                gross=round(gross[(cloud, rid)], 2),
+                credit=round(credit[(cloud, rid)], 2),
                 detail=detail[(cloud, rid)],
                 resource_kind=kind_of[(cloud, rid)],
             )
-            for (cloud, rid), v in agg.items()
+            for (cloud, rid), v in net.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]
 
     def _by_day(self, recs: list[CostRecord], dates: list[str]) -> list[BreakdownRow]:
-        by_day: dict[str, float] = dict.fromkeys(dates, 0.0)
+        net: dict[str, float] = dict.fromkeys(dates, 0.0)
+        gross: dict[str, float] = dict.fromkeys(dates, 0.0)
+        credit: dict[str, float] = dict.fromkeys(dates, 0.0)
         prov: dict[str, bool] = dict.fromkeys(dates, False)
         for r in recs:
-            if r.day in by_day:
-                by_day[r.day] += _net(r)
+            if r.day in net:
+                net[r.day] += _net(r)
+                gross[r.day] += r.cost
+                credit[r.day] += r.credit
                 prov[r.day] = prov[r.day] or r.is_provisional
         return [
-            BreakdownRow(label=d, cloud=None, cost=round(by_day[d], 2), detail="", is_provisional=prov[d])
+            BreakdownRow(
+                label=d,
+                cloud=None,
+                cost=round(net[d], 2),
+                gross=round(gross[d], 2),
+                credit=round(credit[d], 2),
+                detail="",
+                is_provisional=prov[d],
+            )
             for d in reversed(dates)
         ]
 

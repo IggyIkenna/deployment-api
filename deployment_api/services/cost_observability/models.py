@@ -73,7 +73,9 @@ class SummaryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     label: str
     cloud: str | None  # None only for cross-cloud "by day" rows
-    cost: float  # NET — usage cost after this group's credits (matches the summary net total)
+    cost: float  # NET — usage cost after this group's credits (matches the summary net total; primary)
+    gross: float = 0.0  # usage cost at list/contract rate before credits (Σcost for this group)
+    credit: float = 0.0  # credits applied to this group (≤ 0); cost == gross + credit
     detail: str = ""  # e.g. machine type, "GCS", region name
     resource_kind: str = KIND_OTHER
     share_pct: float = 0.0
