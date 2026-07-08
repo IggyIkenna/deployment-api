@@ -130,6 +130,52 @@ def test_summarize_totals_and_deltas(service: CostObservabilityService) -> None:
     assert gcp.delta_pct == 0.0
 
 
+def _fake_gcp_credited(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """GCP rows carrying a promotional credit — net = cost + credit (credit ≤ 0)."""
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-1",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=10.0,
+                credit=-2.0,  # promo credit applied that day
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_summary_and_breakdown_are_net_of_credits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The page must report what's actually invoiced (net), not the pre-credit gross, while still
+    exposing gross + credit for the 'you pay = gross - credits' headline."""
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_credited)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.summarize(days=3)
+    gcp = next(c for c in r.clouds if c.cloud == "gcp")
+    # gross 10*3 = 30, credit -2*3 = -6, net = 24 (what actually gets invoiced)
+    assert gcp.gross == 30.0
+    assert gcp.credit == -6.0
+    assert gcp.total == 24.0
+    assert r.gross == 30.0 and r.credit == -6.0 and r.total == 24.0  # grand rolls up net
+    assert gcp.daily == [8.0, 8.0, 8.0]  # sparkline is net per day
+
+    # breakdown + timeseries also net, so the whole page reconciles to the headline
+    bd = s.breakdown("service", "gcp", days=3)
+    assert next(row.cost for row in bd.rows if row.label == "Compute Engine") == 24.0  # net, not 30
+    ts = s.timeseries(days=3, cloud="gcp")
+    assert all(p.values["gcp"] == 8.0 for p in ts.points)
+
+
 def test_breakdown_by_service_groups_and_sorts(service: CostObservabilityService) -> None:
     r = service.breakdown("service", "all", days=3)
     labels = [(row.cloud, row.label, row.cost) for row in r.rows]

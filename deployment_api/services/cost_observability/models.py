@@ -45,15 +45,19 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
 
 class CloudSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     cloud: str
-    total: float
-    delta_pct: float | None = None  # vs the prior equal-length window
-    daily: list[float] = Field(default_factory=list)  # sparkline, oldest → newest
+    total: float  # NET — what you actually pay = gross + credit
+    gross: float = 0.0  # usage cost at list/contract rate, before credits
+    credit: float = 0.0  # credits applied this window (≤ 0: promo, CUD/SUD, free-tier)
+    delta_pct: float | None = None  # net vs the prior equal-length window
+    daily: list[float] = Field(default_factory=list)  # NET sparkline, oldest → newest
     is_placeholder: bool = False
 
 
 class SummaryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     days: int
-    total: float
+    total: float  # NET grand total — what you actually pay = gross + credit
+    gross: float = 0.0  # sum of usage cost before credits
+    credit: float = 0.0  # sum of credits applied (≤ 0)
     run_rate_daily: float
     delta_pct: float | None = None
     dates: list[str] = Field(default_factory=list)  # window days, oldest → newest
@@ -65,7 +69,7 @@ class SummaryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     label: str
     cloud: str | None  # None only for cross-cloud "by day" rows
-    cost: float
+    cost: float  # NET — usage cost after this group's credits (matches the summary net total)
     detail: str = ""  # e.g. machine type, "GCS", region name
     resource_kind: str = KIND_OTHER
     share_pct: float = 0.0

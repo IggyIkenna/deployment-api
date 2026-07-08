@@ -39,6 +39,17 @@ _DEFAULT_DAYS = 30
 _BREAKDOWN_LIMIT = 50
 
 
+def _net(r: CostRecord) -> float:
+    """What you actually pay for a row: usage cost plus its credits (credits are ≤ 0).
+
+    GCP populates `credit` (promotions, CUD/SUD, free-tier); AWS/GitHub carry 0, so net == gross
+    there. Every aggregation below sums net so the page reports real invoiced spend, not the
+    pre-credit list cost; the summary additionally exposes gross + credit for the
+    "you pay = gross - credits" headline. SSOT: codex/05-infrastructure/billing-cost-observability.md.
+    """
+    return r.cost + r.credit
+
+
 class CostObservabilityService:
     def __init__(self, config: DeploymentApiConfig | None = None) -> None:
         self._cfg = config or DeploymentApiConfig()
@@ -93,33 +104,43 @@ class CostObservabilityService:
         day_index = {d: i for i, d in enumerate(dates)}
         clouds: list[CloudSummary] = []
         grand = 0.0
+        grand_gross = 0.0
+        grand_credit = 0.0
         for cloud in CLOUD_ORDER:
             cur_recs = [r for r in cur if r.cloud == cloud]
-            total = round(sum(r.cost for r in cur_recs), 2)
+            gross = round(sum(r.cost for r in cur_recs), 2)
+            credit = round(sum(r.credit for r in cur_recs), 2)
+            total = round(gross + credit, 2)  # net — what actually gets invoiced
             grand += total
+            grand_gross += gross
+            grand_credit += credit
             daily = [0.0] * len(dates)
             for r in cur_recs:
                 idx = day_index.get(r.day)
                 if idx is not None:
-                    daily[idx] += r.cost
-            prior_total = sum(r.cost for r in prior if r.cloud == cloud)
+                    daily[idx] += _net(r)
+            prior_total = sum(_net(r) for r in prior if r.cloud == cloud)
             delta = round(((total - prior_total) / prior_total) * 100, 1) if prior_total else None
             clouds.append(
                 CloudSummary(
                     cloud=cloud,
                     total=total,
+                    gross=gross,
+                    credit=credit,
                     delta_pct=delta,
                     daily=[round(v, 4) for v in daily],
                     is_placeholder=any(r.is_placeholder for r in cur_recs),
                 )
             )
         grand = round(grand, 2)
-        prior_grand = sum(r.cost for r in prior)
+        prior_grand = sum(_net(r) for r in prior)
         grand_delta = round(((grand - prior_grand) / prior_grand) * 100, 1) if prior_grand else None
         provisional = len({r.day for r in cur if r.is_provisional})
         return SummaryResponse(
             days=len(dates),
             total=grand,
+            gross=round(grand_gross, 2),
+            credit=round(grand_credit, 2),
             run_rate_daily=round(grand / len(dates), 2) if dates else 0.0,
             delta_pct=grand_delta,
             dates=dates,
@@ -158,7 +179,7 @@ class CostObservabilityService:
         prov: dict[tuple[str, str], bool] = {}
         for r in recs:
             k = (r.cloud, key(r))
-            agg[k] = agg.get(k, 0.0) + r.cost
+            agg[k] = agg.get(k, 0.0) + _net(r)
             prov[k] = prov.get(k, False) or r.is_provisional
         rows = [
             BreakdownRow(
@@ -183,7 +204,7 @@ class CostObservabilityService:
             if kind is not None and r.resource_kind != kind:
                 continue
             k = (r.cloud, r.resource_id)
-            agg[k] = agg.get(k, 0.0) + r.cost
+            agg[k] = agg.get(k, 0.0) + _net(r)
             detail[k] = r.service
             # A resource keeps one kind; the VM/bucket split lets the UI drive its leaf tables.
             if r.resource_kind != KIND_OTHER or k not in kind_of:
@@ -206,7 +227,7 @@ class CostObservabilityService:
         prov: dict[str, bool] = dict.fromkeys(dates, False)
         for r in recs:
             if r.day in by_day:
-                by_day[r.day] += r.cost
+                by_day[r.day] += _net(r)
                 prov[r.day] = prov[r.day] or r.is_provisional
         return [
             BreakdownRow(label=d, cloud=None, cost=round(by_day[d], 2), detail="", is_provisional=prov[d])
@@ -221,7 +242,7 @@ class CostObservabilityService:
         by_day: dict[str, dict[str, float]] = {d: dict.fromkeys(clouds, 0.0) for d in dates}
         for r in recs:
             if r.cloud in clouds and r.day in by_day:
-                by_day[r.day][r.cloud] += r.cost
+                by_day[r.day][r.cloud] += _net(r)
         points = [TimeseriesPoint(date=d, values={c: round(by_day[d][c], 4) for c in clouds}) for d in dates]
         return TimeseriesResponse(days=len(dates), clouds=clouds, points=points)
 
