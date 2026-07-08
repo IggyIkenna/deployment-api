@@ -80,7 +80,7 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 
 class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
-    dimension: str  # service | resource | bucket | region | day
+    dimension: str  # service | resource | bucket | region | day | sku
     cloud: str  # all | gcp | aws | github
     days: int
     total: float

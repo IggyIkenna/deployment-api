@@ -166,6 +166,8 @@ class CostObservabilityService:
             rows = self._by_resource(recs, None)
         elif dimension == "region":
             rows = self._grouped(recs, lambda r: r.region or "global")
+        elif dimension == "sku":
+            rows = self._by_sku(recs)
         else:  # service (default)
             rows = self._grouped(recs, lambda r: r.service)
 
@@ -190,6 +192,28 @@ class CostObservabilityService:
                 is_provisional=prov[(cloud, label)],
             )
             for (cloud, label), v in agg.items()
+        ]
+        rows.sort(key=lambda x: x.cost, reverse=True)
+        return rows[:_BREAKDOWN_LIMIT]
+
+    def _by_sku(self, recs: list[CostRecord]) -> list[BreakdownRow]:
+        """SKU (GCP) / usage_type (AWS) breakdown — the "why is this service expensive" axis,
+        e.g. Regional Coldline Class A Operations hidden inside "Cloud Storage"."""
+        agg: dict[tuple[str, str, str], float] = {}
+        prov: dict[tuple[str, str, str], bool] = {}
+        for r in recs:
+            k = (r.cloud, r.service, r.sku or "Unknown")
+            agg[k] = agg.get(k, 0.0) + _net(r)
+            prov[k] = prov.get(k, False) or r.is_provisional
+        rows = [
+            BreakdownRow(
+                label=sku,
+                cloud=cloud,
+                cost=round(v, 2),
+                detail=service,
+                is_provisional=prov[(cloud, service, sku)],
+            )
+            for (cloud, service, sku), v in agg.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]

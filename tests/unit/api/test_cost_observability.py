@@ -264,6 +264,60 @@ def test_breakdown_by_service_groups_and_sorts(service: CostObservabilityService
     assert r.rows[0].share_pct > 0
 
 
+def _fake_gcp_with_sku(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """Two SKUs under one service — the hidden-cost-driver case (Coldline Class A Operations)."""
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Cloud Storage",
+                resource_id="bkt-1",
+                resource_kind="bucket",
+                region="us",
+                cost=3.0,
+                sku="Regional Coldline Class A Operations",
+            )
+        )
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Cloud Storage",
+                resource_id="bkt-1",
+                resource_kind="bucket",
+                region="us",
+                cost=1.0,
+                sku="Standard Storage US",
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_breakdown_by_sku_groups_by_cloud_service_sku(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_with_sku)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("sku", "gcp", days=2)
+    rows = {row.label: (row.cost, row.detail, row.cloud) for row in r.rows}
+    assert rows["Regional Coldline Class A Operations"] == (6.0, "Cloud Storage", "gcp")  # 3.0 * 2 days
+    assert rows["Standard Storage US"] == (2.0, "Cloud Storage", "gcp")  # 1.0 * 2 days
+    # sorted descending, same as every other dimension
+    assert [row.cost for row in r.rows] == sorted((row.cost for row in r.rows), reverse=True)
+
+
+def test_breakdown_by_sku_defaults_missing_sku_to_unknown(service: CostObservabilityService) -> None:
+    # the shared `service` fixture's fake facts don't set `sku` (default "")
+    r = service.breakdown("sku", "gcp", days=1)
+    assert {row.label for row in r.rows} == {"Unknown"}
+
+
 def test_breakdown_by_bucket_filters_kind(service: CostObservabilityService) -> None:
     r = service.breakdown("bucket", "all", days=2)
     assert all(row.resource_kind == "bucket" for row in r.rows)

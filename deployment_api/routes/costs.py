@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # health-overview cost tile, which imports it).
 cost_service = CostObservabilityService()
 
-Dimension = Literal["service", "resource", "bucket", "region", "day"]
+Dimension = Literal["service", "resource", "bucket", "region", "day", "sku"]
 CloudFilter = Literal["all", "gcp", "aws", "github"]
 
 
@@ -57,7 +57,7 @@ def get_cost_breakdown(
     refresh: bool = Query(False),
     _rl: None = Depends(endpoint_rate_limit(30)),
 ) -> BreakdownResponse:
-    """Spend grouped by service / resource / bucket / region / day."""
+    """Spend grouped by service / resource / bucket / region / day / sku."""
     try:
         return cost_service.breakdown(dimension, cloud, days, force=refresh)
     except Exception as exc:
