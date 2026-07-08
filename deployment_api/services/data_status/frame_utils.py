@@ -79,19 +79,50 @@ def promote_prediction_cqg_from_instrument_id(df: pd.DataFrame) -> pd.DataFrame:
 def derive_underlying_from_instrument_id(instrument_id: str) -> str:
     """Extract the base asset (underlying) from a canonical instrument_id.
 
-    Handles common naming conventions:
-    - "BTC-USDT-PERP" -> "BTC"
-    - "ETH-USDC" -> "ETH"
-    - "BTC-USD-241227-C-100000" -> "BTC"
-    - "ES-FUT-20260320" -> "ES"
-    - "SPY" -> "SPY" (single-symbol equity)
+    Two real shapes flow into this function (canonical_id_p0_strategy_
+    reconciliation_2026_07_08 bug #5 — the original bare-``BASE-QUOTE``-only
+    fallback below was proven wrong against every real venue-prefixed
+    production sample):
 
-    The first segment before the first dash is always the base asset.
-    For single-symbol instruments (no dash), the full string is returned.
+    1. **Venue-prefixed** ``VENUE:TYPE:SYMBOL[@SUFFIX]`` (the shape real CeFi/
+       TradFi manifest rows actually carry, e.g. from instruments-service /
+       MTDS): the venue/type prefix is stripped (split on ``:``, keep
+       everything after the *first two* colons — mirrors UAC's
+       ``parse_instrument_key`` convention, so an option symbol's own
+       embedded colons, if any, survive intact), then any trailing
+       ``@SETTLEMENT``/``@CHAIN`` suffix is stripped before applying the
+       bare-shape logic below.
+       - "BINANCE-FUTURES:PERPETUAL:BTC-USDT@LIN" -> "BTC"
+       - "DERIBIT:OPTION:BTC-9JUL26-56000-C" -> "BTC"
+       - "DERIBIT:PERPETUAL:BTC-USD@INV" -> "BTC"
+    2. **Bare** ``BASE-QUOTE[-...]`` with NO venue prefix (deployment-api's
+       own DeFi row_key convention keeps ``instrument_id`` venue-free —
+       ``venue`` is a separate row_key field for that asset_group — so this
+       shape is legitimately still real, not just legacy):
+       - "BTC-USDT-PERP" -> "BTC"
+       - "ETH-USDC" -> "ETH"
+       - "BTC-USD-241227-C-100000" -> "BTC"
+       - "ES-FUT-20260320" -> "ES"
+       - "SPY" -> "SPY" (single-symbol equity)
+
+    In both shapes, once any venue/type prefix and ``@SUFFIX`` are stripped,
+    the first segment before the first dash is the base asset; a
+    single-symbol payload (no dash) returns the full payload.
     """
     if not instrument_id or not instrument_id.strip():
         return ""
-    parts = instrument_id.strip().split("-")
+    stripped = instrument_id.strip()
+    payload = stripped
+    if ":" in stripped:
+        # Canonical VENUE:TYPE:SYMBOL shape -- split on the first two colons
+        # only, so an option/combo symbol's own embedded colons (if any)
+        # stay part of the payload rather than being mistaken for more
+        # VENUE:TYPE segments.
+        colon_parts = stripped.split(":", 2)
+        payload = colon_parts[-1]
+    if "@" in payload:
+        payload = payload.split("@", 1)[0]
+    parts = payload.split("-")
     return parts[0].upper()
 
 

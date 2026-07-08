@@ -139,6 +139,118 @@ class TestPerInstrumentCoverageWithISProvider:
 
 
 # ---------------------------------------------------------------------------
+# Tests: cross-service instrument_id format divergence (bug #4)
+#
+# canonical_id_p0_strategy_reconciliation_2026_07_08 bug #4: the
+# instruments-service catalog (`expected_instruments`, injected here via
+# `_cefi_provider`) and MTDS's own manifest (`manifest_df`) are independently
+# written and can diverge on surface-level formatting (casing / whitespace /
+# an optional @SETTLEMENT or @CHAIN suffix) for the SAME real instrument. The
+# tests above are deliberately format-IDENTICAL on both sides (both built from
+# `_IS_INSTRUMENTS`) so they cannot catch a format-divergence regression --
+# these tests inject a REAL divergence between the two sides.
+# ---------------------------------------------------------------------------
+
+
+class TestPerInstrumentCoverageCrossServiceFormatDivergence:
+    """Tier-3 coverage must not phantom-miss an instrument due to a surface-
+    level (case/whitespace/@suffix) format divergence between the
+    instruments-service catalog and the MTDS manifest for the identical real
+    instrument."""
+
+    def test_lowercase_manifest_side_still_matches(self) -> None:
+        """MTDS wrote the instrument_id lowercase; IS catalog is uppercase."""
+        dates = ["2026-01-01"]
+        manifest_df = pd.DataFrame(
+            [
+                {
+                    "venue": _VENUE,
+                    "data_type": _DT,
+                    "instrument_id": _IS_INSTRUMENTS[0].lower(),
+                    "date": dates[0],
+                    "capture_status": "captured",
+                }
+            ]
+        )
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue=_VENUE,
+            dt=_DT,
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=_cefi_provider,
+        )
+
+        missing_instruments: list[str] = list(result["missing_instruments"])  # type: ignore[assignment]
+        assert _IS_INSTRUMENTS[0] not in missing_instruments, (
+            f"{_IS_INSTRUMENTS[0]!r} captured (case-divergent) but reported phantom-missing: {missing_instruments!r}"
+        )
+        per_instrument: dict[str, object] = result["per_instrument"]  # type: ignore[assignment]
+        assert per_instrument[_IS_INSTRUMENTS[0]]["found"] == 1  # type: ignore[index]
+
+    def test_settlement_suffix_divergence_still_matches(self) -> None:
+        """One side carries a "@LIN"-style settlement/chain suffix, the other doesn't."""
+        dates = ["2026-01-01"]
+        manifest_df = pd.DataFrame(
+            [
+                {
+                    "venue": _VENUE,
+                    "data_type": _DT,
+                    "instrument_id": _IS_INSTRUMENTS[0] + "@LIN",
+                    "date": dates[0],
+                    "capture_status": "captured",
+                }
+            ]
+        )
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue=_VENUE,
+            dt=_DT,
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=_cefi_provider,
+        )
+
+        missing_instruments: list[str] = list(result["missing_instruments"])  # type: ignore[assignment]
+        assert _IS_INSTRUMENTS[0] not in missing_instruments, (
+            f"{_IS_INSTRUMENTS[0]!r} captured (@LIN-suffix-divergent) but reported phantom-missing: "
+            f"{missing_instruments!r}"
+        )
+
+    def test_genuinely_uncaptured_instrument_still_reports_missing(self) -> None:
+        """A real gap (never captured, under any format) must still show as missing."""
+        dates = ["2026-01-01"]
+        # Only the first IS instrument has any manifest row at all.
+        manifest_df = pd.DataFrame(
+            [
+                {
+                    "venue": _VENUE,
+                    "data_type": _DT,
+                    "instrument_id": _IS_INSTRUMENTS[0],
+                    "date": dates[0],
+                    "capture_status": "captured",
+                }
+            ]
+        )
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue=_VENUE,
+            dt=_DT,
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=_cefi_provider,
+        )
+
+        missing_instruments: set[str] = set(result["missing_instruments"])  # type: ignore[assignment]
+        assert missing_instruments == set(_IS_INSTRUMENTS[1:]), (
+            f"Genuinely-uncaptured instruments must still report missing: {missing_instruments!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Tests: _build_cefi_is_instruments_provider
 # ---------------------------------------------------------------------------
 
