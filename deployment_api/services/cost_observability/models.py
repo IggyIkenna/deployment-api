@@ -80,6 +80,8 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     resource_kind: str = KIND_OTHER
     share_pct: float = 0.0
     is_provisional: bool = False
+    is_idle: bool = False  # cost-waste flag (resource dimension only) — see services.cost_observability.waste
+    waste_kind: str = ""  # "" | idle_static_ip | orphaned_disk | idle_elastic_ip
 
 
 class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

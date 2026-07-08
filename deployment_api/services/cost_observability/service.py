@@ -29,6 +29,8 @@ from deployment_api.services.cost_observability.models import (
     TimeseriesResponse,
 )
 from deployment_api.services.cost_observability.providers import aws_facts, gcp_facts, github_facts
+from deployment_api.services.cost_observability.waste import classify_waste
+from deployment_api.vm_utils import list_running_vm_names
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +240,10 @@ class CostObservabilityService:
         credit: dict[tuple[str, str], float] = {}
         detail: dict[tuple[str, str], str] = {}
         kind_of: dict[tuple[str, str], str] = {}
+        waste_of: dict[tuple[str, str], str] = {}
+        # Only the unfiltered "resource" dimension (kind=None) surfaces waste flags — the
+        # bucket dimension never contains idle-IP/orphaned-disk rows, so skip the fleet lookup.
+        running_vm_names = self._running_vm_names() if kind is None else frozenset()
         for r in recs:
             if not r.resource_id:
                 continue
@@ -251,6 +257,12 @@ class CostObservabilityService:
             # A resource keeps one kind; the VM/bucket split lets the UI drive its leaf tables.
             if r.resource_kind != KIND_OTHER or k not in kind_of:
                 kind_of[k] = r.resource_kind
+            if not waste_of.get(k):
+                waste = classify_waste(
+                    cloud=r.cloud, sku=r.sku, resource_id=r.resource_id, running_vm_names=running_vm_names
+                )
+                if waste:
+                    waste_of[k] = waste
         rows = [
             BreakdownRow(
                 label=rid,
@@ -260,11 +272,24 @@ class CostObservabilityService:
                 credit=round(credit[(cloud, rid)], 2),
                 detail=detail[(cloud, rid)],
                 resource_kind=kind_of[(cloud, rid)],
+                is_idle=(cloud, rid) in waste_of,
+                waste_kind=waste_of.get((cloud, rid), ""),
             )
             for (cloud, rid), v in net.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
         return rows[:_BREAKDOWN_LIMIT]
+
+    def _running_vm_names(self) -> frozenset[str]:
+        """Live RUNNING-VM names for GCP orphaned-disk cross-ref.
+
+        Degrades to an empty set (never flags a false-positive orphan) when no project is
+        configured — `list_running_vm_names` itself already degrades to empty on API failure.
+        """
+        project_id = self._cfg.gcp_project_id
+        if not project_id:
+            return frozenset()
+        return frozenset(list_running_vm_names(project_id))
 
     def _by_day(self, recs: list[CostRecord], dates: list[str]) -> list[BreakdownRow]:
         net: dict[str, float] = dict.fromkeys(dates, 0.0)
