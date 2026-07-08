@@ -498,12 +498,13 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
             return None
         meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
-        # BlobMetadata exposes ``updated`` as a datetime (or string ISO depending
-        # on backend). Treat missing/parse-errors as "fresh enough" to read. Respect
-        # staleness — otherwise a frozen live blob (e.g. the worker stalled) is served
-        # indefinitely.
-        if meta is not None and getattr(meta, "updated", None) is not None:
-            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.updated)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
+        # BlobMetadata (unified_trading_library.cloud_interface.abstractions) exposes
+        # ``last_modified`` as an ISO string — NOT ``updated`` (that's the raw
+        # google-cloud-storage Blob attribute name; the UTL wrapper renamed it).
+        # Treat missing/parse-errors as "fresh enough" to read. Respect staleness —
+        # otherwise a frozen live blob (e.g. the worker stalled) is served indefinitely.
+        if meta is not None and getattr(meta, "last_modified", None) is not None:
+            age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(meta.last_modified)).total_seconds()  # type: ignore[reportAttributeAccessIssue, reportUnknownArgumentType]
             if age_sec > _ROLLUP_STALENESS_SEC:
                 logger.info(
                     "rollup for %s is stale (%.0fs > %ds threshold) — falling through to on-demand",
