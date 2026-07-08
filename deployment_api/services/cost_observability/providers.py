@@ -97,6 +97,7 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 sku=_as_str(r.get("sku")),
                 usage_amount=_as_float(r.get("usage_amount")),
                 usage_unit=_as_str(r.get("usage_unit")),
+                zone=_as_str(r.get("zone")),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )
@@ -133,6 +134,7 @@ def aws_facts(
                 cost=_as_float(r.get("cost")),
                 sku=_as_str(r.get("usage_type")),
                 usage_amount=_as_float(r.get("usage_amount")),
+                zone=_as_str(r.get("zone")),
                 is_provisional=_is_provisional(day, provisional_cutoff),
             )
         )

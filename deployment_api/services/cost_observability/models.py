@@ -42,6 +42,7 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     sku: str = ""  # GCP sku.description / AWS line_item_usage_type ("" if not sourced)
     usage_amount: float = 0.0  # GCP usage.amount_in_pricing_units / AWS line_item_usage_amount
     usage_unit: str = ""  # GCP usage.pricing_unit ("" for AWS — not in the export column set)
+    zone: str = ""  # GCP location.zone / AWS line_item_availability_zone ("" — finer than region)
     is_provisional: bool = False  # recent day, still reconciling
     is_placeholder: bool = False  # dummy data (GitHub until PAT lands)
 
@@ -80,7 +81,7 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 
 class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
-    dimension: str  # service | resource | bucket | region | day | sku
+    dimension: str  # service | resource | bucket | region | day | sku | zone
     cloud: str  # all | gcp | aws | github
     days: int
     total: float

@@ -49,14 +49,16 @@ def test_gcp_facts_sql_selects_sku_and_usage_columns() -> None:
     assert "sku.description" in sql
     assert "usage.pricing_unit" in sql
     assert "usage.amount_in_pricing_units" in sql
-    assert "GROUP BY day, service, resource_id, region, sku, usage_unit" in sql
+    assert "location.zone" in sql
+    assert "GROUP BY day, service, resource_id, region, sku, usage_unit, zone" in sql
 
 
 def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
     sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
     assert "line_item_usage_type" in sql
     assert "line_item_usage_amount" in sql
-    assert "GROUP BY 1, 2, 3, 4, 5, 6" in sql
+    assert "line_item_availability_zone" in sql
+    assert "GROUP BY 1, 2, 3, 4, 5, 6, 7" in sql
 
 
 class _FakeAnalyticsClient:
@@ -79,6 +81,7 @@ def test_gcp_facts_maps_sku_and_usage_onto_cost_record(monkeypatch: pytest.Monke
             "cost": 1.5,
             "credit": 0.0,
             "usage_amount": 12.5,
+            "zone": "us-central1-a",
         }
     ]
     monkeypatch.setattr(prov, "get_analytics_client", lambda provider: _FakeAnalyticsClient(rows))
@@ -88,6 +91,7 @@ def test_gcp_facts_maps_sku_and_usage_onto_cost_record(monkeypatch: pytest.Monke
     assert rec.sku == "Coldline Storage US Regional"
     assert rec.usage_unit == "gibibyte month"
     assert rec.usage_amount == 12.5
+    assert rec.zone == "us-central1-a"
 
 
 def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,6 +105,7 @@ def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatc
             "usage_type": "BoxUsage:t3.micro",
             "cost": 3.2,
             "usage_amount": 24.0,
+            "zone": "us-east-1a",
         }
     ]
     monkeypatch.setattr(prov, "AWSAnalyticsClient", lambda region, output_bucket: _FakeAnalyticsClient(rows))
@@ -118,6 +123,7 @@ def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatc
     assert rec.sku == "BoxUsage:t3.micro"  # AWS usage_type is the SKU analog
     assert rec.usage_amount == 24.0
     assert rec.usage_unit == ""  # not sourced from the AWS export
+    assert rec.zone == "us-east-1a"
 
 
 def test_github_facts_deterministic_and_flagged() -> None:
@@ -316,6 +322,60 @@ def test_breakdown_by_sku_defaults_missing_sku_to_unknown(service: CostObservabi
     # the shared `service` fixture's fake facts don't set `sku` (default "")
     r = service.breakdown("sku", "gcp", days=1)
     assert {row.label for row in r.rows} == {"Unknown"}
+
+
+def _fake_gcp_with_zone(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """Two zones under one region — the "finer zone cut" case."""
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-1",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=4.0,
+                zone="asia-northeast1-a",
+            )
+        )
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-2",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=2.0,
+                zone="asia-northeast1-b",
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_breakdown_by_zone_is_finer_than_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_with_zone)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    by_region = s.breakdown("region", "gcp", days=2)
+    assert {row.label for row in by_region.rows} == {"asia-northeast1"}  # collapsed — same region
+
+    by_zone = s.breakdown("zone", "gcp", days=2)
+    costs = {row.label: row.cost for row in by_zone.rows}
+    assert costs == {"asia-northeast1-a": 8.0, "asia-northeast1-b": 4.0}  # 4*2, 2*2 — a finer cut
+
+
+def test_breakdown_by_zone_defaults_missing_zone_to_unknown(service: CostObservabilityService) -> None:
+    # the shared `service` fixture's fake facts don't set `zone` (default "")
+    r = service.breakdown("zone", "gcp", days=1)
+    assert {row.label for row in r.rows} == {"unknown"}
 
 
 def test_breakdown_by_bucket_filters_kind(service: CostObservabilityService) -> None:

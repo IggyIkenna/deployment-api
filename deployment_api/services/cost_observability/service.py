@@ -166,6 +166,8 @@ class CostObservabilityService:
             rows = self._by_resource(recs, None)
         elif dimension == "region":
             rows = self._grouped(recs, lambda r: r.region or "global")
+        elif dimension == "zone":
+            rows = self._grouped(recs, lambda r: r.zone or "unknown")
         elif dimension == "sku":
             rows = self._by_sku(recs)
         else:  # service (default)

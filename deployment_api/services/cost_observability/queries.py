@@ -17,7 +17,7 @@ _PARTITION_PAD_DAYS = 3
 
 
 def gcp_facts_sql(table: str, start: date, end: date) -> str:
-    """Per (day, service, resource, region, sku) cost + credit + usage for the GCP export."""
+    """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export."""
     part_floor = start - timedelta(days=_PARTITION_PAD_DAYS)
     return f"""
 SELECT
@@ -27,6 +27,7 @@ SELECT
   COALESCE(location.region, location.location, 'global') AS region,
   COALESCE(sku.description, 'Unknown') AS sku,
   COALESCE(usage.pricing_unit, '') AS usage_unit,
+  COALESCE(location.zone, '') AS zone,
   ROUND(SUM(cost), 6) AS cost,
   ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit,
   ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount
@@ -35,12 +36,12 @@ WHERE _PARTITIONTIME >= TIMESTAMP('{part_floor.isoformat()}')
   AND usage_start_time >= TIMESTAMP('{start.isoformat()}')
   AND usage_start_time < TIMESTAMP('{end.isoformat()}')
   AND cost <> 0
-GROUP BY day, service, resource_id, region, sku, usage_unit
+GROUP BY day, service, resource_id, region, sku, usage_unit, zone
 """.strip()  # nosec B608 — dates via date.isoformat(); table from config; no user input
 
 
 def aws_facts_sql(database: str, table: str, start: date, end: date) -> str:
-    """Per (day, service, resource, region, usage_type) cost + usage for the AWS CUR (Athena).
+    """Per (day, service, resource, region, usage_type, zone) cost + usage for the AWS CUR (Athena).
 
     `line_item_line_item_type IN ('Usage','DiscountedUsage')` excludes taxes, refunds, and
     Savings-Plan/RI recurring-fee rows so the total matches "usage spend". `usage_type` is the
@@ -54,12 +55,13 @@ SELECT
   line_item_resource_id AS resource_id,
   COALESCE(NULLIF(product_region_code, ''), 'global') AS region,
   COALESCE(NULLIF(line_item_usage_type, ''), 'Unknown') AS usage_type,
+  COALESCE(NULLIF(line_item_availability_zone, ''), '') AS zone,
   round(sum(line_item_unblended_cost), 6) AS cost,
   round(sum(line_item_usage_amount), 6) AS usage_amount
 FROM {database}.{table}
 WHERE line_item_line_item_type IN ('Usage', 'DiscountedUsage')
   AND date(line_item_usage_start_date) >= date('{start.isoformat()}')
   AND date(line_item_usage_start_date) < date('{end.isoformat()}')
-GROUP BY 1, 2, 3, 4, 5, 6
+GROUP BY 1, 2, 3, 4, 5, 6, 7
 HAVING sum(line_item_unblended_cost) <> 0
 """.strip()  # nosec B608 — dates via date.isoformat(); db/table from config; no user input
