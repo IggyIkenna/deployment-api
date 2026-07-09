@@ -31,11 +31,10 @@ from deployment_service.deployment_cluster_registry import responsibility_for_de
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from unified_api_contracts import ShardResponsibilityKind
-from unified_trading_library import read_availability_index
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes.deployments_inventory import classify_vm_target
-from deployment_api.routes.health_consolidator import consolidator_posture
+from deployment_api.routes.health_consolidator import consolidator_posture, object_delta_for_bucket
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -105,35 +104,6 @@ def _mock_freshness(deployment_id: str) -> DeploymentFreshness:
     )
 
 
-def _object_delta_for_bucket(bucket: str) -> tuple[int | None, str]:
-    """Object-count delta = a manifest LOOKUP off the consolidated index (no new bucket walk).
-
-    Reads the SAME consolidated ``availability_index`` blob ``consolidator_posture`` already
-    resolved (``read_availability_index`` hits the process-level index cache health_consolidator
-    just warmed), sums ``row_count``-else-``instrument_count`` for ``capture_status="captured"``
-    rows per written date, and diffs the two most recent written dates. This is the authoritative
-    write-truth signal for WS-D's composite health (D.1) — objects that actually landed, not the
-    log-scraped ``rows_out`` hint. Honest degradation: any read failure or <2 distinct written
-    dates yields ``(None, <reason>)``, never a false zero.
-    """
-    try:
-        index = read_availability_index(bucket, columns=["date", "row_count", "instrument_count", "capture_status"])
-    except (OSError, ValueError, RuntimeError) as exc:
-        return None, f"manifest read failed: {exc}"
-    if index.empty:
-        return None, "manifest index is empty"
-    captured = index[index["capture_status"] == "captured"]
-    if captured.empty:
-        return None, "no captured rows in manifest index"
-    counts = captured["row_count"].where(captured["row_count"] > 0, captured["instrument_count"])
-    by_date = counts.groupby(captured["date"]).sum().sort_index()
-    if len(by_date) < 2:
-        return None, f"only {len(by_date)} distinct written date(s) in manifest — nothing to diff yet"
-    latest_date, prior_date = by_date.index[-1], by_date.index[-2]
-    delta = int(by_date.iloc[-1] - by_date.iloc[-2])
-    return delta, f"{latest_date} object count {by_date.iloc[-1]:.0f} vs {prior_date} {by_date.iloc[-2]:.0f}"
-
-
 def compute_freshness(deployment_id: str, now: datetime) -> DeploymentFreshness:
     """Resolve a deployment's responsibility then read its owned shards' manifest freshness.
 
@@ -167,7 +137,7 @@ def compute_freshness(deployment_id: str, now: datetime) -> DeploymentFreshness:
         )
 
     posture = consolidator_posture(asset_group, now)  # type: ignore[arg-type]  # validated against the AssetGroup literal set above
-    object_delta, object_delta_detail = _object_delta_for_bucket(posture.bucket) if posture.bucket else (None, "")
+    object_delta, object_delta_detail = object_delta_for_bucket(posture.bucket) if posture.bucket else (None, "")
     return DeploymentFreshness(
         deployment_id=deployment_id,
         responsibility=kind.value,

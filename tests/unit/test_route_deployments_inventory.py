@@ -353,15 +353,161 @@ def test_composite_health_working_from_io_write_rate() -> None:
 
 
 def test_composite_health_unknown_when_idle_with_no_object_delta_signal() -> None:
-    """Idle cpu/io/net with a real D.1 sample and no oom/disk flag — exactly the
-    case that needs the not-yet-shipped object_delta signal to call `stalled`
-    for real; degrades to `unknown` rather than guessing (WS-D.0 principle 2)."""
+    """Idle cpu/io/net with a real D.1 sample and no oom/disk flag, no umbrella/object_delta
+    supplied by the caller — degrades to `unknown` rather than guessing (WS-D.0 principle 2)."""
     from deployment_api.routes.deployments_inventory import _composite_health_status
 
     idle = _FakeEntry(vm_name="x", status="running", cpu_pct=3.0, mem_pct=20.0)
     assert (
         _composite_health_status(idle, hb_age_seconds=30, control_plane_running=True) == "unknown"  # type: ignore[arg-type]
     )
+
+
+def test_composite_health_workload_dead_when_daemon_alive_but_pid_gone() -> None:
+    """Fresh heartbeat (daemon alive) + a resolved-dead CMD_PID reading → `workload-dead`,
+    ahead of the D.1-metric-dependent states (the process is confirmed gone regardless of
+    what disk/mem/cpu look like)."""
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    dead_pid = _FakeEntry(vm_name="x", status="running", cpu_pct=5.0, disk_pct=95.0, workload_alive=False)
+    assert (
+        _composite_health_status(dead_pid, hb_age_seconds=30, control_plane_running=True)  # type: ignore[arg-type]
+        == "workload-dead"
+    )
+
+
+def test_composite_health_workload_alive_default_never_fires_workload_dead() -> None:
+    """The honestly-unknown `True` default (unconfigured / legacy row) never claims dead."""
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    legacy = _FakeEntry(vm_name="x", status="running")  # workload_alive defaults True
+    assert (
+        _composite_health_status(legacy, hb_age_seconds=30, control_plane_running=True) == "unknown"  # type: ignore[arg-type]
+    )
+
+
+def test_composite_health_stalled_for_batch_umbrella_when_object_delta_zero_and_cpu_idle() -> None:
+    """BATCH umbrella + object_delta==0 + cpu below the ceiling → `stalled` (the one row of the
+    parent WS-D.3 threshold table whose prerequisite signal is wired)."""
+    from unified_api_contracts import DeploymentUmbrella
+
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    flat = _FakeEntry(vm_name="x", status="running", cpu_pct=3.0, mem_pct=20.0)
+    assert (
+        _composite_health_status(
+            flat,  # type: ignore[arg-type]
+            hb_age_seconds=30,
+            control_plane_running=True,
+            umbrella=DeploymentUmbrella.BATCH,
+            object_delta=0,
+        )
+        == "stalled"
+    )
+
+
+def test_composite_health_batch_working_when_object_delta_positive_despite_idle_proc_sample() -> None:
+    """object_delta>0 counts toward `working` even with an idle-looking /proc sample (a batch VM
+    writes in bursts) — never misreported as `stalled` while real progress landed."""
+    from unified_api_contracts import DeploymentUmbrella
+
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    progressing = _FakeEntry(vm_name="x", status="running", cpu_pct=3.0, mem_pct=20.0)
+    assert (
+        _composite_health_status(
+            progressing,  # type: ignore[arg-type]
+            hb_age_seconds=30,
+            control_plane_running=True,
+            umbrella=DeploymentUmbrella.BATCH,
+            object_delta=128,
+        )
+        == "working"
+    )
+
+
+def test_composite_health_batch_stalled_requires_cpu_below_ceiling() -> None:
+    """object_delta==0 alone isn't enough — the threshold table is progress-metric primary, cpu
+    SECONDARY (never a global cpu cut, but cpu still gates `stalled` per the v1 defaults)."""
+    from unified_api_contracts import DeploymentUmbrella
+
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    busy_but_flat = _FakeEntry(vm_name="x", status="running", cpu_pct=45.0, mem_pct=20.0)
+    assert (
+        _composite_health_status(
+            busy_but_flat,  # type: ignore[arg-type]
+            hb_age_seconds=30,
+            control_plane_running=True,
+            umbrella=DeploymentUmbrella.BATCH,
+            object_delta=0,
+        )
+        == "unknown"
+    )
+
+
+def test_composite_health_live_umbrella_stalled_stays_unknown() -> None:
+    """LIVE umbrella has no wired stalled signal yet (needs an expected-active-window calendar
+    this codebase doesn't have) — stays honest-`unknown` rather than guessing from idle io/net."""
+    from unified_api_contracts import DeploymentUmbrella
+
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    idle_live = _FakeEntry(vm_name="x", status="running", cpu_pct=3.0, mem_pct=20.0)
+    assert (
+        _composite_health_status(
+            idle_live,  # type: ignore[arg-type]
+            hb_age_seconds=30,
+            control_plane_running=True,
+            umbrella=DeploymentUmbrella.LIVE,
+            object_delta=0,
+        )
+        == "unknown"
+    )
+
+
+def test_build_inventory_threads_object_deltas_into_composite_health() -> None:
+    """build_inventory's object_deltas map (batched by the caller) reaches the composite
+    classifier — a BATCH VM in an asset_group with object_delta==0 surfaces `stalled`."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = [
+        # Unknown prefix -> EPHEMERAL_BATCH -> BATCH umbrella. A real (nonzero) D.1 sample so
+        # `_has_d1_metrics` passes the honest-unknown legacy-row gate.
+        _FakeEntry(vm_name="cefi-binance-spot-20260622-014158", asset_group="cefi", cpu_pct=3.0),
+    ]
+    vm_details_by_name = {e.vm_name: {"status": "RUNNING"} for e in entries}  # control-plane-confirmed
+    object_deltas = {"cefi": 0}
+    items = build_inventory(
+        entries,  # type: ignore[arg-type]
+        {},
+        _FIXED_NOW,
+        vm_details_by_name,
+        object_deltas=object_deltas,
+    )
+    by_name = {i.name: i for i in items}
+    assert by_name["cefi-binance-spot-20260622-014158"].composite_health_status == "stalled"
+
+
+def test_batched_object_deltas_calls_once_per_distinct_asset_group() -> None:
+    """ONE object_delta_for_asset_group call per DISTINCT BATCH asset_group, never per VM —
+    WS-D.0 principle 5 (zero new bucket walks) at scale: many VMs sharing an asset_group must
+    not multiply the manifest read."""
+    from deployment_api.routes import deployments_inventory as mod
+
+    entries = [
+        _FakeEntry(vm_name="cefi-binance-spot-20260622-a", asset_group="cefi"),
+        _FakeEntry(vm_name="cefi-binance-spot-20260622-b", asset_group="cefi"),  # same asset_group
+        _FakeEntry(vm_name="defi-backfill-20260622-c", asset_group="defi"),
+        _FakeEntry(
+            vm_name="strategy-live-cefi-20260620", asset_group="cefi"
+        ),  # LIVE umbrella — excluded from the batch
+        _FakeEntry(vm_name="cefi-binance-spot-20260622-d", asset_group="cefi", status="failed"),  # not running
+    ]
+    with patch.object(mod, "object_delta_for_asset_group", return_value=(0, "ok")) as fake_lookup:
+        deltas = mod._batched_object_deltas(entries, _FIXED_NOW)  # type: ignore[arg-type]
+    assert fake_lookup.call_count == 2  # exactly {"cefi", "defi"}, not 5 (one per VM)
+    assert set(deltas) == {"cefi", "defi"}
 
 
 def test_build_inventory_threads_vm_details_control_plane_confirmation_into_composite_health() -> None:

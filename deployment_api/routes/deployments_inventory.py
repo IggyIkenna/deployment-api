@@ -83,6 +83,7 @@ from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
 )
+from deployment_api.routes.health_consolidator import object_delta_for_asset_group
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -380,6 +381,12 @@ def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None
 # D.3 v1 defaults (documented, not a global CPU cut — parent WS-D.0 principle 1).
 _DISK_FULL_PCT_THRESHOLD = 90.0
 _OOM_RISK_MEM_PCT_FLOOR = 80.0
+# `stalled` threshold table (parent WS-D.3, Open-Q3) — progress-metric primary, cpu secondary,
+# NEVER a global CPU cut. Only the BATCH row is wired (object_delta is the only prerequisite
+# signal that exists today); LIVE ("no events/heartbeat-progress >=5min during an expected-active
+# window") and PAPER ("work_delta==0 >=15min") need signals — an active-window calendar and a
+# rows_out-delta tracker respectively — that don't exist yet, so they stay honest-`"unknown"`.
+_STALLED_BATCH_CPU_PCT_CEILING = 10.0
 
 
 def _has_d1_metrics(entry: DeploymentRegistryEntry) -> bool:
@@ -407,23 +414,40 @@ def _composite_health_status(
     hb_age_seconds: int | None,
     *,
     control_plane_running: bool | None = None,
+    umbrella: DeploymentUmbrella | None = None,
+    object_delta: int | None = None,
 ) -> str | None:
     """D.3 VM composite health — resource-in-band AND a work signal advancing
     (parent WS-D.0 principle 1), computed only for a currently ``running`` entry
     (a terminal entry's health is already the exit_code/status).
 
-    v1 covers the 5 states whose signal exists today: ``dead`` / ``hung`` /
-    ``disk-full`` / ``oom-risk`` / ``working``. ``stalled`` and ``workload-dead``
-    need the manifest object-delta lookup and the CMD_PID liveness check
-    respectively — separate, not-yet-shipped sibling todos in this plan — so they
-    degrade to ``"unknown"`` rather than being guessed from a proxy signal
-    (principle 2: a hint is not truth).
+    v1 covers 6 of the 7 states with a real signal today: ``dead`` / ``hung`` /
+    ``workload-dead`` / ``disk-full`` / ``oom-risk`` / ``working``, plus
+    ``stalled`` for the BATCH umbrella only — the one row of the parent WS-D.3
+    threshold table whose prerequisite signal (``object_delta``, the manifest
+    lookup) is wired. LIVE/PAPER ``stalled`` still degrade to ``"unknown"``:
+    their threshold-table signals (an expected-active-window calendar for LIVE,
+    a ``work_delta`` rows-out-delta tracker for PAPER) don't exist anywhere in
+    the codebase yet, so guessing from a proxy would violate principle 2 (a
+    hint is not truth).
 
     ``control_plane_running`` is the GCE aggregated-list confirmation (the
     running-set ``_load_gcp_vm_entries`` already fetches) — ``None`` when the
     caller has no confirmation to offer, in which case ``dead`` never fires and
     ``hung`` falls back to heartbeat staleness alone (no regression vs. the
     pre-D.3 status, just less certain without the control-plane cross-check).
+
+    ``umbrella`` / ``object_delta`` are this entry's classified umbrella + its
+    asset_group's manifest object-delta, both resolved by the caller — the
+    caller batches ``object_delta`` ONE lookup per DISTINCT asset_group across
+    the whole census cycle (``_batched_object_deltas``), never per VM entry
+    (WS-D.0 principle 5, zero new bucket walks). ``None`` for either (the
+    default) means ``stalled`` never fires and ``working`` falls back to the
+    pre-existing io/net-only check — no regression vs. the prior honest-unknown
+    fallback. A positive ``object_delta`` also counts toward ``working`` (parent
+    WS-D.3: "resource in-band AND (object_delta>0 OR io_write_rate>0)") since a
+    batch VM can show real progress between bursty writes with an idle-looking
+    ``/proc`` sample.
     """
     if entry.status != "running":
         return None
@@ -431,14 +455,21 @@ def _composite_health_status(
         return "dead"
     if hb_age_seconds is not None and hb_age_seconds > _STALE_HEARTBEAT_MINUTES * 60:
         return "hung"
+    if entry.workload_alive is False:
+        return "workload-dead"
     if not _has_d1_metrics(entry):
         return "unknown"
     if entry.disk_pct > _DISK_FULL_PCT_THRESHOLD:
         return "disk-full"
     if entry.mem_pct >= _OOM_RISK_MEM_PCT_FLOOR and entry.mem_slope > 0:
         return "oom-risk"
-    if entry.io_write_rate_bytes_sec > 0 or entry.net_recv_rate_bytes_sec > 0:
+    # Parent WS-D.3: working = resource in-band AND (object_delta>0 OR io_write_rate>0) — the
+    # manifest signal counts too, not just this tick's /proc rates (a batch VM can show a real
+    # object_delta between bursty writes with an idle-looking sample).
+    if entry.io_write_rate_bytes_sec > 0 or entry.net_recv_rate_bytes_sec > 0 or (object_delta or 0) > 0:
         return "working"
+    if umbrella == DeploymentUmbrella.BATCH and object_delta == 0 and entry.cpu_pct < _STALLED_BATCH_CPU_PCT_CEILING:
+        return "stalled"
     return "unknown"
 
 
@@ -504,6 +535,7 @@ def _vm_item(
     vm_details: dict[str, object] | None = None,
     *,
     control_plane_running: bool | None = None,
+    object_deltas: dict[str, int | None] | None = None,
 ) -> DeploymentItem:
     """Build an inventory item from a VM deployment-registry entry.
 
@@ -513,10 +545,16 @@ def _vm_item(
     previously discarded down to just the running-VM-name set.
     ``control_plane_running`` is the same GCE aggregated-list confirmation,
     reduced to a bool — feeds the D.3 composite classifier's ``dead``/``hung``.
+    ``object_deltas`` is the BATCH-umbrella asset_group -> manifest object-delta
+    map the caller batches once per census cycle (``_batched_object_deltas``) —
+    feeds the composite classifier's ``stalled``.
     """
     target = _classify_vm(entry.vm_name)
     hb_age = _heartbeat_age_seconds(entry, now)
     status = _vm_status(entry, hb_age)
+    object_delta = None
+    if target.umbrella == DeploymentUmbrella.BATCH:
+        object_delta = (object_deltas or {}).get(target.asset_group)
     run_log = ""
     completed_at = entry.completed_at
     if completed_at and len(completed_at) >= 10:
@@ -547,7 +585,13 @@ def _vm_item(
         health_status=str(details.get("status") or "") or None,
         boot_disk_name=str(details.get("boot_disk_name") or "") or None,
         labels=cast(dict[str, str], labels) if labels else None,
-        composite_health_status=_composite_health_status(entry, hb_age, control_plane_running=control_plane_running),
+        composite_health_status=_composite_health_status(
+            entry,
+            hb_age,
+            control_plane_running=control_plane_running,
+            umbrella=target.umbrella,
+            object_delta=object_delta,
+        ),
     )
 
 
@@ -821,12 +865,36 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
 # ---------------------------------------------------------------------------
 
 
+def _batched_object_deltas(vm_entries: list[DeploymentRegistryEntry], now: datetime) -> dict[str, int | None]:
+    """ONE manifest object-delta lookup per DISTINCT BATCH-umbrella asset_group, never per VM.
+
+    A VM census can carry hundreds of entries sharing a handful of asset_groups — re-deriving
+    ``object_delta_for_asset_group`` (a GCS manifest-index read) once per VM would be an N+1
+    against the manifest and would violate WS-D.0 principle 5 (zero new bucket walks). This
+    collects the distinct (BATCH-umbrella, running, asset_group-carrying) set first, then reads
+    each asset_group's delta exactly once; shard-level isolation — one asset_group's read failure
+    (already caught inside ``object_delta_for_asset_group``) never drops another's entry.
+    """
+    asset_groups: set[str] = set()
+    for entry in vm_entries:
+        if entry.status != "running":
+            continue
+        try:
+            target = _classify_vm(entry.vm_name)
+        except UnclassifiedDeploymentError:
+            continue
+        if target.umbrella == DeploymentUmbrella.BATCH and target.asset_group:
+            asset_groups.add(target.asset_group)
+    return {asset_group: object_delta_for_asset_group(asset_group, now)[0] for asset_group in asset_groups}
+
+
 def build_inventory(
     vm_entries: list[DeploymentRegistryEntry],
     cloud_run_status: dict[str, CloudRunExecutionStatus],
     now: datetime,
     vm_details_by_name: dict[str, dict[str, object]] | None = None,
     cloud_run_services: list[CloudRunServiceStatus] | None = None,
+    object_deltas: dict[str, int | None] | None = None,
 ) -> list[DeploymentItem]:
     """Assemble the full unified inventory (VMs + Cloud Run jobs + Cloud Run services).
 
@@ -844,6 +912,13 @@ def build_inventory(
     states honestly (see ``_composite_health_status``) rather than guessing; an
     explicit ``{}`` (a real, empty GCE census) DOES confirm every entry as
     not-running.
+
+    ``object_deltas`` is the BATCH-umbrella asset_group -> manifest object-delta
+    map (``_batched_object_deltas``) — feeds the composite classifier's
+    ``stalled``. ``None`` (the default, and every existing caller/test) degrades
+    ``stalled`` to the honest ``"unknown"`` it already fell back to; this
+    function stays a pure, I/O-free classifier either way — the manifest read
+    happens in the caller (``_compute_inventory``), never inside this loop.
 
     Cloud Run jobs census the LIVE job list (``cloud_run_status`` keys, already
     fetched by ``latest_execution_by_job``'s ``run_v2.JobsClient.list_jobs`` — no
@@ -874,6 +949,7 @@ def build_inventory(
                     now,
                     details_by_name.get(entry.vm_name),
                     control_plane_running=control_plane_running,
+                    object_deltas=object_deltas,
                 )
             )
         except UnclassifiedDeploymentError as exc:
@@ -1153,12 +1229,14 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
 
         cloud_run_status = latest_execution_by_job(project_id)
         cloud_run_services = list_cloud_run_services(project_id)
+        object_deltas = _batched_object_deltas(vm_entries, now)
         gcp_items = build_inventory(
             vm_entries,
             cloud_run_status,
             now,
             vm_details_by_name=vm_details_by_name,
             cloud_run_services=cloud_run_services,
+            object_deltas=object_deltas,
         )
         items.extend(gcp_items)
 

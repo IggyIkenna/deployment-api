@@ -35,6 +35,7 @@ from unified_trading_library import (
     consolidated_blob_age_sec,
     get_storage_client,
     per_vm_shards_exist,
+    read_availability_index,
     resolve_bucket_name,
     resolve_consolidated_staleness_sec,
 )
@@ -165,6 +166,57 @@ def consolidator_posture(asset_group: AssetGroup, now: datetime) -> Consolidator
     manifest. Uses the canonical consolidated-staleness budget.
     """
     return _ag_health(asset_group, resolve_consolidated_staleness_sec(), now)
+
+
+def object_delta_for_bucket(bucket: str) -> tuple[int | None, str]:
+    """Object-count delta = a manifest LOOKUP off the consolidated index (no new bucket walk).
+
+    Reads the SAME consolidated ``availability_index`` blob ``consolidator_posture`` already
+    resolved (``read_availability_index`` hits the process-level index cache health_consolidator
+    just warmed), sums ``row_count``-else-``instrument_count`` for ``capture_status="captured"``
+    rows per written date, and diffs the two most recent written dates. This is the authoritative
+    write-truth signal for WS-D's composite health (D.1) — objects that actually landed, not the
+    log-scraped ``rows_out`` hint. Honest degradation: any read failure or <2 distinct written
+    dates yields ``(None, <reason>)``, never a false zero.
+
+    Lives here (bucket-only, not deployment-id-scoped) rather than in the per-deployment
+    ``/freshness`` route so both that route AND the composite-health `stalled` classifier
+    (``object_delta_for_asset_group`` below — batched ONE call per distinct asset_group per
+    census cycle, not once per VM entry) can share the same manifest read without a circular
+    import between ``deployment_freshness`` and ``deployments_inventory``.
+    """
+    try:
+        index = read_availability_index(bucket, columns=["date", "row_count", "instrument_count", "capture_status"])
+    except (OSError, ValueError, RuntimeError) as exc:
+        return None, f"manifest read failed: {exc}"
+    if index.empty:
+        return None, "manifest index is empty"
+    captured = index[index["capture_status"] == "captured"]
+    if captured.empty:
+        return None, "no captured rows in manifest index"
+    counts = captured["row_count"].where(captured["row_count"] > 0, captured["instrument_count"])
+    by_date = counts.groupby(captured["date"]).sum().sort_index()
+    if len(by_date) < 2:
+        return None, f"only {len(by_date)} distinct written date(s) in manifest — nothing to diff yet"
+    latest_date, prior_date = by_date.index[-1], by_date.index[-2]
+    delta = int(by_date.iloc[-1] - by_date.iloc[-2])
+    return delta, f"{latest_date} object count {by_date.iloc[-1]:.0f} vs {prior_date} {by_date.iloc[-2]:.0f}"
+
+
+def object_delta_for_asset_group(asset_group: str, now: datetime) -> tuple[int | None, str]:
+    """Object-count delta for an asset_group's market-data bucket — keyed by asset_group ALONE.
+
+    A thin combinator over ``consolidator_posture`` (bucket resolution) + ``object_delta_for_bucket``,
+    so a caller that needs this per DISTINCT asset_group (not per specific deployment_id) — e.g. the
+    composite-health `stalled` classifier looping many VM entries that share an asset_group — can
+    batch it exactly once per asset_group per cycle instead of re-deriving it per VM.
+    """
+    if asset_group not in _ASSET_GROUPS:
+        return None, f"asset_group {asset_group!r} has no availability-index to read freshness from"
+    posture = consolidator_posture(asset_group, now)  # type: ignore[arg-type]  # validated against _ASSET_GROUPS above
+    if not posture.bucket:
+        return None, posture.detail
+    return object_delta_for_bucket(posture.bucket)
 
 
 def build_consolidator_health(ag_entries: list[ConsolidatorAgHealth], now: datetime) -> ConsolidatorHealthResponse:
