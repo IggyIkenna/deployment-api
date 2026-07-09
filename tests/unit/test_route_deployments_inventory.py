@@ -45,7 +45,10 @@ class _FakeEntry:
     last_heartbeat_at: str = "2026-06-22T11:59:30Z"  # 30s ago vs _FIXED_NOW
     completed_at: str | None = None
     exit_code: int | None = None
+    rows_in: int = 0
     rows_out: int = 0
+    rows_error: int = 0
+    events_emitted: int = 0
     extras: dict[str, str] = field(default_factory=dict)
 
 
@@ -133,6 +136,67 @@ def test_build_inventory_classifies_vms_and_jobs() -> None:
     # Every item is GCP and carries exactly one umbrella.
     assert all(i.cloud == "GCP" for i in items)
     assert all(i.umbrella in {"LIVE", "BATCH", "PAPER", "EXPERIMENT"} for i in items)
+
+
+def test_build_inventory_surfaces_tier0_free_wins() -> None:
+    """The GCE aggregated-list join + registry counters are surfaced, not discarded.
+
+    Pins deployment_obs_backend_kinds_health-007: machine_type/zone/labels/boot-disk
+    (from the GCE aggregated-list) and rows_in/rows_error/events_emitted/uptime_hours
+    (from the registry entry) all reach the wire item instead of being dropped down to
+    just the running-VM-name set.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entry = _FakeEntry(
+        vm_name="cefi-binance-spot-20260622-014158",
+        asset_group="cefi",
+        rows_in=20_000,
+        rows_out=11_987,
+        rows_error=3,
+        events_emitted=412,
+    )
+    vm_details_by_name = {
+        "cefi-binance-spot-20260622-014158": {
+            "machine_type": "e2-highmem-8",
+            "zone": "asia-northeast1-c",
+            "status": "RUNNING",
+            "creation_timestamp": "2026-06-22T01:00:00Z",
+            "last_stop_timestamp": "",
+            "boot_disk_name": "cefi-binance-spot-20260622-014158-boot",
+            "labels": {"team": "cefi", "env": "prod"},
+        }
+    }
+    items = build_inventory([entry], {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
+    vm = next(i for i in items if i.name == "cefi-binance-spot-20260622-014158")
+
+    assert vm.rows_in == 20_000
+    assert vm.rows_error == 3
+    assert vm.events_emitted == 412
+    # started_at 11:00, _FIXED_NOW 12:00, still running (no completed_at) -> 1.0h.
+    assert vm.uptime_hours == pytest.approx(1.0)
+    assert vm.machine_type == "e2-highmem-8"
+    assert vm.zone == "asia-northeast1-c"
+    assert vm.health_status == "RUNNING"
+    assert vm.boot_disk_name == "cefi-binance-spot-20260622-014158-boot"
+    assert vm.labels == {"team": "cefi", "env": "prod"}
+
+    # A VM absent from the join (e.g. archived / no-longer-running) degrades to honest
+    # None, never a crash or a fabricated value.
+    unjoined = _FakeEntry(vm_name="defi-paper-trading-20260622", asset_group="defi")
+    items_unjoined = build_inventory([unjoined], {}, _FIXED_NOW, {})  # type: ignore[arg-type]
+    vm_unjoined = next(i for i in items_unjoined if i.name == "defi-paper-trading-20260622")
+    assert vm_unjoined.machine_type is None
+    assert vm_unjoined.zone is None
+    assert vm_unjoined.health_status is None
+    assert vm_unjoined.boot_disk_name is None
+    assert vm_unjoined.labels is None
+
+    # Cloud Run jobs have no GCE instance / registry counters — the new fields stay None.
+    job = next(i for i in items_unjoined if i.kind == "CLOUD_RUN_JOB")
+    assert job.rows_in is None
+    assert job.uptime_hours is None
+    assert job.machine_type is None
 
 
 def test_build_inventory_stale_running_vm() -> None:
@@ -318,7 +382,7 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
 
     with (
         patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
-        patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=entries),
+        patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=(entries, {})),
         patch(
             "deployment_api.routes.deployments_inventory.latest_execution_by_job",
             return_value=cr_status,

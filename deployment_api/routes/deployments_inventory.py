@@ -40,6 +40,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from typing import cast
 
 from deployment_service.cloud_run_job_registry import CLOUD_RUN_JOBS
 from deployment_service.deployment_classification import (
@@ -155,6 +156,18 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     heartbeat_age_seconds: int | None = None
     captured_progress: int | None = None  # rows_out for a VM backfill; None for jobs
     run_log_uri: str = ""
+    # Tier-0 free wins — already fetched by the GCE aggregated-list / registry entry,
+    # previously discarded. None for kinds without the underlying source (Cloud Run
+    # jobs have no GCE instance / registry row-counters).
+    rows_in: int | None = None
+    rows_error: int | None = None
+    events_emitted: int | None = None
+    uptime_hours: float | None = None  # started_at -> completed_at (or now if still running)
+    machine_type: str | None = None  # GCE aggregated-list, e.g. "e2-highmem-8"
+    zone: str | None = None  # GCE aggregated-list zone name
+    health_status: str | None = None  # raw GCE instance status (RUNNING/TERMINATED/...)
+    boot_disk_name: str | None = None
+    labels: dict[str, str] | None = None
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -234,17 +247,22 @@ def active_registry_vm_names() -> set[str]:
     return {e.vm_name for e in _download_entries_parallel(client, DEFAULT_BUCKET, keys)}
 
 
-def _heartbeat_age_seconds(entry: DeploymentRegistryEntry, now: datetime) -> int | None:
-    """Seconds since the registry entry's last heartbeat, or None if unparseable."""
-    raw = entry.last_heartbeat_at
+def _parse_iso(raw: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp (Z-suffixed or offset-aware); None on any parse failure."""
     if not raw:
         return None
     try:
-        last_hb = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
-    if last_hb.tzinfo is None:
-        last_hb = last_hb.replace(tzinfo=UTC)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _heartbeat_age_seconds(entry: DeploymentRegistryEntry, now: datetime) -> int | None:
+    """Seconds since the registry entry's last heartbeat, or None if unparseable."""
+    last_hb = _parse_iso(entry.last_heartbeat_at)
+    if last_hb is None:
+        return None
     return max(0, int((now - last_hb).total_seconds()))
 
 
@@ -267,8 +285,27 @@ def _vm_status(entry: DeploymentRegistryEntry, hb_age_seconds: int | None) -> st
     return status or "unknown"
 
 
-def _vm_item(entry: DeploymentRegistryEntry, now: datetime) -> DeploymentItem:
-    """Build an inventory item from a VM deployment-registry entry."""
+def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None:
+    """Wall-clock hours run — ``started_at`` to ``completed_at`` (or ``now`` if still running)."""
+    started = _parse_iso(entry.started_at)
+    if started is None:
+        return None
+    ended = _parse_iso(entry.completed_at) or now
+    return max(0.0, (ended - started).total_seconds() / 3600.0)
+
+
+def _vm_item(
+    entry: DeploymentRegistryEntry,
+    now: datetime,
+    vm_details: dict[str, object] | None = None,
+) -> DeploymentItem:
+    """Build an inventory item from a VM deployment-registry entry.
+
+    ``vm_details`` is this VM's entry from the GCE aggregated-list join
+    (``get_vm_instance_details``), if any — surfaces the Tier-0 free wins
+    (machine_type/zone/labels/boot-disk/raw status) already fetched there but
+    previously discarded down to just the running-VM-name set.
+    """
     target = _classify_vm(entry.vm_name)
     hb_age = _heartbeat_age_seconds(entry, now)
     status = _vm_status(entry, hb_age)
@@ -278,6 +315,8 @@ def _vm_item(entry: DeploymentRegistryEntry, now: datetime) -> DeploymentItem:
         date_stamp = completed_at[:10].replace("-", "")
         if date_stamp.isdigit():
             run_log = vm_run_log_rolling_uri(entry.vm_name, date_stamp)
+    details = vm_details or {}
+    labels = details.get("labels")
     return DeploymentItem(
         name=entry.vm_name,
         kind=target.kind.value,
@@ -291,6 +330,15 @@ def _vm_item(entry: DeploymentRegistryEntry, now: datetime) -> DeploymentItem:
         heartbeat_age_seconds=hb_age,
         captured_progress=entry.rows_out,
         run_log_uri=run_log,
+        rows_in=entry.rows_in,
+        rows_error=entry.rows_error,
+        events_emitted=entry.events_emitted,
+        uptime_hours=_uptime_hours(entry, now),
+        machine_type=str(details.get("machine_type") or "") or None,
+        zone=str(details.get("zone") or "") or None,
+        health_status=str(details.get("status") or "") or None,
+        boot_disk_name=str(details.get("boot_disk_name") or "") or None,
+        labels=cast(dict[str, str], labels) if labels else None,
     )
 
 
@@ -496,6 +544,7 @@ def build_inventory(
     vm_entries: list[DeploymentRegistryEntry],
     cloud_run_status: dict[str, CloudRunExecutionStatus],
     now: datetime,
+    vm_details_by_name: dict[str, dict[str, object]] | None = None,
 ) -> list[DeploymentItem]:
     """Assemble the full unified inventory (VMs + Cloud Run jobs).
 
@@ -508,11 +557,16 @@ def build_inventory(
     so an off-pattern job (no registry match) still gets a row instead of hiding.
     Only when the live list itself is empty (the GCP call failed) does the census
     degrade to the static registry with status="unknown" (never an empty census).
+
+    ``vm_details_by_name`` is the GCE aggregated-list join (Tier-0 free wins —
+    machine_type/zone/labels/boot-disk/raw status); optional so pure-classification
+    callers (tests, mock mode) can omit it and the new fields default to None.
     """
+    details_by_name = vm_details_by_name or {}
     items: list[DeploymentItem] = []
     for entry in vm_entries:
         try:
-            items.append(_vm_item(entry, now))
+            items.append(_vm_item(entry, now, details_by_name.get(entry.vm_name)))
         except UnclassifiedDeploymentError as exc:
             logger.warning("inventory: skipping unclassifiable VM %r: %s", entry.vm_name, exc)
     if cloud_run_status:
@@ -708,12 +762,17 @@ def _download_entries_parallel(client: StorageClient, bucket: str, keys: list[st
     return [entry for entry in results if entry is not None]
 
 
-def _load_gcp_vm_entries(now: datetime, project_id: str) -> list[DeploymentRegistryEntry]:
+def _load_gcp_vm_entries(
+    now: datetime, project_id: str
+) -> tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]]:
     """Census the GCP VM registry (active running + 7-day archive) with parallel reads.
 
     Runs the four coarse calls concurrently — the GCE aggregated-list, the active-key
     list, the archive-key list, then a single parallel download pool over every key —
-    so the cold path is ~max(slowest single call) instead of their sum.
+    so the cold path is ~max(slowest single call) instead of their sum. Also returns the
+    GCE aggregated-list join (name -> machine_type/zone/labels/boot-disk/raw status) so
+    the caller can surface those Tier-0 free wins instead of discarding them down to just
+    the running-VM-name set.
     """
     client = get_storage_client()
     bucket = DEFAULT_BUCKET
@@ -728,13 +787,14 @@ def _load_gcp_vm_entries(now: datetime, project_id: str) -> list[DeploymentRegis
         f_archive_keys = pool.submit(
             lambda: [key for prefix in archive_prefixes for key in _list_json_keys(client, bucket, prefix)]
         )
-        running_vm_names = set(f_vm.result().keys())
+        vm_details = f_vm.result()
+        running_vm_names = set(vm_details.keys())
         active_keys = f_active_keys.result()
         archive_keys = f_archive_keys.result()
 
     active = [e for e in _download_entries_parallel(client, bucket, active_keys) if e.vm_name in running_vm_names]
     recent = _download_entries_parallel(client, bucket, archive_keys)
-    return active + recent
+    return active + recent, vm_details
 
 
 def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]:
@@ -746,13 +806,13 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
     if want_gcp:
         project_id = _cfg.require_gcp_project_id()
         try:
-            vm_entries = _load_gcp_vm_entries(now, project_id)
+            vm_entries, vm_details_by_name = _load_gcp_vm_entries(now, project_id)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.exception("inventory: VM registry read failed: %s", exc)
             raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
 
         cloud_run_status = latest_execution_by_job(project_id)
-        items.extend(build_inventory(vm_entries, cloud_run_status, now))
+        items.extend(build_inventory(vm_entries, cloud_run_status, now, vm_details_by_name))
 
     if want_aws:
         items.extend(_load_aws_items(now))

@@ -355,7 +355,10 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
             self.last_heartbeat_at = "2026-06-22T11:59:30Z"
             self.completed_at = None
             self.exit_code = None
+            self.rows_in = 0
             self.rows_out = 0
+            self.rows_error = 0
+            self.events_emitted = 0
 
     gcp_entry = _FakeEntry("cefi-binance-spot-20260622-gcp")
     mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
@@ -363,7 +366,7 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
     with (
         patch.object(mod, "_cfg") as mock_cfg,
         # The GCP VM census is read via the parallel loader seam — patch it directly.
-        patch.object(mod, "_load_gcp_vm_entries", return_value=[gcp_entry]),
+        patch.object(mod, "_load_gcp_vm_entries", return_value=([gcp_entry], {})),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         # AWS census degrades to empty (no creds / boto3) — returns no AWS items.
         patch.object(mod, "load_aws_inventory", return_value=[]),
@@ -414,7 +417,7 @@ def test_inventory_route_includes_aws_items() -> None:
     with (
         patch.object(mod, "_cfg") as mock_cfg,
         # GCP VM census empty (no running VMs) — read via the parallel loader seam.
-        patch.object(mod, "_load_gcp_vm_entries", return_value=[]),
+        patch.object(mod, "_load_gcp_vm_entries", return_value=([], {})),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         patch.object(mod, "load_aws_inventory", return_value=aws_items),
     ):
