@@ -123,6 +123,117 @@ def test_compute_freshness_unknown_asset_group() -> None:
     posture.assert_not_called()
 
 
+def test_object_delta_for_bucket_diffs_two_most_recent_dates() -> None:
+    """Object-delta = manifest lookup: sums captured row_count per date, diffs the latest two."""
+    import pandas as pd
+
+    from deployment_api.routes.deployment_freshness import _object_delta_for_bucket
+
+    index = pd.DataFrame(
+        {
+            "date": ["2026-06-22", "2026-06-23", "2026-06-24"],
+            "row_count": [3900, 4000, 4128],
+            "instrument_count": [3900, 4000, 4128],
+            "capture_status": ["captured", "captured", "captured"],
+        }
+    )
+    with patch(
+        "deployment_api.routes.deployment_freshness.read_availability_index",
+        return_value=index,
+    ):
+        delta, detail = _object_delta_for_bucket("market-data-tick-defi-prd")
+    assert delta == 128
+    assert "2026-06-24" in detail and "2026-06-23" in detail
+
+
+def test_object_delta_for_bucket_empty_index_is_none() -> None:
+    """An empty / not-yet-written manifest index → (None, reason), never a false zero."""
+    import pandas as pd
+
+    from deployment_api.routes.deployment_freshness import _object_delta_for_bucket
+
+    with patch(
+        "deployment_api.routes.deployment_freshness.read_availability_index",
+        return_value=pd.DataFrame(columns=["date", "row_count", "instrument_count", "capture_status"]),
+    ):
+        delta, detail = _object_delta_for_bucket("market-data-tick-defi-prd")
+    assert delta is None
+    assert detail
+
+
+def test_object_delta_for_bucket_single_date_is_none() -> None:
+    """Only one distinct written date so far → nothing to diff → (None, reason)."""
+    import pandas as pd
+
+    from deployment_api.routes.deployment_freshness import _object_delta_for_bucket
+
+    index = pd.DataFrame(
+        {
+            "date": ["2026-06-24"],
+            "row_count": [4128],
+            "instrument_count": [4128],
+            "capture_status": ["captured"],
+        }
+    )
+    with patch(
+        "deployment_api.routes.deployment_freshness.read_availability_index",
+        return_value=index,
+    ):
+        delta, detail = _object_delta_for_bucket("market-data-tick-defi-prd")
+    assert delta is None
+    assert "1 distinct" in detail
+
+
+def test_object_delta_for_bucket_read_failure_is_none() -> None:
+    """A manifest read failure degrades honestly to (None, reason), never a crash."""
+    from deployment_api.routes.deployment_freshness import _object_delta_for_bucket
+
+    with patch(
+        "deployment_api.routes.deployment_freshness.read_availability_index",
+        side_effect=OSError("gcs unavailable"),
+    ):
+        delta, detail = _object_delta_for_bucket("market-data-tick-defi-prd")
+    assert delta is None
+    assert "manifest read failed" in detail
+
+
+def test_compute_freshness_capture_includes_object_delta() -> None:
+    """compute_freshness wires the posture's bucket into the object-delta manifest lookup."""
+    import pandas as pd
+    from unified_api_contracts import ShardResponsibility, ShardResponsibilityKind
+
+    from deployment_api.routes import deployment_freshness as mod
+    from deployment_api.routes.health_consolidator import ConsolidatorAgHealth
+
+    cap = ShardResponsibility(kind=ShardResponsibilityKind.ASSET_GROUP_CAPTURE, asset_group="defi")
+    posture = ConsolidatorAgHealth(
+        asset_group="defi",
+        bucket="market-data-tick-defi-prd",
+        status="ok",
+        index_age_seconds=42.0,
+        staleness_budget_seconds=86400,
+        per_vm_shard_fallback_active=False,
+        last_successful_run_at="2026-06-24T09:30:00+00:00",
+        detail="index heartbeat 42s old (<= 86400s budget)",
+    )
+    index = pd.DataFrame(
+        {
+            "date": ["2026-06-23", "2026-06-24"],
+            "row_count": [4000, 4128],
+            "instrument_count": [4000, 4128],
+            "capture_status": ["captured", "captured"],
+        }
+    )
+    with (
+        patch.object(mod, "classify_vm_target", return_value=object()),
+        patch.object(mod, "responsibility_for_deployment", return_value=cap),
+        patch.object(mod, "consolidator_posture", return_value=posture),
+        patch.object(mod, "read_availability_index", return_value=index),
+    ):
+        out = mod.compute_freshness("defi-mtds-capture-20260624", _NOW)
+    assert out.object_delta == 128
+
+
 def test_route_unclassifiable_id_404(client_freshness: TestClient) -> None:
     """A non-mock unclassifiable deployment id → 404 (no silent default)."""
     from deployment_service.deployment_classification import UnclassifiedDeploymentError
