@@ -14,6 +14,11 @@ from google.cloud import compute_v1
 
 logger = logging.getLogger(__name__)
 
+# Per-RPC deadline (< the inventory census wall-clock of 45 s) so a wedged GCE aggregated-list
+# RPC unwinds the census worker on its own instead of leaking it — the except below degrades to
+# an empty VM detail map. Keeps the inventory census pool from starving under a persistent hang.
+_RPC_TIMEOUT_SEC = 30.0
+
 
 def list_running_vm_names(project_id: str) -> set[str]:
     """Return the set of VM names currently in ``RUNNING`` state in ``project_id``.
@@ -25,7 +30,7 @@ def list_running_vm_names(project_id: str) -> set[str]:
         client = compute_v1.InstancesClient()
         request = compute_v1.AggregatedListInstancesRequest(project=project_id)
         running: set[str] = set()
-        for _zone, scoped_list in client.aggregated_list(request=request):
+        for _zone, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             instances = getattr(scoped_list, "instances", None)
             if not instances:
                 continue
@@ -52,7 +57,7 @@ def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
         request = compute_v1.AggregatedListInstancesRequest(project=project_id)
         vm_details: dict[str, dict[str, object]] = {}
 
-        for _zone_url, scoped_list in client.aggregated_list(request=request):
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             instances = getattr(scoped_list, "instances", None)
             if not instances:
                 continue
@@ -108,7 +113,7 @@ def get_disk_details(project_id: str) -> dict[str, dict[str, object]]:
         client = compute_v1.DisksClient()
         request = compute_v1.AggregatedListDisksRequest(project=project_id)
         disk_details: dict[str, dict[str, object]] = {}
-        for _zone_url, scoped_list in client.aggregated_list(request=request):
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             disks = getattr(scoped_list, "disks", None)
             if not disks:
                 continue
@@ -125,6 +130,37 @@ def get_disk_details(project_id: str) -> dict[str, dict[str, object]]:
     except Exception as exc:
         logger.warning("get_disk_details(%s) failed: %s", project_id, exc)
         return {}
+
+
+def list_unattached_disk_names(project_id: str) -> set[str]:
+    """Return names of persistent disks NOT attached to any instance in ``project_id``.
+
+    A disk's ``users`` field lists the instance self-links it is attached to; an empty
+    ``users`` means the disk is unattached — still billing ``PD Capacity`` while doing
+    nothing (orphaned). This is the DEFINITIVE attachment signal, vs a disk-name-vs-VM-name
+    heuristic which false-positives on data disks that don't share their instance's name.
+    One ``aggregated_list`` covers all zones. On failure returns an empty set, so orphaned-disk
+    detection degrades to "flag nothing" — honest absence, never a false-positive orphan claim.
+    """
+    try:
+        client = compute_v1.DisksClient()
+        request = compute_v1.AggregatedListDisksRequest(project=project_id)
+        unattached: set[str] = set()
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
+            disks = getattr(scoped_list, "disks", None)
+            if not disks:
+                continue
+            for disk in disks:
+                disk_typed = cast(object, disk)
+                name = str(getattr(disk_typed, "name", ""))
+                users = getattr(disk_typed, "users", None) or []
+                if name and not users:
+                    unattached.add(name)
+        logger.info("list_unattached_disk_names(%s): %d unattached disks", project_id, len(unattached))
+        return unattached
+    except Exception as exc:
+        logger.warning("list_unattached_disk_names(%s) failed: %s", project_id, exc)
+        return set()
 
 
 def delete_vm_instance(project_id: str, name: str, zone: str) -> bool:
@@ -154,4 +190,10 @@ def delete_vm_instance(project_id: str, name: str, zone: str) -> bool:
     return True
 
 
-__all__ = ["delete_vm_instance", "get_disk_details", "get_vm_instance_details", "list_running_vm_names"]
+__all__ = [
+    "delete_vm_instance",
+    "get_disk_details",
+    "get_vm_instance_details",
+    "list_running_vm_names",
+    "list_unattached_disk_names",
+]

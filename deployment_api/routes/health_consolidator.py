@@ -34,7 +34,9 @@ from unified_trading_library import (
     AssetGroup,
     consolidated_blob_age_sec,
     get_storage_client,
+    per_vm_shard_backlog,
     per_vm_shards_exist,
+    read_availability_index,
     resolve_bucket_name,
     resolve_consolidated_staleness_sec,
 )
@@ -62,6 +64,22 @@ def _market_data_kind(asset_group: str) -> str:
     return _MARKET_DATA_KIND.get(asset_group, "market-data")
 
 
+# Per-asset_group consolidated-staleness budget. Most AGs' market-data consolidator runs
+# ~every minute, so the global default (``resolve_consolidated_staleness_sec()`` = 120s) is
+# right. cefi market-tick is a DAILY batch (capture cron ``0 6 * * *``) and its consolidator
+# effectively runs only ~every 5 min, so a 120s budget false-flags it ``degraded`` ~60% of
+# every cycle even though nothing is wrong; cefi's own launchers set the intended tolerance to
+# 86400s (``MANIFEST_CONSOLIDATED_STALENESS_SEC``) — mirror that so the health check matches the
+# AG's real cadence and only fires on a genuine >24h stall. Verified 2026-07-09 (Cloud Run
+# executions 5 min apart, index age climbing 174→228s under the 120s budget).
+_AG_STALENESS_BUDGET_SEC: dict[str, int] = {"cefi": 86400}
+
+
+def _budget_for(asset_group: str, default: int) -> int:
+    """Staleness budget for an asset_group — its cadence-matched override, else the global default."""
+    return _AG_STALENESS_BUDGET_SEC.get(asset_group, default)
+
+
 class ConsolidatorAgHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Per-asset_group manifest-consolidator posture."""
 
@@ -72,6 +90,8 @@ class ConsolidatorAgHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mo
     staleness_budget_seconds: int
     per_vm_shard_fallback_active: bool  # stale/missing index WHILE shards exist → recovery merge
     last_successful_run_at: str | None = None  # ISO-8601, derived from index mtime
+    pending_shard_count: int | None = None  # per-VM shards written since the last merge (backlog)
+    total_shard_count: int | None = None  # per-VM shards present (fan-in width)
     detail: str
 
 
@@ -110,8 +130,16 @@ def _classify_ag(age: float | None, budget: int, shards_exist: bool) -> tuple[st
     return "degraded", False, f"index {age_str}; no per-VM shards — genuinely empty bucket, not an outage"
 
 
-def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> ConsolidatorAgHealth:
-    """Build the consolidator posture for one asset_group (honest per-AG degradation)."""
+def _ag_health(
+    asset_group: AssetGroup, budget: int, now: datetime, *, include_backlog: bool = False
+) -> ConsolidatorAgHealth:
+    """Build the consolidator posture for one asset_group (honest per-AG degradation).
+
+    ``include_backlog=True`` also counts the per-VM shard backlog (shards written since
+    the last merge → not yet absorbed) via ONE extra prefix list. It is opt-in: the
+    Consolidators-tab endpoint sets it; the per-deployment ``/freshness`` reuse (via
+    ``consolidator_posture``) leaves it off so that hotter path pays no extra list.
+    """
     try:
         bucket = resolve_bucket_name(cloud="gcp", kind=_market_data_kind(asset_group), asset_group=asset_group)
     except (OSError, ValueError) as exc:
@@ -128,12 +156,18 @@ def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> Consolida
         client = get_storage_client()
         age = consolidated_blob_age_sec(client, bucket)
         shards_exist = age is None or age > budget
-        # Only pay for the shard-list when the index looks stale/missing (the discriminator).
-        shards_present = per_vm_shards_exist(client, bucket, exclude_self=True) if shards_exist else False
+        index_mtime = (now - timedelta(seconds=age)) if age is not None else None
+        pending_count: int | None = None
+        total_count: int | None = None
+        if include_backlog:
+            # ONE prefix list gives BOTH the backlog counts AND shard existence.
+            pending_count, total_count = per_vm_shard_backlog(client, bucket, index_mtime)
+            shards_present = total_count > 0
+        else:
+            # Only pay for the shard-list when the index looks stale/missing (the discriminator).
+            shards_present = per_vm_shards_exist(client, bucket, exclude_self=True) if shards_exist else False
         status, fallback, detail = _classify_ag(age, budget, shards_present)
-        last_run: str | None = None
-        if age is not None:
-            last_run = (now - timedelta(seconds=age)).isoformat()
+        last_run = index_mtime.isoformat() if index_mtime is not None else None
         return ConsolidatorAgHealth(
             asset_group=asset_group,
             bucket=bucket,
@@ -142,6 +176,8 @@ def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> Consolida
             staleness_budget_seconds=budget,
             per_vm_shard_fallback_active=fallback,
             last_successful_run_at=last_run,
+            pending_shard_count=pending_count,
+            total_shard_count=total_count,
             detail=detail,
         )
     except (OSError, ValueError, RuntimeError) as exc:
@@ -164,7 +200,67 @@ def consolidator_posture(asset_group: AssetGroup, now: datetime) -> Consolidator
     (``/api/deployments/{id}/freshness``) reuses this rather than re-walking the
     manifest. Uses the canonical consolidated-staleness budget.
     """
-    return _ag_health(asset_group, resolve_consolidated_staleness_sec(), now)
+    return _ag_health(asset_group, _budget_for(asset_group, resolve_consolidated_staleness_sec()), now)
+
+
+def object_delta_for_bucket(bucket: str) -> tuple[int | None, str]:
+    """Object-count delta = a manifest LOOKUP off the consolidated index (no new bucket walk).
+
+    Reads the SAME consolidated ``availability_index`` blob ``consolidator_posture`` already
+    resolved (``read_availability_index`` hits the process-level index cache health_consolidator
+    just warmed), sums ``row_count``-else-``instrument_count`` for ``capture_status="captured"``
+    rows per written date, and diffs the two most recent written dates. This is the authoritative
+    write-truth signal for WS-D's composite health (D.1) — objects that actually landed, not the
+    log-scraped ``rows_out`` hint. Honest degradation: any read failure or <2 distinct written
+    dates yields ``(None, <reason>)``, never a false zero.
+
+    Lives here (bucket-only, not deployment-id-scoped) rather than in the per-deployment
+    ``/freshness`` route so both that route AND the composite-health `stalled` classifier
+    (``object_delta_for_asset_group`` below — batched ONE call per distinct asset_group per
+    census cycle, not once per VM entry) can share the same manifest read without a circular
+    import between ``deployment_freshness`` and ``deployments_inventory``.
+    """
+    try:
+        index = read_availability_index(bucket, columns=["date", "row_count", "instrument_count", "capture_status"])
+    except (OSError, ValueError, RuntimeError) as exc:
+        return None, f"manifest read failed: {exc}"
+    if index.empty:
+        return None, "manifest index is empty"
+    captured = index[index["capture_status"] == "captured"]
+    if captured.empty:
+        return None, "no captured rows in manifest index"
+    # Coerce to numeric FIRST — the availability index can store row_count / instrument_count
+    # as an object/string dtype (nullable or mixed), which made `row_count > 0` raise
+    # TypeError("'>' not supported between instances of 'str' and 'int'") and silently degrade
+    # EVERY object-delta to None, breaking the composite-health working/stalled signal that reads
+    # it. to_numeric(errors="coerce") turns unparseable cells into NaN → 0 (honest absence).
+    import pandas as pd  # lazy: pandas is only needed on this manifest-read path
+
+    row_count = pd.to_numeric(captured["row_count"], errors="coerce").fillna(0)
+    instrument_count = pd.to_numeric(captured["instrument_count"], errors="coerce").fillna(0)
+    counts = row_count.where(row_count > 0, instrument_count)
+    by_date = counts.groupby(captured["date"]).sum().sort_index()
+    if len(by_date) < 2:
+        return None, f"only {len(by_date)} distinct written date(s) in manifest — nothing to diff yet"
+    latest_date, prior_date = by_date.index[-1], by_date.index[-2]
+    delta = int(by_date.iloc[-1] - by_date.iloc[-2])
+    return delta, f"{latest_date} object count {by_date.iloc[-1]:.0f} vs {prior_date} {by_date.iloc[-2]:.0f}"
+
+
+def object_delta_for_asset_group(asset_group: str, now: datetime) -> tuple[int | None, str]:
+    """Object-count delta for an asset_group's market-data bucket — keyed by asset_group ALONE.
+
+    A thin combinator over ``consolidator_posture`` (bucket resolution) + ``object_delta_for_bucket``,
+    so a caller that needs this per DISTINCT asset_group (not per specific deployment_id) — e.g. the
+    composite-health `stalled` classifier looping many VM entries that share an asset_group — can
+    batch it exactly once per asset_group per cycle instead of re-deriving it per VM.
+    """
+    if asset_group not in _ASSET_GROUPS:
+        return None, f"asset_group {asset_group!r} has no availability-index to read freshness from"
+    posture = consolidator_posture(asset_group, now)  # type: ignore[arg-type]  # validated against _ASSET_GROUPS above
+    if not posture.bucket:
+        return None, posture.detail
+    return object_delta_for_bucket(posture.bucket)
 
 
 def build_consolidator_health(ag_entries: list[ConsolidatorAgHealth], now: datetime) -> ConsolidatorHealthResponse:
@@ -191,6 +287,8 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
             staleness_budget_seconds=budget,
             per_vm_shard_fallback_active=False,
             last_successful_run_at=now.isoformat(),
+            pending_shard_count=2,  # small in-flight backlog is normal (~1 merge cycle)
+            total_shard_count=6,
             detail="index heartbeat 42s old (<= 86400s budget)",
         ),
         ConsolidatorAgHealth(
@@ -201,6 +299,8 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
             staleness_budget_seconds=budget,
             per_vm_shard_fallback_active=True,
             last_successful_run_at=None,
+            pending_shard_count=47,  # consolidator behind → large unabsorbed backlog
+            total_shard_count=48,
             detail="index 90000s (> 86400s budget) while per-VM shards exist — consolidator behind/DOWN",
         ),
     ]
@@ -220,8 +320,8 @@ def get_consolidator_health() -> ConsolidatorHealthResponse:
     now = datetime.now(UTC)
     if _cfg.is_mock_mode():
         return _mock_response(now)
-    budget = resolve_consolidated_staleness_sec()
-    entries = [_ag_health(ag, budget, now) for ag in _ASSET_GROUPS]
+    default_budget = resolve_consolidated_staleness_sec()
+    entries = [_ag_health(ag, _budget_for(ag, default_budget), now, include_backlog=True) for ag in _ASSET_GROUPS]
     return build_consolidator_health(entries, now)
 
 

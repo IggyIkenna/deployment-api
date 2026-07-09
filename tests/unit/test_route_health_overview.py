@@ -254,3 +254,52 @@ def test_every_asset_group_resolves_a_market_data_bucket() -> None:
     for ag in _ASSET_GROUPS:
         bucket = resolve_bucket_name(cloud="gcp", kind=_market_data_kind(ag), asset_group=ag)
         assert bucket, f"{ag} resolved an empty bucket via kind {_market_data_kind(ag)!r}"
+
+
+_HC = "deployment_api.routes.health_consolidator"
+
+
+def test_ag_health_include_backlog_populates_pending_and_total() -> None:
+    """include_backlog=True → the per-VM shard backlog counts land on the posture."""
+    from deployment_api.routes.health_consolidator import _ag_health
+
+    with (
+        patch(f"{_HC}.resolve_bucket_name", return_value="market-data-tick-cefi"),
+        patch(f"{_HC}.get_storage_client", return_value=object()),
+        patch(f"{_HC}.consolidated_blob_age_sec", return_value=30.0),
+        patch(f"{_HC}.per_vm_shard_backlog", return_value=(2, 6)) as backlog,
+    ):
+        posture = _ag_health("cefi", budget=120, now=_FIXED_NOW, include_backlog=True)
+
+    assert posture.status == "ok"  # fresh index (30s <= 120s)
+    assert posture.pending_shard_count == 2
+    assert posture.total_shard_count == 6
+    backlog.assert_called_once()
+
+
+def test_ag_health_default_omits_backlog_and_never_lists_when_fresh() -> None:
+    """Default (freshness-route path) leaves backlog None and pays no shard-list when fresh."""
+    from deployment_api.routes.health_consolidator import _ag_health
+
+    with (
+        patch(f"{_HC}.resolve_bucket_name", return_value="market-data-tick-cefi"),
+        patch(f"{_HC}.get_storage_client", return_value=object()),
+        patch(f"{_HC}.consolidated_blob_age_sec", return_value=30.0),
+        patch(f"{_HC}.per_vm_shard_backlog") as backlog,
+        patch(f"{_HC}.per_vm_shards_exist") as exists,
+    ):
+        posture = _ag_health("cefi", budget=120, now=_FIXED_NOW)
+
+    assert posture.pending_shard_count is None
+    assert posture.total_shard_count is None
+    backlog.assert_not_called()
+    exists.assert_not_called()  # fresh index → no shard-list at all
+
+
+def test_budget_for_cefi_overrides_default_others_pass_through() -> None:
+    """cefi (daily-batch market-tick, ~5-min consolidator) gets its 86400s tolerance; others default."""
+    from deployment_api.routes.health_consolidator import _budget_for
+
+    assert _budget_for("cefi", 120) == 86400  # cadence-matched override
+    assert _budget_for("defi", 120) == 120  # ~per-minute consolidator → global default
+    assert _budget_for("tradfi", 999) == 999  # default flows through unchanged

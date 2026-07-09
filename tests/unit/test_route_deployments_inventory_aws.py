@@ -141,7 +141,7 @@ def test_build_aws_inventory_classifies_ec2_and_batch() -> None:
         )
     ]
 
-    items = build_aws_inventory(instances, batch_jobs, _lifecycle_for_name, None, _LOG_BUCKET)
+    items = build_aws_inventory(instances, batch_jobs, [], _lifecycle_for_name, None, _LOG_BUCKET)
     by_name = {i["name"]: i for i in items}
 
     # Every item is AWS and classified into exactly one umbrella.
@@ -179,7 +179,7 @@ def test_build_aws_inventory_terminated_exit_137_is_failed() -> None:
         launch_time=datetime(2026, 6, 22, 3, 0, tzinfo=UTC),
     )
     storage = _FakeStorageClient({(_LOG_BUCKET, EXIT_STATUS_BLOB.format(vm=inst.name)): b"137\n"})
-    items = build_aws_inventory([inst], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
+    items = build_aws_inventory([inst], [], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
     assert len(items) == 1
     item = items[0]
     assert item["cloud"] == "AWS"
@@ -202,7 +202,7 @@ def test_build_aws_inventory_terminated_no_exit_blob_is_stopped() -> None:
         launch_time=datetime(2026, 6, 22, tzinfo=UTC),
     )
     storage = _FakeStorageClient({})  # no EXIT_STATUS blob
-    items = build_aws_inventory([inst], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
+    items = build_aws_inventory([inst], [], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
     assert items[0]["status"] == "stopped"
     assert items[0]["exit_code"] is None
 
@@ -222,9 +222,134 @@ def test_build_aws_inventory_batch_failed_synthesises_nonzero() -> None:
         exit_code=None,  # infra failure → no container rc
         status_reason="Essential container in task exited",
     )
-    items = build_aws_inventory([], [job], _lifecycle_for_name, None, _LOG_BUCKET)
+    items = build_aws_inventory([], [job], [], _lifecycle_for_name, None, _LOG_BUCKET)
     assert items[0]["status"] == "failed"
     assert items[0]["exit_code"] == 1  # synthesised non-zero so the UI shows it red
+
+
+def test_build_aws_inventory_classifies_ecs_service_running() -> None:
+    from deployment_service.backends.aws_census import AwsEcsServiceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    svc = AwsEcsServiceCensus(
+        name="uts-strategy-prod",
+        cluster="uts-defi-prod",
+        desired_count=1,
+        running_count=1,
+        task_definition_revision=12,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 7, 1, 8, 0, tzinfo=UTC),
+    )
+    items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert len(items) == 1
+    item = items[0]
+    assert item["name"] == "uts-strategy-prod"
+    assert item["kind"] == "ECS_SERVICE"
+    assert item["cloud"] == "AWS"
+    # Services have no live/batch/paper/experiment phase (Open-Q1) — Mode is always NONE.
+    assert item["umbrella"] == "NONE"
+    assert item["status"] == "running"
+    assert item["last_run_at"] == "2026-07-01T08:00:00+00:00"
+    assert item["exit_code"] is None
+    # AWS Tier-0 free wins — already fetched by the census, surfaced onto the item.
+    assert item["cluster"] == "uts-defi-prod"
+    assert item["desired_count"] == 1
+    assert item["running_count"] == 1
+    assert item["task_definition_revision"] == 12
+
+
+def test_build_aws_inventory_ecs_service_scaled_to_zero_always_emitted() -> None:
+    """An intentionally scaled-to-zero service is still emitted (Open-Q7) — never filtered."""
+    from deployment_service.backends.aws_census import AwsEcsServiceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    svc = AwsEcsServiceCensus(
+        name="uts-features-prod",
+        cluster="uts-defi-prod",
+        desired_count=0,
+        running_count=0,
+        task_definition_revision=3,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=None,
+    )
+    items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert len(items) == 1
+    assert items[0]["status"] == "stopped"  # desired==0 → off on purpose, not a failure
+
+
+def test_build_aws_inventory_ecs_service_desired_but_not_running_is_unknown() -> None:
+    """desired>0 but nothing running is ambiguous pre-sub-taxonomy — never fabricated as failed."""
+    from deployment_service.backends.aws_census import AwsEcsServiceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    svc = AwsEcsServiceCensus(
+        name="uts-execution-prod",
+        cluster="uts-defi-prod",
+        desired_count=1,
+        running_count=0,
+        task_definition_revision=1,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=None,
+    )
+    items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert items[0]["status"] == "unknown"
+
+
+def test_build_aws_inventory_classifies_lambda_functions() -> None:
+    """A Lambda function census item → kind=LAMBDA, existence + config only."""
+    from deployment_service.backends.aws_census import AwsLambdaFunctionCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    active_fn = AwsLambdaFunctionCensus(
+        name="mtds-backfill-cefi-webhook",
+        function_arn="arn:aws:lambda:ap-northeast-1:427895769566:function:mtds-backfill-cefi-webhook",
+        runtime="python3.13",
+        memory_size_mb=256,
+        last_modified=datetime(2026, 6, 22, 9, 0, tzinfo=UTC),
+        state="Active",
+        package_type="Zip",
+    )
+    failed_fn = AwsLambdaFunctionCensus(
+        name="mtds-backfill-defi-relay",
+        function_arn="arn:aws:lambda:ap-northeast-1:427895769566:function:mtds-backfill-defi-relay",
+        runtime="nodejs20.x",
+        memory_size_mb=512,
+        last_modified=None,
+        state="Failed",
+        package_type="Zip",
+    )
+    items = build_aws_inventory([], [], [], _lifecycle_for_name, None, _LOG_BUCKET, [active_fn, failed_fn])
+    by_name = {i["name"]: i for i in items}
+
+    active = by_name["mtds-backfill-cefi-webhook"]
+    assert active["kind"] == "LAMBDA"
+    assert active["cloud"] == "AWS"
+    assert active["umbrella"] == "BATCH"
+    assert active["status"] == "running"
+    assert active["last_run_at"] == "2026-06-22T09:00:00+00:00"
+    assert active["exit_code"] is None  # existence-only census, no per-run exit code
+    # AWS Tier-0 free wins — already fetched by the census, surfaced onto the item.
+    assert active["runtime"] == "python3.13"
+    assert active["memory_size_mb"] == 256
+    assert active["package_type"] == "Zip"
+
+    failed = by_name["mtds-backfill-defi-relay"]
+    assert failed["status"] == "failed"
+    assert failed["last_run_at"] is None
+    assert failed["runtime"] == "nodejs20.x"
+    assert failed["memory_size_mb"] == 512
+
+
+def test_build_aws_inventory_lambda_defaults_to_empty_list() -> None:
+    """``lambda_functions=None`` (the default) never crashes — EC2/Batch-only callers unaffected."""
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    items = build_aws_inventory([], [], [], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert items == []
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +453,82 @@ def test_list_batch_census_discovers_submitted_job() -> None:
         assert "mtds-backfill-defi-20260622-aws" in names
 
 
+def test_list_ecs_census_discovers_service_across_clusters() -> None:
+    """A service on each of the two prod clusters is discovered, incl. at 0 desired."""
+    moto = pytest.importorskip("moto")
+    import boto3
+
+    with moto.mock_aws():
+        ecs = boto3.client("ecs", region_name=_REGION)
+        ecs.create_cluster(clusterName="uts-defi-prod")
+        ecs.create_cluster(clusterName="unified-trading-prod")
+        task_def = ecs.register_task_definition(
+            family="uts-strategy-prod",
+            containerDefinitions=[{"name": "app", "image": "busybox", "memory": 256}],
+        )["taskDefinition"]["taskDefinitionArn"]
+        ecs.create_service(
+            cluster="uts-defi-prod",
+            serviceName="uts-strategy-prod",
+            taskDefinition=task_def,
+            desiredCount=1,
+        )
+        # A scaled-to-zero service on the second cluster — must still be discovered.
+        ecs.create_service(
+            cluster="unified-trading-prod",
+            serviceName="uts-idle-prod",
+            taskDefinition=task_def,
+            desiredCount=0,
+        )
+
+        from deployment_service.backends.aws_census import list_ecs_census
+
+        census = list_ecs_census(region=_REGION, clusters=("uts-defi-prod", "unified-trading-prod"))
+        names = {c.name for c in census}
+        assert "uts-strategy-prod" in names
+        assert "uts-idle-prod" in names
+        found = next(c for c in census if c.name == "uts-strategy-prod")
+        assert found.cluster == "uts-defi-prod"
+        assert found.desired_count == 1
+        idle = next(c for c in census if c.name == "uts-idle-prod")
+        assert idle.desired_count == 0
+
+
+def test_list_lambda_census_discovers_deployed_function() -> None:
+    moto = pytest.importorskip("moto")
+    import io
+    import zipfile
+
+    import boto3
+
+    with moto.mock_aws():
+        iam = boto3.client("iam", region_name=_REGION)
+        role = iam.create_role(RoleName="lambda-role", AssumeRolePolicyDocument="{}")["Role"]["Arn"]
+
+        code_buf = io.BytesIO()
+        with zipfile.ZipFile(code_buf, "w") as zf:
+            zf.writestr("lambda_function.py", "def handler(event, context):\n    return {}\n")
+
+        fn_lambda = boto3.client("lambda", region_name=_REGION)
+        fn_lambda.create_function(
+            FunctionName="mtds-backfill-cefi-webhook",
+            Runtime="python3.13",
+            Role=role,
+            Handler="lambda_function.handler",
+            Code={"ZipFile": code_buf.getvalue()},
+            MemorySize=256,
+        )
+
+        from deployment_service.backends.aws_census import list_lambda_census
+
+        census = list_lambda_census(region=_REGION)
+        names = {c.name for c in census}
+        assert "mtds-backfill-cefi-webhook" in names
+        found = next(c for c in census if c.name == "mtds-backfill-cefi-webhook")
+        assert found.runtime == "python3.13"
+        assert found.memory_size_mb == 256
+        assert found.package_type == "Zip"
+
+
 # ---------------------------------------------------------------------------
 # Route — GCP unchanged when AWS census is empty (no regression)
 # ---------------------------------------------------------------------------
@@ -355,7 +556,10 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
             self.last_heartbeat_at = "2026-06-22T11:59:30Z"
             self.completed_at = None
             self.exit_code = None
+            self.rows_in = 0
             self.rows_out = 0
+            self.rows_error = 0
+            self.events_emitted = 0
 
     gcp_entry = _FakeEntry("cefi-binance-spot-20260622-gcp")
     mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
@@ -363,7 +567,7 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
     with (
         patch.object(mod, "_cfg") as mock_cfg,
         # The GCP VM census is read via the parallel loader seam — patch it directly.
-        patch.object(mod, "_load_gcp_vm_entries", return_value=[gcp_entry]),
+        patch.object(mod, "_load_gcp_vm_entries", return_value=([gcp_entry], {"cefi-binance-spot-20260622-gcp": {}})),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         # AWS census degrades to empty (no creds / boto3) — returns no AWS items.
         patch.object(mod, "load_aws_inventory", return_value=[]),
@@ -414,7 +618,7 @@ def test_inventory_route_includes_aws_items() -> None:
     with (
         patch.object(mod, "_cfg") as mock_cfg,
         # GCP VM census empty (no running VMs) — read via the parallel loader seam.
-        patch.object(mod, "_load_gcp_vm_entries", return_value=[]),
+        patch.object(mod, "_load_gcp_vm_entries", return_value=([], {})),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         patch.object(mod, "load_aws_inventory", return_value=aws_items),
     ):

@@ -34,7 +34,7 @@ from unified_api_contracts import ShardResponsibilityKind
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes.deployments_inventory import classify_vm_target
-from deployment_api.routes.health_consolidator import consolidator_posture
+from deployment_api.routes.health_consolidator import consolidator_posture, object_delta_for_bucket
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,6 +59,14 @@ class DeploymentFreshness(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mod
     staleness_budget_seconds: int | None = None
     per_vm_shard_fallback_active: bool = False
     oldest_available_at: str | None = None
+    # Object-count delta (WS-D D.1 `object_delta` — the AUTHORITATIVE write-truth signal,
+    # vs the log-scraped `rows_out` hint): captured-row count for the manifest's most recent
+    # written date minus the prior written date, for this asset_group. A manifest LOOKUP
+    # (read_availability_index reads the SAME consolidated index blob already resolved via
+    # `consolidator_posture` — zero new bucket walks). None when there's <2 distinct written
+    # dates to diff (empty / freshly-seeded index) or a manifest read fails (honest degradation).
+    object_delta: int | None = None
+    object_delta_detail: str = ""
     detail: str = ""
 
 
@@ -90,6 +98,8 @@ def _mock_freshness(deployment_id: str) -> DeploymentFreshness:
         staleness_budget_seconds=86400,
         per_vm_shard_fallback_active=False,
         oldest_available_at="2026-06-24T06:55:00+00:00",
+        object_delta=128,
+        object_delta_detail="2026-06-24 object count 4128 vs 2026-06-23 4000",
         detail="index heartbeat 42s old (<= 86400s budget)",
     )
 
@@ -127,6 +137,7 @@ def compute_freshness(deployment_id: str, now: datetime) -> DeploymentFreshness:
         )
 
     posture = consolidator_posture(asset_group, now)  # type: ignore[arg-type]  # validated against the AssetGroup literal set above
+    object_delta, object_delta_detail = object_delta_for_bucket(posture.bucket) if posture.bucket else (None, "")
     return DeploymentFreshness(
         deployment_id=deployment_id,
         responsibility=kind.value,
@@ -137,6 +148,8 @@ def compute_freshness(deployment_id: str, now: datetime) -> DeploymentFreshness:
         staleness_budget_seconds=posture.staleness_budget_seconds,
         per_vm_shard_fallback_active=posture.per_vm_shard_fallback_active,
         oldest_available_at=posture.last_successful_run_at,
+        object_delta=object_delta,
+        object_delta_detail=object_delta_detail,
         detail=posture.detail,
     )
 

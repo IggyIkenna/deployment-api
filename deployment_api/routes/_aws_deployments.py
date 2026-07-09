@@ -8,7 +8,7 @@ umbrellas with ``cloud=AWS`` so the ``/deployments`` UI renders GCP **and** AWS
 uniformly. AWS rides the identical ``DeploymentTarget`` / ``classify_deployment_target``
 contract — GCP behaviour is untouched.
 
-Two compute kinds, mirroring the GCP shape:
+Four compute kinds, mirroring the GCP shape:
 
 * **EC2 backfill VMs** (``deployment_service.backends.aws_census.list_ec2_census``) →
   ``DeploymentItem(kind="VM", cloud="AWS")``. Status from the EC2 instance state;
@@ -18,6 +18,18 @@ Two compute kinds, mirroring the GCP shape:
 * **AWS Batch Fargate jobs** (``list_batch_census``, the Cloud-Run analogue) →
   ``DeploymentItem(kind="CLOUD_RUN_JOB", cloud="AWS")``. Status + exit_code from the
   Batch job description directly (Batch reports a container exit code).
+* **AWS ECS/Fargate services** (``list_ecs_census``, across the prod clusters) →
+  ``DeploymentItem(kind="ECS_SERVICE", cloud="AWS", umbrella="NONE")``. Always-on —
+  no live/batch/paper/experiment phase, so umbrella is always ``NONE`` (never derived
+  via ``classify_deployment_target``, same as a Cloud-Run job's ``lifecycle_class=""``
+  precedent in ``cloud_run_job_registry.py``). Always emitted, even at 0 running
+  tasks — an intentional scale-to-zero must stay visible, not vanish (WS-B Open-Q7).
+  Status is a conservative desired-vs-running placeholder; the full ``serving``/
+  ``scaled-to-zero``/``dead``/``degraded`` sub-taxonomy is a separate WS-D task.
+* **Lambda functions** (``list_lambda_census``) → ``DeploymentItem(kind="LAMBDA",
+  cloud="AWS")``. Existence + config only (``Runtime``/``MemorySize``/``State`` from a
+  single paginated ``list_functions`` call) — no invocation/error stats, those are
+  CloudWatch-only (no host/cgroup to sample at the edge on Lambda).
 
 Cloud-agnostic boundaries: the AWS control plane is reached ONLY through the sanctioned
 ``deployment_service.backends.aws_census`` seam (deferred boto3) — never an inline
@@ -45,13 +57,16 @@ from unified_api_contracts import (
     DeploymentCloud,
     DeploymentKind,
     DeploymentTarget,
+    DeploymentUmbrella,
 )
 from unified_trading_library import StorageClient, get_storage_client
 
 if TYPE_CHECKING:
     from deployment_service.backends.aws_census import (
         AwsBatchJobCensus,
+        AwsEcsServiceCensus,
         AwsInstanceCensus,
+        AwsLambdaFunctionCensus,
     )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +108,17 @@ _BATCH_STATUS_MAP: dict[str, str] = {
     "RUNNING": "running",
     "SUCCEEDED": "succeeded",
     "FAILED": "failed",
+}
+
+# Lambda function State → inventory wire status. Existence-only census: "running"
+# here means "deployed and ready to invoke", not "currently executing" (Lambda has
+# no persistent running process to observe) — the honest existence-only reading the
+# plan scopes this census to (no CloudWatch invocation/error signal).
+_LAMBDA_STATE_MAP: dict[str, str] = {
+    "Active": "running",
+    "Pending": "pending",
+    "Failed": "failed",
+    "Inactive": "stopped",
 }
 
 
@@ -217,18 +243,111 @@ def _batch_item(
     }
 
 
+def _ecs_status(census: AwsEcsServiceCensus) -> str:
+    """A conservative desired-vs-running status (the full service sub-taxonomy is a
+    separate WS-D task — this never fabricates a ``serving``/``dead`` verdict this
+    data alone can't support).
+
+    ``running_count>0`` → ``running``; ``desired_count==0`` → ``stopped`` (an
+    explicit scale-to-zero, off on purpose); otherwise ``unknown`` (desired>0 but
+    nothing running — exactly the ambiguous case the sub-taxonomy task resolves).
+    """
+    if census.running_count > 0:
+        return "running"
+    if census.desired_count == 0:
+        return "stopped"
+    return "unknown"
+
+
+def _ecs_service_item(census: AwsEcsServiceCensus) -> DeploymentItemDict:
+    """Classify one ECS service into an inventory item dict.
+
+    Services have no live/batch/paper/experiment phase (Open-Q1) — umbrella is
+    always ``DeploymentUmbrella.NONE``, constructed directly rather than via
+    ``classify_deployment_target`` (which requires a VM ``lifecycle_class``), the
+    same precedent ``cloud_run_job_registry.py`` sets for kinds with no natural
+    lifecycle_class. The caller never filters these out (Open-Q7: always emitted,
+    even at 0 running tasks). ``asset_group`` stays ``""`` (cross-asset infra) —
+    ECS service creation carries no asset-group tag today (see
+    ``deployment-service/scripts/aws/deploy-ecs-fargate.sh``).
+    """
+    last_run = census.updated_at or census.created_at
+    return {
+        "name": census.name,
+        "kind": DeploymentKind.ECS_SERVICE.value,
+        "umbrella": DeploymentUmbrella.NONE.value,
+        "cloud": DeploymentCloud.AWS.value,
+        "service": census.name,
+        "asset_group": "",
+        "status": _ecs_status(census),
+        "last_run_at": last_run.isoformat() if last_run else None,
+        "exit_code": None,
+        "heartbeat_age_seconds": None,
+        "captured_progress": None,
+        "run_log_uri": "",
+        "cluster": census.cluster,
+        "desired_count": census.desired_count,
+        "running_count": census.running_count,
+        "task_definition_revision": census.task_definition_revision,
+    }
+
+
+def _lambda_item(
+    fn: AwsLambdaFunctionCensus,
+    lifecycle_for_name: LifecycleResolver,
+) -> DeploymentItemDict | None:
+    """Classify one Lambda function into an inventory item dict — existence + config only.
+
+    No ``exit_code`` / ``heartbeat_age_seconds`` / ``captured_progress`` (Lambda has no
+    single "run" with an exit code, no heartbeat, no manifest write-progress in this
+    census — invocation-level signal is the scoped CloudWatch exception, not added
+    here per the plan's "default to existence-only" instruction).
+    """
+    try:
+        target: DeploymentTarget = classify_deployment_target(
+            fn.name,
+            lifecycle_class=lifecycle_for_name(fn.name),
+            cloud=DeploymentCloud.AWS,
+            kind=DeploymentKind.LAMBDA,
+        )
+    except UnclassifiedDeploymentError as exc:
+        logger.warning("AWS inventory: skipping unclassifiable Lambda function %r: %s", fn.name, exc)
+        return None
+    return {
+        "name": fn.name,
+        "kind": target.kind.value,
+        "umbrella": target.umbrella.value,
+        "cloud": target.cloud.value,
+        "service": target.service,
+        "asset_group": target.asset_group,
+        "status": _LAMBDA_STATE_MAP.get(fn.state, "unknown"),
+        "last_run_at": fn.last_modified.isoformat() if fn.last_modified else None,
+        "exit_code": None,
+        "heartbeat_age_seconds": None,
+        "captured_progress": None,
+        "run_log_uri": "",
+        "runtime": fn.runtime,
+        "memory_size_mb": fn.memory_size_mb,
+        "package_type": fn.package_type,
+    }
+
+
 def build_aws_inventory(
     instances: list[AwsInstanceCensus],
     batch_jobs: list[AwsBatchJobCensus],
+    ecs_services: list[AwsEcsServiceCensus],
     lifecycle_for_name: LifecycleResolver,
     storage_client: StorageClient | None,
     log_bucket: str,
+    lambda_functions: list[AwsLambdaFunctionCensus] | None = None,
 ) -> list[DeploymentItemDict]:
-    """Assemble AWS inventory item dicts (EC2 VMs + Batch jobs), classified by umbrella.
+    """Assemble AWS inventory item dicts (EC2 VMs + Batch jobs + ECS services + Lambda
+    functions), classified by umbrella.
 
     Pure over its inputs (the census lists + a lifecycle resolver + the EXIT_STATUS
     storage client) so it is moto-testable without a live route. An unclassifiable
-    name is logged + skipped per-row (never crashes the inventory).
+    VM/job/Lambda name is logged + skipped per-row (never crashes the inventory); ECS
+    services always classify (no lifecycle_class needed — see ``_ecs_service_item``).
     """
     items: list[DeploymentItemDict] = []
     for inst in instances:
@@ -239,6 +358,12 @@ def build_aws_inventory(
         item = _batch_item(job, lifecycle_for_name)
         if item is not None:
             items.append(item)
+    for svc in ecs_services:
+        items.append(_ecs_service_item(svc))
+    for fn in lambda_functions or []:
+        lambda_deployment_item = _lambda_item(fn, lifecycle_for_name)
+        if lambda_deployment_item is not None:
+            items.append(lambda_deployment_item)
     return items
 
 
@@ -250,10 +375,12 @@ def load_aws_inventory(
 ) -> list[DeploymentItemDict]:
     """Census + classify the live AWS estate into inventory item dicts.
 
-    Calls the sanctioned ``aws_census`` seam (deferred boto3) for the EC2 + Batch
-    census, resolves the durable-log S3 bucket from the account id, and builds the
-    classified items. The census itself degrades to an empty list on any AWS error
-    (no creds / boto3 absent / API down), so the GCP inventory is never blocked.
+    Calls the sanctioned ``aws_census`` seam (deferred boto3) for the EC2 + Batch +
+    Lambda census, resolves the durable-log S3 bucket from the account id, and builds
+    the classified items. Each census kind degrades to an empty list independently on
+    any AWS error (no creds / boto3 absent / API down / unsupported region) — a Lambda
+    census failure never blocks EC2/Batch and vice versa (shard-level failure isolation
+    across kinds).
 
     The census import is deferred (not a top-level import) to match the
     ``_cloud_run_executions`` ``_gcp_sdk`` pattern: ``deployment_service.backends`` pulls
@@ -273,18 +400,27 @@ def load_aws_inventory(
     if census_spec is None:
         logger.warning("AWS census seam unavailable (degrading to no AWS items)")
         return []
-    from deployment_service.backends.aws_census import list_batch_census, list_ec2_census
+    from deployment_service.backends.aws_census import (
+        list_batch_census,
+        list_ec2_census,
+        list_ecs_census,
+        list_lambda_census,
+    )
 
     instances = list_ec2_census(region=region)
     batch_jobs = list_batch_census(region=region)
-    if not instances and not batch_jobs:
+    ecs_services = list_ecs_census(region=region)
+    lambda_functions = list_lambda_census(region=region)
+    if not instances and not batch_jobs and not ecs_services and not lambda_functions:
         return []
     log_bucket = _AWS_LOG_BUCKET_TPL.format(account=aws_account_id)
     # Only construct an S3 client when there is a terminal instance whose exit code we
     # actually need (running-only census needs no EXIT_STATUS read).
     needs_exit_read = any(i.state in _EC2_TERMINAL_STATES for i in instances)
     storage_client = _aws_storage_client(region) if needs_exit_read else None
-    return build_aws_inventory(instances, batch_jobs, lifecycle_for_name, storage_client, log_bucket)
+    return build_aws_inventory(
+        instances, batch_jobs, ecs_services, lifecycle_for_name, storage_client, log_bucket, lambda_functions
+    )
 
 
 __all__ = [
