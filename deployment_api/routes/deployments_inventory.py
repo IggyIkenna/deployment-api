@@ -67,7 +67,7 @@ from unified_api_contracts import (
     VmPrefixSpec,
     classify_vm_name,
 )
-from unified_trading_library import StorageClient, get_storage_client
+from unified_trading_library import StorageClient, download_from_storage, get_storage_client, upload_to_storage
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes._aws_deployments import load_aws_inventory
@@ -151,6 +151,22 @@ _inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="
 # second source of truth.
 _vm_entry_by_name_cache: dict[str, DeploymentRegistryEntry] = {}
 _vm_entry_by_name_lock = threading.Lock()
+
+# Shared GCS alert ledger (same store notify-slack.yml + agent-orchestrator's watchers
+# write to) — GET /api/alerts reads it via _repo_ci_alerts.py, no reader-side change needed.
+_ALERTS_BUCKET = "unified-trading-cicd-events"
+# D.3 composite states this todo alerts on. "stalled" cannot occur yet (its manifest
+# object-delta signal is a separate, not-yet-shipped sibling todo — see
+# _composite_health_status) but is included so no code change is needed once it lands.
+_ALERT_HEALTH_STATES = frozenset({"oom-risk", "stalled"})
+
+# In-process last-alerted composite_health_status per VM name — fires an alert only on a
+# fresh TRANSITION into an alertable state, never on every ~45s cache-refresh poll while the
+# state persists. Resets on process restart (acceptable: at most one re-alert per VM already
+# in an alerting state, self-corrects next cycle — no GCS read needed to bootstrap it, D.4's
+# "no new central pull" cost budget).
+_last_alerted_health: dict[str, str | None] = {}
+_last_alerted_health_lock = threading.Lock()
 
 
 class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -418,6 +434,62 @@ def _composite_health_status(
     if entry.io_write_rate_bytes_sec > 0 or entry.net_recv_rate_bytes_sec > 0:
         return "working"
     return "unknown"
+
+
+def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, message: str, dedup_key: str) -> None:
+    """Append one JSONL row to the shared GCS alert ledger — best-effort, never raises.
+
+    Mirrors agent-orchestrator's ``notifications.slack._persist_to_gcs`` write shape exactly
+    (same bucket/path/row fields; ``repo`` names the writing SERVICE, not the alerting VM) so
+    ``GET /api/alerts`` (``_repo_ci_alerts.py``'s ``_parse_line``) picks these up alongside
+    CI/CD + other watcher alerts with zero reader-side changes. Shard-level isolation: a
+    ledger-write failure logs a warning and never breaks the inventory computation it rides on.
+    """
+    try:
+        date = datetime.now(UTC).strftime("%Y-%m-%d")
+        blob_path = f"cicd/alerts/{date}/alerts.jsonl"
+        row: dict[str, object] = {
+            "event_type": "slack_alert",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "repo": "deployment-api",
+            "workflow_name": workflow_name,
+            "severity": severity,
+            "conclusion": None,
+            "message": message,
+            "run_url": "",
+            "dedup_key": dedup_key,
+            "alert_class": alert_class,
+        }
+        line = json.dumps(row)
+        try:
+            existing = download_from_storage(_ALERTS_BUCKET, blob_path).decode("utf-8", errors="replace")
+        except (OSError, ValueError, RuntimeError):  # blob may not exist yet -> start fresh
+            existing = ""
+        new_content = (existing.rstrip("\n") + "\n" + line + "\n").lstrip("\n")
+        upload_to_storage(_ALERTS_BUCKET, blob_path, new_content.encode("utf-8"), content_type="application/jsonl")
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("inventory: alert-ledger persist failed (%s/%s): %s", alert_class, workflow_name, exc)
+
+
+def _alert_on_health_transition(item: DeploymentItem) -> None:
+    """Fire a ledger alert on a fresh transition INTO oom-risk/stalled (never a repeat-poll spam).
+
+    Always records the item's current state (even a non-alertable one, e.g. recovery back to
+    ``working``) so the NEXT transition into an alertable state is detected correctly.
+    """
+    status = item.composite_health_status
+    with _last_alerted_health_lock:
+        previous = _last_alerted_health.get(item.name)
+        _last_alerted_health[item.name] = status
+    if status is None or status not in _ALERT_HEALTH_STATES or status == previous:
+        return
+    _persist_alert(
+        alert_class=status,  # "oom-risk" | "stalled"
+        workflow_name=f"vm-health-{item.name}",
+        severity="CRITICAL" if status == "oom-risk" else "WARNING",
+        message=f"{item.name} ({item.service}/{item.asset_group}) is {status}",
+        dedup_key=f"vm-health-{item.name}-{status}",
+    )
 
 
 def _vm_item(
@@ -1000,7 +1072,8 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
             raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
 
         cloud_run_status = latest_execution_by_job(project_id)
-        items.extend(build_inventory(vm_entries, cloud_run_status, now, vm_details_by_name))
+        gcp_items = build_inventory(vm_entries, cloud_run_status, now, vm_details_by_name)
+        items.extend(gcp_items)
 
         with _vm_entry_by_name_lock:
             _vm_entry_by_name_cache.clear()
@@ -1008,6 +1081,10 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
 
         cloud_function_status = list_cloud_functions(project_id)
         items.extend(_cloud_function_item(status) for status in cloud_function_status.values())
+
+        for vm_item in gcp_items:
+            if vm_item.kind == DeploymentKind.VM.value:
+                _alert_on_health_transition(vm_item)
 
     if want_aws:
         items.extend(_load_aws_items(now))

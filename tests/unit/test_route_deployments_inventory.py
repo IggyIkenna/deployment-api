@@ -425,6 +425,115 @@ def test_cloud_function_item_builds_deployment_item() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Alerts: fire on transition into oom-risk/stalled, never on a repeat-poll
+# ---------------------------------------------------------------------------
+
+
+def _health_item(name: str, composite_health_status: str | None) -> object:
+    from deployment_api.routes.deployments_inventory import DeploymentItem
+
+    return DeploymentItem(
+        name=name,
+        kind="VM",
+        umbrella="BATCH",
+        cloud="GCP",
+        service="cefi-binance-spot",
+        asset_group="cefi",
+        status="running",
+        composite_health_status=composite_health_status,
+    )
+
+
+def test_alert_on_health_transition_fires_once_per_transition() -> None:
+    """deployment_obs_backend_kinds_health-018: alert only on a FRESH transition, never
+    a repeat while the same alertable state persists across polls."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    _inv_mod._last_alerted_health.clear()  # pyright: ignore[reportPrivateUsage]
+    name = "cefi-binance-spot-20260622-014158"
+
+    with patch.object(_inv_mod, "_persist_alert") as mock_persist:
+        _inv_mod._alert_on_health_transition(_health_item(name, "oom-risk"))  # pyright: ignore[reportPrivateUsage]
+        # Same state next poll -> no re-fire.
+        _inv_mod._alert_on_health_transition(_health_item(name, "oom-risk"))  # pyright: ignore[reportPrivateUsage]
+    assert mock_persist.call_count == 1
+    call_kwargs = mock_persist.call_args.kwargs
+    assert call_kwargs["alert_class"] == "oom-risk"
+    assert call_kwargs["severity"] == "CRITICAL"
+    assert name in call_kwargs["workflow_name"]
+
+    with patch.object(_inv_mod, "_persist_alert") as mock_persist:
+        # Recovers -> not alertable, no fire, but records the state.
+        _inv_mod._alert_on_health_transition(_health_item(name, "working"))  # pyright: ignore[reportPrivateUsage]
+        # Re-enters oom-risk -> a NEW transition -> fires again.
+        _inv_mod._alert_on_health_transition(_health_item(name, "oom-risk"))  # pyright: ignore[reportPrivateUsage]
+    assert mock_persist.call_count == 1
+
+
+def test_alert_on_health_transition_ignores_non_alertable_states() -> None:
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    _inv_mod._last_alerted_health.clear()  # pyright: ignore[reportPrivateUsage]
+    with patch.object(_inv_mod, "_persist_alert") as mock_persist:
+        for status in ("working", "hung", "dead", "disk-full", "unknown", None):
+            _inv_mod._alert_on_health_transition(_health_item("vm-a", status))  # pyright: ignore[reportPrivateUsage]
+    mock_persist.assert_not_called()
+
+
+def test_persist_alert_writes_expected_row_shape() -> None:
+    """The ledger row mirrors agent-orchestrator's _persist_to_gcs shape exactly, so
+    GET /api/alerts (_repo_ci_alerts.py's _parse_line) picks it up with no reader change."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    written_bucket = ""
+    written_path = ""
+    written_data = b""
+
+    def _fake_download(bucket: str, path: str) -> bytes:
+        raise FileNotFoundError("no existing blob")
+
+    def _fake_upload(bucket: str, path: str, data: bytes, content_type: str | None = None) -> str:
+        nonlocal written_bucket, written_path, written_data
+        written_bucket, written_path, written_data = bucket, path, data
+        return f"gs://{bucket}/{path}"
+
+    with (
+        patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
+        patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
+    ):
+        _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
+            alert_class="oom-risk",
+            workflow_name="vm-health-cefi-binance-spot",
+            severity="CRITICAL",
+            message="cefi-binance-spot is oom-risk",
+            dedup_key="vm-health-cefi-binance-spot-oom-risk",
+        )
+    assert written_bucket == "unified-trading-cicd-events"
+    assert written_path.startswith("cicd/alerts/")
+    assert written_path.endswith("/alerts.jsonl")
+    row = json.loads(written_data.decode("utf-8").strip())
+    assert row["event_type"] == "slack_alert"
+    assert row["alert_class"] == "oom-risk"
+    assert row["repo"] == "deployment-api"
+    assert row["workflow_name"] == "vm-health-cefi-binance-spot"
+    assert row["severity"] == "CRITICAL"
+
+
+def test_persist_alert_never_raises_on_storage_failure() -> None:
+    """Shard-level isolation: a ledger-write failure never breaks the inventory computation."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    with patch.object(_inv_mod, "download_from_storage", side_effect=RuntimeError("gcs down")):
+        _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
+            alert_class="oom-risk",
+            workflow_name="vm-health-x",
+            severity="CRITICAL",
+            message="x is oom-risk",
+            dedup_key="vm-health-x-oom-risk",
+        )  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # build_umbrella_summary — rollup
 # ---------------------------------------------------------------------------
 
