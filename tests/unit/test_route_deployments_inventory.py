@@ -99,11 +99,19 @@ def test_build_inventory_classifies_vms_and_jobs() -> None:
     items = build_inventory(_vm_entries(), cr_status, _FIXED_NOW)  # type: ignore[arg-type]
     by_name = {i.name: i for i in items}
 
-    # All 4 VMs + every Cloud Run job present.
+    # All 4 VMs + exactly the LIVE Cloud Run jobs (dynamic census — one row per
+    # live job in cr_status, NOT the full 61-entry static registry).
     vm_items = [i for i in items if i.kind == "VM"]
     job_items = [i for i in items if i.kind == "CLOUD_RUN_JOB"]
     assert len(vm_items) == 4
-    assert len(job_items) >= 50  # CLOUD_RUN_JOBS has 61 classified jobs
+    assert len(job_items) == len(cr_status)
+
+    # The live job binds to its registry stem's classification + status.
+    consolidator = by_name["prd-manifest-consolidator-cefi"]
+    assert consolidator.service == "manifest-consolidator"
+    assert consolidator.asset_group == "cefi"
+    assert consolidator.umbrella == "BATCH"
+    assert consolidator.status == "succeeded"
 
     # Umbrella classification.
     assert by_name["cefi-binance-spot-20260622-014158"].umbrella == "BATCH"
@@ -140,6 +148,32 @@ def test_build_inventory_stale_running_vm() -> None:
     vm = next(i for i in items if i.name == "cefi-okx-spot-20260622")
     assert vm.status == "stale"
     assert vm.heartbeat_age_seconds == 1_200
+
+
+def test_off_pattern_live_cloud_run_job_is_not_hidden() -> None:
+    """The registry is a classification HINT, not an allow-list — a live job with
+    no matching registry stem must still surface a row (the census bug this task
+    fixes), classified via the honest BATCH default rather than dropped.
+    """
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    cr_status = {
+        "prd-oddspapi-sports-scraper": CloudRunExecutionStatus(
+            job_name="prd-oddspapi-sports-scraper",
+            status="succeeded",
+            last_run_at="2026-07-09T06:00:00Z",
+            exit_code=0,
+            log_uri="",
+        )
+    }
+    items = build_inventory([], cr_status, _FIXED_NOW)
+    assert len(items) == 1
+    off_pattern = items[0]
+    assert off_pattern.name == "prd-oddspapi-sports-scraper"
+    assert off_pattern.kind == "CLOUD_RUN_JOB"
+    assert off_pattern.umbrella == "BATCH"
+    assert off_pattern.status == "succeeded"
 
 
 def test_cloud_run_job_without_live_status_is_unknown() -> None:

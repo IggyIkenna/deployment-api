@@ -20,9 +20,12 @@ package that already owns ``GET /api/deployments`` + ``/api/deployments/{id}``):
   (the /repos-overview equivalent).
 
 Reuse: VM rows come from the SAME deployment registry ``/api/vm-deployments`` reads
-(``DeploymentsRegistry``); Cloud Run rows come from ``CLOUD_RUN_JOBS`` enriched with
-``latest_execution_by_job``. Classification is the single deployment-service
-``classify_deployment_target`` resolver — never re-derived here.
+(``DeploymentsRegistry``); Cloud Run rows census the LIVE job list from
+``latest_execution_by_job`` (``run_v2.JobsClient.list_jobs``) — ``CLOUD_RUN_JOBS`` is a
+classification HINT (stem match), not an allow-list, so an off-pattern live job still
+gets a row (degrades to the static registry only when the live list itself fails).
+Classification is the single deployment-service ``classify_deployment_target``
+resolver — never re-derived here.
 
 SSOT: ``plans/active/deployment_observability_parity_live_batch_paper_2026_06_22.md``
 Phase 1.
@@ -292,7 +295,7 @@ def _vm_item(entry: DeploymentRegistryEntry, now: datetime) -> DeploymentItem:
 
 
 # ---------------------------------------------------------------------------
-# Cloud Run job items (classified registry + latest-execution enrichment)
+# Cloud Run job items (dynamic live census + registry classification hints)
 # ---------------------------------------------------------------------------
 
 
@@ -315,8 +318,70 @@ def _cloud_run_status_for(
     return None
 
 
+def _match_registered_job(job_name: str) -> DeploymentTarget | None:
+    """Bind a LIVE Cloud Run job name to its classified registry stem — a HINT,
+    not an allow-list. Exact stem match first, then suffix/contains (the same
+    rule ``_cloud_run_status_for`` applies in the other direction). ``None`` when
+    no registry entry matches — the caller derives a classification instead of
+    dropping the job from the census.
+    """
+    for target in CLOUD_RUN_JOBS:
+        if target.name == job_name:
+            return target
+    for target in CLOUD_RUN_JOBS:
+        stem = target.name
+        if job_name.endswith(f"-{stem}") or stem in job_name:
+            return target
+    return None
+
+
+def _classify_live_cloud_run_job(job_name: str) -> DeploymentTarget:
+    """Classify a LIVE Cloud Run job — the registry stem as a HINT, else the
+    honest BATCH default. Mirrors the VM inventory's unregistered-prefix degrade
+    (``_DEFAULT_LIFECYCLE``): the registry's own docstring classification note is
+    "audits / consolidator / catalogue / ... -> BATCH", so an off-pattern job is
+    overwhelmingly infra/audit — classify it, never hide it.
+    """
+    registered = _match_registered_job(job_name)
+    if registered is not None:
+        return registered
+    return classify_deployment_target(
+        job_name,
+        lifecycle_class=LifecycleClass.EPHEMERAL_BATCH.value,
+        cloud=DeploymentCloud.GCP,
+        kind=DeploymentKind.CLOUD_RUN_JOB,
+    )
+
+
+def _cloud_run_item_for_live_job(job_name: str, live: CloudRunExecutionStatus) -> DeploymentItem:
+    """Build an inventory item for ONE live Cloud Run job (the dynamic census path).
+
+    The wire ``name`` is the actual live job name, not the registry stem — an
+    off-pattern job (no registry match) still gets its own row.
+    """
+    target = _classify_live_cloud_run_job(job_name)
+    return DeploymentItem(
+        name=job_name,
+        kind=target.kind.value,
+        umbrella=target.umbrella.value,
+        cloud=target.cloud.value,
+        service=target.service,
+        asset_group=target.asset_group,
+        status=live.status,
+        last_run_at=live.last_run_at,
+        exit_code=live.exit_code,
+        heartbeat_age_seconds=None,
+        captured_progress=None,
+        run_log_uri=live.log_uri,
+    )
+
+
 def _cloud_run_item(target: DeploymentTarget, by_job: dict[str, CloudRunExecutionStatus]) -> DeploymentItem:
-    """Build an inventory item from a classified Cloud Run job + its live status."""
+    """Build a registry-driven inventory item — the DEGRADED-path fallback only,
+    used when the live Cloud Run job list itself failed (empty ``by_job``), so the
+    census still shows the classified registry with status="unknown" rather than
+    going empty.
+    """
     live = _cloud_run_status_for(target, by_job)
     if live is None:
         return DeploymentItem(
@@ -359,10 +424,17 @@ def build_inventory(
     cloud_run_status: dict[str, CloudRunExecutionStatus],
     now: datetime,
 ) -> list[DeploymentItem]:
-    """Assemble the full unified inventory (VMs + classified Cloud Run jobs).
+    """Assemble the full unified inventory (VMs + Cloud Run jobs).
 
     A VM whose name cannot be classified is logged + skipped (never crashes the
     inventory) — the no-silent-default classifier raises, we degrade per-row.
+
+    Cloud Run jobs census the LIVE job list (``cloud_run_status`` keys, already
+    fetched by ``latest_execution_by_job``'s ``run_v2.JobsClient.list_jobs`` — no
+    new API call) — ``CLOUD_RUN_JOBS`` is a classification HINT, not an allow-list,
+    so an off-pattern job (no registry match) still gets a row instead of hiding.
+    Only when the live list itself is empty (the GCP call failed) does the census
+    degrade to the static registry with status="unknown" (never an empty census).
     """
     items: list[DeploymentItem] = []
     for entry in vm_entries:
@@ -370,8 +442,12 @@ def build_inventory(
             items.append(_vm_item(entry, now))
         except UnclassifiedDeploymentError as exc:
             logger.warning("inventory: skipping unclassifiable VM %r: %s", entry.vm_name, exc)
-    for target in CLOUD_RUN_JOBS:
-        items.append(_cloud_run_item(target, cloud_run_status))
+    if cloud_run_status:
+        for job_name, status in cloud_run_status.items():
+            items.append(_cloud_run_item_for_live_job(job_name, status))
+    else:
+        for target in CLOUD_RUN_JOBS:
+            items.append(_cloud_run_item(target, cloud_run_status))
     return items
 
 
