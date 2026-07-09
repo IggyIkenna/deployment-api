@@ -652,6 +652,80 @@ def test_breakdown_bucket_splits_net_cost_into_components(monkeypatch: pytest.Mo
     assert cefi["storage"] > cefi["operations"]
 
 
+def test_breakdown_caps_to_top_n_with_reconciling_other_and_unattributed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A high-cardinality dimension shows the top _BREAKDOWN_LIMIT groups + an 'Other (N more)' roll-up
+    (+ an 'Unattributed' row for resource-less cost); the total equals the TRUE window total (not the
+    shrunk top-N sum) and the shown rows sum to it EXACTLY — the "Other" row absorbs the residual."""
+    recs = [
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Compute Engine",
+            resource_id=f"vm-{i:03d}",
+            resource_kind="vm",
+            region="asia-northeast1",
+            cost=float(150 - i),  # 150 distinct resources, descending cost -> forces the top-100 cap
+        )
+        for i in range(150)
+    ]
+    # resource-less spend (no resource_id) -> surfaced as the "Unattributed" row, not dropped
+    recs.append(
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Run",
+            resource_id="",
+            resource_kind="other",
+            region="asia-northeast1",
+            cost=42.0,
+        )
+    )
+    monkeypatch.setattr(svc, "gcp_facts", lambda *a, **k: recs)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("resource", "gcp", days=2)
+    real = [row for row in r.rows if not row.is_aggregate]
+    agg = [row for row in r.rows if row.is_aggregate]
+
+    expected_total = round(sum(x.cost for x in recs), 2)  # 11325 (vms) + 42 (unattributed)
+    assert r.total == pytest.approx(expected_total, abs=0.01)
+    assert r.total_groups == 150  # distinct resources; the unattributed cost is NOT a group
+    assert len(real) == svc._BREAKDOWN_LIMIT  # capped to the top 100
+    assert any(row.label.startswith("Other (") for row in agg)
+    assert any(row.label.startswith("Unattributed") and row.cost == pytest.approx(42.0, abs=0.01) for row in agg)
+    # shown rows (top 100 + Other + Unattributed) sum to the header total EXACTLY
+    assert round(sum(row.cost for row in r.rows), 2) == pytest.approx(r.total, abs=0.01)
+
+
+def test_breakdown_no_cap_below_limit_has_no_aggregate_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dimension with fewer than _BREAKDOWN_LIMIT groups shows every group and NO roll-up row."""
+    recs = [
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service=f"Service {i}",
+            resource_id=f"r-{i}",
+            resource_kind="other",
+            region="asia-northeast1",
+            cost=10.0,
+        )
+        for i in range(5)
+    ]
+    monkeypatch.setattr(svc, "gcp_facts", lambda *a, **k: recs)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("service", "gcp", days=2)
+    assert r.total_groups == 5
+    assert all(not row.is_aggregate for row in r.rows)
+    assert r.total == pytest.approx(50.0, abs=0.01)
+
+
 def test_breakdown_resource_and_service_expose_purchase_option(monkeypatch: pytest.MonkeyPatch) -> None:
     """A resource/service row folds to 'spot' if ANY of its underlying SKU lines is spot-priced —
     the SPOT-VMs HARD RULE question is "did any spot cost show up here", not an arbitrary pick."""

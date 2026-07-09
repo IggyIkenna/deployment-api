@@ -41,7 +41,7 @@ CLOUD_ORDER = [CLOUD_GCP, CLOUD_AWS, CLOUD_GITHUB]
 _PROVISIONAL_TRAILING_DAYS = 2
 _MAX_DAYS = 366
 _DEFAULT_DAYS = 30
-_BREAKDOWN_LIMIT = 50
+_BREAKDOWN_LIMIT = 100
 
 # GCP bills storage as GiB-months; a day's usage_amount is that day's fraction of a
 # calendar month, so summing across the window and rescaling by the average days/month
@@ -253,27 +253,108 @@ class CostObservabilityService:
         if cloud != "all":
             recs = [r for r in recs if r.cloud == cloud]
 
+        # True totals for this dimension's SCOPE, summed from RAW records (not from rounded per-group
+        # rows) so every tab's header total equals the KPI/summary to the cent — the cap + per-group
+        # rounding residual are absorbed by the "Other" row, never left as a cross-tab mismatch.
+        # Bucket scope is buckets only; every other dimension covers all records (resource incl. the
+        # unattributed tail, which is surfaced as its own row below).
+        covered = [r for r in recs if r.resource_kind == KIND_BUCKET] if dimension == "bucket" else recs
+        t_net = t_gross = t_credit = 0.0
+        for r in covered:
+            t_net += _net(r)
+            t_gross += r.cost
+            t_credit += r.credit
+        totals = (round(t_net, 2), round(t_gross, 2), round(t_credit, 2))
+        total = totals[0]
+
+        # "By day" stays chronological + uncapped (days are inherently bounded and the operator wants
+        # every one) — every other dimension caps to the top-N with an honest "Other" roll-up.
         if dimension == "day":
             rows = self._by_day(recs, dates)
-        elif dimension == "bucket":
-            rows = self._by_resource(recs, KIND_BUCKET, window_days=len(dates))
+            for r in rows:
+                r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
+            return BreakdownResponse(
+                dimension=dimension, cloud=cloud, days=len(dates), total=total, total_groups=len(rows), rows=rows
+            )
+
+        extra_aggregates: tuple[BreakdownRow, ...] = ()
+        if dimension == "bucket":
+            rows_all = self._by_resource(recs, KIND_BUCKET, window_days=len(dates))
         elif dimension == "resource":
             # window_days so bucket-kind rows in the resource view also get storage detail —
             # the "Top storage buckets" leaf table is fed by this dimension.
-            rows = self._by_resource(recs, None, window_days=len(dates))
+            rows_all = self._by_resource(recs, None, window_days=len(dates))
+            # Cost the provider tags to NO resource (Cloud Run, networking, …) is dropped by the
+            # per-resource grouping; surface it as one row so the resource total reconciles to the
+            # cloud total instead of silently sitting ~$365 low.
+            unattributed = round(sum(_net(r) for r in recs if not r.resource_id), 2)
+            if abs(unattributed) >= 0.01:
+                extra_aggregates = (
+                    BreakdownRow(
+                        label="Unattributed (no resource id)",
+                        cloud=None,
+                        cost=unattributed,
+                        detail="cost the provider doesn't tag to a resource (Cloud Run, networking, …)",
+                        is_aggregate=True,
+                    ),
+                )
         elif dimension == "region":
-            rows = self._grouped(recs, lambda r: r.region or "global")
+            rows_all = self._grouped(recs, lambda r: r.region or "global")
         elif dimension == "zone":
-            rows = self._grouped(recs, lambda r: r.zone or "unknown")
+            rows_all = self._grouped(recs, lambda r: r.zone or "unknown")
         elif dimension == "sku":
-            rows = self._by_sku(recs)
+            rows_all = self._by_sku(recs)
         else:  # service (default)
-            rows = self._grouped(recs, lambda r: r.service)
+            rows_all = self._grouped(recs, lambda r: r.service)
 
-        total = round(sum(r.cost for r in rows), 2)
+        rows, total_groups = self._finalize_rows(rows_all, totals=totals, extra_aggregates=extra_aggregates)
         for r in rows:
             r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
-        return BreakdownResponse(dimension=dimension, cloud=cloud, days=len(dates), total=total, rows=rows)
+        return BreakdownResponse(
+            dimension=dimension, cloud=cloud, days=len(dates), total=total, total_groups=total_groups, rows=rows
+        )
+
+    def _finalize_rows(
+        self,
+        rows_all: list[BreakdownRow],
+        *,
+        totals: tuple[float, float, float],
+        extra_aggregates: tuple[BreakdownRow, ...] = (),
+    ) -> tuple[list[BreakdownRow], int]:
+        """Cap a cost-sorted (descending) row list to the top `_BREAKDOWN_LIMIT`, folding the rest into
+        ONE ``Other (N more)`` row whose cost/gross/credit are the RESIDUAL vs the true `totals` — so the
+        shown rows sum to the header total EXACTLY (to the cent), absorbing per-group rounding. Idle/
+        orphaned rows below the cap stay visible (never folded, so the waste-surfacing survives).
+        `extra_aggregates` (e.g. an ``Unattributed`` row) are appended after Other and counted against
+        the residual. Returns (rows_to_show, total_group_count).
+        """
+        total_net, total_gross, total_credit = totals
+        total_groups = len(rows_all)
+        if total_groups <= _BREAKDOWN_LIMIT:
+            return list(rows_all) + list(extra_aggregates), total_groups
+        shown = rows_all[:_BREAKDOWN_LIMIT]
+        tail = rows_all[_BREAKDOWN_LIMIT:]
+        waste_extras = [r for r in tail if r.is_idle]
+        kept = shown + waste_extras
+        remaining_count = len(tail) - len(waste_extras)
+        aggregates: list[BreakdownRow] = []
+        if remaining_count > 0:
+            shown_net = sum(r.cost for r in kept) + sum(a.cost for a in extra_aggregates)
+            shown_gross = sum(r.gross for r in kept) + sum(a.gross for a in extra_aggregates)
+            shown_credit = sum(r.credit for r in kept) + sum(a.credit for a in extra_aggregates)
+            aggregates.append(
+                BreakdownRow(
+                    label=f"Other ({remaining_count:,} more)",
+                    cloud=None,
+                    cost=round(total_net - shown_net, 2),
+                    gross=round(total_gross - shown_gross, 2),
+                    credit=round(total_credit - shown_credit, 2),
+                    detail=f"rows beyond the top {_BREAKDOWN_LIMIT}",
+                    is_aggregate=True,
+                )
+            )
+        aggregates.extend(extra_aggregates)
+        return kept + aggregates, total_groups
 
     def _grouped(self, recs: list[CostRecord], key: Callable[[CostRecord], str]) -> list[BreakdownRow]:
         net: dict[tuple[str, str], float] = {}
@@ -303,7 +384,7 @@ class CostObservabilityService:
             for (cloud, label), v in net.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
-        return rows[:_BREAKDOWN_LIMIT]
+        return rows
 
     def _by_sku(self, recs: list[CostRecord]) -> list[BreakdownRow]:
         """SKU (GCP) / usage_type (AWS) breakdown — the "why is this service expensive" axis,
@@ -331,7 +412,7 @@ class CostObservabilityService:
             for (cloud, service, sku), v in net.items()
         ]
         rows.sort(key=lambda x: x.cost, reverse=True)
-        return rows[:_BREAKDOWN_LIMIT]
+        return rows
 
     def _by_resource(
         self, recs: list[CostRecord], kind: str | None, *, window_days: int | None = None
@@ -430,15 +511,9 @@ class CostObservabilityService:
                 row.cost_by_component = kept
             rows.append(row)
         rows.sort(key=lambda x: x.cost, reverse=True)
-        top = rows[:_BREAKDOWN_LIMIT]
-        # Cost-waste is cheap by nature (an idle IP is a few $/mo) so it sits below the top-N
-        # cost cut — surface every flagged row regardless, else the whole point (find the
-        # forgotten idle IP / orphaned disk) is defeated by the cap.
-        if kind is None:
-            seen = {(r.cloud, r.label) for r in top}
-            extra = [r for r in rows[_BREAKDOWN_LIMIT:] if r.is_idle and (r.cloud, r.label) not in seen]
-            return top + extra
-        return top
+        # Uncapped + cost-sorted; breakdown() → _finalize_rows applies the top-N cap and keeps idle/
+        # orphaned rows visible below it (so the waste-surfacing survives the cap).
+        return rows
 
     def _unattached_disk_names(self) -> frozenset[str]:
         """Live UNATTACHED persistent-disk names for GCP orphaned-disk detection.

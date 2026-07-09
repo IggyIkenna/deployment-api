@@ -90,6 +90,9 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     resource_kind: str = KIND_OTHER
     share_pct: float = 0.0
     is_provisional: bool = False
+    # True for a synthetic roll-up row (the "Other (N more)" tail sum or the "Unattributed" no-resource
+    # sum) — not a real group; the UI pins it to the bottom, excludes it from sort, and skips its bar.
+    is_aggregate: bool = False
     is_idle: bool = False  # cost-waste flag (resource dimension only) — see services.cost_observability.waste
     waste_kind: str = ""  # "" | idle_static_ip | orphaned_disk | idle_elastic_ip
     # Bucket-only (dimension=bucket rows): derived from the storage-volume SKUs' usage_amount,
@@ -112,7 +115,8 @@ class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     dimension: str  # service | resource | bucket | region | day | sku | zone
     cloud: str  # all | gcp | aws | github
     days: int
-    total: float
+    total: float  # TRUE window total for this dimension (all groups, pre-cap) — consistent across tabs
+    total_groups: int = 0  # distinct real groups before the top-N cap (excludes synthetic aggregate rows)
     rows: list[BreakdownRow] = Field(default_factory=list)
 
 
