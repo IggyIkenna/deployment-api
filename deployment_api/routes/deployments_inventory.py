@@ -75,6 +75,10 @@ from deployment_api.routes._cloud_run_executions import (
     CloudRunExecutionStatus,
     latest_execution_by_job,
 )
+from deployment_api.routes._gcp_cloud_functions import (
+    CloudFunctionStatus,
+    list_cloud_functions,
+)
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -580,6 +584,36 @@ def _cloud_run_item(target: DeploymentTarget, by_job: dict[str, CloudRunExecutio
 
 
 # ---------------------------------------------------------------------------
+# GCP Cloud Functions (gen2) census — existence + config only (WS-B). Gen2
+# functions run on Cloud Run underneath, so umbrella is always NONE (same
+# precedent as ECS_SERVICE / CLOUD_RUN_SERVICE — no live/batch/paper phase).
+# ---------------------------------------------------------------------------
+
+
+def _cloud_function_item(status: CloudFunctionStatus) -> DeploymentItem:
+    """Build an inventory item for one live GCP Cloud Function (gen2).
+
+    Existence + config only (per WS-B scope) — always classified directly (no
+    ``classify_deployment_target`` lifecycle_class needed), mirroring the ECS
+    service precedent for kinds with no live/batch/paper phase.
+    """
+    return DeploymentItem(
+        name=status.name,
+        kind=DeploymentKind.CLOUD_FUNCTION.value,
+        umbrella=DeploymentUmbrella.NONE.value,
+        cloud=DeploymentCloud.GCP.value,
+        service=status.name,
+        asset_group="",
+        status=status.status,
+        last_run_at=status.last_updated_at,
+        exit_code=None,
+        heartbeat_age_seconds=None,
+        captured_progress=None,
+        run_log_uri="",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Service-health sub-taxonomy (parent plan D.3) — ECS / Cloud Run service
 # composite status. Services have no manifest/object-delta (they're not data
 # producers), so they get a SEPARATE 4-state set from the VM 7-state taxonomy.
@@ -961,6 +995,9 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
         with _vm_entry_by_name_lock:
             _vm_entry_by_name_cache.clear()
             _vm_entry_by_name_cache.update({e.vm_name: e for e in vm_entries})
+
+        cloud_function_status = list_cloud_functions(project_id)
+        items.extend(_cloud_function_item(status) for status in cloud_function_status.values())
 
     if want_aws:
         items.extend(_load_aws_items(now))

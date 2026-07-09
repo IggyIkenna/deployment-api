@@ -397,6 +397,34 @@ def test_build_inventory_present_but_not_running_join_entry_is_still_dead() -> N
 
 
 # ---------------------------------------------------------------------------
+# _cloud_function_item — GCP Cloud Functions (gen2) census item builder
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_function_item_builds_deployment_item() -> None:
+    """A live Cloud Function classifies directly — no lifecycle_class needed,
+    umbrella is always NONE (no live/batch/paper phase, mirrors ECS_SERVICE)."""
+    from deployment_api.routes._gcp_cloud_functions import CloudFunctionStatus
+    from deployment_api.routes.deployments_inventory import _cloud_function_item  # pyright: ignore[reportPrivateUsage]
+
+    status = CloudFunctionStatus(
+        name="trigger-ingest",
+        status="running",
+        runtime="python313",
+        service_name="trigger-ingest",
+        last_updated_at="2026-07-09T06:00:00+00:00",
+    )
+    item = _cloud_function_item(status)
+    assert item.name == "trigger-ingest"
+    assert item.kind == "CLOUD_FUNCTION"
+    assert item.umbrella == "NONE"
+    assert item.cloud == "GCP"
+    assert item.status == "running"
+    assert item.last_run_at == "2026-07-09T06:00:00+00:00"
+    assert item.exit_code is None
+
+
+# ---------------------------------------------------------------------------
 # build_umbrella_summary — rollup
 # ---------------------------------------------------------------------------
 
