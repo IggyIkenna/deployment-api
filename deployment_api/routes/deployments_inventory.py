@@ -145,7 +145,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """
 
     name: str
-    kind: str  # "VM" | "CLOUD_RUN_JOB" | "ECS_SERVICE"
+    kind: str  # VM|CLOUD_RUN_JOB|CLOUD_RUN_SERVICE|ECS_SERVICE|LAMBDA|CLOUD_FUNCTION (UAC DeploymentKind)
     umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT"
     cloud: str  # "GCP" | "AWS"
     service: str
@@ -177,6 +177,12 @@ class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API cont
     total: int
     vm_count: int
     cloud_run_job_count: int
+    # Per-kind rollup across all 6 DeploymentKind values (VM/CLOUD_RUN_JOB/CLOUD_RUN_SERVICE/
+    # ECS_SERVICE/LAMBDA/CLOUD_FUNCTION) — additive alongside vm_count/cloud_run_job_count
+    # (kept for back-compat) so a new kind's census only needs to start emitting rows; a kind
+    # with a failed/not-yet-shipped census is simply absent from the map (honest degradation,
+    # never a KeyError or a fabricated zero for a kind the caller didn't ask about).
+    counts_by_kind: dict[str, int] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
 
 
 class UmbrellaStatusFailure(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -586,6 +592,7 @@ def _filter_items(
     service: str | None,
     asset_group: str | None,
     status: str | None,
+    kind: str | None = None,
 ) -> list[DeploymentItem]:
     """Apply the inventory query filters (case-insensitive on the enum axes)."""
 
@@ -598,7 +605,9 @@ def _filter_items(
             return False
         if asset_group and item.asset_group != asset_group:
             return False
-        return not (status and item.status != status)
+        if status and item.status != status:
+            return False
+        return not (kind and item.kind.upper() != kind.upper())
 
     return [item for item in items if _keep(item)]
 
@@ -889,6 +898,19 @@ _VALID_UMBRELLAS = frozenset(u.value for u in DeploymentUmbrella)
 _VALID_CLOUDS = frozenset(c.value for c in DeploymentCloud)
 
 
+def _counts_by_kind(items: list[DeploymentItem]) -> dict[str, int]:
+    """Per-kind row counts, one key per kind actually present — never a zero-filled 6-key map.
+
+    A kind absent from ``items`` (its census hasn't shipped yet, or failed this cycle) is simply
+    absent from the map — honest degradation, not a fabricated 0 masquerading as "censused, found
+    none".
+    """
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item.kind] = counts.get(item.kind, 0) + 1
+    return counts
+
+
 @router.get("/deployments/inventory", response_model=DeploymentInventoryResponse)
 def get_deployment_inventory(
     umbrella: str | None = Query(None, description="live|batch|paper|experiment (case-insensitive)"),
@@ -896,6 +918,10 @@ def get_deployment_inventory(
     service: str | None = Query(None, description="Exact service stem filter"),
     asset_group: str | None = Query(None, description="cefi|defi|tradfi|sports|prediction"),
     status: str | None = Query(None, description="Exact status filter (running|succeeded|failed|stale|...)"),
+    kind: str | None = Query(
+        None,
+        description="VM|CLOUD_RUN_JOB|CLOUD_RUN_SERVICE|ECS_SERVICE|LAMBDA|CLOUD_FUNCTION (case-insensitive)",
+    ),
 ) -> DeploymentInventoryResponse:
     """Unified deployment inventory: every VM + Cloud Run job, classified by umbrella.
 
@@ -913,6 +939,7 @@ def get_deployment_inventory(
         service=service,
         asset_group=asset_group,
         status=status,
+        kind=kind,
     )
     vm_count = sum(1 for i in filtered if i.kind == DeploymentKind.VM.value)
     job_count = sum(1 for i in filtered if i.kind == DeploymentKind.CLOUD_RUN_JOB.value)
@@ -921,6 +948,7 @@ def get_deployment_inventory(
         total=len(filtered),
         vm_count=vm_count,
         cloud_run_job_count=job_count,
+        counts_by_kind=_counts_by_kind(filtered),
     )
 
 

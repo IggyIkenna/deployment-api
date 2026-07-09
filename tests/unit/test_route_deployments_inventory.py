@@ -250,6 +250,22 @@ def test_cloud_run_job_without_live_status_is_unknown() -> None:
     assert all(j.status == "unknown" for j in jobs)
 
 
+def test_counts_by_kind_omits_absent_kinds() -> None:
+    """deployment_obs_backend_kinds_health-006: per-kind rollup, no fabricated zero keys."""
+    from deployment_api.routes.deployments_inventory import _counts_by_kind, build_inventory
+
+    items = build_inventory(_vm_entries(), {}, _FIXED_NOW)  # type: ignore[arg-type]
+    counts = _counts_by_kind(items)
+    assert counts["VM"] == 4
+    assert counts["CLOUD_RUN_JOB"] == sum(1 for i in items if i.kind == "CLOUD_RUN_JOB")
+    assert sum(counts.values()) == len(items)
+    # None of the not-yet-censused kinds appear — absence, not a fabricated 0.
+    for absent_kind in ("CLOUD_RUN_SERVICE", "ECS_SERVICE", "LAMBDA", "CLOUD_FUNCTION"):
+        assert absent_kind not in counts
+
+    assert _counts_by_kind([]) == {}
+
+
 # ---------------------------------------------------------------------------
 # build_umbrella_summary — rollup
 # ---------------------------------------------------------------------------
@@ -312,6 +328,35 @@ def test_inventory_route_mock_shape(client_inventory: TestClient) -> None:
     # The exit-137 mock OOM VM is present.
     oom = [i for i in body["items"] if i["exit_code"] == 137]
     assert oom and oom[0]["status"] == "failed"
+    # counts_by_kind rolls up per-kind, additive alongside the legacy vm_count/cloud_run_job_count.
+    assert body["counts_by_kind"]["VM"] == body["vm_count"]
+    assert body["counts_by_kind"]["CLOUD_RUN_JOB"] == body["cloud_run_job_count"]
+    assert sum(body["counts_by_kind"].values()) == body["total"]
+    # A kind absent from the (mock) estate is simply absent — never a fabricated 0 key.
+    assert "ECS_SERVICE" not in body["counts_by_kind"]
+
+
+def test_inventory_route_kind_filter(client_inventory: TestClient) -> None:
+    """deployment_obs_backend_kinds_health-006: kind= isolates one DeploymentKind."""
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/inventory", params={"kind": "cloud_run_job"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] >= 1
+    assert all(i["kind"] == "CLOUD_RUN_JOB" for i in body["items"])
+    assert body["vm_count"] == 0
+    assert body["counts_by_kind"] == {"CLOUD_RUN_JOB": body["total"]}
+
+    # A kind with no rows in the mock estate (not yet censused) -> empty, not an error.
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp_empty = client_inventory.get("/api/deployments/inventory", params={"kind": "lambda"})
+    assert resp_empty.status_code == 200
+    body_empty = resp_empty.json()
+    assert body_empty["total"] == 0
+    assert body_empty["items"] == []
+    assert body_empty["counts_by_kind"] == {}
 
 
 def test_inventory_route_umbrella_filter(client_inventory: TestClient) -> None:
