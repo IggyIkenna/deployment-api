@@ -219,15 +219,12 @@ class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contrac
     ``DeploymentItem`` to composite + headline fields so the list payload stays small at
     ~200-target scale; the metrics vector below lives here instead.
 
-    HONEST SCOPE NOTE: these are the single most-recent sample stamped onto the registry
-    entry each heartbeat tick (overwritten in place) — NOT yet a persisted rolling window
-    of samples. The parent plan's D.2 STORE design calls for keeping the last ~10 samples
-    on the registry entry so ``mem_slope`` / "sustained idle" have a trend to plot; that
-    persistence hasn't shipped (see this plan's new rolling-window-persistence todo), so
-    the popover gets a live point-in-time reading today, a sparkline once that lands.
-    All metrics fields are ``None`` for a kind without D.1 capture (Cloud Run/ECS/Lambda/
-    Cloud Function — VM-only for now, see parent D.2 CAPTURE) or a VM absent from this
-    cycle's census (honest absence, never a fabricated 0.0).
+    The scalar fields below are the single most-recent sample (back-compat, point-in-time
+    reading); ``host_metrics_window`` is the last ~10 samples (oldest first, parent plan
+    D.2 STORE design) so ``mem_slope`` / "sustained idle" have a trend to plot — a
+    sparkline, not just a point. All metrics fields are ``None``/``[]`` for a kind without
+    D.1 capture (Cloud Run/ECS/Lambda/Cloud Function — VM-only for now, see parent D.2
+    CAPTURE) or a VM absent from this cycle's census (honest absence, never fabricated).
     """
 
     item: DeploymentItem
@@ -238,6 +235,7 @@ class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contrac
     io_write_rate_bytes_sec: float | None = None
     net_recv_rate_bytes_sec: float | None = None
     workload_alive: bool | None = None
+    host_metrics_window: list[dict[str, object]] = Field(default_factory=list)  # type: ignore[reportUnknownVariableType]
 
 
 class UmbrellaStatusFailure(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -1165,6 +1163,7 @@ def get_deployment_detail(name: str) -> DeploymentDetailResponse:
         io_write_rate_bytes_sec=entry.io_write_rate_bytes_sec,
         net_recv_rate_bytes_sec=entry.net_recv_rate_bytes_sec,
         workload_alive=entry.workload_alive,
+        host_metrics_window=list(entry.host_metrics_window),
     )
 
 

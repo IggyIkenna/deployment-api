@@ -57,6 +57,7 @@ class _FakeEntry:
     disk_pct: float = 0.0
     io_write_rate_bytes_sec: float = 0.0
     net_recv_rate_bytes_sec: float = 0.0
+    host_metrics_window: list[dict[str, object]] = field(default_factory=list)
     workload_alive: bool = True
     extras: dict[str, str] = field(default_factory=dict)
 
@@ -572,6 +573,7 @@ def test_detail_route_mock_shape(client_inventory: TestClient) -> None:
     assert body["item"]["name"] == "cefi-binance-spot-20260622-014158"
     assert body["cpu_pct"] is None
     assert body["workload_alive"] is None
+    assert body["host_metrics_window"] == []
 
 
 def test_detail_route_unknown_name_404(client_inventory: TestClient) -> None:
@@ -596,6 +598,10 @@ def test_detail_route_live_path_includes_d1_metrics(client_inventory: TestClient
         io_write_rate_bytes_sec=1_048_576.0,
         net_recv_rate_bytes_sec=2_048.0,
         workload_alive=True,
+        host_metrics_window=[
+            {"cpu_pct": 40.0, "sampled_at": "2026-06-22T11:59:00Z"},
+            {"cpu_pct": 42.5, "sampled_at": "2026-06-22T11:59:30Z"},
+        ],
     )
     _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
     _inv_mod._vm_entry_by_name_cache.clear()  # pyright: ignore[reportPrivateUsage]
@@ -621,6 +627,10 @@ def test_detail_route_live_path_includes_d1_metrics(client_inventory: TestClient
     assert body["io_write_rate_bytes_sec"] == 1_048_576.0
     assert body["net_recv_rate_bytes_sec"] == 2_048.0
     assert body["workload_alive"] is True
+    assert body["host_metrics_window"] == [
+        {"cpu_pct": 40.0, "sampled_at": "2026-06-22T11:59:00Z"},
+        {"cpu_pct": 42.5, "sampled_at": "2026-06-22T11:59:30Z"},
+    ]
 
 
 def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory: TestClient) -> None:
