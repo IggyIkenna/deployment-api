@@ -138,9 +138,7 @@ def reap_orphans(
     if not project_id:
         raise HTTPException(status_code=503, detail="No GCP project configured")
 
-    inventory = build_orphan_inventory(
-        get_vm_instance_details(project_id), get_disk_details(project_id), now, grace
-    )
+    inventory = build_orphan_inventory(get_vm_instance_details(project_id), get_disk_details(project_id), now, grace)
     candidates = [o for o in inventory.orphans if o.reapable]
 
     results: list[ReapResultEntry] = []
@@ -206,7 +204,7 @@ def delete_instance(
     details = get_vm_instance_details(project_id).get(name)
     if details is None:
         raise HTTPException(status_code=404, detail=f"Instance {name!r} not found")
-    if str(details.get("status", "")).upper() == "RUNNING":
+    if str(details.get("status", "")).upper() == "RUNNING":  # noqa: qg-empty-fallback — absent status reads as not-running (safe)
         raise HTTPException(
             status_code=409,
             detail=f"Refusing to delete RUNNING instance {name!r}; stop it first (this endpoint is for stopped VMs)",

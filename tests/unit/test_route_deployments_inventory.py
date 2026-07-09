@@ -372,14 +372,28 @@ def test_build_inventory_threads_vm_details_control_plane_confirmation_into_comp
     entries = _vm_entries()
     # NOT defi-paper-trading-20260622 — absent from the (real, non-None) GCE join below.
     vm_details_by_name = {
-        "cefi-binance-spot-20260622-014158": {},
-        "strategy-live-cefi-20260620": {},
+        "cefi-binance-spot-20260622-014158": {"status": "RUNNING"},
+        "strategy-live-cefi-20260620": {"status": "RUNNING"},
     }
     items = build_inventory(entries, {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
     by_name = {i.name: i for i in items}
     assert by_name["defi-paper-trading-20260622"].composite_health_status == "dead"
     # The failed/terminal OOM VM has no composite (not applicable).
     assert by_name["defi-backfill-20260622-014200"].composite_health_status is None
+
+
+def test_build_inventory_present_but_not_running_join_entry_is_still_dead() -> None:
+    """A VM PRESENT in the GCE join but with a non-RUNNING raw status (e.g. GCE keeps a
+    STOPPING/TERMINATED instance visible in the aggregated-list for a while) must still
+    resolve dead — mere key presence is not "running"; the raw status value is checked.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entry = _FakeEntry(vm_name="cefi-stopping-vm", status="running")
+    vm_details_by_name = {"cefi-stopping-vm": {"status": "TERMINATED"}}
+    items = build_inventory([entry], {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
+    vm = next(i for i in items if i.name == "cefi-stopping-vm")
+    assert vm.composite_health_status == "dead"
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +666,47 @@ class _ParsedEntry:
     @classmethod
     def from_json(cls, raw: str) -> _ParsedEntry:
         return cls(vm_name=json.loads(raw)["vm_name"])  # raises JSONDecodeError on corrupt input
+
+
+def test_load_gcp_vm_entries_does_not_filter_active_entries_by_control_plane_presence() -> None:
+    """An ``active/`` registry entry whose VM the GCE aggregated-list no longer has
+    (hard-killed/OOM/pre-empted before it could self-archive) must still be RETURNED —
+    filtering it out here would silently vanish the exact case D.3 ``dead`` exists to
+    catch, before ``build_inventory``/``_composite_health_status`` ever see it.
+    """
+    from datetime import UTC, datetime
+
+    from deployment_api.routes.deployments_inventory import _load_gcp_vm_entries
+
+    store = {
+        "deployments/active/dead.json": '{"vm_name": "cefi-dead-vm"}',
+        "deployments/active/alive.json": '{"vm_name": "cefi-alive-vm"}',
+    }
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            return [_Blob(name=k) for k in store if k.startswith(prefix)]
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            return store[blob_path].encode("utf-8")
+
+    # The GCE aggregated-list no longer has "cefi-dead-vm" at all (control plane says
+    # gone) — only "cefi-alive-vm" is confirmed RUNNING.
+    vm_details = {"cefi-alive-vm": {"status": "RUNNING"}}
+
+    with (
+        patch("deployment_api.routes.deployments_inventory.DeploymentRegistryEntry", _ParsedEntry),
+        patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()),
+        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value=vm_details),
+    ):
+        entries, returned_vm_details = _load_gcp_vm_entries(datetime(2026, 6, 22, 12, tzinfo=UTC), "test-project")
+
+    assert {e.vm_name for e in entries} == {"cefi-dead-vm", "cefi-alive-vm"}
+    assert returned_vm_details == vm_details
 
 
 def test_download_entries_parallel_reads_concurrently_and_skips_unreadable() -> None:

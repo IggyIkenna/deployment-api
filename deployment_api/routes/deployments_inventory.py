@@ -669,13 +669,16 @@ def build_inventory(
     inventory) — the no-silent-default classifier raises, we degrade per-row.
 
     ``vm_details_by_name`` is the GCE aggregated-list join (Tier-0 free wins —
-    machine_type/zone/labels/boot-disk/raw status). Its KEY SET doubles as the
-    control-plane confirmation feeding the D.3 composite ``dead``/``hung`` states
-    (a VM name absent from it is not running per GCP right now). ``None`` (a
-    caller with no join to offer, e.g. pure-classification tests or a degraded
-    path) degrades those states honestly (see ``_composite_health_status``)
-    rather than guessing; an explicit ``{}`` (a real, empty GCE census) DOES
-    confirm every entry as not-running.
+    machine_type/zone/labels/boot-disk/raw status), reused for the control-plane
+    confirmation feeding the D.3 composite ``dead``/``hung`` states: a VM is
+    "running per GCP right now" only when its raw status in the join is exactly
+    ``"RUNNING"`` — mere PRESENCE in the join is not enough, since GCE keeps a
+    stopping/stopped/terminated instance visible in the aggregated-list for a
+    while (present but definitely not running). ``None`` (a caller with no join
+    to offer, e.g. pure-classification tests or a degraded path) degrades those
+    states honestly (see ``_composite_health_status``) rather than guessing; an
+    explicit ``{}`` (a real, empty GCE census) DOES confirm every entry as
+    not-running.
 
     Cloud Run jobs census the LIVE job list (``cloud_run_status`` keys, already
     fetched by ``latest_execution_by_job``'s ``run_v2.JobsClient.list_jobs`` — no
@@ -688,7 +691,11 @@ def build_inventory(
     items: list[DeploymentItem] = []
     for entry in vm_entries:
         try:
-            control_plane_running = entry.vm_name in details_by_name if vm_details_by_name is not None else None
+            control_plane_running = (
+                str(details_by_name.get(entry.vm_name, {}).get("status", "")) == "RUNNING"
+                if vm_details_by_name is not None
+                else None
+            )
             items.append(
                 _vm_item(
                     entry,
@@ -898,16 +905,19 @@ def _download_entries_parallel(client: StorageClient, bucket: str, keys: list[st
 def _load_gcp_vm_entries(
     now: datetime, project_id: str
 ) -> tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]]:
-    """Census the GCP VM registry (active running + 7-day archive) with parallel reads.
+    """Census the GCP VM registry (active + 7-day archive) with parallel reads.
 
     Runs the four coarse calls concurrently — the GCE aggregated-list, the active-key
     list, the archive-key list, then a single parallel download pool over every key —
     so the cold path is ~max(slowest single call) instead of their sum. Also returns the
     GCE aggregated-list join (name -> machine_type/zone/labels/boot-disk/raw status) so
-    the caller can surface those Tier-0 free wins AND cross-check control-plane presence
-    (its key set) — the archived (7-day window) entries are NOT filtered against it (an
-    archived "running" row whose VM is gone is exactly the D.3 ``dead`` case), so the
-    caller needs the full join, not just a pre-filtered set.
+    the caller can surface those Tier-0 free wins AND cross-check control-plane presence.
+
+    Every ``active/`` entry is included — NOT pre-filtered to the GCE aggregated-list's
+    key set. Filtering here would silently drop the exact "hard-killed VM" case the D.3
+    ``dead`` composite state exists to catch: a registry entry whose VM the control plane
+    no longer has must reach ``build_inventory``/``_composite_health_status`` to be
+    classified ``dead``, not vanish from the census beforehand.
     """
     client = get_storage_client()
     bucket = DEFAULT_BUCKET
@@ -923,11 +933,10 @@ def _load_gcp_vm_entries(
             lambda: [key for prefix in archive_prefixes for key in _list_json_keys(client, bucket, prefix)]
         )
         vm_details = f_vm.result()
-        running_vm_names = set(vm_details.keys())
         active_keys = f_active_keys.result()
         archive_keys = f_archive_keys.result()
 
-    active = [e for e in _download_entries_parallel(client, bucket, active_keys) if e.vm_name in running_vm_names]
+    active = _download_entries_parallel(client, bucket, active_keys)
     recent = _download_entries_parallel(client, bucket, archive_keys)
     return active + recent, vm_details
 
