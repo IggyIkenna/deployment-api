@@ -325,9 +325,9 @@ def service(monkeypatch: pytest.MonkeyPatch) -> CostObservabilityService:
     monkeypatch.setattr(svc, "gcp_facts", _fake_gcp)
     monkeypatch.setattr(svc, "aws_facts", _fake_aws)
     monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
-    # No real GCE calls from unit tests — the orphaned-disk cross-ref (empty fleet == "no
-    # running VM matches", the honest default) is exercised explicitly in its own tests below.
-    monkeypatch.setattr(svc, "list_running_vm_names", lambda _project_id: set())
+    # No real GCE calls from unit tests — the orphaned-disk cross-ref (empty unattached-disk
+    # set == "flag nothing", the honest default) is exercised explicitly in its own tests below.
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
     s = CostObservabilityService()
     # Force the real-provider path (conftest sets CLOUD_MOCK_MODE=true globally); patch the
     # method on the class since the config is a pydantic model with validate_assignment.
@@ -691,14 +691,16 @@ def test_timeseries_per_day_per_cloud(service: CostObservabilityService) -> None
 
 
 # --- waste classifiers --------------------------------------------------------
-def test_is_gcp_idle_static_ip_sku_matches_exact_idle_sku_only() -> None:
+def test_is_gcp_idle_static_ip_sku_matches_stem_including_regional_suffix() -> None:
     assert waste.is_gcp_idle_static_ip_sku("Static Ip Charge") is True
+    assert waste.is_gcp_idle_static_ip_sku("Static Ip Charge in Japan") is True  # regional variant
     assert waste.is_gcp_idle_static_ip_sku("External IP Charge on a Standard VM") is False
 
 
-def test_is_gcp_disk_capacity_sku_matches_pd_capacity_suffix() -> None:
-    assert waste.is_gcp_disk_capacity_sku("SSD backed PD Capacity") is True
-    assert waste.is_gcp_disk_capacity_sku("Storage PD Capacity") is True
+def test_is_gcp_disk_capacity_sku_matches_stem_including_regional_suffix() -> None:
+    assert waste.is_gcp_disk_capacity_sku("Balanced PD Capacity") is True
+    assert waste.is_gcp_disk_capacity_sku("SSD backed PD Capacity in Japan") is True  # regional
+    assert waste.is_gcp_disk_capacity_sku("Storage PD Capacity in Japan") is True  # regional
     assert waste.is_gcp_disk_capacity_sku("N2 Instance Core running in Tokyo") is False
 
 
@@ -707,43 +709,47 @@ def test_is_aws_idle_elastic_ip_usage_type_matches_idle_marker() -> None:
     assert waste.is_aws_idle_elastic_ip_usage_type("BoxUsage:t3.micro") is False
 
 
-def test_classify_waste_gcp_idle_static_ip_needs_no_fleet_cross_ref() -> None:
+def test_classify_waste_gcp_idle_static_ip_needs_no_disk_cross_ref() -> None:
     label = waste.classify_waste(
-        cloud="gcp", sku="Static Ip Charge", resource_id="harsh-static-ip", running_vm_names=frozenset()
+        cloud="gcp",
+        sku="Static Ip Charge in Japan",
+        resource_id="harsh-static-ip",
+        unattached_disk_names=frozenset(),
     )
     assert label == waste.WASTE_IDLE_STATIC_IP
 
 
-def test_classify_waste_gcp_disk_orphaned_when_no_matching_running_vm() -> None:
+def test_classify_waste_gcp_disk_orphaned_when_unattached() -> None:
     label = waste.classify_waste(
         cloud="gcp",
-        sku="SSD backed PD Capacity",
+        sku="SSD backed PD Capacity in Japan",
         resource_id="ikenna-windows-tokyo-restored",
-        running_vm_names=frozenset(),
+        unattached_disk_names=frozenset({"ikenna-windows-tokyo-restored"}),
     )
     assert label == waste.WASTE_ORPHANED_DISK
 
 
-def test_classify_waste_gcp_disk_not_flagged_when_vm_is_running() -> None:
+def test_classify_waste_gcp_disk_not_flagged_when_attached() -> None:
+    # Disk SKU matches, but the disk is attached (absent from the unattached set) → not orphaned.
     label = waste.classify_waste(
         cloud="gcp",
-        sku="SSD backed PD Capacity",
-        resource_id="vm-1",
-        running_vm_names=frozenset({"vm-1"}),
+        sku="SSD backed PD Capacity in Japan",
+        resource_id="attached-disk",
+        unattached_disk_names=frozenset(),
     )
     assert label == ""
 
 
 def test_classify_waste_aws_idle_elastic_ip() -> None:
     label = waste.classify_waste(
-        cloud="aws", sku="APN1-ElasticIP:IdleAddress", resource_id="eipalloc-0abc", running_vm_names=frozenset()
+        cloud="aws", sku="APN1-ElasticIP:IdleAddress", resource_id="eipalloc-0abc", unattached_disk_names=frozenset()
     )
     assert label == waste.WASTE_IDLE_ELASTIC_IP
 
 
 def test_classify_waste_no_match_returns_empty() -> None:
     label = waste.classify_waste(
-        cloud="gcp", sku="N1 Predefined Instance Core", resource_id="vm-1", running_vm_names=frozenset()
+        cloud="gcp", sku="N1 Predefined Instance Core", resource_id="vm-1", unattached_disk_names=frozenset()
     )
     assert label == ""
 
@@ -758,8 +764,10 @@ def _fake_gcp_with_waste(_table: str, start: date, end: date, _cutoff: date) -> 
             resource_id="harsh-static-ip",
             resource_kind="other",
             region="asia-northeast1",
+            # REGIONAL SKU strings (as the real billing export emits them) — proves the
+            # substring matchers survive the "... in Japan" suffix that exact/endswith missed.
             cost=5.95,
-            sku="Static Ip Charge",
+            sku="Static Ip Charge in Japan",
         ),
         CostRecord(
             cloud="gcp",
@@ -769,7 +777,7 @@ def _fake_gcp_with_waste(_table: str, start: date, end: date, _cutoff: date) -> 
             resource_kind="other",
             region="asia-northeast1",
             cost=68.62,
-            sku="SSD backed PD Capacity",
+            sku="SSD backed PD Capacity in Japan",
         ),
         CostRecord(
             cloud="gcp",
@@ -788,7 +796,8 @@ def test_breakdown_resource_flags_idle_static_ip_and_orphaned_disk(monkeypatch: 
     monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_with_waste)
     monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
     monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
-    monkeypatch.setattr(svc, "list_running_vm_names", lambda _project_id: {"vm-1"})  # ikenna disk has no match
+    # ikenna's disk is unattached (orphaned); the regional SKU strings must still classify.
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: {"ikenna-windows-tokyo-restored"})
     s = CostObservabilityService()
     monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
 
@@ -801,16 +810,61 @@ def test_breakdown_resource_flags_idle_static_ip_and_orphaned_disk(monkeypatch: 
     assert rows["vm-1"].waste_kind == ""
 
 
-def test_breakdown_resource_disk_not_flagged_when_matching_vm_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_breakdown_resource_disk_not_flagged_when_attached(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_with_waste)
     monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
     monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
-    monkeypatch.setattr(svc, "list_running_vm_names", lambda _project_id: {"ikenna-windows-tokyo-restored", "vm-1"})
+    # ikenna's disk is attached (absent from the unattached set) → never flagged orphaned.
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
     s = CostObservabilityService()
     monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
 
     rows = {row.label: row for row in s.breakdown("resource", "gcp", days=1).rows}
     assert rows["ikenna-windows-tokyo-restored"].is_idle is False
+
+
+def test_breakdown_resource_surfaces_cheap_waste_below_the_top_n_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cost-waste is cheap by nature, so a plain top-N-by-cost cap would hide it. The idle IP
+    must still surface even when far more than _BREAKDOWN_LIMIT pricier resources outrank it."""
+
+    def _many_plus_cheap_waste(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+        recs: list[CostRecord] = [
+            CostRecord(
+                cloud="gcp",
+                day=start.isoformat(),
+                service="Compute Engine",
+                resource_id=f"vm-{i}",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=100.0 + i,  # every VM is pricier than the idle IP below
+                sku="N2 Instance Core running in Japan",
+            )
+            for i in range(svc._BREAKDOWN_LIMIT + 5)
+        ]
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=start.isoformat(),
+                service="Compute Engine",
+                resource_id="harsh-static-ip",
+                resource_kind="other",
+                region="asia-northeast1",
+                cost=2.58,  # cheap — ranks below every VM, so a naive top-N cap would drop it
+                sku="Static Ip Charge in Japan",
+            )
+        )
+        return recs
+
+    monkeypatch.setattr(svc, "gcp_facts", _many_plus_cheap_waste)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    rows = {row.label: row for row in s.breakdown("resource", "gcp", days=1).rows}
+    assert "harsh-static-ip" in rows  # surfaced despite ranking below the top-N cost cut
+    assert rows["harsh-static-ip"].waste_kind == waste.WASTE_IDLE_STATIC_IP
 
 
 def test_breakdown_bucket_dimension_never_flags_waste(service: CostObservabilityService) -> None:
@@ -821,19 +875,19 @@ def test_breakdown_bucket_dimension_never_flags_waste(service: CostObservability
 def test_breakdown_bucket_dimension_skips_fleet_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
-    def counting_running(_project_id: str) -> set[str]:
+    def counting_lookup(_project_id: str) -> set[str]:
         calls["n"] += 1
         return set()
 
     monkeypatch.setattr(svc, "gcp_facts", _fake_gcp)
     monkeypatch.setattr(svc, "aws_facts", _fake_aws)
     monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
-    monkeypatch.setattr(svc, "list_running_vm_names", counting_running)
+    monkeypatch.setattr(svc, "list_unattached_disk_names", counting_lookup)
     s = CostObservabilityService()
     monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
 
     s.breakdown("bucket", "all", days=2)
-    assert calls["n"] == 0  # bucket dimension never needs the running-VM cross-ref
+    assert calls["n"] == 0  # bucket dimension never needs the unattached-disk cross-ref
 
 
 def _fake_gcp_storage(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
@@ -889,8 +943,13 @@ def test_bucket_breakdown_adds_storage_gb_and_class_split(monkeypatch: pytest.Mo
     assert row.storage_class_gb is not None
     assert set(row.storage_class_gb) == {"Coldline"}  # operations SKU (count unit) excluded
     assert row.storage_class_gb["Coldline"] == pytest.approx(expected_gb, abs=0.01)
-    assert row.cost == pytest.approx(0.18, abs=0.001)  # (0.05 + 0.01) * 3
-    assert row.cost_per_gb == pytest.approx(row.cost / row.storage_gb, abs=0.0005)
+    assert row.cost == pytest.approx(0.18, abs=0.001)  # (0.05 storage + 0.01 ops) * 3
+    # $/GB is the effective STORAGE rate — storage-SKU cost (0.05 * 3 = 0.15) over stored GB,
+    # NOT the row's total cost (0.18, which includes the operations SKU). The operations-inclusive
+    # formula would over-read the rate by (0.18/0.15) = 1.2x here, and far worse on a real
+    # write-heavy events bucket.
+    expected_storage_cost = 0.05 * 3
+    assert row.cost_per_gb == pytest.approx(expected_storage_cost / expected_gb, abs=0.0005)
 
 
 def _fake_aws_storage(_db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: date) -> list[CostRecord]:
@@ -928,9 +987,28 @@ def test_bucket_breakdown_classifies_aws_storage_types(monkeypatch: pytest.Monke
     assert row.storage_class_gb == {"Coldline": pytest.approx(expected_gb, abs=0.01)}
 
 
-def test_non_bucket_breakdown_rows_carry_no_storage_fields(service: CostObservabilityService) -> None:
+def test_rows_without_storage_skus_carry_no_storage_fields(service: CostObservabilityService) -> None:
+    # The service fixture's rows (a VM + a bucket with NO storage-volume SKU) carry no gibibyte-month
+    # usage, so storage detail stays absent — storage attaches only to bucket rows that actually
+    # billed storage volume, never fabricated.
     r = service.breakdown("resource", "all", days=2)
     assert all(row.storage_gb is None and row.storage_class_gb is None for row in r.rows)
+
+
+def test_resource_dimension_bucket_rows_carry_storage_for_the_leaf_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 'Top storage buckets' leaf table is fed by the RESOURCE dimension, so bucket-kind rows
+    must carry storage detail there too — not only under the dedicated By-bucket dimension."""
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_storage)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.breakdown("resource", "gcp", days=3)
+    row = next(row for row in r.rows if row.label == "my-bucket")
+    assert row.storage_gb is not None and row.storage_gb > 0  # populated in resource dim, not just By-bucket
+    assert row.storage_class_gb == {"Coldline": pytest.approx(row.storage_gb, abs=0.01)}
 
 
 def test_cache_avoids_requery_until_forced(service: CostObservabilityService, monkeypatch: pytest.MonkeyPatch) -> None:

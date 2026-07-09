@@ -33,7 +33,7 @@ from deployment_api.services.cost_observability.models import (
 )
 from deployment_api.services.cost_observability.providers import aws_facts, gcp_facts, github_facts
 from deployment_api.services.cost_observability.waste import classify_waste
-from deployment_api.vm_utils import list_running_vm_names
+from deployment_api.vm_utils import list_unattached_disk_names
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,9 @@ class CostObservabilityService:
         elif dimension == "bucket":
             rows = self._by_resource(recs, KIND_BUCKET, window_days=len(dates))
         elif dimension == "resource":
-            rows = self._by_resource(recs, None)
+            # window_days so bucket-kind rows in the resource view also get storage detail —
+            # the "Top storage buckets" leaf table is fed by this dimension.
+            rows = self._by_resource(recs, None, window_days=len(dates))
         elif dimension == "region":
             rows = self._grouped(recs, lambda r: r.region or "global")
         elif dimension == "zone":
@@ -304,8 +306,9 @@ class CostObservabilityService:
         waste_of: dict[tuple[str, str], str] = {}
         # Only the unfiltered "resource" dimension (kind=None) surfaces waste flags — the
         # bucket dimension never contains idle-IP/orphaned-disk rows, so skip the fleet lookup.
-        running_vm_names = self._running_vm_names() if kind is None else frozenset()
+        unattached_disks = self._unattached_disk_names() if kind is None else frozenset()
         storage_amt: dict[tuple[str, str], dict[str, float]] = {}
+        storage_cost: dict[tuple[str, str], float] = {}
         purchase: dict[tuple[str, str], str] = {}
         machine_of: dict[tuple[str, str], tuple[str, str, int | None, float | None]] = {}
         for r in recs:
@@ -323,15 +326,19 @@ class CostObservabilityService:
                 kind_of[k] = r.resource_kind
             if not waste_of.get(k):
                 waste = classify_waste(
-                    cloud=r.cloud, sku=r.sku, resource_id=r.resource_id, running_vm_names=running_vm_names
+                    cloud=r.cloud, sku=r.sku, resource_id=r.resource_id, unattached_disk_names=unattached_disks
                 )
                 if waste:
                     waste_of[k] = waste
-            if kind == KIND_BUCKET:
+            # Storage detail attaches to any BUCKET-kind row (its own kind, not the query
+            # dimension) so the resource dimension's bucket rows — which feed the "Top storage
+            # buckets" leaf table — also carry it, not just the By-bucket view.
+            if r.resource_kind == KIND_BUCKET:
                 cls = _storage_class(r)
                 if cls is not None:
                     by_class = storage_amt.setdefault(k, {})
                     by_class[cls] = by_class.get(cls, 0.0) + r.usage_amount
+                    storage_cost[k] = storage_cost.get(k, 0.0) + _net(r)
             if _PURCHASE_RANK.get(r.purchase_option, 0) > _PURCHASE_RANK.get(purchase.get(k, PURCHASE_OTHER), 0):
                 purchase[k] = r.purchase_option
             # A VM's disk/IP SKU rows carry no machine spec (only its Core/Ram rows do) — keep
@@ -368,21 +375,35 @@ class CostObservabilityService:
                     row.storage_gb = total_gb
                     row.storage_class_gb = gb_by_class
                     if total_gb > 0:
-                        row.cost_per_gb = round(row.cost / total_gb, 4)
+                        # $/GB is the effective STORAGE rate — storage-SKU cost over stored GB,
+                        # NOT the row's total (operations-dominated) cost. An events bucket bills
+                        # ~$2.5k in Class-A writes on ~95 GB stored; total/GB reads a nonsense
+                        # ~$25/GB, storage-cost/GB reads the real ~$0.013/GB.
+                        row.cost_per_gb = round(storage_cost.get((cloud, rid), 0.0) / total_gb, 4)
             rows.append(row)
         rows.sort(key=lambda x: x.cost, reverse=True)
-        return rows[:_BREAKDOWN_LIMIT]
+        top = rows[:_BREAKDOWN_LIMIT]
+        # Cost-waste is cheap by nature (an idle IP is a few $/mo) so it sits below the top-N
+        # cost cut — surface every flagged row regardless, else the whole point (find the
+        # forgotten idle IP / orphaned disk) is defeated by the cap.
+        if kind is None:
+            seen = {(r.cloud, r.label) for r in top}
+            extra = [r for r in rows[_BREAKDOWN_LIMIT:] if r.is_idle and (r.cloud, r.label) not in seen]
+            return top + extra
+        return top
 
-    def _running_vm_names(self) -> frozenset[str]:
-        """Live RUNNING-VM names for GCP orphaned-disk cross-ref.
+    def _unattached_disk_names(self) -> frozenset[str]:
+        """Live UNATTACHED persistent-disk names for GCP orphaned-disk detection.
 
-        Degrades to an empty set (never flags a false-positive orphan) when no project is
-        configured — `list_running_vm_names` itself already degrades to empty on API failure.
+        A disk with an empty Compute `users` field is attached to nothing — orphaned, still
+        billing `PD Capacity`. Degrades to an empty set (never flags a false-positive orphan)
+        when no project is configured — `list_unattached_disk_names` itself already degrades to
+        empty on API failure.
         """
         project_id = self._cfg.gcp_project_id
         if not project_id:
             return frozenset()
-        return frozenset(list_running_vm_names(project_id))
+        return frozenset(list_unattached_disk_names(project_id))
 
     def _by_day(self, recs: list[CostRecord], dates: list[str]) -> list[BreakdownRow]:
         net: dict[str, float] = dict.fromkeys(dates, 0.0)
