@@ -24,6 +24,7 @@ Phase 1.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -39,6 +40,12 @@ DEFAULT_CLOUD_RUN_REGION = "asia-northeast1"
 # and degrades to the static classification. Prevents the inventory census pool from starving
 # under a persistent hang.
 _RPC_TIMEOUT_SEC = 30.0
+
+# Per-job "latest execution" is an N+1 (one ListExecutions RPC per job). At ~70 jobs the serial
+# loop routinely blew past the 45 s census wall-clock and degraded the whole Cloud Run jobs census
+# to empty (jobs flickering out of the cockpit). Fan the per-job lookups out concurrently so the
+# census is ~max(single RPC) instead of their sum. GCS/gRPC releases the GIL → true I/O parallelism.
+_EXECUTION_LOOKUP_WORKERS = 16
 
 
 @dataclass(frozen=True)
@@ -122,38 +129,43 @@ def latest_execution_by_job(
         jobs_client = run_v2.JobsClient()
         executions_client = run_v2.ExecutionsClient()
         parent = f"projects/{project_id}/locations/{region}"
-        result: dict[str, CloudRunExecutionStatus] = {}
-        # run_v2 is the untyped GCP-SDK boundary (_gcp_sdk); its pager member types
-        # are partially unknown — the per-execution fields are read defensively via
-        # getattr() below, so the unknown pager element type is safe here.
-        for job in jobs_client.list_jobs(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            request=run_v2.ListJobsRequest(parent=parent), timeout=_RPC_TIMEOUT_SEC
-        ):
-            job_name = str(job.name).rsplit("/", 1)[-1]  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            exec_request = run_v2.ListExecutionsRequest(parent=str(job.name), page_size=1)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+        # run_v2 is the untyped GCP-SDK boundary (_gcp_sdk); its pager member types are
+        # partially unknown — per-execution fields are read defensively via getattr() below,
+        # so the unknown pager element type is safe here.
+        def _resolve(job: object) -> tuple[str, CloudRunExecutionStatus]:
+            """One job's latest-execution status — run CONCURRENTLY across jobs (the N+1 fix)."""
+            full_name = str(job.name)  # pyright: ignore[reportAttributeAccessIssue]
+            job_name = full_name.rsplit("/", 1)[-1]
+            exec_request = run_v2.ListExecutionsRequest(parent=full_name, page_size=1)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             latest = next(
                 iter(executions_client.list_executions(request=exec_request, timeout=_RPC_TIMEOUT_SEC)),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
                 None,
             )
             if latest is None:
-                result[job_name] = CloudRunExecutionStatus(
-                    job_name=job_name,
-                    status="pending",
-                    last_run_at=None,
-                    exit_code=None,
-                    log_uri="",
+                return job_name, CloudRunExecutionStatus(
+                    job_name=job_name, status="pending", last_run_at=None, exit_code=None, log_uri=""
                 )
-                continue
             status, exit_code = _status_for_execution(latest)
             last_run_at = _iso(getattr(latest, "completion_time", None)) or _iso(getattr(latest, "start_time", None))
-            result[job_name] = CloudRunExecutionStatus(
+            return job_name, CloudRunExecutionStatus(
                 job_name=job_name,
                 status=status,
                 last_run_at=last_run_at,
                 exit_code=exit_code,
                 log_uri=str(getattr(latest, "log_uri", "") or ""),
             )
-        return result
+
+        jobs = list(
+            jobs_client.list_jobs(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                request=run_v2.ListJobsRequest(parent=parent), timeout=_RPC_TIMEOUT_SEC
+            )
+        )
+        if not jobs:
+            return {}
+        workers = min(_EXECUTION_LOOKUP_WORKERS, len(jobs))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cr-exec") as pool:
+            return dict(pool.map(_resolve, jobs))
     except Exception as exc:
         logger.warning("Cloud Run executions list failed (degrading to static classification): %s", exc)
         return {}

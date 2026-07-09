@@ -213,7 +213,16 @@ def object_delta_for_bucket(bucket: str) -> tuple[int | None, str]:
     captured = index[index["capture_status"] == "captured"]
     if captured.empty:
         return None, "no captured rows in manifest index"
-    counts = captured["row_count"].where(captured["row_count"] > 0, captured["instrument_count"])
+    # Coerce to numeric FIRST — the availability index can store row_count / instrument_count
+    # as an object/string dtype (nullable or mixed), which made `row_count > 0` raise
+    # TypeError("'>' not supported between instances of 'str' and 'int'") and silently degrade
+    # EVERY object-delta to None, breaking the composite-health working/stalled signal that reads
+    # it. to_numeric(errors="coerce") turns unparseable cells into NaN → 0 (honest absence).
+    import pandas as pd  # lazy: pandas is only needed on this manifest-read path
+
+    row_count = pd.to_numeric(captured["row_count"], errors="coerce").fillna(0)
+    instrument_count = pd.to_numeric(captured["instrument_count"], errors="coerce").fillna(0)
+    counts = row_count.where(row_count > 0, instrument_count)
     by_date = counts.groupby(captured["date"]).sum().sort_index()
     if len(by_date) < 2:
         return None, f"only {len(by_date)} distinct written date(s) in manifest — nothing to diff yet"

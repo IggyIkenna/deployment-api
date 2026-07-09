@@ -151,6 +151,33 @@ def test_object_delta_for_bucket_diffs_two_most_recent_dates() -> None:
     assert "2026-06-24" in detail and "2026-06-23" in detail
 
 
+def test_object_delta_for_bucket_coerces_string_dtype_counts() -> None:
+    """Regression: an availability index storing row_count / instrument_count as an object/string
+    dtype (nullable or mixed) must be coerced to numeric — before the fix `row_count > 0` raised
+    TypeError("'>' not supported between 'str' and 'int'") and silently degraded EVERY object-delta
+    to None (breaking the composite-health working/stalled signal). Found running the live backend.
+    """
+    import pandas as pd
+
+    from deployment_api.routes.health_consolidator import object_delta_for_bucket
+
+    index = pd.DataFrame(
+        {
+            "date": ["2026-06-22", "2026-06-23"],
+            "row_count": ["4000", "4128"],  # strings — as the real index sometimes stores them
+            "instrument_count": ["4000", "4128"],
+            "capture_status": ["captured", "captured"],
+        }
+    )
+    with patch(
+        "deployment_api.routes.health_consolidator.read_availability_index",
+        return_value=index,
+    ):
+        delta, detail = object_delta_for_bucket("market-data-tick-defi-prd")
+    assert delta == 128  # coerced "4128" - "4000", not a TypeError-degraded None
+    assert "2026-06-23" in detail
+
+
 def test_object_delta_for_bucket_empty_index_is_none() -> None:
     """An empty / not-yet-written manifest index → (None, reason), never a false zero."""
     import pandas as pd
