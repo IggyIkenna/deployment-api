@@ -293,6 +293,54 @@ def test_build_aws_inventory_ecs_service_desired_but_not_running_is_unknown() ->
     assert items[0]["status"] == "unknown"
 
 
+def test_build_aws_inventory_classifies_lambda_functions() -> None:
+    """A Lambda function census item → kind=LAMBDA, existence + config only."""
+    from deployment_service.backends.aws_census import AwsLambdaFunctionCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    active_fn = AwsLambdaFunctionCensus(
+        name="mtds-backfill-cefi-webhook",
+        function_arn="arn:aws:lambda:ap-northeast-1:427895769566:function:mtds-backfill-cefi-webhook",
+        runtime="python3.13",
+        memory_size_mb=256,
+        last_modified=datetime(2026, 6, 22, 9, 0, tzinfo=UTC),
+        state="Active",
+        package_type="Zip",
+    )
+    failed_fn = AwsLambdaFunctionCensus(
+        name="mtds-backfill-defi-relay",
+        function_arn="arn:aws:lambda:ap-northeast-1:427895769566:function:mtds-backfill-defi-relay",
+        runtime="nodejs20.x",
+        memory_size_mb=512,
+        last_modified=None,
+        state="Failed",
+        package_type="Zip",
+    )
+    items = build_aws_inventory([], [], [], _lifecycle_for_name, None, _LOG_BUCKET, [active_fn, failed_fn])
+    by_name = {i["name"]: i for i in items}
+
+    active = by_name["mtds-backfill-cefi-webhook"]
+    assert active["kind"] == "LAMBDA"
+    assert active["cloud"] == "AWS"
+    assert active["umbrella"] == "BATCH"
+    assert active["status"] == "running"
+    assert active["last_run_at"] == "2026-06-22T09:00:00+00:00"
+    assert active["exit_code"] is None  # existence-only census, no per-run exit code
+
+    failed = by_name["mtds-backfill-defi-relay"]
+    assert failed["status"] == "failed"
+    assert failed["last_run_at"] is None
+
+
+def test_build_aws_inventory_lambda_defaults_to_empty_list() -> None:
+    """``lambda_functions=None`` (the default) never crashes — EC2/Batch-only callers unaffected."""
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    items = build_aws_inventory([], [], [], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert items == []
+
+
 # ---------------------------------------------------------------------------
 # moto census (skipped when moto is absent — runs in the [aws]-extra CI env)
 # ---------------------------------------------------------------------------
@@ -432,6 +480,42 @@ def test_list_ecs_census_discovers_service_across_clusters() -> None:
         assert found.desired_count == 1
         idle = next(c for c in census if c.name == "uts-idle-prod")
         assert idle.desired_count == 0
+
+
+def test_list_lambda_census_discovers_deployed_function() -> None:
+    moto = pytest.importorskip("moto")
+    import io
+    import zipfile
+
+    import boto3
+
+    with moto.mock_aws():
+        iam = boto3.client("iam", region_name=_REGION)
+        role = iam.create_role(RoleName="lambda-role", AssumeRolePolicyDocument="{}")["Role"]["Arn"]
+
+        code_buf = io.BytesIO()
+        with zipfile.ZipFile(code_buf, "w") as zf:
+            zf.writestr("lambda_function.py", "def handler(event, context):\n    return {}\n")
+
+        fn_lambda = boto3.client("lambda", region_name=_REGION)
+        fn_lambda.create_function(
+            FunctionName="mtds-backfill-cefi-webhook",
+            Runtime="python3.13",
+            Role=role,
+            Handler="lambda_function.handler",
+            Code={"ZipFile": code_buf.getvalue()},
+            MemorySize=256,
+        )
+
+        from deployment_service.backends.aws_census import list_lambda_census
+
+        census = list_lambda_census(region=_REGION)
+        names = {c.name for c in census}
+        assert "mtds-backfill-cefi-webhook" in names
+        found = next(c for c in census if c.name == "mtds-backfill-cefi-webhook")
+        assert found.runtime == "python3.13"
+        assert found.memory_size_mb == 256
+        assert found.package_type == "Zip"
 
 
 # ---------------------------------------------------------------------------
