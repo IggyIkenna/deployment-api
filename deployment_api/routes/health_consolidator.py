@@ -34,6 +34,7 @@ from unified_trading_library import (
     AssetGroup,
     consolidated_blob_age_sec,
     get_storage_client,
+    per_vm_shard_backlog,
     per_vm_shards_exist,
     read_availability_index,
     resolve_bucket_name,
@@ -73,6 +74,8 @@ class ConsolidatorAgHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mo
     staleness_budget_seconds: int
     per_vm_shard_fallback_active: bool  # stale/missing index WHILE shards exist → recovery merge
     last_successful_run_at: str | None = None  # ISO-8601, derived from index mtime
+    pending_shard_count: int | None = None  # per-VM shards written since the last merge (backlog)
+    total_shard_count: int | None = None  # per-VM shards present (fan-in width)
     detail: str
 
 
@@ -111,8 +114,16 @@ def _classify_ag(age: float | None, budget: int, shards_exist: bool) -> tuple[st
     return "degraded", False, f"index {age_str}; no per-VM shards — genuinely empty bucket, not an outage"
 
 
-def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> ConsolidatorAgHealth:
-    """Build the consolidator posture for one asset_group (honest per-AG degradation)."""
+def _ag_health(
+    asset_group: AssetGroup, budget: int, now: datetime, *, include_backlog: bool = False
+) -> ConsolidatorAgHealth:
+    """Build the consolidator posture for one asset_group (honest per-AG degradation).
+
+    ``include_backlog=True`` also counts the per-VM shard backlog (shards written since
+    the last merge → not yet absorbed) via ONE extra prefix list. It is opt-in: the
+    Consolidators-tab endpoint sets it; the per-deployment ``/freshness`` reuse (via
+    ``consolidator_posture``) leaves it off so that hotter path pays no extra list.
+    """
     try:
         bucket = resolve_bucket_name(cloud="gcp", kind=_market_data_kind(asset_group), asset_group=asset_group)
     except (OSError, ValueError) as exc:
@@ -129,12 +140,18 @@ def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> Consolida
         client = get_storage_client()
         age = consolidated_blob_age_sec(client, bucket)
         shards_exist = age is None or age > budget
-        # Only pay for the shard-list when the index looks stale/missing (the discriminator).
-        shards_present = per_vm_shards_exist(client, bucket, exclude_self=True) if shards_exist else False
+        index_mtime = (now - timedelta(seconds=age)) if age is not None else None
+        pending_count: int | None = None
+        total_count: int | None = None
+        if include_backlog:
+            # ONE prefix list gives BOTH the backlog counts AND shard existence.
+            pending_count, total_count = per_vm_shard_backlog(client, bucket, index_mtime)
+            shards_present = total_count > 0
+        else:
+            # Only pay for the shard-list when the index looks stale/missing (the discriminator).
+            shards_present = per_vm_shards_exist(client, bucket, exclude_self=True) if shards_exist else False
         status, fallback, detail = _classify_ag(age, budget, shards_present)
-        last_run: str | None = None
-        if age is not None:
-            last_run = (now - timedelta(seconds=age)).isoformat()
+        last_run = index_mtime.isoformat() if index_mtime is not None else None
         return ConsolidatorAgHealth(
             asset_group=asset_group,
             bucket=bucket,
@@ -143,6 +160,8 @@ def _ag_health(asset_group: AssetGroup, budget: int, now: datetime) -> Consolida
             staleness_budget_seconds=budget,
             per_vm_shard_fallback_active=fallback,
             last_successful_run_at=last_run,
+            pending_shard_count=pending_count,
+            total_shard_count=total_count,
             detail=detail,
         )
     except (OSError, ValueError, RuntimeError) as exc:
@@ -243,6 +262,8 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
             staleness_budget_seconds=budget,
             per_vm_shard_fallback_active=False,
             last_successful_run_at=now.isoformat(),
+            pending_shard_count=2,  # small in-flight backlog is normal (~1 merge cycle)
+            total_shard_count=6,
             detail="index heartbeat 42s old (<= 86400s budget)",
         ),
         ConsolidatorAgHealth(
@@ -253,6 +274,8 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
             staleness_budget_seconds=budget,
             per_vm_shard_fallback_active=True,
             last_successful_run_at=None,
+            pending_shard_count=47,  # consolidator behind → large unabsorbed backlog
+            total_shard_count=48,
             detail="index 90000s (> 86400s budget) while per-VM shards exist — consolidator behind/DOWN",
         ),
     ]
@@ -273,7 +296,7 @@ def get_consolidator_health() -> ConsolidatorHealthResponse:
     if _cfg.is_mock_mode():
         return _mock_response(now)
     budget = resolve_consolidated_staleness_sec()
-    entries = [_ag_health(ag, budget, now) for ag in _ASSET_GROUPS]
+    entries = [_ag_health(ag, budget, now, include_backlog=True) for ag in _ASSET_GROUPS]
     return build_consolidator_health(entries, now)
 
 
