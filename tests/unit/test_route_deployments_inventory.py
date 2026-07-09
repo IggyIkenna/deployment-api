@@ -50,6 +50,14 @@ class _FakeEntry:
     rows_error: int = 0
     events_emitted: int = 0
     extras: dict[str, str] = field(default_factory=dict)
+    # D.1 host metric vector (0.0 defaults mirror the real DeploymentRegistryEntry's
+    # honestly-unknown legacy-row default).
+    cpu_pct: float = 0.0
+    mem_pct: float = 0.0
+    mem_slope: float = 0.0
+    disk_pct: float = 0.0
+    io_write_rate_bytes_sec: float = 0.0
+    net_recv_rate_bytes_sec: float = 0.0
 
 
 @pytest.fixture
@@ -267,6 +275,113 @@ def test_counts_by_kind_omits_absent_kinds() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _composite_health_status — D.3 VM 7-state taxonomy (v1: 5 real states + honest unknown)
+# ---------------------------------------------------------------------------
+
+
+def test_composite_health_not_applicable_for_terminal_entries() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    terminal = _FakeEntry(vm_name="x", status="failed", exit_code=137)
+    assert _composite_health_status(terminal, hb_age_seconds=None) is None  # type: ignore[arg-type]
+
+
+def test_composite_health_dead_when_control_plane_says_not_running() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    zombie = _FakeEntry(vm_name="x", status="running")
+    assert (
+        _composite_health_status(zombie, hb_age_seconds=30, control_plane_running=False)  # type: ignore[arg-type]
+        == "dead"
+    )
+
+
+def test_composite_health_hung_when_heartbeat_stale_and_control_plane_confirms_running() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    frozen = _FakeEntry(vm_name="x", status="running", cpu_pct=10.0)
+    assert (
+        _composite_health_status(frozen, hb_age_seconds=1_200, control_plane_running=True)  # type: ignore[arg-type]
+        == "hung"
+    )
+
+
+def test_composite_health_unknown_without_control_plane_confirmation_falls_back_to_heartbeat_only() -> None:
+    """No running-set supplied (control_plane_running=None) → hung still fires from
+    heartbeat staleness alone (no regression vs. the pre-D.3 `stale` status)."""
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    frozen = _FakeEntry(vm_name="x", status="running", cpu_pct=10.0)
+    assert _composite_health_status(frozen, hb_age_seconds=1_200) == "hung"  # type: ignore[arg-type]
+
+
+def test_composite_health_unknown_for_legacy_row_with_no_d1_sample() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    legacy = _FakeEntry(vm_name="x", status="running")  # all D.1 fields default 0.0
+    assert (
+        _composite_health_status(legacy, hb_age_seconds=30, control_plane_running=True) == "unknown"  # type: ignore[arg-type]
+    )
+
+
+def test_composite_health_disk_full() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    full = _FakeEntry(vm_name="x", status="running", disk_pct=95.0, cpu_pct=5.0)
+    assert (
+        _composite_health_status(full, hb_age_seconds=30, control_plane_running=True) == "disk-full"  # type: ignore[arg-type]
+    )
+
+
+def test_composite_health_oom_risk() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    climbing = _FakeEntry(vm_name="x", status="running", mem_pct=85.0, mem_slope=2.5)
+    assert (
+        _composite_health_status(climbing, hb_age_seconds=30, control_plane_running=True) == "oom-risk"  # type: ignore[arg-type]
+    )
+
+
+def test_composite_health_working_from_io_write_rate() -> None:
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    writing = _FakeEntry(vm_name="x", status="running", cpu_pct=40.0, io_write_rate_bytes_sec=2_048.0)
+    assert (
+        _composite_health_status(writing, hb_age_seconds=30, control_plane_running=True) == "working"  # type: ignore[arg-type]
+    )
+
+
+def test_composite_health_unknown_when_idle_with_no_object_delta_signal() -> None:
+    """Idle cpu/io/net with a real D.1 sample and no oom/disk flag — exactly the
+    case that needs the not-yet-shipped object_delta signal to call `stalled`
+    for real; degrades to `unknown` rather than guessing (WS-D.0 principle 2)."""
+    from deployment_api.routes.deployments_inventory import _composite_health_status
+
+    idle = _FakeEntry(vm_name="x", status="running", cpu_pct=3.0, mem_pct=20.0)
+    assert (
+        _composite_health_status(idle, hb_age_seconds=30, control_plane_running=True) == "unknown"  # type: ignore[arg-type]
+    )
+
+
+def test_build_inventory_threads_vm_details_control_plane_confirmation_into_composite_health() -> None:
+    """build_inventory's vm_details_by_name key set reaches the composite classifier —
+    a VM absent from the GCE aggregated-list join surfaces composite_health_status=dead."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = _vm_entries()
+    # NOT defi-paper-trading-20260622 — absent from the (real, non-None) GCE join below.
+    vm_details_by_name = {
+        "cefi-binance-spot-20260622-014158": {},
+        "strategy-live-cefi-20260620": {},
+    }
+    items = build_inventory(entries, {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
+    by_name = {i.name: i for i in items}
+    assert by_name["defi-paper-trading-20260622"].composite_health_status == "dead"
+    # The failed/terminal OOM VM has no composite (not applicable).
+    assert by_name["defi-backfill-20260622-014200"].composite_health_status is None
+
+
+# ---------------------------------------------------------------------------
 # build_umbrella_summary — rollup
 # ---------------------------------------------------------------------------
 
@@ -425,9 +540,13 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
 
     _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
 
+    vm_details_by_name = {e.vm_name: {} for e in entries if e.status == "running"}
     with (
         patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
-        patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=(entries, {})),
+        patch(
+            "deployment_api.routes.deployments_inventory._load_gcp_vm_entries",
+            return_value=(entries, vm_details_by_name),
+        ),
         patch(
             "deployment_api.routes.deployments_inventory.latest_execution_by_job",
             return_value=cr_status,

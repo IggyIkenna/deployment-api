@@ -168,6 +168,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     health_status: str | None = None  # raw GCE instance status (RUNNING/TERMINATED/...)
     boot_disk_name: str | None = None
     labels: dict[str, str] | None = None
+    composite_health_status: str | None = None  # D.3 VM composite (hung|disk-full|oom-risk|working|unknown); n/a=None
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -300,10 +301,77 @@ def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None
     return max(0.0, (ended - started).total_seconds() / 3600.0)
 
 
+# D.3 v1 defaults (documented, not a global CPU cut — parent WS-D.0 principle 1).
+_DISK_FULL_PCT_THRESHOLD = 90.0
+_OOM_RISK_MEM_PCT_FLOOR = 80.0
+
+
+def _has_d1_metrics(entry: DeploymentRegistryEntry) -> bool:
+    """True iff the entry carries a real D.1 ``/proc`` sample.
+
+    Pre-2026-07-09 registry rows default every D.1 field to 0.0 (honestly-unknown,
+    per the dataclass's own docstring, never fabricated); six simultaneous real
+    zeros — including ``disk_pct`` (an empty disk is not realistic) — is the
+    legacy-row signature, not a genuine idle sample.
+    """
+    return any(
+        (
+            entry.cpu_pct,
+            entry.mem_pct,
+            entry.mem_slope,
+            entry.disk_pct,
+            entry.io_write_rate_bytes_sec,
+            entry.net_recv_rate_bytes_sec,
+        )
+    )
+
+
+def _composite_health_status(
+    entry: DeploymentRegistryEntry,
+    hb_age_seconds: int | None,
+    *,
+    control_plane_running: bool | None = None,
+) -> str | None:
+    """D.3 VM composite health — resource-in-band AND a work signal advancing
+    (parent WS-D.0 principle 1), computed only for a currently ``running`` entry
+    (a terminal entry's health is already the exit_code/status).
+
+    v1 covers the 5 states whose signal exists today: ``dead`` / ``hung`` /
+    ``disk-full`` / ``oom-risk`` / ``working``. ``stalled`` and ``workload-dead``
+    need the manifest object-delta lookup and the CMD_PID liveness check
+    respectively — separate, not-yet-shipped sibling todos in this plan — so they
+    degrade to ``"unknown"`` rather than being guessed from a proxy signal
+    (principle 2: a hint is not truth).
+
+    ``control_plane_running`` is the GCE aggregated-list confirmation (the
+    running-set ``_load_gcp_vm_entries`` already fetches) — ``None`` when the
+    caller has no confirmation to offer, in which case ``dead`` never fires and
+    ``hung`` falls back to heartbeat staleness alone (no regression vs. the
+    pre-D.3 status, just less certain without the control-plane cross-check).
+    """
+    if entry.status != "running":
+        return None
+    if control_plane_running is False:
+        return "dead"
+    if hb_age_seconds is not None and hb_age_seconds > _STALE_HEARTBEAT_MINUTES * 60:
+        return "hung"
+    if not _has_d1_metrics(entry):
+        return "unknown"
+    if entry.disk_pct > _DISK_FULL_PCT_THRESHOLD:
+        return "disk-full"
+    if entry.mem_pct >= _OOM_RISK_MEM_PCT_FLOOR and entry.mem_slope > 0:
+        return "oom-risk"
+    if entry.io_write_rate_bytes_sec > 0 or entry.net_recv_rate_bytes_sec > 0:
+        return "working"
+    return "unknown"
+
+
 def _vm_item(
     entry: DeploymentRegistryEntry,
     now: datetime,
     vm_details: dict[str, object] | None = None,
+    *,
+    control_plane_running: bool | None = None,
 ) -> DeploymentItem:
     """Build an inventory item from a VM deployment-registry entry.
 
@@ -311,6 +379,8 @@ def _vm_item(
     (``get_vm_instance_details``), if any — surfaces the Tier-0 free wins
     (machine_type/zone/labels/boot-disk/raw status) already fetched there but
     previously discarded down to just the running-VM-name set.
+    ``control_plane_running`` is the same GCE aggregated-list confirmation,
+    reduced to a bool — feeds the D.3 composite classifier's ``dead``/``hung``.
     """
     target = _classify_vm(entry.vm_name)
     hb_age = _heartbeat_age_seconds(entry, now)
@@ -345,6 +415,7 @@ def _vm_item(
         health_status=str(details.get("status") or "") or None,
         boot_disk_name=str(details.get("boot_disk_name") or "") or None,
         labels=cast(dict[str, str], labels) if labels else None,
+        composite_health_status=_composite_health_status(entry, hb_age, control_plane_running=control_plane_running),
     )
 
 
@@ -557,22 +628,35 @@ def build_inventory(
     A VM whose name cannot be classified is logged + skipped (never crashes the
     inventory) — the no-silent-default classifier raises, we degrade per-row.
 
+    ``vm_details_by_name`` is the GCE aggregated-list join (Tier-0 free wins —
+    machine_type/zone/labels/boot-disk/raw status). Its KEY SET doubles as the
+    control-plane confirmation feeding the D.3 composite ``dead``/``hung`` states
+    (a VM name absent from it is not running per GCP right now). ``None`` (a
+    caller with no join to offer, e.g. pure-classification tests or a degraded
+    path) degrades those states honestly (see ``_composite_health_status``)
+    rather than guessing; an explicit ``{}`` (a real, empty GCE census) DOES
+    confirm every entry as not-running.
+
     Cloud Run jobs census the LIVE job list (``cloud_run_status`` keys, already
     fetched by ``latest_execution_by_job``'s ``run_v2.JobsClient.list_jobs`` — no
     new API call) — ``CLOUD_RUN_JOBS`` is a classification HINT, not an allow-list,
     so an off-pattern job (no registry match) still gets a row instead of hiding.
     Only when the live list itself is empty (the GCP call failed) does the census
     degrade to the static registry with status="unknown" (never an empty census).
-
-    ``vm_details_by_name`` is the GCE aggregated-list join (Tier-0 free wins —
-    machine_type/zone/labels/boot-disk/raw status); optional so pure-classification
-    callers (tests, mock mode) can omit it and the new fields default to None.
     """
     details_by_name = vm_details_by_name or {}
     items: list[DeploymentItem] = []
     for entry in vm_entries:
         try:
-            items.append(_vm_item(entry, now, details_by_name.get(entry.vm_name)))
+            control_plane_running = entry.vm_name in details_by_name if vm_details_by_name is not None else None
+            items.append(
+                _vm_item(
+                    entry,
+                    now,
+                    details_by_name.get(entry.vm_name),
+                    control_plane_running=control_plane_running,
+                )
+            )
         except UnclassifiedDeploymentError as exc:
             logger.warning("inventory: skipping unclassifiable VM %r: %s", entry.vm_name, exc)
     if cloud_run_status:
@@ -780,8 +864,10 @@ def _load_gcp_vm_entries(
     list, the archive-key list, then a single parallel download pool over every key —
     so the cold path is ~max(slowest single call) instead of their sum. Also returns the
     GCE aggregated-list join (name -> machine_type/zone/labels/boot-disk/raw status) so
-    the caller can surface those Tier-0 free wins instead of discarding them down to just
-    the running-VM-name set.
+    the caller can surface those Tier-0 free wins AND cross-check control-plane presence
+    (its key set) — the archived (7-day window) entries are NOT filtered against it (an
+    archived "running" row whose VM is gone is exactly the D.3 ``dead`` case), so the
+    caller needs the full join, not just a pre-filtered set.
     """
     client = get_storage_client()
     bucket = DEFAULT_BUCKET
