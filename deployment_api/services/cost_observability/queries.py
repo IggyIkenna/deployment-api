@@ -58,16 +58,18 @@ GROUP BY day, service, resource_id, region, sku, usage_unit, zone
 
 
 def aws_facts_sql(database: str, table: str, start: date, end: date) -> str:
-    """Per (day, service, resource, region, usage_type, zone) net cost + usage for the AWS CUR (Athena).
+    """Per (day, service, resource, region, usage_type, zone) GROSS cost + credits + usage for the
+    AWS CUR (Athena) — mirrors the GCP query's cost/credit split so the AWS tab reports NET spend.
 
-    `line_item_net_unblended_cost` (net of RI/SP discounts) replaces `line_item_unblended_cost`
-    so the total tracks effective spend, not list price. `line_item_line_item_type IN
-    ('Usage','DiscountedUsage','Tax','Fee')` adds the invoice's tax + recurring-fee lines on top
-    of usage — this is what makes the AWS total reconcile toward the invoice total instead of
-    reporting usage-only spend (Refund/Credit/RIFee/SavingsPlanRecurringFee rows stay excluded;
-    a further refinement, not required to close the usage-only gap). `usage_type` is the AWS
-    analog of a GCP SKU — the "why is this service expensive" axis; Tax/Fee rows carry no
-    usage_type and fall back to 'Unknown'.
+    `cost` (gross) = `line_item_unblended_cost` over Usage/DiscountedUsage/Tax/Fee. This CUR's
+    crawler schema has **no** `line_item_net_unblended_cost` column (verified via SHOW COLUMNS
+    2026-07-09 — an earlier switch to it silently zeroed the whole AWS tab, a failed per-cloud query
+    being isolated). `credit` = the same column over `Credit` line-item rows (negative); net =
+    cost + credit, so a fully-credited account (verified 2026-07-09: ~$752 usage, ~-$752 credit →
+    **net $0**) reports $0 net with the gross/credit split visible, not a bare or overstated number.
+    Refund / RIFee / SavingsPlanRecurringFee stay excluded. `usage_type` is the AWS analog of a GCP
+    SKU. `HAVING sum(abs(...))` keeps groups with any activity so a fully-credited (net-0) group is
+    not dropped.
     """
     return f"""
 SELECT
@@ -78,12 +80,13 @@ SELECT
   COALESCE(NULLIF(product_region_code, ''), 'global') AS region,
   COALESCE(NULLIF(line_item_usage_type, ''), 'Unknown') AS usage_type,
   COALESCE(NULLIF(line_item_availability_zone, ''), '') AS zone,
-  round(sum(line_item_net_unblended_cost), 6) AS cost,
+  round(sum(CASE WHEN line_item_line_item_type = 'Credit' THEN 0 ELSE line_item_unblended_cost END), 6) AS cost,
+  round(sum(CASE WHEN line_item_line_item_type = 'Credit' THEN line_item_unblended_cost ELSE 0 END), 6) AS credit,
   round(sum(line_item_usage_amount), 6) AS usage_amount
 FROM {database}.{table}
-WHERE line_item_line_item_type IN ('Usage', 'DiscountedUsage', 'Tax', 'Fee')
+WHERE line_item_line_item_type IN ('Usage', 'DiscountedUsage', 'Tax', 'Fee', 'Credit')
   AND date(line_item_usage_start_date) >= date('{start.isoformat()}')
   AND date(line_item_usage_start_date) < date('{end.isoformat()}')
 GROUP BY 1, 2, 3, 4, 5, 6, 7
-HAVING sum(line_item_net_unblended_cost) <> 0
+HAVING sum(abs(line_item_unblended_cost)) <> 0
 """.strip()  # nosec B608 — dates via date.isoformat(); db/table from config; no user input

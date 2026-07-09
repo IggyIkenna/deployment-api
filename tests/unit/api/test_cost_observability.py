@@ -142,12 +142,17 @@ def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
     assert "GROUP BY 1, 2, 3, 4, 5, 6, 7" in sql
 
 
-def test_aws_facts_sql_uses_net_cost_and_includes_tax_and_fee() -> None:
-    """Invoice reconciliation: net-of-discounts cost + Tax/Fee lines, not usage-only gross."""
+def test_aws_facts_sql_splits_gross_cost_and_credit() -> None:
+    """AWS mirrors GCP's cost/credit split so the tab reports net-of-credits: cost = unblended over
+    Usage/DiscountedUsage/Tax/Fee, credit = unblended over Credit line-items. This CUR's crawler
+    schema has no `line_item_net_unblended_cost` column (an earlier switch to it silently zeroed the
+    whole AWS tab, since a failed per-cloud Athena query is isolated)."""
     sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
-    assert "line_item_net_unblended_cost" in sql
-    assert "line_item_unblended_cost" not in sql  # plain (non-net) column must not appear
-    assert "'Usage', 'DiscountedUsage', 'Tax', 'Fee'" in sql
+    assert "line_item_unblended_cost" in sql
+    assert "line_item_net_unblended_cost" not in sql  # absent from this CUR's schema — would error → 0 rows
+    assert "AS cost" in sql and "AS credit" in sql  # the gross/credit split
+    assert "line_item_line_item_type = 'Credit'" in sql  # credit CASE branch
+    assert "'Usage', 'DiscountedUsage', 'Tax', 'Fee', 'Credit'" in sql
 
 
 class _FakeAnalyticsClient:

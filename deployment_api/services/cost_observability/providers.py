@@ -190,6 +190,7 @@ def aws_facts(
                 resource_kind=_aws_kind(service_code, resource_id),
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
+                credit=_as_float(r.get("credit")),
                 sku=usage_type,
                 usage_amount=_as_float(r.get("usage_amount")),
                 zone=_as_str(r.get("zone")),
