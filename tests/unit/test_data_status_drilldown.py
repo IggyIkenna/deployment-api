@@ -73,9 +73,13 @@ class TestGetSchemaForShard:
     def test_uppercase_defi_pool_resolves_uniswap_v3_override(self):
         """Regression from audit 2026-04-19 §5.5 — UI sends uppercase
         ``POOL`` / ``POOL_DEFINITION`` from the availability manifest but
-        UAC keys them as ``pool`` / ``dex_pool_state``. The endpoint now
-        normalises both to the canonical form so the Uniswap V3
-        ``pool_address`` override resolves."""
+        UAC keys them as ``pool`` / ``dex_pool_state``. The endpoint
+        normalises both to the canonical form. Per
+        ``defi_dex_pool_symbol_shape_fix_2026_07_09`` the legacy Uniswap V3
+        ``pool_address`` venue override was removed — the writer now
+        resolves a real canonical ``symbol`` per row, so this falls through
+        to the ``DEFI_DEX_POOL_DEX_POOL_STATE`` default (``symbol_column``
+        now ``symbol``, ``source`` now ``CONTRACT_REGISTRY``)."""
         result = drilldown.get_schema_for_shard(
             asset_group="DEFI",
             instrument_type="POOL",
@@ -83,11 +87,14 @@ class TestGetSchemaForShard:
             venue="UNISWAP_V3",
         )
         assert result["registered"] is True
-        assert result["symbol_column"] == "pool_address"
-        assert result["source"] == "VENUE_CONTRACT_OVERRIDES"
+        assert result["symbol_column"] == "symbol"
+        assert result["source"] == "CONTRACT_REGISTRY"
         assert result["venue"] == "UNISWAP_V3"
 
     def test_uppercase_uniswap_v4_resolves_pool_id(self):
+        """Per ``defi_dex_pool_symbol_shape_fix_2026_07_09`` the legacy
+        Uniswap V4 ``pool_id`` venue override was removed in favor of the
+        ``symbol`` default — see docstring on the V3 test above."""
         result = drilldown.get_schema_for_shard(
             asset_group="DEFI",
             instrument_type="POOL",
@@ -95,11 +102,13 @@ class TestGetSchemaForShard:
             venue="UNISWAP_V4",
         )
         assert result["registered"] is True
-        assert result["symbol_column"] == "pool_id"
-        assert result["source"] == "VENUE_CONTRACT_OVERRIDES"
+        assert result["symbol_column"] == "symbol"
+        assert result["source"] == "CONTRACT_REGISTRY"
 
     def test_uppercase_data_type_alias_resolves(self):
-        # POOL_SNAPSHOT is a UI-level alias for dex_pool_state.
+        # POOL_SNAPSHOT is a UI-level alias for dex_pool_state. Per
+        # defi_dex_pool_symbol_shape_fix_2026_07_09 the legacy CURVE
+        # pool_address override was removed in favor of the symbol default.
         result = drilldown.get_schema_for_shard(
             asset_group="DEFI",
             instrument_type="POOL",
@@ -107,7 +116,7 @@ class TestGetSchemaForShard:
             venue="CURVE",
         )
         assert result["registered"] is True
-        assert result["symbol_column"] == "pool_address"
+        assert result["symbol_column"] == "symbol"
 
     def test_instruments_service_legacy_v4_resolves_catalogue_contract(self):
         """instruments-service legacy v4 manifest rows for cefi/tradfi/defi/prediction
