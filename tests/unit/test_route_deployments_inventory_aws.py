@@ -141,7 +141,7 @@ def test_build_aws_inventory_classifies_ec2_and_batch() -> None:
         )
     ]
 
-    items = build_aws_inventory(instances, batch_jobs, _lifecycle_for_name, None, _LOG_BUCKET)
+    items = build_aws_inventory(instances, batch_jobs, [], _lifecycle_for_name, None, _LOG_BUCKET)
     by_name = {i["name"]: i for i in items}
 
     # Every item is AWS and classified into exactly one umbrella.
@@ -179,7 +179,7 @@ def test_build_aws_inventory_terminated_exit_137_is_failed() -> None:
         launch_time=datetime(2026, 6, 22, 3, 0, tzinfo=UTC),
     )
     storage = _FakeStorageClient({(_LOG_BUCKET, EXIT_STATUS_BLOB.format(vm=inst.name)): b"137\n"})
-    items = build_aws_inventory([inst], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
+    items = build_aws_inventory([inst], [], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
     assert len(items) == 1
     item = items[0]
     assert item["cloud"] == "AWS"
@@ -202,7 +202,7 @@ def test_build_aws_inventory_terminated_no_exit_blob_is_stopped() -> None:
         launch_time=datetime(2026, 6, 22, tzinfo=UTC),
     )
     storage = _FakeStorageClient({})  # no EXIT_STATUS blob
-    items = build_aws_inventory([inst], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
+    items = build_aws_inventory([inst], [], [], _lifecycle_for_name, storage, _LOG_BUCKET)  # type: ignore[arg-type]
     assert items[0]["status"] == "stopped"
     assert items[0]["exit_code"] is None
 
@@ -222,9 +222,75 @@ def test_build_aws_inventory_batch_failed_synthesises_nonzero() -> None:
         exit_code=None,  # infra failure → no container rc
         status_reason="Essential container in task exited",
     )
-    items = build_aws_inventory([], [job], _lifecycle_for_name, None, _LOG_BUCKET)
+    items = build_aws_inventory([], [job], [], _lifecycle_for_name, None, _LOG_BUCKET)
     assert items[0]["status"] == "failed"
     assert items[0]["exit_code"] == 1  # synthesised non-zero so the UI shows it red
+
+
+def test_build_aws_inventory_classifies_ecs_service_running() -> None:
+    from deployment_service.backends.aws_census import AwsEcsServiceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    svc = AwsEcsServiceCensus(
+        name="uts-strategy-prod",
+        cluster="uts-defi-prod",
+        desired_count=1,
+        running_count=1,
+        task_definition_revision=12,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 7, 1, 8, 0, tzinfo=UTC),
+    )
+    items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert len(items) == 1
+    item = items[0]
+    assert item["name"] == "uts-strategy-prod"
+    assert item["kind"] == "ECS_SERVICE"
+    assert item["cloud"] == "AWS"
+    # Services have no live/batch/paper/experiment phase (Open-Q1) — Mode is always NONE.
+    assert item["umbrella"] == "NONE"
+    assert item["status"] == "running"
+    assert item["last_run_at"] == "2026-07-01T08:00:00+00:00"
+    assert item["exit_code"] is None
+
+
+def test_build_aws_inventory_ecs_service_scaled_to_zero_always_emitted() -> None:
+    """An intentionally scaled-to-zero service is still emitted (Open-Q7) — never filtered."""
+    from deployment_service.backends.aws_census import AwsEcsServiceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    svc = AwsEcsServiceCensus(
+        name="uts-features-prod",
+        cluster="uts-defi-prod",
+        desired_count=0,
+        running_count=0,
+        task_definition_revision=3,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=None,
+    )
+    items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert len(items) == 1
+    assert items[0]["status"] == "stopped"  # desired==0 → off on purpose, not a failure
+
+
+def test_build_aws_inventory_ecs_service_desired_but_not_running_is_unknown() -> None:
+    """desired>0 but nothing running is ambiguous pre-sub-taxonomy — never fabricated as failed."""
+    from deployment_service.backends.aws_census import AwsEcsServiceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    svc = AwsEcsServiceCensus(
+        name="uts-execution-prod",
+        cluster="uts-defi-prod",
+        desired_count=1,
+        running_count=0,
+        task_definition_revision=1,
+        created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        updated_at=None,
+    )
+    items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert items[0]["status"] == "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +392,46 @@ def test_list_batch_census_discovers_submitted_job() -> None:
         census = list_batch_census(region=_REGION, job_queue="unified-trading-job-queue")
         names = {c.name for c in census}
         assert "mtds-backfill-defi-20260622-aws" in names
+
+
+def test_list_ecs_census_discovers_service_across_clusters() -> None:
+    """A service on each of the two prod clusters is discovered, incl. at 0 desired."""
+    moto = pytest.importorskip("moto")
+    import boto3
+
+    with moto.mock_aws():
+        ecs = boto3.client("ecs", region_name=_REGION)
+        ecs.create_cluster(clusterName="uts-defi-prod")
+        ecs.create_cluster(clusterName="unified-trading-prod")
+        task_def = ecs.register_task_definition(
+            family="uts-strategy-prod",
+            containerDefinitions=[{"name": "app", "image": "busybox", "memory": 256}],
+        )["taskDefinition"]["taskDefinitionArn"]
+        ecs.create_service(
+            cluster="uts-defi-prod",
+            serviceName="uts-strategy-prod",
+            taskDefinition=task_def,
+            desiredCount=1,
+        )
+        # A scaled-to-zero service on the second cluster — must still be discovered.
+        ecs.create_service(
+            cluster="unified-trading-prod",
+            serviceName="uts-idle-prod",
+            taskDefinition=task_def,
+            desiredCount=0,
+        )
+
+        from deployment_service.backends.aws_census import list_ecs_census
+
+        census = list_ecs_census(region=_REGION, clusters=("uts-defi-prod", "unified-trading-prod"))
+        names = {c.name for c in census}
+        assert "uts-strategy-prod" in names
+        assert "uts-idle-prod" in names
+        found = next(c for c in census if c.name == "uts-strategy-prod")
+        assert found.cluster == "uts-defi-prod"
+        assert found.desired_count == 1
+        idle = next(c for c in census if c.name == "uts-idle-prod")
+        assert idle.desired_count == 0
 
 
 # ---------------------------------------------------------------------------

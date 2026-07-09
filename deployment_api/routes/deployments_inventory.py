@@ -145,7 +145,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """
 
     name: str
-    kind: str  # "VM" | "CLOUD_RUN_JOB"
+    kind: str  # "VM" | "CLOUD_RUN_JOB" | "ECS_SERVICE"
     umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT"
     cloud: str  # "GCP" | "AWS"
     service: str
