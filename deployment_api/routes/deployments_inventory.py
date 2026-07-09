@@ -185,6 +185,16 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     boot_disk_name: str | None = None
     labels: dict[str, str] | None = None
     composite_health_status: str | None = None  # D.3 VM composite (hung|disk-full|oom-risk|working|unknown); n/a=None
+    # AWS Tier-0 free wins — already fetched by the ECS/Lambda census, previously
+    # discarded once collapsed into ``status``. None for kinds without the
+    # underlying source (GCP kinds, EC2 VMs, Batch/Cloud-Run jobs).
+    cluster: str | None = None  # ECS_SERVICE: owning cluster name
+    desired_count: int | None = None  # ECS_SERVICE: desired task count (0 = scaled to zero)
+    running_count: int | None = None  # ECS_SERVICE: currently running task count
+    task_definition_revision: int | None = None  # ECS_SERVICE: active task-def revision
+    runtime: str | None = None  # LAMBDA: declared runtime, "" for a container-image function
+    memory_size_mb: int | None = None  # LAMBDA: configured memory
+    package_type: str | None = None  # LAMBDA: "Zip" or "Image"
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

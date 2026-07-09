@@ -252,6 +252,11 @@ def test_build_aws_inventory_classifies_ecs_service_running() -> None:
     assert item["status"] == "running"
     assert item["last_run_at"] == "2026-07-01T08:00:00+00:00"
     assert item["exit_code"] is None
+    # AWS Tier-0 free wins — already fetched by the census, surfaced onto the item.
+    assert item["cluster"] == "uts-defi-prod"
+    assert item["desired_count"] == 1
+    assert item["running_count"] == 1
+    assert item["task_definition_revision"] == 12
 
 
 def test_build_aws_inventory_ecs_service_scaled_to_zero_always_emitted() -> None:
@@ -327,10 +332,16 @@ def test_build_aws_inventory_classifies_lambda_functions() -> None:
     assert active["status"] == "running"
     assert active["last_run_at"] == "2026-06-22T09:00:00+00:00"
     assert active["exit_code"] is None  # existence-only census, no per-run exit code
+    # AWS Tier-0 free wins — already fetched by the census, surfaced onto the item.
+    assert active["runtime"] == "python3.13"
+    assert active["memory_size_mb"] == 256
+    assert active["package_type"] == "Zip"
 
     failed = by_name["mtds-backfill-defi-relay"]
     assert failed["status"] == "failed"
     assert failed["last_run_at"] is None
+    assert failed["runtime"] == "nodejs20.x"
+    assert failed["memory_size_mb"] == 512
 
 
 def test_build_aws_inventory_lambda_defaults_to_empty_list() -> None:

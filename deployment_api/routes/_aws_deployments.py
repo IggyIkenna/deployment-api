@@ -285,6 +285,10 @@ def _ecs_service_item(census: AwsEcsServiceCensus) -> DeploymentItemDict:
         "heartbeat_age_seconds": None,
         "captured_progress": None,
         "run_log_uri": "",
+        "cluster": census.cluster,
+        "desired_count": census.desired_count,
+        "running_count": census.running_count,
+        "task_definition_revision": census.task_definition_revision,
     }
 
 
@@ -322,6 +326,9 @@ def _lambda_item(
         "heartbeat_age_seconds": None,
         "captured_progress": None,
         "run_log_uri": "",
+        "runtime": fn.runtime,
+        "memory_size_mb": fn.memory_size_mb,
+        "package_type": fn.package_type,
     }
 
 
