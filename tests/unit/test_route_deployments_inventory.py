@@ -49,8 +49,7 @@ class _FakeEntry:
     rows_out: int = 0
     rows_error: int = 0
     events_emitted: int = 0
-    extras: dict[str, str] = field(default_factory=dict)
-    # D.1 host metric vector (0.0 defaults mirror the real DeploymentRegistryEntry's
+    # D.1 host metric vector (0.0/True defaults mirror the real DeploymentRegistryEntry's
     # honestly-unknown legacy-row default).
     cpu_pct: float = 0.0
     mem_pct: float = 0.0
@@ -58,6 +57,8 @@ class _FakeEntry:
     disk_pct: float = 0.0
     io_write_rate_bytes_sec: float = 0.0
     net_recv_rate_bytes_sec: float = 0.0
+    workload_alive: bool = True
+    extras: dict[str, str] = field(default_factory=dict)
 
 
 @pytest.fixture
@@ -517,6 +518,67 @@ def test_summary_route_unknown_umbrella_404(client_inventory: TestClient) -> Non
         mock_cfg.is_mock_mode.return_value = True
         resp = client_inventory.get("/api/deployments/umbrella/bogus/summary")
     assert resp.status_code == 404
+
+
+def test_detail_route_mock_shape(client_inventory: TestClient) -> None:
+    """Mock mode: item found, D.1 metrics honestly None (the mock never populates the entry cache)."""
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/detail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item"]["name"] == "cefi-binance-spot-20260622-014158"
+    assert body["cpu_pct"] is None
+    assert body["workload_alive"] is None
+
+
+def test_detail_route_unknown_name_404(client_inventory: TestClient) -> None:
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/does-not-exist/detail")
+    assert resp.status_code == 404
+
+
+def test_detail_route_live_path_includes_d1_metrics(client_inventory: TestClient) -> None:
+    """deployment_obs_backend_kinds_health-017: the D.1 vector rides the SAME GCP census the
+    list endpoint already runs (no new bucket walk) — hitting /inventory once, then /detail,
+    surfaces the metrics stamped on the registry entry."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    entry = _FakeEntry(
+        vm_name="cefi-binance-spot-20260622-014158",
+        cpu_pct=42.5,
+        mem_pct=61.0,
+        mem_slope=0.3,
+        disk_pct=12.0,
+        io_write_rate_bytes_sec=1_048_576.0,
+        net_recv_rate_bytes_sec=2_048.0,
+        workload_alive=True,
+    )
+    _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+    _inv_mod._vm_entry_by_name_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=([entry], {})),
+        patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        # Populate the caches via the list endpoint first (the same cadence production hits).
+        list_resp = client_inventory.get("/api/deployments/inventory")
+        assert list_resp.status_code == 200
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/detail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["item"]["name"] == "cefi-binance-spot-20260622-014158"
+    assert body["cpu_pct"] == 42.5
+    assert body["mem_pct"] == 61.0
+    assert body["mem_slope"] == 0.3
+    assert body["disk_pct"] == 12.0
+    assert body["io_write_rate_bytes_sec"] == 1_048_576.0
+    assert body["net_recv_rate_bytes_sec"] == 2_048.0
+    assert body["workload_alive"] is True
 
 
 def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory: TestClient) -> None:

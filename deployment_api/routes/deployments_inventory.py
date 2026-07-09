@@ -18,6 +18,8 @@ package that already owns ``GET /api/deployments`` + ``/api/deployments/{id}``):
 * ``GET /api/deployments/inventory`` — the unified, filterable inventory.
 * ``GET /api/deployments/umbrella/{umbrella}/summary`` — the per-umbrella rollup
   (the /repos-overview equivalent).
+* ``GET /api/deployments/{name}/detail`` — per-target drill-down (D.1 metrics vector)
+  for the popover; the thin list above stays composite + headline fields only.
 
 Reuse: VM rows come from the SAME deployment registry ``/api/vm-deployments`` reads
 (``DeploymentsRegistry``); Cloud Run rows census the LIVE job list from
@@ -136,6 +138,16 @@ _inventory_lock = threading.Lock()
 _inventory_refreshing: set[str] = set()
 _inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inv-refresh")
 
+# VM registry entry by vm_name — piggybacks on the SAME GCP VM census _compute_inventory
+# already runs every cache cycle (zero new bucket walks); lets the ``/{id}/detail`` drill-down
+# serve the D.1 metrics vector (cpu/mem/disk/io/net + workload liveness) that live on
+# ``DeploymentRegistryEntry`` but aren't carried onto the thin-list ``DeploymentItem``.
+# Entries are indexed by ``vm_name`` (registry objects are keyed by ``deployment_id``, which
+# a caller of ``/{id}/detail`` doesn't know), so this is a small derived side-cache, not a
+# second source of truth.
+_vm_entry_by_name_cache: dict[str, DeploymentRegistryEntry] = {}
+_vm_entry_by_name_lock = threading.Lock()
+
 
 class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """One classified compute unit in the unified inventory (VM or Cloud Run job).
@@ -184,6 +196,34 @@ class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API cont
     # with a failed/not-yet-shipped census is simply absent from the map (honest degradation,
     # never a KeyError or a fabricated zero for a kind the caller didn't ask about).
     counts_by_kind: dict[str, int] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+
+
+class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Per-target drill-down (parent plan D.2 API layer) — the deep D.1 metrics vector
+
+    alongside the thin-list item. ``/deployments/inventory`` intentionally keeps
+    ``DeploymentItem`` to composite + headline fields so the list payload stays small at
+    ~200-target scale; the metrics vector below lives here instead.
+
+    HONEST SCOPE NOTE: these are the single most-recent sample stamped onto the registry
+    entry each heartbeat tick (overwritten in place) — NOT yet a persisted rolling window
+    of samples. The parent plan's D.2 STORE design calls for keeping the last ~10 samples
+    on the registry entry so ``mem_slope`` / "sustained idle" have a trend to plot; that
+    persistence hasn't shipped (see this plan's new rolling-window-persistence todo), so
+    the popover gets a live point-in-time reading today, a sparkline once that lands.
+    All metrics fields are ``None`` for a kind without D.1 capture (Cloud Run/ECS/Lambda/
+    Cloud Function — VM-only for now, see parent D.2 CAPTURE) or a VM absent from this
+    cycle's census (honest absence, never a fabricated 0.0).
+    """
+
+    item: DeploymentItem
+    cpu_pct: float | None = None
+    mem_pct: float | None = None
+    mem_slope: float | None = None
+    disk_pct: float | None = None
+    io_write_rate_bytes_sec: float | None = None
+    net_recv_rate_bytes_sec: float | None = None
+    workload_alive: bool | None = None
 
 
 class UmbrellaStatusFailure(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -909,6 +949,10 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
         cloud_run_status = latest_execution_by_job(project_id)
         items.extend(build_inventory(vm_entries, cloud_run_status, now, vm_details_by_name))
 
+        with _vm_entry_by_name_lock:
+            _vm_entry_by_name_cache.clear()
+            _vm_entry_by_name_cache.update({e.vm_name: e for e in vm_entries})
+
     if want_aws:
         items.extend(_load_aws_items(now))
 
@@ -1038,6 +1082,36 @@ def get_deployment_inventory(
     )
 
 
+@router.get("/deployments/{name}/detail", response_model=DeploymentDetailResponse)
+def get_deployment_detail(name: str) -> DeploymentDetailResponse:
+    """Per-target drill-down: the thin-list item plus the D.1 metrics vector (popover).
+
+    ``name`` is the ``DeploymentItem.name`` (VM name / Cloud Run job or service name), not
+    an orchestration ``deployment_id`` — this endpoint reads the SAME cached census
+    ``/deployments/inventory`` already computes (no new bucket walk / API call). 404 if the
+    name isn't in the current (cached) inventory.
+    """
+    now = datetime.now(UTC)
+    items = _load_inventory(now)
+    item = next((i for i in items if i.name == name), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Deployment {name!r} not found in the current inventory")
+    with _vm_entry_by_name_lock:
+        entry = _vm_entry_by_name_cache.get(name)
+    if entry is None:
+        return DeploymentDetailResponse(item=item)
+    return DeploymentDetailResponse(
+        item=item,
+        cpu_pct=entry.cpu_pct,
+        mem_pct=entry.mem_pct,
+        mem_slope=entry.mem_slope,
+        disk_pct=entry.disk_pct,
+        io_write_rate_bytes_sec=entry.io_write_rate_bytes_sec,
+        net_recv_rate_bytes_sec=entry.net_recv_rate_bytes_sec,
+        workload_alive=entry.workload_alive,
+    )
+
+
 def build_umbrella_summary(umbrella: str, items: list[DeploymentItem]) -> UmbrellaSummaryResponse:
     """Roll the inventory items of one umbrella into the /repos-overview summary."""
     scoped = [i for i in items if i.umbrella.upper() == umbrella.upper()]
@@ -1082,6 +1156,7 @@ def get_umbrella_summary(umbrella: str) -> UmbrellaSummaryResponse:
 
 
 __all__ = [
+    "DeploymentDetailResponse",
     "DeploymentInventoryResponse",
     "DeploymentItem",
     "UmbrellaSummaryResponse",
