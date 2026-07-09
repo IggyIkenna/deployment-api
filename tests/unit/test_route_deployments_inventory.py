@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import ModuleType
@@ -936,6 +938,88 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
 
 
 # ---------------------------------------------------------------------------
+# Census hang isolation (deployment_obs_backend_kinds_health P0) — a slow/hung provider
+# degrades to an honest EMPTY census for its OWN kind and never blocks the whole inventory
+# (the >240s / 0-byte cockpit hang). WS-B / shard-level failure isolation.
+# ---------------------------------------------------------------------------
+
+
+def test_census_or_degrade_returns_default_on_exception() -> None:
+    """A provider census that RAISES degrades to the default — never propagates."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    def _boom() -> list[int]:
+        raise RuntimeError("provider exploded")
+
+    fut = _inv_mod._census_pool.submit(_boom)  # pyright: ignore[reportPrivateUsage]
+    assert _inv_mod._census_or_degrade("boom", fut, [7]) == [7]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_census_or_degrade_returns_default_on_timeout() -> None:
+    """A census that HANGS past the wall-clock bound degrades to the default without blocking."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    release = threading.Event()
+
+    def _hang() -> list[str]:
+        release.wait(timeout=30)  # self-releases as a safety net if the test forgets
+        return ["ok"]
+
+    fut = _inv_mod._census_pool.submit(_hang)  # pyright: ignore[reportPrivateUsage]
+    try:
+        with patch.object(_inv_mod, "_PROVIDER_CENSUS_TIMEOUT_SEC", 0.2):
+            started = time.monotonic()
+            result = _inv_mod._census_or_degrade("hang", fut, ["degraded"])  # pyright: ignore[reportPrivateUsage]
+            elapsed = time.monotonic() - started
+        assert result == ["degraded"]
+        assert elapsed < 5.0  # returned on the bound, not after the 30s worker self-release
+    finally:
+        release.set()
+
+
+def test_inventory_route_hung_provider_degrades_other_kinds_survive(client_inventory: TestClient) -> None:
+    """A hung Cloud Run *services* census degrades to empty for that kind while the VM /
+    jobs / functions / AWS censuses still return — the endpoint never blocks. P0."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+    entry = _FakeEntry(vm_name="cefi-binance-spot-20260622-014158", rows_out=42)
+    release = threading.Event()
+
+    def _hanging_services(_project_id: str) -> list[object]:
+        release.wait(timeout=30)  # blocks like a wedged control-plane RPC; safety self-release
+        return []
+
+    try:
+        with (
+            patch.object(_inv_mod, "_PROVIDER_CENSUS_TIMEOUT_SEC", 0.3),
+            patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+            patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=([entry], {})),
+            patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
+            patch(
+                "deployment_api.routes.deployments_inventory.list_cloud_run_services",
+                side_effect=_hanging_services,
+            ),
+            patch("deployment_api.routes.deployments_inventory.list_cloud_functions", return_value={}),
+            patch("deployment_api.routes.deployments_inventory._load_aws_items", return_value=[]),
+        ):
+            mock_cfg.is_mock_mode.return_value = False
+            mock_cfg.require_gcp_project_id.return_value = "test-project"
+            started = time.monotonic()
+            resp = client_inventory.get("/api/deployments/inventory")
+            elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    names = {i["name"] for i in body["items"]}
+    assert "cefi-binance-spot-20260622-014158" in names  # VM census survived the services hang
+    assert all(i["kind"] != "CLOUD_RUN_SERVICE" for i in body["items"])  # hung kind degraded to empty
+    assert elapsed < 10.0  # bounded — not the >240s hang
+
+
+# ---------------------------------------------------------------------------
 # parallel registry reader (the perf fix — concurrent GCS reads, per-key isolation)
 # ---------------------------------------------------------------------------
 
@@ -1109,7 +1193,7 @@ def test_list_cloud_run_services_maps_ready_state_revision_and_region() -> None:
     )
 
     class _FakeServicesClient:
-        def list_services(self, request: object) -> list[_FakeRunV2Service]:
+        def list_services(self, request: object, timeout: float | None = None) -> list[_FakeRunV2Service]:
             del request
             return [fake_service]
 
@@ -1153,7 +1237,7 @@ def test_list_cloud_run_services_not_ready_when_reconciling() -> None:
     )
 
     class _FakeServicesClient:
-        def list_services(self, request: object) -> list[_FakeRunV2Service]:
+        def list_services(self, request: object, timeout: float | None = None) -> list[_FakeRunV2Service]:
             del request
             return [fake_service]
 

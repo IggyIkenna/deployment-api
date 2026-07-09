@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 # (CLAUDE.md § VM launchers — all GCS data is in asia-northeast1).
 DEFAULT_CLOUD_FUNCTIONS_REGION = "asia-northeast1"
 
+# Per-RPC deadline (< the inventory census wall-clock of 45 s) so a wedged functions-list RPC
+# unwinds its census worker on its own — DeadlineExceeded is caught below and degrades to an
+# empty census. Keeps the inventory census pool from starving under a persistent hang.
+_RPC_TIMEOUT_SEC = 30.0
+
 # functions_v2.Function.State enum name → inventory wire status.
 _STATE_TO_STATUS: dict[str, str] = {
     "ACTIVE": "running",
@@ -96,7 +101,8 @@ def list_cloud_functions(
         # functions_v2 is the untyped GCP-SDK boundary (_gcp_sdk); its pager element
         # type is partially unknown — fields are read defensively via getattr() below.
         for fn in client.list_functions(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            request=functions_v2.ListFunctionsRequest(parent=parent)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            request=functions_v2.ListFunctionsRequest(parent=parent),
+            timeout=_RPC_TIMEOUT_SEC,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         ):
             short_name = str(fn.name).rsplit("/", 1)[-1]  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             state = getattr(fn, "state", None)

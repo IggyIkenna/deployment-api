@@ -39,7 +39,8 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import cast
@@ -146,6 +147,43 @@ _inventory_lock = threading.Lock()
 # cache keys with an in-flight background refresh (so we kick off exactly one).
 _inventory_refreshing: set[str] = set()
 _inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inv-refresh")
+
+# Per-provider census wall-clock bound. Each provider census (GCE VM registry / Cloud Run
+# jobs / Cloud Run services / Cloud Functions / AWS) runs on its own worker; if one hangs
+# (a GCP/AWS SDK call with no reachable deadline — a stuck transpacific socket, a wedged
+# control-plane), the whole inventory used to block forever (the cockpit timed out at 240 s,
+# 0 bytes). The wrapper below bounds each census independently and degrades a slow/hung
+# provider to an honest EMPTY census for its own KIND (WS-B: one kind's failure never blocks
+# the others / codex/04-architecture/shard-level-failure-isolation.md), so the operator still
+# sees every other kind. Belt-and-suspenders with the client-level RPC timeouts on the GCP
+# list calls (which stop the stuck worker thread from leaking and starving this pool).
+_PROVIDER_CENSUS_TIMEOUT_SEC = 45.0
+_census_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="inv-census")
+
+
+def _census_or_degrade[T](label: str, future: Future[T], default: T) -> T:
+    """Resolve one provider census within the wall-clock bound; degrade to ``default`` on hang/error.
+
+    A census that exceeds ``_PROVIDER_CENSUS_TIMEOUT_SEC`` or raises yields ``default`` (an
+    empty census for that KIND) plus a loud log — it NEVER blocks or crashes the whole
+    inventory. Never raises. (A timed-out worker is left to unwind on its own once the
+    client-level RPC deadline fires; ``cancel()`` can't stop a thread already in a blocking
+    SDK call, hence the paired RPC timeouts.)
+    """
+    try:
+        return future.result(timeout=_PROVIDER_CENSUS_TIMEOUT_SEC)
+    except FutureTimeoutError:
+        logger.warning(
+            "inventory: %s census exceeded %.0fs — degraded to empty for this cycle",
+            label,
+            _PROVIDER_CENSUS_TIMEOUT_SEC,
+        )
+        future.cancel()
+        return default
+    except Exception as exc:  # one provider's failure must never block the others (degradation net)
+        logger.warning("inventory: %s census failed (%s: %s) — degraded to empty", label, type(exc).__name__, exc)
+        return default
+
 
 # VM registry entry by vm_name — piggybacks on the SAME GCP VM census _compute_inventory
 # already runs every cache cycle (zero new bucket walks); lets the ``/{id}/detail`` drill-down
@@ -1219,17 +1257,33 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
     want_aws = cloud is None or cloud.upper() == DeploymentCloud.AWS.value
 
     items: list[DeploymentItem] = []
+
+    # Fan out every wanted provider census concurrently, each resolved through
+    # _census_or_degrade (wall-clock bounded, honest per-kind empty on hang/error). A single
+    # slow or hung provider degrades to an empty census for its OWN kind instead of blocking
+    # the whole inventory — the cold path is ~max(slowest census) not their sum, and never
+    # exceeds _PROVIDER_CENSUS_TIMEOUT_SEC per provider.
+    f_aws: Future[list[DeploymentItem]] | None = _census_pool.submit(_load_aws_items, now) if want_aws else None
+
     if want_gcp:
         project_id = _cfg.require_gcp_project_id()
-        try:
-            vm_entries, vm_details_by_name = _load_gcp_vm_entries(now, project_id)
-        except (OSError, ValueError, RuntimeError) as exc:
-            logger.exception("inventory: VM registry read failed: %s", exc)
-            raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
+        f_vm: Future[tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]]] = _census_pool.submit(
+            _load_gcp_vm_entries, now, project_id
+        )
+        f_jobs = _census_pool.submit(latest_execution_by_job, project_id)
+        f_services = _census_pool.submit(list_cloud_run_services, project_id)
+        f_functions = _census_pool.submit(list_cloud_functions, project_id)
 
-        cloud_run_status = latest_execution_by_job(project_id)
-        cloud_run_services = list_cloud_run_services(project_id)
-        object_deltas = _batched_object_deltas(vm_entries, now)
+        empty_vm: tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]] = ([], {})
+        vm_entries, vm_details_by_name = _census_or_degrade("gcp-vm", f_vm, empty_vm)
+        cloud_run_status = _census_or_degrade("cloud-run-jobs", f_jobs, {})
+        cloud_run_services = _census_or_degrade("cloud-run-services", f_services, [])
+        cloud_function_status = _census_or_degrade("cloud-functions", f_functions, {})
+        # Object-delta is a manifest lookup keyed off the resolved VM entries — bound it too.
+        object_deltas = _census_or_degrade(
+            "object-delta", _census_pool.submit(_batched_object_deltas, vm_entries, now), {}
+        )
+
         gcp_items = build_inventory(
             vm_entries,
             cloud_run_status,
@@ -1244,15 +1298,14 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
             _vm_entry_by_name_cache.clear()
             _vm_entry_by_name_cache.update({e.vm_name: e for e in vm_entries})
 
-        cloud_function_status = list_cloud_functions(project_id)
         items.extend(_cloud_function_item(status) for status in cloud_function_status.values())
 
         for vm_item in gcp_items:
             if vm_item.kind == DeploymentKind.VM.value:
                 _alert_on_health_transition(vm_item)
 
-    if want_aws:
-        items.extend(_load_aws_items(now))
+    if f_aws is not None:
+        items.extend(_census_or_degrade("aws", f_aws, []))
 
     return items
 

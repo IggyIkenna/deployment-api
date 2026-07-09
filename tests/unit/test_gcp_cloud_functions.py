@@ -79,7 +79,7 @@ def _fake_functions_v2(functions: list[_FakeFunction]) -> ModuleType:
     """A fake ``google.cloud.functions_v2`` module whose client returns ``functions``."""
 
     class _FakeClient:
-        def list_functions(self, request: object) -> list[_FakeFunction]:
+        def list_functions(self, request: object, timeout: float | None = None) -> list[_FakeFunction]:
             assert isinstance(request, _FakeRequest)
             return functions
 

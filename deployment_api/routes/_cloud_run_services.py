@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 # Cloud Run jobs census uses.
 DEFAULT_CLOUD_RUN_REGION = "asia-northeast1"
 
+# Per-RPC deadline (< the inventory census wall-clock of 45 s) so a wedged services-list RPC
+# unwinds its census worker on its own — DeadlineExceeded is caught below and degrades to an
+# empty census. Keeps the inventory census pool from starving under a persistent hang.
+_RPC_TIMEOUT_SEC = 30.0
+
 # run_v2 Condition.State enum name for a fully-ready, traffic-serving revision.
 _CONDITION_SUCCEEDED = "CONDITION_SUCCEEDED"
 
@@ -104,7 +109,8 @@ def list_cloud_run_services(
         # are partially unknown — per-service fields are read defensively via
         # getattr() below, so the unknown pager element type is safe here.
         for service in services_client.list_services(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            request=run_v2.ListServicesRequest(parent=parent)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            request=run_v2.ListServicesRequest(parent=parent),
+            timeout=_RPC_TIMEOUT_SEC,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         ):
             full_name = str(service.name)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             short_name = full_name.rsplit("/", 1)[-1]

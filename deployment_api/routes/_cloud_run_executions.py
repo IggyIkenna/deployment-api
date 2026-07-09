@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 # (CLAUDE.md § VM launchers — all GCS data is in asia-northeast1).
 DEFAULT_CLOUD_RUN_REGION = "asia-northeast1"
 
+# Per-RPC deadline for the Cloud Run list calls. Kept below the inventory route's per-provider
+# census wall-clock (_PROVIDER_CENSUS_TIMEOUT_SEC, 45 s) so a wedged control-plane RPC unwinds
+# the census worker thread on its OWN instead of leaking it — DeadlineExceeded is caught below
+# and degrades to the static classification. Prevents the inventory census pool from starving
+# under a persistent hang.
+_RPC_TIMEOUT_SEC = 30.0
+
 
 @dataclass(frozen=True)
 class CloudRunExecutionStatus:
@@ -119,10 +126,15 @@ def latest_execution_by_job(
         # run_v2 is the untyped GCP-SDK boundary (_gcp_sdk); its pager member types
         # are partially unknown — the per-execution fields are read defensively via
         # getattr() below, so the unknown pager element type is safe here.
-        for job in jobs_client.list_jobs(request=run_v2.ListJobsRequest(parent=parent)):  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        for job in jobs_client.list_jobs(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            request=run_v2.ListJobsRequest(parent=parent), timeout=_RPC_TIMEOUT_SEC
+        ):
             job_name = str(job.name).rsplit("/", 1)[-1]  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             exec_request = run_v2.ListExecutionsRequest(parent=str(job.name), page_size=1)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            latest = next(iter(executions_client.list_executions(request=exec_request)), None)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            latest = next(
+                iter(executions_client.list_executions(request=exec_request, timeout=_RPC_TIMEOUT_SEC)),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                None,
+            )
             if latest is None:
                 result[job_name] = CloudRunExecutionStatus(
                     job_name=job_name,

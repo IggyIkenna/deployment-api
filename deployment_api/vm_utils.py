@@ -14,6 +14,11 @@ from google.cloud import compute_v1
 
 logger = logging.getLogger(__name__)
 
+# Per-RPC deadline (< the inventory census wall-clock of 45 s) so a wedged GCE aggregated-list
+# RPC unwinds the census worker on its own instead of leaking it — the except below degrades to
+# an empty VM detail map. Keeps the inventory census pool from starving under a persistent hang.
+_RPC_TIMEOUT_SEC = 30.0
+
 
 def list_running_vm_names(project_id: str) -> set[str]:
     """Return the set of VM names currently in ``RUNNING`` state in ``project_id``.
@@ -25,7 +30,7 @@ def list_running_vm_names(project_id: str) -> set[str]:
         client = compute_v1.InstancesClient()
         request = compute_v1.AggregatedListInstancesRequest(project=project_id)
         running: set[str] = set()
-        for _zone, scoped_list in client.aggregated_list(request=request):
+        for _zone, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             instances = getattr(scoped_list, "instances", None)
             if not instances:
                 continue
@@ -52,7 +57,7 @@ def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
         request = compute_v1.AggregatedListInstancesRequest(project=project_id)
         vm_details: dict[str, dict[str, object]] = {}
 
-        for _zone_url, scoped_list in client.aggregated_list(request=request):
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             instances = getattr(scoped_list, "instances", None)
             if not instances:
                 continue
@@ -108,7 +113,7 @@ def get_disk_details(project_id: str) -> dict[str, dict[str, object]]:
         client = compute_v1.DisksClient()
         request = compute_v1.AggregatedListDisksRequest(project=project_id)
         disk_details: dict[str, dict[str, object]] = {}
-        for _zone_url, scoped_list in client.aggregated_list(request=request):
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             disks = getattr(scoped_list, "disks", None)
             if not disks:
                 continue
@@ -141,7 +146,7 @@ def list_unattached_disk_names(project_id: str) -> set[str]:
         client = compute_v1.DisksClient()
         request = compute_v1.AggregatedListDisksRequest(project=project_id)
         unattached: set[str] = set()
-        for _zone_url, scoped_list in client.aggregated_list(request=request):
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
             disks = getattr(scoped_list, "disks", None)
             if not disks:
                 continue
