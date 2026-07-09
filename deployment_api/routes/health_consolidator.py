@@ -64,6 +64,22 @@ def _market_data_kind(asset_group: str) -> str:
     return _MARKET_DATA_KIND.get(asset_group, "market-data")
 
 
+# Per-asset_group consolidated-staleness budget. Most AGs' market-data consolidator runs
+# ~every minute, so the global default (``resolve_consolidated_staleness_sec()`` = 120s) is
+# right. cefi market-tick is a DAILY batch (capture cron ``0 6 * * *``) and its consolidator
+# effectively runs only ~every 5 min, so a 120s budget false-flags it ``degraded`` ~60% of
+# every cycle even though nothing is wrong; cefi's own launchers set the intended tolerance to
+# 86400s (``MANIFEST_CONSOLIDATED_STALENESS_SEC``) — mirror that so the health check matches the
+# AG's real cadence and only fires on a genuine >24h stall. Verified 2026-07-09 (Cloud Run
+# executions 5 min apart, index age climbing 174→228s under the 120s budget).
+_AG_STALENESS_BUDGET_SEC: dict[str, int] = {"cefi": 86400}
+
+
+def _budget_for(asset_group: str, default: int) -> int:
+    """Staleness budget for an asset_group — its cadence-matched override, else the global default."""
+    return _AG_STALENESS_BUDGET_SEC.get(asset_group, default)
+
+
 class ConsolidatorAgHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """Per-asset_group manifest-consolidator posture."""
 
@@ -184,7 +200,7 @@ def consolidator_posture(asset_group: AssetGroup, now: datetime) -> Consolidator
     (``/api/deployments/{id}/freshness``) reuses this rather than re-walking the
     manifest. Uses the canonical consolidated-staleness budget.
     """
-    return _ag_health(asset_group, resolve_consolidated_staleness_sec(), now)
+    return _ag_health(asset_group, _budget_for(asset_group, resolve_consolidated_staleness_sec()), now)
 
 
 def object_delta_for_bucket(bucket: str) -> tuple[int | None, str]:
@@ -304,8 +320,8 @@ def get_consolidator_health() -> ConsolidatorHealthResponse:
     now = datetime.now(UTC)
     if _cfg.is_mock_mode():
         return _mock_response(now)
-    budget = resolve_consolidated_staleness_sec()
-    entries = [_ag_health(ag, budget, now, include_backlog=True) for ag in _ASSET_GROUPS]
+    default_budget = resolve_consolidated_staleness_sec()
+    entries = [_ag_health(ag, _budget_for(ag, default_budget), now, include_backlog=True) for ag in _ASSET_GROUPS]
     return build_consolidator_health(entries, now)
 
 
