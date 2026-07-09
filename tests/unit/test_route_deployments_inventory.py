@@ -912,3 +912,200 @@ def test_latest_execution_by_job_degrades_on_gcp_error() -> None:
     with patch.dict(sys.modules, {"deployment_service.backends._gcp_sdk": broken}):
         result = _cloud_run_executions.latest_execution_by_job("test-project")
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _cloud_run_services — the CLOUD_RUN_SERVICE census (pure mapping + degradation)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeConditionState:
+    name: str
+
+
+@dataclass
+class _FakeTerminalCondition:
+    state: _FakeConditionState
+
+
+@dataclass
+class _FakeRunV2Service:
+    """Minimal stand-in for a run_v2 ``Service`` proto (the fields read defensively)."""
+
+    name: str
+    terminal_condition: _FakeTerminalCondition
+    latest_ready_revision: str = ""
+    latest_created_revision: str = ""
+    uri: str = ""
+
+
+def test_region_from_resource_name_parses_location_segment() -> None:
+    from deployment_api.routes._cloud_run_services import (
+        _region_from_resource_name,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    full = "projects/test-project/locations/asia-northeast1/services/deployment-api"
+    assert _region_from_resource_name(full, "fallback-region") == "asia-northeast1"
+    assert _region_from_resource_name("garbage", "fallback-region") == "fallback-region"
+
+
+def test_list_cloud_run_services_maps_ready_state_revision_and_region() -> None:
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+        latest_ready_revision=(
+            "projects/test-project/locations/asia-northeast1/services/deployment-api/revisions/deployment-api-00007-abc"
+        ),
+        uri="https://deployment-api-xyz.a.run.app",
+    )
+
+    class _FakeServicesClient:
+        def list_services(self, request: object) -> list[_FakeRunV2Service]:
+            del request
+            return [fake_service]
+
+    class _FakeRunV2Namespace:
+        ServicesClient = _FakeServicesClient
+
+        class ListServicesRequest:
+            def __init__(self, *, parent: str) -> None:
+                self.parent = parent
+
+    fake_module = ModuleType("deployment_service.backends._gcp_sdk")
+    fake_module.run_v2 = _FakeRunV2Namespace  # type: ignore[attr-defined]
+    fake_backends_pkg = ModuleType("deployment_service.backends")
+    fake_backends_pkg._gcp_sdk = fake_module  # type: ignore[attr-defined]
+
+    with patch.dict(
+        sys.modules,
+        {
+            "deployment_service.backends": fake_backends_pkg,
+            "deployment_service.backends._gcp_sdk": fake_module,
+        },
+    ):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+
+    assert len(result) == 1
+    svc = result[0]
+    assert svc.name == "deployment-api"
+    assert svc.ready is True
+    assert svc.state == "CONDITION_SUCCEEDED"
+    assert svc.revision == "deployment-api-00007-abc"
+    assert svc.region == "asia-northeast1"
+    assert svc.uri == "https://deployment-api-xyz.a.run.app"
+
+
+def test_list_cloud_run_services_not_ready_when_reconciling() -> None:
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/still-deploying",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_RECONCILING")),
+    )
+
+    class _FakeServicesClient:
+        def list_services(self, request: object) -> list[_FakeRunV2Service]:
+            del request
+            return [fake_service]
+
+    class _FakeRunV2Namespace:
+        ServicesClient = _FakeServicesClient
+
+        class ListServicesRequest:
+            def __init__(self, *, parent: str) -> None:
+                self.parent = parent
+
+    fake_module = ModuleType("deployment_service.backends._gcp_sdk")
+    fake_module.run_v2 = _FakeRunV2Namespace  # type: ignore[attr-defined]
+    fake_backends_pkg = ModuleType("deployment_service.backends")
+    fake_backends_pkg._gcp_sdk = fake_module  # type: ignore[attr-defined]
+
+    with patch.dict(
+        sys.modules,
+        {
+            "deployment_service.backends": fake_backends_pkg,
+            "deployment_service.backends._gcp_sdk": fake_module,
+        },
+    ):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+
+    assert result[0].ready is False
+    assert result[0].state == "CONDITION_RECONCILING"
+
+
+def test_list_cloud_run_services_degrades_on_gcp_error() -> None:
+    """A GCP import/list failure degrades to an empty list, never raises."""
+    from deployment_api.routes import _cloud_run_services
+
+    broken = ModuleType("deployment_service.backends._gcp_sdk")
+
+    def _boom(_name: str) -> object:
+        raise RuntimeError("no creds")
+
+    broken.__getattr__ = _boom  # type: ignore[attr-defined]
+    with patch.dict(sys.modules, {"deployment_service.backends._gcp_sdk": broken}):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# build_inventory — CLOUD_RUN_SERVICE wiring (umbrella=NONE, Open-Q1)
+# ---------------------------------------------------------------------------
+
+
+def test_build_inventory_includes_cloud_run_service_with_umbrella_sentinel() -> None:
+    from deployment_api.routes._cloud_run_services import CloudRunServiceStatus
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    services = [
+        CloudRunServiceStatus(
+            name="deployment-api",
+            ready=True,
+            state="CONDITION_SUCCEEDED",
+            revision="deployment-api-00007-abc",
+            region="asia-northeast1",
+            uri="https://deployment-api-xyz.a.run.app",
+        )
+    ]
+    items = build_inventory([], {}, _FIXED_NOW, cloud_run_services=services)
+    service_items = [i for i in items if i.kind == "CLOUD_RUN_SERVICE"]
+    assert len(service_items) == 1
+    item = service_items[0]
+    assert item.name == "deployment-api"
+    # Services have no live/batch/paper phase — the wire umbrella is the
+    # DeploymentUmbrella.NONE value, never one of the 4 phase umbrellas (Open-Q1).
+    assert item.umbrella == "NONE"
+    assert item.cloud == "GCP"
+    assert item.status == "running"
+    assert item.revision == "deployment-api-00007-abc"
+    assert item.region == "asia-northeast1"
+
+
+def test_build_inventory_defaults_to_no_cloud_run_services() -> None:
+    """Omitting cloud_run_services (back-compat call shape) yields zero service rows."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    items = build_inventory([], {}, _FIXED_NOW)
+    assert not [i for i in items if i.kind == "CLOUD_RUN_SERVICE"]
+
+
+def test_build_inventory_skips_unclassifiable_cloud_run_service() -> None:
+    """An empty service name can't classify — skipped, never crashes the census."""
+    from deployment_api.routes._cloud_run_services import CloudRunServiceStatus
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    services = [
+        CloudRunServiceStatus(
+            name="",
+            ready=True,
+            state="CONDITION_SUCCEEDED",
+            revision="",
+            region="asia-northeast1",
+            uri="",
+        )
+    ]
+    items = build_inventory([], {}, _FIXED_NOW, cloud_run_services=services)
+    assert not [i for i in items if i.kind == "CLOUD_RUN_SERVICE"]

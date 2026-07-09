@@ -75,6 +75,10 @@ from deployment_api.routes._cloud_run_executions import (
     CloudRunExecutionStatus,
     latest_execution_by_job,
 )
+from deployment_api.routes._cloud_run_services import (
+    CloudRunServiceStatus,
+    list_cloud_run_services,
+)
 from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
@@ -170,7 +174,7 @@ _last_alerted_health_lock = threading.Lock()
 
 
 class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
-    """One classified compute unit in the unified inventory (VM or Cloud Run job).
+    """One classified compute unit in the unified inventory (VM, Cloud Run job, or service).
 
     The wire shape the deployment-ui Deployments page consumes per row. Mirrors the
     classification fields of UAC ``DeploymentTarget`` + the live runtime fields.
@@ -178,7 +182,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
     name: str
     kind: str  # VM|CLOUD_RUN_JOB|CLOUD_RUN_SERVICE|ECS_SERVICE|LAMBDA|CLOUD_FUNCTION (UAC DeploymentKind)
-    umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT"
+    umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT" | "NONE" (services, Open-Q1)
     cloud: str  # "GCP" | "AWS"
     service: str
     asset_group: str
@@ -186,7 +190,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     last_run_at: str | None = None
     exit_code: int | None = None
     heartbeat_age_seconds: int | None = None
-    captured_progress: int | None = None  # rows_out for a VM backfill; None for jobs
+    captured_progress: int | None = None  # rows_out for a VM backfill; None for jobs/services
     run_log_uri: str = ""
     # Tier-0 free wins — already fetched by the GCE aggregated-list / registry entry,
     # previously discarded. None for kinds without the underlying source (Cloud Run
@@ -211,6 +215,8 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     runtime: str | None = None  # LAMBDA: declared runtime, "" for a container-image function
     memory_size_mb: int | None = None  # LAMBDA: configured memory
     package_type: str | None = None  # LAMBDA: "Zip" or "Image"
+    revision: str | None = None  # Cloud Run service's latest (ready|created) revision
+    region: str | None = None  # Cloud Run service's serving region
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -769,6 +775,48 @@ def cloud_run_service_health_status(
 
 
 # ---------------------------------------------------------------------------
+# Cloud Run service items (live census — no live/batch/paper phase, Open-Q1)
+# ---------------------------------------------------------------------------
+
+
+def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
+    """Build an inventory item for ONE live Cloud Run **service**.
+
+    Services (``deployment-api``, ``market-data-query``, ``alerting``, ...) have no
+    live/batch/paper phase — the wire ``umbrella`` is ``DeploymentUmbrella.NONE``
+    (Open-Q1, 2026-07-09: no PLATFORM/INFRA umbrella was added; the Kind column
+    alone tells the operator "this is a service"). ``service``/``asset_group``
+    still derive via the single ``classify_deployment_target`` resolver — a
+    nominal ``LONG_LIVED_LIVE`` lifecycle_class only satisfies the resolver's
+    umbrella requirement; that resolved umbrella is discarded in favour of
+    ``DeploymentUmbrella.NONE`` below (the resolver has no NONE lifecycle_class
+    mapping to derive it from — see ``UMBRELLA_FOR_LIFECYCLE_CLASS``).
+    """
+    target = classify_deployment_target(
+        status.name,
+        lifecycle_class=LifecycleClass.LONG_LIVED_LIVE.value,
+        cloud=DeploymentCloud.GCP,
+        kind=DeploymentKind.CLOUD_RUN_SERVICE,
+    )
+    return DeploymentItem(
+        name=status.name,
+        kind=target.kind.value,
+        umbrella=DeploymentUmbrella.NONE.value,
+        cloud=target.cloud.value,
+        service=target.service,
+        asset_group=target.asset_group,
+        status="running" if status.ready else "pending",
+        last_run_at=None,
+        exit_code=None,
+        heartbeat_age_seconds=None,
+        captured_progress=None,
+        run_log_uri="",
+        revision=status.revision,
+        region=status.region,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Inventory assembly + filtering
 # ---------------------------------------------------------------------------
 
@@ -778,8 +826,9 @@ def build_inventory(
     cloud_run_status: dict[str, CloudRunExecutionStatus],
     now: datetime,
     vm_details_by_name: dict[str, dict[str, object]] | None = None,
+    cloud_run_services: list[CloudRunServiceStatus] | None = None,
 ) -> list[DeploymentItem]:
-    """Assemble the full unified inventory (VMs + Cloud Run jobs).
+    """Assemble the full unified inventory (VMs + Cloud Run jobs + Cloud Run services).
 
     A VM whose name cannot be classified is logged + skipped (never crashes the
     inventory) — the no-silent-default classifier raises, we degrade per-row.
@@ -802,6 +851,13 @@ def build_inventory(
     so an off-pattern job (no registry match) still gets a row instead of hiding.
     Only when the live list itself is empty (the GCP call failed) does the census
     degrade to the static registry with status="unknown" (never an empty census).
+
+    Cloud Run services (``cloud_run_services``, optional — omitted/``None`` yields
+    zero service rows, never an error) census the LIVE service list
+    (``list_cloud_run_services``'s ``run_v2.ServicesClient.list_services``); a
+    per-service classification failure is logged + skipped, same shard-level
+    isolation as the VM loop above — one bad service name never blocks the rest
+    of the census.
     """
     details_by_name = vm_details_by_name or {}
     items: list[DeploymentItem] = []
@@ -828,6 +884,11 @@ def build_inventory(
     else:
         for target in CLOUD_RUN_JOBS:
             items.append(_cloud_run_item(target, cloud_run_status))
+    for service_status in cloud_run_services or []:
+        try:
+            items.append(_cloud_run_service_item(service_status))
+        except UnclassifiedDeploymentError as exc:
+            logger.warning("inventory: skipping unclassifiable Cloud Run service %r: %s", service_status.name, exc)
     return items
 
 
@@ -962,6 +1023,25 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             captured_progress=None,
             run_log_uri="",
         ),
+        # Always-on Cloud Run service (WS-B kinds census) — no live/batch/paper
+        # phase, so umbrella is DeploymentUmbrella.NONE (Open-Q1); Kind carries
+        # the fact that this is a service.
+        DeploymentItem(
+            name="deployment-api",
+            kind="CLOUD_RUN_SERVICE",
+            umbrella=DeploymentUmbrella.NONE.value,
+            cloud="GCP",
+            service="deployment-api",
+            asset_group="",
+            status="running",
+            last_run_at=None,
+            exit_code=None,
+            heartbeat_age_seconds=None,
+            captured_progress=None,
+            run_log_uri="",
+            revision="deployment-api-00042-xyz",
+            region="asia-northeast1",
+        ),
     ]
 
 
@@ -1072,7 +1152,14 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
             raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
 
         cloud_run_status = latest_execution_by_job(project_id)
-        gcp_items = build_inventory(vm_entries, cloud_run_status, now, vm_details_by_name)
+        cloud_run_services = list_cloud_run_services(project_id)
+        gcp_items = build_inventory(
+            vm_entries,
+            cloud_run_status,
+            now,
+            vm_details_by_name=vm_details_by_name,
+            cloud_run_services=cloud_run_services,
+        )
         items.extend(gcp_items)
 
         with _vm_entry_by_name_lock:
