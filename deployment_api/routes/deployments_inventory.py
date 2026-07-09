@@ -72,6 +72,10 @@ from deployment_api.routes._cloud_run_executions import (
     CloudRunExecutionStatus,
     latest_execution_by_job,
 )
+from deployment_api.routes._cloud_run_services import (
+    CloudRunServiceCensus,
+    list_cloud_run_services,
+)
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -137,15 +141,15 @@ _inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="
 
 
 class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
-    """One classified compute unit in the unified inventory (VM or Cloud Run job).
+    """One classified compute unit in the unified inventory (VM / Cloud Run job/service).
 
     The wire shape the deployment-ui Deployments page consumes per row. Mirrors the
     classification fields of UAC ``DeploymentTarget`` + the live runtime fields.
     """
 
     name: str
-    kind: str  # "VM" | "CLOUD_RUN_JOB"
-    umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT"
+    kind: str  # "VM" | "CLOUD_RUN_JOB" | "CLOUD_RUN_SERVICE"
+    umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT" | "—" (CLOUD_RUN_SERVICE: no phase)
     cloud: str  # "GCP" | "AWS"
     service: str
     asset_group: str
@@ -155,6 +159,8 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     heartbeat_age_seconds: int | None = None
     captured_progress: int | None = None  # rows_out for a VM backfill; None for jobs
     run_log_uri: str = ""
+    region: str | None = None  # CLOUD_RUN_SERVICE only (v1 — the census's own region)
+    revision: str | None = None  # CLOUD_RUN_SERVICE only (v1 — the latest READY revision)
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -412,6 +418,47 @@ def _cloud_run_item(target: DeploymentTarget, by_job: dict[str, CloudRunExecutio
         captured_progress=None,
         run_log_uri=live.log_uri,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cloud Run SERVICE items (always-on estate — no live/batch/paper phase)
+# ---------------------------------------------------------------------------
+
+# A Cloud Run service has no live/batch/paper phase (WS-B Open-Q1, resolved
+# 2026-07-09): it never rides classify_deployment_target / DeploymentTarget (whose
+# umbrella is a closed 4-value DeploymentUmbrella), so its wire-level umbrella is
+# stamped directly as this sentinel; the Kind column/filter is how an operator finds
+# always-on services instead.
+_NO_UMBRELLA = "—"
+
+
+def _cloud_run_service_item(svc: CloudRunServiceCensus) -> DeploymentItem:
+    """Build an inventory item from one censused Cloud Run service."""
+    return DeploymentItem(
+        name=svc.name,
+        kind=DeploymentKind.CLOUD_RUN_SERVICE.value,
+        umbrella=_NO_UMBRELLA,
+        cloud=DeploymentCloud.GCP.value,
+        service=svc.name,
+        asset_group="",  # cross-asset infra (mirrors DeploymentTarget's "" convention)
+        status="running" if svc.ready else "failed",
+        last_run_at=None,
+        exit_code=None,
+        heartbeat_age_seconds=None,
+        captured_progress=None,
+        run_log_uri="",
+        region=svc.region,
+        revision=svc.revision,
+    )
+
+
+def _load_cloud_run_service_items(project_id: str) -> list[DeploymentItem]:
+    """Census + build inventory items for the live Cloud Run SERVICE estate.
+
+    ``list_cloud_run_services`` itself honest-degrades to ``[]`` on any GCP error, so
+    this never blocks the VM / Cloud Run job estate.
+    """
+    return [_cloud_run_service_item(svc) for svc in list_cloud_run_services(project_id)]
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +727,7 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
 
         cloud_run_status = latest_execution_by_job(project_id)
         items.extend(build_inventory(vm_entries, cloud_run_status, now))
+        items.extend(_load_cloud_run_service_items(project_id))
 
     if want_aws:
         items.extend(_load_aws_items(now))

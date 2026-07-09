@@ -430,3 +430,100 @@ def test_latest_execution_by_job_degrades_on_gcp_error() -> None:
     with patch.dict(sys.modules, {"deployment_service.backends._gcp_sdk": broken}):
         result = _cloud_run_executions.latest_execution_by_job("test-project")
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _cloud_run_services — Cloud Run SERVICE census (pure + degradation)
+# ---------------------------------------------------------------------------
+
+
+def test_ready_state_reads_terminal_condition() -> None:
+    from deployment_api.routes._cloud_run_services import _ready_state  # pyright: ignore[reportPrivateUsage]
+
+    @dataclass
+    class _State:
+        name: str
+
+    @dataclass
+    class _Condition:
+        state: _State
+
+    @dataclass
+    class _Svc:
+        terminal_condition: _Condition | None
+
+    assert _ready_state(_Svc(terminal_condition=_Condition(state=_State("CONDITION_SUCCEEDED")))) is True
+    assert _ready_state(_Svc(terminal_condition=_Condition(state=_State("CONDITION_FAILED")))) is False
+    assert _ready_state(_Svc(terminal_condition=None)) is False
+
+
+def test_latest_revision_takes_last_path_segment() -> None:
+    from deployment_api.routes._cloud_run_services import _latest_revision  # pyright: ignore[reportPrivateUsage]
+
+    @dataclass
+    class _Svc:
+        latest_ready_revision: str
+
+    assert _latest_revision(_Svc(latest_ready_revision="projects/p/locations/r/services/s/revisions/s-00003")) == (
+        "s-00003"
+    )
+    assert _latest_revision(_Svc(latest_ready_revision="")) == ""
+
+
+def test_list_cloud_run_services_degrades_on_gcp_error() -> None:
+    """A GCP import/list failure degrades to an empty list, never raises."""
+    from deployment_api.routes import _cloud_run_services
+
+    broken = ModuleType("deployment_service.backends._gcp_sdk")
+
+    def _boom(_name: str) -> object:
+        raise RuntimeError("no creds")
+
+    broken.__getattr__ = _boom  # type: ignore[attr-defined]
+    with patch.dict(sys.modules, {"deployment_service.backends._gcp_sdk": broken}):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result == []
+
+
+def test_cloud_run_service_item_shape() -> None:
+    """A censused Cloud Run service maps to kind=CLOUD_RUN_SERVICE, umbrella='—'."""
+    from deployment_api.routes._cloud_run_services import CloudRunServiceCensus
+    from deployment_api.routes.deployments_inventory import (
+        _cloud_run_service_item,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    ready = CloudRunServiceCensus(
+        name="deployment-api", region="asia-northeast1", ready=True, revision="deployment-api-00042", uri="https://x"
+    )
+    item = _cloud_run_service_item(ready)
+    assert item.kind == "CLOUD_RUN_SERVICE"
+    assert item.umbrella == "—"
+    assert item.cloud == "GCP"
+    assert item.status == "running"
+    assert item.region == "asia-northeast1"
+    assert item.revision == "deployment-api-00042"
+
+    dead = CloudRunServiceCensus(name="quota-broker", region="asia-northeast1", ready=False, revision="", uri="")
+    assert _cloud_run_service_item(dead).status == "failed"
+
+
+def test_load_cloud_run_service_items_wires_into_compute_inventory() -> None:
+    """The inventory's GCP compute path includes censused Cloud Run service items."""
+    from deployment_api.routes._cloud_run_services import CloudRunServiceCensus
+
+    with patch(
+        "deployment_api.routes.deployments_inventory.list_cloud_run_services",
+        return_value=[
+            CloudRunServiceCensus(
+                name="market-data-query", region="asia-northeast1", ready=True, revision="rev-1", uri=""
+            )
+        ],
+    ):
+        from deployment_api.routes.deployments_inventory import (
+            _load_cloud_run_service_items,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        items = _load_cloud_run_service_items("test-project")
+    assert len(items) == 1
+    assert items[0].name == "market-data-query"
+    assert items[0].kind == "CLOUD_RUN_SERVICE"
