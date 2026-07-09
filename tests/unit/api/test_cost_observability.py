@@ -555,6 +555,103 @@ def test_breakdown_resource_carries_kind_for_leaf_tables(service: CostObservabil
     assert kinds["bkt-1"] == "bucket"
 
 
+def test_cost_component_classification() -> None:
+    """Text-pattern maps a GCP SKU / AWS usage_type into the 4 cost buckets (verified live 2026-07-09)."""
+    assert svc._cost_component("gcp", "Regional Coldline Class A Operations") == "operations"
+    assert svc._cost_component("gcp", "Standard Storage Tokyo") == "storage"
+    assert svc._cost_component("gcp", "Download APAC") == "egress"
+    assert svc._cost_component("aws", "APN1-Requests-Tier1") == "operations"
+    assert svc._cost_component("aws", "APN1-TimedStorage-ByteHrs") == "storage"
+    assert svc._cost_component("aws", "APN1-DataTransfer-Out-Bytes") == "egress"
+
+
+def test_breakdown_bucket_splits_net_cost_into_components(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bucket's net cost is split into storage / operations / egress by SKU and the parts sum to the
+    row's cost. An event-log bucket is operations-dominated (millions of Class-A writes on little
+    stored data) — the split must surface that, not read as a bare storage total."""
+    recs = [
+        # events bucket: tiny storage, huge Class-A operations, a little egress.
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Storage",
+            resource_id="events",
+            resource_kind="bucket",
+            region="asia-northeast1",
+            cost=2400.0,
+            sku="Regional Coldline Class A Operations",
+            usage_unit="count",
+        ),
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Storage",
+            resource_id="events",
+            resource_kind="bucket",
+            region="asia-northeast1",
+            cost=0.5,
+            sku="Standard Storage Tokyo",
+            usage_unit="gibibyte month",
+            usage_amount=60.0,
+        ),
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Storage",
+            resource_id="events",
+            resource_kind="bucket",
+            region="asia-northeast1",
+            cost=5.0,
+            sku="Download APAC",
+            usage_unit="gibibyte",
+        ),
+        # cefi bucket: storage-dominated.
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Storage",
+            resource_id="cefi",
+            resource_kind="bucket",
+            region="asia-northeast1",
+            cost=300.0,
+            sku="Standard Storage Tokyo",
+            usage_unit="gibibyte month",
+            usage_amount=50000.0,
+        ),
+        CostRecord(
+            cloud="gcp",
+            day="2026-07-01",
+            service="Cloud Storage",
+            resource_id="cefi",
+            resource_kind="bucket",
+            region="asia-northeast1",
+            cost=90.0,
+            sku="Regional Standard Class A Operations",
+            usage_unit="count",
+        ),
+    ]
+    monkeypatch.setattr(svc, "gcp_facts", lambda *a, **k: recs)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    rows = {row.label: row for row in s.breakdown("bucket", "gcp", days=2).rows}
+
+    events = rows["events"].cost_by_component
+    assert events is not None
+    # parts sum (net) to the row's cost within rounding
+    assert round(sum(events.values()), 2) == pytest.approx(rows["events"].cost, abs=0.02)
+    # operations dominate storage — the whole point of the split
+    assert events["operations"] > events["storage"]
+    assert events["storage"] == pytest.approx(0.5, abs=0.01)
+    assert events["egress"] == pytest.approx(5.0, abs=0.01)
+
+    cefi = rows["cefi"].cost_by_component
+    assert cefi is not None
+    assert cefi["storage"] > cefi["operations"]
+
+
 def test_breakdown_resource_and_service_expose_purchase_option(monkeypatch: pytest.MonkeyPatch) -> None:
     """A resource/service row folds to 'spot' if ANY of its underlying SKU lines is spot-priced —
     the SPOT-VMs HARD RULE question is "did any spot cost show up here", not an arbitrary pick."""

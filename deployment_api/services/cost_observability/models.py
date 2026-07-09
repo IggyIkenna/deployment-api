@@ -98,6 +98,10 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     storage_gb: float | None = None  # avg GB stored over the window (GiB/GB-month -> avg GB)
     storage_class_gb: dict[str, float] | None = None  # {"Standard"|"Nearline"|"Coldline"|"Archive": gb}
     cost_per_gb: float | None = None  # net cost / storage_gb for the window
+    # Bucket-only: net cost split by SKU component so a bucket's total is legible (an event-log
+    # bucket is ~all operations, not storage). Keys: storage | operations | egress | other; only
+    # components that round to a non-zero amount are present, and they sum to ~`cost` (net).
+    cost_by_component: dict[str, float] | None = None
     purchase_option: str = ""  # spot | on-demand | other; "" when the axis doesn't apply to this row
     machine_type: str = ""  # VM rows only, e.g. "e2-highmem-16" (from GCP system_labels)
     vcpu: int | None = None  # VM rows only

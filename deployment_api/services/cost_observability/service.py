@@ -90,6 +90,44 @@ def _storage_class(r: CostRecord) -> str | None:
     return None
 
 
+# Cost-composition of a storage resource's SKUs — what a bucket's spend is actually made of.
+# A bucket's total is often operations-dominated (an event-log bucket bills millions of Class-A
+# writes on a few GB stored, verified live 2026-07-09: the events bucket = 99.8% ops,
+# $0.58 of storage), so splitting the net cost into storage / operations / egress makes the total
+# legible. Text-pattern over the SKU (GCP `sku.description`) / usage_type (AWS `line_item_usage_type`),
+# same approach as `_storage_class`; every storage SKU falls into exactly one bucket so the parts
+# sum to the row's net cost. "egress" folds retrieval/download/transfer-out (all data-access charges).
+_COMPONENT_STORAGE = "storage"
+_COMPONENT_OPERATIONS = "operations"
+_COMPONENT_EGRESS = "egress"
+_COMPONENT_OTHER = "other"
+
+
+def _cost_component(cloud: str, sku: str) -> str:
+    low = sku.lower()
+    if cloud == CLOUD_GCP:
+        # Order matters: "Regional Coldline Class A Operations" contains a class word but is an
+        # OPERATIONS charge, so match operations before storage.
+        if "operations" in low:
+            return _COMPONENT_OPERATIONS
+        if "storage" in low:
+            return _COMPONENT_STORAGE
+        if "download" in low or "data transfer" in low or "network" in low or "retrieval" in low:
+            return _COMPONENT_EGRESS
+        return _COMPONENT_OTHER
+    if cloud == CLOUD_AWS:
+        # AWS usage_type: "APN1-Requests-Tier1/2" (ops), "APN1-TimedStorage-ByteHrs" (storage),
+        # "*-DataTransfer-Out-Bytes" (egress). Verified live 2026-07-09.
+        if "requests" in low:
+            return _COMPONENT_OPERATIONS
+        if "timedstorage" in low:
+            return _COMPONENT_STORAGE
+        if "datatransfer" in low or "-out-" in low or "retrieval" in low:
+            return _COMPONENT_EGRESS
+        return _COMPONENT_OTHER
+    return _COMPONENT_OTHER
+
+
 # Fold order for a group's purchase_option: "any spot line present" outranks "any on-demand
 # line present" outranks "other-only" — surfaces "this resource/service had SOME spot cost"
 # rather than an arbitrary last-seen value across its (usually many) underlying SKU lines.
@@ -308,7 +346,9 @@ class CostObservabilityService:
         # bucket dimension never contains idle-IP/orphaned-disk rows, so skip the fleet lookup.
         unattached_disks = self._unattached_disk_names() if kind is None else frozenset()
         storage_amt: dict[tuple[str, str], dict[str, float]] = {}
-        storage_cost: dict[tuple[str, str], float] = {}
+        # Per-bucket net cost split by SKU component (storage / operations / egress / other). Its
+        # "storage" entry doubles as the $/GB numerator so the rate and the Storage column agree.
+        component_cost: dict[tuple[str, str], dict[str, float]] = {}
         purchase: dict[tuple[str, str], str] = {}
         machine_of: dict[tuple[str, str], tuple[str, str, int | None, float | None]] = {}
         for r in recs:
@@ -334,11 +374,13 @@ class CostObservabilityService:
             # dimension) so the resource dimension's bucket rows — which feed the "Top storage
             # buckets" leaf table — also carry it, not just the By-bucket view.
             if r.resource_kind == KIND_BUCKET:
+                by_comp = component_cost.setdefault(k, {})
+                comp = _cost_component(r.cloud, r.sku)
+                by_comp[comp] = by_comp.get(comp, 0.0) + _net(r)
                 cls = _storage_class(r)
                 if cls is not None:
                     by_class = storage_amt.setdefault(k, {})
                     by_class[cls] = by_class.get(cls, 0.0) + r.usage_amount
-                    storage_cost[k] = storage_cost.get(k, 0.0) + _net(r)
             if _PURCHASE_RANK.get(r.purchase_option, 0) > _PURCHASE_RANK.get(purchase.get(k, PURCHASE_OTHER), 0):
                 purchase[k] = r.purchase_option
             # A VM's disk/IP SKU rows carry no machine spec (only its Core/Ram rows do) — keep
@@ -350,6 +392,7 @@ class CostObservabilityService:
         rows = []
         for (cloud, rid), v in net.items():
             _, machine_type, vcpu, memory_gb = machine_of.get((cloud, rid), ("", "", None, None))
+            components = component_cost.get((cloud, rid), {})
             row = BreakdownRow(
                 label=rid,
                 cloud=cloud,
@@ -375,11 +418,16 @@ class CostObservabilityService:
                     row.storage_gb = total_gb
                     row.storage_class_gb = gb_by_class
                     if total_gb > 0:
-                        # $/GB is the effective STORAGE rate — storage-SKU cost over stored GB,
-                        # NOT the row's total (operations-dominated) cost. An events bucket bills
+                        # $/GB is the effective STORAGE rate — the storage COMPONENT cost over stored
+                        # GB, NOT the row's total (operations-dominated) cost. An events bucket bills
                         # ~$2.5k in Class-A writes on ~95 GB stored; total/GB reads a nonsense
                         # ~$25/GB, storage-cost/GB reads the real ~$0.013/GB.
-                        row.cost_per_gb = round(storage_cost.get((cloud, rid), 0.0) / total_gb, 4)
+                        row.cost_per_gb = round(components.get("storage", 0.0) / total_gb, 4)
+            # Cost composition (bucket rows only carry component_cost) — drop components that round
+            # to $0.00 so the UI shows only real drivers; those kept sum to ~`cost` (net).
+            kept = {c: round(x, 2) for c, x in components.items() if round(x, 2) != 0.0}
+            if kept:
+                row.cost_by_component = kept
             rows.append(row)
         rows.sort(key=lambda x: x.cost, reverse=True)
         top = rows[:_BREAKDOWN_LIMIT]
