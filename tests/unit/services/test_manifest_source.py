@@ -74,6 +74,32 @@ def test_live_empty_and_no_consolidated_blob_returns_empty() -> None:
     assert out.empty
 
 
+def test_stale_fallback_handles_legacy_shaped_blob_without_crash() -> None:
+    """The stale-tolerant fallback (~lines 76-93) does a RAW ``pd.read_parquet``
+    that bypasses UTL ``read_availability_index``'s v1->v8 schema backfill —
+    it never touches the raw bytes' column set. A legacy-shaped consolidated
+    blob (pre-v9: no ``capture_status`` / ``source`` / ``pipeline_mode`` /
+    ``data_type`` columns) must not crash the monitoring read, and — since
+    there is no backfill on this path — the returned frame is the raw legacy
+    shape VERBATIM (documented current behaviour; a future accidental
+    "helpful" backfill on this path is a behaviour change, not a bugfix, and
+    should show up here as a diff)."""
+    legacy_df = pd.DataFrame({"date": ["2020-01-01", "2020-01-02"], "venue": ["BINANCE", "BINANCE"]})
+    client = MagicMock()
+    client.download_bytes.return_value = _parquet_bytes(legacy_df)
+    with (
+        patch.object(manifest_source, "read_availability_index", return_value=pd.DataFrame()),
+        patch.object(manifest_source, "get_storage_client", return_value=client),
+    ):
+        out = manifest_source.read_manifest_index("market-data-tick-tradfi-prd-p")
+    assert not out.empty
+    assert list(out.columns) == ["date", "venue"]
+    assert "capture_status" not in out.columns
+    assert "source" not in out.columns
+    assert "pipeline_mode" not in out.columns
+    assert out["date"].tolist() == ["2020-01-01", "2020-01-02"]
+
+
 def test_mode_uses_rollup_fast_path() -> None:
     """get_manifest_status keeps the rollup fast-path — regression guard for the bypass."""
     import asyncio

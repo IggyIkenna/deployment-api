@@ -18,6 +18,8 @@ pipeline_mode_source_batch_live_replay_standardisation_2026_06_05 M5.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pandas as pd
 from unified_api_contracts import CaptureStatusCounts, compute_honest_coverage
 
@@ -253,6 +255,44 @@ class TestProvenanceBreakdown:
         assert len(breakdown) == 1
         assert breakdown[0]["cadence"] == ""
         assert breakdown[0]["captured"] == 1
+
+
+class TestProvenanceBreakdownIsPureInMemory:
+    """Regression guard: FLAG-1's per-(pipeline_mode, source) breakdown must
+    stay a pure in-memory pandas groupby over the already-loaded manifest
+    DataFrame — NEVER a per-parquet / per-shard storage re-scan. The
+    venue-year-coverage endpoint calls ``provenance_breakdown`` on every
+    request; a future "enrich the breakdown" change that re-reads shards per
+    source would silently reintroduce N-parquet-read latency into a hot
+    monitoring endpoint. Patches every storage entry point this codebase
+    uses for GCS reads (plus ``pd.read_parquet`` directly) and asserts none
+    of them fire while computing the breakdown."""
+
+    def test_no_storage_io_during_breakdown(self) -> None:
+        df = pd.DataFrame(
+            [
+                _row(source="databento", pipeline_mode="batch_databento", capture_status="captured"),
+                _row(source="massive", pipeline_mode="batch_massive", capture_status="attempted_failed"),
+                _row(
+                    source="databento",
+                    pipeline_mode="live_databento",
+                    capture_status="captured",
+                    instrument_id="NQM6",
+                ),
+            ]
+        )
+        with (
+            patch("unified_trading_library.get_storage_client") as get_client,
+            patch("deployment_api.utils.storage_facade.read_object_bytes") as read_bytes,
+            patch("deployment_api.utils.storage_facade.list_objects") as list_objs,
+            patch("pandas.read_parquet") as read_parquet,
+        ):
+            breakdown = provenance_breakdown(df)
+        assert len(breakdown) == 3
+        get_client.assert_not_called()
+        read_bytes.assert_not_called()
+        list_objs.assert_not_called()
+        read_parquet.assert_not_called()
 
 
 class TestM4ModePrecedenceTiebreak:
