@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from deployment_api.services.cost_observability.models import BUSINESS_LABEL_KEYS
+
 # GCP: the resource-level export is ingestion-time partitioned on _PARTITIONTIME, NOT on
 # usage_start_time — so we MUST filter _PARTITIONTIME too or BigQuery scans every partition
 # (~4x bytes; verified). Rows can land a couple days after usage, so pad the partition floor.
@@ -38,6 +40,12 @@ def _system_label_col(alias: str, key: str) -> str:
     return f"  ANY_VALUE((SELECT value FROM UNNEST(system_labels)\n    WHERE key = '{key}' LIMIT 1)) AS {alias}"  # nosec B608
 
 
+def _label_col(key: str) -> str:
+    # Extracted like the machine-spec labels (ANY_VALUE per group; a resource carries one value per key).
+    # nosec B608 — key comes only from the hardcoded BUSINESS_LABEL_KEYS tuple, no user input
+    return f"  ANY_VALUE((SELECT value FROM UNNEST(labels)\n    WHERE key = '{key}' LIMIT 1)) AS label_{key}"  # nosec B608
+
+
 def gcp_facts_sql(table: str, start: date, end: date) -> str:
     """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export.
 
@@ -56,6 +64,7 @@ def gcp_facts_sql(table: str, start: date, end: date) -> str:
     """
     part_floor = start - timedelta(days=_PARTITION_PAD_DAYS)
     machine_spec_cols = ",\n".join(_system_label_col(alias, key) for alias, key in _MACHINE_SPEC_LABELS)
+    label_cols = ",\n".join(_label_col(k) for k in BUSINESS_LABEL_KEYS)
     return f"""
 SELECT
   FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time, '{_GCP_BILLING_TZ}')) AS day,
@@ -72,7 +81,8 @@ SELECT
   ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit_native,
   ANY_VALUE(currency) AS currency,
   ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount,
-{machine_spec_cols}
+{machine_spec_cols},
+{label_cols}
 FROM `{table}`
 WHERE _PARTITIONTIME >= TIMESTAMP('{part_floor.isoformat()}')
   AND DATE(usage_start_time, '{_GCP_BILLING_TZ}') >= DATE('{start.isoformat()}')

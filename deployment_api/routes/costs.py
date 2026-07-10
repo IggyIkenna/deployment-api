@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 # health-overview cost tile, which imports it).
 cost_service = CostObservabilityService()
 
-Dimension = Literal["service", "resource", "bucket", "region", "day", "sku", "zone"]
+Dimension = Literal["service", "resource", "bucket", "region", "day", "sku", "zone", "label"]
 CloudFilter = Literal["all", "gcp", "aws", "github"]
+# Which GCP business label the `label` dimension groups by (GCP-only; AWS/GitHub → "(unlabeled)").
+LabelKey = Literal["purpose", "category", "venue", "asset_group"]
 
 
 @router.get("/costs/summary", response_model=SummaryResponse)
@@ -54,12 +56,13 @@ def get_cost_breakdown(
     dimension: Dimension = Query("service", description="How to slice the spend"),
     cloud: CloudFilter = Query("all", description="Filter to one cloud"),
     days: int = Query(30, ge=1, le=366),
+    label_key: LabelKey = Query("purpose", description="GCP label to group by when dimension=label"),
     refresh: bool = Query(False),
     _rl: None = Depends(endpoint_rate_limit(30)),
 ) -> BreakdownResponse:
-    """Spend grouped by service / resource / bucket / region / day / sku / zone."""
+    """Spend grouped by service / resource / bucket / region / day / sku / zone / label."""
     try:
-        return cost_service.breakdown(dimension, cloud, days, force=refresh)
+        return cost_service.breakdown(dimension, cloud, days, label_key=label_key, force=refresh)
     except Exception as exc:
         logger.exception("cost breakdown failed")
         raise HTTPException(
