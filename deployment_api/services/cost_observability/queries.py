@@ -15,6 +15,13 @@ from datetime import date, timedelta
 # (~4x bytes; verified). Rows can land a couple days after usage, so pad the partition floor.
 _PARTITION_PAD_DAYS = 3
 
+# GCP Cloud Billing reports/console group each usage day in US Pacific (America/Los_Angeles), NOT UTC.
+# Bucketing + windowing the export in this zone makes a day tie out to the console CSV (verified: a Jul3-9
+# window re-aligned to Pacific midnight moved gross from ~8% off to 1.6% off the console). AWS is UTC on
+# BOTH the CUR and Cost Explorer, so aws_facts_sql deliberately stays UTC - Pacific-converting it would
+# BREAK its own console match.
+_GCP_BILLING_TZ = "America/Los_Angeles"
+
 # `system_labels` keys carrying the VM machine spec — present on the instance's Core/Ram SKU
 # rows only; disk, IP, and other per-resource SKU rows for the same VM have no machine-spec
 # labels (verified live), hence ANY_VALUE picks whichever of a group's rows has it. No Compute
@@ -32,26 +39,44 @@ def _system_label_col(alias: str, key: str) -> str:
 
 
 def gcp_facts_sql(table: str, start: date, end: date) -> str:
-    """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export."""
+    """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export.
+
+    `cost`/`credit` are converted to USD AT QUERY TIME. The export bills in the account currency
+    (this account = GBP, verified via the export's `currency` column) and carries
+    `currency_conversion_rate` — the USD→account-currency rate GCP billed at — so `amount / rate`
+    is the USD-equivalent list price. Dividing PER SOURCE ROW (inside SUM) applies each day's exact
+    rate. A USD account has rate=1.0 (no-op); a missing/zero rate falls back to 1.0 (leave the row
+    unconverted rather than drop it via a NULL divisor). This makes the whole page single-currency
+    USD, matching the AWS CUR (native USD). Native-GBP figures for the GCP invoice tally are a
+    separate concern (a GBP view option), not this conversion. Usage amounts are not costs — untouched.
+
+    Days are bucketed AND windowed in `_GCP_BILLING_TZ` (US Pacific) — the zone the GCP billing
+    console groups by — so each day ties out to a console export. Partition pruning still rides on
+    `_PARTITIONTIME` (ingestion time, padded); the Pacific-date predicate is the row-level window filter.
+    """
     part_floor = start - timedelta(days=_PARTITION_PAD_DAYS)
     machine_spec_cols = ",\n".join(_system_label_col(alias, key) for alias, key in _MACHINE_SPEC_LABELS)
     return f"""
 SELECT
-  FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time)) AS day,
+  FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time, '{_GCP_BILLING_TZ}')) AS day,
   COALESCE(service.description, 'Unknown') AS service,
   COALESCE(resource.name, '') AS resource_id,
   COALESCE(location.region, location.location, 'global') AS region,
   COALESCE(sku.description, 'Unknown') AS sku,
   COALESCE(usage.pricing_unit, '') AS usage_unit,
   COALESCE(location.zone, '') AS zone,
-  ROUND(SUM(cost), 6) AS cost,
-  ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit,
+  ROUND(SUM(cost / IFNULL(NULLIF(currency_conversion_rate, 0), 1)), 6) AS cost,
+  ROUND(SUM(cost), 6) AS cost_native,
+  ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)
+    / IFNULL(NULLIF(currency_conversion_rate, 0), 1)), 6) AS credit,
+  ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit_native,
+  ANY_VALUE(currency) AS currency,
   ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount,
 {machine_spec_cols}
 FROM `{table}`
 WHERE _PARTITIONTIME >= TIMESTAMP('{part_floor.isoformat()}')
-  AND usage_start_time >= TIMESTAMP('{start.isoformat()}')
-  AND usage_start_time < TIMESTAMP('{end.isoformat()}')
+  AND DATE(usage_start_time, '{_GCP_BILLING_TZ}') >= DATE('{start.isoformat()}')
+  AND DATE(usage_start_time, '{_GCP_BILLING_TZ}') < DATE('{end.isoformat()}')
   AND cost <> 0
 GROUP BY day, service, resource_id, region, sku, usage_unit, zone
 """.strip()  # nosec B608 — dates via date.isoformat(); table from config; no user input

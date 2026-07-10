@@ -62,6 +62,10 @@ class CloudRunServiceStatus:
         region: The location segment parsed from the service's full resource
             name (``projects/{p}/locations/{region}/services/{name}``).
         uri: The service's main serving URI, or ``""`` when absent.
+        min_instance_count: The service's configured minimum instances
+            (``template.scaling.min_instance_count``), ``0`` when scale-to-zero
+            or unreadable — lets the health classifier tell an always-on service
+            (min > 0 → ``serving``) from an idle scale-to-zero one.
     """
 
     name: str
@@ -70,6 +74,7 @@ class CloudRunServiceStatus:
     revision: str
     region: str
     uri: str
+    min_instance_count: int = 0
 
 
 def _region_from_resource_name(full_name: str, fallback: str) -> str:
@@ -116,10 +121,17 @@ def list_cloud_run_services(
             short_name = full_name.rsplit("/", 1)[-1]
             terminal = getattr(service, "terminal_condition", None)
             state_enum = getattr(terminal, "state", None)
-            state_name = state_enum.name if state_enum is not None else "STATE_UNSPECIFIED"
+            state_name = str(state_enum.name) if state_enum is not None else "STATE_UNSPECIFIED"
             revision = str(
                 getattr(service, "latest_ready_revision", "") or getattr(service, "latest_created_revision", "") or ""
             )
+            # template.scaling.min_instance_count — 0 (scale-to-zero) when absent/unreadable.
+            template = getattr(service, "template", None)
+            scaling = getattr(template, "scaling", None)
+            try:
+                min_instances = int(getattr(scaling, "min_instance_count", 0) or 0)
+            except (TypeError, ValueError):
+                min_instances = 0
             result.append(
                 CloudRunServiceStatus(
                     name=short_name,
@@ -128,6 +140,7 @@ def list_cloud_run_services(
                     revision=revision.rsplit("/", 1)[-1],
                     region=_region_from_resource_name(full_name, region),
                     uri=str(getattr(service, "uri", "") or ""),
+                    min_instance_count=min_instances,
                 )
             )
         return result

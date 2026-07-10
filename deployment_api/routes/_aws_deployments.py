@@ -61,6 +61,10 @@ from unified_api_contracts import (
 )
 from unified_trading_library import StorageClient, get_storage_client
 
+# Leaf module (no deployments_inventory import) — safe to import here despite
+# deployments_inventory importing THIS module (the circular-import note below).
+from deployment_api.routes._service_health import ecs_service_health_status
+
 if TYPE_CHECKING:
     from deployment_service.backends.aws_census import (
         AwsBatchJobCensus,
@@ -280,6 +284,10 @@ def _ecs_service_item(census: AwsEcsServiceCensus) -> DeploymentItemDict:
         "service": census.name,
         "asset_group": "",
         "status": _ecs_status(census),
+        # D.3 service sub-taxonomy (serving/scaled-to-zero/dead/degraded) — the composite
+        # health chip, derived from desired-vs-running. desired==0 is an intentional
+        # scale-to-zero (neutral), desired>0 & running==0 is dead, partial is degraded.
+        "composite_health_status": ecs_service_health_status(census.desired_count, census.running_count),
         "last_run_at": last_run.isoformat() if last_run else None,
         "exit_code": None,
         "heartbeat_age_seconds": None,

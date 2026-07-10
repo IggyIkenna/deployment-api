@@ -19,6 +19,8 @@ from unified_trading_library.cloud_interface.providers.aws import (  # noqa: qg-
     AWSAnalyticsClient,
 )
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.services.cost_observability.github_billing import fetch_github_billing
 from deployment_api.services.cost_observability.models import (
     CLOUD_AWS,
     CLOUD_GCP,
@@ -147,6 +149,9 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
                 credit=_as_float(r.get("credit")),
+                currency=_as_str(r.get("currency")) or "GBP",
+                cost_native=_as_float(r.get("cost_native")),
+                credit_native=_as_float(r.get("credit_native")),
                 sku=sku,
                 usage_amount=_as_float(r.get("usage_amount")),
                 usage_unit=_as_str(r.get("usage_unit")),
@@ -191,6 +196,9 @@ def aws_facts(
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
                 credit=_as_float(r.get("credit")),
+                currency="USD",  # AWS CUR is native USD (line_item_currency_code=USD) → native == USD
+                cost_native=_as_float(r.get("cost")),
+                credit_native=_as_float(r.get("credit")),
                 sku=usage_type,
                 usage_amount=_as_float(r.get("usage_amount")),
                 zone=_as_str(r.get("zone")),
@@ -201,10 +209,11 @@ def aws_facts(
     return out
 
 
-# --- GitHub dummy provider ---------------------------------------------------
-# Labelled placeholder until a classic PAT with `user` scope exists. Same normalized
-# shape as the real clouds so the UI renders a third cloud today and the swap-to-real
-# is a provider change only. Deterministic (day-ordinal driven), never random.
+# --- GitHub provider ---------------------------------------------------------
+# `github_facts` tries the real Enhanced Billing usage report (github_billing.fetch_github_billing);
+# when no Plan-scoped token is reachable (403 / secret absent) it falls back to `github_dummy_facts`
+# below — a labelled placeholder in the same normalized shape, so the UI always renders a third cloud
+# and the swap-to-real is transparent. Dummy is deterministic (day-ordinal driven), never random.
 _GH_REPOS = [
     "agent-orchestrator",
     "market-tick-data-service",
@@ -214,7 +223,7 @@ _GH_REPOS = [
 ]
 
 
-def github_facts(start: date, end: date) -> list[CostRecord]:
+def github_dummy_facts(start: date, end: date) -> list[CostRecord]:
     out: list[CostRecord] = []
     day = start
     while day < end:
@@ -260,7 +269,26 @@ def github_facts(start: date, end: date) -> list[CostRecord]:
             )
         )
         day = day.fromordinal(day.toordinal() + 1)
+    # GitHub billing is USD-native → native figures mirror the USD ones (currency defaults to "USD").
+    for rec in out:
+        rec.cost_native = rec.cost
+        rec.credit_native = rec.credit
     return out
+
+
+def github_facts(start: date, end: date) -> list[CostRecord]:
+    """Real GitHub billing when a Plan-scoped token is reachable, else the labelled dummy.
+
+    Keeps the ``(start, end)`` signature the service + tests already use — the real-vs-dummy choice is
+    internal, so wiring a working token is a zero-touch swap. Any failure in the real path degrades to
+    the dummy (the page never blanks or fabricates a GitHub number).
+    """
+    try:
+        real = fetch_github_billing(DeploymentApiConfig(), start, end)
+    except Exception as exc:  # never let a billing hiccup blank the page — fall back to the dummy
+        logger.warning("GitHub real billing failed (%s) — using the dummy", exc)
+        real = None
+    return real if real is not None else github_dummy_facts(start, end)
 
 
 def _is_provisional(day: str, cutoff: date) -> bool:

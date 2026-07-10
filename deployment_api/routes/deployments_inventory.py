@@ -84,6 +84,24 @@ from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
 )
+
+# Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
+# and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
+# which ``deployments_inventory`` imports — needs them too, and a reverse import would cycle.
+from deployment_api.routes._service_health import (
+    SERVICE_STATUS_DEAD,
+    SERVICE_STATUS_DEGRADED,
+    SERVICE_STATUS_SCALED_TO_ZERO,
+    SERVICE_STATUS_SERVING,
+    cloud_run_service_health_status,
+    ecs_service_health_status,
+)
+
+# VM wire-status + D.3 composite-health classifiers — extracted to their own leaf module to
+# keep this hotspot file down; aliased back to the historical private names for existing call
+# sites/tests (one-way import, _vm_health has no deployments_inventory dependency so no cycle).
+from deployment_api.routes._vm_health import composite_health_status as _composite_health_status
+from deployment_api.routes._vm_health import vm_status as _vm_status
 from deployment_api.routes.health_consolidator import object_delta_for_asset_group
 from deployment_api.vm_utils import get_vm_instance_details
 
@@ -91,10 +109,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _cfg = DeploymentApiConfig()
-
-# Heartbeat age beyond which a running VM is treated as stale (mirrors
-# vm_deployments._calculate_health_status' 15-min staleness window).
-_STALE_HEARTBEAT_MINUTES = 15
 
 # Honest, minimal prefix→lifecycle registry — the SAME pattern as
 # ``_fleet_census._CENSUS_PREFIX_REGISTRY`` (NOT a copy of deployment-service's
@@ -139,6 +153,9 @@ _DEFAULT_LIFECYCLE = LifecycleClass.EPHEMERAL_BATCH
 #   2. a short-TTL in-process cache so the cockpit's repeated polls are instant and a
 #      thundering herd of concurrent loads collapses to ONE cold read (lock-guarded).
 _GCS_READ_WORKERS = 32
+# Concurrency for the per-distinct-asset_group object-delta manifest reads (~a handful of
+# asset_groups per census). Fanning them out keeps the cold census under the 45 s provider bound.
+_OBJECT_DELTA_WORKERS = 8
 _INVENTORY_TTL_SEC = 45.0
 _ARCHIVE_WINDOW_DAYS = 7
 
@@ -243,7 +260,9 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     health_status: str | None = None  # raw GCE instance status (RUNNING/TERMINATED/...)
     boot_disk_name: str | None = None
     labels: dict[str, str] | None = None
-    composite_health_status: str | None = None  # D.3 VM composite (hung|disk-full|oom-risk|working|unknown); n/a=None
+    # D.3 composite health. VMs: dead|hung|disk-full|oom-risk|working|stalled|workload-dead|unknown.
+    # Services (ECS/Cloud Run): serving|scaled-to-zero|dead|degraded. None = kind carries no composite.
+    composite_health_status: str | None = None
     # AWS Tier-0 free wins — already fetched by the ECS/Lambda census, previously
     # discarded once collapsed into ``status``. None for kinds without the
     # underlying source (GCP kinds, EC2 VMs, Batch/Cloud-Run jobs).
@@ -280,15 +299,13 @@ class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contrac
     ``DeploymentItem`` to composite + headline fields so the list payload stays small at
     ~200-target scale; the metrics vector below lives here instead.
 
-    HONEST SCOPE NOTE: these are the single most-recent sample stamped onto the registry
-    entry each heartbeat tick (overwritten in place) — NOT yet a persisted rolling window
-    of samples. The parent plan's D.2 STORE design calls for keeping the last ~10 samples
-    on the registry entry so ``mem_slope`` / "sustained idle" have a trend to plot; that
-    persistence hasn't shipped (see this plan's new rolling-window-persistence todo), so
-    the popover gets a live point-in-time reading today, a sparkline once that lands.
-    All metrics fields are ``None`` for a kind without D.1 capture (Cloud Run/ECS/Lambda/
-    Cloud Function — VM-only for now, see parent D.2 CAPTURE) or a VM absent from this
-    cycle's census (honest absence, never a fabricated 0.0).
+    The flat ``cpu_pct``/``mem_pct``/… fields are the single most-recent sample (the live
+    point-in-time reading); ``host_metrics_window`` carries the last ~10 samples the heartbeat
+    daemon persisted (parent plan D.2 STORE) so the popover can plot a sparkline / mem_slope
+    trend instead of a single point. All flat metrics are ``None`` — and the window is ``[]`` —
+    for a kind without D.1 capture (Cloud Run/ECS/Lambda/Cloud Function — VM-only, see parent
+    D.2 CAPTURE) or a VM absent from this cycle's census (honest absence, never a fabricated 0.0
+    or a fake flat line).
     """
 
     item: DeploymentItem
@@ -299,6 +316,9 @@ class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contrac
     io_write_rate_bytes_sec: float | None = None
     net_recv_rate_bytes_sec: float | None = None
     workload_alive: bool | None = None
+    # D.1 rolling window (oldest first, ~10 samples) — each a {cpu_pct/mem_pct/disk_pct/
+    # mem_slope/io_write.../net_recv.../sampled_at} sample; [] when the kind has no D.1 capture.
+    host_metrics_window: list[dict[str, float | str]] = Field(default_factory=list)
 
 
 class UmbrellaStatusFailure(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -388,25 +408,6 @@ def _heartbeat_age_seconds(entry: DeploymentRegistryEntry, now: datetime) -> int
     return max(0, int((now - last_hb).total_seconds()))
 
 
-def _vm_status(entry: DeploymentRegistryEntry, hb_age_seconds: int | None) -> str:
-    """Wire status for a VM registry entry (exit-code-aware, stale-aware).
-
-    A terminal entry (``completed``/``failed``) maps from its exit_code: 0 →
-    ``succeeded``, non-zero (incl. 137 OOM) → ``failed``. A running entry whose
-    heartbeat exceeds the staleness window is ``stale``; otherwise ``running``.
-    """
-    status = entry.status
-    if status in ("completed", "failed"):
-        if entry.exit_code is None:
-            return "stopped"
-        return "succeeded" if entry.exit_code == 0 else "failed"
-    if status == "running":
-        if hb_age_seconds is not None and hb_age_seconds > _STALE_HEARTBEAT_MINUTES * 60:
-            return "stale"
-        return "running"
-    return status or "unknown"
-
-
 def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None:
     """Wall-clock hours run — ``started_at`` to ``completed_at`` (or ``now`` if still running)."""
     started = _parse_iso(entry.started_at)
@@ -414,101 +415,6 @@ def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None
         return None
     ended = _parse_iso(entry.completed_at) or now
     return max(0.0, (ended - started).total_seconds() / 3600.0)
-
-
-# D.3 v1 defaults (documented, not a global CPU cut — parent WS-D.0 principle 1).
-_DISK_FULL_PCT_THRESHOLD = 90.0
-_OOM_RISK_MEM_PCT_FLOOR = 80.0
-# `stalled` threshold table (parent WS-D.3, Open-Q3) — progress-metric primary, cpu secondary,
-# NEVER a global CPU cut. Only the BATCH row is wired (object_delta is the only prerequisite
-# signal that exists today); LIVE ("no events/heartbeat-progress >=5min during an expected-active
-# window") and PAPER ("work_delta==0 >=15min") need signals — an active-window calendar and a
-# rows_out-delta tracker respectively — that don't exist yet, so they stay honest-`"unknown"`.
-_STALLED_BATCH_CPU_PCT_CEILING = 10.0
-
-
-def _has_d1_metrics(entry: DeploymentRegistryEntry) -> bool:
-    """True iff the entry carries a real D.1 ``/proc`` sample.
-
-    Pre-2026-07-09 registry rows default every D.1 field to 0.0 (honestly-unknown,
-    per the dataclass's own docstring, never fabricated); six simultaneous real
-    zeros — including ``disk_pct`` (an empty disk is not realistic) — is the
-    legacy-row signature, not a genuine idle sample.
-    """
-    return any(
-        (
-            entry.cpu_pct,
-            entry.mem_pct,
-            entry.mem_slope,
-            entry.disk_pct,
-            entry.io_write_rate_bytes_sec,
-            entry.net_recv_rate_bytes_sec,
-        )
-    )
-
-
-def _composite_health_status(
-    entry: DeploymentRegistryEntry,
-    hb_age_seconds: int | None,
-    *,
-    control_plane_running: bool | None = None,
-    umbrella: DeploymentUmbrella | None = None,
-    object_delta: int | None = None,
-) -> str | None:
-    """D.3 VM composite health — resource-in-band AND a work signal advancing
-    (parent WS-D.0 principle 1), computed only for a currently ``running`` entry
-    (a terminal entry's health is already the exit_code/status).
-
-    v1 covers 6 of the 7 states with a real signal today: ``dead`` / ``hung`` /
-    ``workload-dead`` / ``disk-full`` / ``oom-risk`` / ``working``, plus
-    ``stalled`` for the BATCH umbrella only — the one row of the parent WS-D.3
-    threshold table whose prerequisite signal (``object_delta``, the manifest
-    lookup) is wired. LIVE/PAPER ``stalled`` still degrade to ``"unknown"``:
-    their threshold-table signals (an expected-active-window calendar for LIVE,
-    a ``work_delta`` rows-out-delta tracker for PAPER) don't exist anywhere in
-    the codebase yet, so guessing from a proxy would violate principle 2 (a
-    hint is not truth).
-
-    ``control_plane_running`` is the GCE aggregated-list confirmation (the
-    running-set ``_load_gcp_vm_entries`` already fetches) — ``None`` when the
-    caller has no confirmation to offer, in which case ``dead`` never fires and
-    ``hung`` falls back to heartbeat staleness alone (no regression vs. the
-    pre-D.3 status, just less certain without the control-plane cross-check).
-
-    ``umbrella`` / ``object_delta`` are this entry's classified umbrella + its
-    asset_group's manifest object-delta, both resolved by the caller — the
-    caller batches ``object_delta`` ONE lookup per DISTINCT asset_group across
-    the whole census cycle (``_batched_object_deltas``), never per VM entry
-    (WS-D.0 principle 5, zero new bucket walks). ``None`` for either (the
-    default) means ``stalled`` never fires and ``working`` falls back to the
-    pre-existing io/net-only check — no regression vs. the prior honest-unknown
-    fallback. A positive ``object_delta`` also counts toward ``working`` (parent
-    WS-D.3: "resource in-band AND (object_delta>0 OR io_write_rate>0)") since a
-    batch VM can show real progress between bursty writes with an idle-looking
-    ``/proc`` sample.
-    """
-    if entry.status != "running":
-        return None
-    if control_plane_running is False:
-        return "dead"
-    if hb_age_seconds is not None and hb_age_seconds > _STALE_HEARTBEAT_MINUTES * 60:
-        return "hung"
-    if entry.workload_alive is False:
-        return "workload-dead"
-    if not _has_d1_metrics(entry):
-        return "unknown"
-    if entry.disk_pct > _DISK_FULL_PCT_THRESHOLD:
-        return "disk-full"
-    if entry.mem_pct >= _OOM_RISK_MEM_PCT_FLOOR and entry.mem_slope > 0:
-        return "oom-risk"
-    # Parent WS-D.3: working = resource in-band AND (object_delta>0 OR io_write_rate>0) — the
-    # manifest signal counts too, not just this tick's /proc rates (a batch VM can show a real
-    # object_delta between bursty writes with an idle-looking sample).
-    if entry.io_write_rate_bytes_sec > 0 or entry.net_recv_rate_bytes_sec > 0 or (object_delta or 0) > 0:
-        return "working"
-    if umbrella == DeploymentUmbrella.BATCH and object_delta == 0 and entry.cpu_pct < _STALLED_BATCH_CPU_PCT_CEILING:
-        return "stalled"
-    return "unknown"
 
 
 def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, message: str, dedup_key: str) -> None:
@@ -787,73 +693,11 @@ def _cloud_function_item(status: CloudFunctionStatus) -> DeploymentItem:
 # Service-health sub-taxonomy (parent plan D.3) — ECS / Cloud Run service
 # composite status. Services have no manifest/object-delta (they're not data
 # producers), so they get a SEPARATE 4-state set from the VM 7-state taxonomy.
-# Pure classifiers only: the ECS_SERVICE / CLOUD_RUN_SERVICE census that feeds
-# these (desiredCount/runningCount, ready-state) is tracked separately in this
-# plan's kinds-census todos — these functions are the reusable status-derivation
-# half, ready for that census to call. Mirrors the ``_vm_status`` local pattern.
+# The pure classifiers live in ``_service_health`` (imported + re-exported at the
+# top of this module — shared with the AWS row builder in ``_aws_deployments``,
+# where a reverse import would cycle) and are wired into the live service rows
+# below (``_cloud_run_service_item`` + ``_ecs_service_item``).
 # ---------------------------------------------------------------------------
-
-# error-rate threshold above which a service reads "degraded" even while fully
-# scaled. v1 default (undocumented SLO in the plan) — revisit once the ECS/Cloud
-# Run census is wired to a real error-rate signal (parent plan Open-Q7).
-_SERVICE_ERROR_RATE_THRESHOLD = 0.05
-
-SERVICE_STATUS_SERVING = "serving"
-SERVICE_STATUS_SCALED_TO_ZERO = "scaled-to-zero"
-SERVICE_STATUS_DEAD = "dead"
-SERVICE_STATUS_DEGRADED = "degraded"
-
-
-def ecs_service_health_status(
-    desired_count: int,
-    running_count: int,
-    error_rate: float | None = None,
-) -> str:
-    """ECS service composite status from desired-vs-running (parent D.3).
-
-    ``desired_count == 0`` is an intentional scale-to-zero (neutral, not an
-    error) — never hidden, never flagged red. ``running_count == 0`` while
-    something is desired is ``dead`` (should be up, isn't). Any capacity
-    shortfall short of fully dead, or an error-rate over threshold, is
-    ``degraded`` (amber) rather than a false ``serving`` green.
-    """
-    if desired_count <= 0:
-        return SERVICE_STATUS_SCALED_TO_ZERO
-    if running_count <= 0:
-        return SERVICE_STATUS_DEAD
-    if running_count < desired_count:
-        return SERVICE_STATUS_DEGRADED
-    if error_rate is not None and error_rate > _SERVICE_ERROR_RATE_THRESHOLD:
-        return SERVICE_STATUS_DEGRADED
-    return SERVICE_STATUS_SERVING
-
-
-def cloud_run_service_health_status(
-    ready: bool | None,
-    min_instance_count: int = 0,
-    active_instance_count: int | None = None,
-    error_rate: float | None = None,
-) -> str:
-    """Cloud Run service composite status from ready-state + revision health
-    (parent D.3) — the Cloud Run analog of ``ecs_service_health_status``, using
-    the terminal-condition ready-state + traffic-serving revision in place of
-    ECS's desired/running counts.
-
-    ``ready is False`` means the latest revision failed to become ready — the
-    service should be serving and isn't, so ``dead``. A service configured with
-    ``min_instance_count == 0`` and observed with zero active instances is an
-    intentional scale-to-zero. ``ready is None`` (state unknown / not yet
-    resolved) degrades honest rather than claiming a green it can't back up.
-    """
-    if ready is False:
-        return SERVICE_STATUS_DEAD
-    if min_instance_count <= 0 and (active_instance_count is None or active_instance_count <= 0):
-        return SERVICE_STATUS_SCALED_TO_ZERO
-    if ready is None:
-        return SERVICE_STATUS_DEGRADED
-    if error_rate is not None and error_rate > _SERVICE_ERROR_RATE_THRESHOLD:
-        return SERVICE_STATUS_DEGRADED
-    return SERVICE_STATUS_SERVING
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +732,12 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
         service=target.service,
         asset_group=target.asset_group,
         status="running" if status.ready else "pending",
+        # D.3 service sub-taxonomy (serving/scaled-to-zero/dead/degraded) — the composite
+        # health chip. A ready service with min-instances > 0 is serving; ready + min 0 is an
+        # idle scale-to-zero (neutral, not red); a revision that failed to go ready is dead.
+        composite_health_status=cloud_run_service_health_status(
+            ready=status.ready, min_instance_count=status.min_instance_count
+        ),
         last_run_at=None,
         exit_code=None,
         heartbeat_age_seconds=None,
@@ -923,7 +773,21 @@ def _batched_object_deltas(vm_entries: list[DeploymentRegistryEntry], now: datet
             continue
         if target.umbrella == DeploymentUmbrella.BATCH and target.asset_group:
             asset_groups.add(target.asset_group)
-    return {asset_group: object_delta_for_asset_group(asset_group, now)[0] for asset_group in asset_groups}
+    if not asset_groups:
+        return {}
+
+    # Each asset_group's delta is an independent GCS manifest-index read; running them serially
+    # (one per distinct asset_group) routinely blew past the 45 s per-provider census bound on a
+    # cold cycle, degrading object-delta to empty and pushing the BATCH working/stalled composite
+    # to "unknown". Fan them out — the read is I/O-bound (GIL released), so this is ~max(one read)
+    # not their sum. object_delta_for_asset_group already catches its own errors (returns
+    # (None, reason)), so no per-ag read can crash the map.
+    def _delta(asset_group: str) -> tuple[str, int | None]:
+        return asset_group, object_delta_for_asset_group(asset_group, now)[0]
+
+    workers = min(_OBJECT_DELTA_WORKERS, len(asset_groups))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="obj-delta") as pool:
+        return dict(pool.map(_delta, asset_groups))
 
 
 def build_inventory(
@@ -1305,7 +1169,8 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
                 _alert_on_health_transition(vm_item)
 
     if f_aws is not None:
-        items.extend(_census_or_degrade("aws", f_aws, []))
+        aws_items: list[DeploymentItem] = _census_or_degrade("aws", f_aws, [])
+        items.extend(aws_items)
 
     return items
 
@@ -1460,6 +1325,7 @@ def get_deployment_detail(name: str) -> DeploymentDetailResponse:
         io_write_rate_bytes_sec=entry.io_write_rate_bytes_sec,
         net_recv_rate_bytes_sec=entry.net_recv_rate_bytes_sec,
         workload_alive=entry.workload_alive,
+        host_metrics_window=entry.host_metrics_window,
     )
 
 
@@ -1507,6 +1373,10 @@ def get_umbrella_summary(umbrella: str) -> UmbrellaSummaryResponse:
 
 
 __all__ = [
+    "SERVICE_STATUS_DEAD",
+    "SERVICE_STATUS_DEGRADED",
+    "SERVICE_STATUS_SCALED_TO_ZERO",
+    "SERVICE_STATUS_SERVING",
     "DeploymentDetailResponse",
     "DeploymentInventoryResponse",
     "DeploymentItem",
@@ -1515,5 +1385,7 @@ __all__ = [
     "build_inventory",
     "build_umbrella_summary",
     "classify_vm_target",
+    "cloud_run_service_health_status",
+    "ecs_service_health_status",
     "router",
 ]

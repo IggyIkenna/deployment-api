@@ -639,7 +639,6 @@ wheels = [
 
 [[package]]
 name = "deployment-api"
-version = "0.45.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -718,7 +717,6 @@ requires-dist = [
 
 [[package]]
 name = "deployment-service"
-version = "0.92.0"
 source = { editable = "../deployment-service" }
 dependencies = [
     { name = "aiohttp" },
@@ -728,10 +726,11 @@ dependencies = [
     { name = "fastapi" },
     { name = "flask" },
     { name = "functions-framework" },
+    { name = "google-cloud-artifact-registry" },
     { name = "google-cloud-compute" },
+    { name = "google-cloud-functions" },
     { name = "google-cloud-run" },
     { name = "jinja2" },
-    { name = "pip" },
     { name = "pip-audit" },
     { name = "prometheus-client" },
     { name = "py-solc-x" },
@@ -761,10 +760,11 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0,<0.137.0" },
     { name = "flask", specifier = ">=3.0.0,<4.0.0" },
     { name = "functions-framework", specifier = ">=3.8.0,<4.0.0" },
+    { name = "google-cloud-artifact-registry", specifier = ">=1.13.0,<2.0.0" },
     { name = "google-cloud-compute", specifier = ">=1.45.0,<2.0.0" },
+    { name = "google-cloud-functions", specifier = ">=1.16.0,<2.0.0" },
     { name = "google-cloud-run", specifier = ">=0.15.0,<1.0.0" },
     { name = "jinja2", specifier = ">=3.0.0,<4.0.0" },
-    { name = "pip", specifier = ">=26.1.2" },
     { name = "pip-audit", specifier = ">=2.7.0,<3.0.0" },
     { name = "prometheus-client", specifier = ">=0.20.0,<1.0.0" },
     { name = "py-solc-x", specifier = ">=2.0.3,<3.0.0" },
@@ -1186,6 +1186,23 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-artifact-registry"
+version = "1.22.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/af/9c/a78d175a0484c500063696b1b923920392de6e5e4c1bd509210721554242/google_cloud_artifact_registry-1.22.0.tar.gz", hash = "sha256:0e8173a97ae695dfcf02c83277a0fd574e1a39be409da6345b945bebe577ad94", size = 312446, upload-time = "2026-06-03T14:52:43.625Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/3d/a777dee068746bf2c44475221be3d2209a0810f1b811c0cf21b66f488583/google_cloud_artifact_registry-1.22.0-py3-none-any.whl", hash = "sha256:2a595448af4366c016aa61805b7e8f685ab089022a1ebb65bea1eaaae461b37d", size = 250051, upload-time = "2026-06-03T14:51:59.298Z" },
+]
+
+[[package]]
 name = "google-cloud-audit-log"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1277,6 +1294,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4c/83/bdfd4387fadc5f44de1d0f97b456c648b6f87ec0b1818a9f7f477e6e6eab/google_cloud_firestore-2.27.0.tar.gz", hash = "sha256:5633cb164ef56ca6c73a807822191a56a98f6f10e76978c4f2eb197ae03383d2", size = 649244, upload-time = "2026-04-13T22:55:43.931Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6d/db/fc72c4279887cc95011f16e70200d021030f0261e6391fa52e3adfaaea25/google_cloud_firestore-2.27.0-py3-none-any.whl", hash = "sha256:cc2ea78bc2d4dcc928016d56802deacfda3c9bbda0a7d691ee73b41a2f1a80d7", size = 429806, upload-time = "2026-04-13T22:55:41.726Z" },
+]
+
+[[package]]
+name = "google-cloud-functions"
+version = "1.24.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/6e/769bde70e2f2ff100ef920109273fa13369b932ece30daa8c40afe9fe47e/google_cloud_functions-1.24.0.tar.gz", hash = "sha256:9a83a1753fb88bda4c2eca4167a7c1e016f9c369fb15a3301d9c38967fb6a2c3", size = 191130, upload-time = "2026-06-22T23:21:18.529Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/95/1e/49ffb3059f68ec89336e5bdc716ed86e635e9cf989db1542549dc4fd42df/google_cloud_functions-1.24.0-py3-none-any.whl", hash = "sha256:c85b41151e4d3e31f7adcf7cdfad8c8c3da1cbf321e26fefff6ebc74ed45b36a", size = 159439, upload-time = "2026-06-22T23:18:59.038Z" },
 ]
 
 [[package]]
@@ -3279,7 +3313,6 @@ wheels = [
 
 [[package]]
 name = "unified-api-contracts"
-version = "0.66.0"
 source = { editable = "../unified-api-contracts" }
 dependencies = [
     { name = "bandit" },
@@ -3292,7 +3325,6 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pandas-stubs" },
-    { name = "pip" },
     { name = "pip-audit" },
     { name = "polars" },
     { name = "prek" },
@@ -3325,7 +3357,6 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3.0,<2.4.0" },
     { name = "pandas", specifier = ">=2.3.0,<3.0.0" },
     { name = "pandas-stubs", specifier = ">=2.2.0,<3.0.0" },
-    { name = "pip", specifier = ">=26.1.2" },
     { name = "pip-audit", specifier = ">=2.7.0,<3.0.0" },
     { name = "polars", specifier = ">=1.37.0,<2.0.0" },
     { name = "prek", specifier = ">=0.3.0,<1.0.0" },
@@ -3348,7 +3379,6 @@ requires-dist = [
 
 [[package]]
 name = "unified-trading-library"
-version = "0.49.0"
 source = { editable = "../unified-trading-library" }
 dependencies = [
     { name = "aiohttp" },
@@ -3419,7 +3449,7 @@ requires-dist = [
     { name = "bandit", specifier = ">=1.7.0,<2.0.0" },
     { name = "basedpyright", specifier = "==1.38.2" },
     { name = "boto3", specifier = ">=1.40.70,<2.0.0" },
-    { name = "boto3-stubs", extras = ["s3", "secretsmanager", "logs", "sns", "sqs"], specifier = ">=1.35.0,<2.0.0" },
+    { name = "boto3-stubs", extras = ["logs", "s3", "secretsmanager", "sns", "sqs"], specifier = ">=1.35.0,<2.0.0" },
     { name = "botocore", specifier = ">=1.34.0,<2.0.0" },
     { name = "databento", specifier = ">=0.32.0,<1.0.0" },
     { name = "duckdb", specifier = ">=1.5.0,<2.0.0" },

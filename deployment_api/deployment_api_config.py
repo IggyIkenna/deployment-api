@@ -120,6 +120,21 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         validation_alias=AliasChoices("AWS_ATHENA_OUTPUT_BUCKET"),
         description="S3 bucket for Athena query results (the CUR delivery bucket's athena-results/ prefix).",
     )
+    github_billing_account: str = Field(
+        default="IggyIkenna",
+        validation_alias=AliasChoices("GITHUB_BILLING_ACCOUNT"),
+        description="GitHub user/org whose Enhanced Billing usage report backs the GitHub cost tab.",
+    )
+    github_billing_account_type: str = Field(
+        default="user",
+        validation_alias=AliasChoices("GITHUB_BILLING_ACCOUNT_TYPE"),
+        description="'user' or 'org' — selects the /users/{} vs /organizations/{} billing endpoint.",
+    )
+    github_billing_secret: str = Field(
+        default="github-billing-token",
+        validation_alias=AliasChoices("GITHUB_BILLING_SECRET"),
+        description="Secret Manager key for the GitHub Plan-scoped billing token (falls back to GH_PAT).",
+    )
 
     # =========================================================================
     # DEPLOYMENT CONCURRENCY LIMITS

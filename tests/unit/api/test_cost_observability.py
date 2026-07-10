@@ -14,7 +14,9 @@ import pytest
 
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.cost_observability import CostObservabilityService, CostRecord, waste
+from deployment_api.services.cost_observability import github_billing as ghb
 from deployment_api.services.cost_observability import providers as prov
 from deployment_api.services.cost_observability import service as svc
 from deployment_api.services.cost_observability.queries import aws_facts_sql, gcp_facts_sql
@@ -132,6 +134,39 @@ def test_gcp_facts_sql_selects_machine_spec_system_labels() -> None:
     assert "compute.googleapis.com/cores" in sql
     assert "compute.googleapis.com/memory" in sql
     assert "UNNEST(system_labels)" in sql
+
+
+def test_gcp_facts_sql_converts_gbp_to_usd_via_conversion_rate() -> None:
+    # The account bills in GBP; both cost AND credit are divided by currency_conversion_rate
+    # (guarded IFNULL(NULLIF(...,0),1)) so the page reports USD-equivalent, matching the USD AWS CUR.
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    divisor = "IFNULL(NULLIF(currency_conversion_rate, 0), 1)"
+    assert f"SUM(cost / {divisor})" in sql, "cost must be converted to USD"
+    assert f"UNNEST(credits) AS c)\n    / {divisor}" in sql, "credit must be converted to USD"
+    # usage is a quantity, not a cost — must NOT be rate-divided
+    assert "usage.amount_in_pricing_units), 6) AS usage_amount" in sql
+
+
+def test_gcp_facts_sql_buckets_and_windows_in_us_pacific() -> None:
+    # The GCP billing console groups days in US Pacific, so bucket AND window the export in that zone
+    # (day expr + both window predicates) so a day ties out to the console CSV. AWS stays UTC.
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    tz_date = "DATE(usage_start_time, 'America/Los_Angeles')"
+    assert f"FORMAT_DATE('%Y-%m-%d', {tz_date}) AS day" in sql, "day must bucket in US Pacific"
+    assert f"{tz_date} >= DATE('2026-07-01')" in sql, "window floor must be Pacific-date"
+    assert f"{tz_date} < DATE('2026-07-04')" in sql, "window ceiling must be Pacific-date"
+    # the bare-UTC timestamp window predicate must be gone (would reintroduce the console mismatch)
+    assert "usage_start_time >= TIMESTAMP(" not in sql
+    assert "usage_start_time < TIMESTAMP(" not in sql
+    # partition pruning still rides on _PARTITIONTIME (unchanged)
+    assert "_PARTITIONTIME >= TIMESTAMP(" in sql
+
+
+def test_aws_facts_sql_stays_utc_no_timezone_conversion() -> None:
+    # AWS CUR + Cost Explorer are both UTC; converting to Pacific would break AWS's own console match.
+    sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
+    assert "America/Los_Angeles" not in sql
+    assert "line_item_usage_start_date" in sql
 
 
 def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
@@ -264,14 +299,123 @@ def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatc
     assert rec.zone == "us-east-1a"
 
 
-def test_github_facts_deterministic_and_flagged() -> None:
+def test_github_dummy_facts_deterministic_and_flagged() -> None:
     start, end = date(2026, 7, 1), date(2026, 7, 4)
-    a = prov.github_facts(start, end)
-    b = prov.github_facts(start, end)
+    a = prov.github_dummy_facts(start, end)
+    b = prov.github_dummy_facts(start, end)
     assert [r.cost for r in a] == [r.cost for r in b]  # deterministic
     assert a, "expected github dummy records"
     assert all(r.is_placeholder for r in a)
     assert {r.day for r in a} == {"2026-07-01", "2026-07-02", "2026-07-03"}
+
+
+def test_github_facts_falls_back_to_dummy_when_real_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No Plan-scoped token reachable → fetch_github_billing returns None → the labelled dummy renders.
+    monkeypatch.setattr(prov, "fetch_github_billing", lambda _cfg, _s, _e: None)
+    out = prov.github_facts(date(2026, 7, 1), date(2026, 7, 4))
+    assert out and all(r.is_placeholder for r in out)
+
+
+def test_github_facts_uses_real_billing_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = [
+        CostRecord(
+            cloud="github",
+            day="2026-07-02",
+            service="Actions",
+            resource_id="r",
+            resource_kind="other",
+            region="global",
+            cost=3.0,
+        )
+    ]
+    monkeypatch.setattr(prov, "fetch_github_billing", lambda _cfg, _s, _e: real)
+    out = prov.github_facts(date(2026, 7, 1), date(2026, 7, 4))
+    assert out == real
+    assert not any(r.is_placeholder for r in out)  # real data drops the placeholder flag
+
+
+def test_github_facts_degrades_to_dummy_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_cfg: object, _s: object, _e: object) -> list[CostRecord]:
+        raise RuntimeError("secret manager down")
+
+    monkeypatch.setattr(prov, "fetch_github_billing", _boom)
+    out = prov.github_facts(date(2026, 7, 1), date(2026, 7, 4))
+    assert out and all(r.is_placeholder for r in out)  # a billing hiccup never blanks the page
+
+
+class _FakeResp:
+    def __init__(self, status_code: int, body: dict[str, object]) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self) -> object:
+        return self._body
+
+
+def _fake_client_factory(resp: _FakeResp) -> type:
+    class _FakeClient:
+        def __init__(self, *_a: object, **_k: object) -> None: ...
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *_a: object) -> None: ...
+
+        def get(self, *_a: object, **_k: object) -> _FakeResp:
+            return resp
+
+    return _FakeClient
+
+
+def test_fetch_github_billing_maps_usage_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    # netAmount = invoiced USD; grossAmount = pre-discount. cost=gross, credit=net-gross (≤0), net=cost+credit.
+    monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: "tok")
+    # Real API shape: `date` is an RFC3339 timestamp and `product` is lowercase ("actions").
+    body: dict[str, object] = {
+        "usageItems": [
+            {
+                "date": "2026-07-05T00:00:00Z",
+                "product": "actions",
+                "repositoryName": "IggyIkenna/ao",
+                "sku": "Linux",
+                "grossAmount": 2.0,
+                "netAmount": 1.5,
+            },
+            {"date": "2026-07-05T00:00:00Z", "product": "copilot", "netAmount": 1.9},  # net-only
+            {
+                "date": "2026-06-01T00:00:00Z",
+                "product": "actions",
+                "grossAmount": 9.9,
+                "netAmount": 9.9,
+            },  # out of window
+        ]
+    }
+    monkeypatch.setattr(ghb.httpx, "Client", _fake_client_factory(_FakeResp(200, body)))
+    recs = ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 11))
+    assert recs is not None and len(recs) == 2  # the June item is outside [start, end)
+    actions = next(r for r in recs if r.service == "Actions")  # prettified from lowercase "actions"
+    assert actions.cloud == "github" and actions.resource_id == "IggyIkenna/ao"
+    assert actions.day == "2026-07-05"  # RFC3339 timestamp → date
+    assert actions.cost == 2.0 and actions.credit == -0.5 and not actions.is_placeholder
+    copilot = next(r for r in recs if r.service == "Copilot")
+    assert copilot.cost == 1.9 and copilot.credit == 0.0  # net-only → gross=net, credit 0
+
+
+def test_fetch_github_billing_403_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: "tok")
+    monkeypatch.setattr(ghb.httpx, "Client", _fake_client_factory(_FakeResp(403, {})))
+    assert ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 11)) is None
+
+
+def test_fetch_github_billing_no_token_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: None)
+    assert ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 4)) is None
+
+
+def test_github_billing_months_touched_by_window() -> None:
+    assert ghb._months(date(2026, 6, 15), date(2026, 7, 11)) == [(2026, 6), (2026, 7)]
+    assert ghb._months(date(2026, 7, 1), date(2026, 7, 11)) == [(2026, 7)]
+    assert ghb._months(date(2026, 6, 20), date(2026, 7, 1)) == [(2026, 6)]  # end on the 1st → June only
 
 
 # --- service aggregation (monkeypatched providers) ---------------------------
@@ -319,6 +463,8 @@ def _fake_aws(_db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: d
                 resource_kind="vm",
                 region="ap-northeast-1",
                 cost=2.0,
+                currency="USD",
+                cost_native=2.0,  # AWS is USD-native → native mirrors USD (as providers.aws_facts sets it)
             )
         )
         d = date.fromordinal(d.toordinal() + 1)
@@ -398,6 +544,56 @@ def test_summary_and_breakdown_are_net_of_credits(monkeypatch: pytest.MonkeyPatc
     assert next(row.cost for row in bd.rows if row.label == "Compute Engine") == 24.0  # net, not 30
     ts = s.timeseries(days=3, cloud="gcp")
     assert all(p.values["gcp"] == 8.0 for p in ts.points)
+
+
+def _fake_gcp_gbp(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """GCP billed in GBP: cost/credit are the USD conversion, *_native the raw GBP (rate 0.8)."""
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-1",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=10.0,  # USD
+                credit=-2.0,  # USD
+                currency="GBP",
+                cost_native=8.0,  # GBP (USD 10 x 0.8)
+                credit_native=-1.6,  # GBP (USD -2 x 0.8)
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_native_currency_threads_gbp_for_gcp_tally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GCP's native GBP figures thread through summary + breakdown so the operator can tally against
+    the GBP invoice, while USD-native clouds (AWS) report native == USD."""
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_gbp)
+    monkeypatch.setattr(svc, "aws_facts", _fake_aws)  # cost 2.0/day, USD-native
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.summarize(days=3)
+    gcp = next(c for c in r.clouds if c.cloud == "gcp")
+    assert gcp.currency == "GBP"
+    # USD: gross 30, credit -6, net 24  |  native GBP: gross 24, credit -4.8, net 19.2
+    assert (gcp.gross, gcp.credit, gcp.total) == (30.0, -6.0, 24.0)
+    assert (gcp.gross_native, gcp.credit_native, gcp.total_native) == (24.0, -4.8, 19.2)
+    aws = next(c for c in r.clouds if c.cloud == "aws")
+    assert aws.currency == "USD" and aws.total_native == aws.total == 6.0  # USD-native mirrors
+
+    # Per-service breakdown carries native alongside USD (the by-service tally view).
+    row = next(row for row in s.breakdown("service", "gcp", days=3).rows if row.label == "Compute Engine")
+    assert row.currency == "GBP"
+    assert (row.cost, row.cost_native) == (24.0, 19.2)
+    assert (row.gross_native, row.credit_native) == (24.0, -4.8)
 
 
 def test_breakdown_rows_bifurcate_gross_credit_net(monkeypatch: pytest.MonkeyPatch) -> None:
