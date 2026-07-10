@@ -134,6 +134,17 @@ def test_gcp_facts_sql_selects_machine_spec_system_labels() -> None:
     assert "UNNEST(system_labels)" in sql
 
 
+def test_gcp_facts_sql_converts_gbp_to_usd_via_conversion_rate() -> None:
+    # The account bills in GBP; both cost AND credit are divided by currency_conversion_rate
+    # (guarded IFNULL(NULLIF(...,0),1)) so the page reports USD-equivalent, matching the USD AWS CUR.
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    divisor = "IFNULL(NULLIF(currency_conversion_rate, 0), 1)"
+    assert f"SUM(cost / {divisor})" in sql, "cost must be converted to USD"
+    assert f"UNNEST(credits) AS c)\n    / {divisor}" in sql, "credit must be converted to USD"
+    # usage is a quantity, not a cost — must NOT be rate-divided
+    assert "usage.amount_in_pricing_units), 6) AS usage_amount" in sql
+
+
 def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
     sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
     assert "line_item_usage_type" in sql

@@ -32,7 +32,17 @@ def _system_label_col(alias: str, key: str) -> str:
 
 
 def gcp_facts_sql(table: str, start: date, end: date) -> str:
-    """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export."""
+    """Per (day, service, resource, region, sku, zone) cost + credit + usage for the GCP export.
+
+    `cost`/`credit` are converted to USD AT QUERY TIME. The export bills in the account currency
+    (this account = GBP, verified via the export's `currency` column) and carries
+    `currency_conversion_rate` — the USD→account-currency rate GCP billed at — so `amount / rate`
+    is the USD-equivalent list price. Dividing PER SOURCE ROW (inside SUM) applies each day's exact
+    rate. A USD account has rate=1.0 (no-op); a missing/zero rate falls back to 1.0 (leave the row
+    unconverted rather than drop it via a NULL divisor). This makes the whole page single-currency
+    USD, matching the AWS CUR (native USD). Native-GBP figures for the GCP invoice tally are a
+    separate concern (a GBP view option), not this conversion. Usage amounts are not costs — untouched.
+    """
     part_floor = start - timedelta(days=_PARTITION_PAD_DAYS)
     machine_spec_cols = ",\n".join(_system_label_col(alias, key) for alias, key in _MACHINE_SPEC_LABELS)
     return f"""
@@ -44,8 +54,9 @@ SELECT
   COALESCE(sku.description, 'Unknown') AS sku,
   COALESCE(usage.pricing_unit, '') AS usage_unit,
   COALESCE(location.zone, '') AS zone,
-  ROUND(SUM(cost), 6) AS cost,
-  ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit,
+  ROUND(SUM(cost / IFNULL(NULLIF(currency_conversion_rate, 0), 1)), 6) AS cost,
+  ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)
+    / IFNULL(NULLIF(currency_conversion_rate, 0), 1)), 6) AS credit,
   ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount,
 {machine_spec_cols}
 FROM `{table}`
