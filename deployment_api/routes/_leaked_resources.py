@@ -41,6 +41,25 @@ class UnreleasedResource(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mode
     cost_basis: str = "inferred"  # always inferred (list-rate estimate), never billing-derived
 
 
+def orphaned_disk(name: str, size_gb: int | None, disk_type: str | None) -> UnreleasedResource:
+    """An UnreleasedResource for a persistent disk with NO owning VM (a first-class orphaned row).
+
+    Cost reuses the orphans disk-rate SSOT; ``est_monthly_usd`` is inferred (principle 8).
+    """
+    return UnreleasedResource(
+        type="DISK",
+        name=name,
+        size_gb=size_gb,
+        disk_type=disk_type,
+        est_monthly_usd=monthly_disk_usd(size_gb, disk_type),
+    )
+
+
+def orphaned_static_ip(name: str) -> UnreleasedResource:
+    """An UnreleasedResource for a reserved static IP with NO owner (idle-billed; inferred cost)."""
+    return UnreleasedResource(type="STATIC_IP", name=name, est_monthly_usd=_STATIC_IP_MONTHLY_USD)
+
+
 def _instance_uses_address(users: list[str], vm_name: str) -> bool:
     """True if any address ``users`` self-link points at this instance."""
     needle = f"/instances/{vm_name}"

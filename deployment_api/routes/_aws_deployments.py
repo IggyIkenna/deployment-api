@@ -337,7 +337,12 @@ def _lambda_item(
         "service": target.service,
         "asset_group": target.asset_group,
         "status": _LAMBDA_STATE_MAP.get(fn.state, "unknown"),
-        "last_run_at": fn.last_modified.isoformat() if fn.last_modified else None,
+        # Lambda has NO honest last-INVOKE time without the paid CloudWatch metric (deliberately
+        # avoided — the reason we lean on Athena/BigQuery). last_run_at stays None (honest-absent),
+        # never the last-DEPLOY time mislabelled as a run; the deploy time surfaces as
+        # last_modified_at, which the UI renders as "last modified" + a tooltip.
+        "last_run_at": None,
+        "last_modified_at": fn.last_modified.isoformat() if fn.last_modified else None,
         "exit_code": None,
         "heartbeat_age_seconds": None,
         "captured_progress": None,
