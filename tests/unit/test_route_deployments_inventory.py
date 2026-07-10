@@ -1312,6 +1312,40 @@ def test_build_inventory_includes_cloud_run_service_with_umbrella_sentinel() -> 
     assert item.status == "running"
     assert item.revision == "deployment-api-00007-abc"
     assert item.region == "asia-northeast1"
+    # Ready + default min-instances 0 → an idle scale-to-zero service (the live row now
+    # carries the D.3 sub-taxonomy on composite_health_status, not just a running/pending flag).
+    assert item.composite_health_status == "scaled-to-zero"
+
+
+def test_build_inventory_wires_cloud_run_service_health_taxonomy() -> None:
+    """A live Cloud Run service row carries the serving/scaled-to-zero/dead sub-taxonomy.
+
+    Regression for the honesty gap where the classifiers existed but were never called by the
+    row builder — service rows only ever showed a binary running/pending status.
+    """
+    from deployment_api.routes._cloud_run_services import CloudRunServiceStatus
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    def _svc(name: str, *, ready: bool, min_instances: int) -> CloudRunServiceStatus:
+        return CloudRunServiceStatus(
+            name=name,
+            ready=ready,
+            state="CONDITION_SUCCEEDED" if ready else "CONDITION_FAILED",
+            revision=f"{name}-00001-abc",
+            region="asia-northeast1",
+            uri="",
+            min_instance_count=min_instances,
+        )
+
+    services = [
+        _svc("market-data-query", ready=True, min_instances=2),  # always-on → serving
+        _svc("alerting", ready=True, min_instances=0),  # ready, idle → scaled-to-zero
+        _svc("broken-service", ready=False, min_instances=1),  # revision failed → dead
+    ]
+    by_name = {i.name: i for i in build_inventory([], {}, _FIXED_NOW, cloud_run_services=services)}
+    assert by_name["market-data-query"].composite_health_status == "serving"
+    assert by_name["alerting"].composite_health_status == "scaled-to-zero"
+    assert by_name["broken-service"].composite_health_status == "dead"
 
 
 def test_build_inventory_defaults_to_no_cloud_run_services() -> None:

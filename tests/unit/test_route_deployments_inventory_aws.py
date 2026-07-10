@@ -257,6 +257,8 @@ def test_build_aws_inventory_classifies_ecs_service_running() -> None:
     assert item["desired_count"] == 1
     assert item["running_count"] == 1
     assert item["task_definition_revision"] == 12
+    # D.3 service sub-taxonomy now wired onto the live row (running == desired → serving).
+    assert item["composite_health_status"] == "serving"
 
 
 def test_build_aws_inventory_ecs_service_scaled_to_zero_always_emitted() -> None:
@@ -277,6 +279,7 @@ def test_build_aws_inventory_ecs_service_scaled_to_zero_always_emitted() -> None
     items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
     assert len(items) == 1
     assert items[0]["status"] == "stopped"  # desired==0 → off on purpose, not a failure
+    assert items[0]["composite_health_status"] == "scaled-to-zero"  # neutral, never red
 
 
 def test_build_aws_inventory_ecs_service_desired_but_not_running_is_unknown() -> None:
@@ -296,6 +299,9 @@ def test_build_aws_inventory_ecs_service_desired_but_not_running_is_unknown() ->
     )
     items = build_aws_inventory([], [], [svc], _lifecycle_for_name, None, _LOG_BUCKET)
     assert items[0]["status"] == "unknown"
+    # The placeholder `status` is a conservative "unknown", but the D.3 sub-taxonomy now
+    # resolves it honestly: desired>0 with nothing running is dead ("should be up, isn't").
+    assert items[0]["composite_health_status"] == "dead"
 
 
 def test_build_aws_inventory_classifies_lambda_functions() -> None:

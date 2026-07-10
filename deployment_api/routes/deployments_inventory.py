@@ -84,6 +84,18 @@ from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
 )
+
+# Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
+# and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
+# which ``deployments_inventory`` imports — needs them too, and a reverse import would cycle.
+from deployment_api.routes._service_health import (
+    SERVICE_STATUS_DEAD,
+    SERVICE_STATUS_DEGRADED,
+    SERVICE_STATUS_SCALED_TO_ZERO,
+    SERVICE_STATUS_SERVING,
+    cloud_run_service_health_status,
+    ecs_service_health_status,
+)
 from deployment_api.routes.health_consolidator import object_delta_for_asset_group
 from deployment_api.vm_utils import get_vm_instance_details
 
@@ -243,7 +255,9 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     health_status: str | None = None  # raw GCE instance status (RUNNING/TERMINATED/...)
     boot_disk_name: str | None = None
     labels: dict[str, str] | None = None
-    composite_health_status: str | None = None  # D.3 VM composite (hung|disk-full|oom-risk|working|unknown); n/a=None
+    # D.3 composite health. VMs: dead|hung|disk-full|oom-risk|working|stalled|workload-dead|unknown.
+    # Services (ECS/Cloud Run): serving|scaled-to-zero|dead|degraded. None = kind carries no composite.
+    composite_health_status: str | None = None
     # AWS Tier-0 free wins — already fetched by the ECS/Lambda census, previously
     # discarded once collapsed into ``status``. None for kinds without the
     # underlying source (GCP kinds, EC2 VMs, Batch/Cloud-Run jobs).
@@ -787,73 +801,11 @@ def _cloud_function_item(status: CloudFunctionStatus) -> DeploymentItem:
 # Service-health sub-taxonomy (parent plan D.3) — ECS / Cloud Run service
 # composite status. Services have no manifest/object-delta (they're not data
 # producers), so they get a SEPARATE 4-state set from the VM 7-state taxonomy.
-# Pure classifiers only: the ECS_SERVICE / CLOUD_RUN_SERVICE census that feeds
-# these (desiredCount/runningCount, ready-state) is tracked separately in this
-# plan's kinds-census todos — these functions are the reusable status-derivation
-# half, ready for that census to call. Mirrors the ``_vm_status`` local pattern.
+# The pure classifiers live in ``_service_health`` (imported + re-exported at the
+# top of this module — shared with the AWS row builder in ``_aws_deployments``,
+# where a reverse import would cycle) and are wired into the live service rows
+# below (``_cloud_run_service_item`` + ``_ecs_service_item``).
 # ---------------------------------------------------------------------------
-
-# error-rate threshold above which a service reads "degraded" even while fully
-# scaled. v1 default (undocumented SLO in the plan) — revisit once the ECS/Cloud
-# Run census is wired to a real error-rate signal (parent plan Open-Q7).
-_SERVICE_ERROR_RATE_THRESHOLD = 0.05
-
-SERVICE_STATUS_SERVING = "serving"
-SERVICE_STATUS_SCALED_TO_ZERO = "scaled-to-zero"
-SERVICE_STATUS_DEAD = "dead"
-SERVICE_STATUS_DEGRADED = "degraded"
-
-
-def ecs_service_health_status(
-    desired_count: int,
-    running_count: int,
-    error_rate: float | None = None,
-) -> str:
-    """ECS service composite status from desired-vs-running (parent D.3).
-
-    ``desired_count == 0`` is an intentional scale-to-zero (neutral, not an
-    error) — never hidden, never flagged red. ``running_count == 0`` while
-    something is desired is ``dead`` (should be up, isn't). Any capacity
-    shortfall short of fully dead, or an error-rate over threshold, is
-    ``degraded`` (amber) rather than a false ``serving`` green.
-    """
-    if desired_count <= 0:
-        return SERVICE_STATUS_SCALED_TO_ZERO
-    if running_count <= 0:
-        return SERVICE_STATUS_DEAD
-    if running_count < desired_count:
-        return SERVICE_STATUS_DEGRADED
-    if error_rate is not None and error_rate > _SERVICE_ERROR_RATE_THRESHOLD:
-        return SERVICE_STATUS_DEGRADED
-    return SERVICE_STATUS_SERVING
-
-
-def cloud_run_service_health_status(
-    ready: bool | None,
-    min_instance_count: int = 0,
-    active_instance_count: int | None = None,
-    error_rate: float | None = None,
-) -> str:
-    """Cloud Run service composite status from ready-state + revision health
-    (parent D.3) — the Cloud Run analog of ``ecs_service_health_status``, using
-    the terminal-condition ready-state + traffic-serving revision in place of
-    ECS's desired/running counts.
-
-    ``ready is False`` means the latest revision failed to become ready — the
-    service should be serving and isn't, so ``dead``. A service configured with
-    ``min_instance_count == 0`` and observed with zero active instances is an
-    intentional scale-to-zero. ``ready is None`` (state unknown / not yet
-    resolved) degrades honest rather than claiming a green it can't back up.
-    """
-    if ready is False:
-        return SERVICE_STATUS_DEAD
-    if min_instance_count <= 0 and (active_instance_count is None or active_instance_count <= 0):
-        return SERVICE_STATUS_SCALED_TO_ZERO
-    if ready is None:
-        return SERVICE_STATUS_DEGRADED
-    if error_rate is not None and error_rate > _SERVICE_ERROR_RATE_THRESHOLD:
-        return SERVICE_STATUS_DEGRADED
-    return SERVICE_STATUS_SERVING
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +840,12 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
         service=target.service,
         asset_group=target.asset_group,
         status="running" if status.ready else "pending",
+        # D.3 service sub-taxonomy (serving/scaled-to-zero/dead/degraded) — the composite
+        # health chip. A ready service with min-instances > 0 is serving; ready + min 0 is an
+        # idle scale-to-zero (neutral, not red); a revision that failed to go ready is dead.
+        composite_health_status=cloud_run_service_health_status(
+            ready=status.ready, min_instance_count=status.min_instance_count
+        ),
         last_run_at=None,
         exit_code=None,
         heartbeat_age_seconds=None,
@@ -1305,7 +1263,8 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
                 _alert_on_health_transition(vm_item)
 
     if f_aws is not None:
-        items.extend(_census_or_degrade("aws", f_aws, []))
+        aws_items: list[DeploymentItem] = _census_or_degrade("aws", f_aws, [])
+        items.extend(aws_items)
 
     return items
 
@@ -1507,6 +1466,10 @@ def get_umbrella_summary(umbrella: str) -> UmbrellaSummaryResponse:
 
 
 __all__ = [
+    "SERVICE_STATUS_DEAD",
+    "SERVICE_STATUS_DEGRADED",
+    "SERVICE_STATUS_SCALED_TO_ZERO",
+    "SERVICE_STATUS_SERVING",
     "DeploymentDetailResponse",
     "DeploymentInventoryResponse",
     "DeploymentItem",
@@ -1515,5 +1478,7 @@ __all__ = [
     "build_inventory",
     "build_umbrella_summary",
     "classify_vm_target",
+    "cloud_run_service_health_status",
+    "ecs_service_health_status",
     "router",
 ]
