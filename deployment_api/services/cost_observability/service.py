@@ -31,7 +31,12 @@ from deployment_api.services.cost_observability.models import (
     TimeseriesPoint,
     TimeseriesResponse,
 )
-from deployment_api.services.cost_observability.providers import aws_facts, gcp_facts, github_facts
+from deployment_api.services.cost_observability.providers import (
+    aws_facts,
+    gcp_facts,
+    github_dummy_facts,
+    github_facts,
+)
 from deployment_api.services.cost_observability.waste import classify_waste
 from deployment_api.vm_utils import list_unattached_disk_names
 
@@ -705,5 +710,5 @@ def _mock_facts(start: date, end: date) -> list[CostRecord]:
                 )
             )
         day = day.fromordinal(day.toordinal() + 1)
-    out += github_facts(start, end)
+    out += github_dummy_facts(start, end)  # mock mode: never touch the network
     return out

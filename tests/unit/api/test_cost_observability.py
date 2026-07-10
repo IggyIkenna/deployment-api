@@ -14,7 +14,9 @@ import pytest
 
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.cost_observability import CostObservabilityService, CostRecord, waste
+from deployment_api.services.cost_observability import github_billing as ghb
 from deployment_api.services.cost_observability import providers as prov
 from deployment_api.services.cost_observability import service as svc
 from deployment_api.services.cost_observability.queries import aws_facts_sql, gcp_facts_sql
@@ -143,6 +145,28 @@ def test_gcp_facts_sql_converts_gbp_to_usd_via_conversion_rate() -> None:
     assert f"UNNEST(credits) AS c)\n    / {divisor}" in sql, "credit must be converted to USD"
     # usage is a quantity, not a cost — must NOT be rate-divided
     assert "usage.amount_in_pricing_units), 6) AS usage_amount" in sql
+
+
+def test_gcp_facts_sql_buckets_and_windows_in_us_pacific() -> None:
+    # The GCP billing console groups days in US Pacific, so bucket AND window the export in that zone
+    # (day expr + both window predicates) so a day ties out to the console CSV. AWS stays UTC.
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    tz_date = "DATE(usage_start_time, 'America/Los_Angeles')"
+    assert f"FORMAT_DATE('%Y-%m-%d', {tz_date}) AS day" in sql, "day must bucket in US Pacific"
+    assert f"{tz_date} >= DATE('2026-07-01')" in sql, "window floor must be Pacific-date"
+    assert f"{tz_date} < DATE('2026-07-04')" in sql, "window ceiling must be Pacific-date"
+    # the bare-UTC timestamp window predicate must be gone (would reintroduce the console mismatch)
+    assert "usage_start_time >= TIMESTAMP(" not in sql
+    assert "usage_start_time < TIMESTAMP(" not in sql
+    # partition pruning still rides on _PARTITIONTIME (unchanged)
+    assert "_PARTITIONTIME >= TIMESTAMP(" in sql
+
+
+def test_aws_facts_sql_stays_utc_no_timezone_conversion() -> None:
+    # AWS CUR + Cost Explorer are both UTC; converting to Pacific would break AWS's own console match.
+    sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
+    assert "America/Los_Angeles" not in sql
+    assert "line_item_usage_start_date" in sql
 
 
 def test_aws_facts_sql_selects_usage_type_and_amount() -> None:
@@ -275,14 +299,116 @@ def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatc
     assert rec.zone == "us-east-1a"
 
 
-def test_github_facts_deterministic_and_flagged() -> None:
+def test_github_dummy_facts_deterministic_and_flagged() -> None:
     start, end = date(2026, 7, 1), date(2026, 7, 4)
-    a = prov.github_facts(start, end)
-    b = prov.github_facts(start, end)
+    a = prov.github_dummy_facts(start, end)
+    b = prov.github_dummy_facts(start, end)
     assert [r.cost for r in a] == [r.cost for r in b]  # deterministic
     assert a, "expected github dummy records"
     assert all(r.is_placeholder for r in a)
     assert {r.day for r in a} == {"2026-07-01", "2026-07-02", "2026-07-03"}
+
+
+def test_github_facts_falls_back_to_dummy_when_real_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No Plan-scoped token reachable → fetch_github_billing returns None → the labelled dummy renders.
+    monkeypatch.setattr(prov, "fetch_github_billing", lambda _cfg, _s, _e: None)
+    out = prov.github_facts(date(2026, 7, 1), date(2026, 7, 4))
+    assert out and all(r.is_placeholder for r in out)
+
+
+def test_github_facts_uses_real_billing_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = [
+        CostRecord(
+            cloud="github",
+            day="2026-07-02",
+            service="Actions",
+            resource_id="r",
+            resource_kind="other",
+            region="global",
+            cost=3.0,
+        )
+    ]
+    monkeypatch.setattr(prov, "fetch_github_billing", lambda _cfg, _s, _e: real)
+    out = prov.github_facts(date(2026, 7, 1), date(2026, 7, 4))
+    assert out == real
+    assert not any(r.is_placeholder for r in out)  # real data drops the placeholder flag
+
+
+def test_github_facts_degrades_to_dummy_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_cfg: object, _s: object, _e: object) -> list[CostRecord]:
+        raise RuntimeError("secret manager down")
+
+    monkeypatch.setattr(prov, "fetch_github_billing", _boom)
+    out = prov.github_facts(date(2026, 7, 1), date(2026, 7, 4))
+    assert out and all(r.is_placeholder for r in out)  # a billing hiccup never blanks the page
+
+
+class _FakeResp:
+    def __init__(self, status_code: int, body: dict[str, object]) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self) -> object:
+        return self._body
+
+
+def _fake_client_factory(resp: _FakeResp) -> type:
+    class _FakeClient:
+        def __init__(self, *_a: object, **_k: object) -> None: ...
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *_a: object) -> None: ...
+
+        def get(self, *_a: object, **_k: object) -> _FakeResp:
+            return resp
+
+    return _FakeClient
+
+
+def test_fetch_github_billing_maps_usage_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    # netAmount = invoiced USD; grossAmount = pre-discount. cost=gross, credit=net-gross (≤0), net=cost+credit.
+    monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: "tok")
+    body: dict[str, object] = {
+        "usageItems": [
+            {
+                "date": "2026-07-05",
+                "product": "Actions",
+                "repositoryName": "IggyIkenna/ao",
+                "sku": "Linux",
+                "grossAmount": 2.0,
+                "netAmount": 1.5,
+            },
+            {"date": "2026-07-05", "product": "Copilot", "netAmount": 1.9},  # net-only
+            {"date": "2026-06-01", "product": "Actions", "grossAmount": 9.9, "netAmount": 9.9},  # out of window
+        ]
+    }
+    monkeypatch.setattr(ghb.httpx, "Client", _fake_client_factory(_FakeResp(200, body)))
+    recs = ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 11))
+    assert recs is not None and len(recs) == 2  # the June item is outside [start, end)
+    actions = next(r for r in recs if r.service == "Actions")
+    assert actions.cloud == "github" and actions.resource_id == "IggyIkenna/ao"
+    assert actions.cost == 2.0 and actions.credit == -0.5 and not actions.is_placeholder
+    copilot = next(r for r in recs if r.service == "Copilot")
+    assert copilot.cost == 1.9 and copilot.credit == 0.0  # net-only → gross=net, credit 0
+
+
+def test_fetch_github_billing_403_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: "tok")
+    monkeypatch.setattr(ghb.httpx, "Client", _fake_client_factory(_FakeResp(403, {})))
+    assert ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 11)) is None
+
+
+def test_fetch_github_billing_no_token_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: None)
+    assert ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 4)) is None
+
+
+def test_github_billing_months_touched_by_window() -> None:
+    assert ghb._months(date(2026, 6, 15), date(2026, 7, 11)) == [(2026, 6), (2026, 7)]
+    assert ghb._months(date(2026, 7, 1), date(2026, 7, 11)) == [(2026, 7)]
+    assert ghb._months(date(2026, 6, 20), date(2026, 7, 1)) == [(2026, 6)]  # end on the 1st → June only
 
 
 # --- service aggregation (monkeypatched providers) ---------------------------
