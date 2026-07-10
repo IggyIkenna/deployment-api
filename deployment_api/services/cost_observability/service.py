@@ -145,6 +145,36 @@ def _net(r: CostRecord) -> float:
     return r.cost + r.credit
 
 
+def _net_native(r: CostRecord) -> float:
+    """`_net` in the record's native currency (for the GBP-tally view; == `_net` for USD-native clouds)."""
+    return r.cost_native + r.credit_native
+
+
+class _NativeAcc:
+    """Per-key native-currency accumulator (net/gross/credit + currency) so every breakdown builder
+    threads the identical GBP-tally figures. `add(key, r)` in the loop; `apply(row, key)` stamps the
+    four native fields onto a freshly-built BreakdownRow. Keeps the builders DRY and one-currency-safe."""
+
+    def __init__(self) -> None:
+        self._net: dict[object, float] = {}
+        self._gross: dict[object, float] = {}
+        self._credit: dict[object, float] = {}
+        self._ccy: dict[object, str] = {}
+
+    def add(self, key: object, r: CostRecord) -> None:
+        self._net[key] = self._net.get(key, 0.0) + _net_native(r)
+        self._gross[key] = self._gross.get(key, 0.0) + r.cost_native
+        self._credit[key] = self._credit.get(key, 0.0) + r.credit_native
+        self._ccy[key] = r.currency
+
+    def apply(self, row: BreakdownRow, key: object) -> BreakdownRow:
+        row.currency = self._ccy.get(key, "USD")
+        row.cost_native = round(self._net.get(key, 0.0), 2)
+        row.gross_native = round(self._gross.get(key, 0.0), 2)
+        row.credit_native = round(self._credit.get(key, 0.0), 2)
+        return row
+
+
 class CostObservabilityService:
     def __init__(self, config: DeploymentApiConfig | None = None) -> None:
         self._cfg = config or DeploymentApiConfig()
@@ -206,6 +236,10 @@ class CostObservabilityService:
             gross = round(sum(r.cost for r in cur_recs), 2)
             credit = round(sum(r.credit for r in cur_recs), 2)
             total = round(gross + credit, 2)  # net — what actually gets invoiced
+            # Native-currency KPI figures for the GBP-tally toggle (GCP=GBP; USD clouds mirror the USD).
+            gross_native = round(sum(r.cost_native for r in cur_recs), 2)
+            credit_native = round(sum(r.credit_native for r in cur_recs), 2)
+            native_currency = next((r.currency for r in cur_recs), "USD")
             grand += total
             grand_gross += gross
             grand_credit += credit
@@ -225,6 +259,10 @@ class CostObservabilityService:
                     delta_pct=delta,
                     daily=[round(v, 4) for v in daily],
                     is_placeholder=any(r.is_placeholder for r in cur_recs),
+                    currency=native_currency,
+                    total_native=round(gross_native + credit_native, 2),
+                    gross_native=gross_native,
+                    credit_native=credit_native,
                 )
             )
         grand = round(grand, 2)
@@ -260,11 +298,19 @@ class CostObservabilityService:
         # unattributed tail, which is surfaced as its own row below).
         covered = [r for r in recs if r.resource_kind == KIND_BUCKET] if dimension == "bucket" else recs
         t_net = t_gross = t_credit = 0.0
+        t_net_native = t_gross_native = t_credit_native = 0.0
         for r in covered:
             t_net += _net(r)
             t_gross += r.cost
             t_credit += r.credit
+            t_net_native += _net_native(r)
+            t_gross_native += r.cost_native
+            t_credit_native += r.credit_native
         totals = (round(t_net, 2), round(t_gross, 2), round(t_credit, 2))
+        native_totals = (round(t_net_native, 2), round(t_gross_native, 2), round(t_credit_native, 2))
+        # One currency only when the scope is a single cloud (the tally case: cloud=gcp → GBP); mixed → USD.
+        _ccy = {r.currency for r in covered}
+        scope_currency = _ccy.pop() if len(_ccy) == 1 else "USD"
         total = totals[0]
 
         # "By day" stays chronological + uncapped (days are inherently bounded and the operator wants
@@ -288,12 +334,15 @@ class CostObservabilityService:
             # per-resource grouping; surface it as one row so the resource total reconciles to the
             # cloud total instead of silently sitting ~$365 low.
             unattributed = round(sum(_net(r) for r in recs if not r.resource_id), 2)
+            unattributed_native = round(sum(_net_native(r) for r in recs if not r.resource_id), 2)
             if abs(unattributed) >= 0.01:
                 extra_aggregates = (
                     BreakdownRow(
                         label="Unattributed (no resource id)",
                         cloud=None,
                         cost=unattributed,
+                        currency=scope_currency,
+                        cost_native=unattributed_native,
                         detail="cost the provider doesn't tag to a resource (Cloud Run, networking, …)",
                         is_aggregate=True,
                     ),
@@ -307,7 +356,13 @@ class CostObservabilityService:
         else:  # service (default)
             rows_all = self._grouped(recs, lambda r: r.service)
 
-        rows, total_groups = self._finalize_rows(rows_all, totals=totals, extra_aggregates=extra_aggregates)
+        rows, total_groups = self._finalize_rows(
+            rows_all,
+            totals=totals,
+            native_totals=native_totals,
+            scope_currency=scope_currency,
+            extra_aggregates=extra_aggregates,
+        )
         for r in rows:
             r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
         return BreakdownResponse(
@@ -319,6 +374,8 @@ class CostObservabilityService:
         rows_all: list[BreakdownRow],
         *,
         totals: tuple[float, float, float],
+        native_totals: tuple[float, float, float],
+        scope_currency: str,
         extra_aggregates: tuple[BreakdownRow, ...] = (),
     ) -> tuple[list[BreakdownRow], int]:
         """Cap a cost-sorted (descending) row list to the top `_BREAKDOWN_LIMIT`, folding the rest into
@@ -329,6 +386,7 @@ class CostObservabilityService:
         the residual. Returns (rows_to_show, total_group_count).
         """
         total_net, total_gross, total_credit = totals
+        total_net_n, total_gross_n, total_credit_n = native_totals
         total_groups = len(rows_all)
         if total_groups <= _BREAKDOWN_LIMIT:
             return list(rows_all) + list(extra_aggregates), total_groups
@@ -342,6 +400,9 @@ class CostObservabilityService:
             shown_net = sum(r.cost for r in kept) + sum(a.cost for a in extra_aggregates)
             shown_gross = sum(r.gross for r in kept) + sum(a.gross for a in extra_aggregates)
             shown_credit = sum(r.credit for r in kept) + sum(a.credit for a in extra_aggregates)
+            shown_net_n = sum(r.cost_native for r in kept) + sum(a.cost_native for a in extra_aggregates)
+            shown_gross_n = sum(r.gross_native for r in kept) + sum(a.gross_native for a in extra_aggregates)
+            shown_credit_n = sum(r.credit_native for r in kept) + sum(a.credit_native for a in extra_aggregates)
             aggregates.append(
                 BreakdownRow(
                     label=f"Other ({remaining_count:,} more)",
@@ -349,6 +410,10 @@ class CostObservabilityService:
                     cost=round(total_net - shown_net, 2),
                     gross=round(total_gross - shown_gross, 2),
                     credit=round(total_credit - shown_credit, 2),
+                    currency=scope_currency,
+                    cost_native=round(total_net_n - shown_net_n, 2),
+                    gross_native=round(total_gross_n - shown_gross_n, 2),
+                    credit_native=round(total_credit_n - shown_credit_n, 2),
                     detail=f"rows beyond the top {_BREAKDOWN_LIMIT}",
                     is_aggregate=True,
                 )
@@ -360,6 +425,7 @@ class CostObservabilityService:
         net: dict[tuple[str, str], float] = {}
         gross: dict[tuple[str, str], float] = {}
         credit: dict[tuple[str, str], float] = {}
+        acc = _NativeAcc()
         prov: dict[tuple[str, str], bool] = {}
         purchase: dict[tuple[str, str], str] = {}
         for r in recs:
@@ -367,19 +433,23 @@ class CostObservabilityService:
             net[k] = net.get(k, 0.0) + _net(r)
             gross[k] = gross.get(k, 0.0) + r.cost
             credit[k] = credit.get(k, 0.0) + r.credit
+            acc.add(k, r)
             prov[k] = prov.get(k, False) or r.is_provisional
             if _PURCHASE_RANK.get(r.purchase_option, 0) > _PURCHASE_RANK.get(purchase.get(k, PURCHASE_OTHER), 0):
                 purchase[k] = r.purchase_option
         rows = [
-            BreakdownRow(
-                label=label,
-                cloud=cloud,
-                cost=round(v, 2),
-                gross=round(gross[(cloud, label)], 2),
-                credit=round(credit[(cloud, label)], 2),
-                detail=_CLOUD_LABEL.get(cloud, cloud),
-                is_provisional=prov[(cloud, label)],
-                purchase_option=purchase.get((cloud, label), PURCHASE_OTHER),
+            acc.apply(
+                BreakdownRow(
+                    label=label,
+                    cloud=cloud,
+                    cost=round(v, 2),
+                    gross=round(gross[(cloud, label)], 2),
+                    credit=round(credit[(cloud, label)], 2),
+                    detail=_CLOUD_LABEL.get(cloud, cloud),
+                    is_provisional=prov[(cloud, label)],
+                    purchase_option=purchase.get((cloud, label), PURCHASE_OTHER),
+                ),
+                (cloud, label),
             )
             for (cloud, label), v in net.items()
         ]
@@ -393,21 +463,26 @@ class CostObservabilityService:
         gross: dict[tuple[str, str, str], float] = {}
         credit: dict[tuple[str, str, str], float] = {}
         prov: dict[tuple[str, str, str], bool] = {}
+        acc = _NativeAcc()
         for r in recs:
             k = (r.cloud, r.service, r.sku or "Unknown")
             net[k] = net.get(k, 0.0) + _net(r)
             gross[k] = gross.get(k, 0.0) + r.cost
             credit[k] = credit.get(k, 0.0) + r.credit
+            acc.add(k, r)
             prov[k] = prov.get(k, False) or r.is_provisional
         rows = [
-            BreakdownRow(
-                label=sku,
-                cloud=cloud,
-                cost=round(v, 2),
-                gross=round(gross[(cloud, service, sku)], 2),
-                credit=round(credit[(cloud, service, sku)], 2),
-                detail=service,
-                is_provisional=prov[(cloud, service, sku)],
+            acc.apply(
+                BreakdownRow(
+                    label=sku,
+                    cloud=cloud,
+                    cost=round(v, 2),
+                    gross=round(gross[(cloud, service, sku)], 2),
+                    credit=round(credit[(cloud, service, sku)], 2),
+                    detail=service,
+                    is_provisional=prov[(cloud, service, sku)],
+                ),
+                (cloud, service, sku),
             )
             for (cloud, service, sku), v in net.items()
         ]
@@ -432,6 +507,7 @@ class CostObservabilityService:
         component_cost: dict[tuple[str, str], dict[str, float]] = {}
         purchase: dict[tuple[str, str], str] = {}
         machine_of: dict[tuple[str, str], tuple[str, str, int | None, float | None]] = {}
+        acc = _NativeAcc()
         for r in recs:
             if not r.resource_id:
                 continue
@@ -441,6 +517,7 @@ class CostObservabilityService:
             net[k] = net.get(k, 0.0) + _net(r)
             gross[k] = gross.get(k, 0.0) + r.cost
             credit[k] = credit.get(k, 0.0) + r.credit
+            acc.add(k, r)
             detail[k] = r.service
             # A resource keeps one kind; the VM/bucket split lets the UI drive its leaf tables.
             if r.resource_kind != KIND_OTHER or k not in kind_of:
@@ -509,6 +586,7 @@ class CostObservabilityService:
             kept = {c: round(x, 2) for c, x in components.items() if round(x, 2) != 0.0}
             if kept:
                 row.cost_by_component = kept
+            acc.apply(row, (cloud, rid))
             rows.append(row)
         rows.sort(key=lambda x: x.cost, reverse=True)
         # Uncapped + cost-sorted; breakdown() → _finalize_rows applies the top-N cap and keeps idle/
@@ -533,21 +611,26 @@ class CostObservabilityService:
         gross: dict[str, float] = dict.fromkeys(dates, 0.0)
         credit: dict[str, float] = dict.fromkeys(dates, 0.0)
         prov: dict[str, bool] = dict.fromkeys(dates, False)
+        acc = _NativeAcc()
         for r in recs:
             if r.day in net:
                 net[r.day] += _net(r)
                 gross[r.day] += r.cost
                 credit[r.day] += r.credit
+                acc.add(r.day, r)
                 prov[r.day] = prov[r.day] or r.is_provisional
         return [
-            BreakdownRow(
-                label=d,
-                cloud=None,
-                cost=round(net[d], 2),
-                gross=round(gross[d], 2),
-                credit=round(credit[d], 2),
-                detail="",
-                is_provisional=prov[d],
+            acc.apply(
+                BreakdownRow(
+                    label=d,
+                    cloud=None,
+                    cost=round(net[d], 2),
+                    gross=round(gross[d], 2),
+                    credit=round(credit[d], 2),
+                    detail="",
+                    is_provisional=prov[d],
+                ),
+                d,
             )
             for d in reversed(dates)
         ]

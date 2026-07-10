@@ -43,8 +43,13 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     resource_id: str  # "" when the billing row has no resource granularity
     resource_kind: str  # vm | bucket | other
     region: str
-    cost: float
+    cost: float  # USD — GCP converted from its native currency at query time (see queries.gcp_facts_sql)
     credit: float = 0.0
+    # Native-currency figures for the GCP-invoice tally view. GCP bills in GBP; `cost`/`credit` above are
+    # the USD conversion, these are the raw pre-conversion amounts. AWS/GitHub are USD-native → native == USD.
+    currency: str = "USD"  # native billing currency code (GCP="GBP")
+    cost_native: float = 0.0  # `cost` in `currency`; == cost for USD-native clouds
+    credit_native: float = 0.0  # `credit` in `currency`; == credit for USD-native clouds
     sku: str = ""  # GCP sku.description / AWS line_item_usage_type ("" if not sourced)
     usage_amount: float = 0.0  # GCP usage.amount_in_pricing_units / AWS line_item_usage_amount
     usage_unit: str = ""  # GCP usage.pricing_unit ("" for AWS — not in the export column set)
@@ -65,6 +70,11 @@ class CloudSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     delta_pct: float | None = None  # net vs the prior equal-length window
     daily: list[float] = Field(default_factory=list)  # NET sparkline, oldest → newest
     is_placeholder: bool = False
+    # Native-currency KPI figures (the GBP-tally view toggle). GCP="GBP"; USD-native clouds repeat the USD values.
+    currency: str = "USD"
+    total_native: float = 0.0
+    gross_native: float = 0.0
+    credit_native: float = 0.0
 
 
 class SummaryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -86,6 +96,11 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     cost: float  # NET — usage cost after this group's credits (matches the summary net total; primary)
     gross: float = 0.0  # usage cost at list/contract rate before credits (Σcost for this group)
     credit: float = 0.0  # credits applied to this group (≤ 0); cost == gross + credit
+    # Native-currency figures for the GBP-tally view (GCP="GBP"; USD-native clouds repeat the USD values).
+    currency: str = "USD"
+    cost_native: float = 0.0
+    gross_native: float = 0.0
+    credit_native: float = 0.0
     detail: str = ""  # e.g. machine type, "GCS", region name
     resource_kind: str = KIND_OTHER
     share_pct: float = 0.0

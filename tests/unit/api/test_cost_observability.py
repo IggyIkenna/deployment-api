@@ -330,6 +330,8 @@ def _fake_aws(_db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: d
                 resource_kind="vm",
                 region="ap-northeast-1",
                 cost=2.0,
+                currency="USD",
+                cost_native=2.0,  # AWS is USD-native → native mirrors USD (as providers.aws_facts sets it)
             )
         )
         d = date.fromordinal(d.toordinal() + 1)
@@ -409,6 +411,56 @@ def test_summary_and_breakdown_are_net_of_credits(monkeypatch: pytest.MonkeyPatc
     assert next(row.cost for row in bd.rows if row.label == "Compute Engine") == 24.0  # net, not 30
     ts = s.timeseries(days=3, cloud="gcp")
     assert all(p.values["gcp"] == 8.0 for p in ts.points)
+
+
+def _fake_gcp_gbp(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """GCP billed in GBP: cost/credit are the USD conversion, *_native the raw GBP (rate 0.8)."""
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Compute Engine",
+                resource_id="vm-1",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=10.0,  # USD
+                credit=-2.0,  # USD
+                currency="GBP",
+                cost_native=8.0,  # GBP (USD 10 x 0.8)
+                credit_native=-1.6,  # GBP (USD -2 x 0.8)
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_native_currency_threads_gbp_for_gcp_tally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GCP's native GBP figures thread through summary + breakdown so the operator can tally against
+    the GBP invoice, while USD-native clouds (AWS) report native == USD."""
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_gbp)
+    monkeypatch.setattr(svc, "aws_facts", _fake_aws)  # cost 2.0/day, USD-native
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    r = s.summarize(days=3)
+    gcp = next(c for c in r.clouds if c.cloud == "gcp")
+    assert gcp.currency == "GBP"
+    # USD: gross 30, credit -6, net 24  |  native GBP: gross 24, credit -4.8, net 19.2
+    assert (gcp.gross, gcp.credit, gcp.total) == (30.0, -6.0, 24.0)
+    assert (gcp.gross_native, gcp.credit_native, gcp.total_native) == (24.0, -4.8, 19.2)
+    aws = next(c for c in r.clouds if c.cloud == "aws")
+    assert aws.currency == "USD" and aws.total_native == aws.total == 6.0  # USD-native mirrors
+
+    # Per-service breakdown carries native alongside USD (the by-service tally view).
+    row = next(row for row in s.breakdown("service", "gcp", days=3).rows if row.label == "Compute Engine")
+    assert row.currency == "GBP"
+    assert (row.cost, row.cost_native) == (24.0, 19.2)
+    assert (row.gross_native, row.credit_native) == (24.0, -4.8)
 
 
 def test_breakdown_rows_bifurcate_gross_credit_net(monkeypatch: pytest.MonkeyPatch) -> None:

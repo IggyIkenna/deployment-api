@@ -147,6 +147,9 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
                 credit=_as_float(r.get("credit")),
+                currency=_as_str(r.get("currency")) or "GBP",
+                cost_native=_as_float(r.get("cost_native")),
+                credit_native=_as_float(r.get("credit_native")),
                 sku=sku,
                 usage_amount=_as_float(r.get("usage_amount")),
                 usage_unit=_as_str(r.get("usage_unit")),
@@ -191,6 +194,9 @@ def aws_facts(
                 region=_as_str(r.get("region")) or "global",
                 cost=_as_float(r.get("cost")),
                 credit=_as_float(r.get("credit")),
+                currency="USD",  # AWS CUR is native USD (line_item_currency_code=USD) → native == USD
+                cost_native=_as_float(r.get("cost")),
+                credit_native=_as_float(r.get("credit")),
                 sku=usage_type,
                 usage_amount=_as_float(r.get("usage_amount")),
                 zone=_as_str(r.get("zone")),
@@ -260,6 +266,10 @@ def github_facts(start: date, end: date) -> list[CostRecord]:
             )
         )
         day = day.fromordinal(day.toordinal() + 1)
+    # GitHub billing is USD-native → native figures mirror the USD ones (currency defaults to "USD").
+    for rec in out:
+        rec.cost_native = rec.cost
+        rec.credit_native = rec.credit
     return out
 
 

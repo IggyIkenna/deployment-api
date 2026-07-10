@@ -55,8 +55,11 @@ SELECT
   COALESCE(usage.pricing_unit, '') AS usage_unit,
   COALESCE(location.zone, '') AS zone,
   ROUND(SUM(cost / IFNULL(NULLIF(currency_conversion_rate, 0), 1)), 6) AS cost,
+  ROUND(SUM(cost), 6) AS cost_native,
   ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)
     / IFNULL(NULLIF(currency_conversion_rate, 0), 1)), 6) AS credit,
+  ROUND(SUM((SELECT IFNULL(SUM(c.amount), 0) FROM UNNEST(credits) AS c)), 6) AS credit_native,
+  ANY_VALUE(currency) AS currency,
   ROUND(SUM(usage.amount_in_pricing_units), 6) AS usage_amount,
 {machine_spec_cols}
 FROM `{table}`
