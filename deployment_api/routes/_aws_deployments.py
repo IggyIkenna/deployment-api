@@ -191,6 +191,11 @@ def _ec2_item(
     status, exit_code = _ec2_status_and_exit(inst, storage_client, log_bucket)
     return {
         "name": inst.name,
+        # Provenance (WS-D). The AWS estate has no deployment registry / managed-by tag yet (the
+        # DEVOPS launcher-label todo), so we cannot honestly claim "deployment-api" or "adhoc" for
+        # an EC2 backfill VM — degrade to "unknown" (never a fabricated deployment-api). Wire values
+        # mirror deployments_inventory.LAUNCHED_BY_* (literals here to avoid a route↔helper cycle).
+        "launched_by": "unknown",
         "kind": target.kind.value,
         "umbrella": target.umbrella.value,
         "cloud": target.cloud.value,
@@ -233,6 +238,7 @@ def _batch_item(
         exit_code = 0
     return {
         "name": job.name,
+        "launched_by": "unknown",  # no AWS job registry/tag signal yet — honest "unknown" (see _ec2_item)
         "kind": target.kind.value,
         "umbrella": target.umbrella.value,
         "cloud": target.cloud.value,
@@ -278,6 +284,7 @@ def _ecs_service_item(census: AwsEcsServiceCensus) -> DeploymentItemDict:
     last_run = census.updated_at or census.created_at
     return {
         "name": census.name,
+        "launched_by": "control-plane",  # always-on platform service (the AWS twin of a Cloud Run service)
         "kind": DeploymentKind.ECS_SERVICE.value,
         "umbrella": DeploymentUmbrella.NONE.value,
         "cloud": DeploymentCloud.AWS.value,
@@ -323,6 +330,7 @@ def _lambda_item(
         return None
     return {
         "name": fn.name,
+        "launched_by": "control-plane",  # platform function (the AWS twin of a Cloud Function)
         "kind": target.kind.value,
         "umbrella": target.umbrella.value,
         "cloud": target.cloud.value,
