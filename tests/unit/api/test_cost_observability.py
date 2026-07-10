@@ -162,6 +162,14 @@ def test_gcp_facts_sql_buckets_and_windows_in_us_pacific() -> None:
     assert "_PARTITIONTIME >= TIMESTAMP(" in sql
 
 
+def test_gcp_facts_sql_extracts_business_labels() -> None:
+    # The "By label" dimension groups by resource-level GCP labels — the query surfaces each as a column.
+    sql = gcp_facts_sql("proj.billing_export.resource_v1", date(2026, 7, 1), date(2026, 7, 4))
+    for label_key in ("purpose", "category", "venue", "asset_group"):
+        assert f"AS label_{label_key}" in sql, f"label_{label_key} must be selected"
+    assert "UNNEST(labels)" in sql  # from the resource-level `labels`, not system_labels
+
+
 def test_aws_facts_sql_stays_utc_no_timezone_conversion() -> None:
     # AWS CUR + Cost Explorer are both UTC; converting to Pacific would break AWS's own console match.
     sql = aws_facts_sql("aws_billing", "cur_uts_cost_usage", date(2026, 7, 1), date(2026, 7, 4))
@@ -521,6 +529,68 @@ def _fake_gcp_credited(_table: str, start: date, end: date, _cutoff: date) -> li
     return recs
 
 
+def _fake_gcp_labeled(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    recs: list[CostRecord] = []
+    d = start
+    while d < end:
+        iso = d.isoformat()
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=iso,
+                service="Compute Engine",
+                resource_id="vm-a",
+                resource_kind="vm",
+                region="asia-northeast1",
+                cost=10.0,
+                labels={"purpose": "backfill"},
+            )
+        )
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=iso,
+                service="Cloud Run",
+                resource_id="svc-b",
+                resource_kind="other",
+                region="asia-northeast1",
+                cost=4.0,
+                labels={"purpose": "live"},
+            )
+        )
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=iso,
+                service="Cloud Storage",
+                resource_id="bkt-c",
+                resource_kind="bucket",
+                region="asia-northeast1",
+                cost=1.0,  # no labels → "(unlabeled)"
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_breakdown_by_label_groups_and_marks_unlabeled(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The "By label" dimension groups spend by a chosen GCP label; resources without it → "(unlabeled)".
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_labeled)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    bd = s.breakdown("label", "gcp", days=3, label_key="purpose")
+    by = {row.label: row.cost for row in bd.rows}
+    assert by["backfill"] == 30.0  # 10 * 3 days
+    assert by["live"] == 12.0  # 4 * 3
+    assert by["(unlabeled)"] == 3.0  # 1 * 3 — the untagged bucket
+    # A label key none of the rows carry → all spend is "(unlabeled)".
+    bd_venue = s.breakdown("label", "gcp", days=3, label_key="venue")
+    assert next(row.cost for row in bd_venue.rows if row.label == "(unlabeled)") == 45.0
+
+
 def test_summary_and_breakdown_are_net_of_credits(monkeypatch: pytest.MonkeyPatch) -> None:
     """The page must report what's actually invoiced (net), not the pre-credit gross, while still
     exposing gross + credit for the 'you pay = gross - credits' headline."""
@@ -852,17 +922,18 @@ def test_breakdown_caps_to_top_n_with_reconciling_other_and_unattributed(monkeyp
     """A high-cardinality dimension shows the top _BREAKDOWN_LIMIT groups + an 'Other (N more)' roll-up
     (+ an 'Unattributed' row for resource-less cost); the total equals the TRUE window total (not the
     shrunk top-N sum) and the shown rows sum to it EXACTLY — the "Other" row absorbs the residual."""
+    n = svc._BREAKDOWN_LIMIT + 50  # more distinct groups than the cap → forces the "Other" roll-up
     recs = [
         CostRecord(
             cloud="gcp",
             day="2026-07-01",
             service="Compute Engine",
-            resource_id=f"vm-{i:03d}",
+            resource_id=f"vm-{i:04d}",
             resource_kind="vm",
             region="asia-northeast1",
-            cost=float(150 - i),  # 150 distinct resources, descending cost -> forces the top-100 cap
+            cost=float(n - i),  # descending cost → the lowest-ranked groups fold into "Other"
         )
-        for i in range(150)
+        for i in range(n)
     ]
     # resource-less spend (no resource_id) -> surfaced as the "Unattributed" row, not dropped
     recs.append(
@@ -888,8 +959,8 @@ def test_breakdown_caps_to_top_n_with_reconciling_other_and_unattributed(monkeyp
 
     expected_total = round(sum(x.cost for x in recs), 2)  # 11325 (vms) + 42 (unattributed)
     assert r.total == pytest.approx(expected_total, abs=0.01)
-    assert r.total_groups == 150  # distinct resources; the unattributed cost is NOT a group
-    assert len(real) == svc._BREAKDOWN_LIMIT  # capped to the top 100
+    assert r.total_groups == n  # distinct resources; the unattributed cost is NOT a group
+    assert len(real) == svc._BREAKDOWN_LIMIT  # capped to the top-N
     assert any(row.label.startswith("Other (") for row in agg)
     assert any(row.label.startswith("Unattributed") and row.cost == pytest.approx(42.0, abs=0.01) for row in agg)
     # shown rows (top 100 + Other + Unattributed) sum to the header total EXACTLY

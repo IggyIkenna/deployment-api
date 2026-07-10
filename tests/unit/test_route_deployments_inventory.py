@@ -211,6 +211,158 @@ def test_build_inventory_surfaces_tier0_free_wins() -> None:
     assert job.machine_type is None
 
 
+def test_build_inventory_full_estate_surfaces_unmanaged_vms() -> None:
+    """WS-D full-estate census: a live GCE instance with NO registry entry becomes an `unmanaged`
+    row (never invisible), carrying its raw GCE state; provenance is adhoc (or control-plane for a
+    managed out-of-band prefix); a registry-backed VM stays launched_by=deployment-api.
+    """
+    from deployment_api.routes.deployments_inventory import (
+        LAUNCHED_BY_ADHOC,
+        LAUNCHED_BY_CONTROL_PLANE,
+        LAUNCHED_BY_DEPLOYMENT_API,
+        build_inventory,
+    )
+
+    entries = _vm_entries()
+    vm_details_by_name = {
+        # A registered VM present in the join (stays a deployment-api row, NOT re-emitted as unmanaged).
+        "cefi-binance-spot-20260622-014158": {"status": "RUNNING"},
+        # UNMANAGED — an agent/operator ad-hoc launch (no registry entry) → adhoc.
+        "onchain-perp-symbol-canon-20260709-123056": {
+            "status": "RUNNING",
+            "machine_type": "e2-standard-4",
+            "zone": "asia-northeast1-c",
+            "creation_timestamp": "2026-06-22T09:00:00Z",  # 3h before _FIXED_NOW
+            "boot_disk_name": "onchain-perp-symbol-canon-20260709-123056-boot",
+            "labels": {"purpose": "canon"},
+        },
+        # UNMANAGED — the 16-day zombie-watchdog (registry-less scheduled daemon) → adhoc.
+        "vm-zombie-watchdog-20260623-171612": {"status": "RUNNING", "creation_timestamp": "2026-06-22T00:00:00Z"},
+        # UNMANAGED but a control-plane prefix (managed out-of-band) → control-plane, never adhoc.
+        "agent-orchestrator-central": {"status": "RUNNING"},
+        # UNMANAGED and TERMINATED — GCE still lists it briefly; maps to status=stopped.
+        "rogue-terminated-vm": {"status": "TERMINATED"},
+    }
+    items = build_inventory(entries, {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
+    by_name = {i.name: i for i in items}
+
+    # Registry VMs (4) + the 4 unmanaged instances not already registered = 8 VM rows.
+    vm_items = [i for i in items if i.kind == "VM"]
+    assert len(vm_items) == len(entries) + 4
+
+    # Registry-backed VM → deployment-api.
+    assert by_name["cefi-binance-spot-20260622-014158"].launched_by == LAUNCHED_BY_DEPLOYMENT_API
+
+    # Ad-hoc unmanaged VM → adhoc, carrying raw GCE state via health_status + the free-win fields;
+    # no registry entry → no heartbeat; uptime derived from the creation timestamp.
+    adhoc = by_name["onchain-perp-symbol-canon-20260709-123056"]
+    assert adhoc.launched_by == LAUNCHED_BY_ADHOC
+    assert adhoc.status == "running"
+    assert adhoc.health_status == "RUNNING"
+    assert adhoc.machine_type == "e2-standard-4"
+    assert adhoc.zone == "asia-northeast1-c"
+    assert adhoc.boot_disk_name == "onchain-perp-symbol-canon-20260709-123056-boot"
+    assert adhoc.labels == {"purpose": "canon"}
+    assert adhoc.heartbeat_age_seconds is None
+    assert adhoc.composite_health_status is None
+    assert adhoc.uptime_hours == pytest.approx(3.0)
+
+    # The zombie-watchdog is registry-less → adhoc (NOT control-plane).
+    assert by_name["vm-zombie-watchdog-20260623-171612"].launched_by == LAUNCHED_BY_ADHOC
+    # A control-plane prefix is accounted-for → control-plane, never adhoc (keeps parity with
+    # fleet_reconciliation's UNKNOWN set, which also excludes control-plane VMs).
+    assert by_name["agent-orchestrator-central"].launched_by == LAUNCHED_BY_CONTROL_PLANE
+    # A terminated unmanaged instance maps to stopped (still adhoc provenance).
+    rogue = by_name["rogue-terminated-vm"]
+    assert rogue.status == "stopped"
+    assert rogue.health_status == "TERMINATED"
+    assert rogue.launched_by == LAUNCHED_BY_ADHOC
+
+
+def test_build_inventory_no_unmanaged_rows_without_a_real_join() -> None:
+    """The full-estate union adds unmanaged rows ONLY for a real GCE join — None (no join offered)
+    and {} (a real, empty census) add nothing, so the classification-only paths + existing callers
+    stay byte-for-byte unchanged.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = _vm_entries()
+    assert len([i for i in build_inventory(entries, {}, _FIXED_NOW) if i.kind == "VM"]) == len(entries)  # type: ignore[arg-type]
+    assert len([i for i in build_inventory(entries, {}, _FIXED_NOW, {}) if i.kind == "VM"]) == len(entries)  # type: ignore[arg-type]
+
+
+def test_build_inventory_launched_by_provenance_for_cloud_run_jobs() -> None:
+    """A live Cloud Run job that binds to a CLOUD_RUN_JOBS registry stem is deployment-api-launched;
+    an off-pattern live job with no registry hint is adhoc (the job analogue of an unmanaged VM).
+    """
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+    from deployment_api.routes.deployments_inventory import (
+        LAUNCHED_BY_ADHOC,
+        LAUNCHED_BY_DEPLOYMENT_API,
+        build_inventory,
+    )
+
+    cr_status = {
+        "prd-manifest-consolidator-cefi": CloudRunExecutionStatus(
+            job_name="prd-manifest-consolidator-cefi", status="succeeded", last_run_at=None, exit_code=0, log_uri=""
+        ),
+        "zzqx-000-unreg": CloudRunExecutionStatus(
+            job_name="zzqx-000-unreg", status="running", last_run_at=None, exit_code=None, log_uri=""
+        ),
+    }
+    by_name = {i.name: i for i in build_inventory([], cr_status, _FIXED_NOW)}
+    assert by_name["prd-manifest-consolidator-cefi"].launched_by == LAUNCHED_BY_DEPLOYMENT_API
+    assert by_name["zzqx-000-unreg"].launched_by == LAUNCHED_BY_ADHOC
+
+
+def test_build_inventory_surfaces_leaked_resources_on_non_running_vms() -> None:
+    """WS-D leaked-resource detection is wired into build_inventory: a non-running VM holding a DATA
+    disk surfaces has_unreleased_resources + the itemised list; the boot disk is excluded (orphans'
+    job); the cost reuses the orphans disk-rate SSOT + is labelled inferred (principle 8)."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    vm_details_by_name: dict[str, dict[str, object]] = {
+        "adhoc-stopped-vm": {
+            "status": "TERMINATED",
+            "boot_disk_name": "adhoc-stopped-vm-boot",
+            "attached_disk_names": ["adhoc-stopped-vm-boot", "adhoc-stopped-vm-data"],
+        },
+    }
+    disk_details: dict[str, dict[str, object]] = {"adhoc-stopped-vm-data": {"size_gb": 200, "type": "pd-balanced"}}
+    items = build_inventory([], {}, _FIXED_NOW, vm_details_by_name, disk_details=disk_details)
+    row = next(i for i in items if i.name == "adhoc-stopped-vm")
+    assert row.has_unreleased_resources is True
+    assert row.unreleased_resources is not None
+    leaked = row.unreleased_resources[0]
+    assert leaked.type == "DISK"
+    assert leaked.name == "adhoc-stopped-vm-data"
+    assert leaked.est_monthly_usd == 26.0  # 200 GB * 0.130 (pd-balanced)
+    assert leaked.cost_basis == "inferred"
+
+
+def test_build_inventory_running_vm_has_no_leaked_resources() -> None:
+    """A RUNNING VM with a data disk reports has_unreleased_resources=False (in-use, not leaked);
+    a registry VM with no GCE join reports honest None (couldn't determine)."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = _vm_entries()
+    vm_details_by_name: dict[str, dict[str, object]] = {
+        "cefi-binance-spot-20260622-014158": {
+            "status": "RUNNING",
+            "boot_disk_name": "cefi-binance-spot-20260622-014158-boot",
+            "attached_disk_names": ["cefi-binance-spot-20260622-014158-boot", "cefi-data"],
+        }
+    }
+    disk_details: dict[str, dict[str, object]] = {"cefi-data": {"size_gb": 100, "type": "pd-ssd"}}
+    items = build_inventory(entries, {}, _FIXED_NOW, vm_details_by_name, disk_details=disk_details)  # type: ignore[arg-type]
+    running = {i.name: i for i in items}["cefi-binance-spot-20260622-014158"]
+    assert running.has_unreleased_resources is False
+    assert running.unreleased_resources is None
+    # No join at all → honest None (couldn't determine).
+    no_join = build_inventory(entries, {}, _FIXED_NOW)  # type: ignore[arg-type]
+    assert next(i for i in no_join if i.name == "defi-paper-trading-20260622").has_unreleased_resources is None
+
+
 def test_build_inventory_stale_running_vm() -> None:
     from deployment_api.routes.deployments_inventory import build_inventory
 

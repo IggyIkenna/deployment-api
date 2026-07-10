@@ -22,6 +22,7 @@ from unified_trading_library.cloud_interface.providers.aws import (  # noqa: qg-
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.cost_observability.github_billing import fetch_github_billing
 from deployment_api.services.cost_observability.models import (
+    BUSINESS_LABEL_KEYS,
     CLOUD_AWS,
     CLOUD_GCP,
     CLOUD_GITHUB,
@@ -161,6 +162,7 @@ def gcp_facts(table: str, start: date, end: date, provisional_cutoff: date) -> l
                 vcpu=_as_int_or_none(r.get("machine_cores")),
                 memory_gb=_mib_to_gb(r.get("machine_memory_mib")),
                 is_provisional=_is_provisional(day, provisional_cutoff),
+                labels={k: v for k in BUSINESS_LABEL_KEYS if (v := _as_str(r.get(f"label_{k}")))},
             )
         )
     return out

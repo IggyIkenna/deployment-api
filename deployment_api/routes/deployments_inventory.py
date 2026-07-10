@@ -84,6 +84,7 @@ from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
 )
+from deployment_api.routes._leaked_resources import UnreleasedResource, detect_unreleased_resources
 
 # Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
 # and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
@@ -103,7 +104,7 @@ from deployment_api.routes._service_health import (
 from deployment_api.routes._vm_health import composite_health_status as _composite_health_status
 from deployment_api.routes._vm_health import vm_status as _vm_status
 from deployment_api.routes.health_consolidator import object_delta_for_asset_group
-from deployment_api.vm_utils import get_vm_instance_details
+from deployment_api.vm_utils import get_disk_details, get_vm_instance_details, list_reserved_addresses
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -142,6 +143,39 @@ _VM_PREFIX_REGISTRY: dict[str, VmPrefixSpec] = {
 # Unknown prefix → batch (the honest default: an unregistered VM is almost always
 # an ephemeral data-pipeline backfill, which IS EPHEMERAL_BATCH → BATCH umbrella).
 _DEFAULT_LIFECYCLE = LifecycleClass.EPHEMERAL_BATCH
+
+# ``launched_by`` provenance values (WS-D full-estate plan). Provenance = registry-presence
+# (principle 1): a resource with a deployment-registry entry / a registered Cloud Run job is
+# ``deployment-api``-launched; a long-lived managed-infra resource with NO registry entry
+# (control-plane VMs, Cloud Run services, Cloud Functions) is ``control-plane``; a live resource
+# unaccounted by either — reconciliation's UNKNOWN set — is ``adhoc``; and a resource we cannot
+# resolve provenance for yet (the AWS estate has no deployment registry / ``managed-by`` tag until
+# the DEVOPS launcher-label todo lands) is ``unknown``. Kept faithful to fleet_reconciliation's
+# union so ``launched_by=adhoc`` (running) matches its UNKNOWN count exactly.
+LAUNCHED_BY_DEPLOYMENT_API = "deployment-api"
+LAUNCHED_BY_CONTROL_PLANE = "control-plane"
+LAUNCHED_BY_ADHOC = "adhoc"
+LAUNCHED_BY_UNKNOWN = "unknown"
+
+# Long-lived control-plane / live-infra VM prefixes managed OUT-OF-BAND — they write no
+# deployment-registry entry, so a running VM matching one is accounted-for (not ``adhoc``) even
+# without a registry blob. This is the SSOT for the set: ``fleet_reconciliation`` imports
+# ``is_control_plane_vm`` FROM here (the reverse import would cycle — reconciliation already depends
+# on this module), so the union is defined once. Mirrors the LONG_LIVED_LIVE prefixes in
+# ``_VM_PREFIX_REGISTRY`` above.
+_CONTROL_PLANE_PREFIXES = (
+    "planning",
+    "human-planning",
+    "agent-orchestrator",
+    "strategy-live-",
+    "defi-recursive-",
+)
+
+
+def is_control_plane_vm(name: str) -> bool:
+    """True if ``name`` is a long-lived control-plane VM managed out-of-band (writes no registry entry)."""
+    return any(name.startswith(prefix) for prefix in _CONTROL_PLANE_PREFIXES)
+
 
 # Registry-read parallelism + a short-TTL inventory cache.
 #
@@ -248,6 +282,18 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     heartbeat_age_seconds: int | None = None
     captured_progress: int | None = None  # rows_out for a VM backfill; None for jobs/services
     run_log_uri: str = ""
+    # Provenance (WS-D full-estate) — who launched this compute unit: "deployment-api" (has a
+    # registry entry / registered Cloud Run job), "control-plane" (long-lived managed infra with
+    # no registry entry — control-plane VMs, Cloud Run services, Cloud Functions), "adhoc" (live
+    # but unaccounted — an ad-hoc/stranded launch, reconciliation's UNKNOWN set), or "unknown" (no
+    # provenance signal yet — the AWS estate until the managed-by tag lands). None on legacy rows.
+    launched_by: str | None = None
+    # Leaked/unreleased resources (WS-D) — a NON-running VM still holding billable resources (data
+    # disks / static IPs; the boot disk is the orphans endpoint's job). has_unreleased_resources is
+    # None when it can't be determined (no GCE join — honest absence, never a false "clean"); each
+    # unreleased_resources item's est_monthly_usd is an inferred list-rate estimate (principle 8).
+    has_unreleased_resources: bool | None = None
+    unreleased_resources: list[UnreleasedResource] | None = None
     # Tier-0 free wins — already fetched by the GCE aggregated-list / registry entry,
     # previously discarded. None for kinds without the underlying source (Cloud Run
     # jobs have no GCE instance / registry row-counters).
@@ -480,6 +526,8 @@ def _vm_item(
     *,
     control_plane_running: bool | None = None,
     object_deltas: dict[str, int | None] | None = None,
+    disk_details: dict[str, dict[str, object]] | None = None,
+    addresses: dict[str, dict[str, object]] | None = None,
 ) -> DeploymentItem:
     """Build an inventory item from a VM deployment-registry entry.
 
@@ -507,6 +555,9 @@ def _vm_item(
             run_log = vm_run_log_rolling_uri(entry.vm_name, date_stamp)
     details = vm_details or {}
     labels = details.get("labels")
+    has_unreleased, unreleased = detect_unreleased_resources(
+        entry.vm_name, vm_details, disk_details or {}, addresses or {}, is_running=bool(control_plane_running)
+    )
     return DeploymentItem(
         name=entry.vm_name,
         kind=target.kind.value,
@@ -520,6 +571,9 @@ def _vm_item(
         heartbeat_age_seconds=hb_age,
         captured_progress=entry.rows_out,
         run_log_uri=run_log,
+        launched_by=LAUNCHED_BY_DEPLOYMENT_API,  # a registry entry is the deployment-api-launched signal
+        has_unreleased_resources=has_unreleased,
+        unreleased_resources=unreleased or None,
         rows_in=entry.rows_in,
         rows_error=entry.rows_error,
         events_emitted=entry.events_emitted,
@@ -605,6 +659,9 @@ def _cloud_run_item_for_live_job(job_name: str, live: CloudRunExecutionStatus) -
     off-pattern job (no registry match) still gets its own row.
     """
     target = _classify_live_cloud_run_job(job_name)
+    # A live job that binds to a CLOUD_RUN_JOBS registry entry is deployment-api-launched; an
+    # off-pattern live job with no registry hint is adhoc (the job-kind analogue of an unmanaged VM).
+    launched_by = LAUNCHED_BY_DEPLOYMENT_API if _match_registered_job(job_name) is not None else LAUNCHED_BY_ADHOC
     return DeploymentItem(
         name=job_name,
         kind=target.kind.value,
@@ -618,6 +675,7 @@ def _cloud_run_item_for_live_job(job_name: str, live: CloudRunExecutionStatus) -
         heartbeat_age_seconds=None,
         captured_progress=None,
         run_log_uri=live.log_uri,
+        launched_by=launched_by,
     )
 
 
@@ -642,6 +700,7 @@ def _cloud_run_item(target: DeploymentTarget, by_job: dict[str, CloudRunExecutio
             heartbeat_age_seconds=None,
             captured_progress=None,
             run_log_uri="",
+            launched_by=LAUNCHED_BY_DEPLOYMENT_API,  # driven from the CLOUD_RUN_JOBS registry
         )
     return DeploymentItem(
         name=target.name,
@@ -656,6 +715,7 @@ def _cloud_run_item(target: DeploymentTarget, by_job: dict[str, CloudRunExecutio
         heartbeat_age_seconds=None,
         captured_progress=None,
         run_log_uri=live.log_uri,
+        launched_by=LAUNCHED_BY_DEPLOYMENT_API,  # driven from the CLOUD_RUN_JOBS registry
     )
 
 
@@ -686,6 +746,7 @@ def _cloud_function_item(status: CloudFunctionStatus) -> DeploymentItem:
         heartbeat_age_seconds=None,
         captured_progress=None,
         run_log_uri="",
+        launched_by=LAUNCHED_BY_CONTROL_PLANE,  # managed platform infra, no registry entry
     )
 
 
@@ -743,6 +804,7 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
         heartbeat_age_seconds=None,
         captured_progress=None,
         run_log_uri="",
+        launched_by=LAUNCHED_BY_CONTROL_PLANE,  # managed platform service, no registry entry
         revision=status.revision,
         region=status.region,
     )
@@ -790,6 +852,77 @@ def _batched_object_deltas(vm_entries: list[DeploymentRegistryEntry], now: datet
         return dict(pool.map(_delta, asset_groups))
 
 
+# Raw GCE instance status -> inventory wire status for an UNMANAGED VM (no registry entry, so no
+# heartbeat-derived _vm_status to lean on). RUNNING is live; the provisioning states are pending;
+# every stop/terminate/suspend state collapses to "stopped" (gone); anything else is honest "unknown".
+_GCE_STATUS_TO_WIRE: dict[str, str] = {
+    "RUNNING": "running",
+    "PROVISIONING": "pending",
+    "STAGING": "pending",
+    "STOPPING": "stopped",
+    "STOPPED": "stopped",
+    "SUSPENDING": "stopped",
+    "SUSPENDED": "stopped",
+    "REPAIRING": "unknown",
+    "TERMINATED": "stopped",
+}
+
+
+def _unmanaged_vm_item(
+    name: str,
+    details: dict[str, object],
+    now: datetime,
+    *,
+    disk_details: dict[str, dict[str, object]] | None = None,
+    addresses: dict[str, dict[str, object]] | None = None,
+) -> DeploymentItem:
+    """Build an inventory row for a LIVE GCE instance that has NO deployment-registry entry.
+
+    The full-estate census (WS-D) unions the registry with the live GCE aggregated-list so an
+    unregistered instance — an agent/operator ad-hoc launch, or a long-lived control-plane VM — is
+    never invisible in the cockpit (the exact "stranded VM chilling on our money" case). It carries
+    ONLY the live GCE state the aggregated-list already fetched: the raw status (surfaced verbatim
+    via ``health_status``), machine_type/zone/labels/boot-disk, and an ``uptime_hours`` derived from
+    the instance ``creation_timestamp`` (so a 16-day zombie reads its true age). Registry-derived
+    fields (heartbeat / rows / exit_code / composite health) honestly stay ``None`` — there is no
+    registry entry to source them from. Classification degrades to a minimal NONE-umbrella row
+    (never hidden) when the name can't be resolved. Provenance is ``control-plane`` for a managed
+    out-of-band prefix, else ``adhoc`` (reconciliation's UNKNOWN set).
+    """
+    raw_status = str(details.get("status") or "")
+    try:
+        target = classify_vm_target(name)
+        umbrella, service, asset_group = target.umbrella.value, target.service, target.asset_group
+    except UnclassifiedDeploymentError:
+        umbrella, service, asset_group = DeploymentUmbrella.NONE.value, name, ""
+    created = _parse_iso(str(details.get("creation_timestamp") or "") or None)
+    uptime = (now - created).total_seconds() / 3600.0 if created is not None and raw_status == "RUNNING" else None
+    labels = details.get("labels")
+    has_unreleased, unreleased = detect_unreleased_resources(
+        name, details, disk_details or {}, addresses or {}, is_running=raw_status == "RUNNING"
+    )
+    return DeploymentItem(
+        name=name,
+        kind=DeploymentKind.VM.value,
+        umbrella=umbrella,
+        cloud=DeploymentCloud.GCP.value,
+        service=service,
+        asset_group=asset_group,
+        status=_GCE_STATUS_TO_WIRE.get(raw_status, "unknown"),
+        last_run_at=created.isoformat() if created is not None else None,
+        run_log_uri="",
+        launched_by=LAUNCHED_BY_CONTROL_PLANE if is_control_plane_vm(name) else LAUNCHED_BY_ADHOC,
+        has_unreleased_resources=has_unreleased,
+        unreleased_resources=unreleased or None,
+        uptime_hours=max(0.0, uptime) if uptime is not None else None,
+        machine_type=str(details.get("machine_type") or "") or None,
+        zone=str(details.get("zone") or "") or None,
+        health_status=raw_status or None,
+        boot_disk_name=str(details.get("boot_disk_name") or "") or None,
+        labels=cast(dict[str, str], labels) if labels else None,
+    )
+
+
 def build_inventory(
     vm_entries: list[DeploymentRegistryEntry],
     cloud_run_status: dict[str, CloudRunExecutionStatus],
@@ -797,6 +930,8 @@ def build_inventory(
     vm_details_by_name: dict[str, dict[str, object]] | None = None,
     cloud_run_services: list[CloudRunServiceStatus] | None = None,
     object_deltas: dict[str, int | None] | None = None,
+    disk_details: dict[str, dict[str, object]] | None = None,
+    addresses: dict[str, dict[str, object]] | None = None,
 ) -> list[DeploymentItem]:
     """Assemble the full unified inventory (VMs + Cloud Run jobs + Cloud Run services).
 
@@ -814,6 +949,12 @@ def build_inventory(
     states honestly (see ``_composite_health_status``) rather than guessing; an
     explicit ``{}`` (a real, empty GCE census) DOES confirm every entry as
     not-running.
+
+    A populated ``vm_details_by_name`` ALSO drives the full-estate census: every live GCE
+    instance in the join with no matching ``vm_entries`` name is emitted as an ``unmanaged``
+    row (``_unmanaged_vm_item``, ``launched_by=adhoc``/``control-plane``) so an unregistered VM
+    is never invisible. This is the same (registry vs live-GCE) union ``fleet_reconciliation``
+    computes — reused, not rebuilt. ``None``/``{}`` add no unmanaged rows.
 
     ``object_deltas`` is the BATCH-umbrella asset_group -> manifest object-delta
     map (``_batched_object_deltas``) — feeds the composite classifier's
@@ -852,10 +993,31 @@ def build_inventory(
                     details_by_name.get(entry.vm_name),
                     control_plane_running=control_plane_running,
                     object_deltas=object_deltas,
+                    disk_details=disk_details,
+                    addresses=addresses,
                 )
             )
         except UnclassifiedDeploymentError as exc:
             logger.warning("inventory: skipping unclassifiable VM %r: %s", entry.vm_name, exc)
+    # Full-estate census (WS-D): union the registry rows above with the live GCE aggregated-list so
+    # EVERY live instance gets a row — an unregistered VM (an ad-hoc launch or an out-of-band
+    # control-plane VM) becomes an `unmanaged` row instead of being invisible. This reuses the SAME
+    # (registry vs live-GCE) union fleet_reconciliation computes — the registered set is exactly the
+    # vm_entries names, the live set is the aggregated-list join already passed in — so there is no
+    # second census. Only a REAL join adds rows: None (no join offered — pure-classification paths)
+    # and {} (a real, empty GCE census) both add nothing.
+    if vm_details_by_name:
+        registered_names = {entry.vm_name for entry in vm_entries}
+        for unmanaged_name in sorted(set(vm_details_by_name) - registered_names):
+            items.append(
+                _unmanaged_vm_item(
+                    unmanaged_name,
+                    vm_details_by_name[unmanaged_name],
+                    now,
+                    disk_details=disk_details,
+                    addresses=addresses,
+                )
+            )
     if cloud_run_status:
         for job_name, status in cloud_run_status.items():
             items.append(_cloud_run_item_for_live_job(job_name, status))
@@ -1137,12 +1299,20 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
         f_jobs = _census_pool.submit(latest_execution_by_job, project_id)
         f_services = _census_pool.submit(list_cloud_run_services, project_id)
         f_functions = _census_pool.submit(list_cloud_functions, project_id)
+        # Disk + reserved-IP maps for leaked-resource detection on non-running VMs — two more
+        # aggregated_list reads, each bounded + degrading to an empty map on failure (leak detection
+        # then flags nothing rather than fabricating a false leak, and non-running rows report
+        # has_unreleased_resources=None honestly).
+        f_disks = _census_pool.submit(get_disk_details, project_id)
+        f_addresses = _census_pool.submit(list_reserved_addresses, project_id)
 
         empty_vm: tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]] = ([], {})
         vm_entries, vm_details_by_name = _census_or_degrade("gcp-vm", f_vm, empty_vm)
         cloud_run_status = _census_or_degrade("cloud-run-jobs", f_jobs, {})
         cloud_run_services = _census_or_degrade("cloud-run-services", f_services, [])
         cloud_function_status = _census_or_degrade("cloud-functions", f_functions, {})
+        disk_details = _census_or_degrade("gcp-disks", f_disks, {})
+        addresses = _census_or_degrade("gcp-addresses", f_addresses, {})
         # Object-delta is a manifest lookup keyed off the resolved VM entries — bound it too.
         object_deltas = _census_or_degrade(
             "object-delta", _census_pool.submit(_batched_object_deltas, vm_entries, now), {}
@@ -1155,6 +1325,8 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
             vm_details_by_name=vm_details_by_name,
             cloud_run_services=cloud_run_services,
             object_deltas=object_deltas,
+            disk_details=disk_details,
+            addresses=addresses,
         )
         items.extend(gcp_items)
 
@@ -1387,5 +1559,6 @@ __all__ = [
     "classify_vm_target",
     "cloud_run_service_health_status",
     "ecs_service_health_status",
+    "is_control_plane_vm",
     "router",
 ]

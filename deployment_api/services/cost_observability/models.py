@@ -7,7 +7,7 @@ built from a list of those. Adding a fourth cloud is a new adapter, not a UI cha
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,11 @@ KIND_OTHER = "other"
 PURCHASE_SPOT = "spot"
 PURCHASE_ON_DEMAND = "on-demand"
 PURCHASE_OTHER = "other"
+
+# Resource-level GCP `labels` surfaced for the "By label" breakdown dimension (spend by business
+# context, not infra). GCP-only — AWS/GitHub carry no cost-allocation tags. Shared by the query
+# builder (columns), the provider (mapping), and the route (valid label_key values).
+BUSINESS_LABEL_KEYS = ("purpose", "category", "venue", "asset_group")
 
 
 @dataclass
@@ -60,6 +65,9 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     memory_gb: float | None = None  # GCP system_labels compute.googleapis.com/memory (MiB / 1024)
     is_provisional: bool = False  # recent day, still reconciling
     is_placeholder: bool = False  # dummy data (GitHub until PAT lands)
+    # Resource-level business-context labels (GCP `labels`: purpose/category/venue/asset_group) for the
+    # "By label" breakdown dimension. Empty for AWS/GitHub (no cost-allocation tags).
+    labels: dict[str, str] = field(default_factory=dict)
 
 
 class CloudSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

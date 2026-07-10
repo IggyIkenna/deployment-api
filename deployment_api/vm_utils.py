@@ -50,7 +50,10 @@ def list_running_vm_names(project_id: str) -> set[str]:
 def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
     """Fetch actual VM instance details from GCP.
 
-    Returns a dict mapping vm_name -> {machine_type, zone, creation_timestamp, status}.
+    Returns a dict mapping vm_name -> {machine_type, zone, creation_timestamp, status,
+    last_stop_timestamp, boot_disk_name, attached_disk_names, labels}. ``attached_disk_names``
+    is every attached disk (tails of the disk self-links) — surfaces DATA disks for
+    leaked-resource detection on non-running VMs, not just the boot disk.
     """
     try:
         client = compute_v1.InstancesClient()
@@ -73,13 +76,18 @@ def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
                 machine_type = machine_type_url.split("/")[-1] if "/" in machine_type_url else machine_type_url
                 creation_timestamp = str(getattr(inst_typed, "creation_timestamp", ""))
                 last_stop_timestamp = str(getattr(inst_typed, "last_stop_timestamp", ""))
-                # Boot-disk name (tail of the disk self-link) so the caller can join
-                # against get_disk_details for size + pd-type → idle-disk cost.
+                # Boot-disk name + EVERY attached disk name (tails of the disk self-links) so the
+                # caller can join against get_disk_details for size + pd-type → idle-disk cost. The
+                # full attached list surfaces DATA disks for leaked-resource detection on a
+                # non-running VM, not just the boot disk.
                 boot_disk_name = ""
+                attached_disk_names: list[str] = []
                 for attached in getattr(inst_typed, "disks", None) or []:
-                    if getattr(attached, "boot", False):
-                        boot_disk_name = str(getattr(attached, "source", "")).split("/")[-1]
-                        break
+                    disk_name = str(getattr(attached, "source", "")).split("/")[-1]
+                    if disk_name:
+                        attached_disk_names.append(disk_name)
+                    if getattr(attached, "boot", False) and not boot_disk_name:
+                        boot_disk_name = disk_name
                 # labels is a proto map; cast to plain dict[str, str] for the caller.
                 labels_raw = getattr(inst_typed, "labels", None) or {}
                 labels: dict[str, str] = {str(k): str(v) for k, v in dict(labels_raw).items()}
@@ -92,6 +100,7 @@ def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
                         "creation_timestamp": creation_timestamp,
                         "last_stop_timestamp": last_stop_timestamp,
                         "boot_disk_name": boot_disk_name,
+                        "attached_disk_names": attached_disk_names,
                         "labels": labels,
                     }
 
@@ -163,6 +172,57 @@ def list_unattached_disk_names(project_id: str) -> set[str]:
         return set()
 
 
+def _record_address(addresses: dict[str, dict[str, object]], addr: object) -> None:
+    """Extract one Address proto into the reserved-address map (best-effort per field)."""
+    name = str(getattr(addr, "name", ""))
+    if not name:
+        return
+    region_url = str(getattr(addr, "region", ""))
+    region = region_url.split("/")[-1] if "/" in region_url else region_url
+    users = [str(u) for u in (getattr(addr, "users", None) or [])]
+    addresses[name] = {
+        "address": str(getattr(addr, "address", "")),
+        "status": str(getattr(addr, "status", "")),
+        "address_type": str(getattr(addr, "address_type", "")),
+        "region": region or "global",
+        "users": users,
+    }
+
+
+def list_reserved_addresses(project_id: str) -> dict[str, dict[str, object]]:
+    """Fetch every reserved static IP (regional + global) in ``project_id``.
+
+    Returns ``{address_name: {"address", "status", "address_type", "region", "users"}}``.
+    ``status`` is ``RESERVED`` (allocated + idle → billed) or ``IN_USE`` (attached); ``users``
+    lists the resource self-links using it (empty = no owner). A reserved external IP that is idle,
+    or attached to a non-running VM, is a leaked cost. One regional ``aggregated_list`` covers all
+    regions; a separate global list covers global addresses. Each read degrades independently: on
+    failure that half is skipped + a warning logged, so leak detection degrades to "flag nothing" —
+    honest absence, never a false-positive leak claim.
+    """
+    addresses: dict[str, dict[str, object]] = {}
+    try:
+        client = compute_v1.AddressesClient()
+        request = compute_v1.AggregatedListAddressesRequest(project=project_id)
+        for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
+            region_addresses = getattr(scoped_list, "addresses", None)
+            if not region_addresses:
+                continue
+            for addr in region_addresses:
+                _record_address(addresses, cast(object, addr))
+    except Exception as exc:
+        logger.warning("list_reserved_addresses(%s) regional read failed: %s", project_id, exc)
+    try:
+        global_client = compute_v1.GlobalAddressesClient()
+        global_request = compute_v1.ListGlobalAddressesRequest(project=project_id)
+        for addr in global_client.list(request=global_request, timeout=_RPC_TIMEOUT_SEC):
+            _record_address(addresses, cast(object, addr))
+    except Exception as exc:
+        logger.warning("list_reserved_addresses(%s) global read failed: %s", project_id, exc)
+    logger.info("list_reserved_addresses(%s): found %d reserved addresses", project_id, len(addresses))
+    return addresses
+
+
 def delete_vm_instance(project_id: str, name: str, zone: str) -> bool:
     """Delete a GCE instance (and its auto-delete boot disk). Best-effort.
 
@@ -194,6 +254,7 @@ __all__ = [
     "delete_vm_instance",
     "get_disk_details",
     "get_vm_instance_details",
+    "list_reserved_addresses",
     "list_running_vm_names",
     "list_unattached_disk_names",
 ]

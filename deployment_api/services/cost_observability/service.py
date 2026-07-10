@@ -46,7 +46,9 @@ CLOUD_ORDER = [CLOUD_GCP, CLOUD_AWS, CLOUD_GITHUB]
 _PROVISIONAL_TRAILING_DAYS = 2
 _MAX_DAYS = 366
 _DEFAULT_DAYS = 30
-_BREAKDOWN_LIMIT = 100
+# Return up to this many real groups so the UI can PAGINATE through all of them (e.g. ~565 buckets);
+# anything beyond still folds into the honest "Other" roll-up so the header total stays exact.
+_BREAKDOWN_LIMIT = 1000
 
 # GCP bills storage as GiB-months; a day's usage_amount is that day's fraction of a
 # calendar month, so summing across the window and rescaling by the average days/month
@@ -292,7 +294,13 @@ class CostObservabilityService:
 
     # -- breakdown ------------------------------------------------------------
     def breakdown(
-        self, dimension: str, cloud: str = "all", days: int = _DEFAULT_DAYS, *, force: bool = False
+        self,
+        dimension: str,
+        cloud: str = "all",
+        days: int = _DEFAULT_DAYS,
+        *,
+        label_key: str = "purpose",
+        force: bool = False,
     ) -> BreakdownResponse:
         start, end, dates = self._window(days)
         recs = self._fetch_window(start, end, force=force)
@@ -361,6 +369,10 @@ class CostObservabilityService:
             rows_all = self._grouped(recs, lambda r: r.zone or "unknown")
         elif dimension == "sku":
             rows_all = self._by_sku(recs)
+        elif dimension == "label":
+            # Spend by a resource-level GCP business label (purpose/category/venue/asset_group). GCP-only —
+            # AWS/GitHub carry no labels, so their spend groups under "(unlabeled)".
+            rows_all = self._grouped(recs, lambda r: r.labels.get(label_key) or "(unlabeled)")
         else:  # service (default)
             rows_all = self._grouped(recs, lambda r: r.service)
 

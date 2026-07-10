@@ -60,11 +60,16 @@ def _classify(vm_name: str) -> LifecycleClass:
 
 
 def _monthly_disk_usd(size_gb: int | None, disk_type: str | None) -> float:
-    """Estimated $/month for a boot disk (0.0 when size is unknown)."""
+    """Estimated $/month for a disk (0.0 when size is unknown)."""
     if not size_gb:
         return 0.0
     rate = _DISK_MONTHLY_USD_PER_GB.get(disk_type or "", _DEFAULT_DISK_RATE)
     return round(size_gb * rate, 2)
+
+
+# Public alias so the leaked-resource detector (_leaked_resources) reuses this ONE disk cost model —
+# estimates never drift between the orphans endpoint and the deployments inventory.
+monthly_disk_usd = _monthly_disk_usd
 
 
 def _stopped_age_hours(stopped_ts: str, creation_ts: str, now: datetime) -> float | None:
@@ -175,4 +180,5 @@ def build_orphan_inventory(
 __all__ = [
     "REAPABLE_LIFECYCLE_CLASSES",
     "build_orphan_inventory",
+    "monthly_disk_usd",
 ]

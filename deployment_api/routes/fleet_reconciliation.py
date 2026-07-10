@@ -38,6 +38,7 @@ from deployment_api.routes._aws_deployments import load_aws_inventory
 from deployment_api.routes.deployments_inventory import (
     active_registry_vm_names,
     classify_vm_target,
+    is_control_plane_vm,
 )
 from deployment_api.vm_utils import get_vm_instance_details
 
@@ -45,17 +46,6 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _cfg = DeploymentApiConfig()
-
-# Long-lived control-plane / live-infra prefixes that do NOT write a deployment-registry
-# entry (they are managed out-of-band) — a running VM matching one of these is accounted-for
-# even without a registry blob. Mirrors the LONG_LIVED_LIVE prefixes the inventory curates.
-_CONTROL_PLANE_PREFIXES = (
-    "planning",
-    "human-planning",
-    "agent-orchestrator",
-    "strategy-live-",
-    "defi-recursive-",
-)
 
 # A noisy registry (un-reaped stale active entries) can yield thousands of EXPECTED-MISSING —
 # cap the returned ROWS for a responsive payload while the COUNTS stay exact (the true totals).
@@ -121,10 +111,6 @@ def _row(name: str, cloud: str) -> ReconciliationRow:
         return ReconciliationRow(name=name, umbrella="UNKNOWN", cloud=cloud, service="", asset_group="")
 
 
-def _is_control_plane(name: str) -> bool:
-    return any(name.startswith(p) for p in _CONTROL_PLANE_PREFIXES)
-
-
 def _gcp_reconciliation() -> CloudReconciliation:
     """Reconcile the live GCP estate: running GCE VMs vs the registered + control-plane set."""
     project_id = _cfg.require_gcp_project_id()
@@ -132,7 +118,7 @@ def _gcp_reconciliation() -> CloudReconciliation:
     running = {name for name, d in details.items() if str(d.get("status")) == "RUNNING"}
     registered = active_registry_vm_names()
     cloud_run = {t.name for t in CLOUD_RUN_JOBS}
-    accounted = registered | cloud_run | {n for n in running if _is_control_plane(n)}
+    accounted = registered | cloud_run | {n for n in running if is_control_plane_vm(n)}
 
     unknown = sorted(running - accounted)
     expected_missing = sorted(registered - running)
