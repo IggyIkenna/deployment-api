@@ -336,7 +336,10 @@ def test_build_aws_inventory_classifies_lambda_functions() -> None:
     assert active["cloud"] == "AWS"
     assert active["umbrella"] == "BATCH"
     assert active["status"] == "running"
-    assert active["last_run_at"] == "2026-06-22T09:00:00+00:00"
+    # Lambda has NO honest last-INVOKE without the paid CloudWatch metric — last_run_at is
+    # honestly-absent; the deploy time surfaces as last_modified_at (WS-D #10, never mislabelled).
+    assert active["last_run_at"] is None
+    assert active["last_modified_at"] == "2026-06-22T09:00:00+00:00"
     assert active["exit_code"] is None  # existence-only census, no per-run exit code
     # AWS Tier-0 free wins — already fetched by the census, surfaced onto the item.
     assert active["runtime"] == "python3.13"
@@ -626,7 +629,12 @@ def test_inventory_route_includes_aws_items() -> None:
         # GCP VM census empty (no running VMs) — read via the parallel loader seam.
         patch.object(mod, "_load_gcp_vm_entries", return_value=([], {})),
         patch.object(mod, "latest_execution_by_job", return_value={}),
-        patch.object(mod, "load_aws_inventory", return_value=aws_items),
+        # Multi-region AWS census (WS-D): _load_aws_items fans out over the configured region set,
+        # so the mock is region-scoped (real censuses return each region's own resources) — the
+        # sample lives only in _REGION, [] elsewhere, so the estate total stays 1 (no cross-region dup).
+        patch.object(
+            mod, "load_aws_inventory", side_effect=lambda **kwargs: aws_items if kwargs.get("region") == _REGION else []
+        ),
     ):
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.require_gcp_project_id.return_value = "test-project"

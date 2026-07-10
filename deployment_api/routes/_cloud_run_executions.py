@@ -65,6 +65,9 @@ class CloudRunExecutionStatus:
             ``None`` when running / pending / never run (Cloud Run executions carry
             counts, not a process rc — we synthesise 0/1 from succeeded/failed).
         log_uri: The execution's Cloud Logging URI, or ``""`` when absent.
+        region: The Cloud Run region the job lives in (the multi-region census sets
+            this so a job row shows its region + a resource outside the configured
+            region set is flagged). ``""`` when unknown (a legacy single-region call).
     """
 
     job_name: str
@@ -72,6 +75,7 @@ class CloudRunExecutionStatus:
     last_run_at: str | None
     exit_code: int | None
     log_uri: str
+    region: str = ""
 
 
 def _iso(value: object) -> str | None:
@@ -144,7 +148,7 @@ def latest_execution_by_job(
             )
             if latest is None:
                 return job_name, CloudRunExecutionStatus(
-                    job_name=job_name, status="pending", last_run_at=None, exit_code=None, log_uri=""
+                    job_name=job_name, status="pending", last_run_at=None, exit_code=None, log_uri="", region=region
                 )
             status, exit_code = _status_for_execution(latest)
             last_run_at = _iso(getattr(latest, "completion_time", None)) or _iso(getattr(latest, "start_time", None))
@@ -154,6 +158,7 @@ def latest_execution_by_job(
                 last_run_at=last_run_at,
                 exit_code=exit_code,
                 log_uri=str(getattr(latest, "log_uri", "") or ""),
+                region=region,
             )
 
         jobs = list(
@@ -171,8 +176,67 @@ def latest_execution_by_job(
         return {}
 
 
+@dataclass(frozen=True)
+class ExecutionRecord:
+    """One historical Cloud Run job execution (the detail-popover run-history vector, WS-D #11)."""
+
+    name: str  # short execution name
+    status: str  # running / succeeded / failed / pending
+    started_at: str | None
+    completed_at: str | None
+    duration_seconds: float | None
+
+
+def list_job_executions(
+    project_id: str,
+    job_short_name: str,
+    region: str = DEFAULT_CLOUD_RUN_REGION,
+    limit: int = 10,
+) -> list[ExecutionRecord]:
+    """The last ``limit`` executions of ONE Cloud Run job — the detail-popover run-history (#11).
+
+    Only the ``/{name}/detail`` path calls this (``page_size=limit``); the thin-list census stays at
+    ``page_size=1`` so its cost is unchanged. Executions return newest-first. Honest degradation: any
+    GCP error yields an empty list (the popover simply shows no history), never a crash.
+    """
+    try:
+        from deployment_service.backends import (
+            _gcp_sdk,  # noqa: imports-inside-functions  # deferred SDK boundary (matches latest_execution_by_job)
+        )
+
+        run_v2 = _gcp_sdk.run_v2
+        executions_client = run_v2.ExecutionsClient()
+        parent = f"projects/{project_id}/locations/{region}/jobs/{job_short_name}"
+        request = run_v2.ListExecutionsRequest(parent=parent, page_size=limit)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        records: list[ExecutionRecord] = []
+        for execution in executions_client.list_executions(request=request, timeout=_RPC_TIMEOUT_SEC):  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            if len(records) >= limit:
+                break
+            status, _ = _status_for_execution(execution)
+            start_dt = getattr(execution, "start_time", None)
+            completion_dt = getattr(execution, "completion_time", None)
+            duration: float | None = None
+            if isinstance(start_dt, datetime) and isinstance(completion_dt, datetime):
+                duration = max(0.0, (completion_dt - start_dt).total_seconds())
+            records.append(
+                ExecutionRecord(
+                    name=str(getattr(execution, "name", "") or "").rsplit("/", 1)[-1],
+                    status=status,
+                    started_at=_iso(start_dt),
+                    completed_at=_iso(completion_dt),
+                    duration_seconds=duration,
+                )
+            )
+        return records
+    except Exception as exc:
+        logger.warning("Cloud Run job-executions list for %s failed (degrading to empty): %s", job_short_name, exc)
+        return []
+
+
 __all__ = [
     "DEFAULT_CLOUD_RUN_REGION",
     "CloudRunExecutionStatus",
+    "ExecutionRecord",
     "latest_execution_by_job",
+    "list_job_executions",
 ]

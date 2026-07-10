@@ -223,6 +223,23 @@ def list_reserved_addresses(project_id: str) -> dict[str, dict[str, object]]:
     return addresses
 
 
+def list_gcp_region_names(project_id: str) -> list[str]:
+    """List every Compute Engine region name in ``project_id`` (for the ?all_regions census sweep).
+
+    Compute regions are a superset of the Cloud Run / Cloud Functions regions — a region that does
+    not support those services simply yields an empty per-region census (honest degradation). On
+    failure returns an empty list so the caller falls back to the configured region set.
+    """
+    try:
+        client = compute_v1.RegionsClient()
+        request = compute_v1.ListRegionsRequest(project=project_id)
+        names = [str(getattr(r, "name", "")) for r in client.list(request=request, timeout=_RPC_TIMEOUT_SEC)]
+        return sorted(name for name in names if name)
+    except Exception as exc:
+        logger.warning("list_gcp_region_names(%s) failed: %s", project_id, exc)
+        return []
+
+
 def delete_vm_instance(project_id: str, name: str, zone: str) -> bool:
     """Delete a GCE instance (and its auto-delete boot disk). Best-effort.
 
@@ -254,6 +271,7 @@ __all__ = [
     "delete_vm_instance",
     "get_disk_details",
     "get_vm_instance_details",
+    "list_gcp_region_names",
     "list_reserved_addresses",
     "list_running_vm_names",
     "list_unattached_disk_names",

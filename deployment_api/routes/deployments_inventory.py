@@ -73,18 +73,29 @@ from unified_trading_library import StorageClient, download_from_storage, get_st
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes._aws_deployments import load_aws_inventory
 from deployment_api.routes._cloud_run_executions import (
+    DEFAULT_CLOUD_RUN_REGION,
     CloudRunExecutionStatus,
     latest_execution_by_job,
+    list_job_executions,
 )
 from deployment_api.routes._cloud_run_services import (
     CloudRunServiceStatus,
     list_cloud_run_services,
 )
+from deployment_api.routes._cloud_scheduler import (
+    SchedulerJobStatus,
+    list_scheduler_jobs,
+)
 from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
 )
-from deployment_api.routes._leaked_resources import UnreleasedResource, detect_unreleased_resources
+from deployment_api.routes._leaked_resources import (
+    UnreleasedResource,
+    detect_unreleased_resources,
+    orphaned_disk,
+    orphaned_static_ip,
+)
 
 # Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
 # and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
@@ -104,7 +115,13 @@ from deployment_api.routes._service_health import (
 from deployment_api.routes._vm_health import composite_health_status as _composite_health_status
 from deployment_api.routes._vm_health import vm_status as _vm_status
 from deployment_api.routes.health_consolidator import object_delta_for_asset_group
-from deployment_api.vm_utils import get_disk_details, get_vm_instance_details, list_reserved_addresses
+from deployment_api.vm_utils import (
+    get_disk_details,
+    get_vm_instance_details,
+    list_gcp_region_names,
+    list_reserved_addresses,
+    list_unattached_disk_names,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -177,6 +194,72 @@ def is_control_plane_vm(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in _CONTROL_PLANE_PREFIXES)
 
 
+# Multi-region census (WS-D) — the CONFIGURED region sets we actually deploy to (operator decision
+# 2026-07-10: a small set for determinism, NOT a per-cycle fan-out to ~30 mostly-empty regions).
+# asia-northeast1 is the GCP primary (all GCS data + the consolidators); ap-northeast-1 (Tokyo) the AWS
+# primary — where the planning orchestrator VM (EIP 13.113.200.22) + the human-planning VM + the AWS
+# EC2/ECS estate actually run (operator decision 2026-07-10, verified via ec2 describe-instances). The
+# us-east-1 Lambda estate is reachable via a US-region selection or the all-regions sweep, NOT the
+# Tokyo default. The ``?all_regions=true`` escape hatch sweeps every region for a periodic surprise-check
+# (GCP live via ``list_gcp_region_names``; AWS via the curated ``_ALL_AWS_REGIONS`` — the census seam
+# has no cheap describe-regions). Per-region honest degradation: one region's failure never blocks
+# the others.
+# asia-northeast1 is where the GCP Cloud Run jobs/services + Functions + Scheduler actually live
+# (all GCS data is there); censusing empty regions every cycle only adds transpacific latency. The
+# ``?all_regions=true`` sweep + a per-region degradation net catch anything elsewhere → add its
+# region here if the sweep surfaces one. (GCE VMs / disks / IPs are already all-region aggregated.)
+_CONFIGURED_GCP_REGIONS: tuple[str, ...] = ("asia-northeast1",)
+_CONFIGURED_AWS_REGIONS: tuple[str, ...] = ("ap-northeast-1",)  # Tokyo — where the planning VM + AWS VMs run
+_ALL_AWS_REGIONS: tuple[str, ...] = (
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "ca-central-1",
+    "sa-east-1",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "eu-central-1",
+    "eu-north-1",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-south-1",
+)
+
+# The GCP region the cockpit's region selector opens on. Selecting it is identical to the configured
+# default census (asia-northeast1 GCP + the primary AWS set), so the us-east-1 Lambda estate never
+# drops off the default view.
+_DEFAULT_GCP_REGION: str = _CONFIGURED_GCP_REGIONS[0]
+
+# GCP region → the AWS region a caller most likely means by "its equivalent" when they pick a single
+# GCP region in the selector. A specific-region census scopes AWS to this geographic match (falling
+# back to the primary AWS set when a region is unpaired); the default and all-regions sweep are
+# unaffected. Best-effort geography pairing, not a hard 1:1.
+_GCP_TO_AWS_REGION: dict[str, str] = {
+    "asia-northeast1": "ap-northeast-1",
+    "asia-northeast2": "ap-northeast-3",
+    "asia-northeast3": "ap-northeast-2",
+    "asia-southeast1": "ap-southeast-1",
+    "asia-south1": "ap-south-1",
+    "australia-southeast1": "ap-southeast-2",
+    "europe-west1": "eu-west-1",
+    "europe-west2": "eu-west-2",
+    "europe-west3": "eu-central-1",
+    "europe-west4": "eu-west-1",
+    "europe-north1": "eu-north-1",
+    "us-central1": "us-east-1",
+    "us-east1": "us-east-1",
+    "us-east4": "us-east-2",
+    "us-west1": "us-west-1",
+    "us-west2": "us-west-2",
+    "northamerica-northeast1": "ca-central-1",
+    "southamerica-east1": "sa-east-1",
+}
+
+
 # Registry-read parallelism + a short-TTL inventory cache.
 #
 # The naive path read ~hundreds of per-VM registry JSONs SEQUENTIALLY over a
@@ -209,7 +292,10 @@ _inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="
 # sees every other kind. Belt-and-suspenders with the client-level RPC timeouts on the GCP
 # list calls (which stop the stuck worker thread from leaking and starving this pool).
 _PROVIDER_CENSUS_TIMEOUT_SEC = 45.0
-_census_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="inv-census")
+# One worker per top-level provider census so none queue behind another on the cold path: GCE VMs +
+# Cloud Run jobs/services + Cloud Functions + Cloud Scheduler + disks + addresses + unattached-disks
+# + object-delta + AWS (WS-D added scheduler / disks / addresses / unattached to the original set).
+_census_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="inv-census")
 
 
 def _census_or_degrade[T](label: str, future: Future[T], default: T) -> T:
@@ -278,6 +364,11 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     asset_group: str
     status: str  # running|succeeded|failed|stopped|stale|pending|unknown
     last_run_at: str | None = None
+    # Last DEPLOY/modify time — distinct from last_run_at (last INVOKE). Set for kinds whose last-run
+    # is not honestly observable without a paid metric (AWS Lambda: last_run_at stays None; this
+    # carries fn.last_modified so the UI can show last-*modified* with a tooltip, never a mislabelled
+    # last-run). None for kinds that report a real last_run_at.
+    last_modified_at: str | None = None
     exit_code: int | None = None
     heartbeat_age_seconds: int | None = None
     captured_progress: int | None = None  # rows_out for a VM backfill; None for jobs/services
@@ -365,6 +456,16 @@ class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contrac
     # D.1 rolling window (oldest first, ~10 samples) — each a {cpu_pct/mem_pct/disk_pct/
     # mem_slope/io_write.../net_recv.../sampled_at} sample; [] when the kind has no D.1 capture.
     host_metrics_window: list[dict[str, float | str]] = Field(default_factory=list)
+    # Cloud Run job run-history (WS-D #11) — the last ~10 executions (newest first), each a
+    # {name/status/started_at/completed_at/duration_seconds}. [] for non-job kinds so "did it fire on
+    # its cadence" is answerable by eye. Fetched on the detail path only (page_size=10); the thin-list
+    # census stays page_size=1 (no new cost).
+    run_history: list[dict[str, str | float | None]] = Field(default_factory=list)
+    # Job → manifest bridge HINT (WS-D #12) — rows since the last manifest snapshot for a job's
+    # asset_group ("rows since last run"), so a fired-but-produced-nothing job is spotted from here.
+    # A LINK + hint only: the AUTHORITATIVE "did the run produce its data" verdict lives on the
+    # consolidator page (consolidator_throughput_backlog_monitor plan). None for non-jobs / on error.
+    object_delta: int | None = None
 
 
 class UmbrellaStatusFailure(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -676,6 +777,7 @@ def _cloud_run_item_for_live_job(job_name: str, live: CloudRunExecutionStatus) -
         captured_progress=None,
         run_log_uri=live.log_uri,
         launched_by=launched_by,
+        region=live.region or None,  # multi-region census surfaces which region the job lives in
     )
 
 
@@ -1185,21 +1287,35 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
     ]
 
 
-def _load_aws_items(now: datetime) -> list[DeploymentItem]:
-    """Census + classify the live AWS estate into inventory items (Phase 5 parity).
+def _load_aws_items(now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_REGIONS) -> list[DeploymentItem]:
+    """Census + classify the live AWS estate into inventory items (Phase 5 parity), multi-region.
 
-    Reuses the curated ``_vm_lifecycle_class`` prefix resolver so AWS umbrella
-    derivation matches GCP exactly. The census itself degrades to an empty list on any
-    AWS error (no creds / boto3 absent / API down), so a missing AWS estate never
-    blocks the GCP inventory — AWS rides the same ``DeploymentItem`` contract.
+    Reuses the curated ``_vm_lifecycle_class`` prefix resolver so AWS umbrella derivation matches
+    GCP exactly. Fans out across ``regions`` (the configured set, or the curated all-regions set on
+    the ``?all_regions`` sweep) with per-region isolation — a region's census failure (no creds /
+    boto3 absent / API down / unsupported) degrades to empty for THAT region and never blocks the
+    others or the GCP inventory. AWS rides the same ``DeploymentItem`` contract.
     """
-    region = _cfg.aws_codebuild_region or "ap-northeast-1"
-    item_dicts = load_aws_inventory(
-        region=region,
-        aws_account_id=_cfg.aws_account_id or "",
-        lifecycle_for_name=_vm_lifecycle_class,
-    )
-    return [DeploymentItem(**d) for d in item_dicts]  # type: ignore[arg-type]
+
+    def _one(region: str) -> list[DeploymentItem]:
+        try:
+            item_dicts = load_aws_inventory(
+                region=region,
+                aws_account_id=_cfg.aws_account_id or "",
+                lifecycle_for_name=_vm_lifecycle_class,
+            )
+            return [DeploymentItem(**d) for d in item_dicts]  # type: ignore[arg-type]
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("inventory: AWS census for region %s degraded: %s", region, exc)
+            return []
+
+    if not regions:
+        return []
+    items: list[DeploymentItem] = []
+    with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="aws-region") as pool:
+        for region_items in pool.map(_one, regions):
+            items.extend(region_items)
+    return items
 
 
 def _list_json_keys(client: StorageClient, bucket: str, prefix: str) -> list[str]:
@@ -1277,8 +1393,176 @@ def _load_gcp_vm_entries(
     return active + recent, vm_details
 
 
-def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]:
-    """Build the live inventory (registry VMs + Cloud Run executions + AWS) — the cold path."""
+def _scheduler_item(entry: SchedulerJobStatus) -> DeploymentItem:
+    """Build an inventory row for one Cloud Scheduler job (WS-D #9) — the on-time / OVERDUE signal.
+
+    Kind ``SCHEDULER``; ``composite_health_status`` carries the verdict (``overdue`` / ``on-time`` /
+    ``paused``) so the UI slots it into the Health column (Cloud Run job rows carry none today).
+    ``service`` is the target it triggers so the UI can cross-link to that job's row.
+    """
+    if entry.overdue:
+        status, health = "failed", "overdue"
+    elif entry.state == "ENABLED":
+        status, health = "running", "on-time"
+    else:
+        status, health = "stopped", "paused"
+    return DeploymentItem(
+        name=entry.name,
+        kind="SCHEDULER",
+        umbrella=DeploymentUmbrella.NONE.value,
+        cloud=DeploymentCloud.GCP.value,
+        service=entry.target or entry.name,
+        asset_group="",
+        status=status,
+        last_run_at=entry.last_attempt_at,
+        run_log_uri="",
+        launched_by=LAUNCHED_BY_CONTROL_PLANE,  # Cloud Scheduler is managed infra
+        composite_health_status=health,
+        region=entry.region or None,
+    )
+
+
+def _multi_region_scheduler(project_id: str, regions: tuple[str, ...], now: datetime) -> list[SchedulerJobStatus]:
+    """Cloud Scheduler jobs across every region in ``regions``, concatenated (per-region isolation)."""
+    entries: list[SchedulerJobStatus] = []
+    if not regions:
+        return entries
+    with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="scheduler-region") as pool:
+        for region_list in pool.map(lambda r: list_scheduler_jobs(project_id, r, now), regions):
+            entries.extend(region_list)
+    return entries
+
+
+def _orphaned_resource_items(
+    disk_details: dict[str, dict[str, object]],
+    unattached_disk_names: set[str],
+    addresses: dict[str, dict[str, object]],
+) -> list[DeploymentItem]:
+    """First-class rows for truly-orphaned resources with NO owning VM (WS-D #7): unattached
+    persistent disks + reserved static IPs with no user.
+
+    ``GET /api/fleet/orphans`` is VM-keyed and misses these entirely, yet each still bills. Emitted
+    as ``kind=DISK`` / ``kind=STATIC_IP``, ``launched_by=unknown`` (no VM to attribute provenance),
+    flagged ``has_unreleased_resources=True`` (the row IS the leak) with its inferred monthly cost,
+    so the estate stranded-cost total picks it up. Disjoint from the #4 VM-attached leaks — a disk
+    attached to a stopped VM has a ``users`` entry (not unattached) and an attached IP has a
+    ``users`` self-link, so neither is double-counted here.
+    """
+    items: list[DeploymentItem] = []
+    for disk_name in sorted(unattached_disk_names):
+        disk = disk_details.get(disk_name, {})
+        size_raw = disk.get("size_gb")
+        size_gb = int(size_raw) if isinstance(size_raw, int) else None
+        type_raw = disk.get("type")
+        disk_type = str(type_raw) if isinstance(type_raw, str) and type_raw else None
+        items.append(
+            DeploymentItem(
+                name=disk_name,
+                kind="DISK",
+                umbrella=DeploymentUmbrella.NONE.value,
+                cloud=DeploymentCloud.GCP.value,
+                service=disk_name,
+                asset_group="",
+                status="stopped",  # allocated + idle (no running workload) — the orphaned state
+                run_log_uri="",
+                launched_by=LAUNCHED_BY_UNKNOWN,
+                has_unreleased_resources=True,
+                unreleased_resources=[orphaned_disk(disk_name, size_gb, disk_type)],
+            )
+        )
+    for addr_name, addr in sorted(addresses.items()):
+        if addr.get("users"):  # attached to something → a VM's leaked resource (#4), not an orphan
+            continue
+        items.append(
+            DeploymentItem(
+                name=addr_name,
+                kind="STATIC_IP",
+                umbrella=DeploymentUmbrella.NONE.value,
+                cloud=DeploymentCloud.GCP.value,
+                service=addr_name,
+                asset_group="",
+                status="stopped",
+                run_log_uri="",
+                launched_by=LAUNCHED_BY_UNKNOWN,
+                has_unreleased_resources=True,
+                unreleased_resources=[orphaned_static_ip(addr_name)],
+                region=str(addr.get("region") or "") or None,
+            )
+        )
+    return items
+
+
+def _gcp_regions_for_scope(region_scope: str, project_id: str) -> tuple[str, ...]:
+    """The GCP regions to census for this scope: the configured default (``""``), every compute region
+    (``"ALL"`` — falling back to the configured set if the region-list read fails), or a single
+    caller-picked region."""
+    if region_scope == "ALL":
+        names = list_gcp_region_names(project_id)
+        return tuple(names) if names else _CONFIGURED_GCP_REGIONS
+    if not region_scope:
+        return _CONFIGURED_GCP_REGIONS
+    return (region_scope,)
+
+
+def _aws_regions_for_scope(region_scope: str) -> tuple[str, ...]:
+    """The AWS regions to census for this scope: the primary set (``""``), the curated full set
+    (``"ALL"``), or the GCP-picked region's best-effort AWS equivalent (``_GCP_TO_AWS_REGION`` —
+    primary set when unpaired)."""
+    if region_scope == "ALL":
+        return _ALL_AWS_REGIONS
+    if not region_scope:
+        return _CONFIGURED_AWS_REGIONS
+    aws_equiv = _GCP_TO_AWS_REGION.get(region_scope)
+    return (aws_equiv,) if aws_equiv else _CONFIGURED_AWS_REGIONS
+
+
+def _multi_region_jobs(project_id: str, regions: tuple[str, ...]) -> dict[str, CloudRunExecutionStatus]:
+    """Cloud Run jobs across every region in ``regions``, merged (region carried on each status).
+
+    Each per-region ``latest_execution_by_job`` already degrades to ``{}`` on its own error, so a
+    region that is down / unsupported never blocks the others (per-region honest isolation). A
+    short-name collision across regions is vanishingly rare (all real jobs are single-region today);
+    the later region wins, and each row carries its ``region`` so the collision is visible.
+    """
+    merged: dict[str, CloudRunExecutionStatus] = {}
+    if not regions:
+        return merged
+    with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="cr-jobs-region") as pool:
+        for region_map in pool.map(lambda r: latest_execution_by_job(project_id, region=r), regions):
+            merged.update(region_map)
+    return merged
+
+
+def _multi_region_services(project_id: str, regions: tuple[str, ...]) -> list[CloudRunServiceStatus]:
+    """Cloud Run services across every region in ``regions``, concatenated (per-region isolation)."""
+    services: list[CloudRunServiceStatus] = []
+    if not regions:
+        return services
+    with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="cr-svc-region") as pool:
+        for region_list in pool.map(lambda r: list_cloud_run_services(project_id, region=r), regions):
+            services.extend(region_list)
+    return services
+
+
+def _multi_region_functions(project_id: str, regions: tuple[str, ...]) -> dict[str, CloudFunctionStatus]:
+    """Cloud Functions across every region in ``regions``, merged (per-region isolation)."""
+    merged: dict[str, CloudFunctionStatus] = {}
+    if not regions:
+        return merged
+    with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="cf-region") as pool:
+        for region_map in pool.map(lambda r: list_cloud_functions(project_id, region=r), regions):
+            merged.update(region_map)
+    return merged
+
+
+def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "") -> list[DeploymentItem]:
+    """Build the live inventory (registry VMs + Cloud Run executions + AWS) — the cold path.
+
+    ``region_scope`` selects the census breadth: ``""`` the configured default, ``"ALL"`` every region
+    (the periodic surprise-check), or a single GCP region + its AWS equivalent. GCE VMs / disks / IPs
+    are all-region aggregated regardless — only the regional Cloud Run / functions / scheduler APIs
+    honour the scope, so a specific-region view still lists every VM.
+    """
     want_gcp = cloud is None or cloud.upper() == DeploymentCloud.GCP.value
     want_aws = cloud is None or cloud.upper() == DeploymentCloud.AWS.value
 
@@ -1289,30 +1573,42 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
     # slow or hung provider degrades to an empty census for its OWN kind instead of blocking
     # the whole inventory — the cold path is ~max(slowest census) not their sum, and never
     # exceeds _PROVIDER_CENSUS_TIMEOUT_SEC per provider.
-    f_aws: Future[list[DeploymentItem]] | None = _census_pool.submit(_load_aws_items, now) if want_aws else None
+    aws_regions = _aws_regions_for_scope(region_scope)
+    f_aws: Future[list[DeploymentItem]] | None = (
+        _census_pool.submit(_load_aws_items, now, aws_regions) if want_aws else None
+    )
 
     if want_gcp:
         project_id = _cfg.require_gcp_project_id()
+        # GCE VMs / disks / addresses use all-region aggregated lists already; only the regional
+        # Cloud Run jobs/services + Cloud Functions APIs need the multi-region fan-out.
+        gcp_regions = _gcp_regions_for_scope(region_scope, project_id)
         f_vm: Future[tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]]] = _census_pool.submit(
             _load_gcp_vm_entries, now, project_id
         )
-        f_jobs = _census_pool.submit(latest_execution_by_job, project_id)
-        f_services = _census_pool.submit(list_cloud_run_services, project_id)
-        f_functions = _census_pool.submit(list_cloud_functions, project_id)
+        f_jobs = _census_pool.submit(_multi_region_jobs, project_id, gcp_regions)
+        f_services = _census_pool.submit(_multi_region_services, project_id, gcp_regions)
+        f_functions = _census_pool.submit(_multi_region_functions, project_id, gcp_regions)
+        f_scheduler = _census_pool.submit(_multi_region_scheduler, project_id, gcp_regions, now)
         # Disk + reserved-IP maps for leaked-resource detection on non-running VMs — two more
         # aggregated_list reads, each bounded + degrading to an empty map on failure (leak detection
         # then flags nothing rather than fabricating a false leak, and non-running rows report
         # has_unreleased_resources=None honestly).
         f_disks = _census_pool.submit(get_disk_details, project_id)
         f_addresses = _census_pool.submit(list_reserved_addresses, project_id)
+        # Unattached-disk names → the truly-orphaned DISK rows (#7); same disks aggregated_list
+        # class (the ``users`` field). Bounded + degrades to an empty set.
+        f_unattached = _census_pool.submit(list_unattached_disk_names, project_id)
 
         empty_vm: tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]] = ([], {})
         vm_entries, vm_details_by_name = _census_or_degrade("gcp-vm", f_vm, empty_vm)
         cloud_run_status = _census_or_degrade("cloud-run-jobs", f_jobs, {})
         cloud_run_services = _census_or_degrade("cloud-run-services", f_services, [])
         cloud_function_status = _census_or_degrade("cloud-functions", f_functions, {})
+        scheduler_entries: list[SchedulerJobStatus] = _census_or_degrade("cloud-scheduler", f_scheduler, [])
         disk_details = _census_or_degrade("gcp-disks", f_disks, {})
         addresses = _census_or_degrade("gcp-addresses", f_addresses, {})
+        unattached_disks: set[str] = _census_or_degrade("gcp-unattached-disks", f_unattached, set())
         # Object-delta is a manifest lookup keyed off the resolved VM entries — bound it too.
         object_deltas = _census_or_degrade(
             "object-delta", _census_pool.submit(_batched_object_deltas, vm_entries, now), {}
@@ -1336,6 +1632,12 @@ def _compute_inventory(now: datetime, cloud: str | None) -> list[DeploymentItem]
 
         items.extend(_cloud_function_item(status) for status in cloud_function_status.values())
 
+        # Cloud Scheduler rows (#9): the on-time / OVERDUE signal (Health column) per scheduled job.
+        items.extend(_scheduler_item(entry) for entry in scheduler_entries)
+
+        # First-class orphaned-resource rows (#7): unattached disks + no-owner reserved static IPs.
+        items.extend(_orphaned_resource_items(disk_details, unattached_disks, addresses))
+
         for vm_item in gcp_items:
             if vm_item.kind == DeploymentKind.VM.value:
                 _alert_on_health_transition(vm_item)
@@ -1353,10 +1655,10 @@ def _store_inventory(cache_key: str, items: list[DeploymentItem]) -> None:
         _inventory_cache[cache_key] = (time.monotonic(), items)
 
 
-def _refresh_inventory(cache_key: str, cloud: str | None) -> None:
+def _refresh_inventory(cache_key: str, cloud: str | None, region_scope: str) -> None:
     """Background cache refresh — recompute + store, then clear the in-flight flag."""
     try:
-        _store_inventory(cache_key, _compute_inventory(datetime.now(UTC), cloud))
+        _store_inventory(cache_key, _compute_inventory(datetime.now(UTC), cloud, region_scope))
     except (HTTPException, OSError, ValueError, RuntimeError) as exc:
         # Keep the stale snapshot on a failed refresh — never poison the cache.
         logger.warning("inventory: background refresh for %s failed: %s", cache_key, exc)
@@ -1365,16 +1667,16 @@ def _refresh_inventory(cache_key: str, cloud: str | None) -> None:
             _inventory_refreshing.discard(cache_key)
 
 
-def _kick_background_refresh(cache_key: str, cloud: str | None) -> None:
+def _kick_background_refresh(cache_key: str, cloud: str | None, region_scope: str) -> None:
     """Schedule exactly one background refresh per cache key (stale-while-revalidate)."""
     with _inventory_lock:
         if cache_key in _inventory_refreshing:
             return
         _inventory_refreshing.add(cache_key)
-    _inventory_refresh_pool.submit(_refresh_inventory, cache_key, cloud)
+    _inventory_refresh_pool.submit(_refresh_inventory, cache_key, cloud, region_scope)
 
 
-def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentItem]:
+def _load_inventory(now: datetime, cloud: str | None = None, region_scope: str = "") -> list[DeploymentItem]:
     """Load the live inventory, stale-while-revalidate cached for a fast, smooth cockpit.
 
     GCP items load unless the caller filters ``cloud=aws``; AWS items load unless the
@@ -1391,11 +1693,13 @@ def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentI
     if _cfg.is_mock_mode():
         return _mock_inventory(now)
 
-    cache_key = (cloud or "all").upper()
+    # The all-regions sweep gets its OWN cache slot so the one-off surprise-check never poisons (or
+    # is served from) the default configured-region snapshot.
+    cache_key = f"{(cloud or 'all').upper()}|{region_scope or 'CONFIGURED'}"
     cached = _inventory_cache.get(cache_key)
     if cached is not None:
         if (time.monotonic() - cached[0]) >= _INVENTORY_TTL_SEC:
-            _kick_background_refresh(cache_key, cloud)
+            _kick_background_refresh(cache_key, cloud, region_scope)
         return cached[1]
 
     # Cold path — lock so concurrent first-polls trigger exactly ONE census.
@@ -1403,7 +1707,7 @@ def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentI
         cached = _inventory_cache.get(cache_key)
         if cached is not None:
             return cached[1]
-        items = _compute_inventory(now, cloud)
+        items = _compute_inventory(now, cloud, region_scope)
         _inventory_cache[cache_key] = (time.monotonic(), items)
         return items
 
@@ -1414,6 +1718,20 @@ def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentI
 
 _VALID_UMBRELLAS = frozenset(u.value for u in DeploymentUmbrella)
 _VALID_CLOUDS = frozenset(c.value for c in DeploymentCloud)
+
+
+def _normalize_region_scope(region: str | None, all_regions: bool) -> str:
+    """Map the ``region`` (and legacy ``all_regions``) query params to an internal census scope token:
+    ``""`` the configured default, ``"ALL"`` the every-region sweep, or a specific GCP region name.
+
+    The default region resolves to ``""`` so it stays identical to the configured default census —
+    asia-northeast1 GCP + ap-northeast-1 AWS, both Tokyo, where the orchestrator + VMs actually run."""
+    value = (region or "").strip().lower()
+    if all_regions or value == "all":
+        return "ALL"
+    if not value or value == _DEFAULT_GCP_REGION:
+        return ""
+    return value
 
 
 def _counts_by_kind(items: list[DeploymentItem]) -> dict[str, int]:
@@ -1440,16 +1758,30 @@ def get_deployment_inventory(
         None,
         description="VM|CLOUD_RUN_JOB|CLOUD_RUN_SERVICE|ECS_SERVICE|LAMBDA|CLOUD_FUNCTION (case-insensitive)",
     ),
+    all_regions: bool = Query(
+        False,
+        description="Sweep EVERY region (a one-off surprise-check) instead of the configured region set. "
+        "Off by default (the census stays on the configured regions for determinism).",
+    ),
+    region: str | None = Query(
+        None,
+        description="GCP region to census (e.g. asia-northeast1, europe-west1). Empty or the default "
+        "region = the configured default; 'all' sweeps every region. AWS is scoped to the region's "
+        "geographic equivalent. Only regional resources (Cloud Run / functions / scheduler) honour "
+        "this — VMs / disks / IPs are all-region aggregated regardless.",
+    ),
 ) -> DeploymentInventoryResponse:
     """Unified deployment inventory: every VM + Cloud Run job, classified by umbrella.
 
     GCP **and** AWS (Phase 5 parity) — AWS EC2 backfill VMs + Batch Fargate jobs ride
     the same ``DeploymentItem`` contract with ``cloud=AWS``. Each item carries its
     umbrella/cloud/service/asset_group classification + live status / last-run /
-    exit_code / heartbeat / captured-progress.
+    exit_code / heartbeat / captured-progress. ``all_regions=true`` sweeps every region
+    (the periodic surprise-check); the default censuses the configured region set.
     """
     now = datetime.now(UTC)
-    items = _load_inventory(now, cloud=cloud)
+    region_scope = _normalize_region_scope(region, all_regions)
+    items = _load_inventory(now, cloud=cloud, region_scope=region_scope)
     filtered = _filter_items(
         items,
         umbrella=umbrella,
@@ -1470,24 +1802,102 @@ def get_deployment_inventory(
     )
 
 
+class DeploymentRegionsResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Region options for the cockpit's region selector (WS-D region reconciliation).
+
+    ``default`` is the region the selector opens on; ``regions`` is the selectable list (default first);
+    ``all_value`` is the sentinel a caller passes as ``?region=`` to sweep every region.
+    """
+
+    default: str
+    regions: list[str]
+    all_value: str
+
+
+@router.get("/deployments/regions", response_model=DeploymentRegionsResponse)
+def get_deployment_regions() -> DeploymentRegionsResponse:
+    """Dynamic region options for the region selector: the default region first, then every GCP compute
+    region (so a region shows up the moment infra lands there), plus the ``all`` sweep sentinel.
+
+    A cheap region-list metadata read; degrades to the configured default set if the read fails, so the
+    selector always has at least its default entry.
+    """
+    if _cfg.is_mock_mode():
+        names: list[str] = ["asia-northeast1", "europe-west1", "europe-west3", "us-central1", "us-east1"]
+    else:
+        listed = list_gcp_region_names(_cfg.require_gcp_project_id())
+        names = list(listed) if listed else list(_CONFIGURED_GCP_REGIONS)
+    # Default region pinned first, the remainder alphabetical + de-duplicated.
+    ordered = [_DEFAULT_GCP_REGION, *sorted(n for n in dict.fromkeys(names) if n and n != _DEFAULT_GCP_REGION)]
+    return DeploymentRegionsResponse(default=_DEFAULT_GCP_REGION, regions=ordered, all_value="all")
+
+
+def _job_run_history(item: DeploymentItem) -> list[dict[str, str | float | None]]:
+    """Last-N Cloud Run job executions for the detail popover (#11).
+
+    Empty for any non-GCP-Cloud-Run-job kind, mock mode, or on any error (the popover simply shows
+    no history). Fetched on the detail path only — ``list_job_executions`` uses ``page_size=10``; the
+    thin-list census stays at 1, so this adds no cost to the list endpoint.
+    """
+    if item.kind != DeploymentKind.CLOUD_RUN_JOB.value or item.cloud != DeploymentCloud.GCP.value:
+        return []
+    if _cfg.is_mock_mode():
+        return []
+    try:
+        project_id = _cfg.require_gcp_project_id()
+    except (HTTPException, ValueError, RuntimeError):
+        return []
+    records = list_job_executions(project_id, item.name, region=item.region or DEFAULT_CLOUD_RUN_REGION)
+    return [
+        {
+            "name": record.name,
+            "status": record.status,
+            "started_at": record.started_at,
+            "completed_at": record.completed_at,
+            "duration_seconds": record.duration_seconds,
+        }
+        for record in records
+    ]
+
+
+def _job_object_delta(item: DeploymentItem, now: datetime) -> int | None:
+    """Rows since the last manifest snapshot for a Cloud Run job's asset_group — the #12 "rows since
+    last run" HINT.
+
+    A link + hint only: the AUTHORITATIVE "did the run produce its data" verdict lives on the
+    consolidator page (``consolidator_throughput_backlog_monitor`` plan), keyed by the full job
+    short-name; this deployments popover only helps spot a fired-but-produced-nothing job. Reuses the
+    same ``object_delta_for_asset_group`` the census batches (which catches its own errors → None);
+    None for non-jobs / no asset_group / mock.
+    """
+    if item.kind != DeploymentKind.CLOUD_RUN_JOB.value or not item.asset_group:
+        return None
+    if _cfg.is_mock_mode():
+        return None
+    return object_delta_for_asset_group(item.asset_group, now)[0]
+
+
 @router.get("/deployments/{name}/detail", response_model=DeploymentDetailResponse)
 def get_deployment_detail(name: str) -> DeploymentDetailResponse:
     """Per-target drill-down: the thin-list item plus the D.1 metrics vector (popover).
 
     ``name`` is the ``DeploymentItem.name`` (VM name / Cloud Run job or service name), not
     an orchestration ``deployment_id`` — this endpoint reads the SAME cached census
-    ``/deployments/inventory`` already computes (no new bucket walk / API call). 404 if the
-    name isn't in the current (cached) inventory.
+    ``/deployments/inventory`` already computes (no new bucket walk). A Cloud Run job additionally
+    gets its last-N run-history (``page_size=10`` on the detail path only). 404 if the name isn't in
+    the current (cached) inventory.
     """
     now = datetime.now(UTC)
     items = _load_inventory(now)
     item = next((i for i in items if i.name == name), None)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Deployment {name!r} not found in the current inventory")
+    run_history = _job_run_history(item)
+    object_delta = _job_object_delta(item, now)
     with _vm_entry_by_name_lock:
         entry = _vm_entry_by_name_cache.get(name)
     if entry is None:
-        return DeploymentDetailResponse(item=item)
+        return DeploymentDetailResponse(item=item, run_history=run_history, object_delta=object_delta)
     return DeploymentDetailResponse(
         item=item,
         cpu_pct=entry.cpu_pct,
@@ -1498,6 +1908,8 @@ def get_deployment_detail(name: str) -> DeploymentDetailResponse:
         net_recv_rate_bytes_sec=entry.net_recv_rate_bytes_sec,
         workload_alive=entry.workload_alive,
         host_metrics_window=entry.host_metrics_window,
+        run_history=run_history,
+        object_delta=object_delta,
     )
 
 
