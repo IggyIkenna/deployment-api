@@ -315,6 +315,54 @@ def test_build_inventory_launched_by_provenance_for_cloud_run_jobs() -> None:
     assert by_name["zzqx-000-unreg"].launched_by == LAUNCHED_BY_ADHOC
 
 
+def test_build_inventory_surfaces_leaked_resources_on_non_running_vms() -> None:
+    """WS-D leaked-resource detection is wired into build_inventory: a non-running VM holding a DATA
+    disk surfaces has_unreleased_resources + the itemised list; the boot disk is excluded (orphans'
+    job); the cost reuses the orphans disk-rate SSOT + is labelled inferred (principle 8)."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    vm_details_by_name: dict[str, dict[str, object]] = {
+        "adhoc-stopped-vm": {
+            "status": "TERMINATED",
+            "boot_disk_name": "adhoc-stopped-vm-boot",
+            "attached_disk_names": ["adhoc-stopped-vm-boot", "adhoc-stopped-vm-data"],
+        },
+    }
+    disk_details: dict[str, dict[str, object]] = {"adhoc-stopped-vm-data": {"size_gb": 200, "type": "pd-balanced"}}
+    items = build_inventory([], {}, _FIXED_NOW, vm_details_by_name, disk_details=disk_details)
+    row = next(i for i in items if i.name == "adhoc-stopped-vm")
+    assert row.has_unreleased_resources is True
+    assert row.unreleased_resources is not None
+    leaked = row.unreleased_resources[0]
+    assert leaked.type == "DISK"
+    assert leaked.name == "adhoc-stopped-vm-data"
+    assert leaked.est_monthly_usd == 26.0  # 200 GB * 0.130 (pd-balanced)
+    assert leaked.cost_basis == "inferred"
+
+
+def test_build_inventory_running_vm_has_no_leaked_resources() -> None:
+    """A RUNNING VM with a data disk reports has_unreleased_resources=False (in-use, not leaked);
+    a registry VM with no GCE join reports honest None (couldn't determine)."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = _vm_entries()
+    vm_details_by_name: dict[str, dict[str, object]] = {
+        "cefi-binance-spot-20260622-014158": {
+            "status": "RUNNING",
+            "boot_disk_name": "cefi-binance-spot-20260622-014158-boot",
+            "attached_disk_names": ["cefi-binance-spot-20260622-014158-boot", "cefi-data"],
+        }
+    }
+    disk_details: dict[str, dict[str, object]] = {"cefi-data": {"size_gb": 100, "type": "pd-ssd"}}
+    items = build_inventory(entries, {}, _FIXED_NOW, vm_details_by_name, disk_details=disk_details)  # type: ignore[arg-type]
+    running = {i.name: i for i in items}["cefi-binance-spot-20260622-014158"]
+    assert running.has_unreleased_resources is False
+    assert running.unreleased_resources is None
+    # No join at all → honest None (couldn't determine).
+    no_join = build_inventory(entries, {}, _FIXED_NOW)  # type: ignore[arg-type]
+    assert next(i for i in no_join if i.name == "defi-paper-trading-20260622").has_unreleased_resources is None
+
+
 def test_build_inventory_stale_running_vm() -> None:
     from deployment_api.routes.deployments_inventory import build_inventory
 
