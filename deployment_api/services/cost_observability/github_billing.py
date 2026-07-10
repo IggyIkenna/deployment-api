@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 _API_BASE = "https://api.github.com"
 _API_VERSION = "2022-11-28"
 _TIMEOUT = 20.0
+# GitHub returns products lowercase ("actions", "copilot", …); present them like the proper-cased
+# GCP/AWS service names so the cross-cloud breakdown reads consistently.
+_PRODUCT_LABELS = {
+    "actions": "Actions",
+    "copilot": "Copilot",
+    "packages": "Packages",
+    "codespaces": "Codespaces",
+    "storage": "Storage",
+    "git_lfs": "Git LFS",
+}
 # The shared CI/repo token — tried only after the dedicated billing secret. It backs repo-ci and
 # usually LACKS the Plan scope (billing 403s), but is a harmless last resort if it ever gains it.
 _FALLBACK_SECRET = "GH_PAT"
@@ -119,7 +129,8 @@ def _map_usage_items(payload: object, start: date, end: date) -> list[CostRecord
         if gross == 0.0 and net != 0.0:  # some items report net only
             gross = net
         credit = round(net - gross, 6)  # ≤ 0 discount
-        product = str(item.get("product") or "GitHub")
+        raw_product = str(item.get("product") or "GitHub")
+        product = _PRODUCT_LABELS.get(raw_product.lower(), raw_product.replace("_", " ").title())
         repo = str(item.get("repositoryName") or "")
         resource_id = repo or product
         out.append(

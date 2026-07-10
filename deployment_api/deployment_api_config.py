@@ -131,7 +131,7 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="'user' or 'org' — selects the /users/{} vs /organizations/{} billing endpoint.",
     )
     github_billing_secret: str = Field(
-        default="GH_BILLING_PAT",
+        default="github-billing-token",
         validation_alias=AliasChoices("GITHUB_BILLING_SECRET"),
         description="Secret Manager key for the GitHub Plan-scoped billing token (falls back to GH_PAT).",
     )

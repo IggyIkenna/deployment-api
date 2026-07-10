@@ -370,25 +370,32 @@ def _fake_client_factory(resp: _FakeResp) -> type:
 def test_fetch_github_billing_maps_usage_items(monkeypatch: pytest.MonkeyPatch) -> None:
     # netAmount = invoiced USD; grossAmount = pre-discount. cost=gross, credit=net-gross (≤0), net=cost+credit.
     monkeypatch.setattr(ghb, "_billing_token", lambda _cfg: "tok")
+    # Real API shape: `date` is an RFC3339 timestamp and `product` is lowercase ("actions").
     body: dict[str, object] = {
         "usageItems": [
             {
-                "date": "2026-07-05",
-                "product": "Actions",
+                "date": "2026-07-05T00:00:00Z",
+                "product": "actions",
                 "repositoryName": "IggyIkenna/ao",
                 "sku": "Linux",
                 "grossAmount": 2.0,
                 "netAmount": 1.5,
             },
-            {"date": "2026-07-05", "product": "Copilot", "netAmount": 1.9},  # net-only
-            {"date": "2026-06-01", "product": "Actions", "grossAmount": 9.9, "netAmount": 9.9},  # out of window
+            {"date": "2026-07-05T00:00:00Z", "product": "copilot", "netAmount": 1.9},  # net-only
+            {
+                "date": "2026-06-01T00:00:00Z",
+                "product": "actions",
+                "grossAmount": 9.9,
+                "netAmount": 9.9,
+            },  # out of window
         ]
     }
     monkeypatch.setattr(ghb.httpx, "Client", _fake_client_factory(_FakeResp(200, body)))
     recs = ghb.fetch_github_billing(DeploymentApiConfig(), date(2026, 7, 1), date(2026, 7, 11))
     assert recs is not None and len(recs) == 2  # the June item is outside [start, end)
-    actions = next(r for r in recs if r.service == "Actions")
+    actions = next(r for r in recs if r.service == "Actions")  # prettified from lowercase "actions"
     assert actions.cloud == "github" and actions.resource_id == "IggyIkenna/ao"
+    assert actions.day == "2026-07-05"  # RFC3339 timestamp → date
     assert actions.cost == 2.0 and actions.credit == -0.5 and not actions.is_placeholder
     copilot = next(r for r in recs if r.service == "Copilot")
     assert copilot.cost == 1.9 and copilot.credit == 0.0  # net-only → gross=net, credit 0
