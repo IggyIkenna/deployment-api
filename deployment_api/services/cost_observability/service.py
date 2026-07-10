@@ -165,7 +165,10 @@ class _NativeAcc:
         self._net[key] = self._net.get(key, 0.0) + _net_native(r)
         self._gross[key] = self._gross.get(key, 0.0) + r.cost_native
         self._credit[key] = self._credit.get(key, 0.0) + r.credit_native
-        self._ccy[key] = r.currency
+        # A key that mixes currencies (a cross-cloud "by day" row) has no single native currency →
+        # mark USD so the UI never renders a £ symbol on a summed GBP+USD figure.
+        prev = self._ccy.get(key)
+        self._ccy[key] = r.currency if prev is None or prev == r.currency else "USD"
 
     def apply(self, row: BreakdownRow, key: object) -> BreakdownRow:
         row.currency = self._ccy.get(key, "USD")
