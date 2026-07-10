@@ -151,6 +151,9 @@ _DEFAULT_LIFECYCLE = LifecycleClass.EPHEMERAL_BATCH
 #   2. a short-TTL in-process cache so the cockpit's repeated polls are instant and a
 #      thundering herd of concurrent loads collapses to ONE cold read (lock-guarded).
 _GCS_READ_WORKERS = 32
+# Concurrency for the per-distinct-asset_group object-delta manifest reads (~a handful of
+# asset_groups per census). Fanning them out keeps the cold census under the 45 s provider bound.
+_OBJECT_DELTA_WORKERS = 8
 _INVENTORY_TTL_SEC = 45.0
 _ARCHIVE_WINDOW_DAYS = 7
 
@@ -881,7 +884,21 @@ def _batched_object_deltas(vm_entries: list[DeploymentRegistryEntry], now: datet
             continue
         if target.umbrella == DeploymentUmbrella.BATCH and target.asset_group:
             asset_groups.add(target.asset_group)
-    return {asset_group: object_delta_for_asset_group(asset_group, now)[0] for asset_group in asset_groups}
+    if not asset_groups:
+        return {}
+
+    # Each asset_group's delta is an independent GCS manifest-index read; running them serially
+    # (one per distinct asset_group) routinely blew past the 45 s per-provider census bound on a
+    # cold cycle, degrading object-delta to empty and pushing the BATCH working/stalled composite
+    # to "unknown". Fan them out — the read is I/O-bound (GIL released), so this is ~max(one read)
+    # not their sum. object_delta_for_asset_group already catches its own errors (returns
+    # (None, reason)), so no per-ag read can crash the map.
+    def _delta(asset_group: str) -> tuple[str, int | None]:
+        return asset_group, object_delta_for_asset_group(asset_group, now)[0]
+
+    workers = min(_OBJECT_DELTA_WORKERS, len(asset_groups))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="obj-delta") as pool:
+        return dict(pool.map(_delta, asset_groups))
 
 
 def build_inventory(
