@@ -141,7 +141,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     """
 
     name: str
-    kind: str  # "VM" | "CLOUD_RUN_JOB"
+    kind: str  # VM|CLOUD_RUN_JOB|CLOUD_RUN_SERVICE|ECS_SERVICE|LAMBDA|CLOUD_FUNCTION
     umbrella: str  # "LIVE" | "BATCH" | "PAPER" | "EXPERIMENT"
     cloud: str  # "GCP" | "AWS"
     service: str
@@ -161,6 +161,11 @@ class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API cont
     total: int
     vm_count: int
     cloud_run_job_count: int
+    counts_by_kind: dict[str, int] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+    """Count per :class:`DeploymentKind` value, all 6 kinds always present (0 for a kind
+    with no census producer wired yet — a missing/failed census for one kind never hides
+    or blocks the others). Superset of ``vm_count``/``cloud_run_job_count``, kept for
+    back-compat."""
 
 
 class UmbrellaStatusFailure(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -380,6 +385,7 @@ def _filter_items(
     *,
     umbrella: str | None,
     cloud: str | None,
+    kind: str | None,
     service: str | None,
     asset_group: str | None,
     status: str | None,
@@ -390,6 +396,8 @@ def _filter_items(
         if umbrella and item.umbrella.upper() != umbrella.upper():
             return False
         if cloud and item.cloud.upper() != cloud.upper():
+            return False
+        if kind and item.kind.upper() != kind.upper():
             return False
         if service and item.service != service:
             return False
@@ -678,22 +686,32 @@ def _load_inventory(now: datetime, cloud: str | None = None) -> list[DeploymentI
 
 _VALID_UMBRELLAS = frozenset(u.value for u in DeploymentUmbrella)
 _VALID_CLOUDS = frozenset(c.value for c in DeploymentCloud)
+_VALID_KINDS = frozenset(k.value for k in DeploymentKind)
 
 
 @router.get("/deployments/inventory", response_model=DeploymentInventoryResponse)
 def get_deployment_inventory(
     umbrella: str | None = Query(None, description="live|batch|paper|experiment (case-insensitive)"),
     cloud: str | None = Query(None, description="gcp|aws (case-insensitive)"),
+    kind: str | None = Query(
+        None,
+        description="vm|cloud_run_job|cloud_run_service|ecs_service|lambda|cloud_function (case-insensitive)",
+    ),
     service: str | None = Query(None, description="Exact service stem filter"),
     asset_group: str | None = Query(None, description="cefi|defi|tradfi|sports|prediction"),
     status: str | None = Query(None, description="Exact status filter (running|succeeded|failed|stale|...)"),
 ) -> DeploymentInventoryResponse:
-    """Unified deployment inventory: every VM + Cloud Run job, classified by umbrella.
+    """Unified deployment inventory: every compute unit, classified by umbrella + kind.
 
     GCP **and** AWS (Phase 5 parity) — AWS EC2 backfill VMs + Batch Fargate jobs ride
     the same ``DeploymentItem`` contract with ``cloud=AWS``. Each item carries its
-    umbrella/cloud/service/asset_group classification + live status / last-run /
+    umbrella/cloud/kind/service/asset_group classification + live status / last-run /
     exit_code / heartbeat / captured-progress.
+
+    ``kind`` spans the full closed-set UAC ``DeploymentKind`` taxonomy (6 values) even
+    though only ``VM``/``CLOUD_RUN_JOB`` have a live census producer today — a kind with
+    no producer wired yet simply counts 0 (honest degradation: one kind's absent/failed
+    census never blocks or hides the others).
     """
     now = datetime.now(UTC)
     items = _load_inventory(now, cloud=cloud)
@@ -701,17 +719,18 @@ def get_deployment_inventory(
         items,
         umbrella=umbrella,
         cloud=cloud,
+        kind=kind,
         service=service,
         asset_group=asset_group,
         status=status,
     )
-    vm_count = sum(1 for i in filtered if i.kind == DeploymentKind.VM.value)
-    job_count = sum(1 for i in filtered if i.kind == DeploymentKind.CLOUD_RUN_JOB.value)
+    counts_by_kind = {k: sum(1 for i in filtered if i.kind == k) for k in sorted(_VALID_KINDS)}
     return DeploymentInventoryResponse(
         items=filtered,
         total=len(filtered),
-        vm_count=vm_count,
-        cloud_run_job_count=job_count,
+        vm_count=counts_by_kind[DeploymentKind.VM.value],
+        cloud_run_job_count=counts_by_kind[DeploymentKind.CLOUD_RUN_JOB.value],
+        counts_by_kind=counts_by_kind,
     )
 
 
