@@ -108,10 +108,17 @@ _CORE_TARBALLS: tuple[str, ...] = (
 # Per-asset_group service tarballs. Mirrors CEFI_REPOS, TRADFI_REPOS,
 # DEFI_REPOS, SPORTS_REPOS, PREDICTION_REPOS in
 # deployment-service/scripts/vm/create-code-tarballs.sh.
+#
+# market-tick-data-service is deliberately absent from every group here —
+# it's covered by `mtds-code.tar.gz` in _CORE_TARBALLS above. Listing
+# `market-tick-data-service-code.tar.gz` here too (pre-2026-07-12) mirrored
+# a create-code-tarballs.sh bug that produced a second, byte-identical
+# tarball under that name; the producer-side bug is fixed, so this module
+# no longer needs to check for it. See
+# plans/active/issues/defi_morpho_lending_indices_never_wired_2026_07_12.md.
 _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
     "CEFI": (
         "instruments-service-code.tar.gz",
-        "market-tick-data-service-code.tar.gz",
         "market-data-processing-service-code.tar.gz",
         "features-delta-one-service-code.tar.gz",
         "features-cross-instrument-service-code.tar.gz",
@@ -124,7 +131,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
     ),
     "TRADFI": (
         "instruments-service-code.tar.gz",
-        "market-tick-data-service-code.tar.gz",
         "market-data-processing-service-code.tar.gz",
         "features-delta-one-service-code.tar.gz",
         "features-cross-instrument-service-code.tar.gz",
@@ -138,7 +144,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
     ),
     "DEFI": (
         "instruments-service-code.tar.gz",
-        "market-tick-data-service-code.tar.gz",
         "market-data-processing-service-code.tar.gz",
         "features-onchain-service-code.tar.gz",
         "features-delta-one-service-code.tar.gz",
@@ -147,7 +152,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
     ),
     "SPORTS": (
         "instruments-service-code.tar.gz",
-        "market-tick-data-service-code.tar.gz",
         "market-data-processing-service-code.tar.gz",
         "features-sports-service-code.tar.gz",
         # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
@@ -157,7 +161,6 @@ _ASSET_GROUP_TARBALLS: dict[str, tuple[str, ...]] = {
     ),
     "PREDICTION": (
         "instruments-service-code.tar.gz",
-        "market-tick-data-service-code.tar.gz",
         "market-data-processing-service-code.tar.gz",
         "features-cross-instrument-service-code.tar.gz",
         "strategy-service-code.tar.gz",
