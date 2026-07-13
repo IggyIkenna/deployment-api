@@ -325,8 +325,14 @@ def _read_latest_run(client: StorageClient, bucket: str) -> dict[str, object] | 
     Absent = this consolidator has never run under the summary-emitting code (dead / not-yet-fired /
     not-yet-redeployed) → the cockpit shows it as "not yet reporting", NEVER a fabricated all-clear.
     Best-effort: any read/parse hiccup returns ``None``.
+
+    Existence is checked via ``get_blob_metadata`` FIRST (returns ``None`` for a missing object,
+    like ``_index_absolutes``) so a missing ``latest.json`` never surfaces the provider's raw
+    ``NotFound`` (404) — which is NOT an ``OSError`` — as a 5xx on this read-only endpoint.
     """
     try:
+        if client.get_blob_metadata(bucket, _LATEST_RUN_BLOB) is None:
+            return None  # no latest.json → the consolidator isn't reporting
         raw = client.download_bytes(bucket, _LATEST_RUN_BLOB)
     except (OSError, ValueError, RuntimeError):
         return None
@@ -349,20 +355,32 @@ def _as_float(v: object) -> float | None:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def _authoritative_verdict(run_verdict: str | None, freshness_verdict: str, pending: int | None) -> str:
+def _authoritative_verdict(
+    run_verdict: str | None, freshness_verdict: str, pending: int | None, index_row_count: int | None
+) -> str:
     """Map the consolidator's SELF-REPORTED run verdict onto the endpoint vocabulary.
 
-    When ``latest.json`` exists its verdict is authoritative (the job knows what it did) and supersedes
-    the Cloud-Run-execution inference: ``produced`` → produced/producing (per current backlog),
-    ``empty`` → the definitive fired-but-empty, ``failed`` → stale_output. Anything else / absent →
-    the freshness-derived verdict.
+    ``latest.json`` is authoritative for what the run KNOWS (it failed; it's live), but its per-run
+    ``empty`` means "this CYCLE wrote 0 rows" — a NO-OP cycle on a fully-populated index reports
+    ``empty`` too — so it is NOT a reliable "the index is empty" signal. We reconcile against the
+    real ``index_row_count`` (cheap parquet footer):
+
+    * ``failed`` → ``stale_output`` (the freshness view can't see a failed run).
+    * ``produced`` → produced/producing (per backlog).
+    * ``empty`` **and the index actually holds rows** → a no-op cycle on real data → defer to the
+      freshness-derived verdict (produced / producing / stale_output per status + backlog).
+    * ``empty`` **and the index is genuinely empty** → ``fired_but_empty`` ONLY if shards were waiting
+      to be absorbed (``pending > 0``), else a genuinely idle bucket (``empty``).
+    * anything else / absent → freshness-derived.
     """
+    if run_verdict == "failed":
+        return "stale_output"
     if run_verdict == "produced":
         return "producing" if (pending or 0) > 0 else "produced"
     if run_verdict == "empty":
-        return "fired_but_empty"
-    if run_verdict == "failed":
-        return "stale_output"
+        if (index_row_count or 0) > 0:
+            return freshness_verdict  # no-op cycle on a populated index → not "empty"
+        return "fired_but_empty" if (pending or 0) > 0 else "empty"
     return freshness_verdict
 
 
@@ -447,7 +465,7 @@ def _consolidator_health(
         fired_empty = _is_fired_but_empty(exec_status, age, budget, now)
         freshness_verdict = _verdict(status, pending_count, fired_but_empty=fired_empty)
         verdict = (
-            _authoritative_verdict(run_verdict, freshness_verdict, pending_count)
+            _authoritative_verdict(run_verdict, freshness_verdict, pending_count, row_count)
             if run is not None
             else freshness_verdict
         )
