@@ -260,6 +260,50 @@ def test_is_fired_but_empty_false_when_execution_failed_or_absent() -> None:
     assert _is_fired_but_empty(None, index_age=90000.0, budget=86400, now=_FIXED_NOW) is False
 
 
+def test_authoritative_verdict_maps_self_reported_run() -> None:
+    from deployment_api.routes.health_consolidator import _authoritative_verdict
+
+    # Self-reported verdict is authoritative when present.
+    assert _authoritative_verdict("produced", "unknown", 0) == "produced"
+    assert _authoritative_verdict("produced", "unknown", 5) == "producing"  # current backlog → producing
+    assert _authoritative_verdict("empty", "producing", 0) == "fired_but_empty"  # ran but wrote nothing
+    assert _authoritative_verdict("failed", "producing", 0) == "stale_output"
+    # Unknown / absent self-report → fall back to the freshness-derived verdict.
+    assert _authoritative_verdict(None, "stale_output", 0) == "stale_output"
+
+
+def test_read_latest_run_parses_and_degrades() -> None:
+    from unittest.mock import MagicMock
+
+    from deployment_api.routes.health_consolidator import _read_latest_run
+
+    client = MagicMock()
+    client.download_bytes.return_value = b'{"verdict": "produced", "rows_added": 5}'
+    parsed = _read_latest_run(client, "bkt")
+    assert parsed is not None and parsed["verdict"] == "produced"
+    # Missing blob → None (honest "not reporting"), never a fabricated summary.
+    client.download_bytes.side_effect = FileNotFoundError("no latest.json")
+    assert _read_latest_run(client, "bkt") is None
+    # Malformed JSON → None.
+    client.download_bytes.side_effect = None
+    client.download_bytes.return_value = b"not json{"
+    assert _read_latest_run(client, "bkt") is None
+
+
+def test_mock_estate_carries_reporting_and_dead_consolidators() -> None:
+    """The mock estate distinguishes live (reporting latest.json) from dead (not reporting)."""
+    from deployment_api.routes.health_consolidator import _mock_response
+
+    resp = _mock_response(_FIXED_NOW)
+    by_cat = {c.category: c for c in resp.consolidators}
+    # A live consolidator self-reports.
+    assert by_cat["market-data-cefi"].run_reporting is True
+    assert by_cat["market-data-cefi"].run_verdict is not None
+    # The dead one has no latest.json → not reporting, honest empty state.
+    assert by_cat["strategy"].run_reporting is False
+    assert by_cat["strategy"].run_verdict is None
+
+
 def test_entry_budget_reads_catalog_then_falls_back() -> None:
     from deployment_api.routes.health_consolidator import _entry_budget
 

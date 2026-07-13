@@ -142,6 +142,16 @@ class ConsolidatorHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mode
     execution_status: str | None = None  # running | succeeded | failed | pending  (latest execution)
     execution_last_run_at: str | None = None  # ISO-8601 completion time of the latest execution
     execution_exit_code: int | None = None  # 0 succeeded / 1 failed (synthesised from Cloud Run counts)
+    # AUTHORITATIVE per-run summary the consolidator job self-publishes to _index/latest.json each
+    # cycle (UTL manifest_consolidator). ``run_reporting`` = a latest.json exists = the consolidator
+    # is live and reporting; False = dead / never-run (no latest.json). When present, its verdict is
+    # authoritative for produced/empty/failed (supersedes the Cloud-Run-execution inference).
+    run_reporting: bool = False  # does this consolidator publish a latest.json (is it live)?
+    run_verdict: str | None = None  # produced | empty | failed  (self-reported)
+    run_last_run_at: str | None = None  # ISO-8601 of the last self-reported run
+    run_shards_changed: int | None = None  # shards merged in the last run
+    run_rows_added: int | None = None  # rows added to the index in the last run
+    run_duration_ms: float | None = None  # last run's duration
     detail: str
 
 
@@ -263,6 +273,7 @@ def _verdict(status: str, pending: int | None, *, fired_but_empty: bool = False)
 
 
 _INDEX_BLOB = "_index/availability_index.parquet"
+_LATEST_RUN_BLOB = "_index/latest.json"  # the consolidator's self-published run summary (UTL manifest_consolidator)
 
 
 class _RangedIndexReader(io.RawIOBase):
@@ -306,6 +317,53 @@ class _RangedIndexReader(io.RawIOBase):
         view[:n] = data
         self._pos += n
         return n
+
+
+def _read_latest_run(client: StorageClient, bucket: str) -> dict[str, object] | None:
+    """The consolidator's self-published ``_index/latest.json`` run summary, or ``None`` if absent.
+
+    Absent = this consolidator has never run under the summary-emitting code (dead / not-yet-fired /
+    not-yet-redeployed) → the cockpit shows it as "not yet reporting", NEVER a fabricated all-clear.
+    Best-effort: any read/parse hiccup returns ``None``.
+    """
+    try:
+        raw = client.download_bytes(bucket, _LATEST_RUN_BLOB)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _as_str(v: object) -> str | None:
+    return v if isinstance(v, str) else None
+
+
+def _as_int(v: object) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _as_float(v: object) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _authoritative_verdict(run_verdict: str | None, freshness_verdict: str, pending: int | None) -> str:
+    """Map the consolidator's SELF-REPORTED run verdict onto the endpoint vocabulary.
+
+    When ``latest.json`` exists its verdict is authoritative (the job knows what it did) and supersedes
+    the Cloud-Run-execution inference: ``produced`` → produced/producing (per current backlog),
+    ``empty`` → the definitive fired-but-empty, ``failed`` → stale_output. Anything else / absent →
+    the freshness-derived verdict.
+    """
+    if run_verdict == "produced":
+        return "producing" if (pending or 0) > 0 else "produced"
+    if run_verdict == "empty":
+        return "fired_but_empty"
+    if run_verdict == "failed":
+        return "stale_output"
+    return freshness_verdict
 
 
 def _index_absolutes(client: StorageClient, bucket: str) -> tuple[int | None, int | None]:
@@ -383,17 +441,34 @@ def _consolidator_health(
         status, _, detail = _classify_ag(age, budget, total_count > 0)
         # Absolute snapshot of the consolidated index (rows via a cheap footer read, size via metadata).
         row_count, size_bytes = _index_absolutes(client, bucket)
+        # The consolidator's self-published run summary (authoritative when present; absent = not live).
+        run = _read_latest_run(client, bucket)
+        run_verdict = _as_str(run.get("verdict")) if run is not None else None
         fired_empty = _is_fired_but_empty(exec_status, age, budget, now)
-        if fired_empty:
+        freshness_verdict = _verdict(status, pending_count, fired_but_empty=fired_empty)
+        verdict = (
+            _authoritative_verdict(run_verdict, freshness_verdict, pending_count)
+            if run is not None
+            else freshness_verdict
+        )
+        if verdict == "fired_but_empty" and run is not None:
+            detail = f"{detail} — consolidator self-reports it ran but produced no rows (fired-but-empty)"
+        elif fired_empty:
             detail = f"execution SUCCEEDED recently yet {detail} — job ran green but wrote nothing (fired-but-empty)"
         return ConsolidatorHealth(
             **base,
             execution_status=exec_kind,
             execution_last_run_at=exec_run_at,
             execution_exit_code=exec_exit,
+            run_reporting=run is not None,
+            run_verdict=run_verdict,
+            run_last_run_at=_as_str(run.get("last_run_at")) if run is not None else None,
+            run_shards_changed=_as_int(run.get("shards_changed")) if run is not None else None,
+            run_rows_added=_as_int(run.get("rows_added")) if run is not None else None,
+            run_duration_ms=_as_float(run.get("duration_ms")) if run is not None else None,
             bucket=bucket,
             status=status,
-            verdict=_verdict(status, pending_count, fired_but_empty=fired_empty),
+            verdict=verdict,
             index_age_seconds=round(age, 1) if age is not None else None,
             last_successful_run_at=index_mtime.isoformat() if index_mtime is not None else None,
             pending_shard_count=pending_count,
@@ -650,7 +725,10 @@ def _mock_consolidator(
     *,
     exec_status: str = "succeeded",
     exec_exit: int | None = 0,
+    reporting: bool = True,
 ) -> ConsolidatorHealth:
+    # Map the endpoint verdict back to the consolidator's self-reported run verdict for the mock.
+    run_verdict = {"fired_but_empty": "empty", "stale_output": "failed", "empty": "empty"}.get(verdict, "produced")
     return ConsolidatorHealth(
         category=category,
         kind=kind,
@@ -671,6 +749,13 @@ def _mock_consolidator(
         execution_status=exec_status,
         execution_last_run_at=ts,
         execution_exit_code=exec_exit,
+        # A reporting consolidator publishes latest.json; a dead one (reporting=False) has none.
+        run_reporting=reporting,
+        run_verdict=run_verdict if reporting else None,
+        run_last_run_at=ts if reporting else None,
+        run_shards_changed=(pending if reporting else None),
+        run_rows_added=(pending * 1000 if reporting else None),
+        run_duration_ms=(8400.0 if reporting else None),
         detail=detail,
     )
 
@@ -755,6 +840,23 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
             ts,
             exec_status="succeeded",
             exec_exit=0,
+        ),
+        # A DEAD consolidator — declared in the catalog but never fired up, so it publishes no
+        # latest.json. The tab must show it honestly as "not yet reporting", never a fake all-clear.
+        _mock_consolidator(
+            "strategy",
+            "strategy",
+            None,
+            "degraded",
+            "empty",
+            None,
+            0,
+            0,
+            "no index and no shards — consolidator not yet fired up (not reporting)",
+            ts,
+            exec_status="pending",
+            exec_exit=None,
+            reporting=False,
         ),
     ]
     ag_entries = [_ag_from_consolidator(c) for c in consolidators if c.kind == "market-data" and c.asset_group]
