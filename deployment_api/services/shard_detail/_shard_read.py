@@ -142,23 +142,10 @@ def _parquet_signed_url(bucket: str | None, object_path: str | None) -> str | No
     """
     if not bucket or not object_path:
         return None
-    from google.cloud import storage  # noqa: cloud-sdk-direct
+    from unified_trading_library import generate_download_url
 
     try:
-        client: object = storage.Client(project=_pid)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        bucket_obj_fn: object = getattr(client, "bucket", None)
-        if not callable(bucket_obj_fn):
-            return None
-        bucket_obj: object = bucket_obj_fn(bucket)
-        blob_fn: object = getattr(bucket_obj, "blob", None)
-        if not callable(blob_fn):
-            return None
-        blob: object = blob_fn(object_path)
-        gen_fn: object = getattr(blob, "generate_signed_url", None)
-        if not callable(gen_fn):
-            return None
-        url_obj: object = gen_fn(expiration=_SIGNED_URL_TTL_SECONDS, method="GET")
-        return str(url_obj) if url_obj else None
+        return generate_download_url(bucket, object_path, expiry_minutes=_SIGNED_URL_TTL_SECONDS // 60)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("signed URL generation failed for gs://%s/%s: %s", bucket, object_path, exc)
         return None

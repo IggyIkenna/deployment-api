@@ -22,7 +22,7 @@ from typing import cast
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
-from unified_trading_library import log_event
+from unified_trading_library import get_storage_client, log_event
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 
@@ -143,15 +143,13 @@ async def _live_entries(project_id: str, services: list[str], limit: int) -> lis
     from google.cloud import (  # noqa: cloud-sdk-direct, imports-inside-functions
         artifactregistry_v1,  # pyright: ignore[reportMissingTypeStubs,reportAttributeAccessIssue,reportUnknownVariableType]
     )
-    from google.cloud import storage as gcs_storage  # noqa: cloud-sdk-direct, imports-inside-functions
 
     bucket_name = _tarball_bucket(project_id)
     try:
-        gcs_client: object = gcs_storage.Client(project=project_id)  # pyright: ignore[reportUnknownMemberType]
-        bucket_obj: object = gcs_client.bucket(bucket_name)  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+        storage_client = get_storage_client(provider="gcp", project_id=project_id)
     except Exception:
         logger.exception("could not connect to GCS bucket %s", bucket_name)
-        bucket_obj = None
+        storage_client = None
 
     ar_client: object = artifactregistry_v1.ArtifactRegistryAsyncClient()  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
     entries: list[BuildLineageEntry] = []
@@ -159,16 +157,15 @@ async def _live_entries(project_id: str, services: list[str], limit: int) -> lis
     for svc in services[:limit]:
         # --- tarball ---
         tarball_info: TarballInfo | None = None
-        if bucket_obj is not None:
+        if storage_client is not None:
             obj_path = _tarball_object_path(svc)
             try:
-                blob: object = bucket_obj.blob(obj_path)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
-                blob.reload()  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
+                meta = storage_client.get_blob_metadata(bucket_name, obj_path)
                 tarball_info = TarballInfo(
                     bucket=bucket_name,
                     object_path=obj_path,
-                    updated_at=getattr(blob, "updated", None),
-                    size_bytes=getattr(blob, "size", None),
+                    updated_at=meta.last_modified if meta is not None else None,
+                    size_bytes=meta.size if meta is not None else None,
                     sha256_hex=None,
                 )
             except Exception:
