@@ -208,7 +208,11 @@ async def _assemble_context(
     # Execution T+1 recon (execution alpha)
     try:
         date_str = datetime.now(UTC).strftime("%Y-%m-%d")
-        raw_bytes = storage.download_bytes(f"execution-store-{project_id}", "t1_recon/latest/summary.json")
+        # execution-store is per-asset_group; config.effective_execution_store_bucket
+        # resolves the CEFI bucket (decide-and-document, deployment_api_config.py) —
+        # the old f"execution-store-{project_id}" (no AG suffix) named a bucket that
+        # never existed, so this recon read always silently missed (2026-07-13 fix).
+        raw_bytes = storage.download_bytes(config.effective_execution_store_bucket, "t1_recon/latest/summary.json")
         recon = cast(dict[str, object], json.loads(raw_bytes))
         context["execution_alpha_bps"] = recon.get("execution_alpha_bps")
         context["execution_recon_date"] = recon.get("date", date_str)
