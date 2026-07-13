@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
 import pandas as pd
+from unified_api_contracts import VENUE_TO_ASSET_GROUP
 from unified_api_contracts.internal import MarketCategory
 from unified_trading_library import AssetGroup, build_bucket, resolve_bucket_name
 
@@ -652,15 +653,15 @@ class DataQueryService:
         return canonical_id, venue, instrument_type
 
     def _venue_to_category(self, venue: str) -> str | None:
-        """Map a venue name to its market category (CEFI/TRADFI/DEFI), or None."""
-        venue_upper = venue.upper()
-        if any(k in venue_upper for k in ["BINANCE", "BYBIT", "OKX", "DERIBIT"]):
-            return "CEFI"
-        if any(k in venue_upper for k in ["NYSE", "NASDAQ", "CME", "CBOE", "ICE"]):
-            return "TRADFI"
-        if any(k in venue_upper for k in ["UNISWAP", "AAVE", "CURVE", "BALANCER"]):
-            return "DEFI"
-        return None
+        """Map a venue name to its market category (CEFI/TRADFI/DEFI), or None.
+
+        Looks up the canonical UAC ``VENUE_TO_ASSET_GROUP`` registry (the same
+        source instruments-service and MTDS use) instead of a hardcoded
+        venue-substring allowlist, so newly onboarded venues (e.g. ASTER)
+        resolve correctly without a code change here.
+        """
+        asset_group = VENUE_TO_ASSET_GROUP.get(venue.upper())
+        return asset_group.upper() if asset_group else None
 
     def _parse_avail_date(self, raw: str, label: str) -> datetime | None:
         """Parse an availability date string to a timezone-aware datetime."""
