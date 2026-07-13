@@ -13,17 +13,17 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from deployment_service.deployments_registry import (
-    DEFAULT_BUCKET,
-    DeploymentRegistryEntry,
-    DeploymentsRegistry,
-)
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import — RBAC not re-exported from UIC top-level yet
     Permission,
 )
-from unified_trading_library import log_event
+from unified_trading_library import (
+    DEFAULT_BUCKET,
+    DeploymentRegistryEntry,
+    DeploymentsRegistry,
+    log_event,
+)
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.rbac import require_permission

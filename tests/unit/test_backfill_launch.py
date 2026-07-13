@@ -29,25 +29,6 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 
-# tests/unit/conftest.py pre-mocks `deployment_service` as an empty package
-# (`__path__ = []`) BEFORE this file is collected. That breaks submodule
-# imports like `from deployment_service.deployments_registry import ...`
-# which `deployment_api.routes.vm_deployments` does at module top. Pre-stub
-# the submodule with the symbols vm_deployments needs so `deployment_api.main`
-# can be imported here for TestClient.
-import sys
-from types import ModuleType
-from unittest.mock import MagicMock
-
-if "deployment_service.deployments_registry" not in sys.modules:
-    _dr_mod = ModuleType("deployment_service.deployments_registry")
-    _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
-    _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_run_log_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_serial_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    sys.modules["deployment_service.deployments_registry"] = _dr_mod
-
 from unittest.mock import patch
 
 import pytest

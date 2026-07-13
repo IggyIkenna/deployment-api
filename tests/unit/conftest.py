@@ -354,19 +354,6 @@ def _ensure_external_packages_mocked() -> None:
             },
             "deployment.orchestrator": {"DeploymentOrchestrator": MagicMock()},
             "deployment.quota_broker_client": {"QuotaBrokerClient": MagicMock()},
-            "deployments_registry": {
-                "ACTIVE_PREFIX": "deployments/active/",
-                "ARCHIVE_PREFIX": "deployments/archive/",
-                "DEFAULT_BUCKET": "test-deployments-bucket",
-                "DeploymentRegistryEntry": MagicMock(),
-                "DeploymentsRegistry": MagicMock(),
-                "vm_run_log_rolling_uri": MagicMock(
-                    return_value="gs://test-bucket/log-archive/rolling/20260101/vm/run.log"
-                ),
-                "vm_serial_rolling_uri": MagicMock(
-                    return_value="gs://test-bucket/log-archive/serial-rolling/20260101/vm/serial-console.txt"
-                ),
-            },
         }.items():
             full = f"deployment_service.{sub_name}"
             sub_mod = ModuleType(full)

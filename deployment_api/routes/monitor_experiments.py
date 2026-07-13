@@ -19,12 +19,12 @@ import shlex
 import subprocess
 from datetime import UTC, datetime
 
-from deployment_service.deployments_registry import (
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+from unified_trading_library import (
     DEFAULT_BUCKET,
     DeploymentsRegistry,
 )
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from deployment_api import settings as _settings
 from deployment_api.deployment_api_config import DeploymentApiConfig

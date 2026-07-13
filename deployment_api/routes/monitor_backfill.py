@@ -15,12 +15,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from deployment_service.deployments_registry import (
+from fastapi import APIRouter, Query
+from pydantic import BaseModel
+from unified_trading_library import (
     DEFAULT_BUCKET,
     DeploymentsRegistry,
 )
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
 
 from deployment_api import settings as _settings
 

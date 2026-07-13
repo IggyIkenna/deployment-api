@@ -29,10 +29,6 @@ import shlex
 import subprocess
 from datetime import UTC, datetime
 
-from deployment_service.deployments_registry import (
-    DEFAULT_BUCKET,
-    DeploymentsRegistry,
-)
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from unified_api_contracts import (
@@ -41,6 +37,10 @@ from unified_api_contracts import (
     EnvironmentTier,
     LiveClusterDeploymentKind,
     LiveClusterSpec,
+)
+from unified_trading_library import (
+    DEFAULT_BUCKET,
+    DeploymentsRegistry,
 )
 
 from deployment_api import settings as _settings

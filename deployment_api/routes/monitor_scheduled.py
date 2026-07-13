@@ -28,10 +28,6 @@ import shlex
 import subprocess
 from datetime import UTC, datetime
 
-from deployment_service.deployments_registry import (
-    DEFAULT_BUCKET,
-    DeploymentsRegistry,
-)
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from unified_api_contracts import (
@@ -40,6 +36,10 @@ from unified_api_contracts import (
     SchedulerSpec,
     SchedulerTargetKind,
     get_schedulers_for_env,
+)
+from unified_trading_library import (
+    DEFAULT_BUCKET,
+    DeploymentsRegistry,
 )
 
 from deployment_api import settings as _settings

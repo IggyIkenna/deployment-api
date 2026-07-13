@@ -31,7 +31,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -152,6 +152,17 @@ class ConsolidatorHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mode
     run_shards_changed: int | None = None  # shards merged in the last run
     run_rows_added: int | None = None  # rows added to the index in the last run
     run_duration_ms: float | None = None  # last run's duration
+    # Dark data-correctness actors — the last phantom audit + last empty re-probe for THIS AG, self-
+    # published by the instruments-service reconcile + e2e-testing re-probe scripts to
+    # _index/{phantom,reprobe}_audit_latest.json in this bucket. Absent = "no audit yet" (the UI shows
+    # the staleness loudly; phantom is ~weekly). None for buckets no audit targets (features/execution/flat).
+    phantom_audit_at: str | None = None  # ISO-8601 of the last phantom audit
+    phantom_count: int | None = None  # phantoms found in the last audit (0 = clean, honest)
+    phantom_triage_link: str | None = None  # gs:// drill-down JSONL, when phantoms > 0
+    reprobe_audit_at: str | None = None  # ISO-8601 of the last empty re-probe
+    reprobe_new_empties: int | None = None  # new empty_confirmed cells re-probed
+    reprobe_disagreements: int | None = None  # oracle/re-fetch says data SHOULD exist (candidate C1 bugs)
+    reprobe_reclassified: int | None = None  # proven-misclassified empties auto-flipped to attempted_failed
     detail: str
 
 
@@ -274,6 +285,14 @@ def _verdict(status: str, pending: int | None, *, fired_but_empty: bool = False)
 
 _INDEX_BLOB = "_index/availability_index.parquet"
 _LATEST_RUN_BLOB = "_index/latest.json"  # the consolidator's self-published run summary (UTL manifest_consolidator)
+# Dark data-correctness actors' self-published per-AG summaries (instruments-service phantom reconcile +
+# e2e-testing empty re-probe), written to the SAME bucket the consolidator card reads. Absent = "no audit
+# yet" (honest). Only market-data / instruments buckets carry these; other kinds read None (harmless).
+_PHANTOM_AUDIT_BLOB = "_index/phantom_audit_latest.json"
+_REPROBE_AUDIT_BLOB = "_index/reprobe_audit_latest.json"
+# The kinds an audit targets — gate the two extra reads to these so features/execution/flat entries
+# don't pay for a metadata HEAD that will always miss.
+_AUDIT_BEARING_KINDS = frozenset({"market-data", "instruments"})
 
 
 class _RangedIndexReader(io.RawIOBase):
@@ -319,21 +338,21 @@ class _RangedIndexReader(io.RawIOBase):
         return n
 
 
-def _read_latest_run(client: StorageClient, bucket: str) -> dict[str, object] | None:
-    """The consolidator's self-published ``_index/latest.json`` run summary, or ``None`` if absent.
+def _read_index_json(client: StorageClient, bucket: str, blob: str) -> dict[str, object] | None:
+    """Read a small self-published ``_index/*.json`` summary object, or ``None`` if absent/malformed.
 
-    Absent = this consolidator has never run under the summary-emitting code (dead / not-yet-fired /
-    not-yet-redeployed) → the cockpit shows it as "not yet reporting", NEVER a fabricated all-clear.
-    Best-effort: any read/parse hiccup returns ``None``.
+    Absent = the producer has never run under the summary-emitting code → the cockpit shows the
+    honest "not reporting / no audit yet" state, NEVER a fabricated all-clear. Best-effort: any
+    read/parse hiccup returns ``None``.
 
     Existence is checked via ``get_blob_metadata`` FIRST (returns ``None`` for a missing object,
-    like ``_index_absolutes``) so a missing ``latest.json`` never surfaces the provider's raw
-    ``NotFound`` (404) — which is NOT an ``OSError`` — as a 5xx on this read-only endpoint.
+    like ``_index_absolutes``) so a missing object never surfaces the provider's raw ``NotFound``
+    (404) — which is NOT an ``OSError`` — as a 5xx on this read-only endpoint.
     """
     try:
-        if client.get_blob_metadata(bucket, _LATEST_RUN_BLOB) is None:
-            return None  # no latest.json → the consolidator isn't reporting
-        raw = client.download_bytes(bucket, _LATEST_RUN_BLOB)
+        if client.get_blob_metadata(bucket, blob) is None:
+            return None  # object absent → not reporting
+        raw = client.download_bytes(bucket, blob)
     except (OSError, ValueError, RuntimeError):
         return None
     try:
@@ -341,6 +360,59 @@ def _read_latest_run(client: StorageClient, bucket: str) -> dict[str, object] | 
     except (ValueError, UnicodeDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _read_latest_run(client: StorageClient, bucket: str) -> dict[str, object] | None:
+    """The consolidator's self-published ``_index/latest.json`` run summary, or ``None`` if absent.
+
+    Absent = this consolidator has never run under the summary-emitting code (dead / not-yet-fired /
+    not-yet-redeployed) → the cockpit shows it as "not yet reporting", NEVER a fabricated all-clear.
+    """
+    return _read_index_json(client, bucket, _LATEST_RUN_BLOB)
+
+
+class _AuditFields(TypedDict):
+    """The audit-summary kwargs spread into ``ConsolidatorHealth`` — one typed slot per model field."""
+
+    phantom_audit_at: str | None
+    phantom_count: int | None
+    phantom_triage_link: str | None
+    reprobe_audit_at: str | None
+    reprobe_new_empties: int | None
+    reprobe_disagreements: int | None
+    reprobe_reclassified: int | None
+
+
+def _audit_fields(client: StorageClient, bucket: str, kind: str) -> _AuditFields:
+    """The last phantom-audit + empty-re-probe summaries for this consolidator's bucket.
+
+    Two cheap ``_index/*.json`` reads, gated to the kinds an audit actually targets so
+    features/execution/flat consolidators pay nothing. Every field is ``None`` when the summary is
+    absent (honest "no audit yet") — never a fabricated clean verdict. Best-effort throughout.
+    """
+    fields = _AuditFields(
+        phantom_audit_at=None,
+        phantom_count=None,
+        phantom_triage_link=None,
+        reprobe_audit_at=None,
+        reprobe_new_empties=None,
+        reprobe_disagreements=None,
+        reprobe_reclassified=None,
+    )
+    if kind not in _AUDIT_BEARING_KINDS:
+        return fields
+    phantom = _read_index_json(client, bucket, _PHANTOM_AUDIT_BLOB)
+    if phantom is not None:
+        fields["phantom_audit_at"] = _as_str(phantom.get("generated_at"))
+        fields["phantom_count"] = _as_int(phantom.get("phantom_count"))
+        fields["phantom_triage_link"] = _as_str(phantom.get("triage_jsonl"))
+    reprobe = _read_index_json(client, bucket, _REPROBE_AUDIT_BLOB)
+    if reprobe is not None:
+        fields["reprobe_audit_at"] = _as_str(reprobe.get("generated_at"))
+        fields["reprobe_new_empties"] = _as_int(reprobe.get("new_empties"))
+        fields["reprobe_disagreements"] = _as_int(reprobe.get("disagreements"))
+        fields["reprobe_reclassified"] = _as_int(reprobe.get("reclassified"))
+    return fields
 
 
 def _as_str(v: object) -> str | None:
@@ -461,6 +533,8 @@ def _consolidator_health(
         row_count, size_bytes = _index_absolutes(client, bucket)
         # The consolidator's self-published run summary (authoritative when present; absent = not live).
         run = _read_latest_run(client, bucket)
+        # The dark data-correctness actors' last audit for this bucket (phantom + empty re-probe).
+        audit = _audit_fields(client, bucket, entry["kind"] or "")
         run_verdict = _as_str(run.get("verdict")) if run is not None else None
         fired_empty = _is_fired_but_empty(exec_status, age, budget, now)
         freshness_verdict = _verdict(status, pending_count, fired_but_empty=fired_empty)
@@ -494,6 +568,7 @@ def _consolidator_health(
             oldest_pending_shard_age_seconds=oldest_pending_age,
             index_row_count=row_count,
             index_size_bytes=size_bytes,
+            **audit,
             detail=detail,
         )
     except (OSError, ValueError, RuntimeError) as exc:
@@ -747,6 +822,7 @@ def _mock_consolidator(
 ) -> ConsolidatorHealth:
     # Map the endpoint verdict back to the consolidator's self-reported run verdict for the mock.
     run_verdict = {"fired_but_empty": "empty", "stale_output": "failed", "empty": "empty"}.get(verdict, "produced")
+    _audits = kind in _AUDIT_BEARING_KINDS  # phantom/reprobe audits only touch market-data / instruments
     return ConsolidatorHealth(
         category=category,
         kind=kind,
@@ -774,6 +850,16 @@ def _mock_consolidator(
         run_shards_changed=(pending if reporting else None),
         run_rows_added=(pending * 1000 if reporting else None),
         run_duration_ms=(8400.0 if reporting else None),
+        # Dark data-correctness actors run only on market-data / instruments buckets (mock sample).
+        phantom_audit_at=ts if _audits else None,
+        phantom_count=(total % 4) if _audits else None,
+        # Placeholder path (no real gs:// URI / project id — the live endpoint carries the
+        # reconcile-published gs:// link; the UI treats it opaquely).
+        phantom_triage_link=("mock://phantom-triage/triage_mock.jsonl" if (_audits and (total % 4) > 0) else None),
+        reprobe_audit_at=ts if _audits else None,
+        reprobe_new_empties=pending if _audits else None,
+        reprobe_disagreements=(1 if pending > 5 else 0) if _audits else None,
+        reprobe_reclassified=0 if _audits else None,
         detail=detail,
     )
 
