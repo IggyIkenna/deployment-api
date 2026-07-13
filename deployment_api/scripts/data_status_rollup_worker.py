@@ -43,9 +43,11 @@ import gzip
 import io
 import json
 import logging
+import multiprocessing
+import resource
 import sys
 import time
-from typing import Any
+from typing import Any, cast
 
 from unified_trading_library import GcsEventSink, get_storage_client, log_event, run_lifecycle, setup_events
 
@@ -82,6 +84,23 @@ DEFAULT_SERVICES: tuple[str, ...] = _DEFAULT_SERVICES
 
 # Compute starts from this fixed date — covers every service's launch.
 _ROLLUP_START_DATE = "2018-01-01"
+
+# Per-service child-process memory ceiling — set comfortably below this
+# service's Cloud Run container memory limit (see
+# deployment-service/terraform/gcp/data_status_rollup_scheduler.tf), leaving
+# headroom for the parent process + gen1 sidecar overhead. Each service's
+# compute runs in its own throwaway spawned child capped at this limit, so a
+# service whose full 2018-today range is simply too large (MTDS/MDPS — see
+# plan deployment_api_cache_oom_and_ui_latency_remediation_2026_07_13.md §3,
+# "no RAM tier through 64GB survives it") raises a catchable MemoryError
+# inside ITS OWN child instead of Cloud Run OOM-killing the whole container.
+# Before this isolation existed, a whole-container kill silently dropped
+# every service queued after the offender — found 2026-07-13: only
+# instruments-service (first in _DEFAULT_SERVICES) had ever produced a
+# rollup blob; nothing past it (including small, cheap services) ever got a
+# chance to run.
+_CHILD_RLIMIT_AS_BYTES = 24 * 1024**3  # 24Gi, for a 32Gi container ceiling
+_CHILD_JOIN_TIMEOUT_S = 420  # wall-clock backstop; the rlimit above is the primary guard
 
 
 def _today_iso() -> str:
@@ -177,95 +196,207 @@ def _write_coverage_to_gcs(
     return {"size_compressed": len(compressed), "size_uncompressed": raw_size}
 
 
+def _set_child_memory_rlimit(limit_bytes: int) -> None:
+    """Cap this process's virtual address space.
+
+    Once exceeded, the allocator fails and Python raises a catchable
+    ``MemoryError`` instead of the process silently growing until Cloud
+    Run's platform-level OOM killer terminates the whole container.
+    """
+    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+
+def _child_build_and_write_service(
+    project_id: str,
+    bucket: str,
+    service: str,
+    end_date: str,
+    rlimit_bytes: int,
+    result_queue: multiprocessing.Queue[dict[str, Any]],
+) -> None:
+    """Child-process entrypoint: compute + write one service's rollup + coverage.
+
+    Runs in its own spawned process (see :func:`_run_service_isolated`) so a
+    memory blowup — a caught ``MemoryError`` from the rlimit above, or a
+    harder native crash — only kills this throwaway child, never the parent
+    request/container. Always puts exactly one result dict on the queue
+    (even on failure) so the parent never blocks past its join timeout.
+    """
+    result: dict[str, Any] = {"service": service, "manifest_ok": False, "coverage_ok": False}
+    try:
+        _set_child_memory_rlimit(rlimit_bytes)
+    except Exception as e:  # best-effort guard: proceed unprotected rather than abort the service
+        logger.warning("could not set memory rlimit for service=%s: %s", service, e)
+
+    try:
+        # Force fully-serial per-asset-group compute in THIS fresh child
+        # interpreter. Running asset groups in parallel threads/processes
+        # holds every AG's cell-grid intermediate at once and OOMs well
+        # before the rlimit above would catch it cleanly; serial holds one
+        # AG at a time. This mirrors the two overrides the parent process
+        # used to set on itself before this isolation existed — each child
+        # is single-use and re-imports the module fresh, so there is no
+        # "restore afterward" concern.
+        import deployment_api.services.data_status_service as _dss_mod
+
+        _dss_mod._PROCESS_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
+        _dss_mod._THREAD_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
+
+        storage_client = get_storage_client(project_id=project_id)
+        dss = DataStatusService()
+    except Exception as e:  # must never escape uncaught; the parent needs a result either way
+        result["error"] = f"init: {e}"
+        with contextlib.suppress(Exception):
+            result_queue.put(result)
+        return
+
+    t0 = time.monotonic()
+    try:
+        payload = _build_one_service_rollup(dss, service, end_date)
+        metrics = _write_rollup_to_gcs(storage_client, bucket, service, payload)
+        result["manifest_ok"] = True
+        result["manifest_elapsed_s"] = round(time.monotonic() - t0, 1)
+        result["size_compressed"] = metrics["size_compressed"]
+        result["size_uncompressed"] = metrics["size_uncompressed"]
+        result["asset_groups_n"] = len(payload.get("asset_groups", {}))  # noqa: qg-empty-fallback — telemetry count only
+        del payload, metrics
+    except Exception as e:  # per-service isolation; caller logs + moves on
+        result["manifest_elapsed_s"] = round(time.monotonic() - t0, 1)
+        result["manifest_error"] = str(e)
+
+    t1 = time.monotonic()
+    try:
+        cov_payload = _build_one_service_coverage(dss, service)
+        cov_metrics = _write_coverage_to_gcs(storage_client, bucket, service, cov_payload)
+        result["coverage_ok"] = True
+        result["coverage_elapsed_s"] = round(time.monotonic() - t1, 1)
+        result["coverage_size_compressed"] = cov_metrics["size_compressed"]
+    except Exception as e:  # per-service isolation; caller logs + moves on
+        result["coverage_elapsed_s"] = round(time.monotonic() - t1, 1)
+        result["coverage_error"] = str(e)
+
+    with contextlib.suppress(Exception):
+        result_queue.put(result)
+
+
+def _run_service_isolated(project_id: str, bucket: str, service: str, end_date: str) -> dict[str, Any]:
+    """Run one service's rollup compute in an isolated spawned child process.
+
+    Returns a result dict describing what happened, synthesising a failure
+    result if the child was OOM-killed / crashed / timed out before it could
+    report back — the caller (:func:`run_rollup`) treats this exactly like
+    an in-process exception would have been treated before this isolation
+    was added, so a doomed service (e.g. a full-history MTDS/MDPS build)
+    never prevents any other service's rollup from being written.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    result_queue: multiprocessing.Queue[dict[str, Any]] = ctx.Queue()
+    process = ctx.Process(
+        target=_child_build_and_write_service,
+        args=(project_id, bucket, service, end_date, _CHILD_RLIMIT_AS_BYTES, result_queue),
+        daemon=True,
+        name=f"rollup-{service[:24]}",
+    )
+    process.start()
+    process.join(timeout=_CHILD_JOIN_TIMEOUT_S)
+
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=10)
+        if process.is_alive():
+            process.kill()
+        return {
+            "service": service,
+            "manifest_ok": False,
+            "coverage_ok": False,
+            "error": f"timed out after {_CHILD_JOIN_TIMEOUT_S}s",
+        }
+
+    if not result_queue.empty():
+        return cast(dict[str, Any], result_queue.get())
+
+    return {
+        "service": service,
+        "manifest_ok": False,
+        "coverage_ok": False,
+        "error": f"child exited with code {process.exitcode} before reporting a result (likely OOM-killed)",
+    }
+
+
 def run_rollup(project_id: str, bucket: str, services: list[str]) -> int:
-    """Compute and upload one rollup per service. Returns process exit code."""
-    # Disable the ProcessPool fork-parallelism inside _get_manifest_status_sync.
-    # The worker invokes ``asyncio.run(get_manifest_status())`` per service,
-    # which schedules the sync compute on a thread pool. Forking from a
-    # multi-threaded process is unsafe (Python emits a DeprecationWarning;
-    # in practice we observed silent deadlock / SIGABRT on services like
-    # market-tick-data-service). The worker doesn't need per-request parallelism
-    # anyway — it runs once every 5 min and processes services sequentially.
-    import deployment_api.services.data_status_service as _dss_mod
+    """Compute and upload one rollup per service. Returns process exit code.
 
-    _dss_mod._PROCESS_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
-
+    Each service's compute + write runs in its own isolated child process
+    (see :func:`_run_service_isolated`) — a service whose full-history build
+    is simply too large for this container's memory (MTDS/MDPS) fails on
+    its own without preventing any other service's rollup from being
+    written. Before this isolation existed, one such failure OOM-killed the
+    whole container mid-sweep and silently dropped every service queued
+    after the offender.
+    """
     end_date = _today_iso()
-    storage_client = get_storage_client(project_id=project_id)
-    dss = DataStatusService()
 
     successes = 0
     failures: list[tuple[str, str]] = []
     for service in services:
-        t0 = time.monotonic()
-        # Manifest rollup
-        try:
-            payload = _build_one_service_rollup(dss, service, end_date)
-            metrics = _write_rollup_to_gcs(storage_client, bucket, service, payload)
-            elapsed = time.monotonic() - t0
+        result = _run_service_isolated(project_id, bucket, service, end_date)
+
+        if result.get("manifest_ok"):
             log_event(
                 "SERVICE_PROCESSED",
                 details={
                     "service": service,
                     "kind": "manifest",
-                    "elapsed_s": round(elapsed, 1),
-                    "size_compressed": metrics["size_compressed"],
-                    "size_uncompressed": metrics["size_uncompressed"],
-                    "asset_groups_n": len(payload.get("asset_groups", {})),  # pyright: ignore[reportAny]  # noqa: qg-empty-fallback — telemetry count only
+                    "elapsed_s": result.get("manifest_elapsed_s"),
+                    "size_compressed": result.get("size_compressed"),
+                    "size_uncompressed": result.get("size_uncompressed"),
+                    "asset_groups_n": result.get("asset_groups_n"),
                 },
             )
-            # Free the manifest payload before computing coverage — the MTDS
-            # manifest is ~150 MB peak in Python heap, and coverage compute
-            # builds its own large intermediates. Letting the GC reclaim
-            # between the two halves keeps each service under the 16 GiB
-            # Cloud Run memory ceiling.
-            del payload, metrics
             successes += 1
-        except Exception as e:  # per-service shard isolation — one bad service must NOT abort the sweep
-            elapsed = time.monotonic() - t0
-            failures.append((service, f"manifest: {e}"))
+        else:
+            error = result.get("manifest_error") or result.get("error") or "unknown"
+            failures.append((service, f"manifest: {error}"))
             log_event(
                 "SERVICE_FAILED",
                 severity="ERROR",
                 details={
                     "service": service,
                     "kind": "manifest",
-                    "elapsed_s": round(elapsed, 1),
-                    "error": str(e),
+                    "elapsed_s": result.get("manifest_elapsed_s"),
+                    "error": str(error),
                 },
             )
-            logger.exception("manifest rollup failed for service=%s", service)
+            logger.error("manifest rollup failed for service=%s: %s", service, error)
 
         # Coverage-summary rollup — paired with manifest. The deployment-ui
         # data-status panel fires both /manifest and /coverage-summary in
         # parallel; before this rollup landed coverage-summary was a 15s
         # on-demand GCS scan. Now it's a sub-second GCS-blob read.
-        t1 = time.monotonic()
-        try:
-            cov_payload = _build_one_service_coverage(dss, service)
-            cov_metrics = _write_coverage_to_gcs(storage_client, bucket, service, cov_payload)
+        if result.get("coverage_ok"):
             log_event(
                 "SERVICE_PROCESSED",
                 details={
                     "service": service,
                     "kind": "coverage",
-                    "elapsed_s": round(time.monotonic() - t1, 1),
-                    "size_compressed": cov_metrics["size_compressed"],
+                    "elapsed_s": result.get("coverage_elapsed_s"),
+                    "size_compressed": result.get("coverage_size_compressed"),
                 },
             )
-        except Exception as e:  # per-service shard isolation — one bad service must NOT abort the sweep
-            failures.append((service, f"coverage: {e}"))
+        else:
+            error = result.get("coverage_error") or result.get("error") or "unknown"
+            failures.append((service, f"coverage: {error}"))
             log_event(
                 "SERVICE_FAILED",
                 severity="ERROR",
                 details={
                     "service": service,
                     "kind": "coverage",
-                    "elapsed_s": round(time.monotonic() - t1, 1),
-                    "error": str(e),
+                    "elapsed_s": result.get("coverage_elapsed_s"),
+                    "error": str(error),
                 },
             )
-            logger.exception("coverage rollup failed for service=%s", service)
+            logger.error("coverage rollup failed for service=%s: %s", service, error)
 
     # Non-zero exit if every service failed (cron fires next minute, idempotent
     # retry; no need to crash the job for partial successes).
