@@ -27,6 +27,9 @@ def test_venue_to_category_cefi_match() -> None:
     assert svc._venue_to_category("binance-spot") == "CEFI"  # lowercase match
     assert svc._venue_to_category("OKX") == "CEFI"
     assert svc._venue_to_category("DERIBIT") == "CEFI"
+    # Onboarded after the old hardcoded 12-venue allowlist was written —
+    # must now resolve via the canonical VENUE_TO_ASSET_GROUP registry.
+    assert svc._venue_to_category("ASTER") == "CEFI"
 
 
 def test_venue_to_category_tradfi_match() -> None:
@@ -38,9 +41,9 @@ def test_venue_to_category_tradfi_match() -> None:
 
 def test_venue_to_category_defi_match() -> None:
     svc = _svc()
-    assert svc._venue_to_category("UNISWAP_V3-ARBITRUM") == "DEFI"
-    assert svc._venue_to_category("aavev3-base") == "DEFI"
-    assert svc._venue_to_category("CURVE-MAINNET") == "DEFI"
+    assert svc._venue_to_category("UNISWAP_V3-ETHEREUM") == "DEFI"
+    assert svc._venue_to_category("aave_v3-ethereum") == "DEFI"
+    assert svc._venue_to_category("CURVE-ETHEREUM") == "DEFI"
 
 
 def test_venue_to_category_unknown_returns_none() -> None:

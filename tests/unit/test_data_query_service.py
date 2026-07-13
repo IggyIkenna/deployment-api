@@ -201,8 +201,10 @@ class TestGetInstrumentAvailability:
     async def test_cefi_venue_returns_cefi_category(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
-            result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03")
-        assert result["venue"] == "BINANCE"
+            result = await svc.get_instrument_availability(
+                "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
+            )
+        assert result["venue"] == "BINANCE-SPOT"
         assert "daily_availability" in result
         assert "summary" in result
 
@@ -225,7 +227,9 @@ class TestGetInstrumentAvailability:
         svc = self._make_service()
         # All days available
         with patch.object(_dqs_mod, "object_exists", return_value=True):
-            result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03")
+            result = await svc.get_instrument_availability(
+                "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
+            )
         summary = result["summary"]
         assert summary["total_days"] == 3
         assert summary["available_days"] == 3
@@ -235,7 +239,9 @@ class TestGetInstrumentAvailability:
     async def test_missing_days_counted_when_no_data(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
-            result = await svc.get_instrument_availability("BINANCE", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03")
+            result = await svc.get_instrument_availability(
+                "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
+            )
         summary = result["summary"]
         assert summary["missing_days"] == 3
         assert summary["available_days"] == 0
@@ -251,7 +257,7 @@ class TestGetInstrumentAvailability:
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=True):
             result = await svc.get_instrument_availability(
-                "BINANCE",
+                "BINANCE-SPOT",
                 "SPOT",
                 "BTC-USDT",
                 "2026-01-01",
@@ -267,7 +273,7 @@ class TestGetInstrumentAvailability:
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
             result = await svc.get_instrument_availability(
-                "BINANCE",
+                "BINANCE-SPOT",
                 "SPOT",
                 "BTC-USDT",
                 "2026-01-01",
@@ -280,7 +286,9 @@ class TestGetInstrumentAvailability:
     async def test_defi_venue_returns_defi_category(self):
         svc = self._make_service()
         with patch.object(_dqs_mod, "object_exists", return_value=False):
-            result = await svc.get_instrument_availability("UNISWAP", "SWAP", "ETH-USDC", "2026-01-01", "2026-01-01")
+            result = await svc.get_instrument_availability(
+                "UNISWAP_V3-ETHEREUM", "SWAP", "ETH-USDC", "2026-01-01", "2026-01-01"
+            )
         assert "error" not in result
 
 

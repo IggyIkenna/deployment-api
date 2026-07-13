@@ -8,8 +8,11 @@ import deployment-service as a Python package; interaction is via messaging/APIs
 All fields read from the same environment variables as before. No behaviour change.
 """
 
+from typing import cast
+
 from pydantic import AliasChoices, Field
-from unified_trading_library import UnifiedCloudConfig
+from unified_trading_library import UnifiedCloudConfig, resolve_bucket_name
+from unified_trading_library.cloud_interface import Cloud  # noqa: qg-deep-import — Cloud not yet on UTL root facade
 
 
 class DeploymentApiConfig(UnifiedCloudConfig):
@@ -478,35 +481,42 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         default="",
         validation_alias=AliasChoices("EXECUTION_STORE_BUCKET"),
         description="GCS bucket name for execution store configs (without gs:// prefix). "
-        "Defaults to 'execution-store-{gcp_project_id}' when empty.",
+        "execution-store is a per-asset_group yaml kind; defaults to the CEFI "
+        "execution-store bucket (resolve_bucket_name kind='execution-store', "
+        "asset_group='cefi') when empty — see effective_execution_store_bucket.",
     )
 
     strategy_store_cefi_bucket: str = Field(
         default="",
         validation_alias=AliasChoices("STRATEGY_STORE_CEFI_BUCKET"),
         description="GCS bucket name for strategy store CeFi configs (without gs:// prefix). "
-        "Defaults to 'strategy-store-cefi-{gcp_project_id}' when empty.",
+        "strategy-store is a FLAT yaml kind (D6 Phase 4 operator decision 2026-05-20); "
+        "defaults to the unified flat strategy-store bucket (resolve_bucket_name "
+        "kind='strategy-store') when empty — same bucket as tradfi/defi.",
     )
 
     strategy_store_tradfi_bucket: str = Field(
         default="",
         validation_alias=AliasChoices("STRATEGY_STORE_TRADFI_BUCKET"),
         description="GCS bucket name for strategy store TradFi configs (without gs:// prefix). "
-        "Defaults to 'strategy-store-tradfi-{gcp_project_id}' when empty.",
+        "Defaults to the unified flat strategy-store bucket when empty — same bucket "
+        "as cefi/defi (see strategy_store_cefi_bucket).",
     )
 
     strategy_store_defi_bucket: str = Field(
         default="",
         validation_alias=AliasChoices("STRATEGY_STORE_DEFI_BUCKET"),
         description="GCS bucket name for strategy store DeFi configs (without gs:// prefix). "
-        "Defaults to 'strategy-store-defi-{gcp_project_id}' when empty.",
+        "Defaults to the unified flat strategy-store bucket when empty — same bucket "
+        "as cefi/tradfi (see strategy_store_cefi_bucket).",
     )
 
     ml_configs_store_bucket: str = Field(
         default="",
         validation_alias=AliasChoices("ML_CONFIGS_STORE_BUCKET"),
         description="GCS bucket name for ML configs store (without gs:// prefix). "
-        "Defaults to 'ml-configs-store-{gcp_project_id}' when empty.",
+        "Defaults to the env-tiered ml-configs-store bucket (resolve_bucket_name "
+        "kind='ml-configs-store') when empty.",
     )
 
     # =========================================================================
@@ -608,38 +618,71 @@ class DeploymentApiConfig(UnifiedCloudConfig):
 
     @property
     def effective_execution_store_bucket(self) -> str:
-        """Get the effective execution store bucket with project_id fallback."""
+        """Get the effective execution store bucket with project_id fallback.
+
+        execution-store is a per-asset_group yaml kind (CEFI/TRADFI/DEFI/SPORTS —
+        cloud-providers.yaml). The OLD default here (``execution-store-{pid}``, no
+        asset_group suffix) named a bucket that never existed (dead on arrival).
+        This property backs a single global /config-buckets route entry
+        (routes/services.py get_config_buckets, "execution-service") with no
+        asset_group in scope to resolve against — decide-and-document (2026-07-13,
+        strategy_store_split_brain_2026_07_13.md follow-up): default to the CEFI
+        execution-store bucket, since it demonstrably exists and CeFi is the only
+        asset_group with live execution-service traffic today. Revisit with a
+        per-AG breakdown (mirroring strategy-store's 3-bucket config-buckets
+        display) if a caller ever needs TradFi/DeFi execution buckets surfaced
+        here.
+        """
         if self.execution_store_bucket:
             return self.execution_store_bucket
-        return f"execution-store-{self.gcp_project_id}"
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="execution-store", asset_group="cefi")
 
     @property
     def effective_strategy_store_cefi_bucket(self) -> str:
-        """Get the effective strategy store CeFi bucket with project_id fallback."""
+        """Get the effective strategy store CeFi bucket with project_id fallback.
+
+        strategy-store is a FLAT yaml kind (unified bucket per D6 Phase 4 operator
+        decision 2026-05-20) — the resolver ignores asset_group for flat kinds, so
+        this intentionally returns the SAME bucket as the tradfi/defi variants
+        below. That's correct: one strategy-store bucket for all asset_groups.
+        """
         if self.strategy_store_cefi_bucket:
             return self.strategy_store_cefi_bucket
-        return f"strategy-store-cefi-{self.gcp_project_id}"
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="strategy-store")
 
     @property
     def effective_strategy_store_tradfi_bucket(self) -> str:
-        """Get the effective strategy store TradFi bucket with project_id fallback."""
+        """Get the effective strategy store TradFi bucket with project_id fallback.
+
+        strategy-store is FLAT (see effective_strategy_store_cefi_bucket) — same
+        bucket as cefi/defi by design.
+        """
         if self.strategy_store_tradfi_bucket:
             return self.strategy_store_tradfi_bucket
-        return f"strategy-store-tradfi-{self.gcp_project_id}"
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="strategy-store")
 
     @property
     def effective_strategy_store_defi_bucket(self) -> str:
-        """Get the effective strategy store DeFi bucket with project_id fallback."""
+        """Get the effective strategy store DeFi bucket with project_id fallback.
+
+        strategy-store is FLAT (see effective_strategy_store_cefi_bucket) — same
+        bucket as cefi/tradfi by design.
+        """
         if self.strategy_store_defi_bucket:
             return self.strategy_store_defi_bucket
-        return f"strategy-store-defi-{self.gcp_project_id}"
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="strategy-store")
 
     @property
     def effective_ml_configs_store_bucket(self) -> str:
-        """Get the effective ML configs store bucket with project_id fallback."""
+        """Get the effective ML configs store bucket with project_id fallback.
+
+        ml-configs-store is env-tiered (``ml-configs-store-{env}-{pid}``). Both
+        the old flat (no-env) default and the resolved env-tiered bucket are
+        empty (2026-07-13 estate audit), so this cutover is data-safe.
+        """
         if self.ml_configs_store_bucket:
             return self.ml_configs_store_bucket
-        return f"ml-configs-store-{self.gcp_project_id}"  # CORRECT-LOCAL
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-configs-store")
 
     @property
     def effective_state_bucket(self) -> str:
