@@ -52,6 +52,10 @@ from unified_trading_library.cloud_interface.bucket_naming import (  # noqa: qg-
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.routes._cloud_run_executions import (
+    CloudRunExecutionStatus,
+    latest_execution_by_job,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -123,14 +127,31 @@ class ConsolidatorHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mode
     job_name: str  # Cloud Run job short-name — the join key the deployments popover links on
     bucket: str
     status: str  # ok | degraded | critical | unknown  (freshness posture)
-    verdict: str  # produced | producing | stale_output | empty | unknown  (data-correctness lens)
+    verdict: str  # produced | producing | stale_output | fired_but_empty | empty | unknown  (data-correctness)
     index_age_seconds: float | None = None
     staleness_budget_seconds: int
     last_successful_run_at: str | None = None
     pending_shard_count: int | None = None  # backlog: shards written since the last merge
     total_shard_count: int | None = None  # fan-in width: how many per-VM shards feed this index
+    oldest_pending_shard_age_seconds: float | None = None  # age of the OLDEST un-absorbed shard (merge-stuck-for)
     index_row_count: int | None = None  # absolute rows in the consolidated index (parquet num_rows)
     index_size_bytes: int | None = None  # size of the consolidated index file on disk
+    # Cloud Run execution truth for THIS consolidator job (the fired-but-empty discriminator):
+    # a recent SUCCEEDED execution whose index is nonetheless stale = the job ran green but wrote
+    # nothing (verdict ``fired_but_empty``), vs a genuinely down/behind job (no recent success).
+    execution_status: str | None = None  # running | succeeded | failed | pending  (latest execution)
+    execution_last_run_at: str | None = None  # ISO-8601 completion time of the latest execution
+    execution_exit_code: int | None = None  # 0 succeeded / 1 failed (synthesised from Cloud Run counts)
+    # AUTHORITATIVE per-run summary the consolidator job self-publishes to _index/latest.json each
+    # cycle (UTL manifest_consolidator). ``run_reporting`` = a latest.json exists = the consolidator
+    # is live and reporting; False = dead / never-run (no latest.json). When present, its verdict is
+    # authoritative for produced/empty/failed (supersedes the Cloud-Run-execution inference).
+    run_reporting: bool = False  # does this consolidator publish a latest.json (is it live)?
+    run_verdict: str | None = None  # produced | empty | failed  (self-reported)
+    run_last_run_at: str | None = None  # ISO-8601 of the last self-reported run
+    run_shards_changed: int | None = None  # shards merged in the last run
+    run_rows_added: int | None = None  # rows added to the index in the last run
+    run_duration_ms: float | None = None  # last run's duration
     detail: str
 
 
@@ -207,13 +228,41 @@ def _catalog_bucket(entry: dict[str, str | None]) -> str:
     return (entry["bucket_template"] or "").format(env=env, project=project)
 
 
-def _verdict(status: str, pending: int | None) -> str:
-    """Data-correctness lens derived cheaply from freshness + backlog.
+def _is_fired_but_empty(
+    exec_status: CloudRunExecutionStatus | None, index_age: float | None, budget: int, now: datetime
+) -> bool:
+    """Did the job fire successfully-and-recently yet leave a STALE index → wrote nothing?
 
-    A precise ``fired_but_empty`` (job exited 0 but wrote nothing) needs per-run execution
-    history — a later refinement; the list view derives the signal from what one cheap index
-    stat + shard-list already tell us.
+    The consolidator touches the index mtime EVERY cycle (incl. no-op cycles), so a recent
+    SUCCEEDED execution should have advanced the index. If the latest execution succeeded within
+    the budget window but the index is nonetheless older than the budget, the run exited 0 and
+    produced nothing — the silent failure a liveness-only view shows as "succeeded". If the last
+    success is ALSO old (> budget), that's just down/behind (``stale_output``), not fired-but-empty.
     """
+    if exec_status is None or exec_status.exit_code != 0 or exec_status.last_run_at is None:
+        return False
+    if index_age is None or index_age <= budget:
+        return False  # index fresh → the run DID write; not empty
+    try:
+        exec_dt = datetime.fromisoformat(exec_status.last_run_at)
+    except ValueError:
+        return False
+    if exec_dt.tzinfo is None:  # can't safely diff a naive stamp against tz-aware ``now``
+        return False
+    exec_age = (now - exec_dt).total_seconds()
+    return 0 <= exec_age <= budget  # a RECENT green run against a STALE index
+
+
+def _verdict(status: str, pending: int | None, *, fired_but_empty: bool = False) -> str:
+    """Data-correctness lens: the execution-join ``fired_but_empty`` first, else freshness+backlog.
+
+    ``fired_but_empty`` (a recent SUCCEEDED execution against a stale index — see
+    ``_is_fired_but_empty``) is the precise silent-failure signal and takes precedence over the
+    freshness-derived ``stale_output``; the rest is derived from what one cheap index stat +
+    shard-list tell us.
+    """
+    if fired_but_empty:
+        return "fired_but_empty"  # execution succeeded recently yet the index is stale → wrote nothing
     if status == "critical":
         return "stale_output"  # index stale while per-VM shards wait → output is behind
     if status == "degraded":
@@ -224,6 +273,7 @@ def _verdict(status: str, pending: int | None) -> str:
 
 
 _INDEX_BLOB = "_index/availability_index.parquet"
+_LATEST_RUN_BLOB = "_index/latest.json"  # the consolidator's self-published run summary (UTL manifest_consolidator)
 
 
 class _RangedIndexReader(io.RawIOBase):
@@ -269,6 +319,53 @@ class _RangedIndexReader(io.RawIOBase):
         return n
 
 
+def _read_latest_run(client: StorageClient, bucket: str) -> dict[str, object] | None:
+    """The consolidator's self-published ``_index/latest.json`` run summary, or ``None`` if absent.
+
+    Absent = this consolidator has never run under the summary-emitting code (dead / not-yet-fired /
+    not-yet-redeployed) → the cockpit shows it as "not yet reporting", NEVER a fabricated all-clear.
+    Best-effort: any read/parse hiccup returns ``None``.
+    """
+    try:
+        raw = client.download_bytes(bucket, _LATEST_RUN_BLOB)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _as_str(v: object) -> str | None:
+    return v if isinstance(v, str) else None
+
+
+def _as_int(v: object) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _as_float(v: object) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _authoritative_verdict(run_verdict: str | None, freshness_verdict: str, pending: int | None) -> str:
+    """Map the consolidator's SELF-REPORTED run verdict onto the endpoint vocabulary.
+
+    When ``latest.json`` exists its verdict is authoritative (the job knows what it did) and supersedes
+    the Cloud-Run-execution inference: ``produced`` → produced/producing (per current backlog),
+    ``empty`` → the definitive fired-but-empty, ``failed`` → stale_output. Anything else / absent →
+    the freshness-derived verdict.
+    """
+    if run_verdict == "produced":
+        return "producing" if (pending or 0) > 0 else "produced"
+    if run_verdict == "empty":
+        return "fired_but_empty"
+    if run_verdict == "failed":
+        return "stale_output"
+    return freshness_verdict
+
+
 def _index_absolutes(client: StorageClient, bucket: str) -> tuple[int | None, int | None]:
     """``(row_count, size_bytes)`` for a bucket's consolidated index. Size is one metadata call;
     rows come from a cheap ranged parquet-footer read (never downloads the whole index). Best-effort:
@@ -294,8 +391,18 @@ def _index_absolutes(client: StorageClient, bucket: str) -> tuple[int | None, in
         return None, size
 
 
-def _consolidator_health(entry: dict[str, str | None], budget: int, now: datetime) -> ConsolidatorHealth:
-    """One consolidator's posture: freshness + backlog + fan-in + verdict (single index stat + shard-list)."""
+def _consolidator_health(
+    entry: dict[str, str | None],
+    budget: int,
+    now: datetime,
+    exec_status: CloudRunExecutionStatus | None = None,
+) -> ConsolidatorHealth:
+    """One consolidator's posture: freshness + backlog + fan-in + verdict (single index stat + shard-list).
+
+    ``exec_status`` (the job's latest Cloud Run execution, looked up once per request) enables the
+    ``fired_but_empty`` verdict — a recent green run against a stale index. Absent it, the verdict
+    degrades to the freshness-derived signal (``stale_output`` / ``producing`` / …).
+    """
     base = {
         "category": entry["category"] or "",
         "kind": entry["kind"] or "",
@@ -303,30 +410,70 @@ def _consolidator_health(entry: dict[str, str | None], budget: int, now: datetim
         "job_name": entry["job_name"] or "",
         "staleness_budget_seconds": budget,
     }
+    exec_kind = exec_status.status if exec_status is not None else None
+    exec_run_at = exec_status.last_run_at if exec_status is not None else None
+    exec_exit = exec_status.exit_code if exec_status is not None else None
     try:
         bucket = _catalog_bucket(entry)
     except (KeyError, ValueError) as exc:
         return ConsolidatorHealth(
-            **base, bucket="", status="unknown", verdict="unknown", detail=f"bucket resolve failed: {exc}"
+            **base,
+            execution_status=exec_kind,
+            execution_last_run_at=exec_run_at,
+            execution_exit_code=exec_exit,
+            bucket="",
+            status="unknown",
+            verdict="unknown",
+            detail=f"bucket resolve failed: {exc}",
         )
     try:
         client = get_storage_client()
         age = consolidated_blob_age_sec(client, bucket)
         index_mtime = (now - timedelta(seconds=age)) if age is not None else None
-        # ONE prefix list gives BOTH the backlog counts AND the fan-in width.
-        pending_count, total_count = per_vm_shard_backlog(client, bucket, index_mtime)
+        # ONE prefix list gives the backlog counts, the fan-in width, AND the oldest pending shard.
+        backlog = per_vm_shard_backlog(client, bucket, index_mtime)
+        pending_count, total_count = backlog.pending, backlog.total
+        oldest_pending_age = (
+            round((now - backlog.oldest_pending_at).total_seconds(), 1)
+            if backlog.oldest_pending_at is not None
+            else None
+        )
         status, _, detail = _classify_ag(age, budget, total_count > 0)
         # Absolute snapshot of the consolidated index (rows via a cheap footer read, size via metadata).
         row_count, size_bytes = _index_absolutes(client, bucket)
+        # The consolidator's self-published run summary (authoritative when present; absent = not live).
+        run = _read_latest_run(client, bucket)
+        run_verdict = _as_str(run.get("verdict")) if run is not None else None
+        fired_empty = _is_fired_but_empty(exec_status, age, budget, now)
+        freshness_verdict = _verdict(status, pending_count, fired_but_empty=fired_empty)
+        verdict = (
+            _authoritative_verdict(run_verdict, freshness_verdict, pending_count)
+            if run is not None
+            else freshness_verdict
+        )
+        if verdict == "fired_but_empty" and run is not None:
+            detail = f"{detail} — consolidator self-reports it ran but produced no rows (fired-but-empty)"
+        elif fired_empty:
+            detail = f"execution SUCCEEDED recently yet {detail} — job ran green but wrote nothing (fired-but-empty)"
         return ConsolidatorHealth(
             **base,
+            execution_status=exec_kind,
+            execution_last_run_at=exec_run_at,
+            execution_exit_code=exec_exit,
+            run_reporting=run is not None,
+            run_verdict=run_verdict,
+            run_last_run_at=_as_str(run.get("last_run_at")) if run is not None else None,
+            run_shards_changed=_as_int(run.get("shards_changed")) if run is not None else None,
+            run_rows_added=_as_int(run.get("rows_added")) if run is not None else None,
+            run_duration_ms=_as_float(run.get("duration_ms")) if run is not None else None,
             bucket=bucket,
             status=status,
-            verdict=_verdict(status, pending_count),
+            verdict=verdict,
             index_age_seconds=round(age, 1) if age is not None else None,
             last_successful_run_at=index_mtime.isoformat() if index_mtime is not None else None,
             pending_shard_count=pending_count,
             total_shard_count=total_count,
+            oldest_pending_shard_age_seconds=oldest_pending_age,
             index_row_count=row_count,
             index_size_bytes=size_bytes,
             detail=detail,
@@ -334,8 +481,46 @@ def _consolidator_health(entry: dict[str, str | None], budget: int, now: datetim
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("consolidator-health: read failed for %s (%s): %s", base["category"], bucket, exc)
         return ConsolidatorHealth(
-            **base, bucket=bucket, status="unknown", verdict="unknown", detail=f"read failed: {exc}"
+            **base,
+            execution_status=exec_kind,
+            execution_last_run_at=exec_run_at,
+            execution_exit_code=exec_exit,
+            bucket=bucket,
+            status="unknown",
+            verdict="unknown",
+            detail=f"read failed: {exc}",
         )
+
+
+def _fetch_executions() -> dict[str, CloudRunExecutionStatus]:
+    """Latest Cloud Run execution per job (ONE batched list), keyed by short job name.
+
+    Honest degradation: any resolution/GCP failure yields ``{}`` so the estate view still renders
+    with the freshness-derived verdict (no ``fired_but_empty`` refinement), never a 5xx.
+    """
+    try:
+        _, project = _env_project()
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("consolidator-health: project resolve failed, skipping execution join (%s)", exc)
+        return {}
+    return latest_execution_by_job(project)
+
+
+def _entry_budget(entry: dict[str, str | None], default_budget: int) -> int:
+    """Per-consolidator staleness budget from the catalog (cadence-matched), else the AG/global default.
+
+    The catalog carries a per-(kind,AG) ``staleness_budget_seconds`` (live market-data ticks = 120s,
+    every other consolidator = its producers' 86400s — see ``gen_consolidator_catalog.py``), so each
+    job is judged against its OWN cadence rather than a uniform 120s. Falls back to the legacy per-AG
+    override then the global default when a catalog is old/absent.
+    """
+    raw = entry.get("staleness_budget_seconds")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("consolidator-health: bad catalog budget %r for %s", raw, entry.get("category"))
+    return _budget_for(entry["asset_group"] or "", default_budget)
 
 
 def _build_consolidators(now: datetime, default_budget: int) -> list[ConsolidatorHealth]:
@@ -343,8 +528,15 @@ def _build_consolidators(now: datetime, default_budget: int) -> list[Consolidato
     if not _CATALOG:
         return []
 
+    executions = _fetch_executions()  # one batched Cloud Run list, joined per job below
+
     def one(entry: dict[str, str | None]) -> ConsolidatorHealth:
-        return _consolidator_health(entry, _budget_for(entry["asset_group"] or "", default_budget), now)
+        return _consolidator_health(
+            entry,
+            _entry_budget(entry, default_budget),
+            now,
+            executions.get(entry["job_name"] or ""),
+        )
 
     with ThreadPoolExecutor(max_workers=min(12, len(_CATALOG))) as pool:
         results = list(pool.map(one, _CATALOG))
@@ -399,7 +591,8 @@ def _ag_health(
         total_count: int | None = None
         if include_backlog:
             # ONE prefix list gives BOTH the backlog counts AND shard existence.
-            pending_count, total_count = per_vm_shard_backlog(client, bucket, index_mtime)
+            backlog = per_vm_shard_backlog(client, bucket, index_mtime)
+            pending_count, total_count = backlog.pending, backlog.total
             shards_present = total_count > 0
         else:
             # Only pay for the shard-list when the index looks stale/missing (the discriminator).
@@ -529,7 +722,13 @@ def _mock_consolidator(
     total: int,
     detail: str,
     ts: str,
+    *,
+    exec_status: str = "succeeded",
+    exec_exit: int | None = 0,
+    reporting: bool = True,
 ) -> ConsolidatorHealth:
+    # Map the endpoint verdict back to the consolidator's self-reported run verdict for the mock.
+    run_verdict = {"fired_but_empty": "empty", "stale_output": "failed", "empty": "empty"}.get(verdict, "produced")
     return ConsolidatorHealth(
         category=category,
         kind=kind,
@@ -543,8 +742,20 @@ def _mock_consolidator(
         last_successful_run_at=ts if age is not None else None,
         pending_shard_count=pending,
         total_shard_count=total,
+        # Oldest un-absorbed shard ≈ the index age when a backlog is waiting (merge-stuck-for).
+        oldest_pending_shard_age_seconds=age if (pending > 0 and age is not None) else None,
         index_row_count=(1_000_000 + total * 50_000) if age is not None else None,
         index_size_bytes=(20_000_000 + total * 4_000_000) if age is not None else None,
+        execution_status=exec_status,
+        execution_last_run_at=ts,
+        execution_exit_code=exec_exit,
+        # A reporting consolidator publishes latest.json; a dead one (reporting=False) has none.
+        run_reporting=reporting,
+        run_verdict=run_verdict if reporting else None,
+        run_last_run_at=ts if reporting else None,
+        run_shards_changed=(pending if reporting else None),
+        run_rows_added=(pending * 1000 if reporting else None),
+        run_duration_ms=(8400.0 if reporting else None),
         detail=detail,
     )
 
@@ -615,6 +826,37 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
         ),
         _mock_consolidator(
             "gas-fees", "gas-fees", None, "ok", "produced", 88.0, 0, 3, "index heartbeat 88s old (<= 86400s budget)", ts
+        ),
+        _mock_consolidator(
+            "features-onchain-defi",
+            "features-onchain",
+            "defi",
+            "critical",
+            "fired_but_empty",
+            95000.0,
+            5,
+            9,
+            "execution SUCCEEDED recently yet index 95000s (> 86400s budget) — job ran green but wrote nothing",
+            ts,
+            exec_status="succeeded",
+            exec_exit=0,
+        ),
+        # A DEAD consolidator — declared in the catalog but never fired up, so it publishes no
+        # latest.json. The tab must show it honestly as "not yet reporting", never a fake all-clear.
+        _mock_consolidator(
+            "strategy",
+            "strategy",
+            None,
+            "degraded",
+            "empty",
+            None,
+            0,
+            0,
+            "no index and no shards — consolidator not yet fired up (not reporting)",
+            ts,
+            exec_status="pending",
+            exec_exit=None,
+            reporting=False,
         ),
     ]
     ag_entries = [_ag_from_consolidator(c) for c in consolidators if c.kind == "market-data" and c.asset_group]

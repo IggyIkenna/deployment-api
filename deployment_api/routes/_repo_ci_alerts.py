@@ -18,7 +18,7 @@ import datetime as dt
 import json
 import logging
 import time
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 from unified_trading_library import download_from_storage, get_storage_client
 
@@ -44,6 +44,10 @@ class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (
     message: str | None  # alerts only
     run_url: str | None
     alert_class: str | None  # non-CI watcher class ("worker_liveness", "git_health", etc.)
+    # The deployment/VM target (``vm_name``) an infra alert names, so the UI can deep-link the alert to
+    # its ``/deployments/{name}`` detail (parity #4). Absent for CI alerts (no target). NotRequired so
+    # only the alert path that carries a target sets it.
+    deployment_target: NotRequired[str | None]
 
 
 class AlertStreamDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
@@ -91,6 +95,9 @@ def _parse_line(line: str) -> AlertEntryDict | None:
             message=str(obj.get("message") or ""),
             run_url=str(obj.get("run_url")) if obj.get("run_url") else None,
             alert_class=alert_class if alert_class else None,
+            # The infra/deployment watchers (vm_down / worker_liveness / deployment lifecycle) flatten
+            # ``details.vm_name`` to the top level → the /deployments/{name} deep-link target (#4).
+            deployment_target=str(obj.get("vm_name") or obj.get("deployment_id") or "") or None,
         )
     if event_type == "github_workflow_event":
         return AlertEntryDict(

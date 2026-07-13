@@ -44,6 +44,25 @@ _JOB_NAME_TMPL = _ENV_PREFIX + "-manifest-consolidator-{category}"
 # token could. A category is ``{kind}-{ag}`` when it ends in one of these, else flat.
 _ASSET_GROUPS: tuple[str, ...] = ("prediction", "cefi", "defi", "tradfi", "sports")
 
+# Per-consolidator staleness budget (seconds) — the cadence each job is judged against.
+# The Cloud Scheduler cron is a UNIFORM ``*/1`` for every consolidator, so the cron is NOT
+# the cadence; the real budget is the ``MANIFEST_CONSOLIDATED_STALENESS_SEC`` the DATA-PRODUCING
+# VMs set. Verified (2026-07-11) across every producer launcher in deployment-service/scripts/vm:
+# ALL of them set 86400s (24h) — EXCEPT the pure LIVE market-data ticks (defi/tradfi/sports/
+# prediction) which run ``*/1`` continuously with NO override → 120s. cefi market-data is a DAILY
+# batch (not a live tick) → 86400s. So: live market-data ticks = 120s; everything else = 86400s.
+_LIVE_MARKET_DATA_AGS: frozenset[str] = frozenset({"defi", "tradfi", "sports", "prediction"})
+_LIVE_TICK_BUDGET_SEC = 120
+_BATCH_BUDGET_SEC = 86400
+
+
+def _staleness_budget(kind: str, asset_group: str | None) -> int:
+    """Cadence-matched staleness budget (see ``_LIVE_MARKET_DATA_AGS`` note)."""
+    if kind == "market-data" and asset_group in _LIVE_MARKET_DATA_AGS:
+        return _LIVE_TICK_BUDGET_SEC
+    return _BATCH_BUDGET_SEC
+
+
 # The two terraform locals that declare the estate. ``_extended`` = the Group-B
 # (features/execution/strategy/ml/gas-fees) buckets.
 _TF_MAP_NAMES: tuple[str, ...] = (
@@ -120,6 +139,8 @@ def build_catalog(tf_text: str) -> list[dict[str, str | None]]:
                     "asset_group": asset_group,
                     "job_name": _JOB_NAME_TMPL.format(category=category),
                     "bucket_template": _bucket_template(tf_value),
+                    # Stored as a string to keep the catalog a flat str/None map; the endpoint parses it.
+                    "staleness_budget_seconds": str(_staleness_budget(kind, asset_group)),
                 }
             )
     return entries
