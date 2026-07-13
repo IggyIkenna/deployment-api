@@ -70,6 +70,19 @@ class CostRecord:  # CORRECT-LOCAL: internal aggregation struct, not a cross-ser
     labels: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class ResourceDailyCost:  # CORRECT-LOCAL: internal per-resource cost signal, not a cross-service contract
+    """Three USD daily-cost figures for one billing resource_id (the deployment cost column).
+
+    All USD (GCP already converted from GBP at query time). Feeds the deployment inventory's
+    per-target cost cell (attached by name == resource_id). Net = cost + credit.
+    """
+
+    actual_usd: float  # net cost on the most recent COMPLETE billing day
+    avg_7d_usd: float  # trailing-window average daily net cost
+    projected_24h_usd: float  # projected $/day if it runs 24h — the peak observed daily net (≈ a full day)
+
+
 class CloudSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     cloud: str
     total: float  # NET — what you actually pay = gross + credit

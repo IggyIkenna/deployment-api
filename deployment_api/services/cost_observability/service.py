@@ -27,6 +27,7 @@ from deployment_api.services.cost_observability.models import (
     BreakdownRow,
     CloudSummary,
     CostRecord,
+    ResourceDailyCost,
     SummaryResponse,
     TimeseriesPoint,
     TimeseriesResponse,
@@ -229,6 +230,45 @@ class CostObservabilityService:
         start = end - timedelta(days=days)
         dates = [(start + timedelta(days=i)).isoformat() for i in range(days)]
         return start, end, dates
+
+    # -- per-resource daily cost (the deployment inventory cost column) --------
+    def per_resource_daily(self, days: int = 7, *, force: bool = False) -> dict[str, ResourceDailyCost]:
+        """Three USD daily-cost figures per billing ``resource_id`` over a trailing window.
+
+        Reuses the cached window fetch (so calling this per inventory refresh is cheap after the
+        first load). Net = cost + credit, USD (GCP already converted). Per resource:
+
+        * ``actual_usd`` — net on the most recent COMPLETE day (excludes today's partial/provisional
+          figure when a completed day exists; falls back to the latest day otherwise).
+        * ``avg_7d_usd`` — total net over the window ÷ ``days`` (trailing daily average).
+        * ``projected_24h_usd`` — the PEAK observed daily net over the window: the day the resource
+          ran fullest ≈ a full 24h day (data-only, no rate-card). Reflects the time-proportional
+          spend; non-time SKUs (egress/requests) don't scale with runtime.
+
+        Rows with no ``resource_id`` (no billing granularity) are skipped — the caller shows None.
+        """
+        start, end, _ = self._window(days)
+        recs = self._fetch_window(start, end, force=force)
+        today = datetime.now(UTC).date().isoformat()
+
+        by_res_day: dict[str, dict[str, float]] = {}
+        for r in recs:
+            if not r.resource_id:
+                continue
+            day_net = by_res_day.setdefault(r.resource_id, {})
+            day_net[r.day] = day_net.get(r.day, 0.0) + _net(r)
+
+        out: dict[str, ResourceDailyCost] = {}
+        for resource_id, day_net in by_res_day.items():
+            daily = list(day_net.values())
+            complete_days = [d for d in day_net if d < today]
+            latest = max(complete_days) if complete_days else max(day_net)
+            out[resource_id] = ResourceDailyCost(
+                actual_usd=round(day_net[latest], 2),
+                avg_7d_usd=round(sum(daily) / days, 2),
+                projected_24h_usd=round(max(daily), 2),
+            )
+        return out
 
     # -- summary --------------------------------------------------------------
     def summarize(self, days: int = _DEFAULT_DAYS, *, force: bool = False) -> SummaryResponse:

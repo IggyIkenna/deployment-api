@@ -115,6 +115,7 @@ from deployment_api.routes._service_health import (
 from deployment_api.routes._vm_health import composite_health_status as _composite_health_status
 from deployment_api.routes._vm_health import vm_status as _vm_status
 from deployment_api.routes.health_consolidator import object_delta_for_asset_group
+from deployment_api.services.cost_observability.service import CostObservabilityService
 from deployment_api.vm_utils import (
     get_disk_details,
     get_vm_instance_details,
@@ -412,6 +413,13 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     package_type: str | None = None  # LAMBDA: "Zip" or "Image"
     revision: str | None = None  # Cloud Run service's latest (ready|created) revision
     region: str | None = None  # Cloud Run service's serving region
+    # Cost-per-target (WS-E) — three USD figures joined from the billing exports (BigQuery +
+    # Athena, `cost` already GBP→USD-converted at query time; USD-only, no currency toggle here).
+    # None when the resource has no billing row yet (export lag / no resource-granularity — honest
+    # absence, never a fabricated 0). Matched to the target by name == billing resource_id.
+    cost_actual_usd: float | None = None  # net cost on the most recent COMPLETE billing day
+    cost_avg_7d_usd: float | None = None  # trailing-7-day average daily net cost
+    cost_projected_24h_usd: float | None = None  # projected $/day if it runs 24h (peak observed day)
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -1646,7 +1654,32 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
         aws_items: list[DeploymentItem] = _census_or_degrade("aws", f_aws, [])
         items.extend(aws_items)
 
+    _attach_costs(items)
     return items
+
+
+def _attach_costs(items: list[DeploymentItem]) -> None:
+    """Best-effort: attach the 3 USD cost figures per target by name == billing resource_id.
+
+    Reuses the cost-observability service's CACHED billing window (WS-E) — one aggregation per
+    inventory refresh (the inventory itself is cached), not per request. A GCP VM's billing
+    ``resource.name`` is its instance name (== the deployment item name); Cloud Run job/service
+    names match likewise. AWS ``resource_id`` is an ARN/instance-id that won't match the friendly
+    name → those rows keep ``None`` (honest absence, never a fabricated 0). A billing-source
+    failure or mock-without-facts leaves every cost field ``None`` — cost NEVER breaks the census.
+    """
+    try:
+        cost_by_resource = CostObservabilityService().per_resource_daily(days=7)
+    except Exception as exc:
+        # best-effort enrichment — cost must never break the inventory census.
+        logger.warning("[deployments-inventory] cost enrichment skipped (best-effort): %s", exc)
+        return
+    for item in items:
+        rc = cost_by_resource.get(item.name)
+        if rc is not None:
+            item.cost_actual_usd = rc.actual_usd
+            item.cost_avg_7d_usd = rc.avg_7d_usd
+            item.cost_projected_24h_usd = rc.projected_24h_usd
 
 
 def _store_inventory(cache_key: str, items: list[DeploymentItem]) -> None:
