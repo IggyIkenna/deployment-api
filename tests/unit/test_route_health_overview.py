@@ -263,13 +263,20 @@ def test_is_fired_but_empty_false_when_execution_failed_or_absent() -> None:
 def test_authoritative_verdict_maps_self_reported_run() -> None:
     from deployment_api.routes.health_consolidator import _authoritative_verdict
 
-    # Self-reported verdict is authoritative when present.
-    assert _authoritative_verdict("produced", "unknown", 0) == "produced"
-    assert _authoritative_verdict("produced", "unknown", 5) == "producing"  # current backlog → producing
-    assert _authoritative_verdict("empty", "producing", 0) == "fired_but_empty"  # ran but wrote nothing
-    assert _authoritative_verdict("failed", "producing", 0) == "stale_output"
+    # produced → produced/producing per backlog.
+    assert _authoritative_verdict("produced", "unknown", 0, 100) == "produced"
+    assert _authoritative_verdict("produced", "unknown", 5, 100) == "producing"
+    # failed → stale_output.
+    assert _authoritative_verdict("failed", "producing", 0, 100) == "stale_output"
+    # 'empty' on a GENUINELY EMPTY index (0 rows): backlog waiting → fired_but_empty; else idle → empty.
+    assert _authoritative_verdict("empty", "producing", 5, 0) == "fired_but_empty"
+    assert _authoritative_verdict("empty", "producing", 0, 0) == "empty"
+    assert _authoritative_verdict("empty", "producing", 0, None) == "empty"
+    # 'empty' but the index actually HOLDS ROWS = a no-op cycle on real data → defer to freshness.
+    assert _authoritative_verdict("empty", "produced", 0, 5_000_000) == "produced"
+    assert _authoritative_verdict("empty", "stale_output", 8, 27_000_000) == "stale_output"
     # Unknown / absent self-report → fall back to the freshness-derived verdict.
-    assert _authoritative_verdict(None, "stale_output", 0) == "stale_output"
+    assert _authoritative_verdict(None, "stale_output", 0, 0) == "stale_output"
 
 
 def test_read_latest_run_parses_and_degrades() -> None:
