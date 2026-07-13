@@ -297,6 +297,58 @@ def test_read_latest_run_parses_and_degrades() -> None:
     assert _read_latest_run(client, "bkt") is None
 
 
+def test_audit_fields_reads_phantom_and_reprobe() -> None:
+    """A market-data/instruments bucket surfaces its last phantom audit + empty re-probe summaries."""
+    from unittest.mock import MagicMock
+
+    from deployment_api.routes.health_consolidator import _audit_fields
+
+    client = MagicMock()
+    client.get_blob_metadata.return_value = object()  # both summaries present
+
+    def _dl(_bucket: str, blob: str) -> bytes:
+        if blob.endswith("phantom_audit_latest.json"):
+            return (
+                b'{"generated_at": "2026-07-13T08:00:00+00:00", "phantom_count": 3, "triage_jsonl": "gs://b/t.jsonl"}'
+            )
+        if blob.endswith("reprobe_audit_latest.json"):
+            return b'{"generated_at": "2026-07-13T09:00:00+00:00", "new_empties": 12, "disagreements": 2, "reclassified": 1}'
+        raise FileNotFoundError(blob)
+
+    client.download_bytes.side_effect = _dl
+    fields = _audit_fields(client, "market-data-tick-cefi-prd", "market-data")
+    assert fields["phantom_count"] == 3
+    assert fields["phantom_audit_at"] == "2026-07-13T08:00:00+00:00"
+    assert (fields["phantom_triage_link"] or "").endswith("t.jsonl")
+    assert fields["reprobe_new_empties"] == 12
+    assert fields["reprobe_disagreements"] == 2
+    assert fields["reprobe_reclassified"] == 1
+
+
+def test_audit_fields_gated_to_audit_bearing_kinds() -> None:
+    """features/execution/flat consolidators pay no read — every field None, no GCS call."""
+    from unittest.mock import MagicMock
+
+    from deployment_api.routes.health_consolidator import _audit_fields
+
+    client = MagicMock()
+    fields = _audit_fields(client, "bkt", "features-volatility")
+    assert all(v is None for v in fields.values())
+    client.get_blob_metadata.assert_not_called()
+
+
+def test_audit_fields_absent_summaries_are_none() -> None:
+    """Missing summary objects → all None (honest 'no audit yet'), never a fabricated clean state."""
+    from unittest.mock import MagicMock
+
+    from deployment_api.routes.health_consolidator import _audit_fields
+
+    client = MagicMock()
+    client.get_blob_metadata.return_value = None  # both summaries absent
+    fields = _audit_fields(client, "bkt", "instruments")
+    assert all(v is None for v in fields.values())
+
+
 def test_mock_estate_carries_reporting_and_dead_consolidators() -> None:
     """The mock estate distinguishes live (reporting latest.json) from dead (not reporting)."""
     from deployment_api.routes.health_consolidator import _mock_response
