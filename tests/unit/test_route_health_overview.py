@@ -170,6 +170,124 @@ def test_classify_ag_stale_no_shards_is_degraded() -> None:
     assert fallback is False
 
 
+def test_verdict_derived_without_execution() -> None:
+    """No execution info → verdict falls back to the freshness+backlog derivation."""
+    from deployment_api.routes.health_consolidator import _verdict
+
+    assert _verdict("ok", 0) == "produced"
+    assert _verdict("ok", 3) == "producing"
+    assert _verdict("critical", 5) == "stale_output"
+    assert _verdict("degraded", 0) == "empty"
+    assert _verdict("unknown", None) == "unknown"
+
+
+def test_verdict_fired_but_empty_takes_precedence() -> None:
+    from deployment_api.routes.health_consolidator import _verdict
+
+    # A stale index that WOULD read as stale_output is reclassified when the run fired green.
+    assert _verdict("critical", 5, fired_but_empty=True) == "fired_but_empty"
+
+
+def test_is_fired_but_empty_recent_success_stale_index() -> None:
+    """Execution succeeded within budget but the index is stale → fired-but-empty."""
+    from datetime import timedelta
+
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+    from deployment_api.routes.health_consolidator import _is_fired_but_empty
+
+    exec_status = CloudRunExecutionStatus(
+        job_name="j",
+        status="succeeded",
+        last_run_at=(_FIXED_NOW - timedelta(seconds=30)).isoformat(),
+        exit_code=0,
+        log_uri="",
+        region="asia-northeast1",
+    )
+    assert _is_fired_but_empty(exec_status, index_age=90000.0, budget=86400, now=_FIXED_NOW) is True
+
+
+def test_is_fired_but_empty_false_when_index_fresh() -> None:
+    from datetime import timedelta
+
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+    from deployment_api.routes.health_consolidator import _is_fired_but_empty
+
+    exec_status = CloudRunExecutionStatus(
+        job_name="j",
+        status="succeeded",
+        last_run_at=(_FIXED_NOW - timedelta(seconds=30)).isoformat(),
+        exit_code=0,
+        log_uri="",
+        region="asia-northeast1",
+    )
+    # Index fresh → the run DID write; not empty.
+    assert _is_fired_but_empty(exec_status, index_age=42.0, budget=86400, now=_FIXED_NOW) is False
+
+
+def test_is_fired_but_empty_false_when_success_is_also_old() -> None:
+    """A stale index whose last SUCCESS is also old = down/behind, not fired-but-empty."""
+    from datetime import timedelta
+
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+    from deployment_api.routes.health_consolidator import _is_fired_but_empty
+
+    exec_status = CloudRunExecutionStatus(
+        job_name="j",
+        status="succeeded",
+        last_run_at=(_FIXED_NOW - timedelta(seconds=200000)).isoformat(),
+        exit_code=0,
+        log_uri="",
+        region="asia-northeast1",
+    )
+    assert _is_fired_but_empty(exec_status, index_age=90000.0, budget=86400, now=_FIXED_NOW) is False
+
+
+def test_is_fired_but_empty_false_when_execution_failed_or_absent() -> None:
+    from datetime import timedelta
+
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+    from deployment_api.routes.health_consolidator import _is_fired_but_empty
+
+    failed = CloudRunExecutionStatus(
+        job_name="j",
+        status="failed",
+        last_run_at=(_FIXED_NOW - timedelta(seconds=30)).isoformat(),
+        exit_code=1,
+        log_uri="",
+        region="asia-northeast1",
+    )
+    assert _is_fired_but_empty(failed, index_age=90000.0, budget=86400, now=_FIXED_NOW) is False
+    assert _is_fired_but_empty(None, index_age=90000.0, budget=86400, now=_FIXED_NOW) is False
+
+
+def test_entry_budget_reads_catalog_then_falls_back() -> None:
+    from deployment_api.routes.health_consolidator import _entry_budget
+
+    # Catalog carries the cadence-matched budget → used verbatim.
+    assert _entry_budget({"asset_group": "defi", "staleness_budget_seconds": "120"}, 999) == 120
+    assert _entry_budget({"asset_group": "cefi", "staleness_budget_seconds": "86400"}, 999) == 86400
+    # Missing/blank → legacy per-AG override (cefi=86400) then the passed default.
+    assert _entry_budget({"asset_group": "cefi"}, 120) == 86400
+    assert _entry_budget({"asset_group": "sports"}, 120) == 120
+    # Garbage budget → falls back, never raises.
+    assert _entry_budget({"asset_group": "sports", "staleness_budget_seconds": "oops"}, 120) == 120
+
+
+def test_catalog_live_market_data_is_120_everything_else_86400() -> None:
+    """The generated catalog must budget live market-data ticks at 120s and all else at 86400s."""
+    from deployment_api.routes.health_consolidator import _CATALOG
+
+    if not _CATALOG:  # catalog is a generated artifact; skip if absent in this checkout
+        pytest.skip("consolidator catalog not present")
+    live = {"defi", "tradfi", "sports", "prediction"}
+    for entry in _CATALOG:
+        budget = int(entry["staleness_budget_seconds"] or 0)
+        if entry["kind"] == "market-data" and entry["asset_group"] in live:
+            assert budget == 120, f"{entry['category']} should be a 120s live tick"
+        else:
+            assert budget == 86400, f"{entry['category']} should be an 86400s batch budget"
+
+
 def test_build_consolidator_overall_is_worst() -> None:
     from deployment_api.routes.health_consolidator import (
         ConsolidatorAgHealth,
@@ -218,6 +336,17 @@ def test_consolidator_route_mock_shape(client_consolidator: TestClient) -> None:
     assert ags["cefi"]["status"] == "ok"
     assert ags["defi"]["status"] == "critical"
     assert ags["defi"]["per_vm_shard_fallback_active"] is True
+    # The full estate carries a fired-but-empty consolidator (ran green, index stale) with its
+    # execution truth attached — the data-correctness signal a liveness-only view would miss.
+    verdicts = {c["category"]: c for c in body["consolidators"]}
+    fired = verdicts["features-onchain-defi"]
+    assert fired["verdict"] == "fired_but_empty"
+    assert fired["execution_status"] == "succeeded"
+    assert fired["execution_exit_code"] == 0
+    # A consolidator with a backlog carries the oldest-unmerged-shard age (merge-stuck-for signal).
+    assert fired["oldest_pending_shard_age_seconds"] is not None
+    # A caught-up consolidator (no backlog) has no oldest-pending age.
+    assert verdicts["instruments-cefi"]["oldest_pending_shard_age_seconds"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -261,13 +390,15 @@ _HC = "deployment_api.routes.health_consolidator"
 
 def test_ag_health_include_backlog_populates_pending_and_total() -> None:
     """include_backlog=True → the per-VM shard backlog counts land on the posture."""
+    from unified_trading_library import PerVmShardBacklog
+
     from deployment_api.routes.health_consolidator import _ag_health
 
     with (
         patch(f"{_HC}.resolve_bucket_name", return_value="market-data-tick-cefi"),
         patch(f"{_HC}.get_storage_client", return_value=object()),
         patch(f"{_HC}.consolidated_blob_age_sec", return_value=30.0),
-        patch(f"{_HC}.per_vm_shard_backlog", return_value=(2, 6)) as backlog,
+        patch(f"{_HC}.per_vm_shard_backlog", return_value=PerVmShardBacklog(2, 6, None)) as backlog,
     ):
         posture = _ag_health("cefi", budget=120, now=_FIXED_NOW, include_backlog=True)
 

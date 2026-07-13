@@ -8,175 +8,200 @@
       "kind": "instruments",
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-instruments-cefi",
-      "bucket_template": "instruments-store-cefi-{env}-{project}"
+      "bucket_template": "instruments-store-cefi-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "instruments-tradfi",
       "kind": "instruments",
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-instruments-tradfi",
-      "bucket_template": "instruments-store-tradfi-{env}-{project}"
+      "bucket_template": "instruments-store-tradfi-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "instruments-defi",
       "kind": "instruments",
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-instruments-defi",
-      "bucket_template": "instruments-store-defi-{env}-{project}"
+      "bucket_template": "instruments-store-defi-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "instruments-sports",
       "kind": "instruments",
       "asset_group": "sports",
       "job_name": "uts-prod-manifest-consolidator-instruments-sports",
-      "bucket_template": "instruments-store-sports-{env}-{project}"
+      "bucket_template": "instruments-store-sports-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "instruments-prediction",
       "kind": "instruments",
       "asset_group": "prediction",
       "job_name": "uts-prod-manifest-consolidator-instruments-prediction",
-      "bucket_template": "instruments-store-pred-{env}-{project}"
+      "bucket_template": "instruments-store-pred-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "market-data-cefi",
       "kind": "market-data",
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-market-data-cefi",
-      "bucket_template": "market-data-tick-cefi-{env}-{project}"
+      "bucket_template": "market-data-tick-cefi-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "market-data-tradfi",
       "kind": "market-data",
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-market-data-tradfi",
-      "bucket_template": "market-data-tick-tradfi-{env}-{project}"
+      "bucket_template": "market-data-tick-tradfi-{env}-{project}",
+      "staleness_budget_seconds": "120"
     },
     {
       "category": "market-data-defi",
       "kind": "market-data",
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-market-data-defi",
-      "bucket_template": "market-data-tick-defi-{env}-{project}"
+      "bucket_template": "market-data-tick-defi-{env}-{project}",
+      "staleness_budget_seconds": "120"
     },
     {
       "category": "market-data-sports",
       "kind": "market-data",
       "asset_group": "sports",
       "job_name": "uts-prod-manifest-consolidator-market-data-sports",
-      "bucket_template": "market-data-tick-sports-{env}-{project}"
+      "bucket_template": "market-data-tick-sports-{env}-{project}",
+      "staleness_budget_seconds": "120"
     },
     {
       "category": "market-data-prediction",
       "kind": "market-data",
       "asset_group": "prediction",
       "job_name": "uts-prod-manifest-consolidator-market-data-prediction",
-      "bucket_template": "market-data-tick-pred-{env}-{project}"
+      "bucket_template": "market-data-tick-pred-{env}-{project}",
+      "staleness_budget_seconds": "120"
     },
     {
       "category": "features-delta-one-cefi",
       "kind": "features-delta-one",
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-features-delta-one-cefi",
-      "bucket_template": "features-delta-one-cefi-{project}"
+      "bucket_template": "features-delta-one-cefi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-delta-one-tradfi",
       "kind": "features-delta-one",
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-features-delta-one-tradfi",
-      "bucket_template": "features-delta-one-tradfi-{project}"
+      "bucket_template": "features-delta-one-tradfi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-delta-one-defi",
       "kind": "features-delta-one",
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-features-delta-one-defi",
-      "bucket_template": "features-delta-one-defi-{project}"
+      "bucket_template": "features-delta-one-defi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-volatility-cefi",
       "kind": "features-volatility",
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-features-volatility-cefi",
-      "bucket_template": "features-volatility-cefi-{project}"
+      "bucket_template": "features-volatility-cefi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-volatility-tradfi",
       "kind": "features-volatility",
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-features-volatility-tradfi",
-      "bucket_template": "features-volatility-tradfi-{project}"
+      "bucket_template": "features-volatility-tradfi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-onchain-cefi",
       "kind": "features-onchain",
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-features-onchain-cefi",
-      "bucket_template": "features-onchain-cefi-{project}"
+      "bucket_template": "features-onchain-cefi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-onchain-defi",
       "kind": "features-onchain",
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-features-onchain-defi",
-      "bucket_template": "features-onchain-defi-{project}"
+      "bucket_template": "features-onchain-defi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-sports",
       "kind": "features",
       "asset_group": "sports",
       "job_name": "uts-prod-manifest-consolidator-features-sports",
-      "bucket_template": "features-sports-{env}-{project}"
+      "bucket_template": "features-sports-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "features-calendar",
       "kind": "features-calendar",
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-features-calendar",
-      "bucket_template": "features-calendar-{env}-{project}"
+      "bucket_template": "features-calendar-{env}-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "strategy",
       "kind": "strategy",
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-strategy",
-      "bucket_template": "strategy-store-{project}"
+      "bucket_template": "strategy-store-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "execution-cefi",
       "kind": "execution",
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-execution-cefi",
-      "bucket_template": "execution-store-cefi-{project}"
+      "bucket_template": "execution-store-cefi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "execution-tradfi",
       "kind": "execution",
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-execution-tradfi",
-      "bucket_template": "execution-store-tradfi-{project}"
+      "bucket_template": "execution-store-tradfi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "execution-defi",
       "kind": "execution",
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-execution-defi",
-      "bucket_template": "execution-store-defi-{project}"
+      "bucket_template": "execution-store-defi-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "ml-training-artifacts",
       "kind": "ml-training-artifacts",
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-ml-training-artifacts",
-      "bucket_template": "ml-training-artifacts-{project}"
+      "bucket_template": "ml-training-artifacts-{project}",
+      "staleness_budget_seconds": "86400"
     },
     {
       "category": "gas-fees",
       "kind": "gas-fees",
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-gas-fees",
-      "bucket_template": "gas-fees-{project}"
+      "bucket_template": "gas-fees-{project}",
+      "staleness_budget_seconds": "86400"
     }
   ]
 }
