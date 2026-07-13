@@ -40,27 +40,20 @@ async def run_data_status_rollup(services: list[str] | None = Query(None)) -> di
     or the manifest read falls through to a multi-minute all-AG compute on the 8 GiB
     service → 503. Each write is overwrite-by-name (idempotent); a partial failure
     returns ``status="partial"`` and the next scheduler tick recomputes.
+
+    ``run_rollup`` isolates each service's actual compute in its own spawned child
+    process (see ``scripts/data_status_rollup_worker.py``), which sets the
+    ProcessPool/ThreadPool-serial overrides on ITS OWN fresh module state — this
+    process's ``data_status_service`` globals are never touched, so no save/restore
+    is needed here.
     """
-    import deployment_api.services.data_status_service as _dss_mod
     from deployment_api.scripts.data_status_rollup_worker import DEFAULT_SERVICES, run_rollup
 
     svc_list: list[str] = list(services) if services else list(DEFAULT_SERVICES)
     bucket = f"{gcp_project_id}-data-status-rollups"
 
-    # Force FULLY-SERIAL per-AG compute: ``run_rollup`` disables the ProcessPool, and we
-    # also disable the ThreadPool here. Running all asset groups in PARALLEL threads holds
-    # every AG's cell-grid intermediate at once and OOMs the service; serial holds one AG at
-    # a time. Save/restore the flags so on-demand requests on this process (and the next
-    # invocation) see the original config afterwards.
-    _prev_proc = _dss_mod._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
-    _prev_thread = _dss_mod._THREAD_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]
-    _dss_mod._THREAD_POOL_DISABLED = True  # pyright: ignore[reportPrivateUsage]
-    try:
-        logger.info("data-status rollup (LIVE): %d service(s) -> gs://%s", len(svc_list), bucket)
-        rc_live = await asyncio.to_thread(run_rollup, gcp_project_id, bucket, svc_list)
-    finally:
-        _dss_mod._PROCESS_POOL_DISABLED = _prev_proc  # pyright: ignore[reportPrivateUsage]
-        _dss_mod._THREAD_POOL_DISABLED = _prev_thread  # pyright: ignore[reportPrivateUsage]
+    logger.info("data-status rollup (LIVE): %d service(s) -> gs://%s", len(svc_list), bucket)
+    rc_live = await asyncio.to_thread(run_rollup, gcp_project_id, bucket, svc_list)
 
     return {
         "status": "ok" if rc_live == 0 else "partial",
