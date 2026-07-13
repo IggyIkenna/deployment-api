@@ -16,8 +16,9 @@ _HEADERS = {"X-API-Key": "test-api-key"}
 def _make_experiment_entry() -> MagicMock:
     """Construct a MagicMock registry entry for an experiment VM.
 
-    conftest pre-mocks deployment_service.deployments_registry so the real
-    dataclass is unavailable; all attributes must be set explicitly.
+    A loose mock (rather than the real ``DeploymentRegistryEntry`` dataclass)
+    keeps this test decoupled from the full field list — all attributes the
+    route reads must be set explicitly.
     """
     entry = MagicMock()
     entry.deployment_id = "exp-deploy-001"

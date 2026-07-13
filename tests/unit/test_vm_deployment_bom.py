@@ -13,25 +13,14 @@ SSOT: dependency_promotion_range_pins_and_major_bump_sit_2026_06_09.md § Phase 
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass, field
-from types import ModuleType
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 os.environ.setdefault("CLOUD_MOCK_MODE", "false")
 os.environ.setdefault("CLOUD_PROVIDER", "local")
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
-
-if "deployment_service.deployments_registry" not in sys.modules:
-    _dr_mod = ModuleType("deployment_service.deployments_registry")
-    _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
-    _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_run_log_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_serial_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    sys.modules["deployment_service.deployments_registry"] = _dr_mod
 
 with (
     patch("unified_trading_library.event_sink.PubSubEventSink"),

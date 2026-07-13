@@ -50,13 +50,6 @@ from deployment_service.deployment_classification import (
     UnclassifiedDeploymentError,
     classify_deployment_target,
 )
-from deployment_service.deployments_registry import (
-    ACTIVE_PREFIX,
-    ARCHIVE_PREFIX,
-    DEFAULT_BUCKET,
-    DeploymentRegistryEntry,
-    vm_run_log_rolling_uri,
-)
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from unified_api_contracts import (
@@ -68,7 +61,17 @@ from unified_api_contracts import (
     VmPrefixSpec,
     classify_vm_name,
 )
-from unified_trading_library import StorageClient, download_from_storage, get_storage_client, upload_to_storage
+from unified_trading_library import (
+    ACTIVE_PREFIX,
+    ARCHIVE_PREFIX,
+    DEFAULT_BUCKET,
+    DeploymentRegistryEntry,
+    StorageClient,
+    download_from_storage,
+    get_storage_client,
+    upload_to_storage,
+    vm_run_log_rolling_uri,
+)
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes._aws_deployments import load_aws_inventory

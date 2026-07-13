@@ -2,11 +2,9 @@
 
 Credential-free: ``tests/unit/conftest.py`` pre-stubs ``deployment_service`` as an
 EMPTY package (``__path__ = []``, no real ``backends`` subpackage) for the whole
-unit-test session — the same reason ``test_backfill_launch.py`` /
-``test_vm_deployment_bom.py`` etc. pre-register their own
-``deployment_service.deployments_registry`` stub before use. We do the same here
-for ``deployment_service.backends`` + ``deployment_service.backends._gcp_sdk``:
-register both directly in ``sys.modules`` (scoped per-test via ``patch.dict``) so
+unit-test session. We stub ``deployment_service.backends`` +
+``deployment_service.backends._gcp_sdk`` the same way: register both directly in
+``sys.modules`` (scoped per-test via ``patch.dict``) so
 ``from deployment_service.backends import _gcp_sdk`` resolves without needing the
 real deployment-service package tree.
 

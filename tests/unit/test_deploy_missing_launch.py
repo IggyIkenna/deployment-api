@@ -27,21 +27,9 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 
-import sys
-from types import ModuleType
-from unittest.mock import MagicMock, patch
-
-if "deployment_service.deployments_registry" not in sys.modules:
-    _dr_mod = ModuleType("deployment_service.deployments_registry")
-    _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
-    _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_run_log_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_serial_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    sys.modules["deployment_service.deployments_registry"] = _dr_mod
-
 import hashlib
 import time
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient

@@ -20,15 +20,15 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import cast
 
-from deployment_service.deployments_registry import (
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+from unified_trading_library import (
     DEFAULT_BUCKET,
     DeploymentRegistryEntry,
     DeploymentsRegistry,
     vm_run_log_rolling_uri,
     vm_serial_rolling_uri,
 )
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.vm_utils import get_vm_instance_details

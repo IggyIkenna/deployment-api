@@ -19,18 +19,6 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("DISABLE_AUTH", "true")
 os.environ.setdefault("MOCK_STATE_MODE", "deterministic")
 
-import sys
-from types import ModuleType
-
-if "deployment_service.deployments_registry" not in sys.modules:
-    _dr_mod = ModuleType("deployment_service.deployments_registry")
-    _dr_mod.DEFAULT_BUCKET = "test-bucket"  # type: ignore[attr-defined]
-    _dr_mod.DeploymentRegistryEntry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.DeploymentsRegistry = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_run_log_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    _dr_mod.vm_serial_rolling_uri = MagicMock()  # type: ignore[attr-defined]
-    sys.modules["deployment_service.deployments_registry"] = _dr_mod
-
 with (
     patch("unified_trading_library.event_sink.PubSubEventSink"),
     patch("unified_trading_library.PubSubEventSink"),

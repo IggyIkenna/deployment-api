@@ -12,8 +12,8 @@ re-exports them for existing callers/tests).
 
 from __future__ import annotations
 
-from deployment_service.deployments_registry import DeploymentRegistryEntry
 from unified_api_contracts import DeploymentUmbrella
+from unified_trading_library import DeploymentRegistryEntry
 
 # A running VM whose heartbeat is older than this is stale/hung.
 _STALE_HEARTBEAT_MINUTES = 15
