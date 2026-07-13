@@ -1,4 +1,4 @@
-"""Daily deployment-estate digest → AlertEvent(INFO) → alerting-service.
+"""Daily deployment-estate digest → UTL log_event → Pub/Sub → ni-service → Slack.
 
 Parity #5 of ``deployment_observability_parity_live_batch_paper_2026_06_22.md``:
 a once-a-day Slack digest that rolls the deployment estate up per **umbrella** —
@@ -7,24 +7,23 @@ plus the most-recent failing target per umbrella. The operator gets ONE morning
 glance at "is everything that should be running, running? what completed/failed
 overnight?" instead of watching the real-time lifecycle stream all day.
 
-This reuses the client-reporting ``core/daily_ledger_digest.py`` pattern (build a
-pure INFO ``AlertEvent`` → POST it to alerting-service over HTTP; alerting-service
-routes it via the catch-all INFO rule to Slack). It is the deployment-estate
-companion to ``DAILY_LEDGER_DIGEST`` (the per-client book digest).
-
-Typed HTTP client (httpx) — NO cross-service Python import of alerting-service
-(the T4 service↔service ban). The contract is the UAC ``AlertEvent`` schema, the
-same ingress client-reporting posts to.
+Emit path — the SAME one the deployment lifecycle alerts (#3) already use and the
+data-pipeline fleet monitors use: UTL ``log_event`` publishes a ``DEPLOYMENT_DIGEST``
+event (severity INFO) to the ``lifecycle-events`` Pub/Sub topic; the ni-service
+``alert_subscriber`` consumes it, ``deployment_rule_for`` matches it as an INFO
+deployment event, and it mirrors to ``#data-pipeline-alerts`` (channel-only, never
+pages). The digest text rides in ``details["message"]``. NO HTTP URL to configure —
+the relay is the proven, already-wired path.
 
 The data source is the deployment-api inventory itself (``_load_inventory`` +
 ``build_umbrella_summary``) — deployment-api already owns the per-umbrella
 rollups (``GET /api/deployments/umbrella/{umbrella}/summary``), so the digest
 adds no new data logic, only the scheduled fold + emit.
 
-Cron: a daily Cloud Scheduler job POSTs ``/api/deployments/digest/run`` (see
-``deployment-service/terraform/gcp/deployment_digest_scheduler.tf``). Honest
-no-op when the estate is empty or ``ALERTING_SERVICE_URL`` is unset — never a
-silent failure, never a fabricated digest.
+Cron: a daily Cloud Scheduler job runs the isolated Cloud Run Job worker
+(``deployment_api.scripts.deployment_digest_worker``) — see
+``deployment-service/terraform/gcp/deployment_digest_scheduler.tf``. Honest
+no-op when the estate is empty (logs, emits nothing — never a fabricated digest).
 
 SSOT: ``plans/active/deployment_observability_parity_live_batch_paper_2026_06_22.md`` #5
 """
@@ -32,15 +31,19 @@ SSOT: ``plans/active/deployment_observability_parity_live_batch_paper_2026_06_22
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import UTC, date, datetime
 
-import httpx
 from fastapi import APIRouter, Query
-from unified_api_contracts import AlertCode, DeploymentUmbrella
-from unified_api_contracts.internal import AlertEvent
+from unified_api_contracts import DeploymentUmbrella
+from unified_trading_library import (
+    DEPLOYMENT_DIGEST,
+    PubSubEventSink,
+    UnifiedCloudConfig,
+    log_event,
+    run_lifecycle,
+    setup_events,
+)
 
-from deployment_api import settings
 from deployment_api.routes.deployments_inventory import (
     UmbrellaSummaryResponse,
     _load_inventory,
@@ -51,12 +54,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The alerting-service AlertEvent ingress — identical to the one client-reporting
-# posts its DAILY_LEDGER_DIGEST to (core/daily_ledger_digest.py).
-_ALERTS_INGRESS_PATH = "/api/v1/alerts/rules/recent"
-_RULE_ID = "DEPLOYMENT_DIGEST"
-_POST_TIMEOUT_SECONDS = 15
-_DEFAULT_CHANNEL = "#data-pipeline-alerts"
+_SERVICE_NAME = "deployment-digest"
+_LIFECYCLE_EVENTS_TOPIC = "lifecycle-events"
 
 # The umbrellas the digest rolls up, in operator reading order. EXPERIMENT folds
 # under BATCH in the UI; NONE (services) is not a run-lifecycle umbrella — the
@@ -84,67 +83,24 @@ def _umbrella_line(summary: UmbrellaSummaryResponse) -> str:
     )
 
 
-def build_deployment_digest_event(
+def build_deployment_digest_message(
     summaries: list[UmbrellaSummaryResponse],
     *,
     digest_date: date,
-    channel: str = _DEFAULT_CHANNEL,
-) -> AlertEvent:
-    """Build the deployment-estate digest ``AlertEvent`` (always INFO).
+) -> str:
+    """Fold the per-umbrella rollups into the digest Slack message (a plain str).
 
-    Folds the per-umbrella rollups into a concise Slack message (per-umbrella
-    totals + running/succeeded/failed/stale counts + last-failure hint). The
-    ``metric_value`` is the estate-wide failed-target count (0.0 on a clean
-    estate) so the operator can eyeball "did anything fail overnight" at a
-    glance, and ``threshold`` is 0.0 (any failure is worth a look).
-
-    Args:
-        summaries: the per-umbrella rollups (LIVE / BATCH / PAPER).
-        digest_date: the day the digest summarises (the estate as-of date).
-        channel: Slack channel hint, embedded in the message like the
-            client-reporting digest (alerting-service routes INFO via catch-all).
+    Rides in ``details["message"]`` on the ``DEPLOYMENT_DIGEST`` event — the
+    ni-service router renders ``[DEPLOYMENT_DIGEST] {message}`` to Slack.
     """
     total_failed = sum(s.counts_by_status.get("failed", 0) for s in summaries)
     total_targets = sum(s.total for s in summaries)
     lines = " | ".join(_umbrella_line(s) for s in summaries)
-    message = (
-        f"[{channel}] DEPLOYMENT DIGEST — estate [{digest_date.isoformat()}]: "
+    return (
+        f"DEPLOYMENT DIGEST — estate [{digest_date.isoformat()}]: "
         f"{total_targets} targets across {len(summaries)} umbrellas, "
         f"{total_failed} failed. {lines}."
     )
-    return AlertEvent(
-        alert_id=str(uuid.uuid4()),
-        rule_id=_RULE_ID,
-        triggered_at=datetime.now(UTC),
-        severity="INFO",
-        message=message,
-        metric_value=float(total_failed),
-        threshold=0.0,
-        code=AlertCode.DEPLOYMENT_DIGEST,
-    )
-
-
-def post_deployment_digest(
-    event: AlertEvent,
-    *,
-    alerting_service_url: str,
-) -> AlertEvent | None:
-    """POST the deployment digest ``AlertEvent`` to alerting-service over HTTP.
-
-    Honest no-op (returns None, logs) when ``alerting_service_url`` is unset —
-    never a silent failure, never a fabricated send.
-    """
-    if not alerting_service_url:
-        logger.warning(
-            "[deployment-digest] ALERTING_SERVICE_URL unset — digest NOT posted: %s",
-            event.message,
-        )
-        return None
-    url = f"{alerting_service_url.rstrip('/')}{_ALERTS_INGRESS_PATH}"
-    resp = httpx.post(url, json=event.model_dump(mode="json"), timeout=_POST_TIMEOUT_SECONDS)
-    resp.raise_for_status()
-    logger.info("[deployment-digest] posted INFO digest to %s", url)
-    return event
 
 
 def build_estate_summaries(now: datetime) -> list[UmbrellaSummaryResponse]:
@@ -158,15 +114,42 @@ def build_estate_summaries(now: datetime) -> list[UmbrellaSummaryResponse]:
     return [build_umbrella_summary(umbrella, items) for umbrella in _DIGEST_UMBRELLAS]
 
 
-def run_deployment_digest(*, dry_run: bool = False, channel: str = _DEFAULT_CHANNEL) -> dict[str, object]:
-    """Build + POST the daily deployment-estate digest (the pure core).
+def _ensure_live_events() -> bool:
+    """Best-effort: wire ``log_event`` → the ``lifecycle-events`` Pub/Sub topic.
+
+    Mirrors the data-pipeline fleet monitor's setup exactly (the confirmed path
+    whose events reach ni-service → #data-pipeline-alerts). The deployment-api
+    HTTP service does not initialise events at startup, and the digest worker is
+    a standalone Cloud Run Job — so the digest sets up its own live-mode writer
+    here. Returns True when set up; a setup failure is logged, not raised.
+    """
+    try:
+        project_id = getattr(UnifiedCloudConfig(), "gcp_project_id", "") or ""
+        if not project_id:
+            logger.warning("[deployment-digest] no gcp_project_id — events not set up; digest not emitted")
+            return False
+        sink = PubSubEventSink(
+            project_id=project_id,
+            topic=_LIFECYCLE_EVENTS_TOPIC,
+            service_name=_SERVICE_NAME,
+        )
+        setup_events(service_name=_SERVICE_NAME, mode="live", sink=sink)
+        return True
+    except Exception as exc:
+        logger.warning("[deployment-digest] live-events setup failed (best-effort): %s", exc)
+        return False
+
+
+def run_deployment_digest(*, dry_run: bool = False) -> dict[str, object]:
+    """Build + emit the daily deployment-estate digest (the pure core).
 
     Called by BOTH the Cloud Run Job worker (deployment_digest_worker.main, the
     daily cron) and the ``/api/deployments/digest/run`` endpoint (on-demand / UI
     / dry-run preview). Loads the inventory once, rolls up LIVE / BATCH / PAPER,
-    builds the INFO digest ``AlertEvent`` and POSTs it to alerting-service.
-    Returns a status payload so the run is auditable (``posted`` | ``empty`` |
-    ``no_url`` | ``dry_run``).
+    builds the digest message and emits it as an INFO ``DEPLOYMENT_DIGEST`` event
+    via UTL ``log_event`` → Pub/Sub → ni-service → Slack. Returns a status
+    payload so the run is auditable (``emitted`` | ``empty`` | ``dry_run`` |
+    ``not_configured``).
     """
     now = datetime.now(UTC)
     summaries = build_estate_summaries(now)
@@ -178,24 +161,38 @@ def run_deployment_digest(*, dry_run: bool = False, channel: str = _DEFAULT_CHAN
         logger.info("[deployment-digest] estate empty (0 targets) — nothing to digest")
         return {"status": "empty", "total_targets": 0}
 
-    event = build_deployment_digest_event(summaries, digest_date=now.date(), channel=channel)
+    message = build_deployment_digest_message(summaries, digest_date=now.date())
+    total_failed = sum(s.counts_by_status.get("failed", 0) for s in summaries)
 
     if dry_run:
-        logger.info("[deployment-digest] DRY-RUN — would post: %s", event.message)
-        return {"status": "dry_run", "total_targets": total_targets, "message": event.message}
+        logger.info("[deployment-digest] DRY-RUN — would emit: %s", message)
+        return {"status": "dry_run", "total_targets": total_targets, "message": message}
 
-    posted = post_deployment_digest(event, alerting_service_url=settings.ALERTING_SERVICE_URL)
-    return {
-        "status": "posted" if posted is not None else "no_url",
-        "total_targets": total_targets,
-        "message": event.message,
-    }
+    if not _ensure_live_events():
+        return {"status": "not_configured", "total_targets": total_targets, "message": message}
+
+    # run_lifecycle wraps the emit so the digest run gets its own STARTED/STOPPED
+    # lifecycle events (auto-correlated by run_id) — the ServiceBootstrap-parity
+    # pattern the data-pipeline monitor jobs use. The writer is already live
+    # (PubSub) from _ensure_live_events above.
+    with run_lifecycle(service_name=_SERVICE_NAME):
+        log_event(
+            DEPLOYMENT_DIGEST,
+            severity="INFO",
+            details={
+                "message": message,
+                "source": _SERVICE_NAME,
+                "total_targets": total_targets,
+                "failed": total_failed,
+            },
+        )
+    logger.info("[deployment-digest] emitted DEPLOYMENT_DIGEST (%d targets, %d failed)", total_targets, total_failed)
+    return {"status": "emitted", "total_targets": total_targets, "message": message}
 
 
 @router.post("/digest/run")
 def run_deployment_digest_endpoint(
-    dry_run: bool = Query(default=False, description="Build the digest but skip the alerting-service POST."),
-    channel: str = Query(default=_DEFAULT_CHANNEL, description="Slack channel hint embedded in the digest message."),
+    dry_run: bool = Query(default=False, description="Build the digest but skip the log_event emit."),
 ) -> dict[str, object]:
     """On-demand / UI trigger for the deployment-estate digest.
 
@@ -203,13 +200,12 @@ def run_deployment_digest_endpoint(
     via the isolated Cloud Run Job worker (deployment_digest_worker), not this
     endpoint — this surface is for operator-initiated / dry-run previews.
     """
-    return run_deployment_digest(dry_run=dry_run, channel=channel)
+    return run_deployment_digest(dry_run=dry_run)
 
 
 __all__ = [
-    "build_deployment_digest_event",
+    "build_deployment_digest_message",
     "build_estate_summaries",
-    "post_deployment_digest",
     "router",
     "run_deployment_digest",
     "run_deployment_digest_endpoint",

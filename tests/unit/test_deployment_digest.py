@@ -1,8 +1,9 @@
 """Unit tests — daily deployment-estate digest (parity #5).
 
-Covers the pure builder (folds per-umbrella rollups into an INFO AlertEvent), the
-poster (honest no-op when the URL is unset; HTTP POST when set), and the cron
-endpoint's status branches (empty / dry_run / posted / no_url).
+Covers the message builder (folds per-umbrella rollups into the digest text) and
+the cron core's status branches (empty / dry_run / emitted), asserting the emit
+goes through UTL ``log_event`` as an INFO ``DEPLOYMENT_DIGEST`` event → Pub/Sub →
+ni-service → Slack (no HTTP URL).
 
 Plan: deployment_observability_parity_live_batch_paper_2026_06_22.md #5.
 """
@@ -10,13 +11,10 @@ Plan: deployment_observability_parity_live_batch_paper_2026_06_22.md #5.
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import MagicMock, patch
-
-from unified_api_contracts import AlertCode
+from unittest.mock import patch
 
 from deployment_api.routes.deployment_digest import (
-    build_deployment_digest_event,
-    post_deployment_digest,
+    build_deployment_digest_message,
     run_deployment_digest,
 )
 from deployment_api.routes.deployments_inventory import (
@@ -67,105 +65,82 @@ def _estate() -> list[UmbrellaSummaryResponse]:
 
 
 # ---------------------------------------------------------------------------
-# builder
+# message builder
 # ---------------------------------------------------------------------------
 
 
-def test_build_digest_event_folds_all_umbrellas() -> None:
-    event = build_deployment_digest_event(_estate(), digest_date=date(2026, 7, 13))
-
-    assert event.severity == "INFO"
-    assert event.code is AlertCode.DEPLOYMENT_DIGEST
-    assert event.rule_id == "DEPLOYMENT_DIGEST"
-    # metric = estate-wide failed count (BATCH's 3).
-    assert event.metric_value == 3.0
-    assert event.threshold == 0.0
-    # Message carries every umbrella + the date + the last-failure hint.
-    assert "LIVE: 12 total" in event.message
-    assert "BATCH: 48 total" in event.message
-    assert "PAPER: 5 total" in event.message
-    assert "2026-07-13" in event.message
-    assert "tradfi-cme-cl-backfill" in event.message
+def test_build_digest_message_folds_all_umbrellas() -> None:
+    msg = build_deployment_digest_message(_estate(), digest_date=date(2026, 7, 13))
+    assert "DEPLOYMENT DIGEST" in msg
+    assert "65 targets across 3 umbrellas, 3 failed" in msg
+    assert "LIVE: 12 total" in msg
+    assert "BATCH: 48 total" in msg
+    assert "PAPER: 5 total" in msg
+    assert "2026-07-13" in msg
+    assert "tradfi-cme-cl-backfill" in msg
 
 
-def test_build_digest_clean_estate_zero_metric() -> None:
+def test_build_digest_message_clean_estate_zero_failed() -> None:
     clean = [_summary("LIVE", running=10), _summary("BATCH", succeeded=20), _summary("PAPER", running=3)]
-    event = build_deployment_digest_event(clean, digest_date=date(2026, 7, 13))
-    assert event.metric_value == 0.0
-    assert "0 failed" in event.message
+    msg = build_deployment_digest_message(clean, digest_date=date(2026, 7, 13))
+    assert "0 failed" in msg
 
 
 # ---------------------------------------------------------------------------
-# poster
-# ---------------------------------------------------------------------------
-
-
-def test_post_digest_noop_when_url_empty() -> None:
-    event = build_deployment_digest_event(_estate(), digest_date=date(2026, 7, 13))
-    with patch(f"{_MODULE}.httpx.post") as mock_post:
-        result = post_deployment_digest(event, alerting_service_url="")
-    assert result is None
-    mock_post.assert_not_called()
-
-
-def test_post_digest_posts_alertevent_when_url_set() -> None:
-    event = build_deployment_digest_event(_estate(), digest_date=date(2026, 7, 13))
-    resp = MagicMock()
-    with patch(f"{_MODULE}.httpx.post", return_value=resp) as mock_post:
-        result = post_deployment_digest(event, alerting_service_url="http://alerting-service:8080/")
-    assert result is event
-    resp.raise_for_status.assert_called_once()
-    (url,), kwargs = mock_post.call_args
-    assert url == "http://alerting-service:8080/api/v1/alerts/rules/recent"
-    assert kwargs["json"]["code"] == "DEPLOYMENT_DIGEST"
-    assert kwargs["json"]["severity"] == "INFO"
-
-
-# ---------------------------------------------------------------------------
-# cron endpoint — status branches
+# cron core — status branches
 # ---------------------------------------------------------------------------
 
 
 def test_run_digest_empty_estate_is_honest_noop() -> None:
     empty = [_summary("LIVE"), _summary("BATCH"), _summary("PAPER")]
-    with patch(f"{_MODULE}.build_estate_summaries", return_value=empty), patch(f"{_MODULE}.httpx.post") as mock_post:
+    with (
+        patch(f"{_MODULE}.build_estate_summaries", return_value=empty),
+        patch(f"{_MODULE}.log_event") as mock_log_event,
+    ):
         out = run_deployment_digest(dry_run=False)
     assert out["status"] == "empty"
     assert out["total_targets"] == 0
-    mock_post.assert_not_called()
+    mock_log_event.assert_not_called()
 
 
-def test_run_digest_dry_run_builds_but_does_not_post() -> None:
+def test_run_digest_dry_run_builds_but_does_not_emit() -> None:
     with (
         patch(f"{_MODULE}.build_estate_summaries", return_value=_estate()),
-        patch(f"{_MODULE}.httpx.post") as mock_post,
+        patch(f"{_MODULE}.log_event") as mock_log_event,
+        patch(f"{_MODULE}._ensure_live_events") as mock_setup,
     ):
         out = run_deployment_digest(dry_run=True)
     assert out["status"] == "dry_run"
     assert out["total_targets"] == 65
     assert "DEPLOYMENT DIGEST" in str(out["message"])
-    mock_post.assert_not_called()
+    mock_log_event.assert_not_called()
+    mock_setup.assert_not_called()
 
 
-def test_run_digest_posts_when_url_configured() -> None:
-    resp = MagicMock()
+def test_run_digest_emits_deployment_digest_event() -> None:
     with (
         patch(f"{_MODULE}.build_estate_summaries", return_value=_estate()),
-        patch(f"{_MODULE}.settings.ALERTING_SERVICE_URL", "http://alerting-service:8080"),
-        patch(f"{_MODULE}.httpx.post", return_value=resp) as mock_post,
+        patch(f"{_MODULE}._ensure_live_events", return_value=True),
+        patch(f"{_MODULE}.log_event") as mock_log_event,
     ):
         out = run_deployment_digest(dry_run=False)
-    assert out["status"] == "posted"
+    assert out["status"] == "emitted"
     assert out["total_targets"] == 65
-    mock_post.assert_called_once()
+    mock_log_event.assert_called_once()
+    (event_name,), kwargs = mock_log_event.call_args
+    assert event_name == "DEPLOYMENT_DIGEST"
+    assert kwargs["severity"] == "INFO"
+    assert "DEPLOYMENT DIGEST" in str(kwargs["details"]["message"])
+    assert kwargs["details"]["failed"] == 3
+    assert kwargs["details"]["source"] == "deployment-digest"
 
 
-def test_run_digest_no_url_reports_no_url_status() -> None:
+def test_run_digest_not_configured_when_events_setup_fails() -> None:
     with (
         patch(f"{_MODULE}.build_estate_summaries", return_value=_estate()),
-        patch(f"{_MODULE}.settings.ALERTING_SERVICE_URL", ""),
-        patch(f"{_MODULE}.httpx.post") as mock_post,
+        patch(f"{_MODULE}._ensure_live_events", return_value=False),
+        patch(f"{_MODULE}.log_event") as mock_log_event,
     ):
         out = run_deployment_digest(dry_run=False)
-    assert out["status"] == "no_url"
-    mock_post.assert_not_called()
+    assert out["status"] == "not_configured"
+    mock_log_event.assert_not_called()
