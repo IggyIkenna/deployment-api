@@ -32,6 +32,10 @@ CLOUD_BUILD_REGION = "asia-northeast1"
 STATE_BUCKET = _config.effective_state_bucket
 SERVICE_ACCOUNT = _config.service_account_email
 
+# Base URL of alerting-service for the daily deployment-estate digest POST
+# (routes/deployment_digest.py). Empty = honest no-op (digest logs + skips).
+ALERTING_SERVICE_URL = _config.alerting_service_url
+
 # GitHub
 GITHUB_ORG = _config.github_org
 GITHUB_TOKEN_SA = _config.effective_github_token_sa

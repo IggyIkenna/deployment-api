@@ -59,6 +59,7 @@ from .routes import (
     data_status_tardis_windows,
     deploy_events_sse,
     deployment_diff,
+    deployment_digest,
     deployment_freshness,
     deployments,
     deployments_inventory,
@@ -170,6 +171,7 @@ _authenticated_router.include_router(services.router, prefix="/api/services", ta
 # caught on real cloud 2026-06-24). A real deployment id still falls through to
 # the parametric route (it doesn't match the literals).
 _authenticated_router.include_router(deployments_inventory.router, prefix="/api", tags=["Deployment Inventory"])
+_authenticated_router.include_router(deployment_digest.router, prefix="/api/deployments", tags=["Deployment Digest"])
 # Freshness BEFORE the parametric deployments.router (same shadowing reason): its
 # ``/deployments/{deployment_id}/freshness`` must register ahead of the parametric CRUD.
 _authenticated_router.include_router(deployment_freshness.router, prefix="/api", tags=["Deployment Freshness"])

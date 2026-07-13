@@ -65,6 +65,17 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Service account email for deployments",
     )
 
+    alerting_service_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("ALERTING_SERVICE_URL"),
+        description=(
+            "Base URL of alerting-service, used by the daily deployment-estate digest "
+            "(routes/deployment_digest.py) to POST its INFO AlertEvent → Slack. Empty = "
+            "honest no-op (the digest cron logs + skips the POST, never a fabricated send). "
+            "Mirrors client-reporting-api's alerting_service_url. Config, not a secret."
+        ),
+    )
+
     # AWS CodeBuild build-status reader (repo-CI Image column, ?provider=aws). Config, not secrets.
     aws_codebuild_region: str = Field(
         default="ap-northeast-1",
