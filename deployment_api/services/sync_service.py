@@ -14,12 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from unified_trading_library import DEFAULT_BUCKET, DeploymentsRegistry
-
 from deployment_api import settings
 from deployment_api.utils.config_validation import ConfigurationError, ValidationUtils
 from deployment_api.utils.storage_facade import list_objects, read_object_text, write_object_text
-from deployment_api.vm_utils import list_running_vm_names
 
 from .event_processor import EventProcessor
 from .state_manager import StateManager
@@ -520,20 +517,6 @@ class SyncService:
             Number of old deployments deleted
         """
         return self.state_manager.cleanup_state_ttl()
-
-    def reap_stale_deployments(self, max_reap: int = 500) -> int:
-        """Archive stale ``deployments/active/`` registry entries.
-
-        Bounded to ``max_reap`` per call so a large backlog (VMs long gone,
-        never reaped) drains over several background-sync ticks instead of
-        one burst of GCS writes. Returns the number of entries archived.
-        """
-        running_vm_names = list_running_vm_names(self.project_id)
-        registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-        reaped = registry.reap_stale(running_vm_names=running_vm_names, max_reap=max_reap)
-        if reaped:
-            logger.info("[SYNC_SERVICE] Reaper: archived %s stale deployment(s)", len(reaped))
-        return len(reaped)
 
     def get_held_deployment_locks(self) -> set[str]:
         """Get currently held deployment locks."""

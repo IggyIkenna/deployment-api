@@ -47,37 +47,6 @@ async def _run_ttl_cleanup(loop: asyncio.AbstractEventLoop, current_interval: fl
         logger.debug("[AUTO_SYNC] State TTL cleanup error: %s", e)
 
 
-# Reaper tick cadence — deliberately coarser than the 30-60s sync cycle: reap_stale's
-# list_active() downloads every `deployments/active/*.json` blob (~138s measured for
-# ~3k stale entries), so it must not run every cycle. REAPER_MAX_PER_TICK bounds the
-# archive burst so a multi-thousand-entry backlog drains over several ticks instead of
-# one storm of GCS writes (see DeploymentsRegistry.reap_stale's max_reap).
-_REAPER_INTERVAL_SEC = 900  # 15 min
-_REAPER_MAX_PER_TICK = 500
-
-
-async def _run_deployment_reaper(loop: asyncio.AbstractEventLoop, current_interval: float) -> None:
-    """Archive stale `deployments/active/` registry entries every ~15 min.
-
-    Routed through `_sync_service.reap_stale_deployments` (not a bare
-    DeploymentsRegistry/list_running_vm_names call here) so this stays a
-    no-op under test doubles that replace SyncService wholesale, mirroring
-    `_run_ttl_cleanup`'s use of `_sync_service.cleanup_state_ttl` above.
-    """
-    if (_time.time() % _REAPER_INTERVAL_SEC) >= current_interval:
-        return
-    assert _sync_service is not None
-    try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            reaped_count = await loop.run_in_executor(
-                executor, _sync_service.reap_stale_deployments, _REAPER_MAX_PER_TICK
-            )
-        if reaped_count > 0:
-            logger.info("[AUTO_SYNC] Reaper: archived %s stale deployment(s)", reaped_count)
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.debug("[AUTO_SYNC] Deployment reaper error: %s", e)
-
-
 def _compute_next_interval(num_active: int, sync_interval_active: int, sync_interval_idle: int) -> int:
     """Return next sync interval based on number of active deployments."""
     if num_active > 0:
@@ -135,7 +104,6 @@ async def auto_sync_running_deployments():
                 logger.info("[AUTO_SYNC] Synced %s deployment(s)", synced)
 
             await _run_ttl_cleanup(loop, current_interval)
-            await _run_deployment_reaper(loop, current_interval)
             current_interval = _compute_next_interval(num_active, sync_interval_active, sync_interval_idle)
 
         except asyncio.CancelledError:
