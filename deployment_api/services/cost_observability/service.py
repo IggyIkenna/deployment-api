@@ -243,7 +243,7 @@ class CostObservabilityService:
         if not project_id:
             return None
         try:
-            store = get_cost_snapshot_store(project_id)
+            store = get_cost_snapshot_store(project_id, self._cfg.effective_state_bucket)
             store.ensure_fresh()
             if not store.present_clouds():
                 return None

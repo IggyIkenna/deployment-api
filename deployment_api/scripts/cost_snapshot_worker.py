@@ -5,9 +5,9 @@
 Runs every ~12 h via Cloud Scheduler. For each cloud (GCP / AWS / GitHub) it scans the
 billing export ONCE over the full available window (~90 days), normalizes to ``CostRecord``
 via the existing provider adapters, and writes the aggregated fact set as a per-cloud parquet
-to::
+under a prefix in deployment-api's EXISTING state bucket (no dedicated cost bucket)::
 
-    gs://{project_id}-cost-snapshots/{cloud}.parquet
+    gs://unified-deployment-state-{project}/cost-snapshots/{cloud}.parquet
 
 The deployment-api ``/api/costs/*`` endpoints download these small (~20-40 MB) parquets to
 local ``/tmp`` and answer every view with a DuckDB SQL aggregation — no per-request BigQuery/
@@ -24,11 +24,9 @@ Plan:
 SSOT:
     ``codex/05-infrastructure/billing-cost-observability.md``
 
-CLI::
+CLI (``--bucket`` optional; defaults to the state bucket)::
 
-    python -m deployment_api.scripts.cost_snapshot_worker \\
-        --project=<gcp-project-id> \\
-        --bucket=<gcp-project-id>-cost-snapshots
+    python -m deployment_api.scripts.cost_snapshot_worker --project=<gcp-project-id>
 """
 
 from __future__ import annotations
@@ -169,7 +167,10 @@ def main() -> int:
     )
     parser.add_argument("--project", required=True, help="GCP project ID")
     parser.add_argument(
-        "--bucket", required=True, help="GCS bucket for snapshot output (e.g. {project}-cost-snapshots)"
+        "--bucket",
+        default=None,
+        help="GCS bucket for snapshot output (default: deployment-api's state bucket, "
+        "config.effective_state_bucket = unified-deployment-state-{project}); blobs land under cost-snapshots/",
     )
     parser.add_argument(
         "--clouds",
@@ -186,8 +187,10 @@ def main() -> int:
     args = parser.parse_args()
     clouds = cast("list[str]", args.clouds)
     project = cast("str", args.project)
-    bucket = cast("str", args.bucket)
     days = cast("int", args.days)
+    # Default to the existing deployment-api state bucket (no dedicated cost bucket) — blobs land
+    # under the cost-snapshots/ prefix (snapshot.snapshot_blob_path).
+    bucket = cast("str | None", args.bucket) or DeploymentApiConfig().effective_state_bucket
 
     # RuntimeError = already initialised by an outer bootstrap — acceptable.
     with contextlib.suppress(RuntimeError):

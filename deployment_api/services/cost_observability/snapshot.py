@@ -56,10 +56,12 @@ logger = logging.getLogger(__name__)
 # Clouds that get their own parquet slice, in render order (matches service.CLOUD_ORDER).
 SNAPSHOT_CLOUDS: tuple[str, ...] = (CLOUD_GCP, CLOUD_AWS, CLOUD_GITHUB)
 
-# GCS bucket + object layout. Mirrors data-status' ``{pid}-data-status-rollups`` template
-# (rollup_cache.ROLLUP_BUCKET_TEMPLATE) — one flat per-cloud object, no date partitioning
-# (the snapshot always holds the full available history, ~90 days, in one file).
-SNAPSHOT_BUCKET_TEMPLATE: str = "{pid}-cost-snapshots"
+# Object layout. Cost snapshots live under a prefix in deployment-api's EXISTING state bucket
+# (config.effective_state_bucket = ``unified-deployment-state-{project}``) — no dedicated bucket
+# for ~10 MB of blobs; the same service account already reads/writes that bucket. One flat
+# per-cloud object, no date partitioning (the snapshot always holds the full available history,
+# ~90 days, in one file).
+SNAPSHOT_BLOB_PREFIX: str = "cost-snapshots"
 
 # Re-download a locally-cached parquet at most this often. The worker refreshes the GCS
 # object every ~12 h; matching that here means a warm instance never re-downloads within a
@@ -102,8 +104,8 @@ SNAPSHOT_SCHEMA: pa.Schema = pa.schema(
 
 
 def snapshot_blob_path(cloud: str) -> str:
-    """GCS object path for one cloud's cost snapshot parquet."""
-    return f"{cloud}.parquet"
+    """GCS object path for one cloud's cost snapshot parquet (under the state-bucket prefix)."""
+    return f"{SNAPSHOT_BLOB_PREFIX}/{cloud}.parquet"
 
 
 # --- typed coercion of DuckDB row cells (fetchall returns untyped tuples) -----
@@ -187,9 +189,9 @@ class CostSnapshotStore:
     result, never the raw fact rows.
     """
 
-    def __init__(self, project_id: str, *, local_dir: str | None = None) -> None:
+    def __init__(self, project_id: str, bucket: str, *, local_dir: str | None = None) -> None:
         self._project_id = project_id
-        self._bucket = SNAPSHOT_BUCKET_TEMPLATE.format(pid=project_id)
+        self._bucket = bucket
         base = local_dir or os.path.join(tempfile.gettempdir(), "cost-snapshots")
         self._dir = Path(base)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -343,16 +345,17 @@ def utc_now_iso() -> str:
 
 # Module singleton — one store per process (shared across workers-of-a-process is not a thing;
 # each gunicorn worker is its own process → its own /tmp cache + DuckDB, which is fine: the files
-# are tiny). Keyed defensively by project in case config ever changes at runtime.
+# are tiny). Keyed by (project, bucket) in case config ever changes at runtime.
 _STORE: dict[str, CostSnapshotStore] = {}
 _STORE_LOCK = threading.Lock()
 
 
-def get_cost_snapshot_store(project_id: str) -> CostSnapshotStore:
-    """Return the process-wide snapshot store for ``project_id`` (created on first use)."""
+def get_cost_snapshot_store(project_id: str, bucket: str) -> CostSnapshotStore:
+    """Return the process-wide snapshot store for ``(project_id, bucket)`` (created on first use)."""
+    key = f"{project_id}|{bucket}"
     with _STORE_LOCK:
-        store = _STORE.get(project_id)
+        store = _STORE.get(key)
         if store is None:
-            store = CostSnapshotStore(project_id)
-            _STORE[project_id] = store
+            store = CostSnapshotStore(project_id, bucket)
+            _STORE[key] = store
         return store

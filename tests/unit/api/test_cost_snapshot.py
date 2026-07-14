@@ -46,10 +46,17 @@ def _store_with(
 ) -> snap.CostSnapshotStore:
     """A store whose local dir already holds the given per-cloud parquet files; GCS disabled."""
     monkeypatch.setattr(snap.CostSnapshotStore, "_download_one", lambda _self, _cloud: None)
-    store = snap.CostSnapshotStore("test-project", local_dir=str(tmp_path))
+    store = snap.CostSnapshotStore("test-project", "test-state-bucket", local_dir=str(tmp_path))
     for cloud, recs in files.items():
         store._local_path(cloud).write_bytes(snap.records_to_parquet_bytes(recs))  # pyright: ignore[reportPrivateUsage]
     return store
+
+
+# --- blob layout -------------------------------------------------------------
+def test_snapshot_blob_path_uses_state_bucket_prefix() -> None:
+    # Cost blobs live under a prefix in the shared state bucket, not a dedicated bucket.
+    assert snap.snapshot_blob_path("gcp") == "cost-snapshots/gcp.parquet"
+    assert snap.snapshot_blob_path("aws") == "cost-snapshots/aws.parquet"
 
 
 # --- parquet round-trip ------------------------------------------------------
@@ -173,7 +180,7 @@ def test_load_window_prefers_snapshot_when_present(monkeypatch: pytest.MonkeyPat
 
     s = _live_service(monkeypatch)
     snap_recs = [_rec(CLOUD_GCP, "2026-07-10", resource_id="SNAPSHOT")]
-    monkeypatch.setattr(svc, "get_cost_snapshot_store", lambda _pid: _FakeStore([CLOUD_GCP], snap_recs))
+    monkeypatch.setattr(svc, "get_cost_snapshot_store", lambda _pid, _bucket: _FakeStore([CLOUD_GCP], snap_recs))
     out = s._load_window(date(2026, 7, 1), date(2026, 8, 1))  # pyright: ignore[reportPrivateUsage]
     assert [r.resource_id for r in out] == ["SNAPSHOT"]  # snapshot won, providers not consulted
 
@@ -182,7 +189,7 @@ def test_load_window_falls_back_to_live_when_no_snapshot(monkeypatch: pytest.Mon
     from datetime import date
 
     s = _live_service(monkeypatch)
-    monkeypatch.setattr(svc, "get_cost_snapshot_store", lambda _pid: _FakeStore([], []))
+    monkeypatch.setattr(svc, "get_cost_snapshot_store", lambda _pid, _bucket: _FakeStore([], []))
     out = s._load_window(date(2026, 7, 1), date(2026, 8, 1))  # pyright: ignore[reportPrivateUsage]
     assert [r.resource_id for r in out] == ["LIVE"]  # no snapshot → live providers
 
@@ -192,7 +199,7 @@ def test_load_window_falls_back_when_snapshot_raises(monkeypatch: pytest.MonkeyP
 
     s = _live_service(monkeypatch)
 
-    def _boom(_pid: str) -> object:
+    def _boom(_pid: str, _bucket: str) -> object:
         raise RuntimeError("gcs down")
 
     monkeypatch.setattr(svc, "get_cost_snapshot_store", _boom)
