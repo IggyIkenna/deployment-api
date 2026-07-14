@@ -14,6 +14,7 @@ from deployment_api.routes import deployments_inventory as inv
 from deployment_api.routes.deployments_inventory import DeploymentItem
 from deployment_api.services.cost_observability import CostObservabilityService, CostRecord
 from deployment_api.services.cost_observability.models import ResourceDailyCost
+from deployment_api.services.cost_observability.snapshot import records_to_table
 
 
 def _rec(resource_id: str, day: str, cost: float, credit: float = 0.0) -> CostRecord:
@@ -42,7 +43,7 @@ def test_per_resource_daily_three_values() -> None:
         _rec("vm-b", _day(1), 7.0),
     ]
     svc = CostObservabilityService()
-    with patch.object(svc, "_fetch_window", return_value=recs):
+    with patch.object(svc, "_window_table", return_value=records_to_table(recs)):
         out = svc.per_resource_daily(days=7)
 
     a = out["vm-a"]
@@ -55,7 +56,7 @@ def test_per_resource_daily_three_values() -> None:
 def test_per_resource_daily_net_of_credits() -> None:
     recs = [_rec("vm-c", _day(1), 30.0, credit=-12.0)]  # net = 18
     svc = CostObservabilityService()
-    with patch.object(svc, "_fetch_window", return_value=recs):
+    with patch.object(svc, "_window_table", return_value=records_to_table(recs)):
         out = svc.per_resource_daily(days=7)
     assert out["vm-c"].actual_usd == 18.0
 
@@ -63,7 +64,7 @@ def test_per_resource_daily_net_of_credits() -> None:
 def test_per_resource_daily_skips_rows_without_resource_id() -> None:
     recs = [_rec("", _day(1), 99.0)]  # no resource granularity → not attributable
     svc = CostObservabilityService()
-    with patch.object(svc, "_fetch_window", return_value=recs):
+    with patch.object(svc, "_window_table", return_value=records_to_table(recs)):
         out = svc.per_resource_daily(days=7)
     assert out == {}
 

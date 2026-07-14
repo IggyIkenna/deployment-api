@@ -33,8 +33,8 @@ def _no_cost_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(
         CostObservabilityService,
-        "_snapshot_records",
-        lambda _self, _start, _end, _cutoff_iso: None,
+        "_snapshot_table",
+        lambda _self, _start, _end: None,
     )
 
 
