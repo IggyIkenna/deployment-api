@@ -12,7 +12,6 @@ keeps intercepting.
 from __future__ import annotations
 
 import logging
-import time
 from typing import cast
 
 import pandas as pd
@@ -24,6 +23,7 @@ from unified_trading_library import (
 
 import deployment_api.services.data_status_drilldown as _dd
 from deployment_api.settings import gcp_project_id as _pid
+from deployment_api.utils.bounded_cache import BoundedCache
 
 logger = logging.getLogger(__name__)
 
@@ -105,26 +105,21 @@ def build_bucket_name(service: str, asset_group: str, project_id: str | None = N
 
 
 # ---------------------------------------------------------------------------
-# TTL cache for read-heavy drill-down calls (5-min).
+# TTL cache for read-heavy drill-down calls (5-min). Bounded (was unbounded,
+# day-keyed — grew forever across venue/day/instrument_type/data_type shards).
 # ---------------------------------------------------------------------------
 
 _CACHE_TTL_SECONDS = 300.0
-_cache: dict[str, tuple[float, object]] = {}
+_CACHE_MAX_ENTRIES = 500
+_cache = BoundedCache(name="data_status_drilldown", maxsize=_CACHE_MAX_ENTRIES, ttl_seconds=_CACHE_TTL_SECONDS)
 
 
 def _cache_get(key: str) -> object | None:
-    entry = _cache.get(key)
-    if entry is None:
-        return None
-    ts, value = entry
-    if (time.monotonic() - ts) > _CACHE_TTL_SECONDS:
-        _cache.pop(key, None)
-        return None
-    return value
+    return _cache.get(key)
 
 
 def _cache_put(key: str, value: object) -> None:
-    _cache[key] = (time.monotonic(), value)
+    _cache[key] = value
 
 
 def clear_drilldown_cache() -> None:

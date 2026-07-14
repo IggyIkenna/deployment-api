@@ -28,6 +28,7 @@ from unified_trading_library import (
 
 from deployment_api import settings as _settings
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.registry_reader import resolve_active_registry, resolve_deployment_by_id
 
 _cfg = DeploymentApiConfig()
 
@@ -116,7 +117,7 @@ def list_experiment_jobs(
     """
     try:
         registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-        active = list(registry.list_active())
+        active = list(resolve_active_registry(gcs=registry))
         archived = list(registry.list_recent_archive(days=3))
     except Exception as exc:
         logger.warning("monitor/experiments: registry read failed: %s", exc)
@@ -209,7 +210,7 @@ def _run_gce_cmd(cmd: str) -> tuple[bool, str]:
 def _do_experiment_action(deployment_id: str, action: str, dry_run: bool) -> ExperimentActionResponse:
     try:
         registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-        entry = registry.get(deployment_id)
+        entry = resolve_deployment_by_id(deployment_id, gcs=registry)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Registry unavailable: {exc}") from exc
 

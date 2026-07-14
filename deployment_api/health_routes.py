@@ -7,6 +7,7 @@ and serving the UI application.
 
 import logging
 from datetime import UTC, datetime
+from typing import cast
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
@@ -226,6 +227,27 @@ async def get_workers_status() -> dict[str, object]:
             "workers": {},
             "error": str(e),
         }
+
+
+@router.get("/api/debug/cache-stats")
+async def get_cache_debug_stats() -> dict[str, object]:
+    """Per-instance stats for every ``BoundedCache`` — entry count + estimated bytes.
+
+    Feeds a future memory-utilization alert (this Cloud Run service runs 4 gunicorn
+    workers, each holding its own full copy of every in-process cache — visibility into
+    per-worker cache footprint is the precondition for alerting on it).
+    """
+    # call-time patch surface (mirrors the /api/cache/clear pattern above)
+    from .utils.bounded_cache import all_cache_stats  # noqa: imports-inside-functions
+
+    caches = all_cache_stats()
+    total_entries = sum(cast(int, cache["entries"]) for cache in caches)
+    total_estimated_bytes = sum(cast(int, cache["estimated_bytes"]) for cache in caches)
+    return {
+        "caches": caches,
+        "total_entries": total_entries,
+        "total_estimated_bytes": total_estimated_bytes,
+    }
 
 
 @router.post("/api/cache/clear")

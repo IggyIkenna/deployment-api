@@ -29,6 +29,24 @@ def _make_svc(**kwargs) -> DataStatusService:
     return DataStatusService(project_id=kwargs.get("project_id", "test-project"))
 
 
+# ── manifest live-build guard (deployment_api/services/data_status/manifest.py) ──
+#
+# get_manifest_status's on-demand fall-through now runs inside
+# bounded_subprocess.run_bounded (a REAL multiprocessing.get_context("spawn")
+# child in production). Unit tests must never spawn a real child process
+# (slow, and the child re-imports modules fresh so none of this file's
+# patch.object(_dss_mod, ...) mocks would even apply inside it) — mirrors
+# the existing test_rollup_worker.py convention of mocking the isolation
+# boundary itself rather than exercising a real subprocess. This fake runs
+# the target function INLINE in the test process so the patches above it
+# (on the canonical _dss_mod) still apply.
+_PATCH_RUN_BOUNDED = "deployment_api.services.data_status.manifest.run_bounded"
+
+
+def _run_bounded_inline(fn, *args, **kwargs):
+    return fn(*args)
+
+
 def _mock_process(returncode: int = 0, stdout: bytes = b"{}", stderr: bytes = b"") -> MagicMock:
     """Build a mock asyncio Process object."""
     proc = MagicMock()
@@ -1283,6 +1301,7 @@ class TestGetManifestStatus:
             patch.object(_dss_mod, "_read_index_cached", return_value=index),
             patch.object(_dss_mod, "VenueMapping", return_value=vm),
             patch.object(_dss_mod, "_read_rollup_if_fresh", return_value=None),
+            patch(_PATCH_RUN_BOUNDED, side_effect=_run_bounded_inline),
         ):
             result = await svc.get_manifest_status(
                 "instruments-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
@@ -1296,8 +1315,96 @@ class TestGetManifestStatus:
     @pytest.mark.asyncio
     async def test_handles_no_template(self):
         svc = _make_svc()
-        result = await svc.get_manifest_status("unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"])
+        with (
+            patch.object(_dss_mod, "_read_rollup_if_fresh", return_value=None),
+            patch(_PATCH_RUN_BOUNDED, side_effect=_run_bounded_inline),
+        ):
+            result = await svc.get_manifest_status("unknown-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"])
         assert result["overall_completion_pct"] == 0.0
+
+
+class TestManifestLiveBuildGuard:
+    """Wiring tests for the manifest-status live-build OOM guard (2026-07-14 incident).
+
+    See ``deployment_api.services.data_status.live_build_guard`` for the
+    pre-flight cost estimator and ``deployment_api.utils.bounded_subprocess``
+    for the defense-in-depth resource-bounded child process.
+    """
+
+    @pytest.mark.asyncio
+    async def test_huge_full_history_request_refused_without_attempting_live_build(self):
+        """A deliberately-huge, full-history MTDS-shaped request must trip
+        the pre-flight refusal and NEVER attempt the live build at all —
+        run_bounded (the entry point into the actual cell-grid compute) is
+        asserted un-called."""
+        svc = _make_svc()
+        with (
+            patch.object(_dss_mod, "_read_rollup_if_fresh", return_value=None),
+            patch.object(_dss_mod, "_read_rollup_allow_stale", return_value=None),
+            patch(_PATCH_RUN_BOUNDED) as mock_run_bounded,
+        ):
+            result = await svc.get_manifest_status("market-tick-data-service", "2018-01-01", "2030-01-01")
+
+        mock_run_bounded.assert_not_called()
+        assert result["refused"] is True
+        assert result["mode"] == "live_build_refused"
+        assert result["estimated_bytes"] > result["budget_bytes"]
+        assert "narrow" in result["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_huge_request_serves_stale_rollup_when_available(self):
+        """When a stale rollup blob exists, a refused live build serves it
+        (clearly marked) instead of a bare error — still without ever
+        attempting the live build."""
+        svc = _make_svc()
+        stale_payload = {"asset_groups": {"CEFI": {"dates_found": 1, "dates_expected": 1}}}
+        with (
+            patch.object(_dss_mod, "_read_rollup_if_fresh", return_value=None),
+            patch.object(_dss_mod, "_read_rollup_allow_stale", return_value=(stale_payload, "2026-07-01T00:00:00Z")),
+            patch(_PATCH_RUN_BOUNDED) as mock_run_bounded,
+        ):
+            result = await svc.get_manifest_status("market-tick-data-service", "2018-01-01", "2030-01-01")
+
+        mock_run_bounded.assert_not_called()
+        assert result["stale"] is True
+        assert result["stale_as_of"] == "2026-07-01T00:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_small_range_request_unaffected_still_returns_real_data(self):
+        """A normal small-range request is NOT refused and still returns
+        real manifest data — via the SAME sync build, now wrapped in the
+        resource-bounded child (mocked inline here to keep the test fast
+        and deterministic; the child-process mechanics themselves are
+        covered by test_bounded_subprocess.py)."""
+        svc = _make_svc()
+        index = pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["BINANCE"],
+                "service_name": ["instruments-service"],
+            }
+        )
+        vm = MagicMock()
+        vm.get_venue_start_date.return_value = "2020-01-01"
+        vm.get_instrument_discovery_start.return_value = None
+        vm.get_expected_trading_dates.return_value = ["2024-01-01"]
+
+        with (
+            patch.object(_dss_mod, "_read_index_cached", return_value=index),
+            patch.object(_dss_mod, "VenueMapping", return_value=vm),
+            patch.object(_dss_mod, "_read_rollup_if_fresh", return_value=None),
+            patch(_PATCH_RUN_BOUNDED, side_effect=_run_bounded_inline) as mock_run_bounded,
+        ):
+            result = await svc.get_manifest_status(
+                "instruments-service", "2024-01-01", "2024-01-01", asset_groups=["CEFI"]
+            )
+
+        mock_run_bounded.assert_called_once()
+        assert result["service"] == "instruments-service"
+        assert result["mode"] == "turbo"
+        assert "overall_completion_pct" in result
+        assert "asset_groups" in result
+        assert "refused" not in result
 
 
 class TestTransferWindowAwareness:
@@ -3370,7 +3477,15 @@ class TestManifestStatusVenueFilter:
         assert len(df) == 3
 
     async def test_venue_engages_any_row_filter_gate_and_bypasses_rollup(self) -> None:
-        """A non-empty ``venue`` must NOT take the filter-free rollup fast-path."""
+        """A non-empty ``venue`` must NOT take the filter-free rollup fast-path.
+
+        The on-demand build now always runs through the OOM-guard's
+        resource-bounded child (``bounded_subprocess.run_bounded``, wired in
+        ``manifest.get_manifest_status``) rather than calling
+        ``_get_manifest_status_sync`` directly on ``self`` — see
+        ``services/data_status/live_build_guard.py`` + ``manifest.py``'s
+        "Layer 2: defense-in-depth" block. Mock at that boundary instead.
+        """
         svc = _make_svc()
         sentinel: dict[str, object] = {"on_demand": True}
         with (
@@ -3379,11 +3494,10 @@ class TestManifestStatusVenueFilter:
                 "_read_rollup_if_fresh",
                 return_value={"should": "not be read"},
             ) as mock_rollup,
-            patch.object(
-                svc,
-                "_get_manifest_status_sync",
+            patch(
+                "deployment_api.services.data_status.manifest.run_bounded",
                 return_value=sentinel,
-            ) as mock_sync,
+            ) as mock_run_bounded,
         ):
             result = await svc.get_manifest_status(
                 service="market-tick-data-service",
@@ -3391,8 +3505,9 @@ class TestManifestStatusVenueFilter:
                 end_date="2025-03-14",
                 venue=["BINANCE-FUTURES"],
             )
-        # Rollup fast-path skipped; on-demand sync path taken with venue threaded.
+        # Rollup fast-path skipped; on-demand path taken through the bounded
+        # child, with venue threaded into the spawned entrypoint's args.
         mock_rollup.assert_not_called()
-        mock_sync.assert_called_once()
-        assert ["BINANCE-FUTURES"] in mock_sync.call_args.args
+        mock_run_bounded.assert_called_once()
+        assert ["BINANCE-FUTURES"] in mock_run_bounded.call_args.args
         assert result is sentinel

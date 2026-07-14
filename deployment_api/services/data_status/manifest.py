@@ -32,6 +32,10 @@ from deployment_api.services.data_status.coverage_metrics import (
     build_coverage_metrics,
     build_failure_rate_by_dimension,
 )
+from deployment_api.services.data_status.live_build_guard import (
+    estimate_live_build_bytes,
+    would_exceed_budget,
+)
 from deployment_api.services.data_status.mtds import (
     MTDS_CATEGORY_META,
     canonicalise_defi_data_types,
@@ -39,6 +43,16 @@ from deployment_api.services.data_status.mtds import (
     mtds_expected_venues,
 )
 from deployment_api.services.data_status.rollup_cache import slice_rollup_to_window
+from deployment_api.settings import (
+    DATA_STATUS_LIVE_BUILD_CHILD_RLIMIT_BYTES as _LIVE_BUILD_CHILD_RLIMIT_BYTES,
+)
+from deployment_api.settings import (
+    DATA_STATUS_LIVE_BUILD_CHILD_TIMEOUT_SECONDS as _LIVE_BUILD_CHILD_TIMEOUT_S,
+)
+from deployment_api.settings import (
+    DATA_STATUS_LIVE_BUILD_MEMORY_BUDGET_BYTES as _LIVE_BUILD_MEMORY_BUDGET_BYTES,
+)
+from deployment_api.utils.bounded_subprocess import BoundedSubprocessError, run_bounded
 
 
 async def prewarm_indexes(service: str, *, days: int = 7, cloud: str = "gcp") -> None:
@@ -95,6 +109,56 @@ def build_category_in_subprocess(
     )
 
 
+def _build_manifest_live_in_subprocess(
+    service: str,
+    start_date: str,
+    end_date: str,
+    asset_groups: list[str] | None,
+    secondary_axis: str | None,
+    league_id: str | None,
+    fixture_id: str | None,
+    canonical_question_group: str | None,
+    job_id: str | None,
+    chain: str | None,
+    cloud: str,
+    pipeline_modes: list[str] | None,
+    venue: list[str] | None,
+) -> dict[str, object]:
+    """Spawned-child entrypoint for ``bounded_subprocess.run_bounded``.
+
+    Defense-in-depth layer 2 for the manifest live-build OOM guard (layer 1
+    is the pre-flight :func:`~deployment_api.services.data_status.live_build_guard.estimate_live_build_bytes`
+    refusal in :meth:`ManifestStatusMixin.get_manifest_status`). Runs the
+    EXACT same sync build the un-guarded code used to call directly, just
+    inside a ``multiprocessing.get_context("spawn")`` child capped by
+    ``RLIMIT_AS`` — so a build the pre-flight estimate underestimated raises
+    a catchable ``MemoryError`` in this throwaway child instead of the
+    platform OOM-killer taking down the parent gunicorn worker.
+
+    Constructs a fresh ``DataStatusService`` inside the child (cheap — no
+    GCS/network at construction time; mirrors
+    :func:`build_category_in_subprocess` above) rather than pickling a live
+    instance across the process boundary — bound methods / instances with
+    live client handles do not reliably pickle under ``spawn``.
+    """
+    dss = _dss.DataStatusService()
+    return dss._get_manifest_status_sync(  # pyright: ignore[reportPrivateUsage]
+        service,
+        start_date,
+        end_date,
+        asset_groups,
+        secondary_axis,
+        league_id,
+        fixture_id,
+        canonical_question_group,
+        job_id,
+        chain,
+        cloud,
+        pipeline_modes,
+        venue,
+    )
+
+
 from deployment_api.services.data_status.missing_shards import MissingShardsMixin
 
 
@@ -145,6 +209,17 @@ class ManifestStatusMixin(MissingShardsMixin):
         The rollup is computed offline by ``data_status_rollup_worker``
         (Cloud Run Job + ``*/5 * * * *`` Scheduler cron). See plan:
         ``data_status_offline_rollup_2026_05_06.md``.
+
+        **Live-build OOM guard** (2026-07-13/14 incident — see
+        ``deployment_api.services.data_status.live_build_guard`` module
+        docstring): before attempting the on-demand fall-through, a cheap
+        request-shape estimate decides whether it's safe to attempt at all.
+        Too large -> refused outright (stale rollup if one exists, else a
+        structured error) rather than risking the ~18-81 GB peak-RSS blowup
+        that was OOM-crash-looping this container. A build that DOES pass
+        the estimate still runs inside a resource-bounded spawned child
+        (``deployment_api.utils.bounded_subprocess``) as defense-in-depth
+        against the estimate itself being wrong.
         """
         any_row_filter = (
             any(f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain))
@@ -163,22 +238,176 @@ class ManifestStatusMixin(MissingShardsMixin):
                 if secondary_axis:
                     response["secondary_axis"] = secondary_axis
                 return response
-        return await asyncio.to_thread(
-            self._get_manifest_status_sync,
-            service,
-            start_date,
-            end_date,
-            asset_groups,
-            secondary_axis,
-            league_id,
-            fixture_id,
-            canonical_question_group,
-            job_id,
-            chain,
-            cloud,
-            pipeline_modes,
-            venue,
+
+        # ── Layer 1: pre-flight refusal ──
+        # Cheap (no GCS/network) estimate of what the on-demand live build
+        # would cost. ``has_row_filter`` covers the secondary-axis row
+        # filters (venue has its own dedicated, separately-weighted count).
+        has_secondary_row_filter = any(
+            f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain)
+        ) or bool(pipeline_modes)
+        cat_list = self._resolve_cat_list(service, asset_groups)
+        estimate_bytes = estimate_live_build_bytes(
+            service=service,
+            start_date=start_date,
+            end_date=end_date,
+            category_count=len(cat_list),
+            venue_count=len(venue) if venue else None,
+            has_row_filter=has_secondary_row_filter,
         )
+        if would_exceed_budget(estimate_bytes, _LIVE_BUILD_MEMORY_BUDGET_BYTES):
+            logger.warning(
+                "manifest live-build REFUSED (pre-flight) for service=%s [%s..%s]: estimate=%dMB > budget=%dMB",
+                service,
+                start_date,
+                end_date,
+                estimate_bytes // (1024 * 1024),
+                _LIVE_BUILD_MEMORY_BUDGET_BYTES // (1024 * 1024),
+            )
+            return await self._live_build_fallback(
+                service,
+                start_date,
+                end_date,
+                asset_groups,
+                secondary_axis,
+                any_row_filter,
+                estimate_bytes,
+            )
+
+        # ── Layer 2: defense-in-depth ──
+        # Even an estimate under budget runs inside a resource-bounded
+        # spawned child (mirrors the isolation pattern shipped in commit
+        # 8d260ad for the offline rollup worker) — an underestimate raises a
+        # catchable error in the throwaway child instead of OOM-killing this
+        # gunicorn worker (and every other request sharing its container).
+        try:
+            return await asyncio.to_thread(
+                run_bounded,
+                _build_manifest_live_in_subprocess,
+                service,
+                start_date,
+                end_date,
+                asset_groups,
+                secondary_axis,
+                league_id,
+                fixture_id,
+                canonical_question_group,
+                job_id,
+                chain,
+                cloud,
+                pipeline_modes,
+                venue,
+                rlimit_bytes=_LIVE_BUILD_CHILD_RLIMIT_BYTES,
+                timeout_s=_LIVE_BUILD_CHILD_TIMEOUT_S,
+                name=f"manifest-live-{service[:24]}",
+            )
+        except BoundedSubprocessError as exc:
+            logger.error(
+                "manifest live-build FAILED in bounded child for service=%s [%s..%s]: %s",
+                service,
+                start_date,
+                end_date,
+                exc,
+            )
+            return await self._live_build_fallback(
+                service,
+                start_date,
+                end_date,
+                asset_groups,
+                secondary_axis,
+                any_row_filter,
+                estimate_bytes,
+                child_error=str(exc),
+            )
+
+    async def _live_build_fallback(
+        self,
+        service: str,
+        start_date: str,
+        end_date: str,
+        asset_groups: list[str] | None,
+        secondary_axis: str | None,
+        any_row_filter: bool,
+        estimate_bytes: int,
+        *,
+        child_error: str | None = None,
+    ) -> dict[str, object]:
+        """Serve a stale rollup if one exists, else a structured refusal.
+
+        Called when the pre-flight guard refuses the live build outright, or
+        the bounded child failed anyway. The rollup is filter-free (see
+        ``get_manifest_status`` docstring) so the stale-serve fallback only
+        applies to unfiltered requests (``not any_row_filter``) — serving a
+        filter-ignorant stale rollup for a secondary-axis drilldown query
+        would silently answer the wrong question.
+        """
+        if not any_row_filter:
+            stale = await asyncio.to_thread(_dss._read_rollup_allow_stale, service)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            if stale is not None:
+                payload, last_modified_iso = stale
+                response = slice_rollup_to_window(payload, start_date, end_date, asset_groups)
+                response["stale"] = True
+                response["stale_as_of"] = last_modified_iso
+                response["stale_reason"] = (
+                    "on-demand live build refused or failed (too large for a single request) "
+                    "-- serving the last precomputed rollup instead"
+                )
+                if secondary_axis:
+                    response["secondary_axis"] = secondary_axis
+                logger.info(
+                    "manifest live-build for service=%s served STALE rollup (as_of=%s, child_error=%s)",
+                    service,
+                    last_modified_iso,
+                    child_error,
+                )
+                return response
+
+        try:
+            days: int | None = (dt.date.fromisoformat(end_date) - dt.date.fromisoformat(start_date)).days + 1
+        except ValueError:
+            days = None
+        budget_mb = _LIVE_BUILD_MEMORY_BUDGET_BYTES // (1024 * 1024)
+        estimate_mb = estimate_bytes // (1024 * 1024)
+        detail = (
+            f"On-demand build estimated at ~{estimate_mb} MB, over the {budget_mb} MB safety budget "
+            "for a single request -- refused to protect the shared container from an OOM crash. "
+            "Narrow the date range (e.g. the last 3-6 months), select fewer asset groups, or add a "
+            "venue filter, then retry."
+        )
+        if child_error is not None:
+            detail = f"On-demand build failed inside its resource-bounded child process ({child_error}). {detail}"
+        logger.info("manifest live-build for service=%s refused with NO rollup fallback available: %s", service, detail)
+        response: dict[str, object] = {
+            "service": service,
+            "date_range": {"start": start_date, "end": end_date, "days": days},
+            "mode": "live_build_refused",
+            "refused": True,
+            "detail": detail,
+            "estimated_bytes": estimate_bytes,
+            "budget_bytes": _LIVE_BUILD_MEMORY_BUDGET_BYTES,
+            "overall_completion_pct": 0.0,
+            "asset_groups": {},
+        }
+        if secondary_axis:
+            response["secondary_axis"] = secondary_axis
+        return response
+
+    def _resolve_cat_list(self, service: str, asset_groups: list[str] | None) -> list[str]:
+        """Category list a manifest build would actually process for this service.
+
+        Shared by the pre-flight cost estimate (``get_manifest_status``) and
+        the actual sync build (``_get_manifest_status_sync``) so the two can
+        never drift on what "how many categories" means for a given request.
+        """
+        cat_list = asset_groups or [str(c) for c in MarketCategory]
+        # Filter to only the categories this service actually targets (Appendix A
+        # SSOT).  Rendering CEFI/TRADFI/SPORTS/PREDICTION as 0/0 for a
+        # DEFI-only service (e.g. features-onchain-service) is misleading — it
+        # looks like "missing data" when in fact the category is out-of-scope.
+        allowed = self._SERVICE_CATEGORY_RESTRICTIONS.get(service)
+        if allowed:
+            cat_list = [c for c in cat_list if c.upper() in allowed]
+        return cat_list
 
     def _get_manifest_status_sync(
         self,
@@ -197,14 +426,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         venue: list[str] | None = None,
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
-        cat_list = asset_groups or [str(c) for c in MarketCategory]
-        # Filter to only the categories this service actually targets (Appendix A
-        # SSOT).  Rendering CEFI/TRADFI/SPORTS/PREDICTION as 0/0 for a
-        # DEFI-only service (e.g. features-onchain-service) is misleading — it
-        # looks like "missing data" when in fact the category is out-of-scope.
-        allowed = self._SERVICE_CATEGORY_RESTRICTIONS.get(service)
-        if allowed:
-            cat_list = [c for c in cat_list if c.upper() in allowed]
+        cat_list = self._resolve_cat_list(service, asset_groups)
         all_dates_range = pd.date_range(start_date, end_date, freq="D")
         all_date_strs = [d.strftime("%Y-%m-%d") for d in all_dates_range]
         total_days = len(all_dates_range)

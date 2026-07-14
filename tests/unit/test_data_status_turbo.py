@@ -1723,14 +1723,24 @@ class TestDefiSubDimensionBreakdown:
         result = svc._build_defi_sub_dimension_breakdown(df, "2025-01-01", "2025-01-01")
         assert result == {}
 
-    def test_includes_all_known_sub_dims(self):
-        """All known sub-dimensions appear even if no data (at 0%)."""
+    def test_includes_all_known_sub_dims(self, monkeypatch):
+        """All known sub-dimensions appear even if no data (at 0%).
+
+        `_MTDS_DEFI_SUB_DIMENSIONS` is production-empty as of 2026-07-14 (all
+        dedicated DeFi sub-buckets, incl. lending-indices, were retired — see
+        deployment_api/services/data_status/defi.py) so it no longer supplies a
+        real "known but dataless" fixture. This test patches the class var to
+        exercise the enumeration mechanism itself (a declared-but-dataless
+        sub-dim still appears at 0%) independent of that live bucket-estate
+        value.
+        """
         import pandas as pd
 
         from deployment_api.services.data_status_service import DataStatusService
 
+        monkeypatch.setattr(DataStatusService, "_MTDS_DEFI_SUB_DIMENSIONS", ["lending-indices"])
         svc = DataStatusService(project_id="test")
-        # Only gas-fees has data, but all should appear
+        # Only gas-fees has data, but all declared sub-dims should appear
         df = pd.DataFrame(
             {
                 "date": ["2025-01-01"],

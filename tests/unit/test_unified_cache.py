@@ -1,7 +1,7 @@
 """
 Unit tests for UnifiedCache in cache.py.
 
-Tests use in-memory only mode (no Redis, no GCS).
+Tests use in-memory only mode (no Redis).
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -28,11 +28,10 @@ async def test_rediscache_get_degrades_on_redis_error() -> None:
 
 
 def _make_cache() -> UnifiedCache:
-    """Create UnifiedCache with no Redis/GCS for unit testing."""
-    cache = UnifiedCache(redis_url=None, storage_bucket=None, gcs_path=None)
-    # Disable Redis and GCS backends explicitly
+    """Create UnifiedCache with no Redis for unit testing."""
+    cache = UnifiedCache(redis_url=None)
+    # Disable the Redis backend explicitly
     cache.redis = None
-    cache.gcs = None
     return cache
 
 
@@ -141,7 +140,6 @@ class TestUnifiedCacheGetOrFetch:
         assert call_count == 2  # None not cached, so fetched again
 
     async def test_backends_state(self):
-        """Verify no Redis/GCS backends are attached in test mode."""
+        """Verify no Redis backend is attached in test mode."""
         cache = _make_cache()
         assert cache.redis is None
-        assert cache.gcs is None

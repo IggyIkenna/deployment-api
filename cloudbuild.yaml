@@ -340,17 +340,24 @@ steps:
   # NO-OP for the build-only triggers (feat/* / live-defi-rollout, _DEPLOY unset)
   # and for every non-deployment-api repo using this shared template. Rolls the
   # shared `uts-shared-deployment-api` Cloud Run revision to the freshly-built
-  # image + merges WORKERS=2 into its env vars (--update-env-vars, NOT
-  # --set-env-vars — the latter REPLACES the whole env-var set and would wipe
-  # existing vars like GCP_PROJECT_ID; --update-env-vars only touches the keys
-  # named, so everything else the service preserves from the prior revision
-  # is untouched. Operator decision 2026-07-14: halve the idle in-process-cache
-  # baseline, ~2.48GB @ WORKERS=4 → ~1.24GB @ WORKERS=2; the in-code default in
-  # deployment_api_config.py stays 4 for local dev / other deploy contexts —
-  # this is a deploy-config-only override for this one Cloud Run service) + syncs
-  # the data-status rollup Job to the SAME image so live data-status reflects new
-  # code (mirrors deployment-service/scripts/cloud-run/deploy-shared.sh). Operator
-  # decision 2026-06-15: auto-deploy deployment-api/ui on main.
+  # image + merges WORKERS=2 + AWS_ATHENA_READER_ROLE_ARN into its env vars
+  # (--update-env-vars, NOT --set-env-vars — the latter REPLACES the whole
+  # env-var set and would wipe existing vars like GCP_PROJECT_ID;
+  # --update-env-vars only touches the keys named, so everything else the
+  # service preserves from the prior revision is untouched. Operator decision
+  # 2026-07-14: halve the idle in-process-cache baseline, ~2.48GB @ WORKERS=4
+  # → ~1.24GB @ WORKERS=2; the in-code default in deployment_api_config.py
+  # stays 4 for local dev / other deploy contexts — this is a deploy-config-
+  # only override for this one Cloud Run service. AWS_ATHENA_READER_ROLE_ARN
+  # points at the keyless GCP->AWS WIF role provisioned 2026-07-14
+  # (gcp-cloudrun-athena-cost-reader, read-only scoped to the CUR data +
+  # Athena workgroup + results bucket, trusting this service's own SA) so the
+  # /ops/costs AWS tab can actually authenticate against Athena from Cloud
+  # Run — previously it had zero ambient AWS credentials and silently
+  # returned nothing (see deployment_api/services/cost_observability/aws_wif.py).
+  # Also syncs the data-status rollup Job to the SAME image so live data-status
+  # reflects new code (mirrors deployment-service/scripts/cloud-run/deploy-shared.sh).
+  # Operator decision 2026-06-15: auto-deploy deployment-api/ui on main.
   - name: "gcr.io/cloud-builders/gcloud"
     id: "deploy"
     entrypoint: "bash"
@@ -363,9 +370,9 @@ steps:
           exit 0
         fi
         IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
-        echo "deploy: rolling uts-shared-deployment-api → $$IMG (WORKERS=2)"
+        echo "deploy: rolling uts-shared-deployment-api → $$IMG (WORKERS=2, AWS Athena WIF role)"
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
-          --update-env-vars WORKERS=2 \
+          --update-env-vars WORKERS=2,AWS_ATHENA_READER_ROLE_ARN=arn:aws:iam::427895769566:role/gcp-cloudrun-athena-cost-reader \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
         # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the
         # new image — it runs the rollup compute via POST /api/data-status/rollup-run, hit

@@ -11,9 +11,7 @@ from deployment_api.routes.deployments_helpers import (
     _extract_date_range,
     _extract_severity_and_logger,
     _extract_shard_signature,
-    _get_verification_cache,
     _maybe_add_direct_gcs,
-    _set_verification_cache,
     _status_str,
     build_deploy_env_vars,
     find_duplicate_running_shards,
@@ -355,43 +353,6 @@ class TestExtractDateRange:
         start, end = _extract_date_range("last-xyz-days")
         assert start is None
         assert end is None
-
-
-class TestVerificationCache:
-    """Tests for _get_verification_cache and _set_verification_cache."""
-
-    def setup_method(self):
-        # Clear the cache before each test
-        from deployment_api.routes import deployments_helpers
-
-        deployments_helpers._verification_cache.clear()
-
-    def test_miss_returns_none(self):
-        assert _get_verification_cache("dep-123") is None
-
-    def test_set_then_get(self):
-        data = {"status": "verified", "output_exists": True}
-        _set_verification_cache("dep-456", data)
-        result = _get_verification_cache("dep-456")
-        assert result == data
-
-    def test_expired_returns_none(self):
-        import time
-
-        from deployment_api.routes import deployments_helpers
-
-        data = {"status": "old"}
-        _set_verification_cache("dep-999", data)
-        # Manually set old timestamp
-        deployments_helpers._verification_cache["dep-999"]["timestamp"] = time.time() - 400
-        result = _get_verification_cache("dep-999")
-        assert result is None
-
-    def test_different_ids_independent(self):
-        _set_verification_cache("dep-A", {"a": 1})
-        _set_verification_cache("dep-B", {"b": 2})
-        assert _get_verification_cache("dep-A") == {"a": 1}
-        assert _get_verification_cache("dep-B") == {"b": 2}
 
 
 class TestFindDuplicateRunningShards:

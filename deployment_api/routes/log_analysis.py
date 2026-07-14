@@ -11,11 +11,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import cast
 
+from deployment_api.utils.bounded_cache import BoundedCache
+
 logger = logging.getLogger(__name__)
 
-# Cache for log analysis results
-_log_analysis_cache: dict[str, dict[str, object]] = {}
+# Cache for log analysis results — bounded (was unbounded, one entry per deployment_id
+# forever). TTL here is a redundant backstop: analyze_deployment_logs_sync already tracks
+# freshness itself via a "timestamp" field on the stored value (see _get_cached_analysis).
 _log_analysis_cache_ttl = 60  # Cache log analysis for 60 seconds
+_log_analysis_cache = BoundedCache(name="log_analysis", maxsize=300, ttl_seconds=_log_analysis_cache_ttl)
 
 # Patterns to search for — module-level constants for clarity and reuse
 _ERROR_PATTERNS: list[tuple[str, str]] = [

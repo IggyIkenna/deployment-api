@@ -2,11 +2,18 @@
 Unified Caching Layer for API
 
 Two-tier caching architecture:
-- Tier 1 (Hot): Redis (distributed) or In-Memory (fallback) - fast, volatile
-- Tier 2 (Warm): GCS (persistent) - slower, survives restarts
+- Tier 1 (Hot): In-Memory (per-worker, always on) - fastest, volatile
+- Tier 2 (Distributed): Redis (optional) - fast, volatile, shared across workers
 
-Read path:  In-Memory -> Redis -> GCS -> Fetch
-Write path: Fetch -> In-Memory + Redis + GCS (async)
+Read path:  In-Memory -> Redis -> Fetch
+Write path: Fetch -> In-Memory + Redis
+
+A GCS-backed persistent third tier (``GCSCache``) previously existed here but was
+confirmed unused in production (the only object under the configured GCS cache prefix was
+a stale 146-byte leftover; the live cache path never wrote there) and carried a real design
+flaw — it mirrored the WHOLE cache blob into memory per worker and fire-and-forgot a
+full-blob JSON rewrite on every ``set()`` with unbounded executor concurrency. Removed
+rather than fixed (2026-07 memory-bounding pass).
 
 Usage:
     from deployment_api.utils.cache import cache
@@ -19,29 +26,20 @@ Usage:
     # Get or fetch with automatic caching
     value = await cache.get_or_fetch("key", fetch_func, ttl=60)
 
-    # With GCS persistence (survives restarts)
-    value = await cache.get_or_fetch("key", fetch_func, ttl=60, persist_to_gcs=True)
-
 Environment Variables:
     REDIS_URL: Redis connection URL (default: redis://localhost:6379/0)
-    STATE_BUCKET: GCS bucket for persistent cache (default: deployment-orchestration-{project})
-    gcp_project_id: GCP project ID (required, no default — fail fast if missing)
 """
 
 import asyncio
-import importlib.util
 import json
 import logging
 import time
 from collections.abc import Callable, Coroutine
 from typing import cast
 
-from deployment_api.settings import REDIS_URL, STATE_BUCKET
+from deployment_api.settings import REDIS_URL
 
 logger = logging.getLogger(__name__)
-
-# Configuration from centralized settings
-GCS_CACHE_PATH = "cache/unified_cache.json"
 
 
 # Serialization helpers
@@ -66,11 +64,6 @@ from unified_trading_library import AsyncRedisProvider
 
 REDIS_AVAILABLE = True
 
-# Check if GCS is available
-GCS_AVAILABLE = importlib.util.find_spec("google.cloud.storage") is not None
-if not GCS_AVAILABLE:
-    logger.info("GCS not available, persistent caching disabled")
-
 
 class CacheBackend:
     """Abstract cache backend interface."""
@@ -89,7 +82,18 @@ class CacheBackend:
 
 
 class InMemoryCache(CacheBackend):
-    """In-memory cache with TTL support (fastest, volatile)."""
+    """In-memory cache with per-entry TTL support (fastest, volatile).
+
+    Bounded by entry count, evicting the earliest-to-expire entry on overflow — the same
+    max-entries + evict-oldest-on-set shape as ``BoundedCache``/``routes/deployment_caching.py``,
+    but NOT built on ``BoundedCache`` itself: every call site sharing this ONE tier supplies
+    its OWN per-call ``ttl`` (``TTL_HEALTH=5`` next to ``TTL_TRIGGER_ID=3600`` in the same
+    cache instance — see the TTL_* constants below), and ``cachetools.TTLCache`` only
+    supports a single fixed ttl per cache instance, not per-entry. A genuine "primitive
+    doesn't fit this shape" case.
+    """
+
+    _MAX_ENTRIES = 5000
 
     def __init__(self):
         self._cache: dict[str, dict[str, object]] = {}
@@ -110,10 +114,19 @@ class InMemoryCache(CacheBackend):
 
     async def set(self, key: str, value: object, ttl: int) -> None:
         async with self._lock:
+            if key not in self._cache and len(self._cache) >= self._MAX_ENTRIES:
+                self._evict_earliest_expiry_locked()
             self._cache[key] = {
                 "value": value,
                 "expires_at": time.time() + ttl,
             }
+
+    def _evict_earliest_expiry_locked(self) -> None:
+        """Drop the entry closest to expiry. Caller MUST already hold ``self._lock``."""
+        if not self._cache:
+            return
+        oldest_key = min(self._cache, key=lambda k: cast(float, self._cache[k].get("expires_at") or 0.0))
+        del self._cache[oldest_key]
 
     async def delete(self, key: str) -> None:
         async with self._lock:
@@ -247,179 +260,22 @@ class RedisCache(CacheBackend):
             return 0
 
 
-class GCSCache:
-    """
-    GCS-backed persistent cache (survives restarts, shared across instances).
-
-    Stores all cached data in a single JSON file in GCS.
-    Uses local in-memory copy for fast reads, syncs to GCS on writes.
-    """
-
-    def __init__(self, bucket_name: str, blob_path: str):
-        self.bucket_name = bucket_name
-        self.blob_path = blob_path
-        self._local_cache: dict[str, dict[str, object]] = {}
-        self._loaded = False
-        self._lock = asyncio.Lock()
-
-    def _get_client(self):
-        """Get GCS client (lazy initialization)."""
-        if not GCS_AVAILABLE:
-            return None
-        from deployment_api.utils.storage_client import get_storage_client
-
-        return get_storage_client()
-
-    async def _load_from_gcs(self) -> None:
-        """Load cache from GCS into local memory."""
-        if self._loaded:
-            return
-
-        async with self._lock:
-            if self._loaded:
-                return
-
-            try:
-                try:
-                    from deployment_api.utils.storage_facade import (
-                        object_exists,
-                        read_object_text,
-                    )
-
-                    if object_exists(self.bucket_name, self.blob_path):
-                        data = cast(
-                            dict[str, dict[str, object]],
-                            json.loads(read_object_text(self.bucket_name, self.blob_path)),
-                        )
-                        self._local_cache = data
-                        logger.info("Loaded GCS cache: %s keys", len(data))
-                    else:
-                        self._local_cache = {}
-                        logger.info("No existing GCS cache, starting fresh")
-                except (OSError, ValueError, RuntimeError):
-                    client = self._get_client()
-                    if not client:
-                        self._local_cache = {}
-                    else:
-                        bucket = client.bucket(self.bucket_name)
-                        blob = bucket.blob(self.blob_path)
-                        if blob.exists():
-                            data = cast(dict[str, dict[str, object]], json.loads(blob.download_as_text()))
-                            self._local_cache = data
-                            logger.info("Loaded GCS cache: %s keys", len(data))
-                        else:
-                            self._local_cache = {}
-                            logger.info("No existing GCS cache, starting fresh")
-
-                self._loaded = True
-            except (OSError, ValueError, RuntimeError) as e:
-                logger.warning("Failed to load GCS cache: %s", e)
-                self._local_cache = {}
-                self._loaded = True
-
-    def _save_to_gcs_sync(self) -> None:
-        """Save cache to GCS (synchronous, for background task)."""
-        try:
-            data = json.dumps(self._local_cache, default=str)
-            try:
-                from deployment_api.utils.storage_facade import write_object_text
-
-                write_object_text(self.bucket_name, self.blob_path, data)
-                logger.debug("Saved cache to GCS (FUSE)")
-            except (OSError, ValueError, RuntimeError):
-                client = self._get_client()
-                if not client:
-                    return
-                client.upload_bytes(
-                    self.bucket_name,
-                    self.blob_path,
-                    data.encode("utf-8"),
-                    content_type="application/json",
-                )
-                logger.debug("Saved cache to GCS")
-        except Exception as e:
-            # Facade and upload_bytes can raise provider-specific errors
-            # (e.g. google.api_core.Forbidden).
-            logger.warning("Failed to save cache to GCS: %s", e)
-
-    async def get(self, key: str) -> object | None:
-        """Get value from GCS cache."""
-        await self._load_from_gcs()
-
-        entry = self._local_cache.get(key)
-        if entry is None:
-            return None
-
-        # Check TTL
-        expires_at_raw = entry.get("expires_at")
-        expires_at = float(expires_at_raw) if isinstance(expires_at_raw, (int, float)) else 0.0
-        if time.time() > expires_at:
-            del self._local_cache[key]
-            return None
-
-        return entry.get("value")
-
-    async def set(self, key: str, value: object, ttl: int) -> None:
-        """Set value in GCS cache (async save to GCS)."""
-        await self._load_from_gcs()
-
-        self._local_cache[key] = {
-            "value": value,
-            "expires_at": time.time() + ttl,
-        }
-
-        # Save to GCS in background (fire and forget)
-        asyncio.get_event_loop().run_in_executor(None, self._save_to_gcs_sync)
-
-    async def delete(self, key: str) -> None:
-        """Delete key from GCS cache."""
-        await self._load_from_gcs()
-
-        if key in self._local_cache:
-            del self._local_cache[key]
-            asyncio.get_event_loop().run_in_executor(None, self._save_to_gcs_sync)
-
-    async def clear_pattern(self, pattern: str) -> int:
-        """Clear all keys matching pattern."""
-        await self._load_from_gcs()
-
-        prefix = pattern.replace("*", "")
-        keys_to_delete = [k for k in self._local_cache if k.startswith(prefix)]
-
-        for k in keys_to_delete:
-            del self._local_cache[k]
-
-        if keys_to_delete:
-            asyncio.get_event_loop().run_in_executor(None, self._save_to_gcs_sync)
-
-        return len(keys_to_delete)
-
-
 class UnifiedCache:
     """
-    Unified caching layer with three tiers:
+    Unified caching layer with two tiers:
 
     1. In-Memory (fastest, per-instance)
     2. Redis (fast, distributed) - optional
-    3. GCS (persistent, survives restarts) - optional
 
-    Read order: In-Memory -> Redis -> GCS -> Fetch
-    Write order: All tiers simultaneously (GCS async)
+    Read order: In-Memory -> Redis -> Fetch
+    Write order: All tiers simultaneously
     """
 
-    def __init__(
-        self,
-        redis_url: str | None = None,
-        storage_bucket: str | None = None,
-        gcs_path: str | None = None,
-    ):
+    def __init__(self, redis_url: str | None = None):
         redis_url = redis_url or REDIS_URL
-        storage_bucket = storage_bucket or STATE_BUCKET
-        gcs_path = gcs_path or GCS_CACHE_PATH
 
         self.in_memory = InMemoryCache()
         self.redis = RedisCache(redis_url) if REDIS_AVAILABLE else None
-        self.gcs = GCSCache(storage_bucket, gcs_path) if GCS_AVAILABLE else None
         self._initialized = False
         self._cleanup_task: asyncio.Task[None] | None = None
         self._shutdown_event = asyncio.Event()
@@ -432,21 +288,13 @@ class UnifiedCache:
         if self.redis:
             await self.redis.connect()
 
-        # Pre-load GCS cache
-        if self.gcs:
-            load_fn = getattr(self.gcs, "_load_from_gcs", None)
-            if callable(load_fn):
-                _coro: Coroutine[object, object, None] = cast(Coroutine[object, object, None], load_fn())
-                await _coro
-
         # Start background cleanup task
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
         self._initialized = True
         logger.info(
-            "Unified cache initialized (Redis: %s, GCS: %s)",
+            "Unified cache initialized (Redis: %s)",
             "enabled" if self.redis and getattr(self.redis, "_provider", None) else "disabled",
-            "enabled" if self.gcs else "disabled",
         )
 
     async def _cleanup_loop(self):
@@ -477,8 +325,8 @@ class UnifiedCache:
         """
         Get value from cache (checks all tiers).
 
-        Order: In-Memory -> Redis -> GCS
-        If found in lower tier, promotes to higher tiers.
+        Order: In-Memory -> Redis
+        If found in a lower tier, promotes to the in-memory tier.
         """
         # Tier 1: In-Memory (fastest)
         value = await self.in_memory.get(key)
@@ -493,19 +341,9 @@ class UnifiedCache:
                 await self.in_memory.set(key, value, ttl=60)
                 return value
 
-        # Tier 3: GCS (persistent)
-        if self.gcs:
-            value = await self.gcs.get(key)
-            if value is not None:
-                # Promote to faster tiers
-                await self.in_memory.set(key, value, ttl=60)
-                if self.redis:
-                    await self.redis.set(key, value, ttl=60)
-                return value
-
         return None
 
-    async def set(self, key: str, value: object, ttl: int, persist_to_gcs: bool = False) -> None:
+    async def set(self, key: str, value: object, ttl: int) -> None:
         """
         Set value in cache (all applicable tiers).
 
@@ -513,7 +351,6 @@ class UnifiedCache:
             key: Cache key
             value: Value to cache
             ttl: Time to live in seconds
-            persist_to_gcs: If True, also persist to GCS for restart survival
         """
         # Always set in in-memory
         await self.in_memory.set(key, value, ttl)
@@ -522,25 +359,17 @@ class UnifiedCache:
         if self.redis:
             await self.redis.set(key, value, ttl)
 
-        # Set in GCS if requested (for persistence)
-        if persist_to_gcs and self.gcs:
-            await self.gcs.set(key, value, ttl)
-
     async def delete(self, key: str) -> None:
         """Delete key from all cache tiers."""
         await self.in_memory.delete(key)
         if self.redis:
             await self.redis.delete(key)
-        if self.gcs:
-            await self.gcs.delete(key)
 
     async def clear_pattern(self, pattern: str) -> int:
         """Clear all keys matching pattern from all tiers."""
         count = await self.in_memory.clear_pattern(pattern)
         if self.redis:
             count += await self.redis.clear_pattern(pattern)
-        if self.gcs:
-            count += await self.gcs.clear_pattern(pattern)
         return count
 
     async def get_or_fetch(
@@ -549,7 +378,6 @@ class UnifiedCache:
         fetch_func: Callable[[], Coroutine[object, object, object]],
         ttl: int,
         force_refresh: bool = False,
-        persist_to_gcs: bool = False,
     ) -> object:
         """
         Get from cache or fetch if missing.
@@ -559,7 +387,6 @@ class UnifiedCache:
             fetch_func: Async function to call if cache miss
             ttl: Time to live in seconds
             force_refresh: Skip cache and fetch fresh data
-            persist_to_gcs: Persist to GCS (survives restarts)
 
         Returns:
             Cached or freshly fetched value
@@ -577,7 +404,7 @@ class UnifiedCache:
 
         # Only cache non-None values
         if value is not None:
-            await self.set(key, value, ttl, persist_to_gcs=persist_to_gcs)
+            await self.set(key, value, ttl)
 
         return value
 

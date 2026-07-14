@@ -23,6 +23,7 @@ from unified_trading_library import (
 )
 
 from deployment_api import settings as _settings
+from deployment_api.registry_reader import resolve_active_registry
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ def list_backfill_jobs(
     """
     try:
         registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-        active = list(registry.list_active())
+        active = list(resolve_active_registry(gcs=registry))
         archived = list(registry.list_recent_archive(days=3))
     except Exception as exc:
         logger.warning("monitor/backfill: registry read failed: %s", exc)

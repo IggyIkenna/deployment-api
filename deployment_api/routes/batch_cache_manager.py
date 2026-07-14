@@ -10,7 +10,6 @@ import logging
 from deployment_api.utils.data_status_cache import (
     get_cached_result,
     set_cached_result,
-    truncate_dates_list,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,15 +60,14 @@ def check_cache_for_result(
         first_day_of_month_only=first_day_of_month_only,
         freshness_date=freshness_date,
         mode=mode,
+        full=full_dates_list,
     )
 
     if cached is not None:
         logger.info("[CACHE] Cache hit for %s %s-%s", service, start_date, end_date)
-        # Return full result if requested, otherwise truncated
-        if full_dates_list:
-            return cached
-        else:
-            return truncate_dates_list(cached)
+        # Already the correct (full or pre-truncated-at-write-time) variant — no per-hit
+        # deepcopy/truncation needed.
+        return cached
 
     return None
 
@@ -105,7 +103,7 @@ def store_result_in_cache(
     # Store in cache (if dates_list was requested)
     # We store the FULL (non-truncated) response for reuse by deploy_missing_only
     if include_dates_list:
-        set_cached_result(
+        truncated = set_cached_result(
             service=service,
             start_date=start_date,
             end_date=end_date,
@@ -125,8 +123,9 @@ def store_result_in_cache(
 
         logger.info("[CACHE] Stored result for %s %s-%s", service, start_date, end_date)
 
-        # Truncate if full_dates_list was not requested
-        if not full_dates_list:
-            response = truncate_dates_list(response)
+        # set_cached_result already computed the truncated variant once (write-time, not
+        # per-hit) — reuse it instead of truncating response a second time.
+        if not full_dates_list and truncated is not None:
+            response = truncated
 
     return response

@@ -12,14 +12,8 @@ from datetime import date
 
 from unified_trading_library import get_analytics_client
 
-# AWSAnalyticsClient is not in the UTL public API, and the factory can't set the CUR's
-# us-east-1 region + explicit Athena output bucket (it needs ATHENA_OUTPUT_BUCKET in env) —
-# so instantiate the concrete client directly.
-from unified_trading_library.cloud_interface.providers.aws import (  # noqa: qg-deep-import
-    AWSAnalyticsClient,
-)
-
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.services.cost_observability.aws_wif import get_athena_analytics_client
 from deployment_api.services.cost_observability.github_billing import fetch_github_billing
 from deployment_api.services.cost_observability.models import (
     BUSINESS_LABEL_KEYS,
@@ -176,10 +170,14 @@ def aws_facts(
     start: date,
     end: date,
     provisional_cutoff: date,
+    reader_role_arn: str = "",
 ) -> list[CostRecord]:
     # CUR lives in us-east-1 with its own results bucket — pin both explicitly; the app's
     # default AWS region (ap-northeast-1) would point Athena at an empty catalog.
-    client = AWSAnalyticsClient(region=region, output_bucket=output_bucket)
+    # `reader_role_arn` set → keyless GCP->AWS WIF (the deployed Cloud Run container has no
+    # ambient AWS creds); unset → the default boto3 credential chain (today's behaviour, local
+    # AWS profile / native-AWS task role). See aws_wif.get_athena_analytics_client.
+    client = get_athena_analytics_client(region=region, output_bucket=output_bucket, role_arn=reader_role_arn)
     rows = client.execute_query(aws_facts_sql(database, table, start, end))
     out: list[CostRecord] = []
     for r in rows:

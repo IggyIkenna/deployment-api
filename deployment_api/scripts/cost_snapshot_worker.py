@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 # How far back to scan. The billing export effectively holds ~90 days (SSOT § 4b: 90-day and
 # 180-day queries return the same ~168 K rows), so a comfortably wider window captures the whole
 # available history plus any prior-period rows for the summary delta. Bounded → cheap BQ scan.
-_DEFAULT_LOOKBACK_DAYS = 400
+DEFAULT_LOOKBACK_DAYS = 400
 
 # GCP billing lags ~2 days; the exact cutoff only mattered for the is_provisional flag, which the
 # snapshot does NOT store (recomputed at read time). Kept for the adapter signature.
@@ -84,6 +84,7 @@ def _load_cloud(cloud: str, cfg: DeploymentApiConfig, start: _dt.date, end: _dt.
             start,
             end,
             cutoff,
+            cfg.aws_athena_reader_role_arn,
         )
     if cloud == CLOUD_GITHUB:
         return github_facts(start, end)
@@ -181,8 +182,8 @@ def main() -> int:
     parser.add_argument(
         "--days",
         type=int,
-        default=_DEFAULT_LOOKBACK_DAYS,
-        help=f"Lookback window in days (default: {_DEFAULT_LOOKBACK_DAYS}; export holds ~90)",
+        default=DEFAULT_LOOKBACK_DAYS,
+        help=f"Lookback window in days (default: {DEFAULT_LOOKBACK_DAYS}; export holds ~90)",
     )
     args = parser.parse_args()
     clouds = cast("list[str]", args.clouds)

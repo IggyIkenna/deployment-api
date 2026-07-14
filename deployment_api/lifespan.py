@@ -23,6 +23,7 @@ from deployment_api.background_sync import (
 )
 from deployment_api.services.data_status.manifest import prewarm_indexes
 from deployment_api.settings import DATA_STATUS_PREWARM_SERVICE
+from deployment_api.utils.bounded_cache import start_sweeper, stop_sweeper
 from deployment_api.utils.service_utils import (
     get_codex_dir,
     get_config_dir,
@@ -38,6 +39,7 @@ from deployment_api.utils.storage_facade import (
 from deployment_api.utils.storage_facade import (
     read_object_text as _read_storage_object_text,
 )
+from deployment_api.utils.worker_identity import is_leader_worker
 
 logger = logging.getLogger(__name__)
 
@@ -157,17 +159,30 @@ async def lifespan(app: FastAPI):
 
         await cache.initialize()
 
-        # Start background sync task
+        # Start background sync task — only on the elected leader worker. Gunicorn forks
+        # WORKERS UvicornWorker processes per Cloud Run instance; running N duplicate
+        # sync loops against the same GCS deployments registry is pure waste (redundant
+        # scans) plus contention on shared per-deployment locks. See
+        # deployment_api.utils.worker_identity for the election mechanism (also gates the
+        # reap_stale tick, which runs inside this same background loop).
         _shutdown_event = asyncio.Event()
         set_shutdown_event(_shutdown_event)
-        _background_task = asyncio.create_task(_auto_sync_running_deployments())
-        logger.info("Background auto-sync task started")
+        if is_leader_worker():
+            _background_task = asyncio.create_task(_auto_sync_running_deployments())
+            logger.info("Background auto-sync task started (leader worker)")
+        else:
+            logger.info("Background auto-sync task skipped (non-leader worker)")
 
         # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
         from deployment_api.utils.deployment_events import drain_sync_queue
 
         _events_drain_task = asyncio.create_task(drain_sync_queue())
         logger.info("Deployment events drain task started")
+
+        # Single periodic sweeper for every BoundedCache instance (proactively expires
+        # entries a cold key would otherwise leave sitting on stale memory indefinitely).
+        start_sweeper()
+        logger.info("Bounded-cache sweeper task started")
 
         # Optional Data Status index pre-warm (DATA_STATUS_PREWARM_SERVICE; off by default).
         # Background + best-effort: warms _INDEX_CACHE so the first Data Status query is fast
@@ -182,6 +197,7 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down API...")
         _shutdown_event.set()
         await _cancel_background_tasks()
+        await stop_sweeper()
         _release_deployment_locks()
 
         try:

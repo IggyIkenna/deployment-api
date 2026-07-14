@@ -108,23 +108,6 @@ def snapshot_blob_path(cloud: str) -> str:
     return f"{SNAPSHOT_BLOB_PREFIX}/{cloud}.parquet"
 
 
-# --- typed coercion of DuckDB row cells (fetchall returns untyped tuples) -----
-def _s(v: object) -> str:
-    return v if isinstance(v, str) else ("" if v is None else str(v))
-
-
-def _f(v: object) -> float:
-    return float(v) if isinstance(v, (int, float)) else 0.0
-
-
-def _fn(v: object) -> float | None:
-    return float(v) if isinstance(v, (int, float)) else None
-
-
-def _i(v: object) -> int | None:
-    return int(v) if isinstance(v, int) else None
-
-
 # --- record <-> parquet ------------------------------------------------------
 def records_to_table(records: Sequence[CostRecord]) -> pa.Table:
     """Columnarize a list of ``CostRecord`` into an Arrow table on ``SNAPSHOT_SCHEMA``.
@@ -177,6 +160,27 @@ def records_to_parquet_bytes(records: Sequence[CostRecord]) -> bytes:
     return table_to_parquet_bytes(records_to_table(records))
 
 
+def aggregate_arrow(
+    table: pa.Table, sql: str, params: Sequence[object] | None = None, *, extra: dict[str, pa.Table] | None = None
+) -> list[tuple[object, ...]]:
+    """Run ``sql`` against ``table`` registered as ``cost_records`` (+ any ``extra`` named tables).
+
+    The Increment-2 aggregation primitive: DuckDB does the GROUP BY over the columnar window and
+    returns only the small grouped result, so the raw fact rows never materialize as Python
+    objects. A fresh in-memory connection per call keeps it thread-safe under gunicorn's sync
+    worker threadpool. ``extra`` registers additional tables (e.g. the prior window for a summary
+    delta) under their dict keys.
+    """
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.register("cost_records", table)
+        for name, tbl in (extra or {}).items():
+            con.register(name, tbl)
+        return cast("list[tuple[object, ...]]", con.execute(sql, list(params) if params else None).fetchall())
+    finally:
+        con.close()
+
+
 # --- read-side store ---------------------------------------------------------
 class CostSnapshotStore:
     """Per-cloud parquet cache on local disk + a DuckDB reader over the union.
@@ -224,8 +228,11 @@ class CostSnapshotStore:
             tmp.replace(self._local_path(cloud))  # atomic swap — never a half-written read
             self._loaded_at[cloud] = time.monotonic()
             self._absent.pop(cloud, None)
-        except (OSError, ValueError, RuntimeError) as exc:
+        except Exception as exc:  # noqa: broad best-effort — one cloud's GCS error (google.api_core
+            # Forbidden/NotFound are NOT OSError subclasses) must NEVER unwind ensure_fresh and abandon
+            # the OTHER clouds' good snapshots; degrade this one cloud to "absent" and keep the rest.
             logger.warning("cost snapshot download for %s failed: %s", cloud, exc)
+            self._absent[cloud] = time.monotonic()
 
     def ensure_fresh(self, *, force: bool = False) -> None:
         """Ensure each cloud's local parquet is present + younger than the refresh window."""
@@ -279,55 +286,25 @@ class CostSnapshotStore:
         finally:
             con.close()
 
-    def records_in_window(self, start_iso: str, end_iso: str, provisional_cutoff_iso: str) -> list[CostRecord]:
-        """Rebuild ``CostRecord``s for ``[start_iso, end_iso)`` from the snapshot (day exclusive end).
+    def window_table(self, start_iso: str, end_iso: str) -> pa.Table:
+        """Arrow table of the snapshot rows for ``[start_iso, end_iso)`` (day exclusive end).
 
-        The transitional read path used by ``service._load_window`` — hands the existing Python
-        aggregation the exact same record shape it got from the live providers, only sourced from
-        the local parquet instead of a BigQuery/Athena scan. ``is_provisional`` is recomputed here
-        against ``provisional_cutoff_iso`` (it is deliberately not stored in the snapshot).
-        Returns ``[]`` when no snapshot is present. (Increment 2 replaces this with in-DuckDB
-        aggregation so the raw rows never materialize in Python.)
+        The Increment-2 read path: hands the aggregation a compact columnar window (~15 MB for a
+        90-day slice) instead of ~168 K ``CostRecord`` objects, and every view then GROUP-BYs it in
+        DuckDB (``aggregate_arrow``) — the raw rows never materialize in Python. Returns an empty
+        (correctly-typed) table when no snapshot is present.
         """
-        rows = self.query(
-            "SELECT cloud, day, service, resource_id, resource_kind, region, cost, credit, currency, "
-            "cost_native, credit_native, sku, usage_amount, usage_unit, zone, purchase_option, "
-            "machine_type, vcpu, memory_gb, is_placeholder, labels "
-            "FROM cost_records WHERE day >= ? AND day < ?",
-            [start_iso, end_iso],
-        )
-        out: list[CostRecord] = []
-        for r in rows:
-            day = _s(r[1])
-            labels_json = _s(r[20])
-            labels = cast("dict[str, str]", json.loads(labels_json)) if labels_json else {}
-            out.append(
-                CostRecord(
-                    cloud=_s(r[0]),
-                    day=day,
-                    service=_s(r[2]),
-                    resource_id=_s(r[3]),
-                    resource_kind=_s(r[4]),
-                    region=_s(r[5]),
-                    cost=_f(r[6]),
-                    credit=_f(r[7]),
-                    currency=_s(r[8]),
-                    cost_native=_f(r[9]),
-                    credit_native=_f(r[10]),
-                    sku=_s(r[11]),
-                    usage_amount=_f(r[12]),
-                    usage_unit=_s(r[13]),
-                    zone=_s(r[14]),
-                    purchase_option=_s(r[15]),
-                    machine_type=_s(r[16]),
-                    vcpu=_i(r[17]),
-                    memory_gb=_fn(r[18]),
-                    is_placeholder=bool(r[19]),
-                    is_provisional=day >= provisional_cutoff_iso,
-                    labels=labels,
-                )
-            )
-        return out
+        self.ensure_fresh()
+        union = self._read_parquet_union_sql()
+        if union is None:
+            return records_to_table([])
+        con = duckdb.connect(database=":memory:")
+        try:
+            con.execute(f"CREATE VIEW cr AS SELECT * FROM {union}")  # nosec B608 — see query()
+            rel = con.execute("SELECT * FROM cr WHERE day >= ? AND day < ?", [start_iso, end_iso])
+            return rel.to_arrow_table()
+        finally:
+            con.close()
 
     def snapshot_age_sec(self) -> dict[str, float | None]:
         """Local age (seconds) of each present cloud parquet, for an observability endpoint."""

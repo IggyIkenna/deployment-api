@@ -33,8 +33,8 @@ def _no_cost_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(
         CostObservabilityService,
-        "_snapshot_records",
-        lambda _self, _start, _end, _cutoff_iso: None,
+        "_snapshot_table",
+        lambda _self, _start, _end: None,
     )
 
 
@@ -122,7 +122,9 @@ def test_gcp_facts_and_aws_facts_populate_purchase_option(monkeypatch: pytest.Mo
             "usage_amount": 24.0,
         }
     ]
-    monkeypatch.setattr(prov, "AWSAnalyticsClient", lambda region, output_bucket: _FakeAnalyticsClient(aws_rows))
+    monkeypatch.setattr(
+        prov, "get_athena_analytics_client", lambda region, output_bucket, role_arn: _FakeAnalyticsClient(aws_rows)
+    )
     aws_out = prov.aws_facts(
         "aws_billing",
         "cur_uts_cost_usage",
@@ -305,7 +307,9 @@ def test_aws_facts_maps_usage_type_into_sku_field(monkeypatch: pytest.MonkeyPatc
             "zone": "us-east-1a",
         }
     ]
-    monkeypatch.setattr(prov, "AWSAnalyticsClient", lambda region, output_bucket: _FakeAnalyticsClient(rows))
+    monkeypatch.setattr(
+        prov, "get_athena_analytics_client", lambda region, output_bucket, role_arn: _FakeAnalyticsClient(rows)
+    )
     out = prov.aws_facts(
         "aws_billing",
         "cur_uts_cost_usage",
@@ -474,7 +478,9 @@ def _fake_gcp(_table: str, start: date, end: date, _cutoff: date) -> list[CostRe
     return recs
 
 
-def _fake_aws(_db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: date) -> list[CostRecord]:
+def _fake_aws(
+    _db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: date, _role_arn: str = ""
+) -> list[CostRecord]:
     recs: list[CostRecord] = []
     d = start
     while d < end:
@@ -1411,7 +1417,9 @@ def test_bucket_breakdown_adds_storage_gb_and_class_split(monkeypatch: pytest.Mo
     assert row.cost_per_gb == pytest.approx(expected_storage_cost / expected_gb, abs=0.0005)
 
 
-def _fake_aws_storage(_db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: date) -> list[CostRecord]:
+def _fake_aws_storage(
+    _db: str, _t: str, _r: str, _b: str, start: date, end: date, _c: date, _role_arn: str = ""
+) -> list[CostRecord]:
     recs: list[CostRecord] = []
     d = start
     while d < end:

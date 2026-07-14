@@ -62,6 +62,53 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         ),
     )
 
+    data_status_live_build_memory_budget_bytes: int = Field(
+        default=768 * 1024**2,  # 768 MiB
+        validation_alias=AliasChoices("DATA_STATUS_LIVE_BUILD_MEMORY_BUDGET_BYTES"),
+        description=(
+            "Pre-flight refusal ceiling (see deployment_api.services.data_status."
+            "live_build_guard.estimate_live_build_bytes) for the manifest-status on-demand "
+            "live cell-grid build. If the cheap request-shape estimate exceeds this, the live "
+            "build is refused outright (serve a stale rollup, or a structured "
+            "narrow-your-range error) rather than attempted. 768 MiB on a 4 GiB Cloud Run "
+            "container: ~2.5 GiB baseline + other concurrent requests leaves headroom for "
+            "roughly one build at this ceiling plus margin below the child rlimit "
+            "(data_status_live_build_child_rlimit_bytes) — deliberately BELOW that rlimit so "
+            "a build the pre-flight estimate underestimates trips the rlimit before it would "
+            "have threatened the container regardless. Calibrated against measured OOM "
+            "incidents (2026-07-13/14): 18 GB (instruments-service full-history), 81 GB "
+            "(market-tick-data-service full-history), 56 GB (market-data-processing-service, "
+            "just 3 months) for a single uncapped request."
+        ),
+    )
+
+    data_status_live_build_child_rlimit_bytes: int = Field(
+        default=1024 * 1024**2,  # 1 GiB
+        validation_alias=AliasChoices("DATA_STATUS_LIVE_BUILD_CHILD_RLIMIT_BYTES"),
+        description=(
+            "RLIMIT_AS ceiling for the spawned child process that runs the manifest-status "
+            "live cell-grid build (defense-in-depth layer 2 — see "
+            "deployment_api.utils.bounded_subprocess.run_bounded). Applies even to builds "
+            "that passed the pre-flight memory-budget estimate, since the estimate is a "
+            "cheap heuristic, not a measurement: an underestimate raises a catchable "
+            "MemoryError in the throwaway child instead of the platform OOM-killer taking "
+            "down the whole container. Set slightly ABOVE the pre-flight budget (1 GiB vs "
+            "768 MiB) so passing the estimate doesn't immediately trip the hard ceiling; "
+            "still comfortably under the 4 GiB container limit alongside the ~2.5 GiB "
+            "baseline + other concurrent requests."
+        ),
+    )
+
+    data_status_live_build_child_timeout_seconds: float = Field(
+        default=120.0,
+        validation_alias=AliasChoices("DATA_STATUS_LIVE_BUILD_CHILD_TIMEOUT_SECONDS"),
+        description=(
+            "Wall-clock backstop for the manifest-status live-build child process (in "
+            "addition to the RLIMIT_AS ceiling) — a hung (not necessarily OOMing) child "
+            "must not block the request forever."
+        ),
+    )
+
     service_account_email: str = Field(
         default="",
         validation_alias=AliasChoices("SERVICE_ACCOUNT", "SERVICE_ACCOUNT_EMAIL"),
@@ -122,6 +169,20 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         default="uts-billing-cur-427895769566",
         validation_alias=AliasChoices("AWS_ATHENA_OUTPUT_BUCKET"),
         description="S3 bucket for Athena query results (the CUR delivery bucket's athena-results/ prefix).",
+    )
+    aws_athena_reader_role_arn: str = Field(
+        default="",
+        validation_alias=AliasChoices("AWS_ATHENA_READER_ROLE_ARN"),
+        description=(
+            "ARN of the keyless GCP->AWS Workload-Identity-Federation role the Cloud Run service "
+            "account assumes (AssumeRoleWithWebIdentity) for READ-ONLY Athena/Glue access — the AWS "
+            "CUR query path behind the cost-observability AWS tab. Same pattern (+ same trust-policy "
+            "shape) as ``aws_codebuild_reader_role_arn`` above, just a distinct role scoped to "
+            "Athena/Glue instead of CodeBuild. Empty = the default boto3 credential chain, which the "
+            "deployed Cloud Run container has NO ambient AWS credentials for (verified live — its "
+            "only env vars are GCP-side), so the AWS cost tab silently returns nothing there until an "
+            "operator provisions the AWS-side role + sets this. Config, not a secret."
+        ),
     )
     github_billing_account: str = Field(
         default="IggyIkenna",

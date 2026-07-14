@@ -16,6 +16,9 @@ a new version of market-tick-data-service"; these are "a batch VM is crunching
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import cast
@@ -31,6 +34,7 @@ from unified_trading_library import (
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.registry_reader import resolve_active_registry, resolve_deployment_by_id
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -174,6 +178,119 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
     return VmDeploymentEntryModel(**defaults)  # type: ignore[reportArgumentType]
 
 
+# Stale-while-revalidate snapshot cache for list_vm_deployments — mirrors
+# routes/deployments_inventory.py's `_load_inventory` / `_inventory_cache` (same
+# proven shape: a full uncached walk of this registry (active + N-day archive, both
+# GCS-backed) plus a per-VM Compute API census measured at avg 93.75s / max 99.27s in
+# prod, occasionally 503/500ing outright under load. SWR serves the last-known-good
+# snapshot instantly, refreshes in the background on a timer, and collapses concurrent
+# refreshes for the same cache key to a single in-flight walk.
+_VM_DEPLOYMENTS_TTL_SEC = 45.0
+
+_vm_deployments_cache: dict[str, tuple[float, VmDeploymentsListModel]] = {}
+_vm_deployments_lock = threading.Lock()
+# cache keys with an in-flight background refresh (so we kick off exactly one).
+_vm_deployments_refreshing: set[str] = set()
+_vm_deployments_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vmdeploy-refresh")
+
+
+def _compute_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListModel:
+    """The real (slow) synchronous registry walk + Compute API census.
+
+    Never call directly from a route — go through `_load_vm_deployments` so callers
+    get the stale-while-revalidate cache.
+    """
+    registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
+    project_id = _cfg.require_gcp_project_id()
+
+    try:
+        # Get actual VM details from GCP
+        vm_details = get_vm_instance_details(project_id) if filter_stale else {}
+        running_vm_names = set(vm_details.keys()) if filter_stale else None
+
+        # Get all registry entries (Firestore-first via resolve_active_registry, GCS fallback)
+        all_active = resolve_active_registry(gcs=registry)
+
+        # Filter active entries to only actually running VMs if requested
+        if filter_stale and running_vm_names is not None:
+            filtered_active = [e for e in all_active if e.vm_name in running_vm_names]
+            logger.info(
+                "Filtered active deployments: %d registry entries -> %d actually running",
+                len(all_active),
+                len(filtered_active),
+            )
+            active = [_to_model(e, vm_details) for e in filtered_active]
+        else:
+            active = [_to_model(e, vm_details) for e in all_active]
+
+        # Recent archive entries (completed/failed) don't need filtering
+        recent = [_to_model(e, vm_details) for e in registry.list_recent_archive(days=days)]
+
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.exception("Failed to read VM deployments registry: %s", exc)
+        raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
+
+    return VmDeploymentsListModel(active=active, recent=recent, archive_days=days)
+
+
+def _store_vm_deployments(cache_key: str, result: VmDeploymentsListModel) -> None:
+    """Atomically record a fresh vm-deployments snapshot for ``cache_key``."""
+    with _vm_deployments_lock:
+        _vm_deployments_cache[cache_key] = (time.monotonic(), result)
+
+
+def _refresh_vm_deployments(cache_key: str, days: int, filter_stale: bool) -> None:
+    """Background cache refresh — recompute + store, then clear the in-flight flag."""
+    try:
+        _store_vm_deployments(cache_key, _compute_vm_deployments(days, filter_stale))
+    except (HTTPException, OSError, ValueError, RuntimeError) as exc:
+        # Keep the stale snapshot on a failed refresh — never poison the cache.
+        logger.warning("vm-deployments: background refresh for %s failed: %s", cache_key, exc)
+    finally:
+        with _vm_deployments_lock:
+            _vm_deployments_refreshing.discard(cache_key)
+
+
+def _kick_background_vm_refresh(cache_key: str, days: int, filter_stale: bool) -> None:
+    """Schedule exactly one background refresh per cache key (stale-while-revalidate)."""
+    with _vm_deployments_lock:
+        if cache_key in _vm_deployments_refreshing:
+            return
+        _vm_deployments_refreshing.add(cache_key)
+    _vm_deployments_refresh_pool.submit(_refresh_vm_deployments, cache_key, days, filter_stale)
+
+
+def _load_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListModel:
+    """Load VM deployments, stale-while-revalidate cached for a fast, smooth UI.
+
+    Cache policy (mock mode bypasses it — already cheap + deterministic, and callers
+    never reach this helper in mock mode):
+
+    * **Fresh** (< TTL) -> served instantly.
+    * **Stale** (> TTL) -> the stale snapshot is served instantly AND a single
+      background refresh is kicked off, so the operator never waits on the slow
+      registry walk after the first ever load (the cockpit polls repeatedly -> always
+      warm).
+    * **Cold** (no snapshot) -> computed synchronously, under a lock so a burst of
+      polls collapses to ONE walk, not N.
+    """
+    cache_key = f"{days}|{filter_stale}"
+    cached = _vm_deployments_cache.get(cache_key)
+    if cached is not None:
+        if (time.monotonic() - cached[0]) >= _VM_DEPLOYMENTS_TTL_SEC:
+            _kick_background_vm_refresh(cache_key, days, filter_stale)
+        return cached[1]
+
+    # Cold path — lock so concurrent first-polls trigger exactly ONE walk.
+    with _vm_deployments_lock:
+        cached = _vm_deployments_cache.get(cache_key)
+        if cached is not None:
+            return cached[1]
+        result = _compute_vm_deployments(days, filter_stale)
+        _vm_deployments_cache[cache_key] = (time.monotonic(), result)
+        return result
+
+
 @router.get("/vm-deployments", response_model=VmDeploymentsListModel)
 def list_vm_deployments(
     days: int = Query(7, ge=1, le=30, description="Archive lookback window in days"),
@@ -184,6 +301,11 @@ def list_vm_deployments(
     By default, filters registry entries to only show VMs that are actually RUNNING
     in GCP (avoiding the stale registry entries problem). Set filter_stale=false to
     see all registry entries including stale ones.
+
+    Backed by a stale-while-revalidate snapshot cache (see `_load_vm_deployments`) —
+    the underlying registry walk + Compute API census is the slowest endpoint in the
+    service (measured avg 93.75s / max 99.27s in prod), so this route serves the
+    last-known-good snapshot instantly and refreshes it on a ~45s background timer.
     """
     if _cfg.is_mock_mode():
         return VmDeploymentsListModel(
@@ -213,37 +335,7 @@ def list_vm_deployments(
             archive_days=days,
         )
 
-    registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-    project_id = _cfg.require_gcp_project_id()
-
-    try:
-        # Get actual VM details from GCP
-        vm_details = get_vm_instance_details(project_id) if filter_stale else {}
-        running_vm_names = set(vm_details.keys()) if filter_stale else None
-
-        # Get all registry entries
-        all_active = registry.list_active()
-
-        # Filter active entries to only actually running VMs if requested
-        if filter_stale and running_vm_names is not None:
-            filtered_active = [e for e in all_active if e.vm_name in running_vm_names]
-            logger.info(
-                "Filtered active deployments: %d registry entries -> %d actually running",
-                len(all_active),
-                len(filtered_active),
-            )
-            active = [_to_model(e, vm_details) for e in filtered_active]
-        else:
-            active = [_to_model(e, vm_details) for e in all_active]
-
-        # Recent archive entries (completed/failed) don't need filtering
-        recent = [_to_model(e, vm_details) for e in registry.list_recent_archive(days=days)]
-
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.exception("Failed to read VM deployments registry: %s", exc)
-        raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
-
-    return VmDeploymentsListModel(active=active, recent=recent, archive_days=days)
+    return _load_vm_deployments(days, filter_stale)
 
 
 class VmReconcileResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -315,7 +407,7 @@ def get_vm_deployment(deployment_id: str) -> VmDeploymentEntryModel:
     project_id = _cfg.require_gcp_project_id()
 
     try:
-        entry = registry.get(deployment_id)
+        entry = resolve_deployment_by_id(deployment_id, gcs=registry)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"VM deployment '{deployment_id}' not found")
 

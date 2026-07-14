@@ -56,6 +56,14 @@ DATA_STATUS_DISABLE_PROCESS_POOL = _config.data_status_disable_process_pool
 # Startup index pre-warm target service (empty = off). See
 # deployment_api_config.data_status_prewarm_service.
 DATA_STATUS_PREWARM_SERVICE = _config.data_status_prewarm_service
+
+# Manifest-status live-build OOM guard (see
+# deployment_api.services.data_status.live_build_guard +
+# deployment_api.utils.bounded_subprocess) — SSOT for the numbers is the
+# field descriptions in deployment_api_config.DeploymentApiConfig.
+DATA_STATUS_LIVE_BUILD_MEMORY_BUDGET_BYTES = _config.data_status_live_build_memory_budget_bytes
+DATA_STATUS_LIVE_BUILD_CHILD_RLIMIT_BYTES = _config.data_status_live_build_child_rlimit_bytes
+DATA_STATUS_LIVE_BUILD_CHILD_TIMEOUT_SECONDS = _config.data_status_live_build_child_timeout_seconds
 _DEPLOYMENT_ENV_SHORT_MAP: dict[str, str] = {
     "prod": "prd",
     "prd": "prd",

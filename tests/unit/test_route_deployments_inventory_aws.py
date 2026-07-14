@@ -575,8 +575,9 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
 
     with (
         patch.object(mod, "_cfg") as mock_cfg,
-        # The GCP VM census is read via the parallel loader seam — patch it directly.
-        patch.object(mod, "_load_gcp_vm_entries", return_value=([gcp_entry], {"cefi-binance-spot-20260622-gcp": {}})),
+        # The GCP VM census is two decoupled seams now — the registry read + the GCE list.
+        patch.object(mod, "_load_registry_entries", return_value=[gcp_entry]),
+        patch.object(mod, "get_vm_instance_details", return_value={"cefi-binance-spot-20260622-gcp": {}}),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         # AWS census degrades to empty (no creds / boto3) — returns no AWS items.
         patch.object(mod, "load_aws_inventory", return_value=[]),
@@ -626,8 +627,9 @@ def test_inventory_route_includes_aws_items() -> None:
 
     with (
         patch.object(mod, "_cfg") as mock_cfg,
-        # GCP VM census empty (no running VMs) — read via the parallel loader seam.
-        patch.object(mod, "_load_gcp_vm_entries", return_value=([], {})),
+        # GCP VM census empty (no running VMs) — two decoupled seams (registry read + GCE list).
+        patch.object(mod, "_load_registry_entries", return_value=[]),
+        patch.object(mod, "get_vm_instance_details", return_value={}),
         patch.object(mod, "latest_execution_by_job", return_value={}),
         # Multi-region AWS census (WS-D): _load_aws_items fans out over the configured region set,
         # so the mock is region-scoped (real censuses return each region's own resources) — the

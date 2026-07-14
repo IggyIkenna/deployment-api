@@ -784,6 +784,18 @@ class TestSyncDeployments:
                 result = svc.sync_deployments()
         assert result == (0, 0)
 
+    def test_idle_skip_when_registry_prefix_empty(self):
+        """0 objects under the deployments registry prefix short-circuits BEFORE
+        filter_active_deployments / _cleanup_recent_orphans run (idle-skip)."""
+        svc = _make_service()
+        with patch.object(svc, "scan_deployment_states", return_value=[]):
+            with patch.object(svc, "filter_active_deployments") as mock_filter:
+                with patch.object(svc, "_cleanup_recent_orphans") as mock_cleanup:
+                    result = svc.sync_deployments()
+        assert result == (0, 0)
+        mock_filter.assert_not_called()
+        mock_cleanup.assert_not_called()
+
     def test_returns_synced_and_active_counts(self):
         svc = _make_service()
         state1 = {"deployment_id": "dep-1", "shards": [], "status": "running"}
