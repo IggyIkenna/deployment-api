@@ -16,12 +16,12 @@ from unified_api_contracts.internal import MarketCategory
 from unified_trading_library import AssetGroup, build_bucket, resolve_bucket_name
 
 from deployment_api.services.data_status_drilldown import build_bucket_name as _drilldown_build_bucket_name
+from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import (
     ObjectInfo,
     list_objects,
     list_prefixes,
-    object_exists,
 )
 
 logger = logging.getLogger(__name__)
@@ -692,16 +692,55 @@ class DataQueryService:
         effective_start: datetime,
         effective_end: datetime,
     ) -> dict[str, dict[str, bool]]:
-        """Check data existence for each day in the effective range."""
-        daily: dict[str, dict[str, bool]] = {}
+        """Check data existence for each day in the effective range.
+
+        Reads the manifest-backed availability index — the same
+        ``read_availability_index`` path ``GET /drilldown/{service}/{asset_group}``
+        already uses correctly — instead of probing a flat
+        ``{venue}/{instrument_type}/{instrument}/{date}/{data_type}`` path shape that
+        never matched the real hive-partition layout (``raw_tick_data/by_date/
+        day=.../pipeline_mode=.../asset_group=.../venue=.../instrument_type=.../
+        data_type=...``) and so never found real data for any instrument.
+        """
+        date_strs: list[str] = []
         current_dt = effective_start
         while current_dt <= effective_end:
-            date_str = current_dt.strftime("%Y-%m-%d")
-            daily[date_str] = {}
-            for dt in data_types:
-                path = f"{venue}/{instrument_type.lower()}/{instrument}/{date_str}/{dt}"
-                daily[date_str][dt] = object_exists(bucket_name, path)
+            date_strs.append(current_dt.strftime("%Y-%m-%d"))
             current_dt += timedelta(days=1)
+        daily: dict[str, dict[str, bool]] = {date_str: dict.fromkeys(data_types, False) for date_str in date_strs}
+
+        df = read_availability_index(bucket_name)
+        if df is None or df.empty:
+            return daily
+        required_columns = {"venue", "instrument_id", "date", "data_type"}
+        if not required_columns.issubset(df.columns):
+            return daily
+
+        mask = (
+            (df["venue"].astype(str).str.upper() == venue.upper())
+            & (df["instrument_id"].astype(str) == instrument)
+            & (df["date"].astype(str).isin(date_strs))
+            & (df["data_type"].astype(str).isin(data_types))
+        )
+        if instrument_type and "instrument_type" in df.columns:
+            mask &= df["instrument_type"].astype(str).str.lower() == instrument_type.lower()
+        rows = df[mask]
+        if rows.empty:
+            return daily
+
+        if "capture_status" in rows.columns:
+            is_captured = rows["capture_status"].astype(str).str.lower() == "captured"
+        else:
+            # Pre-v5 manifests omit capture_status — a present row means captured
+            # (same legacy-compatibility assumption as _aggregate_counts elsewhere).
+            is_captured = pd.Series(data=True, index=rows.index)
+
+        for date_str, dt, captured in zip(
+            rows["date"].astype(str), rows["data_type"].astype(str), is_captured, strict=False
+        ):
+            if date_str in daily and dt in daily[date_str]:
+                daily[date_str][dt] = daily[date_str][dt] or bool(captured)
+
         return daily
 
     async def get_instrument_availability(

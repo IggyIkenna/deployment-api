@@ -10,9 +10,11 @@ Tests cover:
 
 import importlib.util
 import os
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pandas as pd
 import pytest
 
 # Load data_query_service directly without triggering services/__init__.py circular import
@@ -190,6 +192,42 @@ class TestGetInstrumentsList:
         assert result["truncated"] is True
 
 
+def _availability_rows(
+    venue: str,
+    instrument_type: str,
+    instrument: str,
+    data_types: list[str],
+    date_strs: list[str],
+    *,
+    capture_status: str = "captured",
+) -> pd.DataFrame:
+    """Build a manifest-shaped DataFrame with one row per (date, data_type)."""
+    rows = [
+        {
+            "venue": venue,
+            "instrument_type": instrument_type.lower(),
+            "instrument_id": instrument,
+            "date": date_str,
+            "data_type": dt,
+            "capture_status": capture_status,
+        }
+        for date_str in date_strs
+        for dt in data_types
+    ]
+    return pd.DataFrame(rows)
+
+
+def _date_range_strs(start: str, end: str) -> list[str]:
+    start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
+    end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
+    out = []
+    cur = start_dt
+    while cur <= end_dt:
+        out.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+    return out
+
+
 class TestGetInstrumentAvailability:
     """Tests for DataQueryService.get_instrument_availability."""
 
@@ -200,7 +238,7 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_cefi_venue_returns_cefi_category(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "object_exists", return_value=False):
+        with patch.object(_dqs_mod, "read_availability_index", return_value=pd.DataFrame()):
             result = await svc.get_instrument_availability(
                 "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
             )
@@ -217,7 +255,9 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_tradfi_venue_category_detection(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "object_exists", return_value=True):
+        date_strs = _date_range_strs("2026-01-01", "2026-01-02")
+        df = _availability_rows("NYSE", "EQUITY", "AAPL", ["trades", "ohlcv_1m", "tbbo"], date_strs)
+        with patch.object(_dqs_mod, "read_availability_index", return_value=df):
             result = await svc.get_instrument_availability("NYSE", "EQUITY", "AAPL", "2026-01-01", "2026-01-02")
         assert "error" not in result
         assert result["venue"] == "NYSE"
@@ -225,8 +265,10 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_available_days_counted_correctly(self):
         svc = self._make_service()
+        date_strs = _date_range_strs("2026-01-01", "2026-01-03")
         # All days available
-        with patch.object(_dqs_mod, "object_exists", return_value=True):
+        df = _availability_rows("BINANCE-SPOT", "SPOT", "BTC-USDT", ["trades", "book_snapshot_5"], date_strs)
+        with patch.object(_dqs_mod, "read_availability_index", return_value=df):
             result = await svc.get_instrument_availability(
                 "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
             )
@@ -238,7 +280,7 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_missing_days_counted_when_no_data(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "object_exists", return_value=False):
+        with patch.object(_dqs_mod, "read_availability_index", return_value=pd.DataFrame()):
             result = await svc.get_instrument_availability(
                 "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-03"
             )
@@ -255,7 +297,9 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_available_from_clips_start(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "object_exists", return_value=True):
+        date_strs = _date_range_strs("2026-01-03", "2026-01-05")
+        df = _availability_rows("BINANCE-SPOT", "SPOT", "BTC-USDT", ["trades", "book_snapshot_5"], date_strs)
+        with patch.object(_dqs_mod, "read_availability_index", return_value=df):
             result = await svc.get_instrument_availability(
                 "BINANCE-SPOT",
                 "SPOT",
@@ -271,7 +315,7 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_data_type_passed_used(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "object_exists", return_value=False):
+        with patch.object(_dqs_mod, "read_availability_index", return_value=pd.DataFrame()):
             result = await svc.get_instrument_availability(
                 "BINANCE-SPOT",
                 "SPOT",
@@ -285,11 +329,49 @@ class TestGetInstrumentAvailability:
     @pytest.mark.asyncio
     async def test_defi_venue_returns_defi_category(self):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "object_exists", return_value=False):
+        with patch.object(_dqs_mod, "read_availability_index", return_value=pd.DataFrame()):
             result = await svc.get_instrument_availability(
                 "UNISWAP_V3-ETHEREUM", "SWAP", "ETH-USDC", "2026-01-01", "2026-01-01"
             )
         assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_manifest_backed_lookup_reads_real_hive_partitioned_index(self):
+        """Regression: the endpoint must read the manifest, not probe a flat
+        {venue}/{instrument_type}/{instrument}/{date}/{data_type} GCS path that
+        never matched the real hive-partitioned layout."""
+        svc = self._make_service()
+        date_strs = _date_range_strs("2026-01-01", "2026-01-02")
+        df = _availability_rows("ASTER", "PERPETUAL", "ASTER:PERPETUAL:BTC-USDT@LIN", ["trades"], date_strs)
+        with patch.object(_dqs_mod, "read_availability_index", return_value=df) as mock_read:
+            result = await svc.get_instrument_availability(
+                "ASTER",
+                "PERPETUAL",
+                "ASTER:PERPETUAL:BTC-USDT@LIN",
+                "2026-01-01",
+                "2026-01-02",
+                data_type="trades",
+            )
+        mock_read.assert_called_once()
+        assert result["summary"]["available_days"] == 2
+
+    @pytest.mark.asyncio
+    async def test_capture_status_not_captured_counts_as_unavailable(self):
+        svc = self._make_service()
+        date_strs = _date_range_strs("2026-01-01", "2026-01-01")
+        df = _availability_rows(
+            "BINANCE-SPOT",
+            "SPOT",
+            "BTC-USDT",
+            ["trades"],
+            date_strs,
+            capture_status="expected_unattempted",
+        )
+        with patch.object(_dqs_mod, "read_availability_index", return_value=df):
+            result = await svc.get_instrument_availability(
+                "BINANCE-SPOT", "SPOT", "BTC-USDT", "2026-01-01", "2026-01-01", data_type="trades"
+            )
+        assert result["summary"]["available_days"] == 0
 
 
 # ---------------------------------------------------------------------------
