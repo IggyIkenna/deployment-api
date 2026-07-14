@@ -38,6 +38,7 @@ from deployment_api.services.cost_observability.providers import (
     github_dummy_facts,
     github_facts,
 )
+from deployment_api.services.cost_observability.snapshot import get_cost_snapshot_store
 from deployment_api.services.cost_observability.waste import classify_waste
 from deployment_api.vm_utils import list_unattached_disk_names
 
@@ -205,6 +206,14 @@ class CostObservabilityService:
         if self._cfg.is_mock_mode():
             return _mock_facts(start, end)
         cutoff = datetime.now(UTC).date() - timedelta(days=_PROVISIONAL_TRAILING_DAYS - 1)
+        # Fast path: the periodic GCS parquet snapshot (scripts/cost_snapshot_worker.py) sliced to
+        # this window via DuckDB — no per-request BigQuery/Athena scan (bounded to ~2 scans/day/
+        # cloud) and a ~3 MB local read instead of a 55-64s query. Falls through to the live
+        # providers when no snapshot is present yet (bucket unprovisioned / worker not yet run), so
+        # this is a safe no-op until the first snapshot lands. SSOT: billing-cost-observability.md.
+        snapshot = self._snapshot_records(start, end, cutoff.isoformat())
+        if snapshot is not None:
+            return snapshot
         records: list[CostRecord] = []
         # Per-cloud isolation: a failure in one provider must not blank the whole page.
         records += _safe(lambda: gcp_facts(self._gcp_table(), start, end, cutoff), CLOUD_GCP)
@@ -222,6 +231,26 @@ class CostObservabilityService:
         )
         records += _safe(lambda: github_facts(start, end), CLOUD_GITHUB)
         return records
+
+    def _snapshot_records(self, start: date, end: date, cutoff_iso: str) -> list[CostRecord] | None:
+        """Records for ``[start, end)`` from the GCS parquet snapshot, or None if none is present.
+
+        None (not ``[]``) signals "no snapshot available → use the live providers"; an empty list
+        would wrongly render a blank page while the export is healthy. Any snapshot/DuckDB error
+        degrades to None (fall back to live), never a 5xx.
+        """
+        project_id = self._cfg.gcp_project_id
+        if not project_id:
+            return None
+        try:
+            store = get_cost_snapshot_store(project_id)
+            store.ensure_fresh()
+            if not store.present_clouds():
+                return None
+            return store.records_in_window(start.isoformat(), end.isoformat(), cutoff_iso)
+        except Exception as exc:  # snapshot must never break the page — fall back to live
+            logger.warning("cost snapshot read failed (%s) — falling back to live query", exc)
+            return None
 
     # -- window math helper ---------------------------------------------------
     def _window(self, days: int) -> tuple[date, date, list[str]]:

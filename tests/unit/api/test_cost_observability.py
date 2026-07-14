@@ -22,6 +22,22 @@ from deployment_api.services.cost_observability import service as svc
 from deployment_api.services.cost_observability.queries import aws_facts_sql, gcp_facts_sql
 
 
+@pytest.fixture(autouse=True)
+def _no_cost_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the GCS parquet snapshot fast-path for this whole module.
+
+    Every test here exercises the in-Python aggregation by monkeypatching the cloud providers;
+    ``_load_window`` must therefore deterministically use those providers, not any ambient
+    ``gs://…-cost-snapshots`` blob or a local ``/tmp`` snapshot. The snapshot read path has its
+    own coverage in ``test_cost_snapshot.py``.
+    """
+    monkeypatch.setattr(
+        CostObservabilityService,
+        "_snapshot_records",
+        lambda _self, _start, _end, _cutoff_iso: None,
+    )
+
+
 # --- provider pure helpers ---------------------------------------------------
 def test_as_float_coerces_str_int_none() -> None:
     assert prov._as_float("12.5") == 12.5

@@ -34,6 +34,11 @@ dependencies = [
     "jsonpickle>=3.0.0,<4.0.0",
     "cachetools>=5.0.0,<6.0.0",
     "redis>=5.0.0,<6.0.0",
+    # Cost-observability snapshot: DuckDB SQL over a periodic GCS parquet (billing page). Both are
+    # already resolved transitively (duckdb via unified-trading-library; pyarrow fleet-wide) — declared
+    # explicitly here because cost_observability.snapshot imports them directly.
+    "duckdb>=1.5.0,<2.0.0",
+    "pyarrow>=23.0.0,<24.0.0",
     # LLM commentary (pipeline UAT — optional at runtime, required as dep)
     "anthropic>=0.87.0,<1.0.0",
     # Internal libraries
