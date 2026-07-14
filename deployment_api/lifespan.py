@@ -38,6 +38,7 @@ from deployment_api.utils.storage_facade import (
 from deployment_api.utils.storage_facade import (
     read_object_text as _read_storage_object_text,
 )
+from deployment_api.utils.worker_identity import is_leader_worker
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +158,19 @@ async def lifespan(app: FastAPI):
 
         await cache.initialize()
 
-        # Start background sync task
+        # Start background sync task — only on the elected leader worker. Gunicorn forks
+        # WORKERS UvicornWorker processes per Cloud Run instance; running N duplicate
+        # sync loops against the same GCS deployments registry is pure waste (redundant
+        # scans) plus contention on shared per-deployment locks. See
+        # deployment_api.utils.worker_identity for the election mechanism (also gates the
+        # reap_stale tick, which runs inside this same background loop).
         _shutdown_event = asyncio.Event()
         set_shutdown_event(_shutdown_event)
-        _background_task = asyncio.create_task(_auto_sync_running_deployments())
-        logger.info("Background auto-sync task started")
+        if is_leader_worker():
+            _background_task = asyncio.create_task(_auto_sync_running_deployments())
+            logger.info("Background auto-sync task started (leader worker)")
+        else:
+            logger.info("Background auto-sync task skipped (non-leader worker)")
 
         # Start deployment events drain (for low-latency SSE notify when state is saved from sync code)
         from deployment_api.utils.deployment_events import drain_sync_queue

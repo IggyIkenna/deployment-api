@@ -13,6 +13,7 @@ from typing import Protocol
 
 from deployment_api.settings import PORT as _PORT
 from deployment_api.settings import WORKERS as _WORKERS
+from deployment_api.utils.worker_identity import set_worker_age
 
 
 class _GunicornLogger(Protocol):
@@ -25,6 +26,7 @@ class _GunicornServer(Protocol):
 
 class _GunicornWorker(Protocol):
     log: _GunicornLogger
+    age: int
 
 
 # Server socket
@@ -70,7 +72,14 @@ def pre_fork(server: _GunicornServer, worker: _GunicornWorker) -> None:
 
 
 def post_fork(server: _GunicornServer, worker: _GunicornWorker) -> None:
-    """Called just after a worker has been forked."""
+    """Called just after a worker has been forked.
+
+    Records this worker's gunicorn-assigned age (spawn-order counter) in-process via
+    ``worker_identity.set_worker_age`` so the ASGI app — once it starts inside this SAME
+    forked process — can elect a single leader worker for singleton background tasks
+    (see ``deployment_api.utils.worker_identity`` + ``deployment_api.lifespan``).
+    """
+    set_worker_age(worker.age)
 
 
 def pre_exec(server: _GunicornServer) -> None:
