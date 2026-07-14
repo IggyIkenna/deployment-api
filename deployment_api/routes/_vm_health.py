@@ -91,7 +91,7 @@ def composite_health_status(
     hint is not truth).
 
     ``control_plane_running`` is the GCE aggregated-list confirmation (the
-    running-set ``_load_gcp_vm_entries`` already fetches) — ``None`` when the
+    ``get_vm_instance_details`` census future the inventory fetches) — ``None`` when the
     caller has no confirmation to offer, in which case ``dead`` never fires and
     ``hung`` falls back to heartbeat staleness alone (no regression vs. the
     pre-D.3 status, just less certain without the control-plane cross-check).

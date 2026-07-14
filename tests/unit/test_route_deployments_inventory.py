@@ -279,6 +279,46 @@ def test_build_inventory_full_estate_surfaces_unmanaged_vms() -> None:
     assert rogue.launched_by == LAUNCHED_BY_ADHOC
 
 
+def test_build_inventory_registry_degraded_still_renders_live_vms() -> None:
+    """P2 census-decouple guarantee (the prod-blank-tab fix): when the registry read degrades to
+    an EMPTY list (Firestore/GCS slow or failed), every LIVE GCE instance STILL renders as a VM
+    row from the GCE aggregated-list join. A registry hiccup can never blank the fleet — the old
+    bundled-future returned ([], {}) on timeout and dropped every live VM.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    # vm_entries=[] simulates a degraded registry read; the GCE join is populated (the live fleet).
+    live_vms: dict[str, dict[str, object]] = {
+        "cefi-binance-futures-2024-heavy-20260714-010101": {
+            "status": "RUNNING",
+            "machine_type": "n2-standard-8",
+            "zone": "asia-northeast1-c",
+        },
+        "mtds-dex-swaps-backfill-20260714-020202": {"status": "RUNNING"},
+        "strategy-live-cefi-20260714": {"status": "RUNNING"},
+    }
+    items = build_inventory([], {}, _FIXED_NOW, live_vms)  # type: ignore[arg-type]
+    vm_items = [i for i in items if i.kind == "VM"]
+    # Every live VM rendered despite the empty registry (enrichment degrades, the row never drops).
+    assert {i.name for i in vm_items} == set(live_vms)
+    assert len(vm_items) == len(live_vms)
+
+
+def test_build_inventory_scale_many_registry_entries_render() -> None:
+    """Scale sanity: the classifier+render path handles 1k+ registry entries without error or loss
+    (the Firestore indexed query replaces the N-blob download upstream; build_inventory itself is a
+    pure, I/O-free classifier, so it must not choke or silently drop at scale)."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = [
+        _FakeEntry(vm_name=f"cefi-binance-spot-2024-heavy-2026071{i % 10}-{i:06d}", asset_group="cefi")
+        for i in range(1200)
+    ]
+    items = build_inventory(entries, {}, _FIXED_NOW, {})  # type: ignore[arg-type]
+    vm_items = [i for i in items if i.kind == "VM"]
+    assert len(vm_items) == 1200  # every entry classified + rendered, none silently dropped
+
+
 def test_build_inventory_no_unmanaged_rows_without_a_real_join() -> None:
     """The full-estate union adds unmanaged rows ONLY for a real GCE join — None (no join offered)
     and {} (a real, empty census) add nothing, so the classification-only paths + existing callers
@@ -1016,7 +1056,8 @@ def test_detail_route_live_path_includes_d1_metrics(client_inventory: TestClient
 
     with (
         patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
-        patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=([entry], {})),
+        patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=[entry]),
+        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
         patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
     ):
         mock_cfg.is_mock_mode.return_value = False
@@ -1057,8 +1098,9 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
         )
     }
 
-    # The live path now reads the registry via a parallel GCS loader (``_load_gcp_vm_entries``)
-    # — patch that seam directly (the parallel reader itself is covered separately below).
+    # The live path now reads the registry (``_load_registry_entries``, Firestore-first) and the
+    # GCE aggregated-list (``get_vm_instance_details``) as TWO decoupled census futures — patch
+    # both seams (the parallel reader itself is covered separately below).
     from deployment_api.routes import deployments_inventory as _inv_mod
 
     _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
@@ -1067,8 +1109,12 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
     with (
         patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
         patch(
-            "deployment_api.routes.deployments_inventory._load_gcp_vm_entries",
-            return_value=(entries, vm_details_by_name),
+            "deployment_api.routes.deployments_inventory._load_registry_entries",
+            return_value=entries,
+        ),
+        patch(
+            "deployment_api.routes.deployments_inventory.get_vm_instance_details",
+            return_value=vm_details_by_name,
         ),
         patch(
             "deployment_api.routes.deployments_inventory.latest_execution_by_job",
@@ -1156,7 +1202,8 @@ def test_inventory_route_hung_provider_degrades_other_kinds_survive(client_inven
         with (
             patch.object(_inv_mod, "_PROVIDER_CENSUS_TIMEOUT_SEC", 0.3),
             patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
-            patch("deployment_api.routes.deployments_inventory._load_gcp_vm_entries", return_value=([entry], {})),
+            patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=[entry]),
+            patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
             patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
             patch(
                 "deployment_api.routes.deployments_inventory.list_cloud_run_services",
@@ -1197,20 +1244,20 @@ class _ParsedEntry:
         return cls(vm_name=json.loads(raw)["vm_name"])  # raises JSONDecodeError on corrupt input
 
 
-def test_load_gcp_vm_entries_does_not_filter_active_entries_by_control_plane_presence() -> None:
-    """An ``active/`` registry entry whose VM the GCE aggregated-list no longer has
-    (hard-killed/OOM/pre-empted before it could self-archive) must still be RETURNED —
-    filtering it out here would silently vanish the exact case D.3 ``dead`` exists to
-    catch, before ``build_inventory``/``_composite_health_status`` ever see it.
+def test_load_registry_entries_does_not_filter_by_control_plane_presence() -> None:
+    """The registry read (RUNNING via ``resolve_active_registry`` + the 7-day archive window) must
+    NOT filter by GCE control-plane presence — an active entry whose VM the GCE aggregated-list no
+    longer has (hard-killed/OOM/pre-empted before it could self-archive) must still be RETURNED so
+    ``build_inventory``/``_composite_health_status`` can classify it ``dead``. Post-decouple this is
+    STRUCTURAL: ``_load_registry_entries`` never sees the GCE list (that is a separate census
+    future), so control-plane presence cannot affect what the registry read returns.
     """
     from datetime import UTC, datetime
 
-    from deployment_api.routes.deployments_inventory import _load_gcp_vm_entries
+    from deployment_api.routes.deployments_inventory import _load_registry_entries
 
-    store = {
-        "deployments/active/dead.json": '{"vm_name": "cefi-dead-vm"}',
-        "deployments/active/alive.json": '{"vm_name": "cefi-alive-vm"}',
-    }
+    # "cefi-dead-vm" is gone from the control plane; the registry read must still return it.
+    active_entries = [_FakeEntry(vm_name="cefi-dead-vm"), _FakeEntry(vm_name="cefi-alive-vm")]
 
     @dataclass
     class _Blob:
@@ -1218,24 +1265,21 @@ def test_load_gcp_vm_entries_does_not_filter_active_entries_by_control_plane_pre
 
     class _FakeStorage:
         def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
-            return [_Blob(name=k) for k in store if k.startswith(prefix)]
+            return []  # no archive keys in this window
 
         def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
-            return store[blob_path].encode("utf-8")
-
-    # The GCE aggregated-list no longer has "cefi-dead-vm" at all (control plane says
-    # gone) — only "cefi-alive-vm" is confirmed RUNNING.
-    vm_details = {"cefi-alive-vm": {"status": "RUNNING"}}
+            raise KeyError(blob_path)
 
     with (
-        patch("deployment_api.routes.deployments_inventory.DeploymentRegistryEntry", _ParsedEntry),
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_active_registry",
+            return_value=active_entries,
+        ),
         patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()),
-        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value=vm_details),
     ):
-        entries, returned_vm_details = _load_gcp_vm_entries(datetime(2026, 6, 22, 12, tzinfo=UTC), "test-project")
+        entries = _load_registry_entries(datetime(2026, 6, 22, 12, tzinfo=UTC))
 
     assert {e.vm_name for e in entries} == {"cefi-dead-vm", "cefi-alive-vm"}
-    assert returned_vm_details == vm_details
 
 
 def test_download_entries_parallel_reads_concurrently_and_skips_unreadable() -> None:

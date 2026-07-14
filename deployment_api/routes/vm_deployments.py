@@ -34,6 +34,7 @@ from unified_trading_library import (
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.registry_reader import resolve_active_registry
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -207,8 +208,8 @@ def _compute_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListM
         vm_details = get_vm_instance_details(project_id) if filter_stale else {}
         running_vm_names = set(vm_details.keys()) if filter_stale else None
 
-        # Get all registry entries
-        all_active = registry.list_active()
+        # Get all registry entries (Firestore-first via resolve_active_registry, GCS fallback)
+        all_active = resolve_active_registry(gcs=registry)
 
         # Filter active entries to only actually running VMs if requested
         if filter_stale and running_vm_names is not None:

@@ -74,6 +74,7 @@ from unified_trading_library import (
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.registry_reader import resolve_active_registry
 from deployment_api.routes._aws_deployments import load_aws_inventory
 from deployment_api.routes._cloud_run_executions import (
     DEFAULT_CLOUD_RUN_REGION,
@@ -1380,43 +1381,32 @@ def _download_entries_parallel(client: StorageClient, bucket: str, keys: list[st
     return [entry for entry in results if entry is not None]
 
 
-def _load_gcp_vm_entries(
-    now: datetime, project_id: str
-) -> tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]]:
-    """Census the GCP VM registry (active + 7-day archive) with parallel reads.
+def _load_registry_entries(now: datetime) -> list[DeploymentRegistryEntry]:
+    """Census the deployment registry: RUNNING deployments + the 7-day archive window.
 
-    Runs the four coarse calls concurrently — the GCE aggregated-list, the active-key
-    list, the archive-key list, then a single parallel download pool over every key —
-    so the cold path is ~max(slowest single call) instead of their sum. Also returns the
-    GCE aggregated-list join (name -> machine_type/zone/labels/boot-disk/raw status) so
-    the caller can surface those Tier-0 free wins AND cross-check control-plane presence.
+    RUNNING entries come from :func:`resolve_active_registry` (Firestore-first indexed query
+    when the migration flag is on, loud GCS-``active/`` fallback otherwise) — the scale path
+    that replaces downloading ~3k ``active/`` blobs. The 7-day ARCHIVE window stays on the
+    GCS parallel download (bounded, and the dead-VM/hard-killed detection the D.3 ``dead``
+    composite state needs — a registry entry whose VM the control plane no longer has must
+    reach ``build_inventory``/``_composite_health_status`` to be classified ``dead``).
 
-    Every ``active/`` entry is included — NOT pre-filtered to the GCE aggregated-list's
-    key set. Filtering here would silently drop the exact "hard-killed VM" case the D.3
-    ``dead`` composite state exists to catch: a registry entry whose VM the control plane
-    no longer has must reach ``build_inventory``/``_composite_health_status`` to be
-    classified ``dead``, not vanish from the census beforehand.
+    DECOUPLED from the GCE aggregated-list read (``get_vm_instance_details``) — the caller
+    runs that as a SEPARATE census future. So a slow/failed registry read degrades this to a
+    short/empty list WITHOUT dropping the live VMs: those render from the GCE join
+    (``build_inventory``'s unmanaged-row union). This removes the old failure mode where one
+    bundled future timed out and blanked BOTH the VM list and the registry (empty prod tab).
     """
+    active = resolve_active_registry()
     client = get_storage_client()
     bucket = DEFAULT_BUCKET
     today = now.date()
     archive_prefixes = [
         f"{ARCHIVE_PREFIX}{(today - timedelta(days=offset)).isoformat()}/" for offset in range(_ARCHIVE_WINDOW_DAYS)
     ]
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f_vm = pool.submit(get_vm_instance_details, project_id)
-        f_active_keys = pool.submit(_list_json_keys, client, bucket, ACTIVE_PREFIX)
-        f_archive_keys = pool.submit(
-            lambda: [key for prefix in archive_prefixes for key in _list_json_keys(client, bucket, prefix)]
-        )
-        vm_details = f_vm.result()
-        active_keys = f_active_keys.result()
-        archive_keys = f_archive_keys.result()
-
-    active = _download_entries_parallel(client, bucket, active_keys)
+    archive_keys = [key for prefix in archive_prefixes for key in _list_json_keys(client, bucket, prefix)]
     recent = _download_entries_parallel(client, bucket, archive_keys)
-    return active + recent, vm_details
+    return active + recent
 
 
 def _scheduler_item(entry: SchedulerJobStatus) -> DeploymentItem:
@@ -1609,9 +1599,15 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
         # GCE VMs / disks / addresses use all-region aggregated lists already; only the regional
         # Cloud Run jobs/services + Cloud Functions APIs need the multi-region fan-out.
         gcp_regions = _gcp_regions_for_scope(region_scope, project_id)
-        f_vm: Future[tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]]] = _census_pool.submit(
-            _load_gcp_vm_entries, now, project_id
-        )
+        # DECOUPLED (P2 migration): two independent futures instead of one bundled read.
+        #   existence  = the GCE aggregated-list (fast) → drives which live VMs get a row
+        #   enrichment = the registry (Firestore-first via resolve_active_registry) → metadata
+        # Each degrades on its OWN via _census_or_degrade, so a slow/failed registry read yields
+        # [] but the live VMs STILL render from the GCE join (build_inventory's unmanaged-row
+        # union). The old bug: ONE future bundled both, so a registry timeout dropped every live
+        # VM and blanked the prod tab.
+        f_vm_details: Future[dict[str, dict[str, object]]] = _census_pool.submit(get_vm_instance_details, project_id)
+        f_registry: Future[list[DeploymentRegistryEntry]] = _census_pool.submit(_load_registry_entries, now)
         f_jobs = _census_pool.submit(_multi_region_jobs, project_id, gcp_regions)
         f_services = _census_pool.submit(_multi_region_services, project_id, gcp_regions)
         f_functions = _census_pool.submit(_multi_region_functions, project_id, gcp_regions)
@@ -1626,8 +1622,8 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
         # class (the ``users`` field). Bounded + degrades to an empty set.
         f_unattached = _census_pool.submit(list_unattached_disk_names, project_id)
 
-        empty_vm: tuple[list[DeploymentRegistryEntry], dict[str, dict[str, object]]] = ([], {})
-        vm_entries, vm_details_by_name = _census_or_degrade("gcp-vm", f_vm, empty_vm)
+        vm_details_by_name = _census_or_degrade("gcp-vm-details", f_vm_details, {})
+        vm_entries = _census_or_degrade("gcp-registry", f_registry, [])
         cloud_run_status = _census_or_degrade("cloud-run-jobs", f_jobs, {})
         cloud_run_services = _census_or_degrade("cloud-run-services", f_services, [])
         cloud_function_status = _census_or_degrade("cloud-functions", f_functions, {})

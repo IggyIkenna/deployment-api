@@ -27,6 +27,7 @@ from unified_trading_library import (
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.rbac import require_permission
+from deployment_api.registry_reader import resolve_active_registry
 from deployment_api.utils.storage_facade import delete_object, write_object_text
 
 router = APIRouter()
@@ -63,7 +64,10 @@ def _utcnow_iso() -> str:
 
 
 def _find_active_by_vm_name(registry: DeploymentsRegistry, vm_name: str) -> DeploymentRegistryEntry | None:
-    for entry in registry.list_active():
+    # Firestore-first via resolve_active_registry; the passed registry is BOTH the GCS fallback
+    # (so a flag-off read + tests that mock DeploymentsRegistry flow through) and what the caller
+    # uses for the subsequent terminal write (cancel/restart archival).
+    for entry in resolve_active_registry(gcs=registry):
         if entry.vm_name == vm_name:
             return entry
     return None
