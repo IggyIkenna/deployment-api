@@ -189,33 +189,27 @@ class DefiStatusMixin(DataStatusCliMixin):
     # eigenlayer_rewards write into the main ``market-data-tick-defi-{pid}``
     # bucket (via ``get_tick_data_bucket(asset_group="defi")``) so they're
     # picked up by the default ``SERVICE_TO_KIND`` → ``resolve_bucket_name`` path — no override needed.
+    #
+    # 2026-07-14: dropped `gas-fees`/`evm-defi`/`solana-defi`/`dex-pools`/`dex-swaps`/`liquidations`/
+    # `lst-rates`/`oracle-prices`/`perp-funding` — all 9 dedicated buckets these templates resolved to
+    # are now DELETED (confirmed via `gcloud storage buckets list`; deletions landed across PM plan
+    # gcs-bucket-estate-cleanup (2026-07-10) §5i/§5k and defi-dedicated-bucket-shared-migration
+    # (2026-07-13) — all 9 kinds' data now lives in the shared bucket, same as the already-migrated Phase-2 types
+    # above). This file was never updated during any of those rounds, so `_read_defi_merged_index` was
+    # silently swallowing failed reads against dead buckets (`except Exception: logger.debug(...)`) —
+    # not crashing, but the drilldown's per-sub-dimension breakdown was permanently showing these 9 as
+    # empty/no-data. `lending-indices` is the only survivor — its dedicated bucket is still live.
     _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
-        ("market-tick-data-service", "gas-fees"): "gas-fees-{env}-{pid}",
-        ("market-tick-data-service", "evm-defi"): "evm-defi-{env}-{pid}",
-        ("market-tick-data-service", "solana-defi"): "solana-defi-{env}-{pid}",
-        ("market-tick-data-service", "dex-pools"): "dex-pools-{env}-{pid}",
-        ("market-tick-data-service", "dex-swaps"): "dex-swaps-{env}-{pid}",
         ("market-tick-data-service", "lending-indices"): "lending-indices-{env}-{pid}",
-        ("market-tick-data-service", "liquidations"): "liquidations-{env}-{pid}",
-        ("market-tick-data-service", "lst-rates"): "lst-rates-{env}-{pid}",
-        ("market-tick-data-service", "oracle-prices"): "oracle-prices-{env}-{pid}",
-        ("market-tick-data-service", "perp-funding"): "perp-funding-{env}-{pid}",
     }
 
     # DeFi sub-dimension bucket keys for MTDS — merged into DEFI category.
     # Limited to Phase-1 sub-buckets; Phase-2 + eigenlayer-rewards already
     # land in the main DEFI bucket so they appear without enumeration here.
+    # 2026-07-14: see `_BUCKET_CATEGORY_OVERRIDES` above — the other 9 Phase-1 sub-buckets are gone,
+    # their data now merges in via the main DEFI bucket read like every Phase-2 type.
     _MTDS_DEFI_SUB_DIMENSIONS: ClassVar[list[str]] = [
-        "gas-fees",
-        "evm-defi",
-        "solana-defi",
-        "dex-pools",
-        "dex-swaps",
         "lending-indices",
-        "liquidations",
-        "lst-rates",
-        "oracle-prices",
-        "perp-funding",
     ]
 
     def _read_defi_merged_index(self, service: str, cat: str, cloud: str = "gcp") -> pd.DataFrame:
