@@ -206,3 +206,25 @@ def test_load_window_falls_back_when_snapshot_raises(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(svc, "get_cost_snapshot_store", _boom)
     out = s._load_window_table(date(2026, 7, 1), date(2026, 8, 1))  # pyright: ignore[reportPrivateUsage]
     assert _resource_ids(out) == ["LIVE"]  # snapshot error degrades to live, never 5xx
+
+
+# --- snapshot-run endpoint (Cloud Scheduler target) --------------------------
+async def test_snapshot_run_endpoint_delegates_to_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # async (not asyncio.run) so it uses the suite's managed loop — asyncio.run would close the
+    # global loop and break later tests that call the deprecated asyncio.get_event_loop().
+    from deployment_api.routes import costs
+
+    seen: dict[str, object] = {}
+
+    def _fake_run(project: str, bucket: str, clouds: list[str], days: int) -> int:
+        seen["clouds"] = tuple(clouds)
+        seen["bucket"] = bucket
+        return 0
+
+    monkeypatch.setattr(costs, "run_snapshot", _fake_run)
+    out = await costs.run_cost_snapshot(clouds=["gcp"])
+    assert out["status"] == "ok"
+    assert out["clouds"] == ["gcp"]
+    assert seen["clouds"] == ("gcp",)
+    # defaults to the state bucket under the cost-snapshots/ prefix (via snapshot_blob_path)
+    assert str(seen["bucket"]).startswith("unified-deployment-state-")

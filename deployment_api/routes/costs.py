@@ -9,18 +9,22 @@ SSOT for the backends + IAM: codex/05-infrastructure/billing-cost-observability.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.rate_limiting import endpoint_rate_limit
+from deployment_api.scripts.cost_snapshot_worker import DEFAULT_LOOKBACK_DAYS, run_snapshot
 from deployment_api.services.cost_observability import (
     BreakdownResponse,
     CostObservabilityService,
     SummaryResponse,
     TimeseriesResponse,
 )
+from deployment_api.services.cost_observability.snapshot import SNAPSHOT_CLOUDS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -85,3 +89,26 @@ def get_cost_timeseries(
         raise HTTPException(
             status_code=502, detail={"code": "COST_QUERY_FAILED", "message": "Cost data unavailable"}
         ) from exc
+
+
+@router.post("/costs/snapshot-run")
+async def run_cost_snapshot(
+    clouds: list[str] | None = Query(None, description="Clouds to snapshot (default: all present)"),
+) -> dict[str, object]:
+    """Compute + write the per-cloud cost parquet snapshot to the state bucket (Cloud Scheduler target).
+
+    Runs IN the gen1 deployment-api service — the same reason data-status uses an in-service endpoint
+    (Cloud Run Jobs are gen2-only and native pyarrow compute can crash there). Synchronous (the caller
+    is the scheduler with a long attempt-deadline, not the UI). Each per-cloud write is overwrite-by-name
+    (idempotent); a partial failure returns ``status="partial"`` and the next tick recomputes. The AWS
+    slice needs AWS creds on the service (see billing-cost-observability.md) — it degrades to a skipped
+    cloud when absent, never failing GCP/GitHub.
+    """
+    cfg = DeploymentApiConfig()
+    project = cfg.require_gcp_project_id()
+    bucket = cfg.effective_state_bucket
+    cloud_list = list(clouds) if clouds else list(SNAPSHOT_CLOUDS)
+
+    logger.info("cost snapshot: clouds=%s -> gs://%s/cost-snapshots/", cloud_list, bucket)
+    rc = await asyncio.to_thread(run_snapshot, project, bucket, cloud_list, DEFAULT_LOOKBACK_DAYS)
+    return {"status": "ok" if rc == 0 else "partial", "clouds": cloud_list, "exit_code": rc, "bucket": bucket}
