@@ -327,6 +327,7 @@ __all__ = [  # noqa: RUF022
     "_promote_prediction_cqg_from_instrument_id",
     "_read_coverage_rollup_if_fresh",
     "_read_index_cached",
+    "_read_rollup_allow_stale",
     "_read_rollup_if_fresh",
     "_rollup_bucket",
     "_shared_venue_mapping",
@@ -528,6 +529,45 @@ def _read_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return payload  # pyright: ignore[reportUnknownVariableType]
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         logger.info("rollup read failed for %s (%s) — falling through to on-demand", service, exc)
+        return None
+
+
+def _read_rollup_allow_stale(service: str) -> tuple[dict[str, object], str | None] | None:
+    """Read the rollup blob IGNORING staleness — last-resort fallback for the live-build guard.
+
+    Companion to :func:`_read_rollup_if_fresh`. Called ONLY when
+    :func:`~deployment_api.services.data_status.live_build_guard.estimate_live_build_bytes`
+    has already refused the on-demand live build as too expensive — serving
+    a stale rollup (clearly marked) beats a hard structured error for a
+    caller that just wants a rough picture, and beats attempting the build
+    that OOM-crashed the container in the first place.
+
+    Returns ``(payload, last_modified_iso)`` if the blob exists at all
+    (however old), or ``None`` if it does not exist / cannot be read.
+    ``last_modified_iso`` is ``None`` if the blob metadata didn't carry a
+    timestamp — the caller still has a payload, just no age to report.
+    Deliberately bypasses ``_ROLLUP_CACHE`` (keyed for the FRESH path) so
+    this rare fallback always reports the real current blob age.
+    """
+    try:
+        client = get_storage_client(project_id=_pid)
+        bucket_name = _rollup_bucket()
+        blob_path = _rollup_blob_path(service, "full")
+        if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
+            return None
+        meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        last_modified_iso: str | None = None
+        if meta is not None and getattr(meta, "last_modified", None) is not None:
+            last_modified_iso = str(meta.last_modified)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportAttributeAccessIssue]
+        raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+        payload = json.loads(payload_bytes.decode("utf-8"))  # pyright: ignore[reportAny]
+        if not isinstance(payload, dict):
+            logger.warning("stale-fallback rollup for %s is not a dict — ignoring", service)
+            return None
+        return payload, last_modified_iso  # pyright: ignore[reportUnknownVariableType]
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        logger.info("stale-fallback rollup read failed for %s (%s)", service, exc)
         return None
 
 
