@@ -16,6 +16,9 @@ a new version of market-tick-data-service"; these are "a batch VM is crunching
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import cast
@@ -174,45 +177,28 @@ def _mock_entry(**kwargs: object) -> VmDeploymentEntryModel:
     return VmDeploymentEntryModel(**defaults)  # type: ignore[reportArgumentType]
 
 
-@router.get("/vm-deployments", response_model=VmDeploymentsListModel)
-def list_vm_deployments(
-    days: int = Query(7, ge=1, le=30, description="Archive lookback window in days"),
-    filter_stale: bool = Query(True, description="Filter out stale registry entries"),
-) -> VmDeploymentsListModel:
-    """List currently-running VM deployments + those completed in the last N days.
+# Stale-while-revalidate snapshot cache for list_vm_deployments — mirrors
+# routes/deployments_inventory.py's `_load_inventory` / `_inventory_cache` (same
+# proven shape: a full uncached walk of this registry (active + N-day archive, both
+# GCS-backed) plus a per-VM Compute API census measured at avg 93.75s / max 99.27s in
+# prod, occasionally 503/500ing outright under load. SWR serves the last-known-good
+# snapshot instantly, refreshes in the background on a timer, and collapses concurrent
+# refreshes for the same cache key to a single in-flight walk.
+_VM_DEPLOYMENTS_TTL_SEC = 45.0
 
-    By default, filters registry entries to only show VMs that are actually RUNNING
-    in GCP (avoiding the stale registry entries problem). Set filter_stale=false to
-    see all registry entries including stale ones.
+_vm_deployments_cache: dict[str, tuple[float, VmDeploymentsListModel]] = {}
+_vm_deployments_lock = threading.Lock()
+# cache keys with an in-flight background refresh (so we kick off exactly one).
+_vm_deployments_refreshing: set[str] = set()
+_vm_deployments_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vmdeploy-refresh")
+
+
+def _compute_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListModel:
+    """The real (slow) synchronous registry walk + Compute API census.
+
+    Never call directly from a route — go through `_load_vm_deployments` so callers
+    get the stale-while-revalidate cache.
     """
-    if _cfg.is_mock_mode():
-        return VmDeploymentsListModel(
-            active=[_mock_entry()],
-            recent=[
-                _mock_entry(
-                    deployment_id="dep-mock-2",
-                    status="completed",
-                    completed_at="2026-04-17T23:59:00Z",
-                    exit_code=0,
-                    rows_in=30_000,
-                    rows_out=30_000,
-                    rows_error=0,
-                    archive_run_log_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
-                    archive_serial_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",  # noqa: gs-uri (mock fixture URI)
-                ),
-                _mock_entry(
-                    deployment_id="dep-mock-3",
-                    status="failed",
-                    completed_at="2026-04-17T12:05:00Z",
-                    exit_code=1,
-                    rows_in=8_000,
-                    rows_out=4_200,
-                    rows_error=3_800,
-                ),
-            ],
-            archive_days=days,
-        )
-
     registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
     project_id = _cfg.require_gcp_project_id()
 
@@ -244,6 +230,111 @@ def list_vm_deployments(
         raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
 
     return VmDeploymentsListModel(active=active, recent=recent, archive_days=days)
+
+
+def _store_vm_deployments(cache_key: str, result: VmDeploymentsListModel) -> None:
+    """Atomically record a fresh vm-deployments snapshot for ``cache_key``."""
+    with _vm_deployments_lock:
+        _vm_deployments_cache[cache_key] = (time.monotonic(), result)
+
+
+def _refresh_vm_deployments(cache_key: str, days: int, filter_stale: bool) -> None:
+    """Background cache refresh — recompute + store, then clear the in-flight flag."""
+    try:
+        _store_vm_deployments(cache_key, _compute_vm_deployments(days, filter_stale))
+    except (HTTPException, OSError, ValueError, RuntimeError) as exc:
+        # Keep the stale snapshot on a failed refresh — never poison the cache.
+        logger.warning("vm-deployments: background refresh for %s failed: %s", cache_key, exc)
+    finally:
+        with _vm_deployments_lock:
+            _vm_deployments_refreshing.discard(cache_key)
+
+
+def _kick_background_vm_refresh(cache_key: str, days: int, filter_stale: bool) -> None:
+    """Schedule exactly one background refresh per cache key (stale-while-revalidate)."""
+    with _vm_deployments_lock:
+        if cache_key in _vm_deployments_refreshing:
+            return
+        _vm_deployments_refreshing.add(cache_key)
+    _vm_deployments_refresh_pool.submit(_refresh_vm_deployments, cache_key, days, filter_stale)
+
+
+def _load_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListModel:
+    """Load VM deployments, stale-while-revalidate cached for a fast, smooth UI.
+
+    Cache policy (mock mode bypasses it — already cheap + deterministic, and callers
+    never reach this helper in mock mode):
+
+    * **Fresh** (< TTL) -> served instantly.
+    * **Stale** (> TTL) -> the stale snapshot is served instantly AND a single
+      background refresh is kicked off, so the operator never waits on the slow
+      registry walk after the first ever load (the cockpit polls repeatedly -> always
+      warm).
+    * **Cold** (no snapshot) -> computed synchronously, under a lock so a burst of
+      polls collapses to ONE walk, not N.
+    """
+    cache_key = f"{days}|{filter_stale}"
+    cached = _vm_deployments_cache.get(cache_key)
+    if cached is not None:
+        if (time.monotonic() - cached[0]) >= _VM_DEPLOYMENTS_TTL_SEC:
+            _kick_background_vm_refresh(cache_key, days, filter_stale)
+        return cached[1]
+
+    # Cold path — lock so concurrent first-polls trigger exactly ONE walk.
+    with _vm_deployments_lock:
+        cached = _vm_deployments_cache.get(cache_key)
+        if cached is not None:
+            return cached[1]
+        result = _compute_vm_deployments(days, filter_stale)
+        _vm_deployments_cache[cache_key] = (time.monotonic(), result)
+        return result
+
+
+@router.get("/vm-deployments", response_model=VmDeploymentsListModel)
+def list_vm_deployments(
+    days: int = Query(7, ge=1, le=30, description="Archive lookback window in days"),
+    filter_stale: bool = Query(True, description="Filter out stale registry entries"),
+) -> VmDeploymentsListModel:
+    """List currently-running VM deployments + those completed in the last N days.
+
+    By default, filters registry entries to only show VMs that are actually RUNNING
+    in GCP (avoiding the stale registry entries problem). Set filter_stale=false to
+    see all registry entries including stale ones.
+
+    Backed by a stale-while-revalidate snapshot cache (see `_load_vm_deployments`) —
+    the underlying registry walk + Compute API census is the slowest endpoint in the
+    service (measured avg 93.75s / max 99.27s in prod), so this route serves the
+    last-known-good snapshot instantly and refreshes it on a ~45s background timer.
+    """
+    if _cfg.is_mock_mode():
+        return VmDeploymentsListModel(
+            active=[_mock_entry()],
+            recent=[
+                _mock_entry(
+                    deployment_id="dep-mock-2",
+                    status="completed",
+                    completed_at="2026-04-17T23:59:00Z",
+                    exit_code=0,
+                    rows_in=30_000,
+                    rows_out=30_000,
+                    rows_error=0,
+                    archive_run_log_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
+                    archive_serial_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",  # noqa: gs-uri (mock fixture URI)
+                ),
+                _mock_entry(
+                    deployment_id="dep-mock-3",
+                    status="failed",
+                    completed_at="2026-04-17T12:05:00Z",
+                    exit_code=1,
+                    rows_in=8_000,
+                    rows_out=4_200,
+                    rows_error=3_800,
+                ),
+            ],
+            archive_days=days,
+        )
+
+    return _load_vm_deployments(days, filter_stale)
 
 
 class VmReconcileResult(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
