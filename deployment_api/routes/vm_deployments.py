@@ -34,7 +34,7 @@ from unified_trading_library import (
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.registry_reader import resolve_active_registry
+from deployment_api.registry_reader import resolve_active_registry, resolve_deployment_by_id
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -407,7 +407,7 @@ def get_vm_deployment(deployment_id: str) -> VmDeploymentEntryModel:
     project_id = _cfg.require_gcp_project_id()
 
     try:
-        entry = registry.get(deployment_id)
+        entry = resolve_deployment_by_id(deployment_id, gcs=registry)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"VM deployment '{deployment_id}' not found")
 

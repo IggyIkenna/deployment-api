@@ -28,7 +28,7 @@ from unified_trading_library import (
 
 from deployment_api import settings as _settings
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.registry_reader import resolve_active_registry
+from deployment_api.registry_reader import resolve_active_registry, resolve_deployment_by_id
 
 _cfg = DeploymentApiConfig()
 
@@ -210,7 +210,7 @@ def _run_gce_cmd(cmd: str) -> tuple[bool, str]:
 def _do_experiment_action(deployment_id: str, action: str, dry_run: bool) -> ExperimentActionResponse:
     try:
         registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
-        entry = registry.get(deployment_id)
+        entry = resolve_deployment_by_id(deployment_id, gcs=registry)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Registry unavailable: {exc}") from exc
 

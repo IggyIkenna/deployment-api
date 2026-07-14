@@ -81,3 +81,38 @@ def resolve_active_registry(
             )
     registry = gcs if gcs is not None else DeploymentsRegistry(bucket=DEFAULT_BUCKET)
     return registry.list_active()
+
+
+def resolve_deployment_by_id(
+    deployment_id: str,
+    *,
+    store: DeploymentRegistryStore | None = None,
+    gcs: DeploymentsRegistry | None = None,
+    firestore_enabled: bool | None = None,
+) -> DeploymentRegistryEntry | None:
+    """Return ONE deployment by id, Firestore-first with a loud GCS fallback.
+
+    The per-VM point-read companion to :func:`resolve_active_registry` (the drill-down /
+    detail path). When the migration flag is on, ``FirestoreDeploymentRegistryStore.get``
+    (a single indexed doc read); on a Firestore miss or error, log a warning and fall back
+    to the GCS ``registry.get`` (which also checks the recent archive). Flag off → GCS only.
+    """
+    enabled = firestore_enabled if firestore_enabled is not None else _dualwrite_enabled()
+    if enabled:
+        fs = store if store is not None else FirestoreDeploymentRegistryStore(project_id=_project_id())
+        try:
+            entry = fs.get(deployment_id)
+            if entry is not None:
+                return entry
+            logger.warning(
+                "resolve_deployment_by_id: Firestore miss for %s — falling back to the GCS registry",
+                deployment_id,
+            )
+        except Exception as exc:  # loud best-effort read migration — never worse than GCS
+            logger.warning(
+                "resolve_deployment_by_id: Firestore read failed for %s (%s) — falling back to GCS",
+                deployment_id,
+                exc,
+            )
+    registry = gcs if gcs is not None else DeploymentsRegistry(bucket=DEFAULT_BUCKET)
+    return registry.get(deployment_id)

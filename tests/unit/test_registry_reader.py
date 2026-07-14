@@ -18,7 +18,7 @@ os.environ.setdefault("DISABLE_AUTH", "true")
 
 from unified_trading_library import DeploymentRegistryEntry
 
-from deployment_api.registry_reader import resolve_active_registry
+from deployment_api.registry_reader import resolve_active_registry, resolve_deployment_by_id
 
 
 def _entry(deployment_id: str, status: str = "running") -> DeploymentRegistryEntry:
@@ -65,11 +65,14 @@ class _Store:
         return self.query_by_status("running")
 
     def get(self, deployment_id: str) -> DeploymentRegistryEntry | None:
-        return None
+        self.queried = True
+        if self._raises:
+            raise RuntimeError("firestore unavailable")
+        return next((e for e in self._entries if e.deployment_id == deployment_id), None)
 
 
 class _Gcs:
-    """Fake GCS DeploymentsRegistry — records whether list_active() was called."""
+    """Fake GCS DeploymentsRegistry — records whether it was consulted."""
 
     def __init__(self, entries: list[DeploymentRegistryEntry]) -> None:
         self._entries = entries
@@ -78,6 +81,10 @@ class _Gcs:
     def list_active(self) -> list[DeploymentRegistryEntry]:
         self.called = True
         return self._entries
+
+    def get(self, deployment_id: str) -> DeploymentRegistryEntry | None:
+        self.called = True
+        return next((e for e in self._entries if e.deployment_id == deployment_id), None)
 
 
 def test_firestore_hit_returns_firestore_entries() -> None:
@@ -111,5 +118,43 @@ def test_flag_off_uses_gcs_only() -> None:
     gcs = _Gcs(entries=[_entry("gcs-1")])
     result = resolve_active_registry(store=store, gcs=gcs, firestore_enabled=False)  # type: ignore[arg-type]
     assert {e.deployment_id for e in result} == {"gcs-1"}
+    assert store.queried is False  # Firestore never consulted when the flag is off
+    assert gcs.called is True
+
+
+# ---------------------------------------------------------------------------
+# resolve_deployment_by_id — the per-VM point-read (detail / drill-down)
+# ---------------------------------------------------------------------------
+
+
+def test_by_id_firestore_hit() -> None:
+    store = _Store(entries=[_entry("dep-1"), _entry("dep-2")])
+    gcs = _Gcs(entries=[_entry("dep-1")])
+    result = resolve_deployment_by_id("dep-2", store=store, gcs=gcs, firestore_enabled=True)  # type: ignore[arg-type]
+    assert result is not None and result.deployment_id == "dep-2"
+    assert gcs.called is False  # GCS not consulted when Firestore has the doc
+
+
+def test_by_id_firestore_miss_falls_back_to_gcs() -> None:
+    store = _Store(entries=[])  # Firestore doesn't have it yet
+    gcs = _Gcs(entries=[_entry("dep-9")])
+    result = resolve_deployment_by_id("dep-9", store=store, gcs=gcs, firestore_enabled=True)  # type: ignore[arg-type]
+    assert result is not None and result.deployment_id == "dep-9"
+    assert gcs.called is True  # loud fallback on a Firestore miss
+
+
+def test_by_id_firestore_error_falls_back_to_gcs() -> None:
+    store = _Store(raises=True)
+    gcs = _Gcs(entries=[_entry("dep-9")])
+    result = resolve_deployment_by_id("dep-9", store=store, gcs=gcs, firestore_enabled=True)  # type: ignore[arg-type]
+    assert result is not None and result.deployment_id == "dep-9"
+    assert gcs.called is True  # loud fallback on error
+
+
+def test_by_id_flag_off_uses_gcs_only() -> None:
+    store = _Store(entries=[_entry("dep-1")])
+    gcs = _Gcs(entries=[_entry("dep-1")])
+    result = resolve_deployment_by_id("dep-1", store=store, gcs=gcs, firestore_enabled=False)  # type: ignore[arg-type]
+    assert result is not None and result.deployment_id == "dep-1"
     assert store.queried is False  # Firestore never consulted when the flag is off
     assert gcs.called is True
