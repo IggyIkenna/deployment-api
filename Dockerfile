@@ -142,6 +142,11 @@ RUN chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8080
 ENV PORT=8080
+# No OTLP collector sidecar is deployed (single-container Cloud Run), so OpenTelemetry
+# would export into the void at localhost:4317 and spam failed-export retries. Disable
+# tracing at the image level so every deploy is quiet regardless of runtime env.
+# (Runtime override still possible: set TRACING_ENABLED=true once a collector exists.)
+ENV TRACING_ENABLED=false
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["gunicorn", "deployment_api.main:app", "-c", "/app/gunicorn.conf.py"]
 
