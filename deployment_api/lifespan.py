@@ -23,6 +23,7 @@ from deployment_api.background_sync import (
 )
 from deployment_api.services.data_status.manifest import prewarm_indexes
 from deployment_api.settings import DATA_STATUS_PREWARM_SERVICE
+from deployment_api.utils.bounded_cache import start_sweeper, stop_sweeper
 from deployment_api.utils.service_utils import (
     get_codex_dir,
     get_config_dir,
@@ -178,6 +179,11 @@ async def lifespan(app: FastAPI):
         _events_drain_task = asyncio.create_task(drain_sync_queue())
         logger.info("Deployment events drain task started")
 
+        # Single periodic sweeper for every BoundedCache instance (proactively expires
+        # entries a cold key would otherwise leave sitting on stale memory indefinitely).
+        start_sweeper()
+        logger.info("Bounded-cache sweeper task started")
+
         # Optional Data Status index pre-warm (DATA_STATUS_PREWARM_SERVICE; off by default).
         # Background + best-effort: warms _INDEX_CACHE so the first Data Status query is fast
         # (see services/data_status/manifest.prewarm_indexes). Never blocks readiness.
@@ -191,6 +197,7 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down API...")
         _shutdown_event.set()
         await _cancel_background_tasks()
+        await stop_sweeper()
         _release_deployment_locks()
 
         try:

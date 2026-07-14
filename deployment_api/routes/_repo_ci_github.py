@@ -24,11 +24,17 @@ import jwt
 from fastapi import HTTPException
 from unified_trading_library import get_secret_client
 
+from deployment_api.utils.bounded_cache import BoundedCache
+
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.github.com"
 _CACHE_TTL_SECONDS = 90.0
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
+_RESPONSE_CACHE_MAX_ENTRIES = 1000
+
+# (monotonic_ts, parsed json | raw text, etag | None)
+_CacheTuple = tuple[float, object, str | None]
 
 # GitHub App ("uts-ci-poller") installation-token pool — a SEPARATE 5000/hr REST +
 # 5000-pt/hr GraphQL budget from the shared user PAT. Secret Manager names (same
@@ -44,8 +50,11 @@ _app_token_cache: tuple[str, float] | None = None  # (token, expiry_epoch)
 # The ETag lets us send a conditional `If-None-Match` once the short TTL lapses:
 # GitHub answers a matching ETag with `304 Not Modified` which is FREE — it does
 # NOT decrement the shared per-user REST budget. On 304 we serve the cached body;
-# on 200 we refresh both the body and the ETag.
-_response_cache: dict[str, tuple[float, object, str | None]] = {}
+# on 200 we refresh both the body and the ETag. Bounded (was unbounded — every distinct
+# URL this process ever fetched stayed cached forever).
+_response_cache = BoundedCache(
+    name="repo_ci_github_response", maxsize=_RESPONSE_CACHE_MAX_ENTRIES, ttl_seconds=_CACHE_TTL_SECONDS
+)
 _token_cache: str | None = None
 
 
@@ -239,7 +248,7 @@ async def gh_app_rate_limit(
     }
 
 
-async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> object:
+async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str, *, cache_response: bool = True) -> object:
     """GET an api.github.com path, parsed JSON, behind the TTL + ETag cache. 404 -> None.
 
     Two layers of rate-cost avoidance:
@@ -247,10 +256,16 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> 
       2. TTL lapsed but ETag known -> send `If-None-Match`; GitHub's `304 Not Modified`
          is FREE (no REST-budget decrement) and we serve the cached body.
     Only a 200 spends from the shared per-user budget — and refreshes body + ETag.
+
+    ``cache_response=False`` skips the cache entirely (read AND write) — for callers whose
+    URL is keyed on an immutable, single-use resource (e.g. one commit SHA fetched exactly
+    once for a one-off classification, see ``head_commit_message``) where caching would
+    only ever MISS on every future call and just hold memory for a key nothing will ever
+    touch again.
     """
     url = f"{_API_BASE}{path}"
     now = time.monotonic()
-    cached = _response_cache.get(url)
+    cached = cast(_CacheTuple | None, _response_cache.get(url)) if cache_response else None
     if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
     headers = {
@@ -267,7 +282,8 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> 
             _response_cache[url] = (now, cached[1], cached_etag)
             return cached[1]
         if resp.status == 404:
-            _response_cache[url] = (now, None, resp.headers.get("ETag"))
+            if cache_response:
+                _response_cache[url] = (now, None, resp.headers.get("ETag"))
             return None
         _raise_if_rate_limited(resp.status, resp.headers, url)
         if resp.status >= 400:
@@ -277,7 +293,8 @@ async def gh_get_json(session: aiohttp.ClientSession, token: str, path: str) -> 
         # helpers downstream (branch_head/compare/pulls), not a single Pydantic model.
         payload = cast(object, await resp.json())  # noqa: qg-raw-json
         etag = resp.headers.get("ETag")
-    _response_cache[url] = (now, payload, etag)
+    if cache_response:
+        _response_cache[url] = (now, payload, etag)
     return payload
 
 
@@ -285,7 +302,7 @@ async def gh_raw_file(session: aiohttp.ClientSession, token: str, org: str, repo
     """Fetch a file's raw content via the contents API (works on private repos)."""
     url = f"{_API_BASE}/repos/{org}/{repo}/contents/{path}?ref={ref}"
     now = time.monotonic()
-    cached = _response_cache.get(url)
+    cached = cast(_CacheTuple | None, _response_cache.get(url))
     if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
         return str(cached[1])
     headers = {
@@ -600,8 +617,13 @@ async def list_open_promotion_prs(
 
 
 async def head_commit_message(session: aiohttp.ClientSession, token: str, org: str, repo: str, sha: str) -> str:
-    """Full message of one commit (drives the [skip ci] jam classification)."""
-    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/commits/{sha}")
+    """Full message of one commit (drives the [skip ci] jam classification).
+
+    ``cache_response=False`` — an immutable commit SHA queried exactly once for this
+    classification; caching it would only ever be a future MISS (a different SHA next
+    time), holding memory for a key nothing will ever touch again.
+    """
+    payload = await gh_get_json(session, token, f"/repos/{org}/{repo}/commits/{sha}", cache_response=False)
     data = _as_dict(payload)
     inner = _as_dict(data.get("commit"))
     return str(inner.get("message") or "")

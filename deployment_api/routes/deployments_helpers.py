@@ -6,7 +6,6 @@ Contains utility functions for log analysis, state management, and other common 
 
 import logging
 import re
-import time
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -17,37 +16,6 @@ logger = logging.getLogger(__name__)
 # Deployment configuration (public alias for cross-module access)
 _deployment_config = DeploymentApiConfig()
 deployment_config: DeploymentApiConfig = _deployment_config
-
-# Cache for verification results
-_verification_cache: dict[str, dict[str, object]] = {}
-
-
-def _set_verification_cache(deployment_id: str, data: dict[str, object]) -> None:
-    """
-    Set verification cache for a deployment.
-    """
-    _verification_cache[deployment_id] = {"data": data, "timestamp": time.time()}
-
-
-def set_verification_cache(deployment_id: str, data: dict[str, object]) -> None:
-    """Public alias for _set_verification_cache."""
-    _set_verification_cache(deployment_id, data)
-
-
-_VERIFICATION_CACHE_TTL_SEC = 300
-
-
-def _get_verification_cache(deployment_id: str) -> dict[str, object] | None:
-    """Get verification cache for a deployment (reads from local _verification_cache)."""
-    entry = _verification_cache.get(deployment_id)
-    if not entry:
-        return None
-    ts = entry.get("timestamp")
-    if isinstance(ts, float) and time.time() - ts > _VERIFICATION_CACHE_TTL_SEC:
-        _verification_cache.pop(deployment_id, None)
-        return None
-    data: object = entry.get("data")
-    return cast(dict[str, object], data) if isinstance(data, dict) else None
 
 
 def build_deploy_env_vars(

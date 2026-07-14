@@ -631,6 +631,21 @@ def _alert_on_health_transition(item: DeploymentItem) -> None:
     )
 
 
+def _prune_stale_alert_state(census_vm_names: set[str]) -> None:
+    """Drop ``_last_alerted_health`` entries for VM names absent from the current census.
+
+    Called once per full GCP census (GCE VMs are all-region aggregated regardless of
+    ``region_scope`` — see ``_compute_inventory`` — so ``census_vm_names`` is always the
+    complete live+registered VM name set, never a partial/region-scoped one). Without this
+    the map grows forever with every VM ever seen across the fleet's churn (short-lived
+    backfill VMs launched and torn down continuously).
+    """
+    with _last_alerted_health_lock:
+        stale = [name for name in _last_alerted_health if name not in census_vm_names]
+        for name in stale:
+            del _last_alerted_health[name]
+
+
 def _vm_item(
     entry: DeploymentRegistryEntry,
     now: datetime,
@@ -1649,9 +1664,12 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
         # First-class orphaned-resource rows (#7): unattached disks + no-owner reserved static IPs.
         items.extend(_orphaned_resource_items(disk_details, unattached_disks, addresses))
 
+        census_vm_names: set[str] = set()
         for vm_item in gcp_items:
             if vm_item.kind == DeploymentKind.VM.value:
                 _alert_on_health_transition(vm_item)
+                census_vm_names.add(vm_item.name)
+        _prune_stale_alert_state(census_vm_names)
 
     if f_aws is not None:
         aws_items: list[DeploymentItem] = _census_or_degrade("aws", f_aws, [])

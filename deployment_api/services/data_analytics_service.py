@@ -13,6 +13,10 @@ from typing import Any, TypedDict, cast
 
 logger = logging.getLogger(__name__)
 
+# Byte budget for the turbo-mode cache — enforced alongside the existing 100-entry cap
+# (a handful of large rollups can blow the memory budget well under 100 entries).
+_MAX_CACHE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB per worker
+
 
 class _CacheStats(TypedDict):
     hits: int
@@ -138,18 +142,26 @@ class DataAnalyticsService:
 
         self._turbo_cache[cache_key] = cache_entry
         self._cache_stats["entries"] = len(self._turbo_cache)
+        self._cache_stats["total_size_estimate"] = self._current_size_estimate()
 
-        # Update size estimate
-        total_size = sum(cast(int, entry.get("size_estimate", 0)) for entry in self._turbo_cache.values())
-        self._cache_stats["total_size_estimate"] = total_size
-
-        # Evict old entries if cache gets too large (> 100 entries)
-        if len(self._turbo_cache) > 100:
+        # Evict old entries if the cache gets too large (> 100 entries) OR blows the byte budget
+        if len(self._turbo_cache) > 100 or self._cache_stats["total_size_estimate"] > _MAX_CACHE_SIZE_BYTES:
             self._evict_old_entries()
 
+    def _current_size_estimate(self) -> int:
+        return sum(cast(int, entry.get("size_estimate", 0)) for entry in self._turbo_cache.values())
+
     def _evict_old_entries(self) -> None:
-        """Evict oldest cache entries to manage memory."""
-        # Sort by cached_at time and remove oldest 20%
+        """Evict oldest cache entries to manage memory.
+
+        Always removes the oldest 20% (amortized batch eviction, min 1 — unchanged from the
+        original count-based behavior). Then, if the cache is STILL over the byte budget
+        after that batch (a handful of large rollups can blow the budget well under the
+        100-entry cap), keeps evicting oldest-first until under budget.
+        """
+        # Sort by cached_at time, oldest first. A UTC-aware sentinel for invalid/missing
+        # timestamps (NOT datetime.min, which is naive and would raise on comparison
+        # against the timezone-aware cached_at values every real entry carries).
         entries_with_time: list[tuple[datetime, str]] = []
         for key, entry in self._turbo_cache.items():
             cached_at = cast(str | None, entry.get("cached_at"))
@@ -158,19 +170,32 @@ class DataAnalyticsService:
                     cache_time = datetime.fromisoformat(cached_at)
                     entries_with_time.append((cache_time, key))
                 except (ValueError, TypeError):
-                    # Invalid timestamp, mark for removal
-                    entries_with_time.append((datetime.min, key))
+                    # Invalid timestamp — treat as oldest so it's evicted first.
+                    entries_with_time.append((datetime.min.replace(tzinfo=UTC), key))
 
         entries_with_time.sort()
 
-        # Remove oldest 20%
+        # Remove oldest 20%.
         num_to_remove = max(1, len(entries_with_time) // 5)
+        num_removed = 0
         for _, key in entries_with_time[:num_to_remove]:
             if key in self._turbo_cache:
                 del self._turbo_cache[key]
+                num_removed += 1
+
+        # Byte budget: keep evicting oldest-first (from what's left) until under budget.
+        remaining = entries_with_time[num_to_remove:]
+        idx = 0
+        while self._current_size_estimate() > _MAX_CACHE_SIZE_BYTES and idx < len(remaining):
+            _, key = remaining[idx]
+            idx += 1
+            if key in self._turbo_cache:
+                del self._turbo_cache[key]
+                num_removed += 1
 
         self._cache_stats["entries"] = len(self._turbo_cache)
-        logger.info("Evicted %s old cache entries", num_to_remove)
+        self._cache_stats["total_size_estimate"] = self._current_size_estimate()
+        logger.info("Evicted %s old cache entries", num_removed)
 
     async def get_data_status_turbo(
         self,

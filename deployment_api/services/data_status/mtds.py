@@ -361,7 +361,7 @@ def shared_venue_mapping() -> VenueMapping:
     return _shared_venue_mapping_instance
 
 
-@lru_cache(maxsize=8192)
+@lru_cache(maxsize=512)
 def mtds_expected_dates_cached(
     venue: str,
     data_type: str,

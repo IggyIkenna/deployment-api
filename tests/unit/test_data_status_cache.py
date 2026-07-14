@@ -75,18 +75,18 @@ class TestGetSetCachedResult:
         result = get_cached_result("svc", "2024-01-01", "2024-01-31", ["DEFI"])
         assert result is None
 
-    def test_expired_entry_returns_none(self):
-        from datetime import UTC, datetime
+    def test_expired_entry_returns_none(self, monkeypatch):
+        import time
+
+        from deployment_api.utils import data_status_cache
+        from deployment_api.utils.bounded_cache import BoundedCache
+
+        short_lived = BoundedCache(name="test-data-status-cache-expiry", maxsize=8, ttl_seconds=0.01)
+        monkeypatch.setattr(data_status_cache, "_cache", short_lived)
 
         data = {"service": "svc"}
         set_cached_result("svc", "2024-01-01", "2024-01-31", None, result=data)
-
-        # Manually expire the entry
-        from deployment_api.utils import data_status_cache
-
-        for key in list(data_status_cache._cache.keys()):
-            result_val, _ = data_status_cache._cache[key]
-            data_status_cache._cache[key] = (result_val, datetime(2000, 1, 1, tzinfo=UTC))
+        time.sleep(0.05)
 
         result = get_cached_result("svc", "2024-01-01", "2024-01-31", None)
         assert result is None
@@ -262,17 +262,18 @@ class TestExecCache:
         result = get_exec_cached_result("/path/config.yaml", "2024-02-01", "2024-02-28")
         assert result is None
 
-    def test_exec_expired_returns_none(self):
-        from datetime import UTC, datetime
+    def test_exec_expired_returns_none(self, monkeypatch):
+        import time
+
+        from deployment_api.utils import data_status_cache
+        from deployment_api.utils.bounded_cache import BoundedCache
+
+        short_lived = BoundedCache(name="test-data-status-cache-exec-expiry", maxsize=8, ttl_seconds=0.01)
+        monkeypatch.setattr(data_status_cache, "_cache", short_lived)
 
         data = {"status": "ok"}
         set_exec_cached_result("/cfg.yaml", None, None, data)
-
-        from deployment_api.utils import data_status_cache
-
-        for key in list(data_status_cache._cache.keys()):
-            result_val, _ = data_status_cache._cache[key]
-            data_status_cache._cache[key] = (result_val, datetime(2000, 1, 1, tzinfo=UTC))
+        time.sleep(0.05)
 
         result = get_exec_cached_result("/cfg.yaml", None, None)
         assert result is None

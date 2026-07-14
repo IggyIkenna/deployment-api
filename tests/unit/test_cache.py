@@ -4,14 +4,13 @@ Unit tests for the Unified Caching Layer.
 Tests cover:
 1. InMemoryCache operations
 2. UnifiedCache get_or_fetch with None handling
-3. GCSCache operations (mocked)
-4. Cache key builders
-5. TTL expiration
-6. Tier promotion (GCS -> Redis -> InMemory)
+3. Cache key builders
+4. TTL expiration
+5. Tier promotion (Redis -> InMemory)
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -90,10 +89,9 @@ class TestUnifiedCacheGetOrFetch:
 
     @pytest.fixture
     def unified_cache(self):
-        """Create a UnifiedCache with Redis and GCS disabled."""
+        """Create a UnifiedCache with Redis disabled."""
         cache = UnifiedCache()
         cache.redis = None
-        cache.gcs = None
         return cache
 
     @pytest.mark.asyncio
@@ -189,34 +187,6 @@ class TestUnifiedCacheGetOrFetch:
         result2 = await unified_cache.get_or_fetch("key", fetch_returns_empty_dict, ttl=60)
         assert result2 == {}
         assert fetch_count == 1
-
-
-class TestUnifiedCachePersistence:
-    """Tests for GCS persistence in UnifiedCache."""
-
-    @pytest.fixture
-    def unified_cache_with_mock_gcs(self):
-        """Create UnifiedCache with mocked GCS."""
-        cache = UnifiedCache()
-        cache.redis = None
-        cache.gcs = MagicMock()
-        cache.gcs.set = AsyncMock()
-        cache.gcs.get = AsyncMock(return_value=None)
-        return cache
-
-    @pytest.mark.asyncio
-    async def test_persist_to_gcs_false_does_not_call_gcs(self, unified_cache_with_mock_gcs):
-        """persist_to_gcs=False should not write to GCS."""
-        await unified_cache_with_mock_gcs.set("key", "value", ttl=60, persist_to_gcs=False)
-
-        unified_cache_with_mock_gcs.gcs.set.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_persist_to_gcs_true_calls_gcs(self, unified_cache_with_mock_gcs):
-        """persist_to_gcs=True should write to GCS."""
-        await unified_cache_with_mock_gcs.set("key", "value", ttl=60, persist_to_gcs=True)
-
-        unified_cache_with_mock_gcs.gcs.set.assert_called_once_with("key", "value", 60)
 
 
 class TestCacheKeyBuilders:
@@ -519,7 +489,6 @@ class TestUnifiedCacheRedisTier:
         encoded = json.dumps({"cached": True}).encode()
         mock_redis.get = AsyncMock(return_value=encoded)
         cache.redis = mock_redis
-        cache.gcs = None
 
         result = await cache.get("test-key")
         # The cache returns raw bytes from Redis without deserializing
@@ -531,7 +500,6 @@ class TestUnifiedCacheRedisTier:
         mock_redis = AsyncMock()
         mock_redis.set = AsyncMock()
         cache.redis = mock_redis
-        cache.gcs = None
 
         await cache.set("key", {"val": 1}, ttl=60)
         mock_redis.set.assert_called_once()
@@ -542,7 +510,6 @@ class TestUnifiedCacheRedisTier:
         mock_redis = AsyncMock()
         mock_redis.delete = AsyncMock()
         cache.redis = mock_redis
-        cache.gcs = None  # Avoid triggering GCS delete path
 
         await cache.delete("key")
         mock_redis.delete.assert_called_once_with("key")
