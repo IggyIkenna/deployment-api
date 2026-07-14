@@ -340,7 +340,14 @@ steps:
   # NO-OP for the build-only triggers (feat/* / live-defi-rollout, _DEPLOY unset)
   # and for every non-deployment-api repo using this shared template. Rolls the
   # shared `uts-shared-deployment-api` Cloud Run revision to the freshly-built
-  # image (a bare --image deploy preserves all existing service config) + syncs
+  # image + merges WORKERS=2 into its env vars (--update-env-vars, NOT
+  # --set-env-vars — the latter REPLACES the whole env-var set and would wipe
+  # existing vars like GCP_PROJECT_ID; --update-env-vars only touches the keys
+  # named, so everything else the service preserves from the prior revision
+  # is untouched. Operator decision 2026-07-14: halve the idle in-process-cache
+  # baseline, ~2.48GB @ WORKERS=4 → ~1.24GB @ WORKERS=2; the in-code default in
+  # deployment_api_config.py stays 4 for local dev / other deploy contexts —
+  # this is a deploy-config-only override for this one Cloud Run service) + syncs
   # the data-status rollup Job to the SAME image so live data-status reflects new
   # code (mirrors deployment-service/scripts/cloud-run/deploy-shared.sh). Operator
   # decision 2026-06-15: auto-deploy deployment-api/ui on main.
@@ -356,8 +363,9 @@ steps:
           exit 0
         fi
         IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
-        echo "deploy: rolling uts-shared-deployment-api → $$IMG"
+        echo "deploy: rolling uts-shared-deployment-api → $$IMG (WORKERS=2)"
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
+          --update-env-vars WORKERS=2 \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
         # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the
         # new image — it runs the rollup compute via POST /api/data-status/rollup-run, hit
