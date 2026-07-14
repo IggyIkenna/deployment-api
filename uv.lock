@@ -696,7 +696,7 @@ requires-dist = [
     { name = "pip", specifier = ">=26.1.2" },
     { name = "pip-audit", specifier = ">=2.7.0,<3.0.0" },
     { name = "prometheus-client", specifier = ">=0.20.0,<1.0.0" },
-    { name = "pyarrow", specifier = ">=23.0.0,<24.0.0" },
+    { name = "pyarrow", specifier = ">=23.0.1,<24.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<3.0.0" },
     { name = "pygithub", specifier = ">=2.0.0,<3.0.0" },
     { name = "pygments", specifier = ">=2.20.0,<3.0.0" },
