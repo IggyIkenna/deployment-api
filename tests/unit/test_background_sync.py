@@ -232,6 +232,101 @@ class TestAutoSyncRunLoopBody:
                 pytest.fail("Task should have exited after OSError handling")
 
 
+class TestRunDeploymentReaper:
+    """Tests for _run_deployment_reaper — the ~15-min reaper tick."""
+
+    @pytest.mark.asyncio
+    async def test_calls_reap_stale_deployments_on_tick_boundary(self):
+        mock_service = MagicMock()
+        mock_service.reap_stale_deployments.return_value = 3
+        loop = asyncio.get_event_loop()
+
+        with (
+            patch.object(bsync, "_sync_service", mock_service),
+            patch("deployment_api.background_sync._time.time", return_value=0.0),
+        ):
+            await bsync._run_deployment_reaper(loop, current_interval=30)
+
+        mock_service.reap_stale_deployments.assert_called_once_with(bsync._REAPER_MAX_PER_TICK)
+
+    @pytest.mark.asyncio
+    async def test_noop_when_not_on_tick_boundary(self):
+        mock_service = MagicMock()
+        loop = asyncio.get_event_loop()
+
+        # _REAPER_INTERVAL_SEC=900; picking a time mid-window (modulo >= current_interval)
+        # so the gate short-circuits before touching _sync_service at all.
+        with (
+            patch.object(bsync, "_sync_service", mock_service),
+            patch("deployment_api.background_sync._time.time", return_value=500.0),
+        ):
+            await bsync._run_deployment_reaper(loop, current_interval=30)
+
+        mock_service.reap_stale_deployments.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_swallows_oserror_without_raising(self):
+        mock_service = MagicMock()
+        mock_service.reap_stale_deployments.side_effect = OSError("gcs unavailable")
+        loop = asyncio.get_event_loop()
+
+        with (
+            patch.object(bsync, "_sync_service", mock_service),
+            patch("deployment_api.background_sync._time.time", return_value=0.0),
+        ):
+            await bsync._run_deployment_reaper(loop, current_interval=30)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_swallows_valueerror_without_raising(self):
+        mock_service = MagicMock()
+        mock_service.reap_stale_deployments.side_effect = ValueError("bad running-vm payload")
+        loop = asyncio.get_event_loop()
+
+        with (
+            patch.object(bsync, "_sync_service", mock_service),
+            patch("deployment_api.background_sync._time.time", return_value=0.0),
+        ):
+            await bsync._run_deployment_reaper(loop, current_interval=30)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_reaper_error_does_not_break_the_sync_loop(self):
+        """End-to-end: a raising reaper tick must not stop auto_sync_running_deployments."""
+        shutdown_event = asyncio.Event()
+
+        mock_service = MagicMock()
+        mock_service.sync_deployments.return_value = (0, 0)
+        mock_service.cleanup_state_ttl.return_value = 0
+        mock_service.reap_stale_deployments.side_effect = RuntimeError("registry download failed")
+        mock_service.state_manager.owner_id = "test-owner"
+
+        call_count = 0
+
+        async def controlled_sleep(secs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                shutdown_event.set()
+
+        with (
+            patch("deployment_api.background_sync.SyncService", return_value=mock_service),
+            patch.object(bsync, "_shutdown_event", shutdown_event),
+            patch.object(bsync, "_sync_service", None),
+            patch("deployment_api.background_sync._time.time", return_value=0.0),
+            patch(
+                "deployment_api.background_sync.asyncio.sleep",
+                new=AsyncMock(side_effect=controlled_sleep),
+            ),
+        ):
+            task = asyncio.create_task(bsync._auto_sync_running_deployments())
+            try:
+                await asyncio.wait_for(task, timeout=3.0)
+            except TimeoutError:
+                task.cancel()
+                pytest.fail("Task should have exited despite the reaper error")
+
+        assert mock_service.reap_stale_deployments.called
+
+
 class TestModuleLevelConstants:
     """Tests for module-level constant exports."""
 
