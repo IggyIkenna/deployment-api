@@ -84,6 +84,7 @@ def _load_cloud(cloud: str, cfg: DeploymentApiConfig, start: _dt.date, end: _dt.
             start,
             end,
             cutoff,
+            cfg.aws_athena_reader_role_arn,
         )
     if cloud == CLOUD_GITHUB:
         return github_facts(start, end)

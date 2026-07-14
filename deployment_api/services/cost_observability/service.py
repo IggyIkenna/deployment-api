@@ -214,6 +214,7 @@ class CostObservabilityService:
                 start,
                 end,
                 cutoff,
+                self._cfg.aws_athena_reader_role_arn,
             ),
             CLOUD_AWS,
         )
