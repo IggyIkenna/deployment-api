@@ -425,6 +425,15 @@ class SyncService:
 
         # Scan for active deployments
         state_paths = self.scan_deployment_states()
+
+        if not state_paths:
+            # Registry prefix scan found 0 objects this cycle — nothing to filter and
+            # nothing for _cleanup_recent_orphans to re-load (every non-active path it
+            # walks costs a load_deployment_state() GCS read). Skip straight to idle
+            # instead of unconditionally falling through to that work every cycle.
+            logger.debug("[SYNC_SERVICE] Deployments registry empty — idle cycle")
+            return 0, 0
+
         active_states = self.filter_active_deployments(state_paths)
 
         if not active_states:
