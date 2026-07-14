@@ -191,26 +191,29 @@ class DefiStatusMixin(DataStatusCliMixin):
     # picked up by the default ``SERVICE_TO_KIND`` → ``resolve_bucket_name`` path — no override needed.
     #
     # 2026-07-14: dropped `gas-fees`/`evm-defi`/`solana-defi`/`dex-pools`/`dex-swaps`/`liquidations`/
-    # `lst-rates`/`oracle-prices`/`perp-funding` — all 9 dedicated buckets these templates resolved to
-    # are now DELETED (confirmed via `gcloud storage buckets list`; deletions landed across PM plan
-    # gcs-bucket-estate-cleanup (2026-07-10) §5i/§5k and defi-dedicated-bucket-shared-migration
-    # (2026-07-13) — all 9 kinds' data now lives in the shared bucket, same as the already-migrated Phase-2 types
-    # above). This file was never updated during any of those rounds, so `_read_defi_merged_index` was
-    # silently swallowing failed reads against dead buckets (`except Exception: logger.debug(...)`) —
-    # not crashing, but the drilldown's per-sub-dimension breakdown was permanently showing these 9 as
-    # empty/no-data. `lending-indices` is the only survivor — its dedicated bucket is still live.
-    _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {
-        ("market-tick-data-service", "lending-indices"): "lending-indices-{env}-{pid}",
-    }
+    # `lst-rates`/`oracle-prices`/`perp-funding`/`lending-indices` — all 10 dedicated buckets these
+    # templates resolved to are now DELETED or mid-deletion (confirmed via `gcloud storage buckets
+    # list`; deletions landed across PM plan gcs-bucket-estate-cleanup (2026-07-10) §5i/§5k,
+    # defi-dedicated-bucket-shared-migration (2026-07-13), and bucket_estate_consolidation_to_sub100
+    # (2026-07-13) item C for lending-indices specifically — all 10 kinds' data now lives in the
+    # shared bucket, same as the already-migrated Phase-2 types above). This file was never updated
+    # during any of those rounds, so `_read_defi_merged_index` was silently swallowing failed reads
+    # against dead buckets (`except Exception: logger.debug(...)`) — not crashing, but the drilldown's
+    # per-sub-dimension breakdown was permanently showing these as empty/no-data. `lending-indices`
+    # was believed to be "the only survivor" as of the prior commit on this file (b5641cf, same day) —
+    # that was wrong: its dedicated bucket's write path was already broken (a bare `"lending-indices"`
+    # domain string falls through UTL's legacy fallback resolver to the flat, pre-shared-bucket-migration
+    # name — see bucket_estate_consolidation_to_sub100_2026_07_13.md item C), the actual live data has
+    # been in the shared bucket all along, and both dedicated buckets are now being retired.
+    _BUCKET_CATEGORY_OVERRIDES: ClassVar[dict[tuple[str, str], str]] = {}
 
     # DeFi sub-dimension bucket keys for MTDS — merged into DEFI category.
     # Limited to Phase-1 sub-buckets; Phase-2 + eigenlayer-rewards already
     # land in the main DEFI bucket so they appear without enumeration here.
-    # 2026-07-14: see `_BUCKET_CATEGORY_OVERRIDES` above — the other 9 Phase-1 sub-buckets are gone,
-    # their data now merges in via the main DEFI bucket read like every Phase-2 type.
-    _MTDS_DEFI_SUB_DIMENSIONS: ClassVar[list[str]] = [
-        "lending-indices",
-    ]
+    # 2026-07-14: see `_BUCKET_CATEGORY_OVERRIDES` above — all Phase-1 sub-buckets (incl.
+    # lending-indices) are gone; their data now merges in via the main DEFI bucket read like
+    # every Phase-2 type.
+    _MTDS_DEFI_SUB_DIMENSIONS: ClassVar[list[str]] = []
 
     def _read_defi_merged_index(self, service: str, cat: str, cloud: str = "gcp") -> pd.DataFrame:
         """Read availability index, merging sub-dimension buckets for MTDS DEFI.
