@@ -2502,17 +2502,25 @@ class TestTradFiMultiSourceUnion:
         ]
         return pd.DataFrame(rows, columns=cols)
 
-    # Use CBOE + ohlcv_15m: a UAC-declared TRADFI (venue, dt) pair that is
+    # Use ICE + ohlcv_24h: a UAC-declared TRADFI (venue, dt) pair that is
     # NOT per_instrument (is_per_instrument_shard_data_type returns False),
     # so it exercises the venue-level dt branch where per_source is emitted.
-    _VENUE = "CBOE"
-    _DT = "ohlcv_15m"
+    #
+    # NOTE: this was originally CBOE + ohlcv_15m, but UAC commit 78b9e899
+    # (2026-07-15) removed ohlcv_15m from CBOE's VENUE_DATA_TYPE_CAPABILITIES
+    # (retired Yahoo/Barchart VIX cash-index source; no adapter serves that
+    # pair anymore). CBOE's remaining data types (ohlcv_1s / ohlcv_1m) are
+    # per-instrument shard types, so ICE/ohlcv_24h (narrowed to ohlcv_24h
+    # only per commit 753fb81a) is the current UAC-declared venue-level
+    # TRADFI pair that preserves this test's intent.
+    _VENUE = "ICE"
+    _DT = "ohlcv_24h"
 
     def test_two_source_rows_same_date_counts_once(self):
         """FLAG-1 regression: databento + massive both captured on 2026-01-02
         must produce found_shards=1 (union), NOT 2 (per-source double-count).
 
-        Uses CBOE/ohlcv_15m — a UAC-declared venue-level (not per-instrument)
+        Uses ICE/ohlcv_24h — a UAC-declared venue-level (not per-instrument)
         TRADFI (venue, data_type) pair."""
         from unified_api_contracts import VenueMapping
 
@@ -2613,7 +2621,7 @@ class TestTradFiMultiSourceUnion:
         """FLAG-1: if databento=captured and massive=attempted_failed on same date,
         the union MUST see the date as found (databento passes the ok_mask).
 
-        Uses 2026-01-02 — a valid CBOE trading day (verified via
+        Uses 2026-01-02 — a valid ICE trading day (verified via
         _mtds_expected_dates_for_venue_dt returns {'2026-01-02'})."""
         from unified_api_contracts import VenueMapping
 
