@@ -3,6 +3,13 @@
 Consumes ``sports_reference/by_date/day={D}/entity=fixtures/fixtures.parquet`` in
 ``instruments-store-sports-{project}``. Missing dates or read failures are
 skipped per-shard (no cross-day raise) per shard-level failure isolation.
+
+instruments-service cut the FIXTURES writer over to a two-entity
+``fixtures_schedule``/``fixtures_outcomes`` entity-folder split with no legacy
+dual-write (first observed 2026-07-14) — for dates on/after the cutover the
+legacy singleton above no longer exists, so ``_read_one_day_frame`` falls back
+to the split ``fixtures_schedule`` per-league shards (see
+``plans/active/issues/features_sports_fixtures_split_reader_gap_2026_07_15.md``).
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from typing import TypedDict
 import pandas as pd
 from unified_trading_library import resolve_bucket_name
 
+from deployment_api.services._sports_fixtures_split import split_entity_league_blob_paths
 from deployment_api.utils.storage_client import get_storage_client
 from deployment_api.utils.storage_facade import object_exists
 
@@ -160,13 +168,66 @@ def _row_to_fixture(rec: object) -> UpcomingFixture | None:
     )
 
 
+# Raw split-shard columns → the friendly names `_row_to_fixture` expects. Both
+# split entities keep the writer's original raw (af_-prefixed / Q5 timestamp)
+# column names unchanged — the split only partitions columns across two
+# files, it does not rename them.
+_SPLIT_SCHEDULE_ALIASES: dict[str, tuple[str, ...]] = {
+    "fixture_id": ("af_fixture_id", "fixture_id"),
+    "kickoff_utc": ("timestamp", "kickoff_utc"),
+    "league_id": ("af_league_id", "league_id"),
+    "home_team_name": ("af_home_name", "home_team_name"),
+    "away_team_name": ("af_away_name", "away_team_name"),
+    "status": ("status_short", "status"),
+    "round": ("round", "round_name"),
+}
+
+
+def _normalize_split_schedule_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename whichever raw split-schedule column variant is present to the friendly name ``_row_to_fixture`` wants."""
+    rename: dict[str, str] = {}
+    for canonical, variants in _SPLIT_SCHEDULE_ALIASES.items():
+        if canonical in df.columns:
+            continue
+        for variant in variants:
+            if variant in df.columns:
+                rename[variant] = canonical
+                break
+    return df.rename(columns=rename) if rename else df
+
+
+def _read_split_schedule_frame(bucket: str, d: date) -> pd.DataFrame | None:
+    """Fall back to the split ``fixtures_schedule`` per-league shards for one day.
+
+    Upcoming Fixtures only needs schedule columns (kickoff/teams/venue/status/
+    round), all present on ``fixtures_schedule`` — no need to also read
+    ``fixtures_outcomes``.
+    """
+    blob_paths = split_entity_league_blob_paths(bucket, d.isoformat(), "fixtures_schedule")
+    if not blob_paths:
+        return None
+    frames: list[pd.DataFrame] = []
+    for blob_path in blob_paths:
+        try:
+            frames.append(_read_fixtures_parquet(bucket, blob_path))
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("upcoming fixtures split read failed for %s/%s: %s", bucket, blob_path, exc)
+    if not frames:
+        return None
+    combined = pd.concat(frames, ignore_index=True)
+    if combined.empty:
+        return None
+    return _normalize_split_schedule_columns(combined)
+
+
 def _read_one_day_frame(bucket: str, d: date) -> pd.DataFrame | None:
     object_path = f"sports_reference/by_date/day={d.isoformat()}/entity=fixtures/fixtures.parquet"
     try:
-        if not object_exists(bucket, object_path):
-            return None
-        df = _read_fixtures_parquet(bucket, object_path)
-        return df if not df.empty else None
+        if object_exists(bucket, object_path):
+            df = _read_fixtures_parquet(bucket, object_path)
+            if not df.empty:
+                return df
+        return _read_split_schedule_frame(bucket, d)
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning(
             "upcoming fixtures read failed for %s/%s: %s",

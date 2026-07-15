@@ -38,6 +38,7 @@ from unified_trading_library import (
     resolve_bucket_name,
 )
 
+from deployment_api.services._sports_fixtures_split import split_entity_league_blob_paths
 from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
 from deployment_api.settings import gcp_project_id as _pid
 from deployment_api.utils.storage_facade import list_objects

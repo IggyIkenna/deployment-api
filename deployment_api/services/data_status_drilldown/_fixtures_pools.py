@@ -126,6 +126,26 @@ def _read_entity_fixture_ids(gs_uri: str) -> tuple[str, set[str]]:
     return ("captured", fixture_ids)
 
 
+def _read_split_fixture_meta_frame(*, day: str, project_id: str | None = None) -> pd.DataFrame | None:
+    """Fall back to the split ``fixtures_schedule`` per-league shards for one day.
+
+    instruments-service cut the FIXTURES writer over to the schedule/outcomes
+    entity-folder split with no legacy dual-write (first observed
+    2026-07-14) — see
+    ``plans/active/issues/features_sports_fixtures_split_reader_gap_2026_07_15.md``.
+    The fixture-breakdown meta (kickoff/teams/status/venue) only needs
+    schedule columns, all present on ``fixtures_schedule``. Returns ``None``
+    when no split shard exists for the day either (a genuine gap).
+    """
+    _sports_bucket = _dd.resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group="sports")
+    blob_paths = _dd.split_entity_league_blob_paths(_sports_bucket, day, "fixtures_schedule")
+    if not blob_paths:
+        return None
+    frames = [_dd._read_parquet_columns(f"gs://{_sports_bucket}/{p}") for p in blob_paths]  # noqa: gs-uri  — URI composer, bucket already resolved  # pyright: ignore[reportPrivateUsage]
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    return df if not df.empty else None
+
+
 def _load_fixture_meta(
     *,
     day: str,
@@ -137,9 +157,9 @@ def _load_fixture_meta(
     Each fixture dict has: fixture_id, kickoff_utc, home_team_name,
     away_team_name, status, venue_id.
 
-    Raises ``FileNotFoundError`` when the day's fixtures parquet is absent;
-    ``ValueError`` when the canonical league_id can't be mapped to an
-    API-Football numeric id.
+    Raises ``FileNotFoundError`` when neither the legacy singleton nor the
+    split ``fixtures_schedule`` shards exist for the day; ``ValueError`` when
+    the canonical league_id can't be mapped to an API-Football numeric id.
     """
     from unified_api_contracts.sports import get_league
 
@@ -157,7 +177,18 @@ def _load_fixture_meta(
         project_id=project_id,
     )
 
-    schema_names = _dd._parquet_schema_names(gs_uri)  # pyright: ignore[reportPrivateUsage]
+    # instruments-service cut the FIXTURES writer over to the fixtures_schedule/
+    # fixtures_outcomes split with no legacy dual-write (2026-07-14+) — fall back
+    # to the split per-league shards when the legacy singleton is absent.
+    split_frame: pd.DataFrame | None = None
+    try:
+        schema_names = _dd._parquet_schema_names(gs_uri)  # pyright: ignore[reportPrivateUsage]
+    except (OSError, FileNotFoundError):
+        split_frame = _read_split_fixture_meta_frame(day=day, project_id=project_id)
+        if split_frame is None:
+            raise
+        schema_names = set(split_frame.columns)
+
     # Resolve each logical field to whichever schema variant is present.
     resolved: dict[str, str] = {}
     for canonical, variants in _FIXTURE_META_ALIASES.items():
@@ -167,7 +198,7 @@ def _load_fixture_meta(
     proj_cols = list(resolved.values())
     if not proj_cols:
         return ([], af_id)
-    df = _dd._read_parquet_columns(gs_uri, proj_cols)  # pyright: ignore[reportPrivateUsage]
+    df = split_frame[proj_cols] if split_frame is not None else _dd._read_parquet_columns(gs_uri, proj_cols)  # pyright: ignore[reportPrivateUsage]
     # Rename variant → canonical so downstream row access is schema-agnostic.
     df = df.rename(columns={variant: canonical for canonical, variant in resolved.items()})
 
