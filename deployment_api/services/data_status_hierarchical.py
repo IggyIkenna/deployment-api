@@ -462,7 +462,11 @@ def get_hierarchical_drilldown(
     # a ``gs://...`` URI — passing the URI silently returns an empty df.
     # Same call shape as ``data_status_service.py``'s preflight skip path.
     manifest_uri = f"gs://{bucket}/_index/availability_index.parquet"  # noqa: gs-uri  — URI composer, bucket already resolved
-    df = read_availability_index(bucket)
+    # P2 proper-root-fix (predicate pushdown): read ONLY this window's row groups
+    # instead of the entire multi-year index, then window-filter (below) is a cheap
+    # no-op safety net. See manifest_source.read_manifest_index docstring +
+    # manifest_source.DRILLDOWN_COLUMNS for the pushdown contract + column list.
+    df = read_availability_index(bucket, date_window=(window_start, window_end))
     if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
         df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
     if df is None or len(df) == 0:  # pyright: ignore[reportUnnecessaryComparison]
