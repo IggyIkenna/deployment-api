@@ -114,16 +114,21 @@ class DrilldownNode:  # CORRECT-LOCAL: in-process drilldown tree node
 
     @property
     def total(self) -> int:
-        # B3: denominator includes the 4th bin (expected_unattempted) so the
-        # completion_pct is captured / (captured+empty+failed+expected).
+        # Denominator includes all 4 capture-status bins (incl. the 4th,
+        # expected_unattempted). See ``completion_pct`` for the numerator.
         return self.captured + self.empty_confirmed + self.attempted_failed + self.expected_unattempted
 
     @property
     def completion_pct(self) -> float:
+        # Drilldown-only metric (operator 2026-07-15): empty_confirmed counts as a
+        # COVERED answer (numerator AND denominator) so confirmed-empty cells don't
+        # drag the ratio down —
+        # (captured + empty_confirmed) / (captured + empty_confirmed + attempted_failed + expected_unattempted).
+        # The Honest Coverage card + the turbo grid keep their own formulas.
         denom = self.total
         if denom <= 0:
             return 0.0
-        return round(self.captured / denom * 100, 2)
+        return round((self.captured + self.empty_confirmed) / denom * 100, 2)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -572,10 +577,11 @@ def _apply_group_by_axes(axes: tuple[str, ...], group_by: list[str] | None, df: 
 def _totals_dict(
     captured: int, empty_confirmed: int, attempted_failed: int, expected_unattempted: int
 ) -> dict[str, object]:
-    # B3: denominator includes expected_unattempted (the 4th bin) so the
-    # completion_pct is captured / (captured+empty+failed+expected).
+    # Drilldown-only metric (operator 2026-07-15): empty_confirmed counts as a
+    # COVERED answer (numerator AND denominator) so confirmed-empty cells don't
+    # drag the ratio down. Denominator = all 4 bins; numerator = captured + empty_confirmed.
     total = captured + empty_confirmed + attempted_failed + expected_unattempted
-    completion_pct = round(captured / total * 100, 2) if total > 0 else 0.0
+    completion_pct = round((captured + empty_confirmed) / total * 100, 2) if total > 0 else 0.0
     return {
         "captured": captured,
         "empty_confirmed": empty_confirmed,

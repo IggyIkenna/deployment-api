@@ -10,7 +10,7 @@ time so the existing test patch surface keeps intercepting.
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 
 import httpx
@@ -587,12 +587,20 @@ def _honest_coverage_bucket() -> str:
     return f"{_ds._cfg.require_gcp_project_id()}-honest-coverage"  # pyright: ignore[reportPrivateUsage]
 
 
+# How many days back an UN-DATED honest-coverage request will look for the
+# most recent measured coverage before giving up with a 404. The daily
+# ``measure-honest-coverage`` cron has not run yet for the first several hours
+# of each UTC day, so "today" is routinely absent; without this the card
+# showed an empty "not yet computed" state for that whole window every morning.
+_HONEST_COVERAGE_FALLBACK_LOOKBACK_DAYS: Final[int] = 14
+
+
 @router.get("/honest-coverage")
 async def get_honest_coverage(
     query_date: str | None = Query(
         None,
         alias="date",
-        description="ISO date YYYY-MM-DD (default: today UTC)",
+        description="ISO date YYYY-MM-DD (default: latest available within the last 14 days)",
     ),
 ) -> Response:
     """Cross-asset-group honest coverage for a given date.
@@ -600,36 +608,76 @@ async def get_honest_coverage(
     Reads ``gs://{gcp_project_id}-honest-coverage/{date}/coverage.json``
     written daily by the ``measure-honest-coverage`` cron VM
     (``deployment-service/scripts/vm/launch-measure-honest-coverage-vm.sh``)
-    and returns the JSON payload verbatim.
+    and returns the JSON payload verbatim. The payload carries its own
+    ``date`` field, so the UI card always shows WHICH day it is rendering.
+
+    **Latest-available fallback (2026-07-15):** an un-dated request defaults to
+    "today UTC", but the daily cron has not run yet for the first several hours
+    of each UTC day, so a bare request 404'd and the card showed an empty
+    "Coverage not yet computed" state for that whole window. To avoid that, an
+    un-dated request walks BACK from today up to
+    ``_HONEST_COVERAGE_FALLBACK_LOOKBACK_DAYS`` days and serves the most recent
+    measured coverage (its real ``date`` travels in the payload, so nothing is
+    mislabelled). An EXPLICIT ``date`` is honoured exactly (404 on miss) — no
+    silent substitution of a date the caller did not ask for.
 
     Phase 2C per ``cross_asset_group_catalogue_audit_2026_05_10.md``.
     SSOT: ``codex/03-deployment/data-status-ui-surface.md``.
 
-    Returns 404 when coverage has not yet been measured for the requested
-    date (cron VM has not run yet, or staging env without backfill).
+    Returns 404 when no coverage has been measured for the requested date
+    (explicit date), or for any day in the lookback window (un-dated request).
     """
     from deployment_api.utils.storage_facade import read_object_text
 
-    run_date = query_date or datetime.now(UTC).date().isoformat()
     coverage_bucket = _honest_coverage_bucket()
-    object_path = f"{run_date}/coverage.json"
 
-    try:
-        raw = read_object_text(coverage_bucket, object_path)
-    except Exception as exc:
-        logger.info("honest-coverage: no data for %s: %s", run_date, exc)
+    # Ordered candidate dates, most-recent first. Explicit date = exactly that
+    # day (no fallback); un-dated = today then walk back through the window.
+    if query_date is not None:
+        candidate_dates = [query_date]
+    else:
+        today = datetime.now(UTC).date()
+        candidate_dates = [
+            (today - timedelta(days=offset)).isoformat()
+            for offset in range(_HONEST_COVERAGE_FALLBACK_LOOKBACK_DAYS + 1)
+        ]
+
+    raw: str | None = None
+    resolved_date: str | None = None
+    for candidate in candidate_dates:
+        try:
+            raw = read_object_text(coverage_bucket, f"{candidate}/coverage.json")
+            resolved_date = candidate
+            break
+        except Exception as exc:  # missing object -> try the next-oldest day
+            logger.debug("honest-coverage: no data for %s: %s", candidate, exc)
+
+    if raw is None or resolved_date is None:
+        window_desc = (
+            candidate_dates[0]
+            if len(candidate_dates) == 1
+            else f"any of the last {_HONEST_COVERAGE_FALLBACK_LOOKBACK_DAYS} days (through {candidate_dates[-1]})"
+        )
+        logger.info("honest-coverage: no data available for %s", window_desc)
         raise HTTPException(
             status_code=404,
-            detail=f"honest-coverage data not available for date={run_date}",
-        ) from exc
+            detail=f"honest-coverage data not available for {window_desc}",
+        )
+
+    if resolved_date != candidate_dates[0]:
+        logger.info(
+            "honest-coverage: %s absent; serving latest available measurement (%s)",
+            candidate_dates[0],
+            resolved_date,
+        )
 
     try:
         json.loads(raw)
     except Exception as exc:
-        logger.warning("honest-coverage: malformed JSON for %s: %s", run_date, exc)
+        logger.warning("honest-coverage: malformed JSON for %s: %s", resolved_date, exc)
         raise HTTPException(
             status_code=500,
-            detail=f"honest-coverage JSON is malformed for date={run_date}",
+            detail=f"honest-coverage JSON is malformed for date={resolved_date}",
         ) from exc
 
     return Response(content=raw, media_type="application/json")

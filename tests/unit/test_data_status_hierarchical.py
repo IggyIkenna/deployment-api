@@ -65,7 +65,9 @@ _DRILLDOWN_NODE_GOLDEN_KEYS: frozenset[str] = frozenset(
 
 
 class TestDrilldownNodeShape:
-    def test_completion_pct_is_captured_over_total(self) -> None:
+    def test_completion_pct_is_captured_plus_empty_over_total(self) -> None:
+        # Drilldown-only metric (operator 2026-07-15): empty_confirmed counts as a
+        # COVERED answer so it does not drag the ratio down → (captured+empty)/total.
         node = DrilldownNode(
             axis="chain",
             value="ARBITRUM",
@@ -74,7 +76,7 @@ class TestDrilldownNodeShape:
             attempted_failed=5,
         )
         assert node.total == 100
-        assert node.completion_pct == 80.0
+        assert node.completion_pct == 95.0  # (80+15) / (80+15+5)
 
     def test_to_dict_marks_leaves(self) -> None:
         leaf = DrilldownNode(axis="date", value="2024-03-01", captured=1)
@@ -111,7 +113,8 @@ class TestDrilldownNodeShape:
             expected_unattempted=5,
         )
         assert node.total == 100  # all four bins
-        assert node.completion_pct == 80.0  # 80 / (80+10+5+5)
+        # expected_unattempted still DILUTES: (80+10)/(80+10+5+5)=90 < (80+10)/(80+10+5)=94.7.
+        assert node.completion_pct == 90.0  # (80+10) / (80+10+5+5)
         d = node.to_dict()
         assert isinstance(d["expected_unattempted"], int)
         assert d["expected_unattempted"] == 5
@@ -146,7 +149,7 @@ class TestDrilldownNodeShape:
         node = DrilldownNode(axis="venue", value="X", captured=80, empty_confirmed=15, attempted_failed=5)
         d = node.to_dict()
         assert isinstance(d["completion_pct"], float)
-        assert d["completion_pct"] == 80.0
+        assert d["completion_pct"] == 95.0  # (80+15) / (80+15+5)
 
     def test_to_dict_row_key_is_dict(self) -> None:
         node = DrilldownNode(axis="venue", value="X", row_key={"venue": "X", "date": "2024-03-01"})
@@ -306,8 +309,9 @@ class TestHierarchicalDrilldown:
         assert totals["empty_confirmed"] == 3
         assert totals["attempted_failed"] == 2
         assert totals["expected_unattempted"] == 5
-        # B3: denominator now includes the 4th bin → 10 / (10+3+2+5) = 50.0%.
-        assert totals["completion_pct"] == 50.0
+        # Drilldown metric (operator 2026-07-15): empty_confirmed counts as covered →
+        # (10+3) / (10+3+2+5) = 65.0%. Denominator still includes all 4 bins.
+        assert totals["completion_pct"] == 65.0
 
     def test_window_clipping_excludes_out_of_range_dates(self) -> None:
         df = _mtds_defi_manifest()

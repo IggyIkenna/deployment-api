@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -103,3 +104,38 @@ class TestGetHonestCoverageRoute:
         assert len(calls) == 1
         _, path = calls[0]
         assert re.match(r"\d{4}-\d{2}-\d{2}/coverage\.json", path)
+
+    def test_falls_back_to_latest_available_when_today_absent(self, api_client: TestClient) -> None:
+        """An un-dated request walks BACK to the most recent measured day instead of
+        404ing for the whole morning window before the daily cron runs."""
+        paths: list[str] = []
+
+        def _capture(_bucket: str, path: str) -> str:
+            paths.append(path)
+            if len(paths) < 3:  # today + today-1 absent; today-2 present
+                raise FileNotFoundError("blob not found")
+            return json.dumps(SAMPLE_COVERAGE)
+
+        with patch(_PATCH, side_effect=_capture):
+            resp = api_client.get("/api/data-status/honest-coverage")
+
+        assert resp.status_code == 200
+        assert len(paths) == 3  # walked back two days to the first hit
+        walked = [date.fromisoformat(p.split("/", 1)[0]) for p in paths]
+        assert walked[0] - walked[1] == timedelta(days=1)  # strictly descending, 1 day apart
+        assert walked[1] - walked[2] == timedelta(days=1)
+
+    def test_explicit_date_does_not_fall_back(self, api_client: TestClient) -> None:
+        """An explicit ?date= is honoured exactly — a miss is 404 with NO silent
+        substitution of a day the caller did not ask for (single read, no walk-back)."""
+        paths: list[str] = []
+
+        def _capture(_bucket: str, path: str) -> str:
+            paths.append(path)
+            raise FileNotFoundError("blob not found")
+
+        with patch(_PATCH, side_effect=_capture):
+            resp = api_client.get("/api/data-status/honest-coverage?date=2026-05-15")
+
+        assert resp.status_code == 404
+        assert paths == ["2026-05-15/coverage.json"]  # exactly one read, the requested date

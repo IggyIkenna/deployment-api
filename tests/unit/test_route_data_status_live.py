@@ -239,6 +239,22 @@ class TestGetDataStatusDrilldownLive:
         call_kwargs = mock_fn.call_args[1]
         assert call_kwargs["filters"].get("chain") == "ETHEREUM"
 
+    def test_sheds_load_with_503_at_capacity(self, client_ds_live: TestClient) -> None:
+        """A burst past the in-flight cap fails fast (503 + Retry-After) instead of
+        stacking heavy index builds until the container OOMs — the drill-down memory
+        backstop (2026-07-15). The build fn is never reached when shedding."""
+        with (
+            patch("deployment_api.routes.data_status._deploy_turbo._drilldown_inflight", 999),
+            patch("deployment_api.routes.data_status.get_hierarchical_drilldown") as mock_fn,
+        ):
+            r = client_ds_live.get(
+                "/data-status/drilldown/strategy-service/cefi",
+                params={"start_date": "2026-01-01", "end_date": "2026-01-31"},
+            )
+        assert r.status_code == 503
+        assert r.headers.get("Retry-After") == "5"
+        mock_fn.assert_not_called()
+
 
 # ── POST /deploy-missing-preview ──────────────────────────────────────────────
 
