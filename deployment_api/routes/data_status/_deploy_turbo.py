@@ -24,6 +24,27 @@ from deployment_api.services.deploy_missing import (
 
 logger = logging.getLogger(__name__)
 
+# ── Drill-down memory / event-loop guard (2026-07-15) ────────────────────────
+# ``get_hierarchical_drilldown`` reads the whole per-(service, asset_group)
+# availability index into memory and is RAM/CPU-heavy (multi-second, hundreds
+# of MB per call). The deployment-ui used to fan out one drilldown per
+# asset_group on page load; five concurrent builds blew past the 4 GiB Cloud
+# Run limit and the platform OOM-killed the WHOLE instance — a 503 storm across
+# every endpoint plus /api/health flapping ("Backend unreachable"). The UI now
+# lazy-loads (fires one only on expand), but this server-side guard is the
+# defence-in-depth backstop so a burst (multiple operators / direct API calls)
+# degrades gracefully instead of taking the container down:
+#   * ``_DRILLDOWN_BUILD_SLOTS`` caps CONCURRENT builds -> bounds peak RAM.
+#   * ``_DRILLDOWN_MAX_INFLIGHT`` caps building+queued so a spam burst fails
+#     fast (503 + Retry-After) rather than piling an unbounded wait queue.
+# The build runs in a worker thread so a slow (~50 s) drilldown does NOT block
+# the event loop (blocking it would starve /api/health on that worker and feed
+# the very "unreachable" flap this endpoint caused).
+_DRILLDOWN_BUILD_SLOTS = 2
+_DRILLDOWN_MAX_INFLIGHT = 6
+_drilldown_build_semaphore = asyncio.Semaphore(_DRILLDOWN_BUILD_SLOTS)
+_drilldown_inflight = 0
+
 
 @router.get("/drilldown/{service}/{asset_group}")
 async def get_data_status_drilldown(
@@ -131,21 +152,51 @@ async def get_data_status_drilldown(
         "source": source,
     }
     filters: dict[str, str] = {k: v for k, v in raw_filters.items() if v is not None}
-    try:
-        return _ds.get_hierarchical_drilldown(
-            service=service,
-            asset_group=asset_group,
-            window_start=start_date,
-            window_end=end_date,
-            filters=filters,
-            expand_to_depth=expand_to_depth,
-            child_offset=child_offset,
-            child_limit=child_limit,
-            group_by=group_by,
+
+    # Shed load BEFORE queueing when too many builds are already in flight, so a
+    # burst fails fast with a clear retry hint instead of OOM-killing the box.
+    # (No ``await`` between the check and the increment — asyncio is cooperative,
+    # so this read-modify is atomic.)
+    global _drilldown_inflight
+    if _drilldown_inflight >= _DRILLDOWN_MAX_INFLIGHT:
+        logger.warning(
+            "drilldown at capacity (%d in flight); shedding %s/%s",
+            _drilldown_inflight,
+            service,
+            asset_group,
         )
-    except (OSError, ValueError, RuntimeError) as e:
-        logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)
-        raise HTTPException(status_code=500, detail=f"hierarchical drilldown failed: {e!s}") from e
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Data-status drill-down is at capacity (too many concurrent builds). "
+                "Retry shortly, or narrow the date range."
+            ),
+            headers={"Retry-After": "5"},
+        )
+    _drilldown_inflight += 1
+    try:
+        # ``_DRILLDOWN_BUILD_SLOTS`` concurrent builds max (bounds peak RAM); the
+        # rest wait here (cooperatively, not blocking the loop). Run the heavy
+        # sync build off the event loop so /api/health stays responsive.
+        async with _drilldown_build_semaphore:
+            try:
+                return await asyncio.to_thread(
+                    _ds.get_hierarchical_drilldown,
+                    service=service,
+                    asset_group=asset_group,
+                    window_start=start_date,
+                    window_end=end_date,
+                    filters=filters,
+                    expand_to_depth=expand_to_depth,
+                    child_offset=child_offset,
+                    child_limit=child_limit,
+                    group_by=group_by,
+                )
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.exception("drilldown(service=%s, asset_group=%s) failed", service, asset_group)
+                raise HTTPException(status_code=500, detail=f"hierarchical drilldown failed: {e!s}") from e
+    finally:
+        _drilldown_inflight -= 1
 
 
 @router.post("/deploy-missing-preview")
