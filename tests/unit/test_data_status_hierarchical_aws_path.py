@@ -123,7 +123,11 @@ class TestHierarchicalDrilldownAwsBucketNamePin:
                 project_id="427895769566",
             )
 
-        mock_read.assert_called_once_with(_AWS_BUCKET)
+        # P2 proper-root-fix (predicate pushdown): get_hierarchical_drilldown now
+        # passes date_window=(window_start, window_end) so read_manifest_index can
+        # take the pyarrow row-group pushdown path — the bucket positional arg is
+        # still exactly build_bucket_name's return value, unmutated.
+        mock_read.assert_called_once_with(_AWS_BUCKET, date_window=("2024-01-01", "2024-01-31"))
 
 
 class TestHierarchicalDrilldownAwsShapeIdenticalToGcs:
