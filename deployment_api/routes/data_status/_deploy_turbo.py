@@ -40,8 +40,18 @@ logger = logging.getLogger(__name__)
 # The build runs in a worker thread so a slow (~50 s) drilldown does NOT block
 # the event loop (blocking it would starve /api/health on that worker and feed
 # the very "unreachable" flap this endpoint caused).
-_DRILLDOWN_BUILD_SLOTS = 2
-_DRILLDOWN_MAX_INFLIGHT = 6
+#
+# PER-WORKER, not per-container (2026-07-15): these are module-level counters
+# in ONE process. ``uts-shared-deployment-api`` runs ``WORKERS`` uvicorn worker
+# processes (deploy-config default 2), each with its OWN semaphore -- so the
+# CONTAINER-wide build ceiling is ``_DRILLDOWN_BUILD_SLOTS * WORKERS``. A prior
+# value of 2 slots * 2 workers = 4 concurrent full-index builds still OOM-killed
+# the 4 GiB container (measured: 8-way burst -> "Memory limit 4249 MiB used").
+# Keep SLOTS = 1 so 1 * WORKERS(2) = 2 container-wide builds -- the level that
+# fits well within the (now 8 GiB) container. If ``WORKERS`` changes, keep
+# SLOTS * WORKERS <= 2 (or re-measure the per-build peak).
+_DRILLDOWN_BUILD_SLOTS = 1
+_DRILLDOWN_MAX_INFLIGHT = 3
 _drilldown_build_semaphore = asyncio.Semaphore(_DRILLDOWN_BUILD_SLOTS)
 _drilldown_inflight = 0
 
