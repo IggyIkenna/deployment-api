@@ -183,3 +183,62 @@ def test_list_upcoming_fixtures_skips_failed_day() -> None:
 
     assert len(out) == 1
     assert out[0]["fixture_id"] == "z"
+
+
+class TestSplitEntityFallback:
+    """instruments-service cut the FIXTURES writer over to the
+    fixtures_schedule/fixtures_outcomes entity-folder split with no legacy
+    dual-write (first observed 2026-07-14, no feature-flag gate) — see
+    plans/active/issues/features_sports_fixtures_split_reader_gap_2026_07_15.md.
+    ``_read_one_day_frame`` must fall back to the split ``fixtures_schedule``
+    per-league shards when the legacy singleton is absent.
+    """
+
+    def test_falls_back_to_split_schedule_shards_when_singleton_missing(self) -> None:
+        raw_shard = pd.DataFrame(
+            [
+                {
+                    "af_fixture_id": "12345",
+                    "timestamp": "2026-04-21T12:00:00+00:00",
+                    "af_league_id": "39",
+                    "af_home_name": "Home FC",
+                    "af_away_name": "Away FC",
+                    "status_short": "NS",
+                    "venue_id": "v1",
+                    "venue_name": "Stadium",
+                    "round": "R9",
+                }
+            ]
+        )
+
+        with (
+            patch.object(uf, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=False),
+            patch.object(
+                uf,
+                "split_entity_league_blob_paths",
+                return_value=[
+                    "sports_reference/by_date/day=2026-04-21/pipeline_mode=batch_api_football/entity=fixtures_schedule/league=EPL/fixtures_schedule.parquet"
+                ],
+            ),
+            patch.object(uf, "_read_fixtures_parquet", return_value=raw_shard),
+        ):
+            out = uf.list_upcoming_fixtures(days=0, project_id="p")
+
+        assert len(out) == 1
+        assert out[0]["fixture_id"] == "12345"
+        assert out[0]["home_team_name"] == "Home FC"
+        assert out[0]["away_team_name"] == "Away FC"
+        assert out[0]["league_id"] == "39"
+        assert out[0]["status"] == "NS"
+        assert out[0]["round"] == "R9"
+
+    def test_genuine_gap_when_neither_singleton_nor_split_shards_exist(self) -> None:
+        with (
+            patch.object(uf, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=False),
+            patch.object(uf, "split_entity_league_blob_paths", return_value=[]),
+        ):
+            out = uf.list_upcoming_fixtures(days=0, project_id="p")
+
+        assert out == []

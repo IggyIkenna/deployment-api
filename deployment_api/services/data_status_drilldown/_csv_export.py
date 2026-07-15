@@ -218,6 +218,37 @@ def _csv_filename(service: str, venue: str, day: str, instrument_type: str, data
     return f"{service}_{venue}_{day}_{instrument_type}_{data_type}.csv"
 
 
+def _read_split_fixtures_frame(bucket: str, day: str) -> pd.DataFrame | None:
+    """Read + left-join the split ``fixtures_schedule``/``fixtures_outcomes`` shards for one day.
+
+    instruments-service cut the FIXTURES writer over to the schedule/outcomes
+    entity-folder split with no legacy dual-write (first observed 2026-07-14)
+    — see ``plans/active/issues/features_sports_fixtures_split_reader_gap_2026_07_15.md``.
+    Both split entities keep the writer's original raw column names unchanged
+    (the split only partitions columns across two files, it does not rename
+    them), so a left-join of outcomes onto schedule on ``af_fixture_id``
+    reproduces the same shape the legacy singleton read returned. Returns
+    ``None`` when the schedule shard itself is absent (a genuine gap).
+    """
+    schedule_paths = _dd.split_entity_league_blob_paths(bucket, day, "fixtures_schedule")
+    if not schedule_paths:
+        return None
+    schedule_frames = [_dd._read_parquet_columns(f"gs://{bucket}/{p}") for p in schedule_paths]  # noqa: gs-uri  — URI composer, bucket already resolved  # pyright: ignore[reportPrivateUsage]
+    schedule_df = pd.concat(schedule_frames, ignore_index=True, sort=False)
+    if schedule_df.empty or "af_fixture_id" not in schedule_df.columns:
+        return schedule_df
+
+    outcomes_paths = _dd.split_entity_league_blob_paths(bucket, day, "fixtures_outcomes")
+    if not outcomes_paths:
+        return schedule_df
+    outcomes_frames = [_dd._read_parquet_columns(f"gs://{bucket}/{p}") for p in outcomes_paths]  # noqa: gs-uri  — URI composer, bucket already resolved  # pyright: ignore[reportPrivateUsage]
+    outcomes_df = pd.concat(outcomes_frames, ignore_index=True, sort=False)
+    if outcomes_df.empty or "af_fixture_id" not in outcomes_df.columns:
+        return schedule_df
+    outcome_only_cols = [c for c in outcomes_df.columns if c == "af_fixture_id" or c not in schedule_df.columns]
+    return schedule_df.merge(outcomes_df[outcome_only_cols], on="af_fixture_id", how="left")
+
+
 def build_fixtures_csv_export(
     *,
     day: str,
@@ -232,7 +263,11 @@ def build_fixtures_csv_export(
     ``gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet``
     with all leagues in one file, keyed by ``af_league_id`` (API-Football
     numeric). This helper reads that parquet, maps canonical ``league_id`` →
-    API-Football numeric via UAC, filters, and returns CSV.
+    API-Football numeric via UAC, filters, and returns CSV. For dates
+    on/after the fixtures-schedule/outcomes entity-folder split cutover
+    (first observed 2026-07-14, no legacy dual-write), the singleton is
+    absent — :func:`_read_split_fixtures_frame` reads the split per-league
+    shards instead.
 
     Args:
         day: ``YYYY-MM-DD``.
@@ -262,11 +297,14 @@ def build_fixtures_csv_export(
     try:
         df = _dd._read_parquet_columns(gs_uri)  # pyright: ignore[reportPrivateUsage]
     except (OSError, FileNotFoundError):
-        # Adapter never ran for this (day, league) — return empty CSV with a
-        # 0 row count so the caller can surface a "no data" hint to the user
-        # instead of a download failure. The HTTP route sets X-Data-Status
-        # so the UI can still distinguish "empty confirmed" from "never ran".
-        return "", 0, _fixtures_csv_filename(day, league_id)
+        split_df = _read_split_fixtures_frame(_sports_bucket, day)
+        if split_df is None:
+            # Adapter never ran for this (day, league) — return empty CSV with a
+            # 0 row count so the caller can surface a "no data" hint to the user
+            # instead of a download failure. The HTTP route sets X-Data-Status
+            # so the UI can still distinguish "empty confirmed" from "never ran".
+            return "", 0, _fixtures_csv_filename(day, league_id)
+        df = split_df
 
     if "af_league_id" not in df.columns:
         # Empty or malformed day file — return empty CSV rather than erroring.
