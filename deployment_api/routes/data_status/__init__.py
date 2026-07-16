@@ -97,6 +97,7 @@ from deployment_api.routes.data_status import _query_meta
 from deployment_api.routes.data_status import _downloads
 from deployment_api.routes.data_status import _live_coverage
 from deployment_api.routes.data_status import _rollup
+from deployment_api.routes.data_status import _catalogue
 
 # isort: on
 
@@ -105,6 +106,10 @@ from deployment_api.routes.data_status import _rollup
 # ``deployment_api.routes.data_status`` resolves here unchanged (Citadel
 # safety contract: preserve the surface; tests import these directly).
 # ---------------------------------------------------------------------------
+from deployment_api.routes.data_status._catalogue import (
+    download_catalogue_csv,
+    get_instrument_catalogue,
+)
 from deployment_api.routes.data_status._deploy_turbo import (
     clear_turbo_cache,
     get_data_coverage_summary,
