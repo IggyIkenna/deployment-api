@@ -47,7 +47,7 @@ class TestSearchCorpusBucketResolution:
 
         def _fake_resolve(**kwargs: object) -> str:
             captured.append(kwargs)
-            return "instruments-store-cefi-prd-central-element-323112"
+            return "instruments-store-cefi-prd-test-project"
 
         with (
             patch.object(_dqs_mod, "resolve_bucket_name", side_effect=_fake_resolve),
@@ -66,7 +66,7 @@ class TestSearchCorpusBucketResolution:
 
         def _fake_resolve(**kwargs: object) -> str:
             captured.append(kwargs)
-            return "instruments-store-pred-prd-central-element-323112"
+            return "instruments-store-pred-prd-test-project"
 
         with (
             patch.object(_dqs_mod, "resolve_bucket_name", side_effect=_fake_resolve),
