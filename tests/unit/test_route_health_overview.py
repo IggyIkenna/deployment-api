@@ -377,7 +377,13 @@ def test_entry_budget_reads_catalog_then_falls_back() -> None:
 
 
 def test_catalog_live_market_data_is_120_everything_else_86400() -> None:
-    """The generated catalog must budget live market-data ticks at 120s and all else at 86400s."""
+    """The generated catalog must budget live market-data ticks at 120s and all else at 86400s.
+
+    market-data-defi is the one carve-out: its incremental merge cadence (~30 min against the
+    ~28M-row DeFi canonical) means a 120s live-tick budget false-flags it stale every cycle even
+    while succeeding, so it gets a 3600s merge-cadence budget instead (see
+    ``scripts/gen_consolidator_catalog.py::_SLOW_MERGE_MARKET_DATA_BUDGET_SEC``).
+    """
     from deployment_api.routes.health_consolidator import _CATALOG
 
     if not _CATALOG:  # catalog is a generated artifact; skip if absent in this checkout
@@ -385,7 +391,9 @@ def test_catalog_live_market_data_is_120_everything_else_86400() -> None:
     live = {"defi", "tradfi", "sports", "prediction"}
     for entry in _CATALOG:
         budget = int(entry["staleness_budget_seconds"] or 0)
-        if entry["kind"] == "market-data" and entry["asset_group"] in live:
+        if entry["kind"] == "market-data" and entry["asset_group"] == "defi":
+            assert budget == 3600, f"{entry['category']} should be the 3600s merge-cadence budget"
+        elif entry["kind"] == "market-data" and entry["asset_group"] in live:
             assert budget == 120, f"{entry['category']} should be a 120s live tick"
         else:
             assert budget == 86400, f"{entry['category']} should be an 86400s batch budget"
