@@ -840,8 +840,20 @@ class DomainBreakdownsMixin(SportsStatusMixin):
             if defi_sub_dims:
                 extras["defi_sub_dimensions"] = defi_sub_dims
 
-        # Chain breakdown for DeFi
-        has_chain_data = "chain" in filtered.columns and not filtered.empty and filtered["chain"].str.len().sum() > 0
+        # Chain breakdown for DeFi ONLY. ``chain`` is a shard axis exclusively
+        # for defi (UAC ``SHARD_AXIS_MATRIX`` — cefi/tradfi key on ``venue``
+        # alone). CeFi CLOB-perp venues that carry DeFi-style ``{PROTOCOL}-{CHAIN}``
+        # names (PACIFICA-SOLANA, LIGHTER-ZKSYNC) leave residual ``chain=SOLANA``
+        # / ``chain=ZKSYNC`` values in the cefi manifest; gating on ``cat==defi``
+        # keeps the cefi breakdown venue-only instead of manufacturing chain
+        # sub-rows from those venue names (plan
+        # data_status_page_ux_and_canonicalisation_2026_07_16 P7).
+        has_chain_data = (
+            cat.lower() == "defi"
+            and "chain" in filtered.columns
+            and not filtered.empty
+            and filtered["chain"].str.len().sum() > 0
+        )
         if has_chain_data:
             chains_dict = self._build_chain_breakdown(
                 filtered,
