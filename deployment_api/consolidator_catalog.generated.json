@@ -194,14 +194,6 @@
       "job_name": "uts-prod-manifest-consolidator-ml-training-artifacts",
       "bucket_template": "ml-training-artifacts-{project}",
       "staleness_budget_seconds": "86400"
-    },
-    {
-      "category": "gas-fees",
-      "kind": "gas-fees",
-      "asset_group": null,
-      "job_name": "uts-prod-manifest-consolidator-gas-fees",
-      "bucket_template": "gas-fees-{project}",
-      "staleness_budget_seconds": "86400"
     }
   ]
 }
