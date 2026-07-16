@@ -325,12 +325,18 @@ async def get_instruments_for_shard(
             "Ignored for per_underlying bundles. Capped at 100 matches."
         ),
     ),
+    mvp_only: bool = Query(
+        False,
+        description="Restrict the page to is_mvp-true instruments (applied before search + pagination).",
+    ),
 ):
     """List the instrument_ids in a single (day, venue, instrument_type,
     data_type) shard.
 
     Response shape:
-    ``{instruments, total_count, limit, offset, has_more, bundling, search, ...}``.
+    ``{instruments, total_count, limit, offset, has_more, bundling, search,
+    mvp_only, ...}``. Every instrument dict also carries a per-row
+    ``is_mvp: bool`` regardless of the ``mvp_only`` toggle.
 
     ``bundling`` is ``per_symbol``, ``per_underlying`` (options_chain /
     futures_chain / combo), or ``per_condition_id`` (Polymarket OTHER).
@@ -339,15 +345,16 @@ async def get_instruments_for_shard(
 
     For ``per_underlying`` shards search is a no-op — there is one entry
     per underlying and the user is choosing a whole bundle by its root.
-    ``total_count`` always reflects the post-search, pre-pagination count
-    so the UI can decide whether to show "Load more" / paginator.
+    ``total_count`` always reflects the post-mvp_only, post-search,
+    pre-pagination count so the UI can decide whether to show "Load more" /
+    paginator.
     """
     if _ds._cfg.is_mock_mode():  # pyright: ignore[reportPrivateUsage]
         # Phase-C: return three mock instruments (captured / empty /
         # failed) so the drill-down modal has every capture_status badge
         # on screen and the Retry button on the attempted_failed row is
         # exercised against the mock retryFailedShard round-trip.
-        _ = (limit, offset, search, chain)
+        _ = (limit, offset, search, chain, mvp_only)
         return build_mock_shard_instruments(
             service=service,
             asset_group=asset_group,
@@ -368,6 +375,7 @@ async def get_instruments_for_shard(
             limit=limit,
             offset=offset,
             search=search,
+            mvp_only=mvp_only,
         )
     except (OSError, ValueError, RuntimeError) as e:
         logger.exception("Error in get_instruments_for_shard")

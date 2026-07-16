@@ -170,8 +170,21 @@ def _scoped_manifest_rows(bucket: str, venue: str, day: str) -> pd.DataFrame | N
 
 
 def _build_capture_metadata_lookup(scoped: pd.DataFrame) -> dict[str, dict[str, str]]:
-    """Build an instrument_id -> {capture_status, error_reason, attempted_at}
-    lookup from a deduped manifest slice."""
+    """Build an instrument_id -> {capture_status, error_reason, attempted_at,
+    league_id, source} lookup from a deduped manifest slice.
+
+    ``league_id`` / ``source`` are genuine v9 manifest columns (confirmed
+    against the live schema — ``_V8_COLUMNS`` in UTL's
+    ``manifest_writer/_read_index.py``) reused here for the SAME per-instrument
+    join that already powers ``capture_status`` — no new manifest read.
+    They feed the per-row ``is_mvp`` tag (P6 ``mvp_only`` filter,
+    ``data_status_page_ux_and_canonicalisation_2026_07_16.md``): sports
+    league-drilldown shards + source-gated MVP rules need these two REAL axes.
+    ``base_asset`` / ``market_group`` are NOT manifest columns (verified against
+    the live parquet schema for cefi/tradfi/prediction — 42/41 columns, neither
+    present) so they are deliberately NOT read here; inventing them would be a
+    fabricated value.
+    """
     by_iid: dict[str, dict[str, str]] = {}
     for row in scoped.to_dict(orient="records"):  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         iid = str(row.get("instrument_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
@@ -183,6 +196,8 @@ def _build_capture_metadata_lookup(scoped: pd.DataFrame) -> dict[str, dict[str, 
             ).lower(),
             "error_reason": str(row.get("error_reason") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
             "attempted_at": str(row.get("attempted_at") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            "league_id": str(row.get("league_id") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            "source": str(row.get("source") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         }
     return by_iid
 
@@ -198,18 +213,26 @@ def _attach_capture_status_to_instruments(
 
     Reads ``gs://<bucket>/_index/availability_index.parquet``, filters to
     ``(date == day, venue == venue)``, then joins each instrument to its
-    manifest row by ``instrument_id``. Adds three keys to every instrument:
+    manifest row by ``instrument_id``. Adds five keys to every instrument:
     - ``capture_status``:  "captured" | "empty_confirmed" | "attempted_failed"
     - ``error_reason``:    classified error string (empty for captured/empty)
     - ``attempted_at``:    ISO-8601 UTC timestamp (empty for legacy rows)
+    - ``league_id``:       manifest league axis (sports; "" elsewhere)
+    - ``source``:          manifest data-source tag ("" single-source/legacy)
+
+    ``league_id`` / ``source`` are genuine v9 manifest columns reused for the
+    per-row ``is_mvp`` tag (P6 ``mvp_only`` filter). They use ``setdefault`` so
+    a value already stamped on the instrument dict upstream (e.g. a per-row
+    column read straight from an instruments-service bundle parquet) is never
+    clobbered by this manifest join.
 
     When multiple shards match a tuple (re-runs, re-tries), the row with the
     latest ``written_at`` wins — same dedup semantics as UTL
     ``_merge_dataframes``.
 
     Failure to read the manifest is non-fatal: every instrument defaults to
-    ``capture_status="captured"`` + empty error/attempted_at so the drill-down
-    stays usable even when the manifest is unreachable.
+    ``capture_status="captured"`` + empty error/attempted_at/league_id/source
+    so the drill-down stays usable even when the manifest is unreachable.
     """
     if not instruments:
         return
@@ -225,10 +248,14 @@ def _attach_capture_status_to_instruments(
             inst["capture_status"] = _DEFAULT_CAPTURE_STATUS
             inst["error_reason"] = ""
             inst["attempted_at"] = ""
+            inst.setdefault("league_id", "")
+            inst.setdefault("source", "")
         else:
             inst["capture_status"] = meta["capture_status"]
             inst["error_reason"] = meta["error_reason"]
             inst["attempted_at"] = meta["attempted_at"]
+            inst.setdefault("league_id", meta["league_id"])
+            inst.setdefault("source", meta["source"])
 
 
 def _apply_default_capture_status(instruments: list[dict[str, object]]) -> None:
@@ -237,6 +264,8 @@ def _apply_default_capture_status(instruments: list[dict[str, object]]) -> None:
         inst.setdefault("capture_status", _DEFAULT_CAPTURE_STATUS)
         inst.setdefault("error_reason", "")
         inst.setdefault("attempted_at", "")
+        inst.setdefault("league_id", "")
+        inst.setdefault("source", "")
 
 
 # Capture-status branches surfaced by the multi-axis drilldown / download

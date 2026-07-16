@@ -216,6 +216,17 @@ async def download_csv(
     chain: str | None = Query(None, description="DeFi chain leaf-axis filter"),
     league_id: str | None = Query(None, description="Sports league_id leaf-axis filter"),
     job_id: str | None = Query(None, description="ML / strategy / execution job_id leaf-axis filter"),
+    search: str | None = Query(
+        None,
+        description=(
+            "Case-insensitive substring match on instrument_id, applied ONLY when "
+            "instrument_ids is empty (matches the on-screen filtered view)."
+        ),
+    ),
+    mvp_only: bool = Query(
+        False,
+        description="Restrict the export to is_mvp-true instruments (same rule as instrument_ids).",
+    ),
 ):
     """Stream a CSV of the selected instruments for one shard.
 
@@ -224,9 +235,10 @@ async def download_csv(
     ``_capture_status_response`` for the full empty_confirmed /
     attempted_failed / never_attempted / path_drift behaviour.
 
-    Empty ``instrument_ids`` means "download the full shard". The server
-    caps output at 500k rows — larger requests get a 413 advising
-    BigQuery external tables.
+    Empty ``instrument_ids`` means "download the full shard" — ``search`` /
+    ``mvp_only`` then narrow that to match the on-screen filtered instrument
+    list exactly (P6 phase-1). The server caps output at 500k rows — larger
+    requests get a 413 advising BigQuery external tables.
     """
     capture_meta = lookup_capture_status_for_shard(
         service=service,
@@ -259,6 +271,8 @@ async def download_csv(
             instrument_type=instrument_type,
             data_type=data_type,
             instrument_ids=ids,
+            search=search,
+            mvp_only=mvp_only,
         )
     except ValueError as e:
         # Row-cap exceeded.
