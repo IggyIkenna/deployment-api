@@ -30,6 +30,7 @@ SSOT: codex/05-infrastructure/deployment-observability.md.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import cast
@@ -348,14 +349,21 @@ async def get_health_overview() -> HealthOverviewResponse:
     rollup always returns 200 (read-only monitoring).
     """
     now = datetime.now(UTC)
-    tiles: list[HealthTile] = [
-        _fleet_tile(now),
-        _consolidator_tile(),
-        _coverage_tile(),
-        await _alerts_tile(),
-        await _gh_budget_tile(),
-        _cost_tile(now),
-    ]
+    # The sync tile builders do real network I/O (Compute census, GCS manifest reads,
+    # BigQuery cost query) — run them in worker threads, and all six tiles concurrently,
+    # so a slow source can never freeze the event loop. Inline they measured ~21s serial
+    # on a dev box, during which even /api/health stalled and the UI latched its red
+    # "Backend unreachable" banner.
+    tiles: list[HealthTile] = list(
+        await asyncio.gather(
+            asyncio.to_thread(_fleet_tile, now),
+            asyncio.to_thread(_consolidator_tile),
+            asyncio.to_thread(_coverage_tile),
+            _alerts_tile(),
+            _gh_budget_tile(),
+            asyncio.to_thread(_cost_tile, now),
+        )
+    )
     return HealthOverviewResponse(
         generated_at=now.isoformat(),
         overall=_rollup_overall(tiles),

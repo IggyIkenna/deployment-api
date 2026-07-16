@@ -47,6 +47,7 @@ from .routes import (
     builds,
     builds_history,
     capabilities,
+    catalogue_lifecycle,
     chaos_injections,
     checklist,
     client_treasury,
@@ -79,6 +80,7 @@ from .routes import (
     monitor_experiments,
     monitor_live,
     monitor_scheduled,
+    prediction_catalogue,
     promote,
     recursive_borrow_coverage,
     repo_ci,
@@ -187,6 +189,8 @@ _authenticated_router.include_router(
     tags=["Data Status"],
 )
 _authenticated_router.include_router(fixtures.router, prefix="/api")
+_authenticated_router.include_router(catalogue_lifecycle.router, prefix="/api")
+_authenticated_router.include_router(prediction_catalogue.router, prefix="/api")
 _authenticated_router.include_router(service_status.router, prefix="/api/service-status", tags=["Service Status"])
 _authenticated_router.include_router(capabilities.router, prefix="/api/capabilities", tags=["Capabilities"])
 _authenticated_router.include_router(cloud_builds.router)  # Has its own prefix /api/cloud-builds

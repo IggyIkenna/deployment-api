@@ -5,6 +5,7 @@ Contains endpoints for health monitoring, worker status, cache management,
 and serving the UI application.
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import cast
@@ -148,11 +149,20 @@ async def detailed_health_check() -> dict[str, object]:
             "mock_mode": True,
         }
 
+    # Each check is a real blocking GCP round trip — run them in worker threads,
+    # concurrently, so this async handler never freezes the event loop (inline they
+    # measured ~7s serial on a dev box, stalling every other request incl. /api/health).
+    gcs, pubsub, secret_manager, deployment_events = await asyncio.gather(
+        asyncio.to_thread(_check_gcs),
+        asyncio.to_thread(_check_pubsub),
+        asyncio.to_thread(_check_secret_manager),
+        asyncio.to_thread(_check_deployment_events),
+    )
     components = {
-        "gcs": _check_gcs(),
-        "pubsub": _check_pubsub(),
-        "secret_manager": _check_secret_manager(),
-        "deployment_events": _check_deployment_events(),
+        "gcs": gcs,
+        "pubsub": pubsub,
+        "secret_manager": secret_manager,
+        "deployment_events": deployment_events,
     }
     any_down: bool = False
     for _v in components.values():

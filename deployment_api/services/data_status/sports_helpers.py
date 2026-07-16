@@ -130,13 +130,23 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
     "TEAMS": {
         "source": "api_football",
         "classifications": ("Prediction", "Features", "Reference"),
-        # TEAMS is a global reference entity written at trigger dates (season-
-        # start + transfer-window-open + transfer-window-close), not daily.
-        # instruments-service writes master/ + snapshots/trigger=T/ paths.
-        # Depends on sports_master item A2.4 (write-path) being shipped;
-        # degrades gracefully if trigger dates can't be derived (returns an
-        # approximate count). See sports_master.md:1064.
-        "axis": "global_trigger_date",
+        # TEAMS is a PER-LEAGUE reference entity written at trigger dates (season-
+        # start + transfer-window-open + transfer-window-close), not daily and not
+        # global. The instruments-service writer keys TEAMS rows on
+        # ``(date, data_type='TEAMS', league_id)`` (sports_reference_core.py), and
+        # both the UAC ``SHARD_AXIS_MATRIX`` (instruments-service/sports =
+        # ("data_type","league_id")) and ``gcs_paths.py`` classify TEAMS per-league —
+        # so the read-side axis MUST be ``per_league_trigger_date`` to restore
+        # shard-atom identity (data_status_page_ux_and_canonicalisation_2026_07_16 P8;
+        # was ``global_trigger_date`` — a 4-way drift vs writer/UAC/gcs_paths). This
+        # shares PLAYER_VALUES' trigger-date cadence, so the per_league_trigger_date
+        # branch (which computes expected_shards as the count of actual trigger dates
+        # per league inside the window) applies directly. Each season's roster is a
+        # distinct (date, league_id) snapshot, so the date axis under each league
+        # surfaces per-season change; off-season dates read as legitimately empty
+        # (honest-absence), not gaps. Depends on sports_master item A2.4 (write-path);
+        # degrades gracefully per league if trigger dates can't be computed.
+        "axis": "per_league_trigger_date",
         "unit": "trigger_date_snapshots",
     },
     "VENUES": {

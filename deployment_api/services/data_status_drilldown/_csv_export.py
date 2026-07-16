@@ -259,8 +259,8 @@ def build_fixtures_csv_export(
     """Return ``(csv_text, row_count, filename)`` for one (day, league) fixtures slice.
 
     Sports FIXTURES don't fit the per-instrument ``build_csv_export`` contract
-    — the source parquet is a single daily file at
-    ``gs://instruments-store-sports-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet``
+    — the source parquet is a single daily file (canonical bucket, via ``resolve_bucket_name``) at
+    ``gs://instruments-store-sports-prd-{pid}/sports_reference/by_date/day={day}/entity=fixtures/fixtures.parquet``
     with all leagues in one file, keyed by ``af_league_id`` (API-Football
     numeric). This helper reads that parquet, maps canonical ``league_id`` →
     API-Football numeric via UAC, filters, and returns CSV. For dates

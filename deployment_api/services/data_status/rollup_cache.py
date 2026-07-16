@@ -99,6 +99,25 @@ def strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object]
     return {**cat_payload, "chains": cleaned}
 
 
+def strip_non_defi_chains(cat_payload: dict[str, object], category: str) -> dict[str, object]:
+    """Read-time P7 gate: drop the ``chains`` breakdown from a NON-defi category.
+
+    ``chain`` is a shard axis ONLY for defi (UAC ``SHARD_AXIS_MATRIX``); cefi /
+    tradfi / sports / prediction key on ``venue`` (or their own axes) and must
+    never carry a ``chains`` breakdown. This mirrors the build-time gate in
+    ``DomainBreakdownsMixin._build_v4_sub_dimensions`` at the rollup-CONSUMPTION
+    layer, so the TURBO "Data Coverage" grid stays venue-only for cefi even when
+    it is served a pre-P7-fix rollup blob (the cefi CLOB-perp venues
+    PACIFICA-SOLANA / LIGHTER-ZKSYNC leave residual ``chain=SOLANA``/``ZKSYNC``
+    rows that an older ``data_status_rollup_worker`` run baked into the blob).
+    A no-op for a correctly-built (post-fix) blob. Plan
+    data_status_page_ux_and_canonicalisation_2026_07_16 P7.
+    """
+    if category.lower() == "defi" or "chains" not in cat_payload:
+        return cat_payload
+    return {k: v for k, v in cat_payload.items() if k != "chains"}
+
+
 def slice_rollup_to_window(
     rollup: dict[str, object],
     start_date: str,
@@ -141,6 +160,8 @@ def slice_rollup_to_window(
             continue
         if cat.lower() == "defi":  # pyright: ignore[reportUnknownMemberType]
             cat_payload = strip_defi_ghost_venues(cat_payload)  # pyright: ignore[reportUnknownArgumentType]
+        else:
+            cat_payload = strip_non_defi_chains(cat_payload, cat)  # pyright: ignore[reportUnknownArgumentType]
         sliced_cat = slice_asset_group(cat_payload, start_date, end_date)  # pyright: ignore[reportUnknownArgumentType]
         sliced_asset_groups[cat] = sliced_cat
         overall_found += int(cast(int, sliced_cat.get("dates_found", 0)))

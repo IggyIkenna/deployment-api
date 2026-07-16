@@ -3204,22 +3204,25 @@ class TestTriggerDateDenominator:
     """ITEM 7 (sports_master.md:1064): TEAMS and PLAYER_VALUES use trigger-date
     denominator instead of daily/periodic calendar.
 
-    TEAMS uses ``global_trigger_date`` axis — expected = union of
-    get_reference_refresh_dates across all leagues.
-    PLAYER_VALUES uses ``per_league_trigger_date`` axis — expected = per-league
-    trigger date count.
+    Both TEAMS and PLAYER_VALUES use the ``per_league_trigger_date`` axis —
+    expected = per-league trigger date count. TEAMS was reclassified from
+    ``global_trigger_date`` → ``per_league_trigger_date`` (plan
+    data_status_page_ux_and_canonicalisation_2026_07_16 P8) to restore shard-atom
+    identity with the instruments-service writer (row_key ``(date, TEAMS,
+    league_id)``) + the UAC ``SHARD_AXIS_MATRIX`` (sports = ("data_type",
+    "league_id")) + ``gcs_paths``.
 
     Soft-gated on sports_master item A2.4 (instruments-service write-path);
     these tests verify the denominator mechanics in isolation.
     """
 
-    def test_teams_axis_is_global_trigger_date(self) -> None:
-        """TEAMS meta entry declares global_trigger_date axis."""
+    def test_teams_axis_is_per_league_trigger_date(self) -> None:
+        """TEAMS meta entry declares per_league_trigger_date axis (P8 reclassify)."""
         from deployment_api.services.data_status_service import SPORTS_DATA_TYPE_META
 
         meta = SPORTS_DATA_TYPE_META["TEAMS"]
-        assert meta["axis"] == "global_trigger_date", (
-            f"TEAMS axis should be 'global_trigger_date', got {meta['axis']!r}"
+        assert meta["axis"] == "per_league_trigger_date", (
+            f"TEAMS axis should be 'per_league_trigger_date' (P8 reclassify), got {meta['axis']!r}"
         )
         assert meta["unit"] == "trigger_date_snapshots"
         # No cadence_days for trigger-date axes
@@ -3270,48 +3273,49 @@ class TestTriggerDateDenominator:
         for d in result:
             assert "2024-01-01" <= d <= "2024-12-31"
 
-    def test_teams_honest_coverage_uses_trigger_dates(self) -> None:
-        """_sports_honest_coverage for TEAMS returns global_trigger_date axis result."""
+    def test_teams_honest_coverage_uses_per_league_triggers(self) -> None:
+        """_sports_honest_coverage for TEAMS returns a per_league_trigger_date result.
+
+        P8 reclassify: TEAMS routes through the per-league branch (like
+        PLAYER_VALUES / STANDINGS), so the response carries a populated
+        ``per_league`` map (→ ``dt_entry["leagues"]`` → the UI league drilldown).
+        """
         import pandas as pd
 
-        from deployment_api.services.data_status_service import (
-            _sports_honest_coverage,
-            _sports_trigger_dates_for_window,
-        )
-
-        # Real trigger dates for 2024 (derived from UAC)
-        trigger_dates = _sports_trigger_dates_for_window("2024-06-01", "2024-06-30")
+        from deployment_api.services.data_status_service import _sports_honest_coverage
 
         result = _sports_honest_coverage(
             filtered=pd.DataFrame(columns=["data_type", "league_id", "date", "capture_status"]),
             entity_name="TEAMS",
-            start_date="2024-06-01",
-            end_date="2024-06-30",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
         )
         assert result is not None
-        assert result["axis"] == "global_trigger_date"
+        assert result["axis"] == "per_league_trigger_date"
         assert result["unit"] == "trigger_date_snapshots"
-        # expected_shards should match the trigger date count for the window
-        assert result["expected_shards"] == len(trigger_dates)
+        # expected_shards > 0 for a full year (multiple leagues x multiple triggers)
+        assert isinstance(result["expected_shards"], int)
+        assert result["expected_shards"] > 0
         # Empty manifest → 0 found
         assert result["found_shards"] == 0
-        # Trigger dates list is included in response for UI drill-down
-        assert "trigger_dates" in result
+        # per_league populated — this is what becomes the UI ``leagues`` drilldown.
+        assert isinstance(result["per_league"], dict)
+        assert result["per_league"], "TEAMS must carry a per_league map (→ leagues)"
 
-    def test_teams_honest_coverage_counts_found_on_trigger_dates(self) -> None:
-        """found_shards for TEAMS counts manifest rows that land on trigger dates."""
+    def test_teams_honest_coverage_counts_found_per_league_on_trigger_dates(self) -> None:
+        """found_shards for TEAMS counts per-league manifest rows on trigger dates."""
         import pandas as pd
 
         from deployment_api.services.data_status_service import (
             _sports_honest_coverage,
-            _sports_trigger_dates_for_window,
+            _sports_trigger_dates_for_league,
         )
 
-        trigger_dates = _sports_trigger_dates_for_window("2024-06-01", "2024-06-30")
+        trigger_dates = _sports_trigger_dates_for_league("EPL", "2024-01-01", "2024-12-31")
         if not trigger_dates:
-            pytest.skip("No trigger dates for 2024-06 window — UAC data not available")
+            pytest.skip("No EPL trigger dates for 2024 — UAC data not available")
 
-        # One manifest row on a real trigger date, one on a non-trigger date
+        # One EPL manifest row on a real trigger date, one on a non-trigger date.
         trigger_date_in = trigger_dates[0]
         nontrigger_date = "2024-06-15"  # Mid-month, unlikely to be a trigger date
 
@@ -3327,12 +3331,16 @@ class TestTriggerDateDenominator:
         result = _sports_honest_coverage(
             filtered=df,
             entity_name="TEAMS",
-            start_date="2024-06-01",
-            end_date="2024-06-30",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
         )
         assert result is not None
-        # found_shards = intersection of manifest dates with trigger dates
+        assert result["axis"] == "per_league_trigger_date"
+        # found_shards = intersection of manifest dates with EPL trigger dates ≥ 1.
         assert result["found_shards"] >= 1
+        per_league = result["per_league"]
+        assert isinstance(per_league, dict) and "EPL" in per_league
+        assert per_league["EPL"]["found_shards"] >= 1
 
     def test_player_values_honest_coverage_uses_per_league_triggers(self) -> None:
         """_sports_honest_coverage for PLAYER_VALUES returns per_league_trigger_date."""

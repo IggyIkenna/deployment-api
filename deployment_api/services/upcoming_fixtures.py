@@ -1,7 +1,9 @@
 """Read upcoming sports fixtures from rolling-window GCS parquets.
 
-Consumes ``sports_reference/by_date/day={D}/entity=fixtures/fixtures.parquet`` in
-``instruments-store-sports-{project}``. Missing dates or read failures are
+Consumes ``sports_reference/by_date/day={D}/…/entity=fixtures/fixtures.parquet`` in the
+canonical sports bucket (``resolve_bucket_name`` → ``instruments-store-sports-prd-{project}``;
+the legacy no-env ``instruments-store-sports-{project}`` bucket was decommissioned
+2026-07-16). Missing dates or read failures are
 skipped per-shard (no cross-day raise) per shard-level failure isolation.
 
 instruments-service cut the FIXTURES writer over to a two-entity
