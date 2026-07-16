@@ -75,6 +75,59 @@ def test_slice_rollup_emits_r7_overall_capture_attempt() -> None:
     assert out["overall_attempt_coverage_pct"] == 100.0
 
 
+def test_strip_non_defi_chains_drops_cefi_keeps_defi() -> None:
+    """P7 read-time gate: ``chains`` is dropped from a non-defi category payload
+    (stale-rollup artifact) but preserved for defi + when absent."""
+    cefi = {"venues": {"PACIFICA-SOLANA": {}}, "chains": {"SOLANA": {}, "ZKSYNC": {}}}
+    out_cefi = rollup_cache.strip_non_defi_chains(cefi, "CEFI")
+    assert "chains" not in out_cefi
+    assert "venues" in out_cefi  # everything else preserved
+    # defi keeps its chains (real shard axis).
+    defi = {"venues": {"AAVE_V3-ARBITRUM": {}}, "chains": {"ARBITRUM": {}}}
+    assert rollup_cache.strip_non_defi_chains(defi, "DEFI") == defi
+    # no chains key → untouched (no-op for a correctly-built blob).
+    tradfi = {"venues": {"DATABENTO-DBEQ": {}}}
+    assert rollup_cache.strip_non_defi_chains(tradfi, "TRADFI") == tradfi
+
+
+def test_slice_rollup_strips_stale_cefi_chains_keeps_defi() -> None:
+    """A pre-P7-fix rollup blob carrying ``cefi.chains=['SOLANA','ZKSYNC']`` must
+    render cefi venue-only through the slicer, while defi keeps its chains — so the
+    TURBO grid is correct even when served a stale blob (mirrors the build-time gate)."""
+    rollup: dict = {
+        "service": "instruments-service",
+        "asset_groups": {
+            "CEFI": {
+                "attempt_coverage_pct": 98.0,
+                "chains": {"SOLANA": {"completion_pct": 90}, "ZKSYNC": {"completion_pct": 80}},
+                "venues": {
+                    "PACIFICA-SOLANA": {
+                        "dates_found_list": ["2025-03-14"],
+                        "missing_dates": [],
+                        "dates_expected_list": ["2025-03-14"],
+                    }
+                },
+            },
+            "DEFI": {
+                "attempt_coverage_pct": 95.0,
+                "chains": {"ARBITRUM": {"completion_pct": 93}},
+                "venues": {
+                    "AAVE_V3-ARBITRUM": {
+                        "dates_found_list": ["2025-03-14"],
+                        "missing_dates": [],
+                        "dates_expected_list": ["2025-03-14"],
+                    }
+                },
+            },
+        },
+    }
+    out = rollup_cache.slice_rollup_to_window(rollup, "2025-03-14", "2025-03-16", None)
+    ags = out["asset_groups"]
+    assert "chains" not in ags["CEFI"], "stale cefi chains must be stripped at read time (P7)"
+    assert "chains" in ags["DEFI"], "defi chains must be preserved (real shard axis)"
+    assert set(ags["DEFI"]["chains"].keys()) == {"ARBITRUM"}
+
+
 def test_live_rollup_respects_staleness() -> None:
     """A service reading its rollup blob respects the staleness gate — a frozen blob
     (e.g. the worker stalled) must not be served indefinitely; it falls through to the
