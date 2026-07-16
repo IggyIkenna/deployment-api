@@ -173,7 +173,13 @@ class TestAutoSyncRunLoopBody:
         mock_service = MagicMock()
         mock_service.sync_deployments.return_value = (2, 3)
         mock_service.cleanup_state_ttl.return_value = 0
-        mock_service.state_manager.owner_id = "test-owner"
+        # Both periodic ops compare a real wall-clock modulo against current_interval
+        # (_run_ttl_cleanup: time()%3600, _run_deployment_reaper: time()%900), so with an
+        # unpinned clock this loop body only reached the reaper in the 30s after each
+        # quarter-hour — a 30/900 = 3.3% flake that returned an unstubbed MagicMock into
+        # `reaped_count > 0` and escaped as TypeError. Pin the clock so BOTH ops run on
+        # every execution, and stub the reaper's return like cleanup_state_ttl's above.
+        mock_service.reap_stale_deployments.return_value = 0
 
         call_count = 0
 
@@ -187,6 +193,7 @@ class TestAutoSyncRunLoopBody:
             patch("deployment_api.background_sync.SyncService", return_value=mock_service),
             patch.object(bsync, "_shutdown_event", shutdown_event),
             patch.object(bsync, "_sync_service", None),
+            patch("deployment_api.background_sync._time.time", return_value=0.0),
             patch(
                 "deployment_api.background_sync.asyncio.sleep",
                 new=AsyncMock(side_effect=controlled_sleep),
