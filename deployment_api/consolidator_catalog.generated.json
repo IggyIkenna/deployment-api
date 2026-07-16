@@ -65,7 +65,7 @@
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-market-data-defi",
       "bucket_template": "market-data-tick-defi-{env}-{project}",
-      "staleness_budget_seconds": "120"
+      "staleness_budget_seconds": "3600"
     },
     {
       "category": "market-data-sports",

@@ -54,10 +54,22 @@ _ASSET_GROUPS: tuple[str, ...] = ("prediction", "cefi", "defi", "tradfi", "sport
 _LIVE_MARKET_DATA_AGS: frozenset[str] = frozenset({"defi", "tradfi", "sports", "prediction"})
 _LIVE_TICK_BUDGET_SEC = 120
 _BATCH_BUDGET_SEC = 86400
+# market-data-defi is a live-tick SOURCE, but its CONSOLIDATION merge is slow: the date-range-
+# chunked incremental merge (the OOM fix — CONSOLIDATOR_MERGE_CHUNK_DAYS) runs ~24-30 min against
+# the ~28M-row DeFi canonical, so its consolidated-index age tops out at ~one merge cycle (~30 min).
+# A 120s live-tick budget therefore FALSE-flags it stale_output every cycle even while it is
+# SUCCEEDING (verified 2026-07-16: a merge running + last-success ~26 min prior + backlog=1 shard/
+# 3.9s, yet index age ~1579s > 120s -> cockpit "critical"). Give ONLY market-data-defi a budget that
+# matches its real merge cadence so it fires on a genuine >1h stall, not on every normal merge. The
+# other defi consolidators (instruments-/features-/execution-defi) are a different `kind` with small,
+# fast-merging canonicals and correctly keep the batch budget below.
+_SLOW_MERGE_MARKET_DATA_BUDGET_SEC = 3600
 
 
 def _staleness_budget(kind: str, asset_group: str | None) -> int:
     """Cadence-matched staleness budget (see ``_LIVE_MARKET_DATA_AGS`` note)."""
+    if kind == "market-data" and asset_group == "defi":
+        return _SLOW_MERGE_MARKET_DATA_BUDGET_SEC
     if kind == "market-data" and asset_group in _LIVE_MARKET_DATA_AGS:
         return _LIVE_TICK_BUDGET_SEC
     return _BATCH_BUDGET_SEC
