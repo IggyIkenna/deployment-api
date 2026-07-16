@@ -13,7 +13,7 @@ from typing import ClassVar, cast
 import pandas as pd
 from unified_api_contracts import VENUE_TO_ASSET_GROUP
 from unified_api_contracts.internal import MarketCategory
-from unified_trading_library import AssetGroup, build_bucket, resolve_bucket_name
+from unified_trading_library import AssetGroup, resolve_bucket_name
 
 from deployment_api.services.data_status_drilldown import build_bucket_name as _drilldown_build_bucket_name
 from deployment_api.services.manifest_source import read_manifest_index as read_availability_index
@@ -475,7 +475,16 @@ class DataQueryService:
         venue's parquet, extract ``instrument_key`` + ``instrument_type``,
         return the union. Bounded by ``_SEARCH_LISTING_CAP`` parquet reads.
         """
-        bucket = build_bucket("instruments", project_id=self.project_id, asset_group=category)
+        # Bucket resolution MUST match the coverage/sports paths (resolve_bucket_name):
+        # build_bucket("instruments", …) drops the ``-{env}-`` segment → resolves to
+        # a NON-EXISTENT ``instruments-store-{ag}-{project}`` bucket (no ``-prd-``) →
+        # a 404 that 500'd the whole symbol search. Prediction is its own bucket KIND
+        # (no asset_group entry under ``instruments-store``), same as
+        # ``manifest_source.read_unique_instrument_count``.
+        if category == "prediction":
+            bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store-prediction")
+        else:
+            bucket = resolve_bucket_name(cloud="gcp", kind="instruments-store", asset_group=cast(AssetGroup, category))
         latest_day = self._latest_available_day(bucket)
         if latest_day is None:
             return []

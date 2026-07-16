@@ -31,6 +31,52 @@ def _load_dqs():
     return DataQueryService
 
 
+class TestSearchCorpusBucketResolution:
+    """Symbol-search corpus MUST resolve the SAME env-qualified bucket as the
+    coverage/sports paths (``resolve_bucket_name``). Regression: it used
+    ``build_bucket("instruments", …)`` which drops the ``-{env}-`` segment →
+    a non-existent ``instruments-store-{ag}-{project}`` bucket (no ``-prd-``) →
+    a 404 that 500'd the whole symbol search (blank results in the UI)."""
+
+    def _make_service(self):
+        return _load_dqs()(project_id="test-project")
+
+    def test_corpus_bucket_uses_resolve_bucket_name_with_env(self) -> None:
+        svc = self._make_service()
+        captured: list[dict[str, object]] = []
+
+        def _fake_resolve(**kwargs: object) -> str:
+            captured.append(kwargs)
+            return "instruments-store-cefi-prd-central-element-323112"
+
+        with (
+            patch.object(_dqs_mod, "resolve_bucket_name", side_effect=_fake_resolve),
+            # short-circuit after bucket resolution — we only assert the bucket call.
+            patch.object(_dqs_mod.DataQueryService, "_latest_available_day", return_value=None),
+        ):
+            out = svc._load_corpus_from_per_venue_parquets("cefi")  # pyright: ignore[reportPrivateUsage]
+        assert out == []
+        assert captured, "resolve_bucket_name must be called (not build_bucket)"
+        assert captured[0].get("kind") == "instruments-store"
+        assert captured[0].get("asset_group") == "cefi"
+
+    def test_corpus_bucket_prediction_uses_own_kind(self) -> None:
+        svc = self._make_service()
+        captured: list[dict[str, object]] = []
+
+        def _fake_resolve(**kwargs: object) -> str:
+            captured.append(kwargs)
+            return "instruments-store-pred-prd-central-element-323112"
+
+        with (
+            patch.object(_dqs_mod, "resolve_bucket_name", side_effect=_fake_resolve),
+            patch.object(_dqs_mod.DataQueryService, "_latest_available_day", return_value=None),
+        ):
+            svc._load_corpus_from_per_venue_parquets("prediction")  # pyright: ignore[reportPrivateUsage]
+        # prediction is its own bucket KIND (no asset_group under instruments-store).
+        assert captured and captured[0].get("kind") == "instruments-store-prediction"
+
+
 class TestListFilesInPath:
     """Tests for DataQueryService.list_files_in_path."""
 
