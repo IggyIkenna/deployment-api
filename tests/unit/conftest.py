@@ -103,6 +103,13 @@ def _ensure_services_mocked() -> None:
     # dotted import can't reach it otherwise).
     real_catalogue_lifecycle = importlib.import_module("deployment_api.services.catalogue_lifecycle")
 
+    # prediction_catalogue is a pure pandas + storage_client + UAC
+    # resolve_bucket_name/classifiers consumer (prediction catalogue browser — P3).
+    # No circular-import risk; its unit tests + routes/prediction_catalogue.py +
+    # routes/__init__.py's eager import need the REAL module (the stubbed services
+    # package below has __path__=[] so a dotted import can't reach it otherwise).
+    real_prediction_catalogue = importlib.import_module("deployment_api.services.prediction_catalogue")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -162,6 +169,10 @@ def _ensure_services_mocked() -> None:
     # Re-register catalogue_lifecycle as a real module (P2 new-listings/expiries).
     sys.modules["deployment_api.services.catalogue_lifecycle"] = real_catalogue_lifecycle
     services_mod.catalogue_lifecycle = real_catalogue_lifecycle
+
+    # Re-register prediction_catalogue as a real module (P3 catalogue browser).
+    sys.modules["deployment_api.services.prediction_catalogue"] = real_prediction_catalogue
+    services_mod.prediction_catalogue = real_prediction_catalogue
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
