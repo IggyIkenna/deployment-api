@@ -523,6 +523,182 @@ class TestSearchAndPagination:
         assert first_instrument["bundled_under"] == "instruments.parquet"
 
 
+class TestMvpOnlyAndIsMvpTag:
+    """P6 phase-1 — mvp_only + per-row is_mvp badge on ``list_instruments_for_shard``.
+
+    Mirrors ``routes/data_status/_coverage_scope.py::filter_to_mvp`` (the same
+    UAC ``is_mvp`` predicate powering the coverage grid's ``scope=mvp``
+    toggle), evaluated per-instrument. ``is_mvp`` is patched directly (not via
+    the ``drilldown`` facade — ``_instruments.py`` imports it straight from
+    ``unified_api_contracts``) so these tests stay independent of the live
+    MVP_SCOPE registry contents.
+    """
+
+    _IS_MVP_PATCH_TARGET = "deployment_api.services.data_status_drilldown._instruments.is_mvp"
+
+    def test_is_mvp_tag_present_on_every_row_per_symbol_shard(self):
+        objects = [
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=BINANCE/"
+                "instrument_type=perpetual/data_type=trades/BTC-USDT-PERP.parquet"
+            ),
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=BINANCE/"
+                "instrument_type=perpetual/data_type=trades/ETH-USDT-PERP.parquet"
+            ),
+        ]
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch(self._IS_MVP_PATCH_TARGET, return_value=True),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                venue="BINANCE",
+                day="2025-04-01",
+                instrument_type="perpetual",
+                data_type="trades",
+            )
+        assert len(result["instruments"]) == 2
+        assert all(inst["is_mvp"] is True for inst in result["instruments"])
+        assert result["mvp_only"] is False
+
+    def test_base_asset_from_bundle_parquet_feeds_is_mvp_base_ccy(self):
+        """TRACE-FIRST finding: ``base_asset`` genuinely varies per-instrument
+        within an instruments-service (venue, day) bundle — read straight from
+        the catalogue parquet's own ``base_asset`` column (confirmed against
+        the live schema: a real BINANCE-SPOT day file carries it), never
+        fabricated. Asserts the exact per-row kwarg reaches UAC ``is_mvp``."""
+        prefix = "instrument_availability/by_date/day=2025-04-01/venue=BINANCE-SPOT/"
+        objects = [_obj(f"{prefix}instruments.parquet")]
+        fake_df = pd.DataFrame(
+            {
+                "instrument_key": ["BINANCE-SPOT:SPOT_PAIR:BTC-USDT", "BINANCE-SPOT:SPOT_PAIR:ETH-USDT"],
+                "instrument_type": ["SPOT_PAIR", "SPOT_PAIR"],
+                "base_asset": ["BTC", "ETH"],
+            }
+        )
+        seen_base_ccys: list[object] = []
+
+        def _fake_is_mvp(_asset_group, _venue, _instrument_type, _data_type, **kwargs):
+            seen_base_ccys.append(kwargs.get("base_ccy"))
+            return kwargs.get("base_ccy") == "BTC"
+
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_read_parquet_columns", return_value=fake_df),
+            patch(self._IS_MVP_PATCH_TARGET, side_effect=_fake_is_mvp),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="instruments-service",
+                asset_group="cefi",
+                venue="BINANCE-SPOT",
+                day="2025-04-01",
+                instrument_type="spot_pair",
+                data_type="instruments",
+            )
+        assert sorted(seen_base_ccys) == ["BTC", "ETH"]
+        by_id = {i["instrument_id"]: i for i in result["instruments"]}
+        assert by_id["BINANCE-SPOT:SPOT_PAIR:BTC-USDT"]["base_asset"] == "BTC"
+        assert by_id["BINANCE-SPOT:SPOT_PAIR:BTC-USDT"]["is_mvp"] is True
+        assert by_id["BINANCE-SPOT:SPOT_PAIR:ETH-USDT"]["base_asset"] == "ETH"
+        assert by_id["BINANCE-SPOT:SPOT_PAIR:ETH-USDT"]["is_mvp"] is False
+
+    def test_mvp_only_narrows_before_pagination_and_total_count(self):
+        prefix = "instrument_availability/by_date/day=2025-04-01/venue=BINANCE-SPOT/"
+        objects = [_obj(f"{prefix}instruments.parquet")]
+        fake_df = pd.DataFrame(
+            {
+                "instrument_key": ["BINANCE-SPOT:SPOT_PAIR:BTC-USDT", "BINANCE-SPOT:SPOT_PAIR:ETH-USDT"],
+                "instrument_type": ["SPOT_PAIR", "SPOT_PAIR"],
+                "base_asset": ["BTC", "ETH"],
+            }
+        )
+
+        def _fake_is_mvp(_asset_group, _venue, _instrument_type, _data_type, **kwargs):
+            return kwargs.get("base_ccy") == "BTC"
+
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_read_parquet_columns", return_value=fake_df),
+            patch(self._IS_MVP_PATCH_TARGET, side_effect=_fake_is_mvp),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="instruments-service",
+                asset_group="cefi",
+                venue="BINANCE-SPOT",
+                day="2025-04-01",
+                instrument_type="spot_pair",
+                data_type="instruments",
+                mvp_only=True,
+            )
+        assert result["mvp_only"] is True
+        assert result["total_count"] == 1
+        assert len(result["instruments"]) == 1
+        assert result["instruments"][0]["instrument_id"] == "BINANCE-SPOT:SPOT_PAIR:BTC-USDT"
+
+    def test_mvp_only_csv_row_count_matches_filtered_list(self):
+        """CSV export (``instrument_ids=[]`` — full-shard download) must match
+        the on-screen ``mvp_only`` filtered view exactly, using the SAME cached
+        is_mvp tag (both read ``_list_instruments_full``)."""
+        objects = [
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=BINANCE-FUTURES/"
+                "instrument_type=perpetual/data_type=trades/BTC-USDT-PERP.parquet"
+            ),
+            _obj(
+                "raw_tick_data/by_date/day=2025-04-01/category=cefi/venue=BINANCE-FUTURES/"
+                "instrument_type=perpetual/data_type=trades/ETH-USDT-PERP.parquet"
+            ),
+        ]
+        manifest_df = pd.DataFrame(
+            {
+                "date": ["2025-04-01", "2025-04-01"],
+                "venue": ["BINANCE-FUTURES", "BINANCE-FUTURES"],
+                "instrument_id": ["BTC-USDT-PERP", "ETH-USDT-PERP"],
+                "source": ["tardis", "massive"],
+            }
+        )
+        df_btc = pd.DataFrame({"price": [1.0]})
+        df_eth = pd.DataFrame({"price": [2.0]})
+
+        def _read_parquet(uri: str, columns=None):
+            return df_btc if "BTC" in uri else df_eth
+
+        def _fake_is_mvp(_asset_group, _venue, _instrument_type, _data_type, **kwargs):
+            return kwargs.get("source") == "tardis"
+
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "read_availability_index", return_value=manifest_df),
+            patch.object(drilldown, "_read_parquet_columns", side_effect=_read_parquet),
+            patch(self._IS_MVP_PATCH_TARGET, side_effect=_fake_is_mvp),
+        ):
+            listing = drilldown.list_instruments_for_shard(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                venue="BINANCE-FUTURES",
+                day="2025-04-01",
+                instrument_type="perpetual",
+                data_type="trades",
+                mvp_only=True,
+            )
+            csv_text, rows, _fname = drilldown.build_csv_export(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                venue="BINANCE-FUTURES",
+                day="2025-04-01",
+                instrument_type="perpetual",
+                data_type="trades",
+                instrument_ids=[],
+                mvp_only=True,
+            )
+        assert len(listing["instruments"]) == 1
+        assert listing["instruments"][0]["instrument_id"] == "BTC-USDT-PERP"
+        assert rows == 1
+        assert "1.0" in csv_text
+
+
 class TestIsValidInstrumentId:
     def test_accepts_normal_ids(self):
         assert drilldown._is_valid_instrument_id("BTC-USDT-PERP") is True

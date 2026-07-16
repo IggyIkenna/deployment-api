@@ -139,6 +139,8 @@ def build_csv_export(
     instrument_type: str,
     data_type: str,
     instrument_ids: list[str],
+    search: str | None = None,
+    mvp_only: bool = False,
     project_id: str | None = None,
     max_rows: int = MAX_CSV_ROWS,
 ) -> tuple[str, int, str]:
@@ -151,6 +153,14 @@ def build_csv_export(
       parquet.
     - For per_condition_id (Polymarket OTHER): reads the one bundle
       parquet and filters to the selected conditionIds.
+
+    ``search`` / ``mvp_only`` (P6 phase-1) make the CSV match the on-screen
+    filtered view exactly — they reuse the SAME cached ``is_mvp`` tag
+    ``list_instruments_for_shard`` reads (both read ``_list_instruments_full``,
+    so the two structurally cannot drift). They only narrow the "download the
+    full shard" path (``instrument_ids`` empty); an explicit multi-select
+    (``instrument_ids`` non-empty) is honored as-is, matching existing
+    behaviour.
 
     Raises ``ValueError`` if row count would exceed ``max_rows``.
     """
@@ -176,6 +186,21 @@ def build_csv_export(
 
     selected = set(instrument_ids) if instrument_ids else None
 
+    if selected is None and (mvp_only or search):
+        # No explicit multi-select — narrow to the on-screen filtered view
+        # (mvp_only first, then search), then export exactly that set.
+        filtered = all_instruments
+        if mvp_only:
+            filtered = [inst for inst in filtered if bool(inst.get("is_mvp"))]
+        if search and bundling != "per_underlying":
+            needle = search.strip().lower()
+            filtered = [
+                inst
+                for inst in filtered
+                if needle in str(inst.get("instrument_id", "")).lower()  # noqa: qg-empty-fallback — display filter
+            ]
+        selected = {str(inst["instrument_id"]) for inst in filtered}
+
     frames: list[pd.DataFrame] = []
 
     if bundling == "per_condition_id" and all_instruments:
@@ -183,7 +208,7 @@ def build_csv_export(
         pf_uri = str(all_instruments[0]["file_uri"])
         symbol_col = _infer_symbol_column_for_shard(category, instrument_type, data_type, venue)
         df = _dd._read_parquet_columns(pf_uri)  # full parquet  # pyright: ignore[reportPrivateUsage]
-        if selected and symbol_col in df.columns:
+        if selected is not None and symbol_col in df.columns:
             df = df[df[symbol_col].astype(str).isin(selected)]
         frames.append(df)
     else:

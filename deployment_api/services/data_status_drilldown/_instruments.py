@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import cast
 
-from unified_api_contracts import SchemaContractNotFoundError, lookup_contract
+from unified_api_contracts import SchemaContractNotFoundError, is_mvp, lookup_contract
 
 import deployment_api.services.data_status_drilldown as _dd
 from deployment_api.services.data_status_drilldown._core import (
@@ -219,6 +219,32 @@ def _expand_per_venue_day_bundle(
 
     if symbol_col not in df.columns:
         return []
+
+    # instruments-service's own bundled catalogue parquet carries genuine
+    # per-instrument reference-data columns (confirmed against the live
+    # schema — 51 columns incl. ``base_asset``/``quote_asset`` for a real
+    # BINANCE-SPOT day file). ``base_asset`` genuinely VARIES per row (BTC vs
+    # ETH on the same venue/day) — read it straight from this already-loaded
+    # DataFrame (no new read) rather than inventing it. MTDS raw-tick shards
+    # (``_expand_per_file``) have no such column available at this leaf level;
+    # their instrument dicts simply omit ``base_asset`` (``is_mvp`` treats an
+    # absent axis as ``None``, never fabricated).
+    base_asset_by_symbol: dict[str, str | None] = {}
+    if "base_asset" in df.columns:
+        for rec in (
+            df[[symbol_col, "base_asset"]]
+            .dropna(subset=[symbol_col])
+            .to_dict(  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+                orient="records"
+            )
+        ):
+            sid_key = str(rec.get(symbol_col) or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            if not sid_key or sid_key in base_asset_by_symbol:
+                continue
+            raw_ba = rec.get("base_asset")  # pyright: ignore[reportUnknownMemberType]
+            ba_str = str(raw_ba).strip() if raw_ba is not None else ""  # pyright: ignore[reportUnknownArgumentType,reportAny]
+            base_asset_by_symbol[sid_key] = ba_str or None
+
     seen: set[str] = set()
     out: list[dict[str, object]] = []
     bundled_under = str(pf["_name"]).split("/")[-1]
@@ -227,14 +253,15 @@ def _expand_per_venue_day_bundle(
         if not sid or sid in seen:
             continue
         seen.add(sid)
-        out.append(
-            {
-                "instrument_id": sid,
-                "file_uri": uri,
-                "size_bytes": pf["size_bytes"],
-                "bundled_under": bundled_under,
-            }
-        )
+        entry: dict[str, object] = {
+            "instrument_id": sid,
+            "file_uri": uri,
+            "size_bytes": pf["size_bytes"],
+            "bundled_under": bundled_under,
+        }
+        if "base_asset" in df.columns:
+            entry["base_asset"] = base_asset_by_symbol.get(sid)
+        out.append(entry)
     out.sort(key=lambda d: str(d["instrument_id"]))
     return out
 
@@ -299,6 +326,63 @@ def _apply_search_and_pagination(
     return page, total
 
 
+def _tag_is_mvp(
+    instruments: list[dict[str, object]],
+    *,
+    asset_group: str,
+    venue: str,
+    instrument_type: str,
+    data_type: str,
+) -> None:
+    """Mutate each instrument dict in-place to add a per-row ``is_mvp`` bool.
+
+    Mirrors ``routes/data_status/_coverage_scope.py::filter_to_mvp`` — the
+    SAME UAC ``is_mvp(...)`` predicate that powers the coverage grid's
+    ``scope=mvp`` toggle, evaluated per-instrument here so the drill-down list
+    + CSV export can filter/badge at the leaf level (P6 phase-1,
+    ``data_status_page_ux_and_canonicalisation_2026_07_16.md``).
+
+    Axis sourcing (TRACE-FIRST finding — see plan Progress Log):
+    - ``asset_group`` / ``instrument_type`` / ``data_type``: shard-level
+      constants (the call is already scoped to one shard).
+    - ``venue``: shard-level constant.
+    - ``base_ccy``: read from the instrument dict's own ``base_asset`` key
+      when present (populated by ``_expand_per_venue_day_bundle`` straight
+      from the instruments-service catalogue parquet — genuinely varies
+      per-instrument, e.g. BTC vs ETH). ``None`` for MTDS raw-tick shards
+      (``_expand_per_file`` / ``_expand_per_condition_id``) — there is no
+      manifest OR parquet column to source it from at this leaf level, and
+      ``filter_to_mvp``'s own ``base_asset`` manifest-column read is ALSO a
+      no-op in production (confirmed against the live schema: the
+      availability_index parquet for cefi/tradfi/prediction carries no
+      ``base_asset`` column at all) — so ``None`` here is honest parity with
+      existing behaviour, not a new gap.
+    - ``league``: read from the instrument dict's ``league_id`` key
+      (``_core.py::_attach_capture_status_to_instruments`` — a genuine v9
+      manifest column, joined via the SAME single manifest read already
+      used for ``capture_status``).
+    - ``market_group``: always ``None`` — no manifest column, no catalogue
+      column exists for it at this leaf level (verified against the live
+      schema); fabricating a value would be worse than an honest absence.
+    - ``source``: read from the instrument dict's ``source`` key (same
+      manifest join as ``league_id`` — a genuine v9 column).
+    """
+    for inst in instruments:
+        base_asset_val = inst.get("base_asset")
+        league_val = inst.get("league_id")
+        source_val = inst.get("source")
+        inst["is_mvp"] = is_mvp(
+            asset_group,
+            venue,
+            instrument_type,
+            data_type,
+            base_ccy=str(base_asset_val) if base_asset_val else None,
+            league=str(league_val) if league_val else None,
+            market_group=None,
+            source=str(source_val) if source_val else None,
+        )
+
+
 def _list_instruments_full(
     *,
     service: str,
@@ -338,6 +422,18 @@ def _list_instruments_full(
     # modal can render status badges + retry tooltips per instrument.
     _attach_capture_status_to_instruments(instruments, bucket=bucket, venue=venue, day=day)
 
+    # P6 phase-1 (mvp_only + is_mvp badge): tag every instrument ONCE here so
+    # both ``list_instruments_for_shard`` (the on-screen list) and
+    # ``build_csv_export`` (the CSV download) read the identical cached
+    # is_mvp verdict — the two paths structurally cannot drift.
+    _tag_is_mvp(
+        instruments,
+        asset_group=category,
+        venue=venue,
+        instrument_type=instrument_type,
+        data_type=data_type,
+    )
+
     full: dict[str, object] = {
         "service": service,
         "category": category.lower(),
@@ -366,6 +462,7 @@ def list_instruments_for_shard(
     limit: int = DEFAULT_INSTRUMENT_LIMIT,
     offset: int = 0,
     search: str | None = None,
+    mvp_only: bool = False,
     project_id: str | None = None,
 ) -> dict[str, object]:
     """List the instrument_ids present in a specific shard.
@@ -383,6 +480,12 @@ def list_instruments_for_shard(
     payload for large shards (e.g. Polymarket OTHER with ~5k conditionIds).
     The underlying listing is still cached in full so repeated pagination
     hits are cheap.
+
+    ``mvp_only`` (P6 phase-1) narrows to ``is_mvp``-true rows BEFORE search +
+    pagination, so ``total_count`` reflects the mvp_only-filtered set (search
+    then narrows further on top). Every returned instrument dict ALSO carries
+    a per-row ``"is_mvp": bool`` key regardless of the toggle, so the UI can
+    badge MVP instruments even when showing the full unfiltered list.
     """
     category = asset_group
     # Clamp the page window defensively before doing any work.
@@ -407,8 +510,12 @@ def list_instruments_for_shard(
     ]
     bundling_mode = str(full.get("bundling", "per_symbol"))
 
+    scoped_instruments = full_instruments
+    if mvp_only:
+        scoped_instruments = [inst for inst in full_instruments if bool(inst.get("is_mvp"))]
+
     page, total_count = _apply_search_and_pagination(
-        full_instruments,
+        scoped_instruments,
         search=search,
         limit=safe_limit,
         offset=safe_offset,
@@ -431,6 +538,7 @@ def list_instruments_for_shard(
         "offset": safe_offset,
         "has_more": (safe_offset + len(page)) < total_count,
         "search": (search or "").strip(),
+        "mvp_only": mvp_only,
     }
 
 
