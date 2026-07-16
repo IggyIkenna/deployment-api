@@ -187,6 +187,12 @@ class TestAutoSyncRunLoopBody:
             patch("deployment_api.background_sync.SyncService", return_value=mock_service),
             patch.object(bsync, "_shutdown_event", shutdown_event),
             patch.object(bsync, "_sync_service", None),
+            # Pin wall-clock so the TTL-cleanup/reaper tick gates (real `_time.time() %
+            # interval` in background_sync.py) don't flakily fire — matches the fixed-clock
+            # convention in TestRunDeploymentReaper below. Without this, ~3.3% of real-clock
+            # ticks hit the unconfigured `reap_stale_deployments` mock and crash on
+            # `MagicMock() > 0` (observed CI flake 2026-07-16).
+            patch("deployment_api.background_sync._time.time", return_value=500.0),
             patch(
                 "deployment_api.background_sync.asyncio.sleep",
                 new=AsyncMock(side_effect=controlled_sleep),
