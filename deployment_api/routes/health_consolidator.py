@@ -28,6 +28,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -967,19 +969,12 @@ def _mock_response(now: datetime) -> ConsolidatorHealthResponse:
     return build_consolidator_health(ag_entries, now, consolidators=consolidators)
 
 
-@router.get("/health/consolidator", response_model=ConsolidatorHealthResponse)
-def get_consolidator_health() -> ConsolidatorHealthResponse:
-    """Per-asset_group manifest-consolidator health drill-down.
-
-    For each asset_group's ``market-data`` bucket: the consolidated availability-index
-    heartbeat age, whether the per-VM shard recovery-merge fallback is active (stale index
-    + shards present = consolidator behind/down), the derived health status, and the last
-    successful run timestamp. Read-only; degrades to ``status="unknown"`` per-AG on a read
-    failure, never a 5xx.
+def _compute_consolidator_health() -> ConsolidatorHealthResponse:
+    """The real (slow) estate walk — GCS index reads + Cloud Run execution lookups per
+    consolidator (measured ~15s on a dev box). Never call directly from a route — go
+    through ``get_consolidator_health`` so callers get the stale-while-revalidate cache.
     """
     now = datetime.now(UTC)
-    if _cfg.is_mock_mode():
-        return _mock_response(now)
     default_budget = resolve_consolidated_staleness_sec()
     consolidators = _build_consolidators(now, default_budget)
     if consolidators:
@@ -992,6 +987,71 @@ def get_consolidator_health() -> ConsolidatorHealthResponse:
             _ag_health(ag, _budget_for(ag, default_budget), now, include_backlog=True) for ag in _ASSET_GROUPS
         ]
     return build_consolidator_health(ag_entries, now, consolidators=consolidators)
+
+
+# Stale-while-revalidate snapshot cache (same pattern as vm_deployments.py): the cockpit
+# polls this route every 30s and the health-overview tile reuses it — without a cache
+# every poll redid the full ~15s walk back-to-back. Staleness budgets are minutes-scale,
+# so a snapshot a TTL old is as honest as a live read. ``generated_at`` inside the
+# payload keeps the snapshot's true compute time visible.
+_CONSOLIDATOR_HEALTH_TTL_SEC = 25.0
+_consolidator_health_cache: tuple[float, ConsolidatorHealthResponse] | None = None
+_consolidator_health_lock = threading.Lock()
+_consolidator_health_refreshing = False
+_consolidator_health_refresh_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="consolidator-health-refresh")
+
+
+def _refresh_consolidator_health() -> None:
+    """Background cache refresh — recompute + store, then clear the in-flight flag."""
+    global _consolidator_health_cache, _consolidator_health_refreshing
+    try:
+        result = _compute_consolidator_health()
+        with _consolidator_health_lock:
+            _consolidator_health_cache = (time.monotonic(), result)
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Keep the stale snapshot on a failed refresh — never poison the cache.
+        logger.warning("consolidator-health: background refresh failed: %s", exc)
+    finally:
+        with _consolidator_health_lock:
+            _consolidator_health_refreshing = False
+
+
+@router.get("/health/consolidator", response_model=ConsolidatorHealthResponse)
+def get_consolidator_health() -> ConsolidatorHealthResponse:
+    """Per-asset_group manifest-consolidator health drill-down.
+
+    For each asset_group's ``market-data`` bucket: the consolidated availability-index
+    heartbeat age, whether the per-VM shard recovery-merge fallback is active (stale index
+    + shards present = consolidator behind/down), the derived health status, and the last
+    successful run timestamp. Read-only; degrades to ``status="unknown"`` per-AG on a read
+    failure, never a 5xx.
+
+    Served from a stale-while-revalidate snapshot (see ``_compute_consolidator_health``):
+    fresh (< TTL) → instant; stale → the snapshot is served instantly and ONE background
+    refresh is kicked off; cold (first call) → computed synchronously under a lock so a
+    burst of polls collapses to one walk.
+    """
+    if _cfg.is_mock_mode():
+        return _mock_response(datetime.now(UTC))
+
+    global _consolidator_health_cache, _consolidator_health_refreshing
+    with _consolidator_health_lock:
+        cached = _consolidator_health_cache
+        stale = cached is not None and (time.monotonic() - cached[0]) >= _CONSOLIDATOR_HEALTH_TTL_SEC
+        if cached is not None and stale and not _consolidator_health_refreshing:
+            _consolidator_health_refreshing = True
+            _consolidator_health_refresh_pool.submit(_refresh_consolidator_health)
+    if cached is not None:
+        return cached[1]
+
+    # Cold path — lock so concurrent first-polls trigger exactly ONE walk.
+    with _consolidator_health_lock:
+        cached = _consolidator_health_cache
+        if cached is not None:
+            return cached[1]
+        result = _compute_consolidator_health()
+        _consolidator_health_cache = (time.monotonic(), result)
+        return result
 
 
 __all__ = [

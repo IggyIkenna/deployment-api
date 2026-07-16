@@ -550,3 +550,90 @@ def test_budget_for_cefi_overrides_default_others_pass_through() -> None:
     assert _budget_for("cefi", 120) == 86400  # cadence-matched override
     assert _budget_for("defi", 120) == 120  # ~per-minute consolidator → global default
     assert _budget_for("tradfi", 999) == 999  # default flows through unchanged
+
+
+# ---------------------------------------------------------------------------
+# health_consolidator — stale-while-revalidate snapshot cache
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _reset_consolidator_cache():
+    """Isolate each cache test — clear the module-global snapshot before + after."""
+    from deployment_api.routes import health_consolidator as hc
+
+    hc._consolidator_health_cache = None
+    hc._consolidator_health_refreshing = False
+    yield
+    hc._consolidator_health_cache = None
+    hc._consolidator_health_refreshing = False
+
+
+def _fake_response():
+    from deployment_api.routes.health_consolidator import build_consolidator_health
+
+    return build_consolidator_health([], _FIXED_NOW, consolidators=[])
+
+
+@pytest.mark.usefixtures("_reset_consolidator_cache")
+def test_consolidator_health_cold_call_computes_once_and_caches() -> None:
+    """Cold cache → ONE synchronous walk; an immediate second call is served from cache."""
+    from deployment_api.routes import health_consolidator as hc
+
+    with (
+        patch(_CONSOLIDATOR_MOCK, return_value=False),
+        patch(f"{_HC}._compute_consolidator_health", return_value=_fake_response()) as compute,
+    ):
+        first = hc.get_consolidator_health()
+        second = hc.get_consolidator_health()
+
+    compute.assert_called_once()
+    assert first is second  # same snapshot object — no recompute inside TTL
+
+
+@pytest.mark.usefixtures("_reset_consolidator_cache")
+def test_consolidator_health_stale_serves_snapshot_and_kicks_one_refresh() -> None:
+    """Stale cache → the old snapshot returns instantly + exactly ONE background refresh."""
+    from deployment_api.routes import health_consolidator as hc
+
+    stale_snapshot = _fake_response()
+    hc._consolidator_health_cache = (-999_999.0, stale_snapshot)  # far past → stale
+
+    with (
+        patch(_CONSOLIDATOR_MOCK, return_value=False),
+        patch.object(hc._consolidator_health_refresh_pool, "submit") as submit,
+    ):
+        first = hc.get_consolidator_health()
+        second = hc.get_consolidator_health()  # refresh already in flight → no second submit
+
+    assert first is stale_snapshot
+    assert second is stale_snapshot
+    submit.assert_called_once_with(hc._refresh_consolidator_health)
+
+
+@pytest.mark.usefixtures("_reset_consolidator_cache")
+def test_consolidator_health_failed_refresh_keeps_stale_snapshot() -> None:
+    """A failing background refresh never poisons the cache and clears the in-flight flag."""
+    from deployment_api.routes import health_consolidator as hc
+
+    stale_snapshot = _fake_response()
+    hc._consolidator_health_cache = (-999_999.0, stale_snapshot)
+    hc._consolidator_health_refreshing = True
+
+    with patch(f"{_HC}._compute_consolidator_health", side_effect=OSError("gcs down")):
+        hc._refresh_consolidator_health()
+
+    assert hc._consolidator_health_cache == (-999_999.0, stale_snapshot)
+    assert hc._consolidator_health_refreshing is False
+
+
+@pytest.mark.usefixtures("_reset_consolidator_cache")
+def test_consolidator_health_mock_mode_bypasses_cache() -> None:
+    """Mock mode stays deterministic — never reads or writes the snapshot cache."""
+    from deployment_api.routes import health_consolidator as hc
+
+    with patch(_CONSOLIDATOR_MOCK, return_value=True):
+        resp = hc.get_consolidator_health()
+
+    assert hc._consolidator_health_cache is None
+    assert resp.asset_groups  # the mock estate renders
