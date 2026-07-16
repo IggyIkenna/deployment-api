@@ -438,7 +438,7 @@ class DataQueryService:
         return corpus
 
     def _load_sports_corpus_from_index(self) -> list[dict[str, str]]:
-        """Read ``instruments-store-sports/_index/availability_index.parquet``.
+        """Read the canonical sports ``_index/availability_index.parquet`` (via ``resolve_bucket_name``).
 
         Sports' canonical ID is the league_id (EPL, BUNDESLIGA, ...) - the
         index has it populated for every league x venue x data_type tuple. We
