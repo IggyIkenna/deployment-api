@@ -43,6 +43,7 @@ from unified_api_contracts.registry import (
     SHARD_AXIS_MATRIX,
     get_shard_axes,
 )
+from unified_trading_library import BucketNamingError
 
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_union import (
@@ -457,7 +458,32 @@ def get_hierarchical_drilldown(
     filters = filters or {}
     axes = _resolve_axis_order(service, asset_group)
 
-    bucket = build_bucket_name(service, asset_group, project_id=project_id)
+    try:
+        bucket = build_bucket_name(service, asset_group, project_id=project_id)
+    except BucketNamingError:
+        # No bucket exists for this (service, asset_group) pair — e.g. a
+        # producer-less asset_group retired from cloud-providers.yaml.
+        # Render an honest empty tree instead of 500ing.
+        return {
+            "axes": list(axes),
+            "tree": [],
+            "totals": {
+                "captured": 0,
+                "empty_confirmed": 0,
+                "attempted_failed": 0,
+                "expected_unattempted": 0,
+                "total": 0,
+                "completion_pct": 0.0,
+            },
+            "filtered_by": filters,
+            "service": service,
+            "asset_group": asset_group,
+            "manifest_uri": None,
+            "child_offset": child_offset,
+            "child_limit": child_limit,
+            "total_top_axis_children": 0,
+            "provenance": [],
+        }
     # ``read_availability_index`` takes the BUCKET NAME (no scheme), NOT
     # a ``gs://...`` URI — passing the URI silently returns an empty df.
     # Same call shape as ``data_status_service.py``'s preflight skip path.
