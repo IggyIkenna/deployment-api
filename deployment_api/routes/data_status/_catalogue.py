@@ -1,19 +1,40 @@
 """Availability-derived instrument catalogue explorer (P6 phase-1).
 
 ``GET /catalogue`` (+ ``/download-catalogue-csv`` twin) — a de-duped,
-cross-day instrument list built ONLY from the availability manifest
-(``read_availability_index``), pinned by ``(service, asset_group)`` and
-narrowed by optional ``venue`` / ``instrument_type`` / ``data_type``. This is
+cross-day instrument list, pinned by ``(service, asset_group)`` and narrowed
+by optional ``venue`` / ``instrument_type`` / ``data_type``. This is
 DELIBERATELY NOT "the catalogue" — deployment-api cannot reach the
 instruments-service ``InstrumentCatalogReader`` SSOT (T4 — no service→service
 imports) — so every response is labeled "captured instruments
 (availability-derived)": what we've actually captured, not what the venue
 could theoretically list. A true-catalogue projection is P6 phase-2.
 
-Single-walk discipline: this reads the availability manifest ONCE per request
-(``_read_availability_index`` — the same bounded, already-imported collaborator
-``routes/data_status/_live_coverage.py``/``_coverage_scope.py`` use for the
-coverage grid) — never a whole-corpus GCS parquet walk.
+**Two-source split (fixed 2026-07-17 — real-data bug: cefi/defi/tradfi
+returned ``total_count=0``).** The per-row source differs by asset_group,
+because the availability manifest's shard atom differs:
+
+* **prediction / sports** — ``_index/availability_index.parquet`` IS
+  per-entity (a genuine ``instrument_id``/``league_id`` column per row), so
+  these two read it directly via ``_read_availability_index`` (unchanged).
+* **cefi / defi / tradfi** — the ``_index`` shard atom is the VENUE (no
+  per-instrument rows there at all), so there is no ``instrument_id`` to key
+  on. These three instead read the per-asset-group identity catalogue
+  ``prod/catalog.parquet`` (the SAME file ``catalogue_lifecycle.py`` /
+  ``manifest_source.read_unique_instrument_count`` already read for the
+  new-listings/expiries panels + the unique-instrument count) — see
+  ``_read_identity_catalogue``. It carries no live per-day ``capture_status``/
+  ``error_reason``/``attempted_at`` (those are manifest-only, per-shard
+  fields), so those three fields honestly default to
+  ``captured``/``""``/``""`` for identity-catalogue rows (never fabricated —
+  ``prod/catalog.parquet`` only ever contains instruments captured at least
+  once). Its own precomputed ``mvp`` column is used directly for ``is_mvp``
+  (rather than re-derived via ``is_mvp_for_manifest_row``, which needs
+  manifest-only axis columns this file doesn't carry) — mirrors
+  ``catalogue_lifecycle.py``'s ``_row()`` reading ``rec.get("mvp")`` as-is.
+
+Single-walk discipline: both paths are ONE bounded GCS read per request
+(``_read_availability_index`` or one ``download_bytes`` of
+``prod/catalog.parquet``) — never a whole-corpus GCS parquet walk.
 
 Split as a new submodule (not folded into ``_query_meta.py``) attaching to the
 shared package ``router`` — see ``routes/data_status/__init__.py`` import
@@ -24,6 +45,7 @@ Plan: ``data_status_page_ux_and_canonicalisation_2026_07_16.md`` P6.
 
 from __future__ import annotations
 
+import io
 import logging
 
 import pandas as pd
@@ -33,6 +55,7 @@ from fastapi.responses import Response
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
 from deployment_api.routes.data_status._coverage_scope import is_mvp_for_manifest_row
+from deployment_api.utils.storage_client import get_storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +64,25 @@ CATALOGUE_LABEL = "captured instruments (availability-derived)"
 DEFAULT_CATALOGUE_LIMIT = 50
 MAX_CATALOGUE_LIMIT = 500
 MAX_CATALOGUE_SEARCH_RESULTS = 500
+
+# cefi/defi/tradfi: the availability ``_index`` is VENUE-level (no per-instrument
+# rows) — read the per-instrument identity catalogue instead. prediction/sports
+# are NOT in this set (their ``_index`` already carries a genuine per-row
+# instrument_id/league_id and keeps working unchanged).
+_IDENTITY_CATALOGUE_ASSET_GROUPS: frozenset[str] = frozenset({"cefi", "defi", "tradfi"})
+
+# Columns projected from ``prod/catalog.parquet`` for this endpoint (schema-aware
+# — only present columns are read, same graceful-degrade pattern as
+# ``catalogue_lifecycle.py``/``prediction_catalogue.py``'s own per-consumer
+# column subsets over the SAME file).
+_IDENTITY_CATALOGUE_READ_COLUMNS: list[str] = [
+    "instrument_id",
+    "venue",
+    "instrument_type",
+    "data_type",
+    "base_asset",
+    "mvp",
+]
 
 # Columns surfaced per catalogue row (in order) on the CSV twin.
 _CATALOGUE_CSV_COLUMNS: list[str] = [
@@ -55,6 +97,50 @@ _CATALOGUE_CSV_COLUMNS: list[str] = [
 ]
 
 
+def _identity_catalogue_bucket(asset_group: str, *, cloud: str = "gcp") -> str:
+    """Resolve the identity-catalogue bucket for ``asset_group``.
+
+    Deliberately asset_group-scoped, NOT ``(service, asset_group)`` like
+    ``_ds.build_bucket_name`` — ``prod/catalog.parquet`` lives in the
+    instruments-service bucket regardless of which service tab the caller is
+    viewing (mirrors ``catalogue_lifecycle.py::_catalogue_bucket``)."""
+    from unified_trading_library import resolve_bucket_name  # noqa: qg-inside-import
+
+    return resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group=asset_group)
+
+
+def _read_identity_catalogue(asset_group: str) -> pd.DataFrame:
+    """Read ``prod/catalog.parquet`` (ONE bounded GCS GET) for cefi/defi/tradfi.
+
+    This is the per-instrument IDENTITY-level source — the fix for the
+    real-data bug where these three asset groups' venue-level ``_index`` has
+    no ``instrument_id`` column at all. Empty DataFrame on any failure
+    (missing bucket/object, unreadable parquet, no ``instrument_id`` column)
+    — shard-isolated: never raises, the caller degrades to an honest empty
+    catalogue for this asset_group (same "never raise" contract as
+    ``catalogue_lifecycle.py::_read_catalogue`` /
+    ``prediction_catalogue.py::_read_catalogue`` reading the SAME file)."""
+    import pyarrow.parquet as pq  # noqa: imports-inside-functions — lazy heavy SDK
+
+    try:
+        bucket = _identity_catalogue_bucket(asset_group)
+        raw = get_storage_client().download_bytes(bucket, "prod/catalog.parquet")
+        schema_names = set(pq.read_schema(io.BytesIO(raw)).names)
+        present = [c for c in _IDENTITY_CATALOGUE_READ_COLUMNS if c in schema_names]
+        if "instrument_id" not in present:
+            return pd.DataFrame()
+        df = pd.read_parquet(io.BytesIO(raw), columns=present)
+    except Exception as exc:
+        # Shard-isolated: a bad asset_group must not sink this request.
+        logger.warning(
+            "catalogue: prod/catalog.parquet read failed for asset_group=%s (%s) — returning empty",
+            asset_group,
+            exc,
+        )
+        return pd.DataFrame()
+    return df
+
+
 def _load_catalogue_frame(
     *,
     service: str,
@@ -63,11 +149,16 @@ def _load_catalogue_frame(
     instrument_type: str | None,
     data_type: str | None,
 ) -> pd.DataFrame:
-    """Read the availability manifest for ``(service, asset_group)`` and
-    narrow to the requested axes. ONE bounded manifest read — no GCS parquet
-    walk (single-walk discipline)."""
-    bucket = _ds.build_bucket_name(service, asset_group)
-    df = _ds._read_availability_index(bucket)  # pyright: ignore[reportPrivateUsage]
+    """Load the per-instrument source for ``(service, asset_group)`` and
+    narrow to the requested axes. ONE bounded read either way — no GCS
+    parquet walk (single-walk discipline). See module docstring for the
+    two-source split rationale."""
+    ag = asset_group.lower()
+    if ag in _IDENTITY_CATALOGUE_ASSET_GROUPS:
+        df = _read_identity_catalogue(ag)
+    else:
+        bucket = _ds.build_bucket_name(service, asset_group)
+        df = _ds._read_availability_index(bucket)  # pyright: ignore[reportPrivateUsage]
     if df.empty or "instrument_id" not in df.columns:
         return df
 
@@ -91,17 +182,43 @@ def _dedupe_latest(df: pd.DataFrame) -> pd.DataFrame:
     return ordered.drop_duplicates(subset=["instrument_id"], keep="last")
 
 
+def _row_is_mvp(row: pd.Series, asset_group: str, *, identity_catalogue: bool) -> bool:  # type: ignore[type-arg]
+    """Per-row ``is_mvp`` — sourced differently depending on which frame the
+    row came from (see module docstring's two-source split).
+
+    Identity-catalogue rows (cefi/defi/tradfi) carry their OWN precomputed
+    ``mvp`` boolean (IS stamps it at roll-up time via the same UAC ``is_mvp``
+    predicate, over the FULL instrument context) — read it directly, mirroring
+    ``catalogue_lifecycle.py``'s ``_row()`` doing the same
+    (``bool(mvp_raw) if mvp_raw is not None and not _pandas_missing(mvp_raw)
+    else False``). Manifest rows (prediction/sports) have no such column, so
+    they keep recomputing via ``is_mvp_for_manifest_row`` (unchanged
+    behaviour)."""
+    if identity_catalogue:
+        val = row.get("mvp")
+        if val is None:
+            return False
+        try:
+            if pd.isna(val):  # type: ignore[reportArgumentType]
+                return False
+        except (TypeError, ValueError):
+            pass
+        return bool(val)
+    return is_mvp_for_manifest_row(row, asset_group)  # pyright: ignore[reportUnknownArgumentType]
+
+
 def _catalogue_rows(
     df: pd.DataFrame,
     *,
     asset_group: str,
     search: str | None,
     mvp_only: bool,
+    identity_catalogue: bool,
 ) -> list[dict[str, object]]:
-    """Project a de-duped manifest slice into catalogue row dicts, applying
+    """Project a de-duped source slice into catalogue row dicts, applying
     ``mvp_only`` + ``search`` (mirrors ``_instruments.py::_tag_is_mvp`` +
-    ``_apply_search_and_pagination`` — same is_mvp axis-plumbing rationale,
-    read straight from the manifest row via ``is_mvp_for_manifest_row``)."""
+    ``_apply_search_and_pagination`` — same is_mvp axis-plumbing rationale).
+    ``identity_catalogue`` selects the is_mvp source — see ``_row_is_mvp``."""
     if df.empty or "instrument_id" not in df.columns:
         return []
 
@@ -110,7 +227,7 @@ def _catalogue_rows(
         iid = str(row.get("instrument_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         if not iid:
             continue
-        row_is_mvp = is_mvp_for_manifest_row(row, asset_group)  # pyright: ignore[reportUnknownArgumentType]
+        row_is_mvp = _row_is_mvp(row, asset_group, identity_catalogue=identity_catalogue)  # pyright: ignore[reportUnknownArgumentType]
         if mvp_only and not row_is_mvp:
             continue
         out.append(
@@ -156,7 +273,14 @@ def _build_catalogue_rows(
         data_type=data_type,
     )
     deduped = _dedupe_latest(df)
-    return _catalogue_rows(deduped, asset_group=asset_group, search=search, mvp_only=mvp_only)
+    identity_catalogue = asset_group.lower() in _IDENTITY_CATALOGUE_ASSET_GROUPS
+    return _catalogue_rows(
+        deduped,
+        asset_group=asset_group,
+        search=search,
+        mvp_only=mvp_only,
+        identity_catalogue=identity_catalogue,
+    )
 
 
 @router.get("/catalogue")

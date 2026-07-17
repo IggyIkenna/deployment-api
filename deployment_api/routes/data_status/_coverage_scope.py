@@ -81,10 +81,15 @@ def is_mvp_for_manifest_row(row: pd.Series[object], asset_group: str) -> bool:  
     """Per-row ``is_mvp`` predicate over ONE manifest DataFrame row.
 
     The shared core of :func:`filter_to_mvp` (coverage-grid ``scope=mvp``
-    toggle) and the P6 catalogue explorer's per-row ``is_mvp`` tag
-    (``routes/data_status/_catalogue.py`` — reads the SAME
-    ``read_availability_index`` manifest, so the two consumers stay
-    byte-for-byte consistent on axis sourcing instead of re-deriving it).
+    toggle) and the P6 catalogue explorer's per-row ``is_mvp`` tag for
+    prediction/sports (``routes/data_status/_catalogue.py`` — reads the SAME
+    ``read_availability_index`` manifest for those two, so the two consumers
+    stay byte-for-byte consistent on axis sourcing instead of re-deriving it).
+    cefi/defi/tradfi rows in the catalogue explorer do NOT go through this
+    predicate (fixed 2026-07-17): their ``_index`` is venue-level with no
+    per-instrument row to key on, so they read the identity catalogue
+    (``prod/catalog.parquet``) instead, which carries its own precomputed
+    ``mvp`` column — see ``_catalogue.py``'s module docstring.
 
     Per-AG axis-plumbing (SSOT ``mvp_scope_catalogue_tagging_2026_06_08.md`` §2):
     the CeFi / TradFi / Sports / Prediction MVP rules gate on an extra axis
