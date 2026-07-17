@@ -456,3 +456,70 @@ class TestIdentityCatalogueAssetGroupsGuard:
         from deployment_api.routes.data_status._catalogue import _IDENTITY_CATALOGUE_ASSET_GROUPS
 
         assert sorted(_IDENTITY_CATALOGUE_ASSET_GROUPS) == ["cefi", "defi", "tradfi"]
+
+
+class TestCatalogueFilterOptions:
+    """F3 (live UI review round 3, 2026-07-17): the Catalogue Explorer's
+    venue/instrument_type/data_type filters were free-text; this endpoint feeds
+    the real distinct values so the UI can render dropdowns. Distinct values are
+    honest-absence: an axis with no/blank data returns ``[]``."""
+
+    def test_identity_catalogue_distinct_values(self, client_ds_catalogue: TestClient) -> None:
+        # cefi/defi/tradfi read prod/catalog.parquet (identity source). data_type is
+        # blank for these single-grain AGs -> honest empty list.
+        with patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=_real_schema_catalog_df()):
+            r = client_ds_catalogue.get(
+                "/data-status/catalogue-filter-options",
+                params={"service": "market-tick-data-service", "asset_group": "cefi"},
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["asset_group"] == "cefi"
+        assert body["venues"] == ["BINANCE-FUTURES", "OKX-SWAP"]  # sorted, distinct
+        assert body["instrument_types"] == ["PERPETUAL"]
+        assert body["data_types"] == []  # all blank -> honest-absence, not [""]
+
+    def test_manifest_catalogue_distinct_values(self, client_ds_catalogue: TestClient) -> None:
+        # prediction/sports read the availability index; _manifest_df carries a real
+        # data_type ("trades") per row.
+        with patch(_PATCH_READ_INDEX, return_value=_manifest_df()):
+            r = client_ds_catalogue.get(
+                "/data-status/catalogue-filter-options",
+                params={"service": "market-tick-data-service", "asset_group": "prediction"},
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["venues"] == ["BINANCE-FUTURES"]
+        assert body["instrument_types"] == ["PERPETUAL"]
+        assert body["data_types"] == ["trades"]
+
+    def test_all_blank_axis_is_honest_empty(self, client_ds_catalogue: TestClient) -> None:
+        # Mirrors the sports catalogue: venue 100% blank -> [] (the UI shows only
+        # the "any" default, never a fabricated venue option).
+        blank_venue = _manifest_df()
+        blank_venue["venue"] = ""
+        with patch(_PATCH_READ_INDEX, return_value=blank_venue):
+            r = client_ds_catalogue.get(
+                "/data-status/catalogue-filter-options",
+                params={"service": "market-tick-data-service", "asset_group": "sports"},
+            )
+        assert r.status_code == 200
+        assert r.json()["venues"] == []
+
+    def test_read_failure_is_500(self, client_ds_catalogue: TestClient) -> None:
+        with patch(_PATCH_READ_INDEX, side_effect=OSError("gcs unavailable")):
+            r = client_ds_catalogue.get(
+                "/data-status/catalogue-filter-options",
+                params={"service": "market-tick-data-service", "asset_group": "prediction"},
+            )
+        assert r.status_code == 500
+
+    def test_distinct_values_helper_strips_and_sorts(self) -> None:
+        from deployment_api.routes.data_status._catalogue import _distinct_values
+
+        df = pd.DataFrame({"venue": ["  OKX  ", "BINANCE", "OKX", "", None, "binance"]})
+        # Distinct, stripped, blank/None dropped; sorted (case-sensitive so
+        # "BINANCE" < "OKX" < "binance").
+        assert _distinct_values(df, "venue") == ["BINANCE", "OKX", "binance"]
+        assert _distinct_values(df, "absent_column") == []
+        assert _distinct_values(pd.DataFrame(), "venue") == []

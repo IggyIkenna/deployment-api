@@ -196,6 +196,23 @@ def _dedupe_latest(df: pd.DataFrame) -> pd.DataFrame:
     return ordered.drop_duplicates(subset=["instrument_id"], keep="last")
 
 
+def _distinct_values(df: pd.DataFrame, column: str) -> list[str]:
+    """Sorted distinct NON-BLANK string values of ``column`` for the filter
+    dropdowns (F3, live UI review round 3 2026-07-17).
+
+    Returns ``[]`` when the column is absent or entirely blank — honest-absence:
+    e.g. the sports catalogue's ``venue`` is 100% blank (see the module-level
+    ``_IDENTITY_CATALOGUE_ASSET_GROUPS`` note), so its venue dropdown offers only
+    the "any" default rather than a fabricated option. Values are returned exactly
+    as stored so a selected ``venue`` matches the catalogue narrow's case-sensitive
+    ``==`` (``instrument_type``/``data_type`` narrow upper-cases both sides, so
+    their casing is immaterial)."""
+    if df.empty or column not in df.columns:
+        return []
+    series = df[column].dropna().astype(str).str.strip()
+    return sorted({value for value in series if value})
+
+
 def _row_is_mvp(row: pd.Series, asset_group: str, *, identity_catalogue: bool) -> bool:  # type: ignore[type-arg]
     """Per-row ``is_mvp`` — sourced differently depending on which frame the
     row came from (see module docstring's two-source split).
@@ -491,6 +508,45 @@ async def get_instrument_catalogue(
         "has_more": (safe_offset + len(page)) < total_count,
         "search": (search or "").strip(),
         "mvp_only": mvp_only,
+    }
+
+
+@router.get("/catalogue-filter-options")
+async def get_catalogue_filter_options(
+    service: str = Query(..., description="Service name"),
+    asset_group: str = Query(..., description="Asset group"),
+) -> dict[str, object]:
+    """Distinct venue / instrument_type / data_type values present in the
+    ``(service, asset_group)`` catalogue — populates the Catalogue Explorer's
+    filter dropdowns so the operator selects a real value instead of typing one
+    (F3, live UI review round 3 2026-07-17).
+
+    Single-walk: reads the SAME source ``/catalogue`` reads (unnarrowed,
+    column-pruned, ONE bounded GCS GET), de-dupes to latest-per-instrument (so a
+    value only ever appears if selecting it would return rows), and returns the
+    sorted distinct non-blank values per axis. An axis whose column is absent or
+    all-blank returns ``[]`` (honest-absence) — the UI then offers only the "any"
+    default for that axis.
+    """
+    try:
+        df = _load_catalogue_frame(
+            service=service,
+            asset_group=asset_group,
+            venue=None,
+            instrument_type=None,
+            data_type=None,
+        )
+        deduped = _dedupe_latest(df)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.exception("Error in get_catalogue_filter_options")
+        raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from exc
+
+    return {
+        "service": service,
+        "asset_group": asset_group.lower(),
+        "venues": _distinct_values(deduped, "venue"),
+        "instrument_types": _distinct_values(deduped, "instrument_type"),
+        "data_types": _distinct_values(deduped, "data_type"),
     }
 
 
