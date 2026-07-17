@@ -1016,3 +1016,107 @@ class TestBuildBucketName:
     def test_unknown_service_raises(self):
         with pytest.raises(ValueError, match="Unknown service"):
             drilldown.build_bucket_name("foobar", "CEFI")
+
+
+class TestBaseAssetContractAddress:
+    """P4-B: surface the on-chain contract address for SPOT_ASSET/DeFi rows.
+
+    Provenance rule (same as ``base_asset``): the address is a genuine per-row
+    column of the ALREADY-LOADED (venue, day) bundle parquet — verified against
+    the live defi schema (a real UNISWAP_V3-ETHEREUM day file carries it 484/484
+    non-null with true mainnet addresses). It is never fabricated, and a bundle
+    without the column omits the field entirely rather than emitting a blank.
+    """
+
+    def test_address_reaches_the_instrument_entry(self):
+        prefix = "instrument_availability/by_date/day=2026-07-16/venue=UNISWAP_V3-ETHEREUM/"
+        objects = [_obj(f"{prefix}instruments.parquet")]
+        fake_df = pd.DataFrame(
+            {
+                "instrument_key": [
+                    "UNISWAP_V3-ETHEREUM:POOL:USDC-WETH-5",
+                    "UNISWAP_V3-ETHEREUM:POOL:WBTC-WETH-30",
+                ],
+                "instrument_type": ["POOL", "POOL"],
+                "base_asset": ["USDC", "WBTC"],
+                "base_asset_contract_address": [
+                    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+                ],
+            }
+        )
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_read_parquet_columns", return_value=fake_df),
+            patch(TestMvpOnlyAndIsMvpTag._IS_MVP_PATCH_TARGET, return_value=True),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="instruments-service",
+                asset_group="defi",
+                venue="UNISWAP_V3-ETHEREUM",
+                day="2026-07-16",
+                instrument_type="pool",
+                data_type="instruments",
+            )
+        by_id = {r["instrument_id"]: r for r in result["instruments"]}
+        assert by_id["UNISWAP_V3-ETHEREUM:POOL:USDC-WETH-5"]["base_asset_contract_address"] == (
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        )
+        # The address is per-row, not a constant smeared across the bundle.
+        assert by_id["UNISWAP_V3-ETHEREUM:POOL:WBTC-WETH-30"]["base_asset_contract_address"] == (
+            "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+        )
+
+    def test_a_bundle_without_the_column_omits_the_field_entirely(self):
+        """Honest absence: a CeFi venue has no on-chain address of its own, so its
+        bundle has no such column — the field must be ABSENT, not a blank string
+        (absent = "not applicable"; "" would read as "we looked and found none")."""
+        prefix = "instrument_availability/by_date/day=2026-07-16/venue=BINANCE-SPOT/"
+        objects = [_obj(f"{prefix}instruments.parquet")]
+        fake_df = pd.DataFrame(
+            {
+                "instrument_key": ["BINANCE-SPOT:SPOT_PAIR:BTC-USDT"],
+                "instrument_type": ["SPOT_PAIR"],
+                "base_asset": ["BTC"],
+            }
+        )
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_read_parquet_columns", return_value=fake_df),
+            patch(TestMvpOnlyAndIsMvpTag._IS_MVP_PATCH_TARGET, return_value=True),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="instruments-service",
+                asset_group="cefi",
+                venue="BINANCE-SPOT",
+                day="2026-07-16",
+                instrument_type="spot_pair",
+                data_type="instruments",
+            )
+        assert "base_asset_contract_address" not in result["instruments"][0]
+
+    def test_a_blank_cell_normalises_to_none_not_empty_string(self):
+        prefix = "instrument_availability/by_date/day=2026-07-16/venue=UNISWAP_V3-ETHEREUM/"
+        objects = [_obj(f"{prefix}instruments.parquet")]
+        fake_df = pd.DataFrame(
+            {
+                "instrument_key": ["UNISWAP_V3-ETHEREUM:POOL:X-Y-5"],
+                "instrument_type": ["POOL"],
+                "base_asset": ["X"],
+                "base_asset_contract_address": ["   "],
+            }
+        )
+        with (
+            patch.object(drilldown, "list_objects", return_value=objects),
+            patch.object(drilldown, "_read_parquet_columns", return_value=fake_df),
+            patch(TestMvpOnlyAndIsMvpTag._IS_MVP_PATCH_TARGET, return_value=True),
+        ):
+            result = drilldown.list_instruments_for_shard(
+                service="instruments-service",
+                asset_group="defi",
+                venue="UNISWAP_V3-ETHEREUM",
+                day="2026-07-16",
+                instrument_type="pool",
+                data_type="instruments",
+            )
+        assert result["instruments"][0]["base_asset_contract_address"] is None
