@@ -13,7 +13,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
-from deployment_api.services.fixtures_browser import list_fixtures_by_league_and_day
+from deployment_api.services.fixtures_browser import (
+    league_names_for,
+    list_fixtures_by_league_and_day,
+)
 
 _cfg = DeploymentApiConfig()
 
@@ -40,7 +43,7 @@ async def get_fixtures_browse(
     team name and id (matches either side of the fixture).
     """
     if _cfg.is_mock_mode():
-        return {"leagues": {}, "mock": True}
+        return {"leagues": {}, "league_names": {}, "mock": True}
     grouped = list_fixtures_by_league_and_day(
         window_days_back=days_back,
         window_days_forward=days_forward,
@@ -49,4 +52,8 @@ async def get_fixtures_browse(
         start_date=start_date,
         end_date=end_date,
     )
-    return {"leagues": grouped}
+    # ``league_names`` maps each present numeric/canonical league_id → its human
+    # display_name (UAC data); unresolved ids are omitted so the UI falls back to
+    # the raw id (honest-absence). The UI renders the name as the group header with
+    # the raw id as a subtitle.
+    return {"leagues": grouped, "league_names": league_names_for(grouped)}

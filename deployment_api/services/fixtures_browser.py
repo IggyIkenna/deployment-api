@@ -37,6 +37,11 @@ import time
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
+from unified_api_contracts.sports import (
+    LeagueDefinition,
+    get_league,
+    get_league_by_api_football_id,
+)
 
 from deployment_api.services.upcoming_fixtures import (
     UpcomingFixture,
@@ -152,6 +157,44 @@ def _dedupe_preserve_order(fixtures: list[UpcomingFixture]) -> list[UpcomingFixt
         seen.add(fid)
         unique.append(fx)
     return unique
+
+
+def _resolve_league_name(league_id: str) -> str | None:
+    """Human ``display_name`` for a fixtures-catalogue ``league_id``, or ``None``.
+
+    The catalogue groups fixtures by the raw API-Football league key, which for
+    football is the **numeric** id (``"103"`` → Eliteserien, ``"2"`` → UEFA
+    Champions League) — that is what the browser currently shows the operator, and
+    it is unreadable. League identity is UAC data, so resolve it there (never
+    hardcode a mapping in the UI): try the numeric api_football_id first, then the
+    canonical string id (``"EPL"`` etc.) for any non-numeric key. Returns ``None``
+    for an id with no registry entry — the caller then omits it so the UI honestly
+    falls back to the raw id rather than fabricating a name.
+    """
+    lid = league_id.strip()
+    if not lid:
+        return None
+    league: LeagueDefinition | None = None
+    if lid.isdigit():
+        league = get_league_by_api_football_id(int(lid))
+    if league is None:
+        league = get_league(lid)
+    return league.display_name if league is not None else None
+
+
+def league_names_for(grouped: FixturesByLeagueAndDay) -> dict[str, str]:
+    """Map each ``league_id`` present in ``grouped`` → its human ``display_name``.
+
+    Unresolved ids are OMITTED (honest-absence): the UI renders the raw id for any
+    league not in the map, never a placeholder/fabricated name. Pure in-memory
+    lookup over the already-read grouping — no extra GCS walk.
+    """
+    names: dict[str, str] = {}
+    for league_id in grouped:
+        name = _resolve_league_name(league_id)
+        if name is not None:
+            names[league_id] = name
+    return names
 
 
 def list_fixtures_by_league_and_day(
