@@ -207,18 +207,94 @@ def _row_is_mvp(row: pd.Series, asset_group: str, *, identity_catalogue: bool) -
     return is_mvp_for_manifest_row(row, asset_group)  # pyright: ignore[reportUnknownArgumentType]
 
 
-def _catalogue_rows(
+_IS_MVP_COL: str = "_is_mvp"
+
+
+def _is_mvp_series(df: pd.DataFrame, asset_group: str, *, identity_catalogue: bool) -> pd.Series:  # type: ignore[type-arg]
+    """``is_mvp`` for EVERY row of ``df``, as a column — the vectorised twin of
+    ``_row_is_mvp`` (which stays the per-row SSOT for the semantics).
+
+    Identity-catalogue rows carry a precomputed ``mvp`` boolean, so this is a
+    cheap column read (the whole point — it takes tradfi's 1.17M rows off the
+    per-row path). Manifest-backed rows (prediction/sports) have no such column
+    and must still recompute per row via ``is_mvp_for_manifest_row``; that is
+    the same cost those asset groups already paid, so no regression."""
+    if df.empty:
+        return pd.Series(data=False, index=df.index, dtype=bool)
+    if identity_catalogue:
+        if "mvp" not in df.columns:
+            return pd.Series(data=False, index=df.index, dtype=bool)
+        return df["mvp"].map(_truthy_mvp).astype(bool)
+
+    def _manifest_row_is_mvp(row: pd.Series) -> bool:  # type: ignore[type-arg]
+        return is_mvp_for_manifest_row(row, asset_group)  # pyright: ignore[reportUnknownArgumentType]
+
+    return df.apply(_manifest_row_is_mvp, axis=1).astype(bool)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+
+
+def _truthy_mvp(val: object) -> bool:
+    """Same coercion as ``_row_is_mvp``'s identity branch (NA/None -> False)."""
+    if val is None:
+        return False
+    try:
+        if pd.isna(val):  # type: ignore[reportArgumentType]
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(val)
+
+
+def _prepare_catalogue_frame(
     df: pd.DataFrame,
     *,
     asset_group: str,
     search: str | None,
     mvp_only: bool,
     identity_catalogue: bool,
-) -> list[dict[str, object]]:
-    """Project a de-duped source slice into catalogue row dicts, applying
-    ``mvp_only`` + ``search`` (mirrors ``_instruments.py::_tag_is_mvp`` +
-    ``_apply_search_and_pagination`` — same is_mvp axis-plumbing rationale).
-    ``identity_catalogue`` selects the is_mvp source — see ``_row_is_mvp``."""
+) -> pd.DataFrame:
+    """Narrow + tag + ORDER the frame so that every remaining row is a result
+    row, in final response order — WITHOUT building any row dicts.
+
+    This is the pagination enabler: ``len()`` of the result is the total_count
+    and ``.iloc[offset:offset+limit]`` is the page, so only the page ever gets
+    materialised into dicts (previously all 1.17M tradfi rows were built to
+    show 50).
+
+    **Operation order is load-bearing and mirrors the pre-pagination code
+    exactly** (mvp_only filter -> search filter in frame order -> cap at
+    ``MAX_CATALOGUE_SEARCH_RESULTS`` -> sort by instrument_id). The cap lands
+    BEFORE the sort, so a capped search returns the first N matches in frame
+    order and then sorts those — changing this order would silently change which
+    rows a capped search returns."""
+    if df.empty or "instrument_id" not in df.columns:
+        return df
+
+    out = df.copy()
+    iid = out["instrument_id"].astype(str).str.strip()
+    out = out[iid != ""]
+    if out.empty:
+        return out
+
+    out[_IS_MVP_COL] = _is_mvp_series(out, asset_group, identity_catalogue=identity_catalogue)
+    if mvp_only:
+        out = out[out[_IS_MVP_COL]]
+
+    if search:
+        needle = search.strip().lower()
+        if needle:
+            hit = out["instrument_id"].astype(str).str.lower().str.contains(needle, regex=False, na=False)
+            out = out[hit].head(MAX_CATALOGUE_SEARCH_RESULTS)
+
+    return out.sort_values("instrument_id", kind="stable")
+
+
+def _rows_from_frame(df: pd.DataFrame, *, asset_group: str, identity_catalogue: bool) -> list[dict[str, object]]:
+    """Materialise catalogue row dicts from an ALREADY-prepared frame slice.
+
+    Callers pass either the whole prepared frame (CSV export — must carry every
+    filtered row) or just the requested page (JSON route). Filtering/ordering is
+    NOT redone here — ``_prepare_catalogue_frame`` owns it, so both callers are
+    structurally guaranteed to agree on rows + order."""
     if df.empty or "instrument_id" not in df.columns:
         return []
 
@@ -227,9 +303,11 @@ def _catalogue_rows(
         iid = str(row.get("instrument_id") or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         if not iid:
             continue
-        row_is_mvp = _row_is_mvp(row, asset_group, identity_catalogue=identity_catalogue)  # pyright: ignore[reportUnknownArgumentType]
-        if mvp_only and not row_is_mvp:
-            continue
+        row_is_mvp = (
+            _truthy_mvp(row.get(_IS_MVP_COL))  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+            if _IS_MVP_COL in df.columns
+            else _row_is_mvp(row, asset_group, identity_catalogue=identity_catalogue)  # pyright: ignore[reportUnknownArgumentType]
+        )
         out.append(
             {
                 "instrument_id": iid,
@@ -242,14 +320,29 @@ def _catalogue_rows(
                 "is_mvp": row_is_mvp,
             }
         )
-
-    if search:
-        needle = search.strip().lower()
-        if needle:
-            out = [r for r in out if needle in str(r["instrument_id"]).lower()][:MAX_CATALOGUE_SEARCH_RESULTS]
-
-    out.sort(key=lambda r: str(r["instrument_id"]))
     return out
+
+
+def _catalogue_rows(
+    df: pd.DataFrame,
+    *,
+    asset_group: str,
+    search: str | None,
+    mvp_only: bool,
+    identity_catalogue: bool,
+) -> list[dict[str, object]]:
+    """Project a de-duped source slice into catalogue row dicts (ALL rows).
+
+    Retained as the full-list path (CSV export); the JSON route uses the
+    paginated ``_build_catalogue_page`` instead."""
+    prepared = _prepare_catalogue_frame(
+        df,
+        asset_group=asset_group,
+        search=search,
+        mvp_only=mvp_only,
+        identity_catalogue=identity_catalogue,
+    )
+    return _rows_from_frame(prepared, asset_group=asset_group, identity_catalogue=identity_catalogue)
 
 
 def _build_catalogue_rows(
@@ -283,6 +376,48 @@ def _build_catalogue_rows(
     )
 
 
+def _build_catalogue_page(
+    *,
+    service: str,
+    asset_group: str,
+    venue: str | None,
+    instrument_type: str | None,
+    data_type: str | None,
+    search: str | None,
+    mvp_only: bool,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, object]], int]:
+    """``(page_rows, total_count)`` — the paginated twin of
+    ``_build_catalogue_rows``, for the JSON route.
+
+    Identical source/narrow/dedupe/order pipeline; the ONLY difference is that
+    dict-building happens after the page slice, so a 50-row page costs 50 row
+    builds instead of the whole asset group. ``total_count`` is still the full
+    filtered count (a frame ``len()``, not a build), so pagination metadata is
+    unchanged. Single-walk discipline unaffected — still ONE bounded GCS read."""
+    df = _load_catalogue_frame(
+        service=service,
+        asset_group=asset_group,
+        venue=venue,
+        instrument_type=instrument_type,
+        data_type=data_type,
+    )
+    deduped = _dedupe_latest(df)
+    identity_catalogue = asset_group.lower() in _IDENTITY_CATALOGUE_ASSET_GROUPS
+    prepared = _prepare_catalogue_frame(
+        deduped,
+        asset_group=asset_group,
+        search=search,
+        mvp_only=mvp_only,
+        identity_catalogue=identity_catalogue,
+    )
+    total_count = len(prepared)
+    page_frame = prepared.iloc[offset : offset + limit]
+    page = _rows_from_frame(page_frame, asset_group=asset_group, identity_catalogue=identity_catalogue)
+    return page, total_count
+
+
 @router.get("/catalogue")
 async def get_instrument_catalogue(
     service: str = Query(..., description="Service name"),
@@ -310,8 +445,10 @@ async def get_instrument_catalogue(
     label, ...}``. Every instrument dict carries ``is_mvp`` + ``capture_status``
     regardless of the ``mvp_only`` toggle.
     """
+    safe_limit = max(1, min(int(limit or DEFAULT_CATALOGUE_LIMIT), MAX_CATALOGUE_LIMIT))
+    safe_offset = max(0, int(offset or 0))
     try:
-        rows = _build_catalogue_rows(
+        page, total_count = _build_catalogue_page(
             service=service,
             asset_group=asset_group,
             venue=venue,
@@ -319,15 +456,12 @@ async def get_instrument_catalogue(
             data_type=data_type,
             search=search,
             mvp_only=mvp_only,
+            limit=safe_limit,
+            offset=safe_offset,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         logger.exception("Error in get_instrument_catalogue")
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from exc
-
-    total_count = len(rows)
-    safe_limit = max(1, min(int(limit or DEFAULT_CATALOGUE_LIMIT), MAX_CATALOGUE_LIMIT))
-    safe_offset = max(0, int(offset or 0))
-    page = rows[safe_offset : safe_offset + safe_limit]
 
     return {
         "service": service,

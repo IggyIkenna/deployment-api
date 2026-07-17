@@ -114,8 +114,33 @@ class PredictionCatalogueResult(TypedDict):  # CORRECT-LOCAL — API response sh
     cqg_counts: dict[str, int]
 
 
-_CatalogueCacheKey = tuple[str | None, str | None, str | None, str | None, int, int]
-_CATALOGUE_CACHE: dict[_CatalogueCacheKey, tuple[float, PredictionCatalogueResult]] = {}
+#: Cache key = the FILTER set only. ``limit``/``offset`` are deliberately NOT in
+#: it: the whole cost of this endpoint (a ~184 MB transpacific GCS GET + a
+#: ~2.7M-row classification pass, measured 2026-07-17 at 84.5s + 86.0s = ~173s
+#: cold) is identical for every page of the same filter set, so keying on the
+#: page made "Next page" re-pay the entire ~173s. See ``_PAGE_WINDOW_ROWS``.
+_CatalogueCacheKey = tuple[str | None, str | None, str | None, str | None]
+
+#: How many leading rows of a filter set's result are retained for cheap paging.
+#: Deliberately BOUNDED rather than caching the whole result: an unfiltered
+#: result is ~2.7M rows, and holding that (or the source frame — the identity
+#: catalogues measure 122-312 MB deep) risks exactly the OOM class this plan's
+#: P1 already root-caused on the honest-coverage writer. 5,000 rows = 100 pages
+#: at the default 50/page, which covers real browsing; a request reaching past
+#: the window falls back to a full rebuild (correct, just slow — logged).
+_PAGE_WINDOW_ROWS: int = 5_000
+
+
+class _CachedFilterSet(TypedDict):
+    """Everything a filter set needs to answer any page inside the window."""
+
+    window: list[PredictionCatalogueRow]  # leading _PAGE_WINDOW_ROWS of the sorted result
+    total: int  # full count (NOT len(window)) — pagination metadata stays exact
+    category_counts: dict[str, int]
+    cqg_counts: dict[str, int]
+
+
+_CATALOGUE_CACHE: dict[_CatalogueCacheKey, tuple[float, _CachedFilterSet]] = {}
 
 
 def _bucket(*, cloud: str = "gcp") -> str:
@@ -212,13 +237,23 @@ def _label(rec: dict[str, object]) -> str:
     return _norm(rec.get("instrument_id"))
 
 
-def _build_rows(df: pd.DataFrame) -> list[PredictionCatalogueRow]:
+def _build_rows(df: pd.DataFrame, *, venue: str | None = None) -> list[PredictionCatalogueRow]:
     """Project catalogue records into browsable rows, excluding cqg-bundle
     summary rows. Classification is cached per unique (venue, raw_symbol,
     instrument_id) and per unique cqg so a large catalogue classifies each
-    distinct market/underlying-question exactly once, not per row."""
+    distinct market/underlying-question exactly once, not per row.
+
+    ``venue`` narrows the FRAME before classification. This is a pure
+    optimisation, not a semantic change: ``venue`` is a raw catalogue column
+    (no classification needed to evaluate it) and the caller applied the exact
+    same narrow to the built rows immediately afterwards — doing it here just
+    stops us classifying ~2.7M rows to then discard most of them. Facet counts
+    are unaffected because they are computed over the venue-filtered set anyway.
+    """
     if "data_type" in df.columns:
         df = df[df["data_type"].astype(str) != _CQG_BUNDLE_DATA_TYPE]
+    if venue and "venue" in df.columns:
+        df = df[df["venue"].astype(str).str.upper() == venue]
     rows: list[PredictionCatalogueRow] = []
     cqg_cache: dict[tuple[str, str, str], CanonicalQuestionGroup] = {}
     category_cache: dict[CanonicalQuestionGroup, PredictionMarketCategory] = {}
@@ -291,22 +326,38 @@ def read_prediction_catalogue(
     )
     search_f = search.strip().lower() if search and search.strip() else None
 
-    key: _CatalogueCacheKey = (venue_f, category_f, cqg_f, search_f, limit, offset)
+    key: _CatalogueCacheKey = (venue_f, category_f, cqg_f, search_f)
     now = time.monotonic()
     cached = _CATALOGUE_CACHE.get(key)
     if cached is not None and (now - cached[0]) < _CACHE_TTL_SEC:
-        return cached[1]
+        entry = cached[1]
+        # Serve from the retained window when the requested page lies inside it.
+        # A page beyond the window is rare (>100 pages deep) and falls through to
+        # a full rebuild rather than being answered from a truncated list.
+        if offset + limit <= len(entry["window"]) or offset + limit <= entry["total"] <= _PAGE_WINDOW_ROWS:
+            return PredictionCatalogueResult(
+                rows=entry["window"][offset : offset + limit],
+                total=entry["total"],
+                category_counts=entry["category_counts"],
+                cqg_counts=entry["cqg_counts"],
+            )
+        logger.info(
+            "prediction-catalogue: page offset=%d limit=%d is past the cached %d-row window (total=%d) — rebuilding",
+            offset,
+            limit,
+            len(entry["window"]),
+            entry["total"],
+        )
 
     df = _read_catalogue()
     if df is None:
-        empty = PredictionCatalogueResult(rows=[], total=0, category_counts={}, cqg_counts={})
-        _CATALOGUE_CACHE[key] = (now, empty)
-        return empty
+        empty_entry = _CachedFilterSet(window=[], total=0, category_counts={}, cqg_counts={})
+        _CATALOGUE_CACHE[key] = (now, empty_entry)
+        return PredictionCatalogueResult(rows=[], total=0, category_counts={}, cqg_counts={})
 
-    all_rows = _build_rows(df)
+    # venue is a raw column -> narrow before classifying (see _build_rows).
+    all_rows = _build_rows(df, venue=venue_f)
 
-    if venue_f:
-        all_rows = [r for r in all_rows if r["venue"] == venue_f]
     if search_f:
         all_rows = [
             r
@@ -326,11 +377,22 @@ def read_prediction_catalogue(
 
     filtered.sort(key=lambda r: (r["venue"], r["label"]))
     total = len(filtered)
-    page = filtered[offset : offset + limit]
 
-    result = PredictionCatalogueResult(rows=page, total=total, category_counts=category_counts, cqg_counts=cqg_counts)
-    _CATALOGUE_CACHE[key] = (now, result)
-    return result
+    _CATALOGUE_CACHE[key] = (
+        now,
+        _CachedFilterSet(
+            window=filtered[:_PAGE_WINDOW_ROWS],
+            total=total,
+            category_counts=category_counts,
+            cqg_counts=cqg_counts,
+        ),
+    )
+    return PredictionCatalogueResult(
+        rows=filtered[offset : offset + limit],
+        total=total,
+        category_counts=category_counts,
+        cqg_counts=cqg_counts,
+    )
 
 
 def _clear_cache() -> None:  # test hook

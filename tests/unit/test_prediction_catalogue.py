@@ -193,3 +193,62 @@ def test_label_fallback_chain_and_read_failure_is_honest_empty() -> None:
         empty = pc.read_prediction_catalogue()
 
     assert empty == {"rows": [], "total": 0, "category_counts": {}, "cqg_counts": {}}
+
+
+class TestPagingDoesNotRePayTheCorpusCost:
+    """A5 perf (plan P3): the ~173s cost of this endpoint (a ~184MB GCS GET +
+    a ~2.7M-row classification pass, both measured on real GCS 2026-07-17) is
+    IDENTICAL for every page of the same filter set. The cache key used to
+    include limit/offset, so clicking "Next page" re-paid all of it."""
+
+    def test_second_page_of_same_filter_set_does_not_re_read(self) -> None:
+        pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(pc, "_read_catalogue", side_effect=lambda: _fixture_df()) as read_spy:
+            first = pc.read_prediction_catalogue(limit=2, offset=0)
+            second = pc.read_prediction_catalogue(limit=2, offset=2)
+        assert read_spy.call_count == 1, (
+            "paging within one filter set must reuse the cached window — a second read "
+            "means every Next-page click re-pays the full corpus download+classification"
+        )
+        assert first["total"] == second["total"]
+        # Different pages really are different rows (not the cache echoing page 1).
+        assert [r["instrument_id"] for r in first["rows"]] != [r["instrument_id"] for r in second["rows"]]
+
+    def test_paged_rows_match_the_unpaged_ordering(self) -> None:
+        """The window must be the SAME sorted list the unpaged path produces."""
+        pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(pc, "_read_catalogue", side_effect=lambda: _fixture_df()):
+            everything = pc.read_prediction_catalogue(limit=500, offset=0)
+            page1 = pc.read_prediction_catalogue(limit=2, offset=0)
+            page2 = pc.read_prediction_catalogue(limit=2, offset=2)
+        assert page1["rows"] == everything["rows"][0:2]
+        assert page2["rows"] == everything["rows"][2:4]
+
+    def test_a_different_filter_set_is_not_served_from_another_sets_cache(self) -> None:
+        """The load-bearing cache-correctness risk of dropping limit/offset from
+        the key: filters MUST still be part of it."""
+        pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(pc, "_read_catalogue", side_effect=lambda: _fixture_df()):
+            crypto = pc.read_prediction_catalogue(category="crypto", limit=50)
+            sports = pc.read_prediction_catalogue(category="sports", limit=50)
+        assert crypto["rows"], "fixture guard: crypto must have rows"
+        assert sports["rows"], "fixture guard: sports must have rows"
+        assert {r["category"] for r in crypto["rows"]} == {"crypto"}
+        assert {r["category"] for r in sports["rows"]} == {"sports"}
+
+    def test_total_is_the_full_count_not_the_window_length(self) -> None:
+        pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(pc, "_read_catalogue", side_effect=lambda: _fixture_df()):
+            res = pc.read_prediction_catalogue(limit=1, offset=0)
+        assert res["total"] > len(res["rows"]), "total must count the whole filter set, not the page"
+
+    def test_venue_narrow_is_pushed_into_the_frame_before_classification(self) -> None:
+        """Pure optimisation — must not change results vs filtering after build."""
+        pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(pc, "_read_catalogue", side_effect=lambda: _fixture_df()):
+            narrowed = pc.read_prediction_catalogue(venue="POLYMARKET", limit=500)
+            pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+            everything = pc.read_prediction_catalogue(limit=500)
+        expected = [r for r in everything["rows"] if r["venue"] == "POLYMARKET"]
+        assert narrowed["rows"] == expected
+        assert {r["venue"] for r in narrowed["rows"]} == {"POLYMARKET"}
