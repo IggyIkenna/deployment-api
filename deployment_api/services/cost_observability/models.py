@@ -100,6 +100,11 @@ class CloudSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 class SummaryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     days: int
+    # The RESOLVED window bounds, inclusive, ISO `YYYY-MM-DD`. Echoed back on every view so a caller
+    # that asked for an explicit range (rather than a trailing `days`) can tell WHICH window the
+    # numbers describe — `days` alone can't: two different ranges share a length.
+    start_date: str = ""
+    end_date: str = ""
     total: float  # NET grand total — what you actually pay = gross + credit
     gross: float = 0.0  # sum of usage cost before credits
     credit: float = 0.0  # sum of credits applied (≤ 0)
@@ -151,6 +156,11 @@ class BreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     dimension: str  # service | resource | bucket | region | day | sku | zone
     cloud: str  # all | gcp | aws | github
     days: int
+    # Resolved window bounds (inclusive, ISO). This view carries no per-day series, so `days` alone
+    # leaves the window ambiguous under an explicit range — the UI's cache-validity check compares
+    # these to know whether a cached breakdown still describes the selected window.
+    start_date: str = ""
+    end_date: str = ""
     total: float  # TRUE window total for this dimension (all groups, pre-cap) — consistent across tabs
     total_groups: int = 0  # distinct real groups before the top-N cap (excludes synthetic aggregate rows)
     rows: list[BreakdownRow] = Field(default_factory=list)
@@ -163,5 +173,7 @@ class TimeseriesPoint(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 class TimeseriesResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     days: int
+    start_date: str = ""  # resolved window bounds, inclusive, ISO — see SummaryResponse
+    end_date: str = ""
     clouds: list[str] = Field(default_factory=list)
     points: list[TimeseriesPoint] = Field(default_factory=list)
