@@ -312,9 +312,9 @@ async def download_fixtures_csv(
 
     Reads the manifest capture_status for this (instruments-service,
     sports, day, league_id) FIRST and branches — empty_confirmed leagues
-    (paused window per UAC ``KNOWN_COVERAGE_GAPS`` or pre-source-launch
-    per ``SOURCE_COVERAGE_START``) return a header-only CSV explaining
-    the honest empty rather than a confusing zero-row download.
+    (pre-source-launch per ``SOURCE_COVERAGE_START``) return a header-only
+    CSV explaining the honest empty rather than a confusing zero-row
+    download.
     """
     capture_meta = lookup_capture_status_for_shard(
         service="instruments-service",
