@@ -189,7 +189,7 @@ def build_mock_turbo_response(
     service_restrictions: dict[str, frozenset[str]] = {
         "market-data-processing-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-delta-one-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
-        "features-volatility-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        "features-volatility-service": frozenset({"CEFI", "TRADFI"}),
         "features-multi-timeframe-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-cross-instrument-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-onchain-service": frozenset({"DEFI"}),

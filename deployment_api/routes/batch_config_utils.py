@@ -58,12 +58,13 @@ BUCKET_MAPPING = {
         "CEFI": resolve_bucket_name(cloud="gcp", kind="features-calendar"),
     },
     "features-onchain-service": {
-        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="cefi"),
+        # DEFI-only by design — on-chain data has no CEFI producer (features_service/onchain/config.py
+        # hardcodes _ONCHAIN_ASSET_GROUP = "defi"); cloud-providers.yaml dropped the CEFI entry in c8f96e6.
         "DEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="defi"),
     },
     "features-volatility-service": {
+        # No DeFi or sports options (operator ruling, c8f96e6) — CEFI/TRADFI only.
         "CEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="cefi"),
-        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="defi"),
         "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="tradfi"),
     },
     "corporate-actions": {

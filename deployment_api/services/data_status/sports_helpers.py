@@ -21,9 +21,6 @@ from unified_api_contracts.sports import (
 from unified_api_contracts.sports import (
     clip_dates_to_source_coverage as _clip_dates_to_source_coverage,
 )
-from unified_api_contracts.sports import (
-    is_in_known_gap as _is_in_known_gap,
-)
 
 import deployment_api.services.data_status_service as _dss
 
@@ -333,11 +330,7 @@ def expected_dates_for_upstream(
     if not clipped_end or clipped_end < clipped_start:
         return []
     candidate = _dss.get_league_fixture_calendar(league_id, clipped_start, clipped_end)
-    return [
-        d
-        for d in candidate
-        if not _is_in_known_gap(req.source, req.data_type, d) and in_coverage(req.source, req.data_type, league_id, d)
-    ]
+    return [d for d in candidate if in_coverage(req.source, req.data_type, league_id, d)]
 
 
 def sports_expected_dates_for_league(
@@ -361,12 +354,10 @@ def sports_expected_dates_for_league(
     start. When ``data_type`` is supplied, applies the per-(source,
     data_type) override from ``DATA_TYPE_COVERAGE_START`` (e.g.
     SFI_PROGRESSIVE_STATS starts 2020-01-01 even though the SFI source
-    starts 2019-01-01). Then drops any date that falls inside a registered
-    known-coverage-gap window (``KNOWN_COVERAGE_GAPS``) — useful for
-    documented provider outages.
+    starts 2019-01-01).
 
-    Pass empty strings to skip clipping/gap-filtering (preserves legacy
-    callers that don't yet know the source/data_type).
+    Pass an empty ``source_key`` to skip clipping (preserves legacy callers
+    that don't yet know the source/data_type).
     """
     if source_key:
         start_date, end_date = _clip_dates_to_source_coverage(
@@ -376,12 +367,8 @@ def sports_expected_dates_for_league(
             return []
     season_dates = _dss.get_league_fixture_calendar(league_id, start_date, end_date)
     if axis == "per_league_per_fixture_date" or cadence_days <= 1:
-        result = season_dates
-    else:
-        result = season_dates[::cadence_days]
-    if source_key and data_type:
-        result = [d for d in result if not _is_in_known_gap(source_key, data_type, d)]
-    return result
+        return season_dates
+    return season_dates[::cadence_days]
 
 
 def sports_trigger_dates_for_window(
