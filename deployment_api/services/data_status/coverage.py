@@ -226,7 +226,7 @@ class CoverageStatusMixin(VenueResolutionMixin):
                 axis_counts = {
                     (str(k) if str(k).strip() else "__legacy__"): int(v)  # pyright: ignore[reportAny]
                     for k, v in grouped.items()  # pyright: ignore[reportAny]
-                    if v and v > 0  # pyright: ignore[reportAny]
+                    if pd.notna(v) and v > 0  # pyright: ignore[reportAny]
                 }
             else:
                 # Vectorised value-counts (single O(n) pass). The prior

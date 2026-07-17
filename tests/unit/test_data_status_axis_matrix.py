@@ -118,6 +118,26 @@ class TestBuildBreakdowns:
         # instrument_type is a display axis → also present + populated
         assert breakdowns["instrument_type"] == {"DEX_POOL": 140, "LENDING_POOL": 20}
 
+    def test_all_na_instrument_count_group_does_not_crash(self) -> None:
+        """A group whose ``instrument_count`` is entirely NA must be skipped, not raise.
+
+        ``groupby(...).sum(min_count=1)`` returns ``pd.NA`` (not 0/NaN) for a group with
+        zero non-NA members. ``pd.NA``'s ``__bool__`` deliberately raises
+        ``TypeError: boolean value of NA is ambiguous`` — a bare ``if v and v > 0`` crashes
+        the whole coverage-summary request. Regression for a live 500 hit on real GCS data
+        (2026-07-16/17).
+        """
+        dss = DataStatusService()
+        idx = pd.DataFrame(
+            {
+                "venue": ["BINANCE-SPOT", "BINANCE-SPOT", "DERIBIT"],
+                "instrument_type": ["SPOT_PAIR", "SPOT_PAIR", "PERPETUAL"],
+                "instrument_count": pd.array([100, 50, pd.NA], dtype="Int64"),
+            }
+        )
+        breakdowns = dss._build_breakdowns("instruments-service", "CEFI", idx, "venue")
+        assert breakdowns["instrument_type"] == {"SPOT_PAIR": 150}
+
     def test_strategy_breakdowns_include_job_id_and_archetype(self) -> None:
         dss = DataStatusService()
         idx = _index(
