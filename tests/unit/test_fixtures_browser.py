@@ -349,3 +349,34 @@ class TestAbsoluteDateWindow:
 
         assert spy.call_count == 2
         assert [c.kwargs["start"] for c in spy.call_args_list] == [date(2025, 1, 1), date(2025, 5, 1)]
+
+
+class TestLeagueNames:
+    """F1 (live UI review round 3, 2026-07-17): the browser grouped by the raw
+    API-Football numeric league_id; resolve to the human ``display_name`` from
+    UAC, honest-absence when unmapped."""
+
+    def test_numeric_api_football_id_resolves_to_display_name(self) -> None:
+        # 2 -> UEFA Champions League, 103 -> Eliteserien (real UAC registry entries).
+        assert fb._resolve_league_name("2") == "UEFA Champions League"
+        assert fb._resolve_league_name("103") == "Eliteserien"
+
+    def test_canonical_string_id_resolves(self) -> None:
+        assert fb._resolve_league_name("EPL") == "English Premier League"
+
+    def test_unmapped_id_is_none_not_fabricated(self) -> None:
+        # An id with no registry entry stays honest — None, so the map omits it and
+        # the UI falls back to the raw id (never a placeholder name).
+        assert fb._resolve_league_name("99999999") is None
+        assert fb._resolve_league_name("") is None
+        assert fb._resolve_league_name("   ") is None
+
+    def test_league_names_for_maps_present_ids_only(self) -> None:
+        grouped: fb.FixturesByLeagueAndDay = {
+            "2": {"2026-04-21": []},
+            "103": {"2026-04-21": []},
+            "99999999": {"2026-04-21": []},  # unmapped
+        }
+        names = fb.league_names_for(grouped)
+        assert names == {"2": "UEFA Champions League", "103": "Eliteserien"}
+        assert "99999999" not in names  # honest-absence — UI shows the raw id
