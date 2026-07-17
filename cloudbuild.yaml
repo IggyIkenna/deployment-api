@@ -261,9 +261,28 @@ steps:
       - |
         set -e
         IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
-        echo "=== Operability probe: IMPORT deployment_api ==="
+        # Probe the module gunicorn ACTUALLY loads, not the bare package.
+        #
+        # This step used to run `import deployment_api` — the package __init__, which is 20 lines
+        # and imports NOTHING from unified_trading_library. The runtime entrypoint is
+        # `CMD ["gunicorn", "deployment_api.main:app", ...]`, and deployment_api/main.py:19 does
+        # `from unified_trading_library import (RequestAuditMiddleware, UnifiedCloudConfig,
+        # make_events_relay_router)`. So the probe could pass on an image whose entrypoint was
+        # unimportable — which is exactly what happened: builds 93f36e15 / b452c879 / 8b581721 /
+        # f98d218c / b980dd16 all went build+QG+probe+push+scan GREEN and then died at `deploy`
+        # with "The user-provided container failed to start and listen on PORT=8080", the Cloud Run
+        # log showing the traceback ending at main.py:19's UTL import. Cloud Run kept serving the
+        # stale revision (00180) while ~11 newer revisions failed to start, and NOTHING caught it
+        # until the build alert — because the one step whose job is "does this image actually come
+        # up" was importing the wrong module.
+        #
+        # Import the REAL app_uri module. Keep it `--entrypoint python` (not a full gunicorn boot):
+        # this validates the import graph gunicorn will execute, without needing a port or Cloud
+        # Run's env. If main.py cannot import, the image can never serve, and we must fail HERE —
+        # at the build — rather than 5 steps later against a live service.
+        echo "=== Operability probe: IMPORT deployment_api.main (the gunicorn app_uri) ==="
         docker run --rm --entrypoint python "$$IMG" \
-          -c "import deployment_api; print('IMPORT OK')"
+          -c "import deployment_api.main; print('IMPORT OK: deployment_api.main')"
         echo "=== Operability probe PASSED ==="
     waitFor: ["quality-gates"]
 
