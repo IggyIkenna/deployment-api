@@ -124,14 +124,6 @@
       "staleness_budget_seconds": "86400"
     },
     {
-      "category": "features-onchain-cefi",
-      "kind": "features-onchain",
-      "asset_group": "cefi",
-      "job_name": "uts-prod-manifest-consolidator-features-onchain-cefi",
-      "bucket_template": "features-onchain-cefi-{project}",
-      "staleness_budget_seconds": "86400"
-    },
-    {
       "category": "features-onchain-defi",
       "kind": "features-onchain",
       "asset_group": "defi",
