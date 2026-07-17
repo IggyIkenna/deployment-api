@@ -69,6 +69,20 @@ MAX_CATALOGUE_SEARCH_RESULTS = 500
 # rows) — read the per-instrument identity catalogue instead. prediction/sports
 # are NOT in this set (their ``_index`` already carries a genuine per-row
 # instrument_id/league_id and keeps working unchanged).
+#
+# DO NOT ADD "sports" (or "prediction") HERE. This has been prototyped and reverted
+# more than once — it LOOKS like a consistency win and is a real regression. Measured
+# against the live sports ``prod/catalog.parquet`` (2026-07-17, 27,250 rows):
+#   1. ``venue`` is BLANK on 27,250/27,250 rows = 100.0% — the explorer's venue narrow
+#      would silently return nothing for every sports venue filter.
+#   2. There is NO ``capture_status`` column — the identity path defaults that field to
+#      ``captured``, so all ~27k rows would be stamped "captured" from a file that has
+#      no capture evidence at all. That FABRICATES a status (honest-absence violation,
+#      ``codex/02-data/honest-absence-downstream-handling.md``). The default is only
+#      honest for cefi/defi/tradfi, whose catalog rows are captured-at-least-once.
+#   3. ``instrument_type`` is lowercase legacy (fixture/player/team/league), not the
+#      UPPERCASE canonical vocabulary this endpoint's type narrow matches on.
+# The regression test ``test_sports_not_in_identity_catalogue_asset_groups`` guards this.
 _IDENTITY_CATALOGUE_ASSET_GROUPS: frozenset[str] = frozenset({"cefi", "defi", "tradfi"})
 
 # Columns projected from ``prod/catalog.parquet`` for this endpoint (schema-aware
