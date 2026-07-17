@@ -110,6 +110,13 @@ def _ensure_services_mocked() -> None:
     # package below has __path__=[] so a dotted import can't reach it otherwise).
     real_prediction_catalogue = importlib.import_module("deployment_api.services.prediction_catalogue")
 
+    # fixtures_browser is a pure pandas + upcoming_fixtures-reuse consumer
+    # (fixtures browser — P9 operator request). No circular-import risk; its
+    # unit tests + routes/fixtures_browse.py's eager import need the REAL
+    # module (the stubbed services package below has __path__=[] so a dotted
+    # import can't reach it otherwise).
+    real_fixtures_browser = importlib.import_module("deployment_api.services.fixtures_browser")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -173,6 +180,10 @@ def _ensure_services_mocked() -> None:
     # Re-register prediction_catalogue as a real module (P3 catalogue browser).
     sys.modules["deployment_api.services.prediction_catalogue"] = real_prediction_catalogue
     services_mod.prediction_catalogue = real_prediction_catalogue
+
+    # Re-register fixtures_browser as a real module (P9 fixtures browser).
+    sys.modules["deployment_api.services.fixtures_browser"] = real_fixtures_browser
+    services_mod.fixtures_browser = real_fixtures_browser
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
