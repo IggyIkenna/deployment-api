@@ -223,6 +223,10 @@ EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_REFDATA_CADENCE_CHANGE",
     "EXPECTED_DEPRECATED_DATA_TYPE",
     "EXPECTED_KNOWN_SOURCE_GAP",
+    # Bounded evidenced out-of-bounds range (UAC canonical.coverage_exclusions). OUT OF MODEL
+    # (clipped from numerator + denominator) — so it MUST keep its own visible bucket here:
+    # an out-of-model range that is invisible is indistinguishable from data we lost.
+    "EXPECTED_UPSTREAM_OUT_OF_BOUNDS",
     "EXPECTED_UPSTREAM_EMPTY",
     "EXPECTED_OUT_OF_COVERAGE_WINDOW",
     "EXPECTED_FIXTURE_CANCELLED",
