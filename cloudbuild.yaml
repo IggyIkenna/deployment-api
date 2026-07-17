@@ -414,12 +414,18 @@ steps:
         # 8585, matching the dedicated rollup service's 16Gi) absorbs the cold first-mount
         # burst. Set EXPLICITLY here — this deploy passes --update-env-vars (not --memory),
         # so without this line the memory silently inherits the prior revision's value.
-        # Incidents: deployment_ui_data_status_drilldown_oom_and_leaf_schema_2026_07_15 (→8Gi)
-        # + data_status_ui_live_review_round3_2026_07_17 F2 (→16Gi). If it recurs at 16Gi,
-        # add an in-container asyncio.Semaphore capping CONCURRENT heavy catalogue loads
-        # (model on _deploy_turbo._drilldown_build_semaphore) rather than bumping again.
+        # --cpu 4 is REQUIRED with 16Gi: Cloud Run (gen2) caps memory at 8Gi for 2 CPU;
+        # 16Gi needs ≥4 CPU (the 2026-07-17 first attempt set --memory 16Gi alone and the
+        # deploy was REJECTED: "For 2.0 CPU, memory must be between 128Mi and 8Gi"). 4 CPU
+        # also shortens the concurrent-heavy-read overlap window (parquet decompress + pandas
+        # are CPU-bound), which is itself part of the OOM cause. Incidents:
+        # deployment_ui_data_status_drilldown_oom_and_leaf_schema_2026_07_15 (→8Gi) +
+        # data_status_ui_live_review_round3_2026_07_17 F2 (→16Gi/4CPU). If it recurs, add an
+        # in-container asyncio.Semaphore capping CONCURRENT heavy catalogue loads (model on
+        # _deploy_turbo._drilldown_build_semaphore) rather than bumping again.
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
           --memory 16Gi \
+          --cpu 4 \
           --update-env-vars WORKERS=2,AWS_ATHENA_READER_ROLE_ARN=arn:aws:iam::427895769566:role/gcp-cloudrun-athena-cost-reader \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
         # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the
