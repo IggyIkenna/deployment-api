@@ -7,6 +7,7 @@ and instrument availability queries.
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, cast
 
@@ -472,8 +473,9 @@ class DataQueryService:
         ``instrument_availability/by_date/day=.../venue=.../instruments.parquet``.
 
         Strategy: list venues for the most recent day with data, read each
-        venue's parquet, extract ``instrument_key`` + ``instrument_type``,
-        return the union. Bounded by ``_SEARCH_LISTING_CAP`` parquet reads.
+        venue's parquet (in parallel — see ``_read_all_venue_parquets``),
+        extract ``instrument_key`` + ``instrument_type``, return the union.
+        Bounded by ``_SEARCH_LISTING_CAP`` parquet reads.
         """
         # Bucket resolution MUST match the coverage/sports paths (resolve_bucket_name):
         # build_bucket("instruments", …) drops the ``-{env}-`` segment → resolves to
@@ -489,10 +491,41 @@ class DataQueryService:
         if latest_day is None:
             return []
         per_venue_uris = self._collect_per_venue_uris(bucket, latest_day)
+        if not per_venue_uris:
+            return []
+        return self._read_all_venue_parquets(per_venue_uris)
+
+    # Cap on concurrent per-venue parquet reads — enough to collapse a
+    # 60+-venue category (DeFi) to a couple of batches without opening an
+    # unbounded number of GCS connections. Same ceiling as
+    # ``upcoming_fixtures._read_frames_for_window``'s per-day threading.
+    _VENUE_READ_MAX_WORKERS: int = 16
+
+    def _read_all_venue_parquets(self, per_venue_uris: dict[str, str]) -> list[dict[str, str]]:
+        """Read every venue's ``instruments.parquet`` concurrently, merge + dedup.
+
+        Per-venue reads are independent transpacific GCS round-trips
+        (~1-3s each). DeFi alone registers 63 venues in ``VENUE_TO_ASSET_GROUP``
+        — a sequential loop here was the dominant cost behind the ~44s cold
+        cache-miss latency on symbol search (measured operator-side,
+        2026-07-16). Threading collapses N round-trips to ~one round-trip
+        latency per batch — the same pattern already shipped in
+        ``upcoming_fixtures.py`` for per-day fixture reads.
+        """
+        venues = list(per_venue_uris.keys())
+        uris = list(per_venue_uris.values())
+        with ThreadPoolExecutor(max_workers=min(len(uris), self._VENUE_READ_MAX_WORKERS)) as ex:
+            per_venue_rows = list(ex.map(self._read_venue_parquet_rows, uris, venues))
+
         corpus: list[dict[str, str]] = []
         seen: set[tuple[str, str, str]] = set()
-        for venue, uri in per_venue_uris.items():
-            self._extend_corpus_from_venue_parquet(uri, venue, corpus, seen)
+        for rows in per_venue_rows:
+            for row in rows:
+                key = (row["canonical_id"], row["venue"], row["instrument_type"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                corpus.append(row)
         return corpus
 
     def _collect_per_venue_uris(self, bucket: str, day: str) -> dict[str, str]:
@@ -516,27 +549,25 @@ class DataQueryService:
                 per_venue[venue] = f"gs://{bucket}/{obj.name}"  # noqa: gs-uri  — URI composer, bucket already resolved
         return per_venue
 
-    def _extend_corpus_from_venue_parquet(
-        self,
-        uri: str,
-        venue: str,
-        corpus: list[dict[str, str]],
-        seen: set[tuple[str, str, str]],
-    ) -> None:
-        """Read one venue's instruments.parquet and append unique rows to corpus."""
+    def _read_venue_parquet_rows(self, uri: str, venue: str) -> list[dict[str, str]]:
+        """Read one venue's ``instruments.parquet``, return its rows (undeduped).
+
+        Runs inside a ``ThreadPoolExecutor`` worker (see
+        ``_read_all_venue_parquets``) — must not mutate shared state; the
+        caller merges + dedups results from all venues after every read
+        completes.
+        """
         df = self._read_parquet_columns_safe(uri, ["instrument_key", "instrument_type"])
         if df is None or df.empty:
-            return
+            return []
+        rows: list[dict[str, str]] = []
         for _, row in df.iterrows():
             cid = str(row.get("instrument_key") or "").strip()
             if not cid:
                 continue
             it = str(row.get("instrument_type") or "").strip()
-            key = (cid, venue, it)
-            if key in seen:
-                continue
-            seen.add(key)
-            corpus.append({"canonical_id": cid, "venue": venue, "instrument_type": it})
+            rows.append({"canonical_id": cid, "venue": venue, "instrument_type": it})
+        return rows
 
     def _latest_available_day(self, bucket: str) -> str | None:
         """Find the most-recent ``day=YYYY-MM-DD`` partition in the bucket's
