@@ -401,17 +401,25 @@ steps:
           exit 0
         fi
         IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
-        echo "deploy: rolling uts-shared-deployment-api → $$IMG (WORKERS=2, 8Gi, AWS Athena WIF role)"
-        # --memory 8Gi (2026-07-15): the data-status hierarchical drilldown reads the
-        # per-(service, asset_group) availability index into memory; even with the
-        # container-wide build guard (_DRILLDOWN_BUILD_SLOTS=1 → WORKERS(2)=2 concurrent
-        # builds) a burst needs headroom over the ~1.24GB WORKERS=2 baseline. Set EXPLICITLY
-        # here rather than relying on Cloud Run revision inheritance — this deploy passes
-        # --update-env-vars (not --memory), so without this line the memory silently
-        # inherits from whatever the prior revision happened to be. Incident:
-        # deployment_ui_data_status_drilldown_oom_and_leaf_schema_2026_07_15.
+        echo "deploy: rolling uts-shared-deployment-api → $$IMG (WORKERS=2, 16Gi, AWS Athena WIF role)"
+        # --memory 16Gi (2026-07-17, was 8Gi): the data-status page mounts SEVERAL heavy
+        # catalogue-reading panels at once (New listings + Upcoming expiries read all five
+        # per-AG prod/catalog.parquet objects; Prediction catalogue reads the 184 MB /
+        # 2.67M-row prediction catalogue — now 25 cols after the `question` backfill;
+        # coverage-summary / drilldown read the availability index). Under concurrency=80
+        # a first-mount burst packs these onto ONE 8Gi instance and OOMs — MEASURED live
+        # 2026-07-17: 8585 MiB used > 8192 limit, container killed, ALL in-flight panel
+        # requests 500 together (operator saw "Unknown error" on all three panels). The
+        # reads are already column-pruned + 5-min TTL-cached, so 16Gi (2× over the failing
+        # 8585, matching the dedicated rollup service's 16Gi) absorbs the cold first-mount
+        # burst. Set EXPLICITLY here — this deploy passes --update-env-vars (not --memory),
+        # so without this line the memory silently inherits the prior revision's value.
+        # Incidents: deployment_ui_data_status_drilldown_oom_and_leaf_schema_2026_07_15 (→8Gi)
+        # + data_status_ui_live_review_round3_2026_07_17 F2 (→16Gi). If it recurs at 16Gi,
+        # add an in-container asyncio.Semaphore capping CONCURRENT heavy catalogue loads
+        # (model on _deploy_turbo._drilldown_build_semaphore) rather than bumping again.
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
-          --memory 8Gi \
+          --memory 16Gi \
           --update-env-vars WORKERS=2,AWS_ATHENA_READER_ROLE_ARN=arn:aws:iam::427895769566:role/gcp-cloudrun-athena-cost-reader \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
         # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the
