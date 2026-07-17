@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 
 import pandas as pd
@@ -172,3 +172,180 @@ def test_window_clamped_to_max_side_days() -> None:
 
     _, kwargs = spy.call_args
     assert kwargs["inclusive_extra_days"] == fb._MAX_WINDOW_SIDE_DAYS * 2
+
+
+def _flatten(out: fb.FixturesByLeagueAndDay) -> list[str]:
+    """All fixture_ids across every league/day, sorted — filter assertions."""
+    return sorted(f["fixture_id"] for by_day in out.values() for day in by_day.values() for f in day)
+
+
+class TestTeamFilter:
+    """``team=`` — case-insensitive substring across home/away name AND id,
+    matching whichever side the team played (operator ask 2026-07-17)."""
+
+    def test_matches_home_and_away_side_case_insensitively(self) -> None:
+        df = pd.DataFrame(
+            [
+                _fixture_row("home-side", "2026-04-21T12:00:00Z", home="Arsenal", away="Chelsea"),
+                _fixture_row("away-side", "2026-04-21T14:00:00Z", home="Spurs", away="Arsenal"),
+                _fixture_row("no-match", "2026-04-21T16:00:00Z", home="Leeds", away="Everton"),
+            ]
+        )
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, team="arSEnal")
+
+        assert _flatten(out) == ["away-side", "home-side"]
+
+    def test_matches_on_team_id_not_only_name(self) -> None:
+        row = _fixture_row("by-id", "2026-04-21T12:00:00Z", home="Some Club", away="Other Club")
+        row["home_team_id"] = "team-arsenal-42"
+        other = _fixture_row("other", "2026-04-21T13:00:00Z", home="X", away="Y")
+        other["home_team_id"] = "team-leeds-7"
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=pd.DataFrame([row, other])),
+        ):
+            out = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, team="arsenal-42")
+
+        assert _flatten(out) == ["by-id"]
+
+    def test_blank_team_is_a_no_op_not_a_match_everything_filter(self) -> None:
+        df = pd.DataFrame([_fixture_row("a", "2026-04-21T12:00:00Z")])
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, team="   ")
+
+        assert _flatten(out) == ["a"]
+
+    def test_team_narrow_is_not_served_from_the_unfiltered_cache_entry(self) -> None:
+        """Regression: the cache key MUST include the team filter — otherwise a
+        team search silently returns the previously-cached unfiltered rows."""
+        df = pd.DataFrame(
+            [
+                _fixture_row("arsenal-fx", "2026-04-21T12:00:00Z", home="Arsenal", away="Chelsea"),
+                _fixture_row("other-fx", "2026-04-21T14:00:00Z", home="Leeds", away="Everton"),
+            ]
+        )
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            unfiltered = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0)
+            filtered = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, team="arsenal")
+
+        assert _flatten(unfiltered) == ["arsenal-fx", "other-fx"]
+        assert _flatten(filtered) == ["arsenal-fx"]
+
+    def test_combines_with_league_and_date_narrows(self) -> None:
+        df = pd.DataFrame(
+            [
+                _fixture_row("want", "2026-04-21T12:00:00Z", league_id="EPL", home="Arsenal", away="Chelsea"),
+                _fixture_row("wrong-league", "2026-04-21T13:00:00Z", league_id="MLS", home="Arsenal", away="X"),
+                _fixture_row("wrong-team", "2026-04-21T14:00:00Z", league_id="EPL", home="Leeds", away="Y"),
+            ]
+        )
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(
+                league_id="EPL", team="arsenal", start_date="2026-04-21", end_date="2026-04-21"
+            )
+
+        assert _flatten(out) == ["want"]
+
+
+class TestAbsoluteDateWindow:
+    """``start_date``/``end_date`` — the today-relative window can only reach 60
+    days back, so an absolute range is the only way to search an arbitrary
+    historical date (operator ask 2026-07-17)."""
+
+    def test_absolute_range_addresses_a_window_far_outside_the_relative_one(self) -> None:
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),  # "today" = 2026-04-21
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(start_date="2024-01-01", end_date="2024-01-08")
+
+        _, kwargs = spy.call_args
+        assert kwargs["start"] == date(2024, 1, 1)
+        assert kwargs["inclusive_extra_days"] == 7
+
+    def test_start_date_only_fills_end_from_days_forward(self) -> None:
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(start_date="2025-06-01", window_days_forward=3)
+
+        _, kwargs = spy.call_args
+        assert kwargs["start"] == date(2025, 6, 1)
+        assert kwargs["inclusive_extra_days"] == 3
+
+    def test_end_date_only_fills_start_from_days_back(self) -> None:
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(end_date="2025-06-10", window_days_back=4)
+
+        _, kwargs = spy.call_args
+        assert kwargs["start"] == date(2025, 6, 6)
+        assert kwargs["inclusive_extra_days"] == 4
+
+    def test_reversed_range_is_swapped_not_negative(self) -> None:
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(start_date="2025-03-10", end_date="2025-03-01")
+
+        _, kwargs = spy.call_args
+        assert kwargs["start"] == date(2025, 3, 1)
+        assert kwargs["inclusive_extra_days"] == 9
+
+    def test_absolute_span_is_capped(self) -> None:
+        """An absolute range must never read more days than the relative window
+        could — single-walk discipline (bounded read) preserved."""
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(start_date="2020-01-01", end_date="2026-01-01")
+
+        _, kwargs = spy.call_args
+        assert kwargs["start"] == date(2020, 1, 1)
+        assert kwargs["inclusive_extra_days"] == fb._MAX_WINDOW_SPAN_DAYS
+
+    def test_unparseable_date_falls_back_to_the_relative_window(self) -> None:
+        """A stray query param degrades to the default window rather than 500ing."""
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(start_date="not-a-date", window_days_back=2, window_days_forward=3)
+
+        _, kwargs = spy.call_args
+        assert kwargs["start"] == date(2026, 4, 19)  # today(2026-04-21) - 2
+        assert kwargs["inclusive_extra_days"] == 5
+
+    def test_distinct_date_windows_do_not_share_a_cache_entry(self) -> None:
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(fb, "_read_frames_for_window", return_value=[]) as spy,
+        ):
+            fb.list_fixtures_by_league_and_day(start_date="2025-01-01", end_date="2025-01-02")
+            fb.list_fixtures_by_league_and_day(start_date="2025-05-01", end_date="2025-05-02")
+
+        assert spy.call_count == 2
+        assert [c.kwargs["start"] for c in spy.call_args_list] == [date(2025, 1, 1), date(2025, 5, 1)]
