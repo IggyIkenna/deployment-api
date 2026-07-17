@@ -138,7 +138,10 @@ class DefiStatusMixin(DataStatusCliMixin):
     _SERVICE_CATEGORY_RESTRICTIONS: ClassVar[dict[str, frozenset[str]]] = {
         "market-data-processing-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-delta-one-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
-        "features-volatility-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
+        # DEFI removed (UAC cloud-providers.yaml DEFI key removed 2026-07-17,
+        # asset-group parity sweep, operator ruling: no DeFi options exist,
+        # so IV/skew/term-structure surfaces cannot be computed for DEFI).
+        "features-volatility-service": frozenset({"CEFI", "TRADFI"}),
         "features-multi-timeframe-service": frozenset({"CEFI", "TRADFI", "DEFI"}),
         "features-cross-instrument-service": frozenset({"CEFI", "TRADFI", "DEFI", "PREDICTION"}),
         "features-onchain-service": frozenset({"DEFI"}),

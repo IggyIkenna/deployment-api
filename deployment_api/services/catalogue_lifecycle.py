@@ -5,16 +5,26 @@ Mirrors ``upcoming_fixtures.py`` (5-min in-process TTL cache, TypedDict rows,
 shard-isolated per-AG reads — a missing/failed AG parquet is skipped, never a
 cross-AG raise). The catalogue is the ONLY identity-level source: one row per
 instrument with ``available_from`` (listing date = MIN(first-observed,
-venue-declared)) and ``available_to`` (a 4-way value: delisted_at / expiry /
-None-if-active / last-observed).
+venue-declared)) and ``available_to`` (a 3-way value: expiry / None-if-active /
+last-observed).
+
+``delisted_at`` is NOT a fourth ``available_to`` source. It exists only as a UAC
+schema field (``internal/reference/instrument.py``, ``_instruments_parquet_schema``)
+that **no adapter/writer ever populates**: the only assignments workspace-wide are
+in ``build_instrument_catalogue.py``'s roll-up, and those read it back out of the
+per-date rows (``_extract_meta``) — nothing puts it there. Measured 2026-07-17:
+non-blank on **0 rows across 98 per-date cefi venue files / 38,582 rows** spanning
+four day-scans two years apart (2024-01-15 / 2024-07-15 / 2025-07-15 / 2026-07-15);
+the column is present in every file and empty in all of them. The roll-up's
+``delisted_at``-wins-over-liveness branch is therefore unreachable on real data.
 
 Load-bearing correctness rule for **Upcoming Expiries** (plan
 data_status_page_ux_and_canonicalisation_2026_07_16 P2): filter
 ``instrument_type ∈ {FUTURE, OPTION, COMBO}`` AND ``available_to`` inside the
-forward window ``[today, today+within_days]``. Because delistings + last-observed
-values are always ≤ today, the forward window admits only genuine future
-expiries — the type filter + forward window together make it correct even though
-``available_to`` is overloaded.
+forward window ``[today, today+within_days]``. Because last-observed values are
+always ≤ today, the forward window admits only genuine future expiries — the type
+filter + forward window together make it correct even though ``available_to`` is
+overloaded.
 """
 
 from __future__ import annotations
@@ -267,10 +277,12 @@ def list_upcoming_expiries(
     """Derivatives (``instrument_type ∈ {FUTURE, OPTION, COMBO}``) whose
     ``available_to`` falls inside ``[today, today+within_days]`` (soonest-first).
 
-    The type filter + forward window are BOTH load-bearing: delistings +
-    last-observed ``available_to`` values are always ≤ today, so the forward
-    window admits only genuine future expiries. Read-only, 5-min TTL,
-    shard-isolated per asset_group."""
+    The type filter + forward window are BOTH load-bearing: last-observed
+    ``available_to`` values are always ≤ today, so the forward window admits only
+    genuine future expiries. (``available_to`` is a 3-way value — expiry /
+    None-if-active / last-observed; ``delisted_at`` is a schema field no writer
+    populates, see the module docstring.) Read-only, 5-min TTL, shard-isolated per
+    asset_group."""
     within_days = max(1, min(within_days, _MAX_EXPIRY_WINDOW_DAYS))
     venue_f = venue.strip() if venue and venue.strip() else None
     key = (within_days, asset_group, venue_f)

@@ -11,10 +11,12 @@ import os
 from datetime import date
 
 import pytest
+from fastapi import HTTPException
 
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.routes.costs import _resolve_range
 from deployment_api.services.cost_observability import CostObservabilityService, CostRecord, waste
 from deployment_api.services.cost_observability import github_billing as ghb
 from deployment_api.services.cost_observability import providers as prov
@@ -528,6 +530,132 @@ def test_summarize_totals_and_deltas(service: CostObservabilityService) -> None:
     assert len(gcp.daily) == 3
     # equal prior window → 0% delta
     assert gcp.delta_pct == 0.0
+
+
+# --- explicit date-range window (start_date / end_date) ----------------------
+# The operator-picked range on /ops/costs. The bounds are INCLUSIVE at the API edge but every
+# consumer below `_window_table` takes an EXCLUSIVE end, so the off-by-one is the thing worth
+# pinning: a picker showing "1 → 15 May" that silently dropped the 15th would understate spend.
+
+
+def test_window_from_range_includes_both_bounds(service: CostObservabilityService) -> None:
+    start, end, dates = service._window_from_range(date(2026, 5, 1), date(2026, 5, 15))  # pyright: ignore[reportPrivateUsage]
+    assert start == date(2026, 5, 1)
+    assert end == date(2026, 5, 16), "internal end must be EXCLUSIVE (end_date + 1 day)"
+    assert dates[0] == "2026-05-01"
+    assert dates[-1] == "2026-05-15", "the picked end day must be IN the window"
+    assert len(dates) == 15
+
+
+def test_window_from_range_single_day_is_one_day(service: CostObservabilityService) -> None:
+    start, end, dates = service._window_from_range(date(2026, 5, 1), date(2026, 5, 1))  # pyright: ignore[reportPrivateUsage]
+    assert (start, end) == (date(2026, 5, 1), date(2026, 5, 2))
+    assert dates == ["2026-05-01"]
+
+
+def test_window_from_range_swaps_inverted_bounds(service: CostObservabilityService) -> None:
+    """Service-level defence only — the ROUTE rejects an inverted pair loudly (see routes/costs.py)."""
+    _, _, dates = service._window_from_range(date(2026, 5, 15), date(2026, 5, 1))  # pyright: ignore[reportPrivateUsage]
+    assert dates[0] == "2026-05-01"
+    assert dates[-1] == "2026-05-15"
+
+
+def test_window_from_range_clamps_span_to_max_days(service: CostObservabilityService) -> None:
+    """A direct caller can't mint an unbounded scan — mirrors `_window`'s own clamp."""
+    _, _, dates = service._window_from_range(date(2020, 1, 1), date(2026, 1, 1))  # pyright: ignore[reportPrivateUsage]
+    assert len(dates) == svc._MAX_DAYS  # pyright: ignore[reportPrivateUsage]
+
+
+def test_resolve_window_prefers_explicit_range_over_days(service: CostObservabilityService) -> None:
+    _, _, dates = service._resolve_window(30, date(2026, 5, 1), date(2026, 5, 3))  # pyright: ignore[reportPrivateUsage]
+    assert dates == ["2026-05-01", "2026-05-02", "2026-05-03"], "`days` must be ignored when a range is given"
+
+
+@pytest.mark.parametrize(
+    ("start_date", "end_date"),
+    [(None, None), (date(2026, 5, 1), None), (None, date(2026, 5, 1))],
+)
+def test_resolve_window_falls_back_to_days_unless_both_bounds_given(
+    service: CostObservabilityService, start_date: date | None, end_date: date | None
+) -> None:
+    """Both-or-neither: a half-specified range is ambiguous, so it degrades to the trailing window."""
+    _, _, dates = service._resolve_window(3, start_date, end_date)  # pyright: ignore[reportPrivateUsage]
+    assert len(dates) == 3
+
+
+def test_summarize_explicit_range_equals_equivalent_trailing_window(service: CostObservabilityService) -> None:
+    """The two paths must agree — this is the back-compat guarantee for the existing 7/30/90 presets."""
+    trailing = service.summarize(days=3)
+    explicit = service.summarize(
+        start_date=date.fromisoformat(trailing.dates[0]),
+        end_date=date.fromisoformat(trailing.dates[-1]),
+    )
+    assert explicit.dates == trailing.dates
+    assert explicit.total == trailing.total
+    assert explicit.days == trailing.days
+    assert explicit.run_rate_daily == trailing.run_rate_daily
+
+
+def test_summarize_range_prior_window_is_same_length_immediately_before(
+    service: CostObservabilityService,
+) -> None:
+    """`delta_pct` compares against the equal-length span ENDING where this one starts.
+
+    The fake providers emit a flat 15/day (gcp), so an equal-length prior window means a 0% delta;
+    a prior window of the wrong length would skew it and fail here.
+    """
+    r = service.summarize(start_date=date(2026, 5, 10), end_date=date(2026, 5, 12))
+    gcp = next(c for c in r.clouds if c.cloud == "gcp")
+    assert gcp.total == 45.0  # 15/day * 3 days
+    assert gcp.delta_pct == 0.0  # prior = 7-9 May, also 45.0
+
+
+def test_summarize_range_echoes_resolved_bounds(service: CostObservabilityService) -> None:
+    r = service.summarize(start_date=date(2026, 5, 1), end_date=date(2026, 5, 3))
+    assert (r.start_date, r.end_date, r.days) == ("2026-05-01", "2026-05-03", 3)
+
+
+def test_breakdown_and_timeseries_accept_range_and_echo_bounds(service: CostObservabilityService) -> None:
+    """Breakdown carries no per-day series, so its echoed bounds are the ONLY way a caller can tell
+    which window the rows describe — two different ranges share a `days` length."""
+    bd = service.breakdown("service", "gcp", start_date=date(2026, 5, 1), end_date=date(2026, 5, 3))
+    assert (bd.start_date, bd.end_date, bd.days) == ("2026-05-01", "2026-05-03", 3)
+
+    ts = service.timeseries(cloud="gcp", start_date=date(2026, 5, 1), end_date=date(2026, 5, 3))
+    assert (ts.start_date, ts.end_date, ts.days) == ("2026-05-01", "2026-05-03", 3)
+    assert [p.date for p in ts.points] == ["2026-05-01", "2026-05-02", "2026-05-03"]
+
+
+# --- route-level range validation (the loud gate) ---------------------------
+
+
+def test_resolve_range_passes_through_a_valid_range() -> None:
+    assert _resolve_range(date(2026, 5, 1), date(2026, 5, 15)) == (date(2026, 5, 1), date(2026, 5, 15))
+
+
+def test_resolve_range_returns_none_pair_when_unset() -> None:
+    assert _resolve_range(None, None) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("start_date", "end_date", "expected_code"),
+    [
+        (date(2026, 5, 1), None, "COST_RANGE_INCOMPLETE"),
+        (None, date(2026, 5, 1), "COST_RANGE_INCOMPLETE"),
+        (date(2026, 5, 15), date(2026, 5, 1), "COST_RANGE_INVERTED"),
+        (date(2024, 1, 1), date(2026, 5, 1), "COST_RANGE_TOO_LONG"),
+    ],
+)
+def test_resolve_range_rejects_ambiguous_or_unbounded(
+    start_date: date | None, end_date: date | None, expected_code: str
+) -> None:
+    """400, never a silent correction: a window quietly different from the one asked for is
+    indistinguishable — on the page — from real spend moving."""
+    with pytest.raises(HTTPException) as exc:
+        _resolve_range(start_date, end_date)
+    assert exc.value.status_code == 400
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["code"] == expected_code
 
 
 def _fake_gcp_credited(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:

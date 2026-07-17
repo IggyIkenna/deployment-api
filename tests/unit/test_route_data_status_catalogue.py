@@ -424,3 +424,35 @@ class TestIdentityCatalogueSource:
         assert body["total_count"] == 1
         assert body["instruments"][0]["instrument_id"] == "BTC-USDT-PERP"
         assert body["instruments"][0]["is_mvp"] is True
+
+
+class TestIdentityCatalogueAssetGroupsGuard:
+    """Regression guard: sports/prediction must NEVER join ``_IDENTITY_CATALOGUE_ASSET_GROUPS``.
+
+    Adding them reads like a consistency win (one source for every asset_group) and
+    has been prototyped + reverted more than once. It is a real regression — see the
+    dense comment above the frozenset in ``_catalogue.py`` for the measured numbers.
+    This test is the enforcement; the comment alone has not been enough.
+    """
+
+    def test_sports_and_prediction_not_in_identity_catalogue_asset_groups(self) -> None:
+        from deployment_api.routes.data_status._catalogue import _IDENTITY_CATALOGUE_ASSET_GROUPS
+
+        for ag in ("sports", "prediction"):
+            assert ag not in _IDENTITY_CATALOGUE_ASSET_GROUPS, (
+                f"{ag!r} must NOT read the identity catalogue (prod/catalog.parquet). Measured on the live "
+                "sports catalogue 2026-07-17 (27,250 rows): venue is BLANK on 100.0% of rows (the explorer's "
+                "venue narrow would silently return nothing), and there is NO capture_status column — the "
+                "identity path defaults capture_status to 'captured', which would FABRICATE a captured status "
+                "for ~27k rows carrying no capture evidence (honest-absence violation, "
+                "codex/02-data/honest-absence-downstream-handling.md). Its instrument_type is also lowercase "
+                "legacy (fixture/player/team/league), not the UPPERCASE canonical vocabulary this endpoint's "
+                "type narrow matches. sports/prediction read _read_availability_index, whose _index carries a "
+                "genuine per-row instrument_id/league_id. Do not 'unify' these paths."
+            )
+
+    def test_identity_catalogue_asset_groups_is_exactly_the_venue_level_index_three(self) -> None:
+        """The set is exactly cefi/defi/tradfi — the three whose ``_index`` is VENUE-level."""
+        from deployment_api.routes.data_status._catalogue import _IDENTITY_CATALOGUE_ASSET_GROUPS
+
+        assert sorted(_IDENTITY_CATALOGUE_ASSET_GROUPS) == ["cefi", "defi", "tradfi"]

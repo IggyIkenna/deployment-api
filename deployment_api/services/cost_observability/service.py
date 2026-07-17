@@ -253,6 +253,40 @@ class CostObservabilityService:
         dates = [(start + timedelta(days=i)).isoformat() for i in range(days)]
         return start, end, dates
 
+    def _window_from_range(self, start_date: date, end_date: date) -> tuple[date, date, list[str]]:
+        """An EXPLICIT window from an operator-picked ``[start_date, end_date]``.
+
+        Both bounds are INCLUSIVE (a picker's "1 May → 15 May" means both endpoints are in), which
+        is why ``end`` comes back as ``end_date + 1 day``: every downstream consumer — the cached
+        ``_window_table``, the snapshot slice, the providers — takes an EXCLUSIVE end, the same
+        contract ``_window`` honours by returning ``today + 1``.
+
+        Returns the identical ``(start, end, dates)`` triple as ``_window`` so every view
+        (summary / breakdown / timeseries) is range-capable without touching its aggregation.
+        Bounds are normalized rather than raised on (the route is the loud gate — see
+        ``routes/costs.py::_resolve_range``): an inverted pair is swapped and an over-long span is
+        clamped to ``_MAX_DAYS``, mirroring ``_window``'s own clamp, so a direct service caller
+        can't produce an unbounded scan.
+        """
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+        span = min((end_date - start_date).days + 1, _MAX_DAYS)
+        end = start_date + timedelta(days=span)  # exclusive
+        dates = [(start_date + timedelta(days=i)).isoformat() for i in range(span)]
+        return start_date, end, dates
+
+    def _resolve_window(
+        self, days: int, start_date: date | None, end_date: date | None
+    ) -> tuple[date, date, list[str]]:
+        """Explicit range when BOTH bounds are given, else the trailing ``days`` window.
+
+        Both-or-neither: a half-specified range is ambiguous (is the other end today, or the start
+        of the data?), so the route rejects it rather than guessing here.
+        """
+        if start_date is not None and end_date is not None:
+            return self._window_from_range(start_date, end_date)
+        return self._window(days)
+
     # -- per-resource daily cost (the deployment inventory cost column) --------
     def per_resource_daily(self, days: int = 7, *, force: bool = False) -> dict[str, ResourceDailyCost]:
         """Three USD daily-cost figures per billing ``resource_id`` over a trailing window.
@@ -294,9 +328,19 @@ class CostObservabilityService:
         return out
 
     # -- summary --------------------------------------------------------------
-    def summarize(self, days: int = _DEFAULT_DAYS, *, force: bool = False) -> SummaryResponse:
-        start, end, dates = self._window(days)
+    def summarize(
+        self,
+        days: int = _DEFAULT_DAYS,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        force: bool = False,
+    ) -> SummaryResponse:
+        start, end, dates = self._resolve_window(days, start_date, end_date)
         cur = self._window_table(start, end, force=force)
+        # The delta's comparison window is the SAME-LENGTH span immediately before this one — true
+        # for a trailing window and an explicit range alike, so "vs prior" stays meaningful when an
+        # operator picks e.g. 1-15 May (compares against 16-30 April).
         prior = self._window_table(start - (end - start), start, force=force)
         cutoff = self._provisional_cutoff_iso()
 
@@ -360,6 +404,8 @@ class CostObservabilityService:
         provisional = (_i(prov_rows[0][0]) or 0) if prov_rows else 0
         return SummaryResponse(
             days=len(dates),
+            start_date=dates[0] if dates else "",
+            end_date=dates[-1] if dates else "",
             total=grand,
             gross=round(grand_gross, 2),
             credit=round(grand_credit, 2),
@@ -379,9 +425,11 @@ class CostObservabilityService:
         days: int = _DEFAULT_DAYS,
         *,
         label_key: str = "purpose",
+        start_date: date | None = None,
+        end_date: date | None = None,
         force: bool = False,
     ) -> BreakdownResponse:
-        start, end, dates = self._window(days)
+        start, end, dates = self._resolve_window(days, start_date, end_date)
         table = self._window_table(start, end, force=force)
         cutoff = self._provisional_cutoff_iso()
         cwhere, cparams = ("cloud = ?", [cloud]) if cloud != "all" else ("TRUE", [])
@@ -412,7 +460,14 @@ class CostObservabilityService:
             for r in rows:
                 r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
             return BreakdownResponse(
-                dimension=dimension, cloud=cloud, days=len(dates), total=total, total_groups=len(rows), rows=rows
+                dimension=dimension,
+                cloud=cloud,
+                days=len(dates),
+                start_date=dates[0] if dates else "",
+                end_date=dates[-1] if dates else "",
+                total=total,
+                total_groups=len(rows),
+                rows=rows,
             )
 
         extra_aggregates: tuple[BreakdownRow, ...] = ()
@@ -472,7 +527,14 @@ class CostObservabilityService:
         for r in rows:
             r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
         return BreakdownResponse(
-            dimension=dimension, cloud=cloud, days=len(dates), total=total, total_groups=total_groups, rows=rows
+            dimension=dimension,
+            cloud=cloud,
+            days=len(dates),
+            start_date=dates[0] if dates else "",
+            end_date=dates[-1] if dates else "",
+            total=total,
+            total_groups=total_groups,
+            rows=rows,
         )
 
     def _finalize_rows(
@@ -721,8 +783,16 @@ class CostObservabilityService:
         return rows
 
     # -- timeseries -----------------------------------------------------------
-    def timeseries(self, days: int = _DEFAULT_DAYS, cloud: str = "all", *, force: bool = False) -> TimeseriesResponse:
-        start, end, dates = self._window(days)
+    def timeseries(
+        self,
+        days: int = _DEFAULT_DAYS,
+        cloud: str = "all",
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        force: bool = False,
+    ) -> TimeseriesResponse:
+        start, end, dates = self._resolve_window(days, start_date, end_date)
         table = self._window_table(start, end, force=force)
         clouds = CLOUD_ORDER if cloud == "all" else [cloud]
         ph = ", ".join(["?"] * len(clouds))
@@ -738,7 +808,13 @@ class CostObservabilityService:
             if day_s in by_day and c_s in by_day[day_s]:
                 by_day[day_s][c_s] = _f(net)
         points = [TimeseriesPoint(date=d, values={c: round(by_day[d][c], 4) for c in clouds}) for d in dates]
-        return TimeseriesResponse(days=len(dates), clouds=clouds, points=points)
+        return TimeseriesResponse(
+            days=len(dates),
+            start_date=dates[0] if dates else "",
+            end_date=dates[-1] if dates else "",
+            clouds=clouds,
+            points=points,
+        )
 
 
 _CLOUD_LABEL = {CLOUD_GCP: "GCP", CLOUD_AWS: "AWS", CLOUD_GITHUB: "GitHub"}

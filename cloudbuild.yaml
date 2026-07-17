@@ -280,8 +280,20 @@ steps:
         # this validates the import graph gunicorn will execute, without needing a port or Cloud
         # Run's env. If main.py cannot import, the image can never serve, and we must fail HERE —
         # at the build — rather than 5 steps later against a live service.
+        # Mirror the env Cloud Run actually provides, or the probe fails for a reason production
+        # never hits. deployment_api/settings.py:175 resolves buckets AT IMPORT TIME
+        # (EXECUTION_STORE_BUCKET = _config.effective_execution_store_bucket -> resolve_bucket_name
+        # -> BucketNamingError when the project-id env var is unset), and the live service DOES set
+        # it (verified: gcloud run services describe -> GCP_PROJECT_ID=central-element-323112).
+        # Same -e set as the quality-gates step above. A bare docker run with no env would red every
+        # build on a non-bug. NB: do not write the project-id var in ${...} form anywhere in this
+        # file — check_cloudbuild_substitutions scans COMMENTS too and Cloud Build SILENTLY rejects
+        # a config with an unescaped substitution (no build record, no GitHub check).
         echo "=== Operability probe: IMPORT deployment_api.main (the gunicorn app_uri) ==="
-        docker run --rm --entrypoint python "$$IMG" \
+        docker run --rm --entrypoint python \
+          -e CLOUD_BUILD=true \
+          -e GCP_PROJECT_ID=$PROJECT_ID \
+          "$$IMG" \
           -c "import deployment_api.main; print('IMPORT OK: deployment_api.main')"
         echo "=== Operability probe PASSED ==="
     waitFor: ["quality-gates"]

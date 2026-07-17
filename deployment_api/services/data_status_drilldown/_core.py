@@ -65,6 +65,17 @@ PREDICTION_KIND_MAP: dict[str, str] = {
     "execution-store": "execution-store-prediction",
 }
 
+# Services whose cloud-providers.yaml kind-dict carries exactly ONE
+# asset_group entry — bucket resolution for these is SERVICE-keyed, not
+# asset_group-keyed (there is only one physical bucket regardless of which
+# asset_group the caller is drilling into). Mirrors
+# ``DefiStatusMixin._SERVICE_CATEGORY_RESTRICTIONS`` (data_status/defi.py) —
+# features-onchain-service is DEFI-only (UAC cloud-providers.yaml CEFI key
+# removed 2026-07-17, asset-group parity sweep).
+SINGLE_ASSET_GROUP_SERVICES: dict[str, str] = {
+    "features-onchain-service": "defi",
+}
+
 
 # Types that bundle many underlyings / strikes into one parquet per day.
 # For these the shard unit is the underlying root (ES, NQ, BTC), not the
@@ -96,7 +107,8 @@ def build_bucket_name(service: str, asset_group: str, project_id: str | None = N
     kind = SERVICE_TO_KIND.get(service)
     if kind is None:
         raise ValueError(f"Unknown service: {service}")
-    ag: str | None = asset_group.lower() if asset_group else None
+    fixed_ag = SINGLE_ASSET_GROUP_SERVICES.get(service)
+    ag: str | None = fixed_ag or (asset_group.lower() if asset_group else None)
     if ag == "prediction":
         pred_kind = PREDICTION_KIND_MAP.get(kind)
         if pred_kind:
