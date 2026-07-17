@@ -58,12 +58,18 @@ BUCKET_MAPPING = {
         "CEFI": resolve_bucket_name(cloud="gcp", kind="features-calendar"),
     },
     "features-onchain-service": {
-        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="cefi"),
+        # DEFI-only (UAC cloud-providers.yaml CEFI key removed 2026-07-17,
+        # asset-group parity sweep — no code ever honoured a CEFI onchain
+        # bucket; see deployment_api/services/data_status/defi.py
+        # _SERVICE_CATEGORY_RESTRICTIONS).
         "DEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="defi"),
     },
     "features-volatility-service": {
+        # DEFI removed (UAC cloud-providers.yaml DEFI/PREDICTION/SPORTS keys
+        # removed 2026-07-17, asset-group parity sweep, operator ruling:
+        # there are no DeFi options, so IV/skew/term-structure surfaces
+        # cannot be computed for DEFI — bucket confirmed empty and deleted).
         "CEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="cefi"),
-        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="defi"),
         "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="tradfi"),
     },
     "corporate-actions": {
