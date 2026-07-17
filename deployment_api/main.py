@@ -67,6 +67,7 @@ from .routes import (
     epics,
     execution_backtest_launch,
     fixtures,
+    fixtures_browse,
     fleet,
     fleet_reconciliation,
     health_consolidator,
@@ -189,6 +190,7 @@ _authenticated_router.include_router(
     tags=["Data Status"],
 )
 _authenticated_router.include_router(fixtures.router, prefix="/api")
+_authenticated_router.include_router(fixtures_browse.router, prefix="/api")
 _authenticated_router.include_router(catalogue_lifecycle.router, prefix="/api")
 _authenticated_router.include_router(prediction_catalogue.router, prefix="/api")
 _authenticated_router.include_router(service_status.router, prefix="/api/service-status", tags=["Service Status"])
