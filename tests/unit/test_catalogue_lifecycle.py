@@ -121,6 +121,143 @@ def test_upcoming_expiries_type_and_window_filter() -> None:
     )
 
 
+def _onboarding_flood_df() -> pd.DataFrame:
+    """Models the REAL false-positive found on prod GCS 2026-07-17: a venue the
+    pipeline onboarded recently (COINBASE-CDE, 2026-07-10) whose entire
+    pre-existing universe carries available_from = the onboarding day, alongside
+    an established venue where a genuinely-new listing must NOT be tagged."""
+    today = _today()
+
+    def iso(offset_days: int) -> str:
+        return (today + timedelta(days=offset_days)).isoformat()
+
+    return pd.DataFrame(
+        [
+            # --- Recently-onboarded venue: every row on the venue's first day,
+            # but with expiries running years out => cannot all be same-day listings.
+            {
+                "instrument_id": "CDE-FUT-NEAR",
+                "instrument_type": "FUTURE",
+                "venue": "COINBASE-CDE",
+                "chain": "",
+                "available_from": iso(-5),
+                "available_to": iso(20),
+                "base_asset": "ADA",
+                "raw_symbol": "ADA-CDE",
+                "mvp": True,
+            },
+            {
+                "instrument_id": "CDE-FUT-FAR",
+                "instrument_type": "FUTURE",
+                "venue": "COINBASE-CDE",
+                "chain": "",
+                "available_from": iso(-5),
+                "available_to": iso(1600),  # ~2030 expiry — clearly pre-existing
+                "base_asset": "BTC",
+                "raw_symbol": "BTC-CDE",
+                "mvp": True,
+            },
+            # --- Established venue: long history, plus one genuinely-new listing.
+            {
+                "instrument_id": "EST-OLD",
+                "instrument_type": "SPOT_PAIR",
+                "venue": "BINANCE-SPOT",
+                "chain": "",
+                "available_from": iso(-900),
+                "available_to": "",
+                "base_asset": "BTC",
+                "raw_symbol": "BTCUSDT",
+                "mvp": True,
+            },
+            {
+                "instrument_id": "EST-GENUINELY-NEW",
+                "instrument_type": "SPOT_PAIR",
+                "venue": "BINANCE-SPOT",
+                "chain": "",
+                "available_from": iso(-3),
+                "available_to": "",
+                "base_asset": "NEW",
+                "raw_symbol": "NEWUSDT",
+                "mvp": True,
+            },
+        ]
+    )
+
+
+class TestNewListingFalsePositiveGuard:
+    """The venue-first-day provenance flag (plan P2 backend todo).
+
+    Guards the mechanism traced on real GCS: catalogue available_from =
+    MIN(first_day_observed, declared_from), so a venue with no declared listing
+    date degrades to "the day the pipeline first saw it" and a recently-onboarded
+    venue floods new-listings.
+    """
+
+    def test_onboarding_flood_rows_are_tagged(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(
+            cl, "_read_catalogue", side_effect=lambda ag: _onboarding_flood_df() if ag == "cefi" else None
+        ):
+            rows = cl.list_new_listings(max_age_days=30)
+        tagged = {r["instrument_id"]: r["available_from_is_venue_first_day"] for r in rows}
+        assert tagged["CDE-FUT-NEAR"] is True
+        assert tagged["CDE-FUT-FAR"] is True, (
+            "a row whose available_from is its venue's earliest known date must be flagged — "
+            "this is the COINBASE-CDE onboarding-flood signature"
+        )
+
+    def test_genuine_new_listing_on_established_venue_is_not_tagged(self) -> None:
+        """The guard must not cry wolf: a real listing on a venue with history
+        does NOT coincide with that venue's first day, so it stays untagged."""
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(
+            cl, "_read_catalogue", side_effect=lambda ag: _onboarding_flood_df() if ag == "cefi" else None
+        ):
+            rows = cl.list_new_listings(max_age_days=30)
+        by_id = {r["instrument_id"]: r for r in rows}
+        assert by_id["EST-GENUINELY-NEW"]["available_from_is_venue_first_day"] is False
+
+    def test_rows_are_surfaced_not_excluded(self) -> None:
+        """Decision: SHOW provenance, do not silently drop. Measured impact was
+        99/439,940 rows (0.02%) — dropping them would hide possibly-real listings."""
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(
+            cl, "_read_catalogue", side_effect=lambda ag: _onboarding_flood_df() if ag == "cefi" else None
+        ):
+            rows = cl.list_new_listings(max_age_days=30)
+        ids = {r["instrument_id"] for r in rows}
+        assert {"CDE-FUT-NEAR", "CDE-FUT-FAR"} <= ids, "flagged rows must still be returned, only tagged"
+
+    def test_tag_is_computed_before_the_window_narrows_the_frame(self) -> None:
+        """Load-bearing ordering: the venue's first day is its earliest date in the
+        WHOLE catalogue. If the tag were computed after the date window, the
+        established venue's oldest row INSIDE the window would falsely tag as its
+        first day. A 30-day window excludes EST-OLD (-900d), so EST-GENUINELY-NEW
+        would become BINANCE-SPOT's in-window minimum — and must still be False."""
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(
+            cl, "_read_catalogue", side_effect=lambda ag: _onboarding_flood_df() if ag == "cefi" else None
+        ):
+            rows = cl.list_new_listings(max_age_days=30)
+        by_id = {r["instrument_id"] for r in rows}
+        assert "EST-OLD" not in by_id, "fixture guard: the -900d row must be outside the 30d window"
+        genuine = next(r for r in rows if r["instrument_id"] == "EST-GENUINELY-NEW")
+        assert genuine["available_from_is_venue_first_day"] is False, (
+            "tag leaked from the windowed slice instead of the full catalogue"
+        )
+
+    def test_expiries_carry_a_truthful_tag_too(self) -> None:
+        """The field is on the shared row type, so the expiries endpoint must
+        compute it rather than letting it default to a silent False."""
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(
+            cl, "_read_catalogue", side_effect=lambda ag: _onboarding_flood_df() if ag == "cefi" else None
+        ):
+            rows = cl.list_upcoming_expiries(within_days=30)
+        by_id = {r["instrument_id"]: r for r in rows}
+        assert by_id["CDE-FUT-NEAR"]["available_from_is_venue_first_day"] is True
+
+
 def test_shard_isolation_one_failing_asset_group_is_skipped() -> None:
     cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
 
