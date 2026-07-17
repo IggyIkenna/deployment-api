@@ -28,11 +28,14 @@ adapters already compute, not a stored value — then composes
 :func:`~unified_api_contracts.predictions.category_for_group` for the coarse
 category. Bundle rows are excluded (never surfaced as a browsable "market").
 
-Honest-absence label fallback (never fabricate a title): ``raw_symbol`` ->
-``base_asset`` (first 50 chars) -> ``event_title`` (only if the schema carries
-it — NaN until a regen per ``PREDICTION_INSTRUMENTS.md`` lines 324-326;
-absent from ``CATALOG_COLUMNS`` today, but schema-checked defensively) ->
-``instrument_id``.
+Honest-absence label fallback (never fabricate a title): ``question`` (the real
+human market question, populated going forward by the adapters — uac@c1de078a
+added ``InstrumentRecord.question``; schema-checked defensively so a
+pre-backfill catalogue that lacks the column degrades gracefully) ->
+``raw_symbol`` -> ``base_asset`` (first 50 chars) -> ``event_title`` (only if
+the schema carries it — NaN until a regen per ``PREDICTION_INSTRUMENTS.md``
+lines 324-326; absent from ``CATALOG_COLUMNS`` today, but schema-checked
+defensively) -> ``instrument_id``.
 """
 
 from __future__ import annotations
@@ -67,6 +70,11 @@ _BASE_ASSET_LABEL_MAX_LEN: int = 50
 # is NOT in today's ``CATALOG_COLUMNS`` (dropped before roll-up per
 # PREDICTION_INSTRUMENTS.md's P3 follow-up) but is listed as a candidate for a
 # future regen — the label fallback chain below is honest either way.
+# ``question`` (the real human market question) is forward-only: uac@c1de078a
+# added ``InstrumentRecord.question`` + the aligned INSTRUMENTS_PARQUET_SCHEMA
+# entry, so new captures carry it, existing rows are backfilled separately. The
+# schema-aware read means a catalogue that predates the column simply omits it
+# (the label chain then falls through, unchanged).
 _READ_COLUMNS: list[str] = [
     "instrument_id",
     "instrument_type",
@@ -78,6 +86,7 @@ _READ_COLUMNS: list[str] = [
     "available_to",
     "data_type",
     "mvp",
+    "question",
     "event_title",
 ]
 
@@ -222,9 +231,15 @@ def _classify_row(venue: str, raw_symbol: str, instrument_id: str) -> CanonicalQ
 
 
 def _label(rec: dict[str, object]) -> str:
-    """Honest fallback chain — never fabricate: ``raw_symbol`` -> ``base_asset``
-    (first 50 chars) -> ``event_title`` (if the schema carries it) ->
-    ``instrument_id``."""
+    """Honest fallback chain — never fabricate: ``question`` (the real human
+    market question, populated going forward by the adapters) -> ``raw_symbol``
+    -> ``base_asset`` (first 50 chars) -> ``event_title`` (if the schema carries
+    it) -> ``instrument_id``. A blank/None ``question`` (the forward-only norm
+    until existing rows are backfilled) falls straight through to the existing
+    floor, so the label is never an empty string."""
+    question = _norm(rec.get("question"))
+    if question:
+        return question
     raw_symbol = _norm(rec.get("raw_symbol"))
     if raw_symbol:
         return raw_symbol

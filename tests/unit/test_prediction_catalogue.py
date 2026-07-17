@@ -195,6 +195,44 @@ def test_label_fallback_chain_and_read_failure_is_honest_empty() -> None:
     assert empty == {"rows": [], "total": 0, "category_counts": {}, "cqg_counts": {}}
 
 
+def test_question_is_the_top_label_rung_when_present() -> None:
+    """A row carrying a real human ``question`` labels by it (top of the fallback
+    chain — uac@c1de078a); a row WITHOUT ``question`` (or a blank/None one) falls
+    straight through to the existing floor (raw_symbol), unbroken."""
+    df = _fixture_df()
+    # Give ONE existing row a real human question; leave every other row's
+    # column blank/None so the honest fall-through is exercised in the same frame.
+    df["question"] = ""
+    df.loc[df["instrument_id"] == "COND-BTC-1", "question"] = "Will Bitcoin close up on June 24, 2026?"
+    # A None (not just "") must also fall through — not render as an empty label.
+    df.loc[df["instrument_id"] == "KXBTCD-26JUN23", "question"] = None
+
+    pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+    with patch.object(pc, "_read_catalogue", return_value=df):
+        result = pc.read_prediction_catalogue(canonical_question_group="btc_up_down_daily")
+
+    by_id = {r["instrument_id"]: r for r in result["rows"]}
+    # WITH a question -> labels by it.
+    assert by_id["COND-BTC-1"]["label"] == "Will Bitcoin close up on June 24, 2026?"
+    # WITHOUT (None) -> falls through to raw_symbol (the existing behaviour).
+    assert by_id["KXBTCD-26JUN23"]["label"] == "KXBTCD-26JUN23"
+
+
+def test_question_absent_from_schema_does_not_break_the_read() -> None:
+    """Forward-only: a catalogue that predates the ``question`` column (no such
+    key on any record) must still label by the existing chain, never raise."""
+    df = _fixture_df()
+    assert "question" not in df.columns, "fixture guard: this frame has no question column"
+
+    pc._clear_cache()  # pyright: ignore[reportPrivateUsage]
+    with patch.object(pc, "_read_catalogue", return_value=df):
+        result = pc.read_prediction_catalogue(search="bitcoin-up-or-down")
+
+    btc_rows = [r for r in result["rows"] if r["instrument_id"] == "COND-BTC-1"]
+    assert len(btc_rows) == 1
+    assert btc_rows[0]["label"] == "bitcoin-up-or-down-june-24-2026", "must fall through to raw_symbol"
+
+
 class TestPagingDoesNotRePayTheCorpusCost:
     """A5 perf (plan P3): the ~173s cost of this endpoint (a ~184MB GCS GET +
     a ~2.7M-row classification pass, both measured on real GCS 2026-07-17) is
