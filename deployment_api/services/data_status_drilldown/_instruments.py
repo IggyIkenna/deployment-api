@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import cast
 
+import pandas as pd
 from unified_api_contracts import SchemaContractNotFoundError, is_mvp, lookup_contract
 
 import deployment_api.services.data_status_drilldown as _dd
@@ -228,22 +229,19 @@ def _expand_per_venue_day_bundle(
     # DataFrame (no new read) rather than inventing it. MTDS raw-tick shards
     # (``_expand_per_file``) have no such column available at this leaf level;
     # their instrument dicts simply omit ``base_asset`` (``is_mvp`` treats an
-    # absent axis as ``None``, never fabricated).
-    base_asset_by_symbol: dict[str, str | None] = {}
-    if "base_asset" in df.columns:
-        for rec in (
-            df[[symbol_col, "base_asset"]]
-            .dropna(subset=[symbol_col])
-            .to_dict(  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-                orient="records"
-            )
-        ):
-            sid_key = str(rec.get(symbol_col) or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-            if not sid_key or sid_key in base_asset_by_symbol:
-                continue
-            raw_ba = rec.get("base_asset")  # pyright: ignore[reportUnknownMemberType]
-            ba_str = str(raw_ba).strip() if raw_ba is not None else ""  # pyright: ignore[reportUnknownArgumentType,reportAny]
-            base_asset_by_symbol[sid_key] = ba_str or None
+    # absent axis as ``None``, never fabricated). The same holds for
+    # ``base_asset_contract_address`` below — one shared helper so the two
+    # cannot drift on absent/blank handling.
+    base_asset_by_symbol = _column_by_symbol(df, symbol_col, "base_asset")
+    # On-chain contract address for the instrument's BASE leg. Same provenance
+    # rationale as ``base_asset`` directly above: it is a genuine per-row column
+    # of this ALREADY-LOADED bundle (verified against the live defi schema — a
+    # real UNISWAP_V3-ETHEREUM day file carries it 484/484 non-null with true
+    # mainnet addresses), so this costs no extra read and invents nothing. Venues
+    # with no on-chain address of their own (all of CeFi) simply don't carry the
+    # column, and their instrument dicts omit the field — honest absence, never a
+    # fabricated or zero address.
+    address_by_symbol = _column_by_symbol(df, symbol_col, "base_asset_contract_address")
 
     seen: set[str] = set()
     out: list[dict[str, object]] = []
@@ -261,8 +259,39 @@ def _expand_per_venue_day_bundle(
         }
         if "base_asset" in df.columns:
             entry["base_asset"] = base_asset_by_symbol.get(sid)
+        if "base_asset_contract_address" in df.columns:
+            entry["base_asset_contract_address"] = address_by_symbol.get(sid)
         out.append(entry)
     out.sort(key=lambda d: str(d["instrument_id"]))
+    return out
+
+
+def _column_by_symbol(df: pd.DataFrame, symbol_col: str, value_col: str) -> dict[str, str | None]:
+    """``{symbol -> value}`` for one genuine per-row bundle column (first row per
+    symbol wins, mirroring the de-dupe the caller applies to the symbol list).
+
+    Returns an empty map when ``value_col`` is absent from this bundle, so the
+    caller omits the field entirely rather than emitting a fabricated blank —
+    honest absence (a CeFi venue has no on-chain address; a missing column must
+    not read as "address = none of your business" vs "address = empty string").
+    A present-but-blank cell normalises to ``None`` for the same reason.
+    """
+    out: dict[str, str | None] = {}
+    if value_col not in df.columns or symbol_col not in df.columns:
+        return out
+    for rec in (
+        df[[symbol_col, value_col]]
+        .dropna(subset=[symbol_col])
+        .to_dict(  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            orient="records"
+        )
+    ):
+        sid_key = str(rec.get(symbol_col) or "").strip()  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        if not sid_key or sid_key in out:
+            continue
+        raw = rec.get(value_col)  # pyright: ignore[reportUnknownMemberType]
+        text = str(raw).strip() if raw is not None else ""  # pyright: ignore[reportUnknownArgumentType,reportAny]
+        out[sid_key] = text or None
     return out
 
 
