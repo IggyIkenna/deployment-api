@@ -10,6 +10,7 @@ Tests cover:
 
 import importlib.util
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -686,3 +687,127 @@ class TestSearchInstruments:
         result = await svc.search_instruments(query="usdc", limit=10)
         assert result["total_matches"] == 1
         assert result["matches"][0]["asset_group"] == "DEFI"
+
+
+class TestCorpusCacheTTL:
+    """``_load_search_corpus``'s 5-minute in-process TTL cache — the house
+    convention also used by ``upcoming_fixtures._FIXTURES_CACHE`` /
+    ``prediction_catalogue`` / ``catalogue_lifecycle``. Regression coverage
+    for the 2026-07-16 ~44s symbol-search latency fix: a cold miss must
+    populate the cache, a within-TTL call must reuse it (no re-read), and
+    an expired entry must trigger exactly one fresh read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_corpus_cache(self):
+        DataQueryService._corpus_cache.clear()
+        yield
+        DataQueryService._corpus_cache.clear()
+
+    def test_ttl_cache_cold_miss_then_hit_then_expiry(self, monkeypatch):
+        svc = DataQueryService(project_id="p")
+        call_count = {"n": 0}
+        fake_now = {"t": 1000.0}
+
+        def _fake_underlying_load(_self, _category):
+            call_count["n"] += 1
+            return [{"canonical_id": f"X-{call_count['n']}", "venue": "V", "instrument_type": "SPOT"}]
+
+        monkeypatch.setattr(DataQueryService, "_load_corpus_from_per_venue_parquets", _fake_underlying_load)
+        monkeypatch.setattr(_dqs_mod.time, "monotonic", lambda: fake_now["t"])
+
+        # (a) cold cache miss populates the cache — the expensive loader runs once.
+        first = svc._load_search_corpus("cefi")
+        assert call_count["n"] == 1
+        assert first[0]["canonical_id"] == "X-1"
+
+        # (b) a subsequent call within the TTL window (well under 300s) does
+        # NOT re-trigger the expensive read — served from the in-process cache.
+        fake_now["t"] += 100
+        second = svc._load_search_corpus("cefi")
+        assert call_count["n"] == 1
+        assert second == first
+
+        # (c) after TTL expiry (>300s since the original load) a new read happens.
+        fake_now["t"] += 300
+        third = svc._load_search_corpus("cefi")
+        assert call_count["n"] == 2
+        assert third[0]["canonical_id"] == "X-2"
+
+
+class TestReadAllVenueParquetsConcurrency:
+    """``_read_all_venue_parquets`` must read per-venue parquets in PARALLEL,
+    not sequentially. Root cause of the ~44s cold symbol-search latency
+    (operator-reported 2026-07-16): a sequential ``for venue in per_venue_uris``
+    loop over per-venue GCS parquet reads — DeFi alone registers 63 venues in
+    ``VENUE_TO_ASSET_GROUP``, each an independent ~1-3s transpacific round-trip.
+    Threading (mirroring ``upcoming_fixtures._read_frames_for_window``'s
+    per-day pattern) collapses N round-trips into ~one round-trip's wall time.
+    """
+
+    def test_reads_execute_concurrently_not_sequentially(self, monkeypatch):
+        svc = DataQueryService(project_id="p")
+        n_venues = 6
+        sleep_s = 0.2
+        per_venue_uris = {f"VENUE-{i}": f"gs://bucket/VENUE-{i}/instruments.parquet" for i in range(n_venues)}
+
+        def _slow_read(_self, _uri, venue):
+            time.sleep(sleep_s)
+            return [{"canonical_id": f"{venue}:X", "venue": venue, "instrument_type": "SPOT"}]
+
+        monkeypatch.setattr(DataQueryService, "_read_venue_parquet_rows", _slow_read)
+
+        start = time.monotonic()
+        corpus = svc._read_all_venue_parquets(per_venue_uris)
+        elapsed = time.monotonic() - start
+
+        assert len(corpus) == n_venues
+        # Sequential would take ~n_venues * sleep_s (1.2s here). All 6 venues
+        # fit under _VENUE_READ_MAX_WORKERS (16) so a parallel run finishes
+        # in ~one sleep_s; generous margin for slow/shared-host CI.
+        sequential_cost = sleep_s * n_venues
+        assert elapsed < sequential_cost * 0.65, (
+            f"per-venue reads look sequential: {elapsed:.3f}s for {n_venues} venues "
+            f"(sequential would be ~{sequential_cost:.3f}s)"
+        )
+
+    def test_merges_and_dedupes_across_venues(self, monkeypatch):
+        svc = DataQueryService(project_id="p")
+        per_venue_uris = {
+            "BINANCE": "gs://b/BINANCE/instruments.parquet",
+            "BYBIT": "gs://b/BYBIT/instruments.parquet",
+        }
+
+        def _fake_read(_self, _uri, venue):
+            # Exact intra-venue duplicate — must collapse to one row.
+            return [
+                {"canonical_id": "BTC-USDT", "venue": venue, "instrument_type": "SPOT"},
+                {"canonical_id": "BTC-USDT", "venue": venue, "instrument_type": "SPOT"},
+            ]
+
+        monkeypatch.setattr(DataQueryService, "_read_venue_parquet_rows", _fake_read)
+        corpus = svc._read_all_venue_parquets(per_venue_uris)
+
+        assert len(corpus) == 2
+        assert {(r["canonical_id"], r["venue"]) for r in corpus} == {
+            ("BTC-USDT", "BINANCE"),
+            ("BTC-USDT", "BYBIT"),
+        }
+
+    def test_empty_per_venue_uris_short_circuits_without_reading(self, monkeypatch):
+        svc = DataQueryService(project_id="p")
+        read_calls: list[str] = []
+
+        def _tracking_read(_self, _uri, venue):
+            read_calls.append(venue)
+            return []
+
+        monkeypatch.setattr(_dqs_mod, "resolve_bucket_name", lambda **_kwargs: "instruments-store-cefi-prd-proj")
+        monkeypatch.setattr(DataQueryService, "_latest_available_day", lambda _self, _bucket: "2026-07-15")
+        monkeypatch.setattr(DataQueryService, "_collect_per_venue_uris", lambda _self, _bucket, _day: {})
+        monkeypatch.setattr(DataQueryService, "_read_venue_parquet_rows", _tracking_read)
+
+        result = svc._load_corpus_from_per_venue_parquets("cefi")
+
+        assert result == []
+        assert read_calls == []
