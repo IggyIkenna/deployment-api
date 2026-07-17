@@ -24,14 +24,29 @@ router = APIRouter(prefix="/fixtures", tags=["Fixtures"])
 async def get_fixtures_browse(
     days_back: int = Query(7, ge=0, le=60, description="Backward window from today (UTC), inclusive"),
     days_forward: int = Query(30, ge=0, le=60, description="Forward window from today (UTC), inclusive"),
-    league_id: str | None = Query(None, description="Optional canonical league_id filter"),
+    league_id: str | None = Query(None, description="Optional canonical league_id filter (exact match)"),
+    team: str | None = Query(
+        None, description="Optional team filter — case-insensitive substring on home/away name or id"
+    ),
+    start_date: str | None = Query(None, description="Absolute window start (YYYY-MM-DD, UTC) — overrides days_back"),
+    end_date: str | None = Query(None, description="Absolute window end (YYYY-MM-DD, UTC) — overrides days_forward"),
 ) -> dict[str, object]:
-    """Return catalogue fixtures in [today-days_back, today+days_forward], grouped league -> day."""
+    """Return catalogue fixtures grouped league -> day, filterable by date, league and/or team.
+
+    Date window is either today-relative (``days_back``/``days_forward``, the
+    default) or ABSOLUTE when ``start_date``/``end_date`` is given — the latter
+    can address any range in history, span-capped server-side. ``league_id`` is
+    an exact match; ``team`` is a case-insensitive substring across home/away
+    team name and id (matches either side of the fixture).
+    """
     if _cfg.is_mock_mode():
         return {"leagues": {}, "mock": True}
     grouped = list_fixtures_by_league_and_day(
         window_days_back=days_back,
         window_days_forward=days_forward,
         league_id=league_id,
+        team=team,
+        start_date=start_date,
+        end_date=end_date,
     )
     return {"leagues": grouped}

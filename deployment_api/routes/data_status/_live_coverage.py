@@ -608,8 +608,19 @@ async def get_honest_coverage(
     Reads ``gs://{gcp_project_id}-honest-coverage/{date}/coverage.json``
     written daily by the ``measure-honest-coverage`` cron VM
     (``deployment-service/scripts/vm/launch-measure-honest-coverage-vm.sh``)
-    and returns the JSON payload verbatim. The payload carries its own
-    ``date`` field, so the UI card always shows WHICH day it is rendering.
+    and returns the JSON payload with two additive provenance fields. The
+    payload carries its own ``date`` field, so the UI card always shows WHICH
+    day it is rendering.
+
+    **Fallback provenance (2026-07-17):** the response carries
+    ``requested_date`` (the day the caller asked for — an explicit ``?date=``,
+    else today UTC) and ``resolved_date`` (the day whose file was actually
+    served). ``requested_date == resolved_date`` means "today's file";
+    a difference means the walk-back below served an older measurement, which
+    the card can then state exactly instead of inferring staleness from
+    ``date``. Both are additive — every pre-existing field is passed through
+    untouched. A payload that is not a JSON object (never written by the
+    current writer) has nothing to enrich onto and is served verbatim.
 
     **Latest-available fallback (2026-07-15):** an un-dated request defaults to
     "today UTC", but the daily cron has not run yet for the first several hours
@@ -672,7 +683,7 @@ async def get_honest_coverage(
         )
 
     try:
-        json.loads(raw)
+        parsed = cast("object", json.loads(raw))
     except Exception as exc:
         logger.warning("honest-coverage: malformed JSON for %s: %s", resolved_date, exc)
         raise HTTPException(
@@ -680,7 +691,15 @@ async def get_honest_coverage(
             detail=f"honest-coverage JSON is malformed for date={resolved_date}",
         ) from exc
 
-    return Response(content=raw, media_type="application/json")
+    if not isinstance(parsed, dict):
+        # Not an object -> no field to hang provenance on. Serve verbatim rather
+        # than reshaping a payload we do not understand.
+        return Response(content=raw, media_type="application/json")
+
+    payload = cast("dict[str, object]", parsed)
+    payload["requested_date"] = candidate_dates[0]
+    payload["resolved_date"] = resolved_date
+    return Response(content=json.dumps(payload), media_type="application/json")
 
 
 # ---------------------------------------------------------------------------

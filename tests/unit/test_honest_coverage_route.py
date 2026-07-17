@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -139,3 +139,60 @@ class TestGetHonestCoverageRoute:
 
         assert resp.status_code == 404
         assert paths == ["2026-05-15/coverage.json"]  # exactly one read, the requested date
+
+
+class TestFallbackProvenanceFields:
+    """`requested_date`/`resolved_date` let the card state "today's file" vs a
+    14-day-fallback file exactly, instead of inferring staleness from `date`."""
+
+    def test_direct_hit_reports_requested_equal_to_resolved(self, api_client: TestClient) -> None:
+        """The requested day's own file: both fields are that day -> not a fallback."""
+        with patch(_PATCH, return_value=json.dumps(SAMPLE_COVERAGE)):
+            resp = api_client.get("/api/data-status/honest-coverage?date=2026-05-15")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["requested_date"] == "2026-05-15"
+        assert body["resolved_date"] == "2026-05-15"
+
+    def test_walk_back_reports_the_day_actually_served(self, api_client: TestClient) -> None:
+        """An un-dated request that falls back reports the requested day (today)
+        AND the older day whose file was really served — the pair the card needs."""
+        paths: list[str] = []
+
+        def _capture(_bucket: str, path: str) -> str:
+            paths.append(path)
+            if len(paths) < 3:  # today + today-1 absent; today-2 present
+                raise FileNotFoundError("blob not found")
+            return json.dumps(SAMPLE_COVERAGE)
+
+        with patch(_PATCH, side_effect=_capture):
+            resp = api_client.get("/api/data-status/honest-coverage")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        today = datetime.now(UTC).date()
+        assert body["requested_date"] == today.isoformat()
+        assert body["resolved_date"] == (today - timedelta(days=2)).isoformat()
+        # The served file is genuinely older than the day asked for -> a fallback.
+        assert body["resolved_date"] < body["requested_date"]
+
+    def test_provenance_is_additive_and_preserves_the_payload(self, api_client: TestClient) -> None:
+        """Every pre-existing field survives untouched — the writer's own `date`
+        is NOT overwritten by the resolved date, and the coverage math is intact."""
+        with patch(_PATCH, return_value=json.dumps(SAMPLE_COVERAGE)):
+            resp = api_client.get("/api/data-status/honest-coverage?date=2026-05-15")
+
+        body = resp.json()
+        for key, value in SAMPLE_COVERAGE.items():
+            assert body[key] == value, f"{key} was mutated by the provenance enrichment"
+        assert set(body) - set(SAMPLE_COVERAGE) == {"requested_date", "resolved_date"}
+
+    def test_non_object_payload_is_served_verbatim(self, api_client: TestClient) -> None:
+        """A non-object JSON payload has nothing to hang provenance on — it is
+        passed through unreshaped rather than being wrapped or rejected."""
+        with patch(_PATCH, return_value="[1, 2, 3]"):
+            resp = api_client.get("/api/data-status/honest-coverage?date=2026-05-15")
+
+        assert resp.status_code == 200
+        assert resp.json() == [1, 2, 3]
