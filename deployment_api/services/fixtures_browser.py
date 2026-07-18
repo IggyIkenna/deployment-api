@@ -8,13 +8,16 @@ drilldown (operator request, P9,
 ``plans/active/data_status_page_ux_and_canonicalisation_2026_07_16.md``).
 
 Reuses ``upcoming_fixtures``'s per-day threaded reader (``_read_frames_for_window``),
-row parser (``_row_to_fixture``) and bucket resolver (``_sports_bucket``) —
-same legacy-singleton / split-``fixtures_schedule``-shard fallback, same
+row parser (``_row_to_fixture``), bucket resolver (``_sports_bucket``), and
+league-name/filter helpers (``league_names_for_ids``, ``_matching_league_ids``)
+— same legacy-singleton / split-``fixtures_schedule``-shard fallback, same
 shard-level failure isolation (one bad day is skipped, never aborts the
-whole response). Cross-module import of these leading-underscore helpers
-mirrors the established in-repo convention (e.g.
-``deployment_api/routes/_fleet_inventory.py`` importing symbols from
-``deployment_api/routes/_fleet_census.py``).
+whole response). The league helpers live in ``upcoming_fixtures.py`` (not
+here) specifically to avoid a circular import: this module already imports
+FROM ``upcoming_fixtures``, so the shared code has to live on that side.
+Cross-module import of these leading-underscore helpers mirrors the
+established in-repo convention (e.g. ``deployment_api/routes/_fleet_inventory.py``
+importing symbols from ``deployment_api/routes/_fleet_census.py``).
 
 Single-walk discipline: this module does NOT ``list_blobs``/glob over the
 whole ``sports_reference/`` prefix — it reads explicit per-day paths across a
@@ -37,17 +40,14 @@ import time
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
-from unified_api_contracts.sports import (
-    LeagueDefinition,
-    get_league,
-    get_league_by_api_football_id,
-)
 
 from deployment_api.services.upcoming_fixtures import (
     UpcomingFixture,
+    _matching_league_ids,  # shared league-filter matcher, see module docstring
     _read_frames_for_window,  # shared day-window reader, see module docstring
     _row_to_fixture,
     _sports_bucket,
+    league_names_for_ids,  # shared league-name resolver, see module docstring
 )
 
 #: A fixture row grouped for the browser response — identical shape to
@@ -159,42 +159,16 @@ def _dedupe_preserve_order(fixtures: list[UpcomingFixture]) -> list[UpcomingFixt
     return unique
 
 
-def _resolve_league_name(league_id: str) -> str | None:
-    """Human ``display_name`` for a fixtures-catalogue ``league_id``, or ``None``.
-
-    The catalogue groups fixtures by the raw API-Football league key, which for
-    football is the **numeric** id (``"103"`` → Eliteserien, ``"2"`` → UEFA
-    Champions League) — that is what the browser currently shows the operator, and
-    it is unreadable. League identity is UAC data, so resolve it there (never
-    hardcode a mapping in the UI): try the numeric api_football_id first, then the
-    canonical string id (``"EPL"`` etc.) for any non-numeric key. Returns ``None``
-    for an id with no registry entry — the caller then omits it so the UI honestly
-    falls back to the raw id rather than fabricating a name.
-    """
-    lid = league_id.strip()
-    if not lid:
-        return None
-    league: LeagueDefinition | None = None
-    if lid.isdigit():
-        league = get_league_by_api_football_id(int(lid))
-    if league is None:
-        league = get_league(lid)
-    return league.display_name if league is not None else None
-
-
 def league_names_for(grouped: FixturesByLeagueAndDay) -> dict[str, str]:
     """Map each ``league_id`` present in ``grouped`` → its human ``display_name``.
 
     Unresolved ids are OMITTED (honest-absence): the UI renders the raw id for any
     league not in the map, never a placeholder/fabricated name. Pure in-memory
-    lookup over the already-read grouping — no extra GCS walk.
+    lookup over the already-read grouping — no extra GCS walk. Thin wrapper over
+    ``upcoming_fixtures.league_names_for_ids`` (the shared resolver — see module
+    docstring for why it lives there).
     """
-    names: dict[str, str] = {}
-    for league_id in grouped:
-        name = _resolve_league_name(league_id)
-        if name is not None:
-            names[league_id] = name
-    return names
+    return league_names_for_ids(grouped.keys())
 
 
 def list_fixtures_by_league_and_day(
@@ -215,7 +189,10 @@ def list_fixtures_by_league_and_day(
       ``[0, _MAX_WINDOW_SIDE_DAYS]``), or an ABSOLUTE ``[start_date, end_date]``
       (``YYYY-MM-DD``) which can address ANY range in history, span-capped to
       ``_MAX_WINDOW_SPAN_DAYS`` — see :func:`_resolve_window`.
-    * **league** — exact ``league_id`` match (unchanged).
+    * **league** — case-insensitive substring against either the raw catalogue
+      league key OR its resolved human display_name (e.g. "Allsvenskan" matches
+      the numeric raw id it resolves to; "113" still matches the raw id even
+      once a name exists) — see ``upcoming_fixtures.league_matches_filter``.
     * **team** — case-insensitive substring across home/away team name AND id,
       matching whether the team played home or away (:func:`_matches_team`).
 
@@ -226,7 +203,7 @@ def list_fixtures_by_league_and_day(
     """
     window_days_back = max(0, min(window_days_back, _MAX_WINDOW_SIDE_DAYS))
     window_days_forward = max(0, min(window_days_forward, _MAX_WINDOW_SIDE_DAYS))
-    league_filter = league_id.strip() if league_id and league_id.strip() else None
+    league_filter = league_id.strip().lower() if league_id and league_id.strip() else None
     team_filter = team.strip().lower() if team and team.strip() else None
 
     start, inclusive_extra_days = _resolve_window(
@@ -255,7 +232,9 @@ def list_fixtures_by_league_and_day(
 
     all_df = pd.concat(frames, ignore_index=True)
     if league_filter and "league_id" in all_df.columns:
-        all_df = all_df[all_df["league_id"].astype(str) == league_filter]
+        league_id_col = all_df["league_id"].astype(str)
+        matching_ids = _matching_league_ids(league_id_col.unique().tolist(), league_filter)
+        all_df = all_df[league_id_col.isin(matching_ids)]
 
     if "kickoff_utc" not in all_df.columns:
         _BROWSE_CACHE[cache_key] = (now, {})

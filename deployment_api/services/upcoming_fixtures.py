@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from typing import TypedDict
 
 import pandas as pd
+from unified_api_contracts.sports import (
+    LeagueDefinition,
+    get_league,
+    get_league_by_api_football_id,
+)
 from unified_trading_library import resolve_bucket_name
 
 from deployment_api.services._sports_fixtures_split import split_entity_league_blob_paths
@@ -267,6 +273,77 @@ def _dedupe_preserve_order(sorted_fixtures: list[UpcomingFixture]) -> list[Upcom
     return unique
 
 
+# --- League name resolution + filtering ------------------------------------
+# Shared by this module and ``fixtures_browser.py`` (which imports these
+# rather than re-implementing them, to avoid a circular import — see that
+# module's docstring). Lives here, not there, because ``fixtures_browser``
+# already imports FROM this module.
+
+
+def _resolve_league_name(league_id: str) -> str | None:
+    """Human ``display_name`` for a fixtures-catalogue ``league_id``, or ``None``.
+
+    The catalogue groups fixtures by the raw API-Football league key, which for
+    football is the **numeric** id (``"103"`` -> Eliteserien, ``"2"`` -> UEFA
+    Champions League) — unreadable on its own. League identity is UAC data, so
+    resolve it there (never hardcode a mapping in the UI): try the numeric
+    api_football_id first, then the canonical string id (``"EPL"`` etc.) for
+    any non-numeric key. Returns ``None`` for an id with no registry entry —
+    callers then omit it so the UI honestly falls back to the raw id rather
+    than fabricating a name.
+    """
+    lid = league_id.strip()
+    if not lid:
+        return None
+    league: LeagueDefinition | None = None
+    if lid.isdigit():
+        league = get_league_by_api_football_id(int(lid))
+    if league is None:
+        league = get_league(lid)
+    return league.display_name if league is not None else None
+
+
+def league_names_for_ids(league_ids: Iterable[str]) -> dict[str, str]:
+    """Map each given raw ``league_id`` -> its human ``display_name``.
+
+    Unresolved ids are OMITTED (honest-absence): the UI renders the raw id for
+    any league not in the map, never a placeholder/fabricated name. Pure UAC
+    lookup — resolves each DISTINCT id exactly once, no GCS I/O.
+    """
+    names: dict[str, str] = {}
+    for league_id in league_ids:
+        name = _resolve_league_name(league_id)
+        if name is not None:
+            names[league_id] = name
+    return names
+
+
+def league_names_for_fixtures(fixtures: list[UpcomingFixture]) -> dict[str, str]:
+    """``league_names_for_ids`` over the distinct ``league_id``s in ``fixtures``."""
+    distinct_ids = {fx["league_id"] for fx in fixtures if fx["league_id"]}
+    return league_names_for_ids(distinct_ids)
+
+
+def league_matches_filter(league_id: str, needle_lower: str) -> bool:
+    """Case-insensitive substring match against the raw id OR its resolved human name.
+
+    ``needle_lower`` must already be lowercased (callers lowercase the league
+    filter once at parse time, same convention as the team filter) so a search
+    for "Allsvenskan" matches the numeric raw id it resolves to, and a search
+    for "113" still matches on the raw id even when a human name exists.
+    """
+    if needle_lower in league_id.lower():
+        return True
+    name = _resolve_league_name(league_id)
+    return name is not None and needle_lower in name.lower()
+
+
+def _matching_league_ids(distinct_ids: Iterable[str], needle_lower: str) -> set[str]:
+    """The subset of ``distinct_ids`` that match ``needle_lower`` — resolves each
+    DISTINCT id's human name at most once, never per-row."""
+    return {lid for lid in distinct_ids if league_matches_filter(lid, needle_lower)}
+
+
 def list_upcoming_fixtures(
     *,
     days: int = 7,
@@ -275,6 +352,11 @@ def list_upcoming_fixtures(
 ) -> list[UpcomingFixture]:
     """Concatenate fixture rows for UTC today through today+``days`` (inclusive).
 
+    ``league_id`` is a case-insensitive substring match against either the raw
+    catalogue league key OR its resolved human display_name (see
+    :func:`league_matches_filter`) — no longer an exact match, consistent with
+    the ``team`` filter's existing substring behaviour.
+
     Missing parquet objects are skipped. Read/parse errors for one day do not
     abort other days.
     """
@@ -282,7 +364,7 @@ def list_upcoming_fixtures(
         days = 1
     if days > _MAX_DAYS:
         days = _MAX_DAYS
-    league_filter = league_id.strip() if league_id and league_id.strip() else None
+    league_filter = league_id.strip().lower() if league_id and league_id.strip() else None
 
     cache_key = (days, league_filter)
     now = time.monotonic()
@@ -300,7 +382,9 @@ def list_upcoming_fixtures(
 
     all_df = pd.concat(frames, ignore_index=True)
     if league_filter and "league_id" in all_df.columns:
-        all_df = all_df[all_df["league_id"].astype(str) == league_filter]
+        league_id_col = all_df["league_id"].astype(str)
+        matching_ids = _matching_league_ids(league_id_col.unique().tolist(), league_filter)
+        all_df = all_df[league_id_col.isin(matching_ids)]
 
     if "kickoff_utc" not in all_df.columns:
         _FIXTURES_CACHE[cache_key] = (now, [])
