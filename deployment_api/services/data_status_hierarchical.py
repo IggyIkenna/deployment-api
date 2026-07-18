@@ -41,6 +41,7 @@ import pandas as pd
 from unified_api_contracts import InstrumentType
 from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
 from unified_api_contracts.registry import (
+    DECOMMISSIONED_VENUE_BASES,
     EMPTY_OR_DEPRECATED_DEFI_VENUES,
     SHARD_AXIS_MATRIX,
     get_shard_axes,
@@ -110,32 +111,15 @@ def _canonicalise_instrument_type(raw: str) -> str:
     return _INSTRUMENT_TYPE_LEGACY_MAP.get(upper, upper)
 
 
-# venue axis, part 1 — registry-removed venues. Source SSOT:
-# ``unified_api_contracts.registry.venue_adapter_keys`` (grep-confirmed
-# 2026-07-18: none of these 5 protocol bases appear ANYWHERE in
-# ``VENUE_TO_ADAPTER_KEY`` / ``VENUES_BY_ASSET_GROUP`` any more). Matched by
-# BASE (the venue string split on the first ``-``) so this excludes both the
-# bare form and any ``-<CHAIN>`` suffixed form of the removed protocol —
-# memory 2026-07-18 measured evidence: bare ``DRIFT`` alone carries 3,556
+# venue axis, part 1 — registry-removed venues. SSOT (single source, moved
+# 2026-07-18 off the local hardcode that used to live here — a future removal
+# now auto-propagates from one place):
+# ``unified_api_contracts.registry.venue_adapter_keys.DECOMMISSIONED_VENUE_BASES``.
+# Matched by BASE (the venue string split on the first ``-``) so this excludes
+# both the bare form and any ``-<CHAIN>`` suffixed form of a removed protocol
+# — memory 2026-07-18 measured evidence: bare ``DRIFT`` alone carries 3,556
 # stale rows in the instruments-service defi availability index (0 in MTDS).
-_REMOVED_VENUE_BASES: frozenset[str] = frozenset(
-    {
-        # Solana perp DEXes — operator ruling 2026-07-16: Drift was hacked for
-        # ~$280M on 2026-04-01 (Lazarus-attributed), offline 3 months, then
-        # rebranded "Velocity DEX" 2026-07-01 (~2-week-old private beta, ~$0
-        # TVL). All Solana perp DEXes dropped except Jupiter (not integrated).
-        "DRIFT",
-        # Same 2026-07-16 Solana-perp-DEX sweep as DRIFT above.
-        "PACIFICA",
-        # MANGO-SOLANA/ZETA-SOLANA/FLASH-SOLANA removed 2026-07-15 (operator
-        # ruling): all 3 declared API hosts are dead (api.mngo.cloud /
-        # api.flash.trade NXDOMAIN, dex.zeta.markets/api returns HTML not
-        # JSON), ~$0 DeFiLlama TVL, zero MTDS market-data capture ever wired.
-        "MANGO",
-        "ZETA",
-        "FLASH",
-    }
-)
+_REMOVED_VENUE_BASES: frozenset[str] = DECOMMISSIONED_VENUE_BASES
 
 # venue axis, part 2 — bare-vs-chain duplicate venues. The instruments-service
 # defi availability index carries BOTH the bare protocol name and the

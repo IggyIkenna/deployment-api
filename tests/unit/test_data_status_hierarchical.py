@@ -1173,3 +1173,11 @@ class TestDropRemovedVenuesHelperUnit:
         df = pd.DataFrame({"venue": ["ZETA-SOLANA", "FLASH-SOLANA", "MANGO-SOLANA", "PACIFICA", "HYPERLIQUID"]})
         out = _hier._drop_removed_venues(df)  # pyright: ignore[reportPrivateUsage]
         assert list(out["venue"]) == ["HYPERLIQUID"]
+
+    def test_removed_venue_base_set_is_sourced_from_uac(self) -> None:
+        """Piece P2: the local removed-venue set must BE the UAC export, not a
+        parallel hardcode — a future registry removal auto-propagates here
+        without a deployment-api code change."""
+        from unified_api_contracts.registry import DECOMMISSIONED_VENUE_BASES
+
+        assert _hier._REMOVED_VENUE_BASES is DECOMMISSIONED_VENUE_BASES  # pyright: ignore[reportPrivateUsage]
