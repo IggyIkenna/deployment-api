@@ -545,7 +545,13 @@ class ManifestStatusMixin(MissingShardsMixin):
 
         Uses the shared ``get_compute_engine_client`` facade the rest of
         deployment-api uses. Failures return ``False`` — this is purely an
-        advisory flag for the UI, never a gate on completion math.
+        advisory flag for the UI, never a gate on completion math. Includes
+        ``ValueError`` in the caught set: ``get_compute_engine_client`` raises
+        it when the ambient ``UnifiedCloudConfig`` resolves to a non-GCP
+        provider (e.g. ``CloudProvider.LOCAL`` in some local/test
+        environments) — that is exactly the kind of environment mismatch this
+        best-effort advisory check must degrade past, not surface as an
+        unhandled 500.
         """
         try:
             from unified_trading_library import get_compute_engine_client
@@ -576,7 +582,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                     if svc_key in name and "backfill" in name:
                         return True
             return False
-        except (ImportError, OSError, RuntimeError, KeyError, AttributeError):
+        except (ImportError, OSError, RuntimeError, KeyError, AttributeError, ValueError):
             return False
 
     def _dispatch_category_builds(
