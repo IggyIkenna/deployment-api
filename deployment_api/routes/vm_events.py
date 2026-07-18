@@ -74,6 +74,7 @@ _PREFIX_TO_SERVICE: dict[str, str] = {
     "mdps-backfill-": "market-data-processing-service",
     "canonical-migration-": "market-tick-data-service",
     "fs-backfill-": "instruments-service",
+    "fts-backfill-": "features-sports-service",
     "af-backfill-": "instruments-service",
     "af-audit-": "instruments-service",
     "af-recover-": "instruments-service",
