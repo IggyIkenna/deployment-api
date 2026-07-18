@@ -919,3 +919,257 @@ class TestFeatureFamilyAxis:
         assert totals["captured"] == 0
         assert totals["empty_confirmed"] == 0
         assert totals["attempted_failed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# PIECE A — data-status drilldown DISPLAY canonicalisation (2026-07-18).
+# instrument_type merge (UAC InstrumentType legacy map + honest UNKNOWN
+# sentinel) + registry-removed-venue exclusion + bare-vs-chain venue collapse.
+# ---------------------------------------------------------------------------
+
+
+class TestInstrumentTypeCanonicalisationUnit:
+    """Unit coverage for the pure ``_canonicalise_instrument_type`` mapper."""
+
+    def test_legacy_lowercase_spot_maps_to_spot_pair(self) -> None:
+        assert _hier._canonicalise_instrument_type("spot") == "SPOT_PAIR"  # pyright: ignore[reportPrivateUsage]
+
+    def test_already_canonical_spot_pair_is_unchanged(self) -> None:
+        assert _hier._canonicalise_instrument_type("SPOT_PAIR") == "SPOT_PAIR"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("spot_pair") == "SPOT_PAIR"  # pyright: ignore[reportPrivateUsage]
+
+    def test_perp_and_perpetual_both_map_to_perpetual(self) -> None:
+        assert _hier._canonicalise_instrument_type("perp") == "PERPETUAL"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("perpetual") == "PERPETUAL"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("PERPETUAL") == "PERPETUAL"  # pyright: ignore[reportPrivateUsage]
+
+    def test_futures_chain_and_future_both_map_to_future(self) -> None:
+        assert _hier._canonicalise_instrument_type("futures_chain") == "FUTURE"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("FUTURE") == "FUTURE"  # pyright: ignore[reportPrivateUsage]
+
+    def test_blank_none_and_literal_none_all_map_to_unknown(self) -> None:
+        assert _hier._canonicalise_instrument_type("") == "UNKNOWN"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("None") == "UNKNOWN"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("nan") == "UNKNOWN"  # pyright: ignore[reportPrivateUsage]
+
+    def test_lending_market_and_yield_legacy_names(self) -> None:
+        assert _hier._canonicalise_instrument_type("lending_market") == "LENDING"  # pyright: ignore[reportPrivateUsage]
+        assert _hier._canonicalise_instrument_type("yield") == "YIELD_BEARING"  # pyright: ignore[reportPrivateUsage]
+
+
+def _instrument_type_variant_manifest() -> pd.DataFrame:
+    """One venue/data_type/day with 4 raw instrument_type spellings that
+    canonicalise to 2 real buckets (SPOT_PAIR merges 3; blank -> UNKNOWN)."""
+    rows: list[dict[str, object]] = [
+        {
+            "venue": "COINBASE-SPOT",
+            "data_type": "trades",
+            "instrument_type": "",
+            "instrument_id": "X1",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "COINBASE-SPOT",
+            "data_type": "trades",
+            "instrument_type": "SPOT_PAIR",
+            "instrument_id": "X2",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "COINBASE-SPOT",
+            "data_type": "trades",
+            "instrument_type": "spot",
+            "instrument_id": "X3",
+            "date": "2024-03-01",
+            "capture_status": "empty_confirmed",
+            "error_reason": "",
+        },
+        {
+            "venue": "COINBASE-SPOT",
+            "data_type": "trades",
+            "instrument_type": "spot_pair",
+            "instrument_id": "X4",
+            "date": "2024-03-01",
+            "capture_status": "attempted_failed",
+            "error_reason": "some error",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestInstrumentTypeTreeMerge:
+    """Integration: the drilldown TREE merges non-canonical instrument_type
+    spellings into one node, SUMS counts, and recomputes completion_pct from
+    the summed totals (never averages per-raw-value percentages)."""
+
+    def test_canonical_merge_sums_counts_and_recomputes_pct(self) -> None:
+        df = _instrument_type_variant_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "COINBASE-SPOT", "data_type": "trades"},
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        by_value = {n["value"]: n for n in tree if isinstance(n, dict)}
+        # 4 raw spellings collapse to exactly 2 display nodes.
+        assert set(by_value) == {"SPOT_PAIR", "UNKNOWN"}
+        spot_pair = by_value["SPOT_PAIR"]
+        # 3 raw variants (SPOT_PAIR/spot/spot_pair) merged: 1 captured +
+        # 1 empty_confirmed + 1 attempted_failed — a real SUM, not a count of 1.
+        assert spot_pair["captured"] == 1
+        assert spot_pair["empty_confirmed"] == 1
+        assert spot_pair["attempted_failed"] == 1
+        assert spot_pair["total"] == 3
+        # Recomputed FROM the summed totals: (1+1)/3*100 = 66.67 — NOT an
+        # average of the 3 raw rows' individual (100/0/0)% completion.
+        assert spot_pair["completion_pct"] == 66.67
+        unknown = by_value["UNKNOWN"]
+        assert unknown["captured"] == 1
+        assert unknown["total"] == 1
+        assert unknown["completion_pct"] == 100.0
+
+    def test_no_captured_rows_are_dropped_by_the_merge(self) -> None:
+        """Count-preserving: total captured+empty+failed across the merged
+        tree equals the raw row count (nothing silently vanishes)."""
+        df = _instrument_type_variant_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                filters={"venue": "COINBASE-SPOT", "data_type": "trades"},
+                expand_to_depth=0,
+            )
+        totals = result["totals"]
+        assert totals["captured"] + totals["empty_confirmed"] + totals["attempted_failed"] == len(df)
+
+
+def _removed_and_collapsed_venue_manifest() -> pd.DataFrame:
+    """DeFi manifest mixing a registry-removed venue, a legit untouched
+    venue, and a bare-vs-chain duplicate pair — all in ARBITRUM/SOLANA."""
+    rows: list[dict[str, object]] = [
+        # Registry-removed (operator ruling 2026-07-16) — must vanish entirely.
+        {
+            "venue": "DRIFT",
+            "chain": "SOLANA",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "DRIFT-SOLANA",
+            "chain": "SOLANA",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        # Legit venue — untouched (not in any removed/collapse set).
+        {
+            "venue": "AAVE_V3-ARBITRUM",
+            "chain": "ARBITRUM",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        # Bare-vs-chain duplicate — collapses into ONE JITO-SOLANA node.
+        {
+            "venue": "JITO",
+            "chain": "SOLANA",
+            "date": "2024-03-01",
+            "capture_status": "captured",
+            "error_reason": "",
+        },
+        {
+            "venue": "JITO-SOLANA",
+            "chain": "SOLANA",
+            "date": "2024-03-01",
+            "capture_status": "empty_confirmed",
+            "error_reason": "",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestVenueAxisDisplayCanonicalisation:
+    def test_removed_venue_is_absent_from_tree_and_totals(self) -> None:
+        df = _removed_and_collapsed_venue_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="instruments-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        values = {n["value"] for n in tree if isinstance(n, dict)}
+        assert "DRIFT" not in values
+        assert "DRIFT-SOLANA" not in values
+        # Root totals must NOT count the 2 dropped DRIFT/DRIFT-SOLANA rows —
+        # only the 3 remaining (AAVE_V3-ARBITRUM, JITO, JITO-SOLANA) rows.
+        assert result["totals"]["captured"] + result["totals"]["empty_confirmed"] == 3
+
+    def test_legit_venue_is_untouched(self) -> None:
+        df = _removed_and_collapsed_venue_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="instruments-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        by_value = {n["value"]: n for n in tree if isinstance(n, dict)}
+        assert "AAVE_V3-ARBITRUM" in by_value
+        assert by_value["AAVE_V3-ARBITRUM"]["captured"] == 1
+
+    def test_bare_and_chain_venue_collapse_into_one_node_summed(self) -> None:
+        df = _removed_and_collapsed_venue_manifest()
+        with patch.object(_hier, "read_availability_index", return_value=df):
+            result = get_hierarchical_drilldown(
+                service="instruments-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        values = {n["value"] for n in tree if isinstance(n, dict)}
+        # "JITO" (bare) must NOT survive as its own node — collapsed into
+        # the canonical "JITO-SOLANA" node.
+        assert "JITO" not in values
+        assert "JITO-SOLANA" in values
+        by_value = {n["value"]: n for n in tree if isinstance(n, dict)}
+        jito = by_value["JITO-SOLANA"]
+        # Both the bare-form captured row AND the chain-form empty_confirmed
+        # row are SUMMED into the one collapsed node.
+        assert jito["captured"] == 1
+        assert jito["empty_confirmed"] == 1
+        assert jito["total"] == 2
+        assert jito["completion_pct"] == 100.0  # (1+1)/2 — empty_confirmed counts as covered.
+
+
+class TestDropRemovedVenuesHelperUnit:
+    def test_drop_removed_venues_is_a_noop_without_venue_column(self) -> None:
+        df = pd.DataFrame({"chain": ["ARBITRUM"]})
+        out = _hier._drop_removed_venues(df)  # pyright: ignore[reportPrivateUsage]
+        assert list(out.columns) == ["chain"]
+
+    def test_drop_removed_venues_matches_base_before_first_hyphen(self) -> None:
+        df = pd.DataFrame({"venue": ["ZETA-SOLANA", "FLASH-SOLANA", "MANGO-SOLANA", "PACIFICA", "HYPERLIQUID"]})
+        out = _hier._drop_removed_venues(df)  # pyright: ignore[reportPrivateUsage]
+        assert list(out["venue"]) == ["HYPERLIQUID"]
