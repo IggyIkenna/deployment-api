@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
@@ -54,6 +55,18 @@ _EXPIRING_TYPES: frozenset[str] = frozenset({"FUTURE", "OPTION", "COMBO"})
 _MAX_NEW_LISTING_AGE_DAYS = 365
 _MAX_EXPIRY_WINDOW_DAYS = 365
 
+# Pagination (mirrors routes/data_status/_catalogue.py's DEFAULT/MAX_CATALOGUE_LIMIT).
+DEFAULT_LIFECYCLE_LIMIT = 50
+MAX_LIFECYCLE_LIMIT = 500
+
+# Per-AG reads are independent transpacific GCS GETs (~3-17s each depending on
+# asset_group size — prediction alone is 2.9M rows / ~17s). Serial-summed that
+# was measured 35s/31s for new-listings(30)/upcoming-expiries(5) — past the
+# Cloud Run / browser fetch timeout -> 500 "Unknown error" (plan F10, measured
+# 2026-07-17). Threading across the 5 asset groups collapses wall-clock to
+# roughly the SLOWEST single read instead of the serial sum.
+_MAX_AG_WORKERS = len(_CATALOGUE_ASSET_GROUPS)
+
 # Columns projected from catalog.parquet (a subset — the file has ~24 columns).
 _READ_COLUMNS: list[str] = [
     "instrument_id",
@@ -74,11 +87,19 @@ _READ_COLUMNS: list[str] = [
 # over the WHOLE catalogue for an asset_group -- never over the windowed slice,
 # or every row in the window would trivially tag against the window's own min.
 _AF_COL: str = "_af_date"
+_AT_COL: str = "_at_date"
 _VENUE_FIRST_DAY_COL: str = "_af_is_venue_first_day"
+_AG_COL: str = "_lifecycle_asset_group"
 
 _CACHE_TTL_SEC: int = 300
-_NEW_LISTINGS_CACHE: dict[tuple[int, str | None, str | None], tuple[float, list[CatalogueLifecycleRow]]] = {}
-_EXPIRIES_CACHE: dict[tuple[int, str | None, str | None], tuple[float, list[CatalogueLifecycleRow]]] = {}
+# Caches hold the PREPARED (narrowed/tagged/sorted, cross-AG-concatenated)
+# DataFrame, not built row dicts -- so a page request only ever materialises
+# its own slice into dicts (previously every matching row was built even for
+# an unbounded caller, e.g. 644,380 rows for list_new_listings(30)). Building
+# ALL rows (unpaginated ``list_new_listings``/``list_upcoming_expiries``) still
+# reads through this same cache, it just materialises the whole frame.
+_NEW_LISTINGS_FRAME_CACHE: dict[tuple[int, str | None, str | None], tuple[float, pd.DataFrame]] = {}
+_EXPIRIES_FRAME_CACHE: dict[tuple[int, str | None, str | None], tuple[float, pd.DataFrame]] = {}
 
 
 class CatalogueLifecycleRow(TypedDict):  # CORRECT-LOCAL — API response shape, no cross-service consumer
@@ -225,6 +246,86 @@ def _venue_filter(df: pd.DataFrame, venue: str | None) -> pd.DataFrame:
     return df
 
 
+def _read_and_filter_new_listings(ag: str, *, cutoff: str, today_iso: str, venue_f: str | None) -> pd.DataFrame | None:
+    """One asset_group's worth of new-listings work: read + venue-narrow + tag
+    + date-mask. Runs inside the ``ThreadPoolExecutor`` in ``_build_new_listings_frame``
+    — every read is independent (own bytes download, own DataFrame), so this is
+    safe to fan out across asset groups without shared mutable state."""
+    df = _read_catalogue(ag)
+    if df is None or "available_from" not in df.columns:
+        return None
+    df = _venue_filter(df, venue_f)
+    if df.empty:
+        return None
+    df = df.copy()
+    df[_AF_COL] = df["available_from"].astype(str).str.slice(0, 10)
+    # Tag against the venue's WHOLE-catalogue first day, BEFORE the window
+    # below narrows the frame — otherwise every row would tag against the
+    # window's own minimum and the flag would be meaningless.
+    df = _mark_venue_first_day(df)
+    # available_from within [cutoff, today] — a listing date can't be in the future.
+    mask = (df[_AF_COL] >= cutoff) & (df[_AF_COL] <= today_iso)
+    out = df[mask]
+    if out.empty:
+        return None
+    out = out.copy()
+    out[_AG_COL] = ag
+    return out
+
+
+def _build_new_listings_frame(*, max_age_days: int, asset_group: str | None, venue_f: str | None) -> pd.DataFrame:
+    """Narrowed + tagged + SORTED cross-AG frame for new-listings — no row
+    dicts built here (that only happens for the requested page/full list).
+    The 5 per-AG reads are independent + shard-isolated, so they run in a
+    bounded ThreadPool: cold wall-clock collapses to roughly the slowest
+    single read (~17s) instead of the serial sum (~35s, plan F10)."""
+    today = datetime.now(UTC).date()
+    cutoff = (today - timedelta(days=max_age_days)).isoformat()
+    today_iso = today.isoformat()
+    ags = _scan_asset_groups(asset_group)
+    if not ags:
+        return pd.DataFrame()
+    with ThreadPoolExecutor(max_workers=min(len(ags), _MAX_AG_WORKERS)) as ex:
+        frames = list(
+            ex.map(
+                lambda ag: _read_and_filter_new_listings(ag, cutoff=cutoff, today_iso=today_iso, venue_f=venue_f),
+                ags,
+            )
+        )
+    parts = [f for f in frames if f is not None]
+    if not parts:
+        return pd.DataFrame()
+    combined = pd.concat(parts, ignore_index=True)
+    return combined.sort_values(_AF_COL, ascending=False, kind="stable")  # newest first
+
+
+def _new_listings_frame(*, max_age_days: int, asset_group: str | None, venue: str | None) -> pd.DataFrame:
+    """Cached (5-min TTL) prepared frame — the single read/compute path shared
+    by ``list_new_listings`` (full list) and ``list_new_listings_page`` (one page)."""
+    max_age_days = max(1, min(max_age_days, _MAX_NEW_LISTING_AGE_DAYS))
+    venue_f = venue.strip() if venue and venue.strip() else None
+    key = (max_age_days, asset_group, venue_f)
+    now = time.monotonic()
+    cached = _NEW_LISTINGS_FRAME_CACHE.get(key)
+    if cached is not None and (now - cached[0]) < _CACHE_TTL_SEC:
+        return cached[1]
+    frame = _build_new_listings_frame(max_age_days=max_age_days, asset_group=asset_group, venue_f=venue_f)
+    _NEW_LISTINGS_FRAME_CACHE[key] = (now, frame)
+    return frame
+
+
+def _rows_from_lifecycle_frame(df: pd.DataFrame) -> list[CatalogueLifecycleRow]:
+    """Materialise row dicts from an already-prepared (narrowed/tagged/sorted)
+    frame slice — callers pass either the whole frame or just a page."""
+    if df.empty:
+        return []
+    out: list[CatalogueLifecycleRow] = []
+    for rec in df.to_dict(orient="records"):
+        ag = str(rec.get(_AG_COL) or "")
+        out.append(_row(ag, rec))
+    return out
+
+
 def list_new_listings(
     *,
     max_age_days: int = 30,
@@ -232,40 +333,96 @@ def list_new_listings(
     venue: str | None = None,
 ) -> list[CatalogueLifecycleRow]:
     """Instruments whose ``available_from`` is within the last ``max_age_days``
-    days (newest-first). Read-only, 5-min TTL, shard-isolated per asset_group."""
-    max_age_days = max(1, min(max_age_days, _MAX_NEW_LISTING_AGE_DAYS))
+    days (newest-first). Read-only, 5-min TTL, shard-isolated per asset_group.
+
+    Builds row dicts for EVERY matching row — for the paginated/fast path used
+    by the API route, see ``list_new_listings_page``."""
+    frame = _new_listings_frame(max_age_days=max_age_days, asset_group=asset_group, venue=venue)
+    return _rows_from_lifecycle_frame(frame)
+
+
+def list_new_listings_page(
+    *,
+    max_age_days: int = 30,
+    asset_group: str | None = None,
+    venue: str | None = None,
+    limit: int = DEFAULT_LIFECYCLE_LIMIT,
+    offset: int = 0,
+) -> tuple[list[CatalogueLifecycleRow], int]:
+    """``(page_rows, total_count)`` — the paginated twin of ``list_new_listings``.
+    Same cached prepared frame; only the requested page ever gets built into
+    row dicts, so a 50-row page costs 50 row builds instead of every matching
+    row (previously up to 644,380 for the 30-day default, plan F10)."""
+    safe_limit = max(1, min(int(limit or DEFAULT_LIFECYCLE_LIMIT), MAX_LIFECYCLE_LIMIT))
+    safe_offset = max(0, int(offset or 0))
+    frame = _new_listings_frame(max_age_days=max_age_days, asset_group=asset_group, venue=venue)
+    total_count = len(frame)
+    page = frame.iloc[safe_offset : safe_offset + safe_limit]
+    return _rows_from_lifecycle_frame(page), total_count
+
+
+def _read_and_filter_expiries(ag: str, *, today_iso: str, horizon_iso: str, venue_f: str | None) -> pd.DataFrame | None:
+    """One asset_group's worth of upcoming-expiries work — mirrors
+    ``_read_and_filter_new_listings``' independence/thread-safety."""
+    df = _read_catalogue(ag)
+    if df is None or "available_to" not in df.columns or "instrument_type" not in df.columns:
+        return None
+    df = _venue_filter(df, venue_f)
+    if df.empty:
+        return None
+    df = df.copy()
+    # Same tag as new-listings: the row type carries the field on BOTH
+    # endpoints, so computing it here too keeps it truthful rather than
+    # letting _row default it to a silent False.
+    df[_AF_COL] = df["available_from"].astype(str).str.slice(0, 10) if "available_from" in df.columns else ""
+    df = _mark_venue_first_day(df)
+    itype = df["instrument_type"].astype(str).str.upper()
+    df[_AT_COL] = df["available_to"].astype(str).str.slice(0, 10)
+    mask = itype.isin(_EXPIRING_TYPES) & (df[_AT_COL] >= today_iso) & (df[_AT_COL] <= horizon_iso)
+    out = df[mask]
+    if out.empty:
+        return None
+    out = out.copy()
+    out[_AG_COL] = ag
+    return out
+
+
+def _build_expiries_frame(*, within_days: int, asset_group: str | None, venue_f: str | None) -> pd.DataFrame:
+    """Narrowed + tagged + SORTED cross-AG frame for upcoming-expiries — same
+    bounded-ThreadPool fan-out across asset groups as new-listings."""
+    today = datetime.now(UTC).date()
+    today_iso = today.isoformat()
+    horizon_iso = (today + timedelta(days=within_days)).isoformat()
+    ags = _scan_asset_groups(asset_group)
+    if not ags:
+        return pd.DataFrame()
+    with ThreadPoolExecutor(max_workers=min(len(ags), _MAX_AG_WORKERS)) as ex:
+        frames = list(
+            ex.map(
+                lambda ag: _read_and_filter_expiries(ag, today_iso=today_iso, horizon_iso=horizon_iso, venue_f=venue_f),
+                ags,
+            )
+        )
+    parts = [f for f in frames if f is not None]
+    if not parts:
+        return pd.DataFrame()
+    combined = pd.concat(parts, ignore_index=True)
+    return combined.sort_values(_AT_COL, ascending=True, kind="stable")  # soonest first
+
+
+def _expiries_frame(*, within_days: int, asset_group: str | None, venue: str | None) -> pd.DataFrame:
+    """Cached (5-min TTL) prepared frame — shared by ``list_upcoming_expiries``
+    (full list) and ``list_upcoming_expiries_page`` (one page)."""
+    within_days = max(1, min(within_days, _MAX_EXPIRY_WINDOW_DAYS))
     venue_f = venue.strip() if venue and venue.strip() else None
-    key = (max_age_days, asset_group, venue_f)
+    key = (within_days, asset_group, venue_f)
     now = time.monotonic()
-    cached = _NEW_LISTINGS_CACHE.get(key)
+    cached = _EXPIRIES_FRAME_CACHE.get(key)
     if cached is not None and (now - cached[0]) < _CACHE_TTL_SEC:
         return cached[1]
-
-    today = datetime.now(UTC).date()
-    cutoff = (today - timedelta(days=max_age_days)).isoformat()
-    today_iso = today.isoformat()
-    out: list[CatalogueLifecycleRow] = []
-    for ag in _scan_asset_groups(asset_group):
-        df = _read_catalogue(ag)
-        if df is None or "available_from" not in df.columns:
-            continue
-        df = _venue_filter(df, venue_f)
-        if df.empty:
-            continue
-        df = df.copy()
-        df[_AF_COL] = df["available_from"].astype(str).str.slice(0, 10)
-        # Tag against the venue's WHOLE-catalogue first day, BEFORE the window
-        # below narrows the frame — otherwise every row would tag against the
-        # window's own minimum and the flag would be meaningless.
-        df = _mark_venue_first_day(df)
-        # available_from within [cutoff, today] — a listing date can't be in the future.
-        mask = (df[_AF_COL] >= cutoff) & (df[_AF_COL] <= today_iso)
-        for rec in df[mask].to_dict(orient="records"):
-            out.append(_row(ag, rec))
-
-    out.sort(key=lambda r: r["available_from"], reverse=True)  # newest first
-    _NEW_LISTINGS_CACHE[key] = (now, out)
-    return out
+    frame = _build_expiries_frame(within_days=within_days, asset_group=asset_group, venue_f=venue_f)
+    _EXPIRIES_FRAME_CACHE[key] = (now, frame)
+    return frame
 
 
 def list_upcoming_expiries(
@@ -282,50 +439,42 @@ def list_upcoming_expiries(
     genuine future expiries. (``available_to`` is a 3-way value — expiry /
     None-if-active / last-observed; ``delisted_at`` is a schema field no writer
     populates, see the module docstring.) Read-only, 5-min TTL, shard-isolated per
-    asset_group."""
-    within_days = max(1, min(within_days, _MAX_EXPIRY_WINDOW_DAYS))
-    venue_f = venue.strip() if venue and venue.strip() else None
-    key = (within_days, asset_group, venue_f)
-    now = time.monotonic()
-    cached = _EXPIRIES_CACHE.get(key)
-    if cached is not None and (now - cached[0]) < _CACHE_TTL_SEC:
-        return cached[1]
+    asset_group.
 
-    today = datetime.now(UTC).date()
-    today_iso = today.isoformat()
-    horizon_iso = (today + timedelta(days=within_days)).isoformat()
-    out: list[CatalogueLifecycleRow] = []
-    for ag in _scan_asset_groups(asset_group):
-        df = _read_catalogue(ag)
-        if df is None or "available_to" not in df.columns or "instrument_type" not in df.columns:
-            continue
-        df = _venue_filter(df, venue_f)
-        if df.empty:
-            continue
-        df = df.copy()
-        # Same tag as new-listings: the row type carries the field on BOTH
-        # endpoints, so computing it here too keeps it truthful rather than
-        # letting _row default it to a silent False.
-        df[_AF_COL] = df["available_from"].astype(str).str.slice(0, 10) if "available_from" in df.columns else ""
-        df = _mark_venue_first_day(df)
-        itype = df["instrument_type"].astype(str).str.upper()
-        at = df["available_to"].astype(str).str.slice(0, 10)
-        mask = itype.isin(_EXPIRING_TYPES) & (at >= today_iso) & (at <= horizon_iso)
-        for rec in df[mask].to_dict(orient="records"):
-            out.append(_row(ag, rec))
+    Builds row dicts for EVERY matching row — for the paginated/fast path used
+    by the API route, see ``list_upcoming_expiries_page``."""
+    frame = _expiries_frame(within_days=within_days, asset_group=asset_group, venue=venue)
+    return _rows_from_lifecycle_frame(frame)
 
-    out.sort(key=lambda r: r["available_to"])  # soonest first
-    _EXPIRIES_CACHE[key] = (now, out)
-    return out
+
+def list_upcoming_expiries_page(
+    *,
+    within_days: int = 7,
+    asset_group: str | None = None,
+    venue: str | None = None,
+    limit: int = DEFAULT_LIFECYCLE_LIMIT,
+    offset: int = 0,
+) -> tuple[list[CatalogueLifecycleRow], int]:
+    """``(page_rows, total_count)`` — the paginated twin of ``list_upcoming_expiries``."""
+    safe_limit = max(1, min(int(limit or DEFAULT_LIFECYCLE_LIMIT), MAX_LIFECYCLE_LIMIT))
+    safe_offset = max(0, int(offset or 0))
+    frame = _expiries_frame(within_days=within_days, asset_group=asset_group, venue=venue)
+    total_count = len(frame)
+    page = frame.iloc[safe_offset : safe_offset + safe_limit]
+    return _rows_from_lifecycle_frame(page), total_count
 
 
 def _clear_caches() -> None:  # test hook
-    _NEW_LISTINGS_CACHE.clear()
-    _EXPIRIES_CACHE.clear()
+    _NEW_LISTINGS_FRAME_CACHE.clear()
+    _EXPIRIES_FRAME_CACHE.clear()
 
 
 __all__ = [
+    "DEFAULT_LIFECYCLE_LIMIT",
+    "MAX_LIFECYCLE_LIMIT",
     "CatalogueLifecycleRow",
     "list_new_listings",
+    "list_new_listings_page",
     "list_upcoming_expiries",
+    "list_upcoming_expiries_page",
 ]

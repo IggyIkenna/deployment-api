@@ -21,6 +21,10 @@ from deployment_api.background_sync import (
     get_owner_id,
     set_shutdown_event,
 )
+from deployment_api.services.catalogue_lifecycle import (
+    list_new_listings_page,
+    list_upcoming_expiries_page,
+)
 from deployment_api.services.data_status.manifest import prewarm_indexes
 from deployment_api.settings import DATA_STATUS_PREWARM_SERVICE
 from deployment_api.utils.bounded_cache import start_sweeper, stop_sweeper
@@ -50,7 +54,50 @@ _auto_sync_running_deployments = auto_sync_running_deployments
 _background_task = None
 _events_drain_task = None
 _prewarm_task = None
+_catalogue_lifecycle_warm_task = None
 _shutdown_event = None
+
+# Just under catalogue_lifecycle's 5-min (300s) in-process TTL cache, so a
+# refresh always lands before the previous warm's cache entry would expire —
+# a user request should essentially never observe a cold miss.
+_CATALOGUE_LIFECYCLE_WARM_INTERVAL_SEC = 270
+
+
+async def _warm_catalogue_lifecycle() -> None:
+    """Background, best-effort cache warm for the New Listings / Upcoming
+    Expiries panels (F10, 2026-07-18).
+
+    Each cold read does 5 per-AG transpacific GCS parquet reads; even
+    parallelised (services/catalogue_lifecycle.py) that's dominated by the
+    slowest single AG (~17s for prediction) which can still be tight against
+    the Cloud Run / browser fetch timeout on a request that lands during a
+    5-min-TTL cache miss. Priming the default-params cache here, on a timer
+    just under the TTL, means a real request almost always hits the warm
+    in-process cache instead of paying that cold read synchronously. Runs on
+    EVERY worker (unlike the leader-only auto-sync task) — the cache is a
+    per-process module dict, not shared storage, so each worker needs its own
+    warm to benefit whichever worker a request lands on. Swallows every error
+    — a failed warm must never affect readiness; the next request just pays
+    the cold read as before."""
+    # Small initial stagger (matches _prewarm_data_status) so the first warm's
+    # GCS reads don't contend with the rest of startup.
+    await asyncio.sleep(5)
+    while True:
+        try:
+            # Default params only — the same (max_age_days=30/within_days=7,
+            # asset_group=None, venue=None) shape the UI cards request on
+            # first mount (LifecycleCards.tsx defaultThreshold).
+            await asyncio.to_thread(list_new_listings_page)
+            await asyncio.to_thread(list_upcoming_expiries_page)
+            logger.info("Catalogue-lifecycle cache warm complete (new-listings + upcoming-expiries)")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # best-effort: never let a warm failure affect the service
+            logger.warning("Catalogue-lifecycle cache warm failed (non-fatal): %s", exc)
+        try:
+            await asyncio.sleep(_CATALOGUE_LIFECYCLE_WARM_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            raise
 
 
 async def _prewarm_data_status(service: str) -> None:
@@ -89,6 +136,10 @@ async def _cancel_background_tasks() -> None:
         _prewarm_task.cancel()
         with suppress(TimeoutError, asyncio.CancelledError):
             await asyncio.wait_for(_prewarm_task, timeout=2)
+    if _catalogue_lifecycle_warm_task:
+        _catalogue_lifecycle_warm_task.cancel()
+        with suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(_catalogue_lifecycle_warm_task, timeout=2)
 
 
 def _release_one_lock(deployment_id: str, held_locks: set[str]) -> int:
@@ -126,7 +177,7 @@ def _release_deployment_locks() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
-    global _background_task, _shutdown_event, _events_drain_task, _prewarm_task
+    global _background_task, _shutdown_event, _events_drain_task, _prewarm_task, _catalogue_lifecycle_warm_task
 
     async with fastapi_uei_lifespan("deployment-api", entrypoint="gunicorn/uvicorn"):
         # Startup
@@ -190,6 +241,12 @@ async def lifespan(app: FastAPI):
         if DATA_STATUS_PREWARM_SERVICE:
             _prewarm_task = asyncio.create_task(_prewarm_data_status(DATA_STATUS_PREWARM_SERVICE))
             logger.info("Data Status pre-warm scheduled for %s", DATA_STATUS_PREWARM_SERVICE)
+
+        # New Listings / Upcoming Expiries cache warm (F10, 2026-07-18) — unconditional
+        # (unlike the DATA_STATUS_PREWARM_SERVICE toggle above) and runs on every worker,
+        # not just the leader: see _warm_catalogue_lifecycle for why.
+        _catalogue_lifecycle_warm_task = asyncio.create_task(_warm_catalogue_lifecycle())
+        logger.info("Catalogue-lifecycle cache warm task started")
 
         yield
 

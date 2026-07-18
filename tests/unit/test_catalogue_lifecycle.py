@@ -271,3 +271,76 @@ def test_shard_isolation_one_failing_asset_group_is_skipped() -> None:
     with patch.object(cl, "_read_catalogue", side_effect=lambda ag: None if ag == "defi" else _read(ag)):
         rows = cl.list_new_listings(max_age_days=7)
     assert any(r["instrument_id"] == "NEW-SPOT" for r in rows)
+
+
+class TestPagination:
+    """F10 (2026-07-18): pagination + parallel per-AG reads.
+
+    ``list_new_listings_page``/``list_upcoming_expiries_page`` must return the
+    SAME rows (in the SAME order) as the unbounded ``list_new_listings``/
+    ``list_upcoming_expiries``, just sliced -- so ``total_count`` always
+    reflects the full filtered set even though only the page gets built.
+    """
+
+    def test_new_listings_page_matches_unbounded_slice(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+            full = cl.list_new_listings(max_age_days=7)
+            page, total_count = cl.list_new_listings_page(max_age_days=7, limit=1, offset=0)
+        assert total_count == len(full)
+        assert page == full[:1]
+
+    def test_new_listings_page_offset_beyond_total_is_empty_not_error(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+            page, total_count = cl.list_new_listings_page(max_age_days=7, limit=50, offset=9_999)
+        assert page == []
+        assert total_count >= 1
+
+    def test_new_listings_page_limit_clamped_to_max(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+            page, _total_count = cl.list_new_listings_page(max_age_days=7, limit=cl.MAX_LIFECYCLE_LIMIT + 500, offset=0)
+        # Clamped limit must not raise / must not silently return everything unbounded.
+        assert len(page) <= cl.MAX_LIFECYCLE_LIMIT
+
+    def test_upcoming_expiries_page_matches_unbounded_slice(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+            full = cl.list_upcoming_expiries(within_days=7)
+            page, total_count = cl.list_upcoming_expiries_page(within_days=7, limit=10, offset=0)
+        assert total_count == len(full)
+        assert page == full
+
+    def test_new_listings_page_shares_cache_with_unbounded_call(self) -> None:
+        """Both entry points read through the SAME cached prepared frame -- a
+        page call right after the unbounded call must not re-hit _read_catalogue."""
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        call_count = 0
+
+        def _counting_read(ag: str):
+            nonlocal call_count
+            if ag == "cefi":
+                call_count += 1
+                return _cefi_df()
+            return None
+
+        with patch.object(cl, "_read_catalogue", side_effect=_counting_read):
+            cl.list_new_listings(max_age_days=7)
+            cefi_calls_after_first = call_count
+            cl.list_new_listings_page(max_age_days=7, limit=1, offset=0)
+        assert call_count == cefi_calls_after_first, "second call must hit the cached frame, not re-read the AG"
+
+    def test_all_asset_groups_are_queried_when_unfiltered(self) -> None:
+        """Parallel fan-out must still cover every configured asset_group (no
+        AG silently dropped by the ThreadPoolExecutor rewrite)."""
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        seen: set[str] = set()
+
+        def _record(ag: str):
+            seen.add(ag)
+            return _cefi_df() if ag == "cefi" else None
+
+        with patch.object(cl, "_read_catalogue", side_effect=_record):
+            cl.list_new_listings(max_age_days=7)
+        assert seen == set(cl._CATALOGUE_ASSET_GROUPS)  # pyright: ignore[reportPrivateUsage]
