@@ -33,10 +33,12 @@ deeper filter dicts and the builder returns only the branch that matches.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import cast
 
 import pandas as pd
+from unified_api_contracts import InstrumentType
 from unified_api_contracts.features import FEATURE_GROUP_TO_FAMILY
 from unified_api_contracts.registry import (
     EMPTY_OR_DEPRECATED_DEFI_VENUES,
@@ -56,6 +58,140 @@ from deployment_api.services.manifest_source import read_manifest_index as read_
 logger = logging.getLogger(__name__)
 
 _ALL_DEFI_GHOST_VENUES: frozenset[str] = EMPTY_OR_DEPRECATED_DEFI_VENUES
+
+# ---------------------------------------------------------------------------
+# PIECE A — data-status drilldown DISPLAY canonicalisation (2026-07-18, no
+# manifest/writer regen). Two independent axis-value transforms applied ONLY
+# at tree-grouping/filter-matching time in THIS module — the manifest, the
+# on-disk GCS partition layout, and every OTHER consumer of the raw
+# availability index are untouched.
+# ---------------------------------------------------------------------------
+
+# instrument_type axis: canonicalise the manifest's raw (often non-canonical)
+# spelling onto the UAC ``InstrumentType`` SSOT vocabulary before grouping, so
+# one real instrument type never splits into multiple tree rows. Source:
+# ``InstrumentType`` docstring "Mapping from legacy lowercase values" — only
+# the RENAMES need an entry; a value that is already canonical after
+# ``.upper()`` (e.g. ``PERPETUAL`` / ``perpetual`` -> ``PERPETUAL``,
+# ``option``/``OPTION`` -> ``OPTION``) needs no map entry, the uppercase
+# fallback in ``_canonicalise_instrument_type`` already lands it correctly.
+# Measured evidence (2026-07-18): COINBASE-SPOT instrument_types =
+# ['', 'SPOT_PAIR', 'spot', 'spot_pair']; BYBIT = ['', 'FUTURE', 'PERPETUAL',
+# 'SPOT_PAIR', 'futures_chain', 'perpetual']; the literal string "None" also
+# appears — all handled below.
+_INSTRUMENT_TYPE_LEGACY_MAP: dict[str, str] = {
+    "SPOT": InstrumentType.SPOT_PAIR.value,
+    "PERP": InstrumentType.PERPETUAL.value,
+    "FUTURES": InstrumentType.FUTURE.value,
+    "FUTURES_CHAIN": InstrumentType.FUTURE.value,
+    "LENDING_MARKET": InstrumentType.LENDING.value,
+    "YIELD": InstrumentType.YIELD_BEARING.value,
+}
+
+# Honest sentinel for a row that carries no instrument_type classification at
+# all (blank / NaN / the literal string "None") — never fabricate a real type
+# for it. Deliberately NOT a member of ``InstrumentType`` (this bucket means
+# "the manifest didn't say", not a real classification).
+_INSTRUMENT_TYPE_UNKNOWN: str = "UNKNOWN"
+
+
+def _canonicalise_instrument_type(raw: str) -> str:
+    """Canonicalise one raw manifest ``instrument_type`` value for display.
+
+    Deterministic + total: every input maps to exactly one non-empty output,
+    so grouping by the canonicalised value is always well-defined. Blank /
+    ``None`` / ``"None"`` / ``"nan"`` -> :data:`_INSTRUMENT_TYPE_UNKNOWN`;
+    otherwise uppercase + apply :data:`_INSTRUMENT_TYPE_LEGACY_MAP`.
+    """
+    val = raw.strip()
+    if not val or val.lower() in ("none", "nan"):
+        return _INSTRUMENT_TYPE_UNKNOWN
+    upper = val.upper()
+    return _INSTRUMENT_TYPE_LEGACY_MAP.get(upper, upper)
+
+
+# venue axis, part 1 — registry-removed venues. Source SSOT:
+# ``unified_api_contracts.registry.venue_adapter_keys`` (grep-confirmed
+# 2026-07-18: none of these 5 protocol bases appear ANYWHERE in
+# ``VENUE_TO_ADAPTER_KEY`` / ``VENUES_BY_ASSET_GROUP`` any more). Matched by
+# BASE (the venue string split on the first ``-``) so this excludes both the
+# bare form and any ``-<CHAIN>`` suffixed form of the removed protocol —
+# memory 2026-07-18 measured evidence: bare ``DRIFT`` alone carries 3,556
+# stale rows in the instruments-service defi availability index (0 in MTDS).
+_REMOVED_VENUE_BASES: frozenset[str] = frozenset(
+    {
+        # Solana perp DEXes — operator ruling 2026-07-16: Drift was hacked for
+        # ~$280M on 2026-04-01 (Lazarus-attributed), offline 3 months, then
+        # rebranded "Velocity DEX" 2026-07-01 (~2-week-old private beta, ~$0
+        # TVL). All Solana perp DEXes dropped except Jupiter (not integrated).
+        "DRIFT",
+        # Same 2026-07-16 Solana-perp-DEX sweep as DRIFT above.
+        "PACIFICA",
+        # MANGO-SOLANA/ZETA-SOLANA/FLASH-SOLANA removed 2026-07-15 (operator
+        # ruling): all 3 declared API hosts are dead (api.mngo.cloud /
+        # api.flash.trade NXDOMAIN, dex.zeta.markets/api returns HTML not
+        # JSON), ~$0 DeFiLlama TVL, zero MTDS market-data capture ever wired.
+        "MANGO",
+        "ZETA",
+        "FLASH",
+    }
+)
+
+# venue axis, part 2 — bare-vs-chain duplicate venues. The instruments-service
+# defi availability index carries BOTH the bare protocol name and the
+# canonical ``-SOLANA`` registry name for the SAME protocol (a historic
+# naming-migration artifact, not two real venues — measured evidence
+# 2026-07-18). Collapse the bare form INTO the canonical registry name.
+# Conservative: only these 3 CONFIRMED same-protocol pairs (bare form absent
+# from ``VENUES_BY_ASSET_GROUP``/``VENUE_TO_ADAPTER_KEY``, chain form present)
+# — do NOT generalise to "any bare venue with a -SOLANA sibling" without
+# operator confirmation; a wrong collapse silently merges two DIFFERENT
+# venues' counts, which is worse than leaving a display duplicate.
+_VENUE_COLLAPSE_TO_CANONICAL: dict[str, str] = {
+    "JITO": "JITO-SOLANA",
+    "RAYDIUM": "RAYDIUM-SOLANA",
+    "MARINADE": "MARINADE-SOLANA",
+}
+
+
+def _canonicalise_venue_collapse(raw: str) -> str:
+    """Collapse a confirmed bare-vs-chain duplicate venue name (display-only).
+
+    Identity for every venue not in :data:`_VENUE_COLLAPSE_TO_CANONICAL`
+    (every CeFi/TradFi/prediction/sports venue, and every DeFi venue that
+    doesn't have a bare-name duplicate) — safe to apply unconditionally.
+    """
+    return _VENUE_COLLAPSE_TO_CANONICAL.get(raw, raw)
+
+
+def _drop_removed_venues(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows whose ``venue`` base matches a registry-removed protocol.
+
+    Applied to the WHOLE manifest slice (not just at the venue tree level) so
+    every level of the tree — root totals, a parent axis above ``venue``
+    (e.g. DeFi's ``chain``), and the venue children themselves — stays
+    mutually consistent. Only the explicit :data:`_REMOVED_VENUE_BASES` set
+    is touched; every other venue's rows pass through byte-for-byte.
+    """
+    if df.empty or "venue" not in df.columns:
+        return df
+    base = df["venue"].astype(str).str.upper().str.split("-", n=1).str[0]
+    keep = ~base.isin(_REMOVED_VENUE_BASES)
+    if bool(keep.all()):
+        return df
+    return df.loc[keep].reset_index(drop=True)
+
+
+# Per-axis DISPLAY canonicaliser dispatch — used by both ``_filter_manifest``
+# (so a filter value matches every raw spelling that canonicalises to it) and
+# ``_children_for_axis`` (so the tree groups by the canonical value, summing
+# counts across every raw spelling that merges into one node). Every other
+# axis (chain / data_type / instrument_id / date / league_id / ...) is
+# untouched — identity passthrough via the ``None`` lookup miss.
+_AXIS_VALUE_CANONICALIZERS: dict[str, Callable[[str], str]] = {
+    "instrument_type": _canonicalise_instrument_type,
+    "venue": _canonicalise_venue_collapse,
+}
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -197,7 +333,14 @@ def _filter_manifest(df: pd.DataFrame, axes: tuple[str, ...], filters: dict[str,
         val = filters.get(axis)
         if val is None or axis not in out.columns:
             continue
-        out = out[out[axis].astype(str) == str(val)]
+        canon_fn = _AXIS_VALUE_CANONICALIZERS.get(axis)
+        if canon_fn is not None:
+            # Compare canonicalised-vs-canonicalised so a filter value in
+            # EITHER the raw or the display-canonical spelling matches every
+            # raw row that canonicalises to the same bucket.
+            out = out[out[axis].astype(str).map(canon_fn) == canon_fn(str(val))]
+        else:
+            out = out[out[axis].astype(str) == str(val)]
     for non_axis_key in _NON_AXIS_FILTERS:
         val = filters.get(non_axis_key)
         if val is None or non_axis_key not in out.columns:
@@ -264,7 +407,17 @@ def _children_for_axis(
         return []
     if rows.empty:
         return []
-    values = sorted(v for v in rows[axis].astype(str).unique() if v != "" and v != "nan")  # pyright: ignore[reportAny]
+    # Display canonicalisation (PIECE A, 2026-07-18): for instrument_type /
+    # venue, group by the CANONICAL value instead of the raw manifest
+    # spelling — every raw row that canonicalises to the same value merges
+    # into one tree node, and ``_aggregate_counts`` below sums the REAL
+    # per-status counts across the merge (completion_pct is then computed
+    # FROM those summed totals via ``DrilldownNode.completion_pct`` — never
+    # averaged). Identity passthrough (unchanged prior behaviour) for every
+    # other axis.
+    canon_fn = _AXIS_VALUE_CANONICALIZERS.get(axis)
+    axis_col = rows[axis].astype(str).map(canon_fn) if canon_fn is not None else rows[axis].astype(str)
+    values = sorted(v for v in axis_col.unique() if v != "" and v != "nan")  # pyright: ignore[reportAny]
     if len(values) > _MAX_CHILDREN_PER_NODE:
         logger.warning(
             "drilldown: axis %s has %d values, truncating to %d (caller should paginate)",
@@ -275,7 +428,7 @@ def _children_for_axis(
         values = values[:_MAX_CHILDREN_PER_NODE]
     children: list[DrilldownNode] = []
     for val in values:  # pyright: ignore[reportAny]
-        sub = rows[rows[axis].astype(str) == val]  # pyright: ignore[reportUnknownVariableType]
+        sub = rows[axis_col == val]  # pyright: ignore[reportUnknownVariableType]
         captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
         node_row_key = {**parent_row_key, axis: val}
         node = DrilldownNode(
@@ -495,6 +648,14 @@ def get_hierarchical_drilldown(
     df = read_availability_index(bucket, date_window=(window_start, window_end))
     if df is not None and len(df) > 0 and asset_group.lower() == "defi" and "venue" in df.columns:  # pyright: ignore[reportUnnecessaryComparison]
         df = df[~df["venue"].isin(_ALL_DEFI_GHOST_VENUES)].reset_index(drop=True)
+    # PIECE A (2026-07-18): drop registry-removed venues (bare + any
+    # -<CHAIN> form) BEFORE any aggregation, so root totals / a shallower
+    # axis' subtotal (e.g. DeFi's ``chain``, above ``venue``) and the venue
+    # children list all agree. Applied unconditionally (not asset_group-
+    # scoped like the ghost-venue filter above) — harmless no-op when no
+    # row's venue base is in the removed set.
+    if df is not None and len(df) > 0:  # pyright: ignore[reportUnnecessaryComparison]
+        df = _drop_removed_venues(df)
     if df is None or len(df) == 0:  # pyright: ignore[reportUnnecessaryComparison]
         return {
             "axes": list(axes),
