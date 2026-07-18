@@ -190,7 +190,14 @@ _TASK_TO_LAUNCHER: dict[BackfillLaunchTaskKind, _LauncherSpec] = {
     ),
     BackfillLaunchTaskKind.FEATURES_SPORTS_BACKFILL: _LauncherSpec(
         launcher_filename="launch-features-sports-backfill-vm.sh",
-        vm_prefix_template="features",
+        # The launcher itself computes VM_NAME=fts-backfill-${RUN_TS} (split
+        # 2026-07-18 off the fs-backfill- prefix it used to share with
+        # launch-footystats-backfill-vm.sh — see
+        # api_football_backfill_chronological_scan_never_reaches_pending_tail_2026_07_18.md
+        # todo P3); this template must match or _resolve_vm_name_prefix's
+        # logged/tracked vm_name diverges from the VM the launcher actually
+        # creates.
+        vm_prefix_template="fts-backfill",
         service="features-sports-service",
     ),
     BackfillLaunchTaskKind.CANONICAL_MIGRATION: _LauncherSpec(
@@ -254,6 +261,7 @@ _REGISTERED_VM_PREFIXES: frozenset[str] = frozenset(
         "mtds-lending-indices-",
         # Sports per-source backfill + audits
         "fs-backfill-",
+        "fts-backfill-",
         "af-backfill-",
         "af-audit-",
         "af-recover-",
