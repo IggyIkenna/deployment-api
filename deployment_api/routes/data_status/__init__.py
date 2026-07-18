@@ -98,6 +98,7 @@ from deployment_api.routes.data_status import _downloads
 from deployment_api.routes.data_status import _live_coverage
 from deployment_api.routes.data_status import _rollup
 from deployment_api.routes.data_status import _catalogue
+from deployment_api.routes.data_status import _axis_census
 
 # isort: on
 
@@ -106,6 +107,10 @@ from deployment_api.routes.data_status import _catalogue
 # ``deployment_api.routes.data_status`` resolves here unchanged (Citadel
 # safety contract: preserve the surface; tests import these directly).
 # ---------------------------------------------------------------------------
+from deployment_api.routes.data_status._axis_census import (
+    AXIS_CENSUS_COLUMNS,
+    get_axis_value_census,
+)
 from deployment_api.routes.data_status._catalogue import (
     download_catalogue_csv,
     get_instrument_catalogue,
