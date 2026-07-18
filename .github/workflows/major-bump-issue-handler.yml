@@ -221,6 +221,20 @@ jobs:
           # Retired Telegram -> Slack #ci-failures (cicd #551). Prefer the dedicated valid webhook.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
         run: |
+          # REPO must be non-empty (2026-07-18). The step gate above is the parsed COMMAND, and the
+          # job gate is the `major-bump-pending` LABEL — but REPO/VERSION come from a
+          # `<!-- major-bump-metadata -->` block in the issue BODY. An issue can carry the label
+          # without a parseable block, and this then posted
+          #   "Major bump REJECTED:  -> v (by @someone)"
+          # naming NO repo and NO version. Measured twice on unified-trading-pm the same day (17:50,
+          # 18:51) via its carrier-based copy of this workflow; both handler runs SUCCEEDED, so it was
+          # pure #ci-failures noise, not a failure. That channel is actionable-only: an alert with no
+          # identifying fields is worse than silence because it still costs a human the read.
+          # SSOT: codex/04-architecture/ci-alerting.md.
+          if [ -z "${REPO:-}" ]; then
+            echo "No repo parsed from the issue metadata block — not a major-bump request; skipping notification" >&2
+            exit 0
+          fi
           if [ "$ACTION" = "approve" ]; then
             MSG="Major bump APPROVED: ${REPO} -> v${VERSION} on live-defi-rollout (by @${APPROVER})\n${ISSUE_URL}"
           else
