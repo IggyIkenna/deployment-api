@@ -354,22 +354,24 @@ class TestAbsoluteDateWindow:
 class TestLeagueNames:
     """F1 (live UI review round 3, 2026-07-17): the browser grouped by the raw
     API-Football numeric league_id; resolve to the human ``display_name`` from
-    UAC, honest-absence when unmapped."""
+    UAC, honest-absence when unmapped. The resolver lives in
+    ``upcoming_fixtures.py`` (shared with F9's league filter — see that
+    module's docstring), ``fb.league_names_for`` is a thin wrapper over it."""
 
     def test_numeric_api_football_id_resolves_to_display_name(self) -> None:
         # 2 -> UEFA Champions League, 103 -> Eliteserien (real UAC registry entries).
-        assert fb._resolve_league_name("2") == "UEFA Champions League"
-        assert fb._resolve_league_name("103") == "Eliteserien"
+        assert uf._resolve_league_name("2") == "UEFA Champions League"
+        assert uf._resolve_league_name("103") == "Eliteserien"
 
     def test_canonical_string_id_resolves(self) -> None:
-        assert fb._resolve_league_name("EPL") == "English Premier League"
+        assert uf._resolve_league_name("EPL") == "English Premier League"
 
     def test_unmapped_id_is_none_not_fabricated(self) -> None:
         # An id with no registry entry stays honest — None, so the map omits it and
         # the UI falls back to the raw id (never a placeholder name).
-        assert fb._resolve_league_name("99999999") is None
-        assert fb._resolve_league_name("") is None
-        assert fb._resolve_league_name("   ") is None
+        assert uf._resolve_league_name("99999999") is None
+        assert uf._resolve_league_name("") is None
+        assert uf._resolve_league_name("   ") is None
 
     def test_league_names_for_maps_present_ids_only(self) -> None:
         grouped: fb.FixturesByLeagueAndDay = {
@@ -380,3 +382,66 @@ class TestLeagueNames:
         names = fb.league_names_for(grouped)
         assert names == {"2": "UEFA Champions League", "103": "Eliteserien"}
         assert "99999999" not in names  # honest-absence — UI shows the raw id
+
+
+class TestLeagueFilter:
+    """F9 (operator 2026-07-18): the league filter is a case-insensitive
+    SUBSTRING match against the raw catalogue id OR its resolved human name —
+    it used to be an exact match on the raw id only, so typing a human league
+    name (e.g. "Allsvenskan") returned 0 rows even though the fixture's raw
+    ``league_id`` was the numeric API-Football key it resolves from."""
+
+    def test_human_name_matches_the_numeric_raw_id_it_resolves_to(self) -> None:
+        # 113 -> Allsvenskan (real UAC registry entry) — the catalogue row's raw
+        # league_id is the numeric key, never the human name.
+        df = pd.DataFrame(
+            [
+                _fixture_row("swe", "2026-04-21T12:00:00Z", league_id="113"),
+                _fixture_row("other", "2026-04-21T13:00:00Z", league_id="EPL"),
+            ]
+        )
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, league_id="Allsvenskan")
+
+        assert _flatten(out) == ["swe"]
+
+    def test_matches_case_insensitively_and_as_a_substring(self) -> None:
+        df = pd.DataFrame([_fixture_row("a", "2026-04-21T12:00:00Z", league_id="EPL")])
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, league_id="epl")
+
+        assert _flatten(out) == ["a"]
+
+    def test_raw_id_still_matches_when_a_human_name_exists(self) -> None:
+        """A numeric-id search must keep working even once the id resolves to a
+        name — the filter checks BOTH the raw id and the resolved name."""
+        df = pd.DataFrame([_fixture_row("a", "2026-04-21T12:00:00Z", league_id="113")])
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(window_days_back=0, window_days_forward=0, league_id="113")
+
+        assert _flatten(out) == ["a"]
+
+    def test_unmatched_needle_returns_no_leagues(self) -> None:
+        df = pd.DataFrame([_fixture_row("a", "2026-04-21T12:00:00Z", league_id="EPL")])
+        with (
+            patch.object(fb, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=df),
+        ):
+            out = fb.list_fixtures_by_league_and_day(
+                window_days_back=0, window_days_forward=0, league_id="no-such-league"
+            )
+
+        assert out == {}

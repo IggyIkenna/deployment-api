@@ -148,6 +148,117 @@ def test_list_upcoming_fixtures_league_filter() -> None:
     assert out[0]["fixture_id"] == "x"
 
 
+class TestLeagueFilterSubstring:
+    """F9 (operator 2026-07-18): the league filter is a case-insensitive
+    SUBSTRING match against the raw catalogue id OR its resolved human name —
+    consistent with the ``team`` filter's existing substring semantics
+    (previously an exact match on the raw id only, so a human league name
+    typed into the filter — e.g. "Allsvenskan" — returned 0 rows)."""
+
+    def _two_league_df(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "fixture_id": "swe",
+                    "kickoff_utc": "2026-04-21T12:00:00Z",
+                    "league_id": "113",  # Allsvenskan's api_football_id (UAC)
+                    "home_team_id": "h",
+                    "away_team_id": "a",
+                    "home_team_name": "H",
+                    "away_team_name": "A",
+                    "venue_id": "v",
+                    "venue_name": "V",
+                    "status": "NS",
+                    "round_name": "R1",
+                },
+                {
+                    "fixture_id": "eng",
+                    "kickoff_utc": "2026-04-21T13:00:00Z",
+                    "league_id": "EPL",
+                    "home_team_id": "h",
+                    "away_team_id": "a",
+                    "home_team_name": "H",
+                    "away_team_name": "A",
+                    "venue_id": "v",
+                    "venue_name": "V",
+                    "status": "NS",
+                    "round_name": "R1",
+                },
+            ]
+        )
+
+    def test_human_name_matches_the_numeric_raw_id_it_resolves_to(self) -> None:
+        with (
+            patch.object(uf, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=self._two_league_df()),
+        ):
+            out = uf.list_upcoming_fixtures(days=0, league_id="Allsvenskan", project_id="p")
+
+        assert [f["fixture_id"] for f in out] == ["swe"]
+
+    def test_case_insensitive_substring_on_raw_id(self) -> None:
+        with (
+            patch.object(uf, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=self._two_league_df()),
+        ):
+            out = uf.list_upcoming_fixtures(days=0, league_id="epl", project_id="p")
+
+        assert [f["fixture_id"] for f in out] == ["eng"]
+
+    def test_raw_id_still_matches_when_a_human_name_exists(self) -> None:
+        with (
+            patch.object(uf, "datetime", _DatetimeStub),
+            patch.object(uf, "object_exists", return_value=True),
+            patch.object(uf, "_read_fixtures_parquet", return_value=self._two_league_df()),
+        ):
+            out = uf.list_upcoming_fixtures(days=0, league_id="113", project_id="p")
+
+        assert [f["fixture_id"] for f in out] == ["swe"]
+
+
+class TestLeagueNamesForFixtures:
+    """``league_names_for_fixtures`` — the ``/fixtures/upcoming`` counterpart to
+    ``fixtures_browser.league_names_for``, so the flat upcoming-fixtures list
+    can also render human league names (F9)."""
+
+    def test_maps_distinct_league_ids_only_omits_unmapped(self) -> None:
+        fixtures: list[uf.UpcomingFixture] = [
+            uf.UpcomingFixture(
+                fixture_id="a",
+                kickoff_utc="2026-04-21T12:00:00+00:00",
+                league_id="113",
+                home_team_id="h",
+                away_team_id="a",
+                home_team_name="H",
+                away_team_name="A",
+                venue_id="v",
+                venue_name="V",
+                status="NS",
+                round="R1",
+            ),
+            uf.UpcomingFixture(
+                fixture_id="b",
+                kickoff_utc="2026-04-21T13:00:00+00:00",
+                league_id="99999999",  # unmapped
+                home_team_id="h",
+                away_team_id="a",
+                home_team_name="H",
+                away_team_name="A",
+                venue_id="v",
+                venue_name="V",
+                status="NS",
+                round="R1",
+            ),
+        ]
+
+        names = uf.league_names_for_fixtures(fixtures)
+
+        assert names == {"113": "Allsvenskan"}
+        assert "99999999" not in names
+
+
 def test_list_upcoming_fixtures_skips_failed_day() -> None:
     df_ok = pd.DataFrame(
         [

@@ -54,6 +54,7 @@ class TestLifespanStartup:
 
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
+        warm_task = asyncio.create_task(asyncio.sleep(0))
 
         with (
             patch("deployment_api.lifespan.get_config_dir", return_value=tmp_path / "configs"),
@@ -61,7 +62,7 @@ class TestLifespanStartup:
             patch("deployment_api.lifespan._auto_sync_running_deployments", new=AsyncMock()),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
-            patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
+            patch("asyncio.create_task", side_effect=[bg_task, drain_task, warm_task]),
             patch("deployment_api.lifespan.start_sweeper"),
             patch("deployment_api.lifespan.stop_sweeper", new=AsyncMock()),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
@@ -85,6 +86,7 @@ class TestLifespanStartup:
 
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
+        warm_task = asyncio.create_task(asyncio.sleep(0))
 
         with (
             patch("deployment_api.lifespan.get_config_dir", return_value=MagicMock()),
@@ -92,7 +94,7 @@ class TestLifespanStartup:
             patch("deployment_api.lifespan._auto_sync_running_deployments", new=AsyncMock()),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
-            patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
+            patch("asyncio.create_task", side_effect=[bg_task, drain_task, warm_task]),
             patch("deployment_api.lifespan.start_sweeper"),
             patch("deployment_api.lifespan.stop_sweeper", new=AsyncMock()),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
@@ -118,6 +120,7 @@ class TestLifespanStartup:
 
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
+        warm_task = asyncio.create_task(asyncio.sleep(0))
 
         with (
             patch("deployment_api.lifespan.get_config_dir", return_value=MagicMock()),
@@ -125,7 +128,7 @@ class TestLifespanStartup:
             patch("deployment_api.lifespan._auto_sync_running_deployments", new=AsyncMock()),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
-            patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
+            patch("asyncio.create_task", side_effect=[bg_task, drain_task, warm_task]),
             patch("deployment_api.lifespan.start_sweeper"),
             patch("deployment_api.lifespan.stop_sweeper", new=AsyncMock()),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
@@ -155,6 +158,7 @@ class TestLifespanShutdown:
 
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
+        warm_task = asyncio.create_task(asyncio.sleep(0))
 
         with (
             patch("deployment_api.lifespan.get_config_dir", return_value=MagicMock()),
@@ -162,7 +166,7 @@ class TestLifespanShutdown:
             patch("deployment_api.lifespan._auto_sync_running_deployments", new=AsyncMock()),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
-            patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
+            patch("asyncio.create_task", side_effect=[bg_task, drain_task, warm_task]),
             patch("deployment_api.lifespan.start_sweeper"),
             patch("deployment_api.lifespan.stop_sweeper", new=AsyncMock()),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value=set()),
@@ -188,6 +192,7 @@ class TestLifespanShutdown:
 
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
+        warm_task = asyncio.create_task(asyncio.sleep(0))
 
         with (
             patch("deployment_api.lifespan.get_config_dir", return_value=MagicMock()),
@@ -195,7 +200,7 @@ class TestLifespanShutdown:
             patch("deployment_api.lifespan._auto_sync_running_deployments", new=AsyncMock()),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
-            patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
+            patch("asyncio.create_task", side_effect=[bg_task, drain_task, warm_task]),
             patch("deployment_api.lifespan.start_sweeper"),
             patch("deployment_api.lifespan.stop_sweeper", new=AsyncMock()),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value={"dep-x"}),
@@ -223,6 +228,7 @@ class TestLifespanShutdown:
 
         bg_task = asyncio.create_task(asyncio.sleep(0))
         drain_task = asyncio.create_task(asyncio.sleep(0))
+        warm_task = asyncio.create_task(asyncio.sleep(0))
 
         mock_delete = MagicMock()
 
@@ -232,7 +238,7 @@ class TestLifespanShutdown:
             patch("deployment_api.lifespan._auto_sync_running_deployments", new=AsyncMock()),
             patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}),
             patch.dict(sys.modules, {"deployment_api.utils.deployment_events": mock_drain_mod}),
-            patch("asyncio.create_task", side_effect=[bg_task, drain_task]),
+            patch("asyncio.create_task", side_effect=[bg_task, drain_task, warm_task]),
             patch("deployment_api.lifespan.start_sweeper"),
             patch("deployment_api.lifespan.stop_sweeper", new=AsyncMock()),
             patch("deployment_api.lifespan.get_held_deployment_locks", return_value={"dep-1"}),

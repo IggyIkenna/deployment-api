@@ -27,7 +27,9 @@ router = APIRouter(prefix="/fixtures", tags=["Fixtures"])
 async def get_fixtures_browse(
     days_back: int = Query(7, ge=0, le=60, description="Backward window from today (UTC), inclusive"),
     days_forward: int = Query(30, ge=0, le=60, description="Forward window from today (UTC), inclusive"),
-    league_id: str | None = Query(None, description="Optional canonical league_id filter (exact match)"),
+    league_id: str | None = Query(
+        None, description="Optional league filter — case-insensitive substring on raw id or human name"
+    ),
     team: str | None = Query(
         None, description="Optional team filter — case-insensitive substring on home/away name or id"
     ),
@@ -39,7 +41,9 @@ async def get_fixtures_browse(
     Date window is either today-relative (``days_back``/``days_forward``, the
     default) or ABSOLUTE when ``start_date``/``end_date`` is given — the latter
     can address any range in history, span-capped server-side. ``league_id`` is
-    an exact match; ``team`` is a case-insensitive substring across home/away
+    a case-insensitive substring against the raw catalogue league key OR its
+    resolved human display_name (e.g. "Allsvenskan" matches the numeric id it
+    resolves to); ``team`` is a case-insensitive substring across home/away
     team name and id (matches either side of the fixture).
     """
     if _cfg.is_mock_mode():
