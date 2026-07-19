@@ -40,13 +40,17 @@ SERVICE_TO_KIND: dict[str, str] = {
     "market-tick-data-service": "market-data",
     "market-tick-data-handler": "market-data",  # API-layer alias
     "market-data-processing-service": "market-data",
-    "features-delta-one-service": "features-delta-one",
-    "features-volatility-service": "features-volatility",
-    "features-onchain-service": "features-onchain",
+    # features FOLD A (fold_a_cutover_spec, 2026-07-18): the 5 per-family kinds
+    # below all collapsed into the single folded "features" key in
+    # cloud-providers.yaml (per-family split is now a key PREFIX, not a
+    # separate kind) — see features_service_qg_red_asset_group_parity_stale_kind_mapping_2026_07_19.md.
+    "features-delta-one-service": "features",
+    "features-volatility-service": "features",
+    "features-onchain-service": "features",
     "features-sports-service": "features-sports",
     "features-calendar-service": "features-calendar",
-    "features-multi-timeframe-service": "features-multi-timeframe",
-    "features-cross-instrument-service": "features-cross-instrument",
+    "features-multi-timeframe-service": "features",
+    "features-cross-instrument-service": "features",
     # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21).
     # ml FOLD B (bucket_fold_ml_2026_07_17.md): kind="ml-models-store" folds through UTL
     # `resolve_bucket_name` `_KIND_ALIASES` to the SINGLE `ml-store-{env}-{pid}` bucket.
