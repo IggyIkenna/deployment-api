@@ -40,9 +40,14 @@ SERVICE_TO_KIND: dict[str, str] = {
     "market-tick-data-service": "market-data",
     "market-tick-data-handler": "market-data",  # API-layer alias
     "market-data-processing-service": "market-data",
-    "features-delta-one-service": "features-delta-one",
-    "features-volatility-service": "features-volatility",
-    "features-onchain-service": "features-onchain",
+    # features FOLD A (fold_a_cutover_spec, 2026-07-18): delta_one/volatility/onchain
+    # collapsed into the single folded "features" kind (per-AG dict: CEFI/TRADFI/DEFI/
+    # PREDICTION). The old per-family SHORT kind strings were removed from UTL's
+    # `_KIND_ALIASES` in the 2026-07-19 alias sunset, so resolving with them now raises
+    # BucketNamingError — see features_service_qg_red_asset_group_parity_stale_kind_mapping_2026_07_19.md.
+    "features-delta-one-service": "features",
+    "features-volatility-service": "features",
+    "features-onchain-service": "features",
     "features-sports-service": "features-sports",
     "features-calendar-service": "features-calendar",
     "features-multi-timeframe-service": "features-multi-timeframe",
