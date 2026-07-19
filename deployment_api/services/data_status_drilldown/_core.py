@@ -40,21 +40,30 @@ SERVICE_TO_KIND: dict[str, str] = {
     "market-tick-data-service": "market-data",
     "market-tick-data-handler": "market-data",  # API-layer alias
     "market-data-processing-service": "market-data",
-    "features-delta-one-service": "features-delta-one",
-    "features-volatility-service": "features-volatility",
-    "features-onchain-service": "features-onchain",
+    # features FOLD A (fold_a_cutover_spec, 2026-07-18): delta-one/volatility/onchain folded
+    # onto the single per-asset_group `features-{ag}` bucket via kind="features" (per-kind
+    # separation is now an object-key PREFIX: delta_one/ | volatility/ | onchain/). The
+    # `features-delta-one` / `features-volatility` / `features-onchain` yaml keys were
+    # REMOVED from `_KIND_ALIASES` on ALIAS SUNSET 2026-07-19 (bucket_naming.py@055948e3) —
+    # this mapping was missed in that repoint (caught by
+    # test_data_status_hierarchical.py::TestFeatureFamilyAxis going BucketNamingError). Mirrors
+    # the already-correct `deployment_api/routes/batch_config_utils.py` BUCKET_MAPPING.
+    "features-delta-one-service": "features",
+    "features-volatility-service": "features",
+    "features-onchain-service": "features",
     "features-sports-service": "features-sports",
     "features-calendar-service": "features-calendar",
     "features-multi-timeframe-service": "features-multi-timeframe",
     "features-cross-instrument-service": "features-cross-instrument",
     # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21).
-    # ml FOLD B (bucket_fold_ml_2026_07_17.md): kind="ml-models-store" folds through UTL
-    # `resolve_bucket_name` `_KIND_ALIASES` to the SINGLE `ml-store-{env}-{pid}` bucket.
-    # Per-kind separation is a top-level object-key PREFIX (models/); the manifest read here
-    # (`read_availability_index`) is a per-bucket ROOT index (no per-prefix index), so the
+    # ml FOLD B (bucket_fold_ml_2026_07_17.md): the five per-kind ml buckets folded into the
+    # SINGLE `ml-store-{env}-{pid}` bucket under kind="ml-store" (ALIAS SUNSET 2026-07-19
+    # removed the retired `ml-models-store` yaml alias — same drift class as the features kinds
+    # above). Per-kind separation is a top-level object-key PREFIX (models/); the manifest read
+    # here (`read_availability_index`) is a per-bucket ROOT index (no per-prefix index), so the
     # models/ fold's rows are discriminated by the `service_name == "ml-service"` filter —
     # predictions/ + configs/ folds are empty (no manifest rows) so there is no conflation.
-    "ml-service": "ml-models-store",
+    "ml-service": "ml-store",
     "strategy-service": "strategy-store",
     "execution-service": "execution-store",
 }
