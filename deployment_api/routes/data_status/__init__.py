@@ -99,6 +99,7 @@ from deployment_api.routes.data_status import _live_coverage
 from deployment_api.routes.data_status import _rollup
 from deployment_api.routes.data_status import _catalogue
 from deployment_api.routes.data_status import _axis_census
+from deployment_api.routes.data_status import _distinct_values
 
 # isort: on
 
@@ -127,6 +128,10 @@ from deployment_api.routes.data_status._deploy_turbo import (
     post_deploy_live_cluster_preview,
     post_deploy_missing_launch,
     post_deploy_missing_preview,
+)
+from deployment_api.routes.data_status._distinct_values import (
+    enumerate_distinct_values,
+    get_distinct_values,
 )
 from deployment_api.routes.data_status._downloads import (
     _attempted_failed_csv_body,  # pyright: ignore[reportPrivateUsage]

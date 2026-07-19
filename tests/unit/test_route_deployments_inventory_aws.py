@@ -551,6 +551,7 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
     from fastapi.testclient import TestClient
 
     from deployment_api.routes import deployments_inventory as mod
+    from tests.mocks import patch_inventory_secondary_census
 
     app = FastAPI()
     app.include_router(mod.router, prefix="/api")
@@ -581,6 +582,9 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
         patch.object(mod, "latest_execution_by_job", return_value={}),
         # AWS census degrades to empty (no creds / boto3) — returns no AWS items.
         patch.object(mod, "load_aws_inventory", return_value=[]),
+        # Secondary GCP censuses (services/functions/scheduler/disks/IPs/object-deltas/costs)
+        # → honest-empty, credential-free: no real socket to GCP (offline / pytest-socket safe).
+        patch_inventory_secondary_census(mod),
     ):
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.require_gcp_project_id.return_value = "test-project"
@@ -601,6 +605,7 @@ def test_inventory_route_includes_aws_items() -> None:
     from fastapi.testclient import TestClient
 
     from deployment_api.routes import deployments_inventory as mod
+    from tests.mocks import patch_inventory_secondary_census
 
     app = FastAPI()
     app.include_router(mod.router, prefix="/api")
@@ -637,6 +642,9 @@ def test_inventory_route_includes_aws_items() -> None:
         patch.object(
             mod, "load_aws_inventory", side_effect=lambda **kwargs: aws_items if kwargs.get("region") == _REGION else []
         ),
+        # Secondary GCP censuses (services/functions/scheduler/disks/IPs/object-deltas/costs)
+        # → honest-empty, credential-free: no real socket to GCP (offline / pytest-socket safe).
+        patch_inventory_secondary_census(mod),
     ):
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.require_gcp_project_id.return_value = "test-project"

@@ -25,6 +25,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.mocks import patch_inventory_secondary_census
+
 os.environ.setdefault("CLOUD_MOCK_MODE", "false")
 os.environ.setdefault("CLOUD_PROVIDER", "local")
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
@@ -1059,6 +1061,9 @@ def test_detail_route_live_path_includes_d1_metrics(client_inventory: TestClient
         patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=[entry]),
         patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
         patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
+        # Secondary GCP censuses (services/functions/scheduler/disks/IPs/object-deltas/costs)
+        # → honest-empty, credential-free: no real socket to GCP (offline / pytest-socket safe).
+        patch_inventory_secondary_census(_inv_mod),
     ):
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.require_gcp_project_id.return_value = "test-project"
@@ -1124,6 +1129,9 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
             "deployment_api.routes.deployments_inventory.vm_run_log_rolling_uri",
             return_value="gs://deployment-scripts-test/log-archive/rolling/run.log",
         ),
+        # Secondary GCP censuses (services/functions/scheduler/disks/IPs/object-deltas/costs)
+        # → honest-empty, credential-free: no real socket to GCP (offline / pytest-socket safe).
+        patch_inventory_secondary_census(_inv_mod),
     ):
         mock_cfg.is_mock_mode.return_value = False
         mock_cfg.require_gcp_project_id.return_value = "test-project"
@@ -1201,6 +1209,10 @@ def test_inventory_route_hung_provider_degrades_other_kinds_survive(client_inven
     try:
         with (
             patch.object(_inv_mod, "_PROVIDER_CENSUS_TIMEOUT_SEC", 0.3),
+            # Secondary GCP censuses (scheduler/disks/IPs/object-deltas/costs, + a benign default
+            # for services/functions) → honest-empty, credential-free: no real socket to GCP. The
+            # test's OWN list_cloud_run_services hang below is entered LATER, so it wins on that seam.
+            patch_inventory_secondary_census(_inv_mod),
             patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
             patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=[entry]),
             patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
