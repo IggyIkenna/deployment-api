@@ -190,10 +190,16 @@ async def _assemble_context(
         context["feature_null_rate"] = None
 
     # ML training metrics
+    # ml FOLD B (bucket_fold_ml_2026_07_17.md): the training-metrics artefacts live in the
+    # SINGLE folded ml-store bucket under the 'training-artifacts/' object-key prefix. The
+    # config property resolves it via resolve_bucket_name(kind="ml-training-artifacts") →
+    # _KIND_ALIASES → the env-tiered folded ml-store bucket. This replaces the old flat,
+    # env-less hardcoded ml-store name (no env tier) that named a bucket which never existed
+    # and always silently missed.
     try:
         raw_bytes = storage.download_bytes(
-            f"ml-store-{project_id}",  # CORRECT-LOCAL
-            "training/latest/metrics.json",
+            config.effective_ml_training_artifacts_bucket,
+            "training-artifacts/training/latest/metrics.json",
         )
         metrics = cast(dict[str, object], json.loads(raw_bytes))
         context["ml_loss"] = metrics.get("loss")

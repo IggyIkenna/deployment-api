@@ -542,9 +542,11 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         default="",
         validation_alias=AliasChoices("EXECUTION_STORE_BUCKET"),
         description="GCS bucket name for execution store configs (without gs:// prefix). "
-        "execution-store is a per-asset_group yaml kind; defaults to the CEFI "
-        "execution-store bucket (resolve_bucket_name kind='execution-store', "
-        "asset_group='cefi') when empty — see effective_execution_store_bucket.",
+        "execution-store is a FLAT env-tiered yaml kind post Fold C "
+        "(bucket_fold_execution_strategy_2026_07_17.md): resolve_bucket_name(kind="
+        "'execution-store') folds to execution-store-{env}-{pid} and IGNORES asset_group; "
+        "asset_group is now an object-key prefix ('{ag}/') within that shared bucket. "
+        "Defaults (when empty) to that folded bucket — see effective_execution_store_bucket.",
     )
 
     strategy_store_cefi_bucket: str = Field(
@@ -576,8 +578,10 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         default="",
         validation_alias=AliasChoices("ML_CONFIGS_STORE_BUCKET"),
         description="GCS bucket name for ML configs store (without gs:// prefix). "
-        "Defaults to the env-tiered ml-configs-store bucket (resolve_bucket_name "
-        "kind='ml-configs-store') when empty.",
+        "Defaults (when empty) to the folded ml-store bucket — ml FOLD B "
+        "(bucket_fold_ml_2026_07_17.md): resolve_bucket_name(kind='ml-configs-store') "
+        "folds through _KIND_ALIASES to ml-store-{env}-{pid}; the configs are namespaced "
+        "under the 'configs/' object-key prefix within that shared bucket.",
     )
 
     # =========================================================================
@@ -681,18 +685,17 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     def effective_execution_store_bucket(self) -> str:
         """Get the effective execution store bucket with project_id fallback.
 
-        execution-store is a per-asset_group yaml kind (CEFI/TRADFI/DEFI/SPORTS —
-        cloud-providers.yaml). The OLD default here (``execution-store-{pid}``, no
-        asset_group suffix) named a bucket that never existed (dead on arrival).
-        This property backs a single global /config-buckets route entry
-        (routes/services.py get_config_buckets, "execution-service") with no
-        asset_group in scope to resolve against — decide-and-document (2026-07-13,
-        strategy_store_split_brain_2026_07_13.md follow-up): default to the CEFI
-        execution-store bucket, since it demonstrably exists and CeFi is the only
-        asset_group with live execution-service traffic today. Revisit with a
-        per-AG breakdown (mirroring strategy-store's 3-bucket config-buckets
-        display) if a caller ever needs TradFi/DeFi execution buckets surfaced
-        here.
+        execution-store is a FLAT env-tiered yaml kind post Fold C
+        (bucket_fold_execution_strategy_2026_07_17.md): the resolver folds the old
+        per-asset_group CEFI/TRADFI/DEFI/SPORTS dict into a single
+        ``execution-store-{env}-{pid}`` bucket and IGNORES asset_group (asset_group
+        is now an object-key prefix ``{ag}/`` within that shared bucket). This
+        property backs a single global /config-buckets route entry
+        (routes/services.py get_config_buckets, "execution-service"); the
+        ``asset_group="cefi"`` passed below is vestigial — ignored for the flat kind
+        (same mechanism strategy-store uses) — and kept only so resolution stays
+        robust across the fold transition. The route advertises the config path
+        under the ``cefi/`` prefix since configs now live at ``{ag}/configs/``.
         """
         if self.execution_store_bucket:
             return self.execution_store_bucket
@@ -737,13 +740,28 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     def effective_ml_configs_store_bucket(self) -> str:
         """Get the effective ML configs store bucket with project_id fallback.
 
-        ml-configs-store is env-tiered (``ml-configs-store-{env}-{pid}``). Both
-        the old flat (no-env) default and the resolved env-tiered bucket are
-        empty (2026-07-13 estate audit), so this cutover is data-safe.
+        ml FOLD B (bucket_fold_ml_2026_07_17.md): ``resolve_bucket_name(kind=
+        'ml-configs-store')`` folds through ``_KIND_ALIASES`` to the SINGLE folded
+        ``ml-store-{env}-{pid}`` bucket. The ML configs live under the ``configs/``
+        object-key PREFIX within that shared bucket (callers that build a display path
+        prepend ``configs/`` — see routes/services.py). The configs/ fold was empty at
+        fold time (2026-07-13 estate audit), so this cutover is data-safe.
         """
         if self.ml_configs_store_bucket:
             return self.ml_configs_store_bucket
         return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-configs-store")
+
+    @property
+    def effective_ml_training_artifacts_bucket(self) -> str:
+        """Get the effective ML training-artifacts bucket.
+
+        ml FOLD B (bucket_fold_ml_2026_07_17.md): ``resolve_bucket_name(kind=
+        'ml-training-artifacts')`` folds through ``_KIND_ALIASES`` to the SINGLE folded
+        ``ml-store-{env}-{pid}`` bucket. Training-metrics / experiment-output artefacts live
+        under the ``training-artifacts/`` object-key PREFIX within that shared bucket (callers
+        that build a blob path prepend ``training-artifacts/`` — see commentary/pipeline_uat.py).
+        """
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-training-artifacts")
 
     @property
     def effective_state_bucket(self) -> str:

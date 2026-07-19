@@ -152,31 +152,15 @@
       "kind": "strategy",
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-strategy",
-      "bucket_template": "strategy-store-{project}",
+      "bucket_template": "strategy-store-{env}-{project}",
       "staleness_budget_seconds": "86400"
     },
     {
-      "category": "execution-cefi",
+      "category": "execution",
       "kind": "execution",
-      "asset_group": "cefi",
-      "job_name": "uts-prod-manifest-consolidator-execution-cefi",
-      "bucket_template": "execution-store-cefi-{project}",
-      "staleness_budget_seconds": "86400"
-    },
-    {
-      "category": "execution-tradfi",
-      "kind": "execution",
-      "asset_group": "tradfi",
-      "job_name": "uts-prod-manifest-consolidator-execution-tradfi",
-      "bucket_template": "execution-store-tradfi-{project}",
-      "staleness_budget_seconds": "86400"
-    },
-    {
-      "category": "execution-defi",
-      "kind": "execution",
-      "asset_group": "defi",
-      "job_name": "uts-prod-manifest-consolidator-execution-defi",
-      "bucket_template": "execution-store-defi-{project}",
+      "asset_group": null,
+      "job_name": "uts-prod-manifest-consolidator-execution",
+      "bucket_template": "execution-store-{env}-{project}",
       "staleness_budget_seconds": "86400"
     },
     {
@@ -184,7 +168,7 @@
       "kind": "ml-training-artifacts",
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-ml-training-artifacts",
-      "bucket_template": "ml-training-artifacts-{project}",
+      "bucket_template": "ml-store-{env}-{project}",
       "staleness_budget_seconds": "86400"
     }
   ]
