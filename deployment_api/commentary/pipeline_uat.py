@@ -192,8 +192,8 @@ async def _assemble_context(
     # ML training metrics
     # ml FOLD B (bucket_fold_ml_2026_07_17.md): the training-metrics artefacts live in the
     # SINGLE folded ml-store bucket under the 'training-artifacts/' object-key prefix. The
-    # config property resolves it via resolve_bucket_name(kind="ml-training-artifacts") →
-    # _KIND_ALIASES → the env-tiered folded ml-store bucket. This replaces the old flat,
+    # config property resolves it via resolve_bucket_name(kind="ml-store") → the env-tiered
+    # folded ml-store bucket (the ml-training-artifacts alias was retired 2026-07-19). This replaces the old flat,
     # env-less hardcoded ml-store name (no env tier) that named a bucket which never existed
     # and always silently missed.
     try:

@@ -741,27 +741,29 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         """Get the effective ML configs store bucket with project_id fallback.
 
         ml FOLD B (bucket_fold_ml_2026_07_17.md): ``resolve_bucket_name(kind=
-        'ml-configs-store')`` folds through ``_KIND_ALIASES`` to the SINGLE folded
-        ``ml-store-{env}-{pid}`` bucket. The ML configs live under the ``configs/``
-        object-key PREFIX within that shared bucket (callers that build a display path
-        prepend ``configs/`` — see routes/services.py). The configs/ fold was empty at
-        fold time (2026-07-13 estate audit), so this cutover is data-safe.
+        'ml-store')`` returns the SINGLE folded ``ml-store-{env}-{pid}`` bucket. The ML
+        configs live under the ``configs/`` object-key PREFIX within that shared bucket
+        (callers that build a display path prepend ``configs/`` — see routes/services.py).
+        The configs/ fold was empty at fold time (2026-07-13 estate audit), so this cutover
+        is data-safe. (The ``ml-configs-store`` alias was retired 2026-07-19; resolve the
+        folded ``ml-store`` kind directly.)
         """
         if self.ml_configs_store_bucket:
             return self.ml_configs_store_bucket
-        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-configs-store")
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-store")
 
     @property
     def effective_ml_training_artifacts_bucket(self) -> str:
         """Get the effective ML training-artifacts bucket.
 
-        ml FOLD B (bucket_fold_ml_2026_07_17.md): ``resolve_bucket_name(kind=
-        'ml-training-artifacts')`` folds through ``_KIND_ALIASES`` to the SINGLE folded
-        ``ml-store-{env}-{pid}`` bucket. Training-metrics / experiment-output artefacts live
-        under the ``training-artifacts/`` object-key PREFIX within that shared bucket (callers
-        that build a blob path prepend ``training-artifacts/`` — see commentary/pipeline_uat.py).
+        ml FOLD B (bucket_fold_ml_2026_07_17.md): ``resolve_bucket_name(kind='ml-store')``
+        returns the SINGLE folded ``ml-store-{env}-{pid}`` bucket. Training-metrics /
+        experiment-output artefacts live under the ``training-artifacts/`` object-key PREFIX
+        within that shared bucket (callers that build a blob path prepend
+        ``training-artifacts/`` — see commentary/pipeline_uat.py). (The ``ml-training-artifacts``
+        alias was retired 2026-07-19; resolve the folded ``ml-store`` kind directly.)
         """
-        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-training-artifacts")
+        return resolve_bucket_name(cloud=cast(Cloud, self.cloud_provider), kind="ml-store")
 
     @property
     def effective_state_bucket(self) -> str:
