@@ -104,6 +104,14 @@ def _collect_result_strategy_ids(
 
     existing_ids: set[str] = set()
     dates_by_strategy: defaultdict[str, set[str]] = defaultdict(set)
+    # Fold-C (bucket_fold_execution_strategy): deliberately NO `{asset_group}/` prefix here. This scan
+    # targets the bare, hive-less convention `results/{YYYY-MM-DD}/{strategy_id}/` (strategy_id ==
+    # `{strategy}_{mode}_{timeframe}_{version}`, see _list_exec_configs) — NOT the folded execution-store
+    # report path. The folded execution-service writer (save_operations._upload_report_to_gcs / save_fast)
+    # emits hive-partitioned `{asset_group}/results/date=…/strategy_id=…/instruction_type=…/run_id=…/`,
+    # a layout that predates Fold-C (Fold-C only prepended `{ag}/`) and never matched this bare regex.
+    # Prefixing with `{ag}/` would therefore NOT make this reader symmetric with that writer, so it is
+    # left as-is; the bare contract is pinned by test_service_status_execution_helpers.py.
     for date_prefix in list_prefixes(bucket_name, "results/"):
         date_match = re.search(r"results/(\d{4}-\d{2}-\d{2})/", date_prefix)
         if not date_match:
@@ -437,6 +445,10 @@ def _collect_result_dates_in_range(
     from deployment_api.utils.storage_facade import list_prefixes
 
     result_dates_by_strategy: defaultdict[str, set[str]] = defaultdict(set)
+    # Fold-C (bucket_fold_execution_strategy): deliberately NO `{asset_group}/` prefix here — same reasoning
+    # as _collect_result_strategy_ids above. This scans the bare `results/{YYYY-MM-DD}/{strategy_id}/`
+    # convention, not the folded execution-store hive path (`{ag}/results/date=…/strategy_id=…/`); adding
+    # `{ag}/` would not make it symmetric with the writer.
     for date_prefix in list_prefixes(bucket_name, "results/"):
         date_match = re.search(r"results/(\d{4}-\d{2}-\d{2})/", date_prefix)
         if not date_match:

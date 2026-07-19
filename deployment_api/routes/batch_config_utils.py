@@ -48,9 +48,12 @@ BUCKET_MAPPING = {
     # NOTE: Processing service writes to tick buckets with /processed_candles/ prefix
     "market-data-processing-service": _tick_buckets,
     "features-delta-one-service": {
-        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="cefi"),
-        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="defi"),
-        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-delta-one", asset_group="tradfi"),
+        # Fold A (bucket_fold_features_2026_07_18): delta-one folds onto the per-asset_group
+        # env-tiered `features-{ag}` bucket via kind="features"; data lands under the
+        # `delta_one/` object-key prefix (read prefix carried by SERVICE_PATH_TEMPLATES).
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features", asset_group="cefi"),
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features", asset_group="defi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features", asset_group="tradfi"),
     },
     "features-calendar-service": {
         # Calendar is a flat/universal bucket; routed under CEFI key since calendar
@@ -62,15 +65,17 @@ BUCKET_MAPPING = {
         # asset-group parity sweep — no code ever honoured a CEFI onchain
         # bucket; see deployment_api/services/data_status/defi.py
         # _SERVICE_CATEGORY_RESTRICTIONS).
-        "DEFI": resolve_bucket_name(cloud="gcp", kind="features-onchain", asset_group="defi"),
+        # Fold A: onchain folds onto features-defi via kind="features"; data under `onchain/`.
+        "DEFI": resolve_bucket_name(cloud="gcp", kind="features", asset_group="defi"),
     },
     "features-volatility-service": {
         # DEFI removed (UAC cloud-providers.yaml DEFI/PREDICTION/SPORTS keys
         # removed 2026-07-17, asset-group parity sweep, operator ruling:
         # there are no DeFi options, so IV/skew/term-structure surfaces
         # cannot be computed for DEFI — bucket confirmed empty and deleted).
-        "CEFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="cefi"),
-        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features-volatility", asset_group="tradfi"),
+        # Fold A: volatility folds onto features-{ag} via kind="features"; data under `volatility/`.
+        "CEFI": resolve_bucket_name(cloud="gcp", kind="features", asset_group="cefi"),
+        "TRADFI": resolve_bucket_name(cloud="gcp", kind="features", asset_group="tradfi"),
     },
     "corporate-actions": {
         # Corporate actions are TRADFI-only (uses instruments-store bucket)

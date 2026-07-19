@@ -83,9 +83,13 @@ INSTRUMENT_TYPE_TO_FOLDER = {
 # Service-specific GCS path templates (key=value format for BigQuery hive partitioning)
 SERVICE_PATH_TEMPLATES = {
     "instruments-service": "instrument_availability/by_date/day={date}/venue={venue}/",
-    "features-delta-one-service": "by_date/day={date}/feature_group={feature_group}/",
-    "features-onchain-service": "by_date/day={date}/feature_group={feature_group}/",
-    "features-volatility-service": "by_date/day={date}/feature_group={feature_group}/",
+    # Fold A (bucket_fold_features_2026_07_18): delta-one/onchain/volatility fold onto the
+    # per-asset_group `features-{ag}` bucket (BUCKET_MAPPING kind="features"); data lands
+    # under the per-kind object-key prefix (`delta_one/`, `onchain/`, `volatility/`), so the
+    # coverage-read prefix gains that leading segment (byte-parity read twin of the writers).
+    "features-delta-one-service": "delta_one/by_date/day={date}/feature_group={feature_group}/",
+    "features-onchain-service": "onchain/by_date/day={date}/feature_group={feature_group}/",
+    "features-volatility-service": "volatility/by_date/day={date}/feature_group={feature_group}/",
     "features-calendar-service": "calendar/category={feature_type}/by_date/day={date}/",
     "corporate-actions": "corporate_actions/by_date/day={date}/",
 }

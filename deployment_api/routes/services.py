@@ -323,12 +323,16 @@ async def get_config_buckets(service_name: str, request: Request):
     # Bucket names come from config fields (EXECUTION_STORE_BUCKET, etc.) populated via
     # DeploymentApiConfig env vars. Defaults derived from gcp_project_id when env vars unset.
     bucket_mappings: dict[str, dict[str, object]] = {
+        # execution FOLD C (bucket_fold_execution_strategy_2026_07_17.md): EXECUTION_STORE_BUCKET
+        # is now the flat env-tiered execution-store-{env}-{pid} bucket; asset_group moved into an
+        # object-key prefix, so configs live under '{ag}/configs/' (cefi shown — the only AG with
+        # live execution-service traffic) rather than at the flat bucket root.
         "execution-service": {
-            "default_bucket": f"gs://{EXECUTION_STORE_BUCKET}/configs/",  # noqa: gs-uri
+            "default_bucket": f"gs://{EXECUTION_STORE_BUCKET}/cefi/configs/",  # noqa: gs-uri
             "buckets": [
                 {
                     "name": "execution-store (main)",
-                    "path": f"gs://{EXECUTION_STORE_BUCKET}/configs/",  # noqa: gs-uri
+                    "path": f"gs://{EXECUTION_STORE_BUCKET}/cefi/configs/",  # noqa: gs-uri
                 },
             ],
         },
@@ -349,13 +353,16 @@ async def get_config_buckets(service_name: str, request: Request):
                 },
             ],
         },
-        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21)
+        # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21).
+        # ml FOLD B (bucket_fold_ml_2026_07_17.md): ML_CONFIGS_STORE_BUCKET is now the folded
+        # ml-store bucket; the configs live under the 'configs/' object-key prefix within it →
+        # gs://ml-store-{env}-{pid}/configs/training/grid_configs/.
         "ml-service": {
-            "default_bucket": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",  # noqa: gs-uri
+            "default_bucket": f"gs://{ML_CONFIGS_STORE_BUCKET}/configs/training/grid_configs/",  # noqa: gs-uri
             "buckets": [
                 {
                     "name": "ml-configs-store",
-                    "path": f"gs://{ML_CONFIGS_STORE_BUCKET}/training/grid_configs/",  # noqa: gs-uri
+                    "path": f"gs://{ML_CONFIGS_STORE_BUCKET}/configs/training/grid_configs/",  # noqa: gs-uri
                 },
             ],
         },
