@@ -523,3 +523,300 @@ class TestCatalogueFilterOptions:
         assert _distinct_values(df, "venue") == ["BINANCE", "OKX", "binance"]
         assert _distinct_values(df, "absent_column") == []
         assert _distinct_values(pd.DataFrame(), "venue") == []
+
+
+class TestDownloadCatalogueCsvPerAssetGroupSmoke:
+    """Regression for data_status_catalogue_csv_download_500_sports_tradfi_2026_07_18:
+    ``GET /download-catalogue-csv`` returned HTTP 500 for asset_group=tradfi and
+    asset_group=sports in prod (2026-07-18) while cefi/defi/prediction returned 200.
+
+    Root-caused to TWO distinct, unrelated failure modes sharing one symptom:
+
+    * **tradfi** — a real, deterministic code bug. The endpoint built the FULL CSV
+      via ``DataFrame.to_csv()`` and returned it as one buffered ``Response``. For a
+      large asset_group (tradfi: 1,060,790 rows -> a 67 MiB CSV, measured live
+      2026-07-20 against the real tradfi identity-catalogue bucket's
+      ``prod/catalog.parquet``) that exceeds Cloud Run's ~32 MiB buffered-response cap
+      — the PLATFORM rejects the oversized response before it reaches the client.
+      Confirmed via Cloud Logging: the tradfi request's response carried a
+      "Response size was too large" WARNING with NO Python traceback anywhere near
+      it (row-building itself never raised). Fixed by streaming the CSV in bounded
+      chunks (``_iter_catalogue_csv_chunks`` + ``StreamingResponse`` — chunked
+      transfer encoding is not subject to the buffered-response cap). See
+      ``TestDownloadCatalogueCsvStreamingBoundaries`` for the streaming-correctness
+      proof.
+    * **sports** — NOT a ``_catalogue.py`` bug. Cloud Logging showed a genuine
+      ``RuntimeError`` (``ManifestConsolidatorStaleError``, raised by
+      ``unified_trading_library.manifest_writer.read_availability_index``'s
+      loud-fail-by-design guard) when the sports manifest consolidator fell behind
+      mid-session — the SAME endpoint had returned 200 minutes earlier in the same
+      testing session, and a live re-check 2026-07-20 succeeds cleanly. This is the
+      SAME honest-absence contract ``/catalogue`` already enforces by design (see
+      ``TestGetInstrumentCatalogue.test_manifest_read_failure_returns_500`` above) —
+      swallowing it would fabricate data the manifest genuinely couldn't confirm.
+      The tests below prove the CSV export still works end-to-end for sports (and
+      every other asset_group) when the underlying read succeeds, which is the
+      actual, permanent contract.
+    """
+
+    @pytest.mark.parametrize(
+        ("asset_group", "expect_row_count"),
+        [("cefi", 3), ("defi", 3), ("tradfi", 3)],
+    )
+    def test_identity_catalogue_asset_groups_download_200(
+        self, client_ds_catalogue: TestClient, asset_group: str, expect_row_count: int
+    ) -> None:
+        from deployment_api.routes.data_status._catalogue import _CATALOGUE_CSV_COLUMNS
+
+        with (
+            patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=_real_schema_catalog_df()),
+            patch(_PATCH_IS_MVP, side_effect=AssertionError("is_mvp must not be called for identity-catalogue rows")),
+        ):
+            r = client_ds_catalogue.get(
+                "/data-status/download-catalogue-csv",
+                params={"service": "instruments-service", "asset_group": asset_group},
+            )
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        assert r.headers["X-Row-Count"] == str(expect_row_count)
+        assert "BTC-USDT-PERP" in r.text
+        assert "SOL-USDT-SWAP" in r.text
+        # Header row present + exactly expect_row_count data rows (LF-terminated,
+        # matching the pre-fix DataFrame.to_csv() format — see
+        # _iter_catalogue_csv_chunks's lineterminator note).
+        lines = r.text.splitlines()
+        assert lines[0] == ",".join(_CATALOGUE_CSV_COLUMNS)
+        assert len(lines) == expect_row_count + 1
+
+    @pytest.mark.parametrize("asset_group", ["prediction", "sports"])
+    def test_manifest_backed_asset_groups_download_200(self, client_ds_catalogue: TestClient, asset_group: str) -> None:
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value=f"market-data-tick-{asset_group}-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=_manifest_df()),
+            patch(_PATCH_IS_MVP, return_value=True),
+        ):
+            r = client_ds_catalogue.get(
+                "/data-status/download-catalogue-csv",
+                params={"service": "market-tick-data-service", "asset_group": asset_group},
+            )
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        assert r.headers["X-Row-Count"] == "2"
+        assert "BTC-USDT-PERP" in r.text
+        assert "ETH-USDT-PERP" in r.text
+
+    def test_sports_manifest_read_failure_still_surfaces_as_500_not_swallowed(
+        self, client_ds_catalogue: TestClient
+    ) -> None:
+        """The honest-absence contract this endpoint deliberately preserves
+        (module docstring + TestGetInstrumentCatalogue.test_manifest_read_failure_
+        returns_500): a genuine manifest read failure for a manifest-backed
+        asset_group (prediction/sports) must still 500, never silently degrade to
+        an empty/fabricated CSV. This is what actually happened in prod for
+        sports on 2026-07-18 (a real, transient ManifestConsolidatorStaleError) —
+        proving it is NOT a regression to "fix away" with a blanket except."""
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="instruments-store-sports-prd-fake"),
+            patch(_PATCH_READ_INDEX, side_effect=RuntimeError("Consolidated availability_index is stale")),
+        ):
+            r = client_ds_catalogue.get(
+                "/data-status/download-catalogue-csv",
+                params={"service": "instruments-service", "asset_group": "sports"},
+            )
+        assert r.status_code == 500
+
+
+class TestDownloadCatalogueCsvStreamingBoundaries:
+    """Streaming-correctness proof for the tradfi fix: the rewritten
+    ``_iter_catalogue_csv_chunks`` (``StreamingResponse``, ``_CSV_STREAM_BATCH_ROWS``
+    -row chunks) must produce BYTE-IDENTICAL output to the old single-buffer
+    ``DataFrame.to_csv()`` approach — no row loss/duplication/reordering at chunk
+    boundaries. Parametrized around ``_CSV_STREAM_BATCH_ROWS`` itself so a future
+    change to the batch size keeps exercising the real boundary."""
+
+    @staticmethod
+    def _synthetic_identity_df(n: int) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "instrument_id": f"SYN:INSTR:{i:07d}",
+                    "venue": "CBOE" if i % 2 == 0 else "CME",
+                    "instrument_type": "FUTURE",
+                    "data_type": "",
+                    "base_asset": "SYN",
+                    "mvp": i % 3 == 0,
+                }
+                for i in range(n)
+            ]
+        )
+
+    @pytest.mark.parametrize(
+        "n_rows",
+        [
+            0,
+            1,
+            "batch_minus_1",
+            "batch",
+            "batch_plus_1",
+            "two_batches_plus_7",
+        ],
+    )
+    def test_streamed_csv_matches_pre_fix_buffered_reference(
+        self, client_ds_catalogue: TestClient, n_rows: int | str
+    ) -> None:
+        from deployment_api.routes.data_status._catalogue import (
+            _CATALOGUE_CSV_COLUMNS,
+            _CSV_STREAM_BATCH_ROWS,
+            _build_catalogue_rows,
+        )
+
+        resolved_n = {
+            "batch_minus_1": _CSV_STREAM_BATCH_ROWS - 1,
+            "batch": _CSV_STREAM_BATCH_ROWS,
+            "batch_plus_1": _CSV_STREAM_BATCH_ROWS + 1,
+            "two_batches_plus_7": 2 * _CSV_STREAM_BATCH_ROWS + 7,
+        }.get(n_rows, n_rows)
+        assert isinstance(resolved_n, int)
+        df = self._synthetic_identity_df(resolved_n)
+
+        with patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=df):
+            r = client_ds_catalogue.get(
+                "/data-status/download-catalogue-csv",
+                params={"service": "instruments-service", "asset_group": "tradfi"},
+            )
+        assert r.status_code == 200
+        assert r.headers["X-Row-Count"] == str(resolved_n)
+
+        # Reference: the row-builder's OWN output run through the pre-fix
+        # single-buffer pandas serialization — must match byte-for-byte.
+        with patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=df):
+            rows = _build_catalogue_rows(
+                service="instruments-service",
+                asset_group="tradfi",
+                venue=None,
+                instrument_type=None,
+                data_type=None,
+                search=None,
+                mvp_only=False,
+            )
+        assert len(rows) == resolved_n
+        expected_csv = pd.DataFrame(data=rows or None, columns=_CATALOGUE_CSV_COLUMNS).to_csv(index=False)
+        assert r.text == expected_csv
+
+    def test_response_is_chunked_streaming_not_a_single_buffer(self, client_ds_catalogue: TestClient) -> None:
+        """Asserts the response class is actually ``StreamingResponse`` (chunked
+        transfer, no upfront ``Content-Length``) — the architectural fix, not
+        just a byte-content coincidence. A regression back to a single buffered
+        ``Response`` would reintroduce the Cloud Run buffered-response-cap bug
+        even if the CSV content stayed byte-identical for small fixtures."""
+        import inspect
+
+        from fastapi.responses import StreamingResponse
+
+        from deployment_api.routes.data_status._catalogue import download_catalogue_csv
+
+        # ``from __future__ import annotations`` stringifies annotations at
+        # def-time; eval_str=True resolves it back through the function's own
+        # module globals (where StreamingResponse is imported) for a real
+        # class-identity check rather than a string comparison.
+        assert inspect.signature(download_catalogue_csv, eval_str=True).return_annotation is StreamingResponse
+
+        with patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=_real_schema_catalog_df()):
+            r = client_ds_catalogue.get(
+                "/data-status/download-catalogue-csv",
+                params={"service": "instruments-service", "asset_group": "tradfi"},
+            )
+        assert r.status_code == 200
+        # httpx/starlette TestClient surfaces a chunked StreamingResponse without
+        # a Content-Length header (content-length is only set for fully-buffered
+        # bodies); Transfer-Encoding is stripped by the test transport, so the
+        # absence of Content-Length is the observable signal here.
+        assert "content-length" not in {k.lower() for k in r.headers}
+
+
+def _krx_identity_catalog_df() -> pd.DataFrame:
+    """A tradfi identity-catalogue frame carrying the ``name`` display column the
+    roll-up's ``_add_instrument_name`` stamps for KRX single-stock equities — the
+    opaque 6-digit KRX code as ``instrument_id`` + a human-readable issuer ``name``.
+    A non-KRX row with a blank name proves the column is honest-blank when absent."""
+    return pd.DataFrame(
+        [
+            {
+                "instrument_id": "KRX:EQUITY:005930",
+                "name": "Samsung Electronics",
+                "venue": "KRX",
+                "instrument_type": "EQUITY",
+                "data_type": "",
+                "base_asset": "005930",
+                "mvp": True,
+            },
+            {
+                "instrument_id": "KRX:EQUITY:000660",
+                "name": "SK Hynix",
+                "venue": "KRX",
+                "instrument_type": "EQUITY",
+                "data_type": "",
+                "base_asset": "000660",
+                "mvp": True,
+            },
+            {
+                "instrument_id": "CME:FUTURE:ESZ5",
+                "name": "",
+                "venue": "CME",
+                "instrument_type": "FUTURE",
+                "data_type": "",
+                "base_asset": "SP500",
+                "mvp": False,
+            },
+        ]
+    )
+
+
+class TestCatalogueNameColumn:
+    """Regression for the KRX human-readable-name deliverable (2026-07-20): the
+    catalogue ``name`` column (roll-up ``_add_instrument_name`` from the UAC
+    ``KRX_EQUITY_NAMES`` SSOT) must surface on BOTH the JSON ``/catalogue`` route
+    and the ``/download-catalogue-csv`` twin, next to the opaque coded
+    ``instrument_id`` — so a KRX equity reads "Samsung Electronics" next to
+    ``KRX:EQUITY:005930`` instead of a bare 6-digit code."""
+
+    def test_json_catalogue_row_carries_name(self, client_ds_catalogue: TestClient) -> None:
+        with (
+            patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=_krx_identity_catalog_df()),
+            patch(_PATCH_IS_MVP, side_effect=AssertionError("is_mvp must not be called for identity-catalogue rows")),
+        ):
+            r = client_ds_catalogue.get(
+                "/data-status/catalogue",
+                params={"service": "instruments-service", "asset_group": "tradfi"},
+            )
+        assert r.status_code == 200
+        by_id = {inst["instrument_id"]: inst for inst in r.json()["instruments"]}
+        assert by_id["KRX:EQUITY:005930"]["name"] == "Samsung Electronics"
+        assert by_id["KRX:EQUITY:000660"]["name"] == "SK Hynix"
+        # Honest-blank for an instrument with no display name (readable id already).
+        assert by_id["CME:FUTURE:ESZ5"]["name"] == ""
+
+    def test_csv_download_carries_name_column(self, client_ds_catalogue: TestClient) -> None:
+        from deployment_api.routes.data_status._catalogue import _CATALOGUE_CSV_COLUMNS
+
+        with (
+            patch(_PATCH_READ_IDENTITY_CATALOGUE, return_value=_krx_identity_catalog_df()),
+            patch(_PATCH_IS_MVP, side_effect=AssertionError("is_mvp must not be called for identity-catalogue rows")),
+        ):
+            r = client_ds_catalogue.get(
+                "/data-status/download-catalogue-csv",
+                params={"service": "instruments-service", "asset_group": "tradfi"},
+            )
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        lines = r.text.splitlines()
+        header = lines[0].split(",")
+        # ``name`` sits immediately after ``instrument_id`` in the export.
+        assert header == _CATALOGUE_CSV_COLUMNS
+        assert header[0] == "instrument_id"
+        assert header[1] == "name"
+        name_idx = header.index("name")
+        rows_by_id = {ln.split(",")[0]: ln.split(",") for ln in lines[1:]}
+        assert rows_by_id["KRX:EQUITY:005930"][name_idx] == "Samsung Electronics"
+        assert rows_by_id["KRX:EQUITY:000660"][name_idx] == "SK Hynix"
+        assert rows_by_id["CME:FUTURE:ESZ5"][name_idx] == ""
