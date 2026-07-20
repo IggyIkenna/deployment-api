@@ -16,7 +16,7 @@ from fastapi import HTTPException, Query, Request
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
 from deployment_api.services import DataStatusService
-from deployment_api.services.data_status_mock import build_mock_turbo_response
+from deployment_api.services.data_status_mock import build_mock_drilldown_tree, build_mock_turbo_response
 from deployment_api.services.deploy_missing import (
     DeployMissingError,
     assert_tarball_not_blocked,
@@ -132,21 +132,10 @@ async def get_data_status_drilldown(
     returns only the matched subtree.
     """
     if _ds._cfg.is_mock_mode():  # pyright: ignore[reportPrivateUsage]
-        return {  # pyright: ignore[reportUnknownVariableType]
-            "service": service,
-            "asset_group": asset_group,
-            "axes": [],
-            "tree": [],
-            "totals": {
-                "captured": 0,
-                "empty_confirmed": 0,
-                "attempted_failed": 0,
-                "total": 0,
-                "completion_pct": 0.0,
-            },
-            "filtered_by": {},
-            "mock": True,
-        }
+        # Cherry-pick D (2026-07-20): synthesize a small non-empty tree
+        # (was a hardcoded empty ``tree: []`` — unreviewable via Playwright
+        # without a live cloud backend) from the SSOT SHARD_AXIS_MATRIX.
+        return build_mock_drilldown_tree(service=service, asset_group=asset_group)
     raw_filters: dict[str, str | None] = {
         "chain": chain,
         "venue": venue,
@@ -591,11 +580,12 @@ async def get_turbo_cache_stats():
 async def clear_turbo_cache():
     """Clear ALL data-status caches.
 
-    Four cache layers exist; UI staleness occurs when any are skipped:
+    Five cache layers exist; UI staleness occurs when any are skipped:
       1. data_analytics_service._turbo_cache — turbo response cache
       2. data_status_service._INDEX_CACHE — manifest parquet cache (5-min TTL)
       3. data_status_drilldown._cache — per-(date, venue, data_type) drilldown cache (5-min TTL)
       4. DataStatusService._REF_DATA_CACHE — upstream-expected-dates cache (5-min TTL, class-level)
+      5. _coverage_grid._grid_cache — /coverage-grid manifest-window cache (5-min TTL, cherry-pick E)
 
     Reference incident 2026-05-05: PREDICTION fanout completed and canonical
     showed 100% by date, but /turbo kept returning stale 89.05% because layers
@@ -611,6 +601,7 @@ async def clear_turbo_cache():
         clear_index_cache()
         clear_rollup_cache()
         _ds.clear_drilldown_cache()
+        _ds.clear_coverage_grid_cache()
         DataStatusService._REF_DATA_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
         return await _ds.data_analytics_service.clear_cache()
     except (OSError, ValueError, RuntimeError) as e:

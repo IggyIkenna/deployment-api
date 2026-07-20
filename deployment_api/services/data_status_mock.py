@@ -21,6 +21,8 @@ from typing import cast
 
 from unified_api_contracts.internal import MarketCategory
 
+from deployment_api.services.data_status_hierarchical import DrilldownNode, list_supported_pairs
+
 # Representative venue lists per category — same shape as real manifest
 # without pulling in the full venue registry. Order matters: the first
 # venue in each list gets a non-zero failure_rate in the seed so the
@@ -343,3 +345,249 @@ def build_mock_shard_instruments(
             "mock": True,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Cherry-pick D (2026-07-20): rich /coverage-summary mock inventory + a
+# non-empty /drilldown mock tree.
+#
+# Pre-2026-07-20, GET /coverage-summary in mock mode returned an all-zero
+# inventory because ``routes/data_status/_status_core.get_coverage_summary``
+# is registered FIRST on the shared router (FastAPI first-registration-wins
+# on the duplicate ``/coverage-summary`` path — see the import-order comment
+# in ``routes/data_status/__init__.py``) with a zero mock, while a RICH
+# per-asset_group mock already existed in the unreachable duplicate
+# ``routes/data_status/_deploy_turbo.get_data_coverage_summary``. Rather than
+# reorder routes (which the ``__init__.py`` comment explicitly forbids), the
+# rich numbers are ported here and wired into the WINNING handler's mock
+# branch. Same story for the drilldown mock: it returned a hardcoded empty
+# ``tree: []`` — replaced with a small tree synthesised from the SSOT
+# ``SHARD_AXIS_MATRIX`` via the real ``DrilldownNode`` dataclass, so the mock
+# payload always matches the production node schema.
+# ---------------------------------------------------------------------------
+
+# Per-category seed, ported byte-for-byte (shard counts / unique dates /
+# venues / latest-day breakdowns) from the pre-2026-07-20 unreachable
+# ``_deploy_turbo.get_data_coverage_summary`` mock branch — only the
+# per-category *shape* below changed, to match the REAL response schema
+# (``CoverageStatusMixin._build_coverage_for_cat`` / ``_get_coverage_summary_sync``)
+# instead of the sibling duplicate route's now-dead schema.
+_MOCK_COVERAGE_SEED: dict[str, dict[str, object]] = {
+    "CEFI": {
+        "total_shards": 25000,
+        "unique_dates": 2200,
+        "unique_venues": 18,
+        "date_range": {"start": "2019-01-01", "end": "2026-04-03"},
+        "latest_day": "2026-04-03",
+        "latest_day_instruments": {"SPOT": 1200, "PERPETUAL": 800, "FUTURE": 600, "OPTION": 1271},
+        "latest_day_total": 3871,
+        "group_axis": "instrument_type",
+        "empty": 12,
+        "failed": 5,
+    },
+    "TRADFI": {
+        "total_shards": 40000,
+        "unique_dates": 1800,
+        "unique_venues": 6,
+        "date_range": {"start": "2019-01-01", "end": "2026-04-03"},
+        "latest_day": "2026-04-03",
+        "latest_day_instruments": {"EQUITY": 8000, "ETF": 3500, "INDEX": 200, "OPTION": 2500, "FUTURE": 514},
+        "latest_day_total": 14714,
+        "group_axis": "instrument_type",
+        "empty": 20,
+        "failed": 8,
+    },
+    "DEFI": {
+        "total_shards": 10000,
+        "unique_dates": 250,
+        "unique_venues": 35,
+        "date_range": {"start": "2020-01-20", "end": "2026-04-03"},
+        "latest_day": "2026-04-03",
+        "latest_day_instruments": {"LP_POOL": 1200, "LENDING_POOL": 622},
+        "latest_day_total": 1822,
+        "group_axis": "venue",
+        "empty": 40,
+        "failed": 3,
+    },
+    "SPORTS": {
+        "total_shards": 3800,
+        "unique_dates": 36,
+        "unique_venues": 3,
+        "date_range": {"start": "2026-03-01", "end": "2026-04-03"},
+        "latest_day": "2026-04-03",
+        "latest_day_instruments": {"FIXTURE": 450},
+        "latest_day_total": 450,
+        "group_axis": "data_type",
+        "empty": 15,
+        "failed": 2,
+    },
+}
+
+
+def build_mock_coverage_summary(
+    service: str,
+    asset_groups: list[str] | None = None,
+) -> dict[str, object]:
+    """Realistic per-asset_group ``/coverage-summary`` mock.
+
+    Matches the REAL response schema (``CoverageStatusMixin.
+    _get_coverage_summary_sync``): ``asset_groups`` keyed by category, each
+    entry carrying ``total_shards`` / ``capture_status_counts`` (5-state) /
+    ``completion_pct`` / ... — NOT the sibling ``_deploy_turbo`` duplicate's
+    dead ``categories`` schema. ``asset_groups`` param (comma-split by the
+    caller) narrows the categories exactly like the real path's ``ag_list``.
+    """
+    wanted = {c.upper() for c in asset_groups} if asset_groups else None
+    result_categories: dict[str, object] = {}
+    total_shards = 0
+    total_instrument_rows = 0
+    all_dates: set[str] = set()
+    total_latest_day_instruments = 0
+    total_capture_status: dict[str, int] = {
+        "captured": 0,
+        "empty_confirmed": 0,
+        "attempted_failed": 0,
+        "expected_unattempted": 0,
+        "out_of_window": 0,
+    }
+    for cat, seed in _MOCK_COVERAGE_SEED.items():
+        if wanted is not None and cat not in wanted:
+            continue
+        shards = int(cast(int, seed["total_shards"]))
+        failed = int(cast(int, seed["failed"]))
+        empty = int(cast(int, seed["empty"]))
+        captured = max(0, shards - failed - empty)
+        capture_status_counts: dict[str, int] = {
+            "captured": captured,
+            "empty_confirmed": empty,
+            "attempted_failed": failed,
+            "expected_unattempted": 0,
+            "out_of_window": 0,
+        }
+        completion_pct = round(captured / max(1, shards) * 100, 2)
+        date_range = cast(dict[str, str], seed["date_range"])
+        entry: dict[str, object] = {
+            "total_shards": shards,
+            "total_instrument_rows": shards,
+            "total_instruments": shards,
+            "unique_instruments": None,
+            "unique_dates": seed["unique_dates"],
+            "unique_venues": seed["unique_venues"],
+            "group_axis": seed["group_axis"],
+            "date_range": date_range,
+            "latest_day": seed["latest_day"],
+            "latest_day_instruments": seed["latest_day_instruments"],
+            "latest_day_total": seed["latest_day_total"],
+            "breakdowns": {},
+            "capture_status_counts": capture_status_counts,
+            "completion_pct": completion_pct,
+        }
+        result_categories[cat] = entry
+        total_shards += shards
+        total_instrument_rows += shards
+        total_latest_day_instruments += int(cast(int, seed["latest_day_total"]))
+        all_dates.add(str(date_range["start"]))
+        all_dates.add(str(date_range["end"]))
+        for key in total_capture_status:
+            total_capture_status[key] += capture_status_counts[key]
+
+    cov_total = (
+        total_capture_status["captured"]
+        + total_capture_status["empty_confirmed"]
+        + total_capture_status["attempted_failed"]
+        + total_capture_status["expected_unattempted"]
+    )
+    overall_pct = round(total_capture_status["captured"] / cov_total * 100, 2) if cov_total > 0 else 0.0
+    return {
+        "service": service,
+        "asset_groups": result_categories,
+        "totals": {
+            "shards": total_shards,
+            "instrument_rows": total_instrument_rows,
+            "dates_across_categories": len(all_dates),
+            "latest_day_instruments": total_latest_day_instruments,
+            "unique_instruments": 0,
+            "capture_status_counts": total_capture_status,
+            "completion_pct": overall_pct,
+        },
+        "totals_source": "mock",
+        "mock": True,
+    }
+
+
+def build_mock_drilldown_tree(service: str, asset_group: str) -> dict[str, object]:
+    """Synthesize a small, realistic 2-level hierarchical drilldown tree.
+
+    Pre-2026-07-20 the mock branch of ``GET /drilldown/{service}/{asset_group}``
+    returned a hardcoded empty ``tree: []`` + all-zero totals, leaving the
+    deployment-ui ``HierarchicalShardDrilldown`` component unreviewable via
+    Playwright without a live cloud backend. Built from the SAME
+    ``DrilldownNode`` dataclass + ``to_dict()`` the real
+    ``get_hierarchical_drilldown`` builder uses (via the public
+    ``list_supported_pairs`` SSOT lookup) so the mock payload's node shape
+    never drifts from the production schema.
+
+    ``head_axis`` is the SSOT-declared top axis for ``(service, asset_group)``
+    (``SHARD_AXIS_MATRIX`` via ``list_supported_pairs``); falls back to
+    ``venue`` for an undeclared pair — mirrors
+    ``data_status_hierarchical._resolve_axis_order``'s fallback. The 2x2 seed
+    (2 top-axis values x 2 dates) puts one ``attempted_failed`` leaf and one
+    ``empty_confirmed`` leaf under the second top value — everything else
+    ``captured`` — so the 4-state heatmap + "show only failures" toggle have
+    real, non-zero seed data to render.
+    """
+    match = next(
+        (p for p in list_supported_pairs() if p["service"] == service and p["asset_group"] == asset_group),
+        None,
+    )
+    axes_list: list[str] = cast(list[str], match["axes"]) if match else ["venue", "date"]
+    head_axis = str(axes_list[0]) if axes_list else "venue"
+
+    top_values = [f"MOCK_{head_axis.upper()}_A", f"MOCK_{head_axis.upper()}_B"]
+    dates = ["2026-01-01", "2026-01-02"]
+
+    top_nodes: list[DrilldownNode] = []
+    for top_idx, top_val in enumerate(top_values):
+        leaves: list[DrilldownNode] = []
+        for day_idx, day in enumerate(dates):
+            row_key = {head_axis: top_val, "date": day}
+            if top_idx == 1 and day_idx == 0:
+                leaves.append(DrilldownNode(axis="date", value=day, attempted_failed=1, row_key=row_key))
+            elif top_idx == 1 and day_idx == 1:
+                leaves.append(DrilldownNode(axis="date", value=day, empty_confirmed=1, row_key=row_key))
+            else:
+                leaves.append(DrilldownNode(axis="date", value=day, captured=1, row_key=row_key))
+        top_nodes.append(
+            DrilldownNode(
+                axis=head_axis,
+                value=top_val,
+                captured=sum(leaf.captured for leaf in leaves),
+                empty_confirmed=sum(leaf.empty_confirmed for leaf in leaves),
+                attempted_failed=sum(leaf.attempted_failed for leaf in leaves),
+                children=leaves,
+                row_key={head_axis: top_val},
+            )
+        )
+
+    total_captured = sum(n.captured for n in top_nodes)
+    total_empty = sum(n.empty_confirmed for n in top_nodes)
+    total_failed = sum(n.attempted_failed for n in top_nodes)
+    total_all = total_captured + total_empty + total_failed
+    completion_pct = round((total_captured + total_empty) / total_all * 100, 2) if total_all > 0 else 0.0
+
+    return {
+        "service": service,
+        "asset_group": asset_group,
+        "axes": [head_axis, "date"],
+        "tree": [n.to_dict() for n in top_nodes],
+        "totals": {
+            "captured": total_captured,
+            "empty_confirmed": total_empty,
+            "attempted_failed": total_failed,
+            "expected_unattempted": 0,
+            "total": total_all,
+            "completion_pct": completion_pct,
+        },
+        "filtered_by": {},
+        "mock": True,
+    }

@@ -35,9 +35,28 @@ chains until the next nightly run.)
   - ``data_types``        → ``DATA_TYPES_BY_ASSET_GROUP[asset_group]``
   - ``chains``            → ``MAINNET_CHAIN_IDS`` keys
 
-The membership test is EXACT (case-sensitive) on purpose — a case/plural drift
+The membership test is EXACT (case-sensitive) by DEFAULT — a case/plural drift
 (``lending`` vs ``LENDING``) is precisely what this panel must surface, so
 lower-casing both sides would defeat it.
+
+**Grain-aware exceptions (audit 2026-07-20).** For two (axis, asset_group)
+pairs the canonical set and the manifest column are keyed at DELIBERATELY
+different grains, so a raw exact test reports false drift rather than real
+drift. :func:`_comparison_set` resolves the grain for exactly those pairs:
+
+  - ``(defi, venues)`` — canonical is chain-qualified (``UNISWAP_V2-ETHEREUM``)
+    but the operator-locked DeFi naming SSOT stores **bare venue + a separate
+    ``chain=`` segment**, so the manifest carries ``UNISWAP_V2``. Bare-vs-
+    composite never matched → 76/76 DeFi venues badged non-canonical. Now
+    compared against the bare bases.
+  - ``(defi, instrument_types)`` — the DeFi manifest column is canonically
+    LOWERCASE (operator ruling) while the enum is UPPERCASE → case-insensitive
+    for defi ONLY. cefi/tradfi keep the exact test: their canonical
+    instrument_type IS uppercase, so their lowercase spellings are REAL drift
+    owned by the in-flight uppercase migrations, and folding case globally
+    would hide it.
+
+Every other (axis, asset_group) keeps the exact, case-sensitive test.
 
 Split as a new submodule (mirrors ``_axis_census.py`` / ``_catalogue.py`` — attaches
 to the shared package ``router``; see ``routes/data_status/__init__.py``).
@@ -191,6 +210,61 @@ def _canonical_set(axis: str, asset_group: str) -> frozenset[str]:
     return frozenset()
 
 
+def _defi_bare_venue_bases(composites: frozenset[str]) -> frozenset[str]:
+    """Strip the trailing ``-{CHAIN}`` from each chain-qualified DeFi venue.
+
+    ``VENUES_BY_ASSET_GROUP['defi']`` stores venues CHAIN-QUALIFIED
+    (``UNISWAP_V2-ETHEREUM``, ``AAVE_V3-BASE``), but the DeFi canonical naming
+    SSOT (``codex/02-data/defi-canonical-naming-ssot.md``, operator-locked) is
+    **bare venue + a separate ``chain=`` path segment** — so the manifest (and
+    therefore the honest-coverage rollup's ``by_venue`` keys) carries the BARE
+    venue. Comparing bare-vs-composite can never match, which badged 100% of
+    DeFi venues non-canonical (76/76) — a false alarm on the majority.
+
+    The chain is the LAST ``-`` segment, but the base itself may contain ``-``
+    (``SOLANA-NATIVE-SOLANA`` → base ``SOLANA-NATIVE``, chain ``SOLANA``), so a
+    naive ``split("-")[0]`` is WRONG. Strip only a suffix that is a real member
+    of the chain registry.
+    """
+    bases: set[str] = set()
+    for venue in composites:
+        base = venue
+        for chain in _CANONICAL_CHAINS:
+            suffix = f"-{chain}"
+            if venue.endswith(suffix) and len(venue) > len(suffix):
+                base = venue[: -len(suffix)]
+                break
+        bases.add(base)
+    return frozenset(bases)
+
+
+def _comparison_set(axis: str, asset_group: str) -> tuple[frozenset[str], bool]:
+    """Return ``(set_to_compare_against, casefold)`` for one axis + asset_group.
+
+    The canonical set and the manifest column are deliberately keyed at
+    DIFFERENT grains for some (axis, asset_group) pairs; comparing them raw
+    produces false drift badges. This resolves the grain so the panel flags
+    only REAL drift:
+
+    - ``(defi, venues)`` — canonical is chain-qualified, manifest is bare →
+      compare against the bare bases (see :func:`_defi_bare_venue_bases`).
+    - ``(defi, instrument_types)`` — the DeFi manifest column is canonically
+      LOWERCASE (operator ruling) while ``InstrumentType`` is UPPERCASE →
+      case-insensitive compare. Deliberately NOT applied to cefi/tradfi, whose
+      canonical instrument_type IS uppercase and whose lowercase spellings are
+      genuine drift owned by the in-flight uppercase migrations — folding case
+      globally would HIDE that.
+
+    Every other pair keeps the exact, case-sensitive test.
+    """
+    canonical = _canonical_set(axis, asset_group)
+    if axis == "venues" and asset_group == "defi":
+        return _defi_bare_venue_bases(canonical), False
+    if axis == "instrument_types" and asset_group == "defi":
+        return frozenset(v.casefold() for v in canonical), True
+    return canonical, False
+
+
 def enumerate_distinct_values(
     coverage: dict[str, object],
     asset_group: str,
@@ -211,11 +285,11 @@ def enumerate_distinct_values(
         section = coverage.get(section_key)
         ag_section = section.get(ag) if isinstance(section, dict) else None
         raw_values = _top_level_keys(ag_section) if mode == "top" else _inner_keys(ag_section)
-        canonical = _canonical_set(axis, ag)
+        canonical, casefold = _comparison_set(axis, ag)
         entries: list[dict[str, object]] = []
         nc = 0
         for value in sorted(v for v in raw_values if not _is_blank(v)):
-            is_canonical = value in canonical
+            is_canonical = (value.casefold() if casefold else value) in canonical
             if not is_canonical:
                 nc += 1
             entries.append({"value": value, "is_canonical": is_canonical})

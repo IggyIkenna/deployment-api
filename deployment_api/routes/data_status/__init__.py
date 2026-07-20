@@ -100,6 +100,7 @@ from deployment_api.routes.data_status import _rollup
 from deployment_api.routes.data_status import _catalogue
 from deployment_api.routes.data_status import _axis_census
 from deployment_api.routes.data_status import _distinct_values
+from deployment_api.routes.data_status import _coverage_grid
 
 # isort: on
 
@@ -115,6 +116,11 @@ from deployment_api.routes.data_status._axis_census import (
 from deployment_api.routes.data_status._catalogue import (
     download_catalogue_csv,
     get_instrument_catalogue,
+)
+from deployment_api.routes.data_status._coverage_grid import (
+    build_coverage_grid,
+    clear_coverage_grid_cache,
+    get_coverage_grid,
 )
 from deployment_api.routes.data_status._deploy_turbo import (
     clear_turbo_cache,

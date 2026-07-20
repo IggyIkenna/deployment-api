@@ -48,6 +48,10 @@ from unified_api_contracts.registry import (
 )
 from unified_trading_library import BucketNamingError
 
+from deployment_api.services.data_status.coverage_metrics import (
+    compute_empty_reason_counts,
+    compute_failure_pillar_counts,
+)
 from deployment_api.services.data_status_drilldown import build_bucket_name
 from deployment_api.services.data_status_union import (
     has_provenance_columns,
@@ -232,6 +236,21 @@ class DrilldownNode:  # CORRECT-LOCAL: in-process drilldown tree node
     # so the UI can render "captured via batch_databento + replay_databento,
     # missing in live_databento". Empty on v8 manifests (no provenance cols).
     provenance: list[dict[str, object]] = field(default_factory=list)
+    # Cherry-pick C (2026-07-20): per-node reason breakdown, computed from
+    # THIS node's own row slice via the SAME prod counters
+    # ``breakdowns_core._build_single_venue_entry`` already uses per-venue
+    # (``coverage_metrics.compute_empty_reason_counts`` /
+    # ``compute_failure_pillar_counts``) — never a new classifier.
+    # ``reason_summary`` = {"empty_reasons": {...}, "failure_pillars": {...}},
+    # both closed-taxonomy dicts (every key present, zero-filled). Empty dict
+    # default (not populated) matches every OTHER field's "well-formed empty"
+    # convention for a bare/default-constructed node.
+    reason_summary: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Dominant non-zero reason label for this node — the top failure_pillar
+    # when the node has any attempted_failed rows, else the top empty_reason,
+    # else ``None`` (the node is fully captured / carries no attempted or
+    # empty rows at all). See ``_dominant_reason_category``.
+    reason_category: str | None = None
 
     @property
     def total(self) -> int:
@@ -263,6 +282,8 @@ class DrilldownNode:  # CORRECT-LOCAL: in-process drilldown tree node
             "completion_pct": self.completion_pct,
             "row_key": self.row_key,
             "provenance": self.provenance,
+            "reason_summary": self.reason_summary,
+            "reason_category": self.reason_category,
             "children": [c.to_dict() for c in self.children],
             "is_leaf": not self.children,
         }
@@ -371,6 +392,32 @@ def _aggregate_counts(rows: pd.DataFrame) -> tuple[int, int, int, int]:
     return captured, empty_confirmed, attempted_failed, expected_unattempted
 
 
+def _dominant_reason_category(
+    empty_reasons: dict[str, int],
+    failure_pillars: dict[str, int],
+) -> str | None:
+    """Pick the single dominant non-zero reason label for a node's row slice.
+
+    Prefers the top failure_pillar whenever the node carries any
+    ``attempted_failed`` rows (``compute_failure_pillar_counts`` buckets
+    every attempted_failed row into >=1 pillar, defaulting to
+    ``failed_other``, so at least one pillar is guaranteed non-zero).
+    Otherwise falls back to the top empty_reason (same guarantee via
+    ``empty_unclassified``). Ties break on taxonomy declaration order
+    (``FAILURE_PILLAR_KEYS`` / ``EMPTY_REASON_KEYS``) since both dicts are
+    built via ``dict.fromkeys`` and ``max`` keeps the first-seen maximum.
+
+    Returns ``None`` when neither bucket has a non-zero count — the node's
+    rows are entirely ``captured`` (or entirely ``expected_unattempted``,
+    which carries no reason taxonomy of its own).
+    """
+    if any(failure_pillars.values()):
+        return max(failure_pillars.items(), key=lambda kv: kv[1])[0]
+    if any(empty_reasons.values()):
+        return max(empty_reasons.items(), key=lambda kv: kv[1])[0]
+    return None
+
+
 def _children_for_axis(
     rows: pd.DataFrame,
     axis: str,
@@ -414,6 +461,13 @@ def _children_for_axis(
     for val in values:  # pyright: ignore[reportAny]
         sub = rows[axis_col == val]  # pyright: ignore[reportUnknownVariableType]
         captured, empty_confirmed, attempted_failed, expected_unattempted = _aggregate_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
+        # Cherry-pick C: per-node reason breakdown from THIS node's OWN row
+        # slice (``sub``) — mirrors ``breakdowns_core._build_single_venue_entry``
+        # exactly (same two prod counters, called directly on the slice, no
+        # extra union-reduce — matches the per-venue precedent byte-for-byte).
+        empty_reasons = compute_empty_reason_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
+        failure_pillars = compute_failure_pillar_counts(sub)  # pyright: ignore[reportUnknownArgumentType]
+        reason_category = _dominant_reason_category(empty_reasons, failure_pillars)
         node_row_key = {**parent_row_key, axis: val}
         node = DrilldownNode(
             axis=axis,
@@ -423,6 +477,8 @@ def _children_for_axis(
             attempted_failed=attempted_failed,
             expected_unattempted=expected_unattempted,
             row_key=node_row_key,
+            reason_summary={"empty_reasons": empty_reasons, "failure_pillars": failure_pillars},
+            reason_category=reason_category,
         )
         # Shard-atom leaf (no deeper axis) → attach the per-(pipeline_mode,
         # source) breakdown so the UI can show which mode/source answered the

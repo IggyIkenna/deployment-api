@@ -58,6 +58,9 @@ _DRILLDOWN_NODE_GOLDEN_KEYS: frozenset[str] = frozenset(
         "row_key",
         # G3/M5: per-(pipeline_mode, source) breakdown at shard-atom leaves.
         "provenance",
+        # Cherry-pick C (2026-07-20): per-node reason breakdown + dominant label.
+        "reason_summary",
+        "reason_category",
         "children",
         "is_leaf",
     }
@@ -88,15 +91,18 @@ class TestDrilldownNodeShape:
         assert isinstance(children, list)
         assert len(children) == 1
 
-    def test_to_dict_golden_schema_has_exactly_twelve_keys(self) -> None:
+    def test_to_dict_golden_schema_has_exactly_fourteen_keys(self) -> None:
         # B2: the schema carries the 4th capture-status bin
         # (expected_unattempted) so genuinely-missing cells are visible.
         # G3/M5: + the ``provenance`` key (per-mode/source leaf breakdown).
+        # Cherry-pick C: + ``reason_summary`` / ``reason_category``.
         node = DrilldownNode(axis="venue", value="BINANCE", captured=5)
         d = node.to_dict()
-        assert len(_DRILLDOWN_NODE_GOLDEN_KEYS) == 12
+        assert len(_DRILLDOWN_NODE_GOLDEN_KEYS) == 14
         assert "expected_unattempted" in _DRILLDOWN_NODE_GOLDEN_KEYS
         assert "provenance" in _DRILLDOWN_NODE_GOLDEN_KEYS
+        assert "reason_summary" in _DRILLDOWN_NODE_GOLDEN_KEYS
+        assert "reason_category" in _DRILLDOWN_NODE_GOLDEN_KEYS
         assert set(d.keys()) == _DRILLDOWN_NODE_GOLDEN_KEYS, (
             f"to_dict() key set drifted. Missing: {_DRILLDOWN_NODE_GOLDEN_KEYS - set(d.keys())}. "
             f"Extra: {set(d.keys()) - _DRILLDOWN_NODE_GOLDEN_KEYS}."
@@ -224,6 +230,123 @@ class TestAggregateCountsLegacyCoercion:
         assert empty == 1
         assert failed == 0
         assert exp == 0
+
+
+# ---------------------------------------------------------------------------
+# Cherry-pick C (2026-07-20): reason_category / reason_summary surfaced per
+# DrilldownNode, computed from THIS node's own row slice via prod's OWN
+# counters (``coverage_metrics.compute_empty_reason_counts`` /
+# ``compute_failure_pillar_counts``) — same functions
+# ``breakdowns_core._build_single_venue_entry`` uses per-venue.
+# ---------------------------------------------------------------------------
+
+
+def _venue_with_mixed_failures_manifest() -> pd.DataFrame:
+    """One venue: 2 captured, 3 attempted_failed (2x UpstreamTimestampBiasError,
+    1x MalformedTickFieldError), 1 empty_confirmed (EXPECTED_HOLIDAY).
+
+    The failure-pillar count (2 vs 1) must dominate the empty-reason count
+    (1) since ``attempted_failed > 0`` — proving the "prefer failure_pillar"
+    branch of ``_dominant_reason_category``.
+    """
+    rows: list[dict[str, object]] = []
+    for i in range(2):
+        rows.append(
+            {
+                "venue": "BINANCE-FUTURES",
+                "data_type": "trades",
+                "instrument_id": f"CAP{i}",
+                "date": "2024-03-01",
+                "capture_status": "captured",
+                "error_reason": "",
+            }
+        )
+    for i in range(2):
+        rows.append(
+            {
+                "venue": "BINANCE-FUTURES",
+                "data_type": "trades",
+                "instrument_id": f"BIAS{i}",
+                "date": "2024-03-01",
+                "capture_status": "attempted_failed",
+                "error_reason": "UpstreamTimestampBiasError(shard=BINANCE-FUTURES:trades)",
+            }
+        )
+    rows.append(
+        {
+            "venue": "BINANCE-FUTURES",
+            "data_type": "trades",
+            "instrument_id": "MALFORMED0",
+            "date": "2024-03-01",
+            "capture_status": "attempted_failed",
+            "error_reason": "MalformedTickFieldError(field=price)",
+        }
+    )
+    rows.append(
+        {
+            "venue": "BINANCE-FUTURES",
+            "data_type": "trades",
+            "instrument_id": "EMPTY0",
+            "date": "2024-03-01",
+            "capture_status": "empty_confirmed",
+            "error_reason": "EXPECTED_HOLIDAY",
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+class TestReasonCategoryAndSummary:
+    def _patch_manifest(self, df: pd.DataFrame):
+        return patch.object(_hier, "read_availability_index", return_value=df)
+
+    def test_node_with_failures_gets_dominant_pillar_and_nonempty_summary(self) -> None:
+        df = _venue_with_mixed_failures_manifest()
+        with self._patch_manifest(df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="cefi",
+                window_start="2024-03-01",
+                window_end="2024-03-01",
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        by_value = {n["value"]: n for n in tree if isinstance(n, dict)}
+        node = by_value["BINANCE-FUTURES"]
+        assert node["attempted_failed"] == 3
+        assert node["empty_confirmed"] == 1
+        # 2x failed_timestamp_bias beats 1x failed_malformed AND beats the
+        # 1x EXPECTED_HOLIDAY empty_reason — failure_pillar wins because
+        # attempted_failed > 0, regardless of the empty_reason count.
+        assert node["reason_category"] == "failed_timestamp_bias"
+        summary = node["reason_summary"]
+        assert isinstance(summary, dict)
+        assert summary["failure_pillars"]["failed_timestamp_bias"] == 2
+        assert summary["failure_pillars"]["failed_malformed"] == 1
+        assert summary["empty_reasons"]["EXPECTED_HOLIDAY"] == 1
+
+    def test_fully_captured_node_gets_null_reason_category(self) -> None:
+        df = _mtds_defi_manifest()  # every row capture_status="captured"
+        with self._patch_manifest(df):
+            result = get_hierarchical_drilldown(
+                service="market-tick-data-service",
+                asset_group="defi",
+                window_start="2024-03-01",
+                window_end="2024-03-03",
+                expand_to_depth=0,
+            )
+        tree = result["tree"]
+        assert isinstance(tree, list)
+        assert tree, "expected at least one top-level node"
+        for node in tree:
+            assert isinstance(node, dict)
+            assert node["attempted_failed"] == 0
+            assert node["empty_confirmed"] == 0
+            assert node["reason_category"] is None
+            summary = node["reason_summary"]
+            assert isinstance(summary, dict)
+            assert all(v == 0 for v in summary["failure_pillars"].values())
+            assert all(v == 0 for v in summary["empty_reasons"].values())
 
 
 class TestHierarchicalDrilldown:
