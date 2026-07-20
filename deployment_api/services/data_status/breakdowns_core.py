@@ -355,6 +355,40 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
                 "dates_found_list": sorted(found_dates),
                 "missing_dates": missing_dates,
                 "completion_pct": min(pct, 100.0),
+                "is_unexpected": False,
+            }
+
+        # Vocabulary-drift surfacing (NOT a rename / re-point). The manifest's
+        # ``feature_group`` column carries the WRITER's names, which need not
+        # intersect the UAC registry's expected names — for onchain the two
+        # vocabularies do not overlap at all. Iterating ``expected_fgs`` alone
+        # silently DROPS every observed-but-unexpected value, so a live
+        # vocabulary drift renders as a pure coverage hole ("N expected groups
+        # missing") when the truth is "we counted the wrong vocabulary". Emit
+        # the set difference (observed minus expected) as an explicit
+        # ``is_unexpected`` bucket instead of dropping it, so the drift renders
+        # AS a drift. Correct under every vocabulary hypothesis; changes no name.
+        expected_set = set(expected_fgs)
+        observed_fgs: set[str] = {
+            str(v)
+            for v in col_series.unique()
+            if str(v) and str(v).strip() and str(v) != "nan"  # pyright: ignore[reportAny]
+        }
+        for fg in sorted(observed_fgs - expected_set):
+            sub_df = venue_df[col_series == fg]
+            obs_dates = {str(d) for d in sub_df["date"].unique() if start_date <= str(d) <= end_date}  # pyright: ignore[reportAny]
+            result[fg] = {
+                # Observed outside the expected vocabulary: report what was
+                # seen, but with no UAC denominator (``dates_expected`` == the
+                # observed count) so it never reads as a coverage gap, and flag
+                # it so a reader distinguishes drift from a real missing group.
+                "dates_found": len(obs_dates),
+                "dates_expected": len(obs_dates),
+                "dates_missing": 0,
+                "dates_found_list": sorted(obs_dates),
+                "missing_dates": [],
+                "completion_pct": 100.0 if obs_dates else 0.0,
+                "is_unexpected": True,
             }
         return result
 

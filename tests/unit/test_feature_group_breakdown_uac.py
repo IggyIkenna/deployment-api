@@ -190,3 +190,41 @@ def test_uac_breakdown_no_feature_group_column_returns_empty(
         df, "2024-01-01", "2024-01-02", service="features-service"
     )
     assert out == {}
+
+
+def test_uac_breakdown_observed_but_unexpected_group_surfaces_as_drift(
+    service_instance: DataStatusService,
+) -> None:
+    """A feature_group present in the manifest but absent from the UAC expected
+    list must surface as an explicit ``is_unexpected`` bucket, not be dropped.
+
+    This is the onchain vocabulary-split case: the manifest carries the WRITER's
+    names (e.g. ``lending_rates``) while the UAC registry expects a disjoint set
+    (``aave_lending_rates`` ...). Silently dropping the observed value renders a
+    vocabulary drift as a phantom coverage hole; surfacing it renders the drift
+    AS a drift. Verified: the observed writer-name appears, flagged unexpected,
+    while the expected registry names still appear (flagged not-unexpected).
+    """
+    df = _venue_df(
+        [
+            {"date": "2024-01-01", "feature_group": "lending_rates"},
+            {"date": "2024-01-02", "feature_group": "lending_rates"},
+        ]
+    )
+    out = service_instance._build_feature_group_breakdown_uac(
+        df, "2024-01-01", "2024-01-05", service="features-service"
+    )
+    # The observed-but-unexpected writer name is NOT dropped.
+    assert "lending_rates" in out
+    drift_entry = out["lending_rates"]
+    assert isinstance(drift_entry, dict)
+    assert drift_entry["is_unexpected"] is True
+    assert drift_entry["dates_found"] == 2
+    # No UAC denominator → never rendered as a coverage gap.
+    assert drift_entry["dates_missing"] == 0
+    assert drift_entry["dates_expected"] == 2
+
+    # Registry-expected groups still appear and are flagged not-unexpected.
+    aave_entry = out["aave_lending_rates"]
+    assert isinstance(aave_entry, dict)
+    assert aave_entry["is_unexpected"] is False
