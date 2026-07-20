@@ -98,14 +98,22 @@ class TestEnumerateDistinctValues:
 
         axes, non_canonical = enumerate_distinct_values(_defi_coverage_payload(), "defi")
 
-        # instrument_types: canonical LENDING/POOL/SOLANA_LENDING true, lower-case false.
+        # instrument_types (defi): case-INSENSITIVE since the 2026-07-20 audit.
+        # UPDATED: this previously asserted the lower-case forms were drift. That
+        # encoded a stale assumption — the operator-locked DeFi naming SSOT
+        # (codex/02-data/defi-canonical-naming-ssot.md, "instrument_type" row)
+        # declares the DeFi canonical values in LOWER case (`pool`, `a_token`,
+        # `lst`, `spot_asset`, `perpetual`, `lending`, `solana_lending`, …) while
+        # the InstrumentType enum is UPPER, so an exact test false-flagged the
+        # SSOT's own canonical spelling. Both cases now badge canonical for defi.
+        # (cefi/tradfi keep the exact test — see TestGrainAwareCanonicalCompare.)
         it_map = {e["value"]: e["is_canonical"] for e in axes["instrument_types"]}
         assert it_map["LENDING"] is True
         assert it_map["POOL"] is True
         assert it_map["SOLANA_LENDING"] is True
-        assert it_map["lending"] is False
-        assert it_map["pool"] is False
-        # Raw NOT collapsed: LENDING and lending both survive as distinct entries.
+        assert it_map["lending"] is True
+        assert it_map["pool"] is True
+        # Raw still NOT collapsed: LENDING and lending survive as distinct entries.
         assert "LENDING" in it_map and "lending" in it_map
 
         # chains: ETHEREUM/SOLANA canonical, lower-case ethereum drift.
@@ -120,7 +128,7 @@ class TestEnumerateDistinctValues:
         assert dt_map["dex_pools"] is False
 
         # non_canonical_count is the per-axis drift headline.
-        assert non_canonical["instrument_types"] == 2  # lending, pool
+        assert non_canonical["instrument_types"] == 0  # defi itype compare is case-insensitive
         assert non_canonical["chains"] == 1  # ethereum
         assert non_canonical["data_types"] == 1  # dex_pools
 
@@ -172,3 +180,97 @@ class TestDistinctValuesEndpoint:
         with patch(_PATCH_READ_ROLLUP, return_value=None):
             resp = client_distinct_values.get("/data-status/distinct-values/defi")
         assert resp.status_code == 503
+
+
+def _payload(ag: str, venues: list[str], itypes: list[str]) -> dict[str, object]:
+    """Minimal coverage.json slice carrying just the two axes under test."""
+    return {
+        "by_venue": {ag: {v: {} for v in venues}},
+        "by_venue_instrument_type": {ag: {venues[0] if venues else "X": {t: {} for t in itypes}}},
+    }
+
+
+class TestGrainAwareCanonicalCompare:
+    """Audit 2026-07-20 — the canonical set and the manifest column are keyed at
+    deliberately DIFFERENT grains for two (axis, asset_group) pairs; comparing
+    them raw reported false drift. See ``_comparison_set``."""
+
+    def test_defi_bare_venue_bases_strips_chain_but_keeps_multi_hyphen_base(self) -> None:
+        from deployment_api.routes.data_status._distinct_values import _defi_bare_venue_bases
+
+        bases = _defi_bare_venue_bases(
+            frozenset({"UNISWAP_V2-ETHEREUM", "AAVE_V3-BASE", "SOLANA-NATIVE-SOLANA", "VENUS-BSC"})
+        )
+        assert "UNISWAP_V2" in bases
+        assert "AAVE_V3" in bases
+        assert "VENUS" in bases
+        # The base itself contains a hyphen — a naive split("-")[0] would yield
+        # "SOLANA" and silently mis-canonicalise a real venue.
+        assert "SOLANA-NATIVE" in bases
+        assert "SOLANA" not in bases
+
+    def test_defi_bare_venues_canonical_but_real_drift_still_flagged(self) -> None:
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        payload = _payload("defi", ["UNISWAP_V2", "AAVE_V3", "VENUS", "AAVE", "YEARNV3", "COMPOUND"], [])
+        axes, non_canonical = enumerate_distinct_values(payload, "defi")
+        badge = {e["value"]: e["is_canonical"] for e in axes["venues"]}
+        # bare canonical venues no longer false-flagged
+        assert badge["UNISWAP_V2"] is True
+        assert badge["AAVE_V3"] is True
+        assert badge["VENUS"] is True
+        # genuine version/underscore drift MUST survive
+        assert badge["AAVE"] is False
+        assert badge["YEARNV3"] is False
+        assert badge["COMPOUND"] is False
+        assert non_canonical["venues"] == 3
+
+    def test_defi_instrument_types_case_insensitive(self) -> None:
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        payload = _payload("defi", ["UNISWAP_V2"], ["lending", "a_token", "lst", "liquidation", "restaking"])
+        axes, _ = enumerate_distinct_values(payload, "defi")
+        badge = {e["value"]: e["is_canonical"] for e in axes["instrument_types"]}
+        # defi manifest column is canonically lowercase (operator ruling)
+        assert badge["lending"] is True
+        assert badge["a_token"] is True
+        assert badge["lst"] is True
+        # `restaking` became CANONICAL on 2026-07-20: the audit surfaced that the
+        # DeFi manifest emits instrument_type=restaking (ezETH/rsETH/pufETH) with
+        # no enum member, and the operator approved adding `RESTAKING` to
+        # InstrumentType (uac). Under the defi case-insensitive compare it now
+        # matches — this assertion is the cross-repo canary for that addition.
+        assert badge["restaking"] is True
+        # `liquidation` is NOT an instrument_type at all (it is a data concept —
+        # the manifest contradicts the same handler's disk write). Still a real
+        # defect, must stay flagged.
+        assert badge["liquidation"] is False
+
+    def test_cefi_and_tradfi_instrument_types_are_not_case_folded(self) -> None:
+        """Regression guard: cefi/tradfi canonical instrument_type is UPPERCASE and
+        their lowercase spellings are REAL drift owned by the in-flight uppercase
+        migrations — a global case-fold would hide them."""
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        cefi_axes, _ = enumerate_distinct_values(_payload("cefi", ["OKX"], ["perpetual", "spot"]), "cefi")
+        cefi_badge = {e["value"]: e["is_canonical"] for e in cefi_axes["instrument_types"]}
+        assert cefi_badge["perpetual"] is False
+        assert cefi_badge["spot"] is False
+
+        tradfi_axes, _ = enumerate_distinct_values(
+            _payload("tradfi", ["CME"], ["future", "futures", "equity"]), "tradfi"
+        )
+        tradfi_badge = {e["value"]: e["is_canonical"] for e in tradfi_axes["instrument_types"]}
+        assert tradfi_badge["future"] is False
+        assert tradfi_badge["futures"] is False
+        assert tradfi_badge["equity"] is False
+
+    def test_cefi_venue_axis_keeps_exact_compare(self) -> None:
+        """Only defi venues are bare-based; cefi's suffix IS part of the canonical
+        venue identity, so the exact test must be preserved."""
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        axes, _ = enumerate_distinct_values(_payload("cefi", ["BINANCE-SPOT", "OKX-FUTURES"], []), "cefi")
+        badge = {e["value"]: e["is_canonical"] for e in axes["venues"]}
+        assert badge["BINANCE-SPOT"] is True
+        assert badge["OKX-FUTURES"] is False
