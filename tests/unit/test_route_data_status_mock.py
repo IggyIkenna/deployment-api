@@ -102,15 +102,36 @@ class TestGetCoverageSummaryMock:
         assert "totals" in data
         assert data["service"] == "instruments-service"
 
-    def test_returns_zero_totals(self, client_ds_mock: TestClient) -> None:
+    def test_returns_rich_nonzero_inventory(self, client_ds_mock: TestClient) -> None:
+        """Cherry-pick D (2026-07-20): this handler wins the duplicate
+        ``/coverage-summary`` registration (FastAPI first-registration-wins —
+        see ``routes/data_status/__init__.py``), so its mock branch must
+        carry the rich per-asset_group inventory ported from the unreachable
+        ``_deploy_turbo.get_data_coverage_summary`` mock, not all-zeros."""
         r = client_ds_mock.get(
             "/data-status/coverage-summary",
             params={"service": "instruments-service"},
         )
         assert r.status_code == 200
         data = r.json()
-        assert data["totals"]["shards"] == 0
-        assert data["totals"]["instrument_rows"] == 0
+        # 25000 (CEFI) + 40000 (TRADFI) + 10000 (DEFI) + 3800 (SPORTS).
+        assert data["totals"]["shards"] == 78800
+        assert data["totals"]["instrument_rows"] == 78800
+        asset_groups = data["asset_groups"]
+        assert set(asset_groups.keys()) == {"CEFI", "TRADFI", "DEFI", "SPORTS"}
+        cefi = asset_groups["CEFI"]
+        assert cefi["total_shards"] == 25000
+        assert cefi["capture_status_counts"]["captured"] > 0
+
+    def test_asset_groups_param_narrows_the_inventory(self, client_ds_mock: TestClient) -> None:
+        r = client_ds_mock.get(
+            "/data-status/coverage-summary",
+            params={"service": "instruments-service", "asset_groups": "CEFI"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data["asset_groups"].keys()) == {"CEFI"}
+        assert data["totals"]["shards"] == 25000
 
 
 # ── GET /drilldown/{service}/{asset_group} ────────────────────────────────────
@@ -130,15 +151,26 @@ class TestGetDataStatusDrilldownMock:
         assert "tree" in data
         assert "totals" in data
 
-    def test_totals_are_zero_in_mock(self, client_ds_mock: TestClient) -> None:
+    def test_tree_and_totals_are_nonzero_in_mock(self, client_ds_mock: TestClient) -> None:
+        """Cherry-pick D (2026-07-20): the mock drilldown tree is synthesized
+        from SHARD_AXIS_MATRIX instead of the pre-2026-07-20 hardcoded empty
+        ``tree: []`` — the deployment-ui drilldown component now has
+        something to render in local dev / Playwright."""
         r = client_ds_mock.get(
             "/data-status/drilldown/execution-service/cefi",
             params={"start_date": "2026-01-01", "end_date": "2026-02-01"},
         )
         assert r.status_code == 200
         data = r.json()
-        assert data["totals"]["total"] == 0
-        assert data["totals"]["completion_pct"] == 0.0
+        assert data["tree"], "expected a non-empty mock tree"
+        assert data["totals"]["total"] > 0
+        assert data["totals"]["completion_pct"] > 0.0
+        # Every node — mock or real — carries the full DrilldownNode schema
+        # (proves the mock was built via the real dataclass, not a hand-rolled dict).
+        first = data["tree"][0]
+        assert "reason_summary" in first
+        assert "reason_category" in first
+        assert "is_leaf" in first
 
 
 # ── GET /turbo ────────────────────────────────────────────────────────────────

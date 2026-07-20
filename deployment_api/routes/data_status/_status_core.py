@@ -15,7 +15,7 @@ from fastapi import HTTPException, Query, Request
 
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
-from deployment_api.services.data_status_mock import build_mock_turbo_response
+from deployment_api.services.data_status_mock import build_mock_coverage_summary, build_mock_turbo_response
 
 logger = logging.getLogger(__name__)
 
@@ -237,17 +237,14 @@ async def get_coverage_summary(
 ):
     """Get coverage summary with shard counts and latest-day instrument totals."""
     if _ds._cfg.is_mock_mode():  # pyright: ignore[reportPrivateUsage]
-        return {
-            "service": service,
-            "asset_groups": {},
-            "totals": {
-                "shards": 0,
-                "instrument_rows": 0,
-                "dates_across_asset_groups": 0,
-                "latest_day_instruments": 0,
-            },
-            "mock": True,
-        }
+        # Cherry-pick D (2026-07-20): this handler wins the duplicate
+        # ``/coverage-summary`` registration (import-order-dependent — see
+        # ``routes/data_status/__init__.py``), so its mock branch must carry
+        # the rich per-asset_group inventory, not an all-zero stub — the
+        # sibling ``_deploy_turbo.get_data_coverage_summary`` mock is dead
+        # code, never reached by FastAPI's first-registration-wins matching.
+        ag_list = asset_groups.split(",") if asset_groups else None
+        return build_mock_coverage_summary(service=service, asset_groups=ag_list)
     try:
         ag_list = asset_groups.split(",") if asset_groups else None
         result = await _ds.data_status_service.get_coverage_summary(
