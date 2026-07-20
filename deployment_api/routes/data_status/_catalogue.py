@@ -45,12 +45,14 @@ Plan: ``data_status_page_ux_and_canonicalisation_2026_07_16.md`` P6.
 
 from __future__ import annotations
 
+import csv
 import io
 import logging
+from collections.abc import Iterator
 
 import pandas as pd
 from fastapi import HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
@@ -91,6 +93,13 @@ _IDENTITY_CATALOGUE_ASSET_GROUPS: frozenset[str] = frozenset({"cefi", "defi", "t
 # column subsets over the SAME file).
 _IDENTITY_CATALOGUE_READ_COLUMNS: list[str] = [
     "instrument_id",
+    # Human-readable display name for an opaque-coded instrument (KRX single-stock
+    # equities: bare 6-digit code -> issuer name, e.g. 005930 -> "Samsung Electronics").
+    # Stamped into ``prod/catalog.parquet`` by the catalogue roll-up's on-the-fly
+    # ``_add_instrument_name`` from the UAC ``KRX_EQUITY_NAMES`` SSOT. Schema-aware read
+    # (only projected when present), so a pre-``name`` catalogue degrades to a blank
+    # name rather than raising. Blank for the vast majority (readable instrument_ids).
+    "name",
     "venue",
     "instrument_type",
     "data_type",
@@ -98,9 +107,11 @@ _IDENTITY_CATALOGUE_READ_COLUMNS: list[str] = [
     "mvp",
 ]
 
-# Columns surfaced per catalogue row (in order) on the CSV twin.
+# Columns surfaced per catalogue row (in order) on the CSV twin. ``name`` sits right
+# after ``instrument_id`` so the human-readable label reads next to the coded id.
 _CATALOGUE_CSV_COLUMNS: list[str] = [
     "instrument_id",
+    "name",
     "venue",
     "instrument_type",
     "data_type",
@@ -342,6 +353,11 @@ def _rows_from_frame(df: pd.DataFrame, *, asset_group: str, identity_catalogue: 
         out.append(
             {
                 "instrument_id": iid,
+                # Human-readable display name (KRX equities: "Samsung Electronics" next
+                # to 005930) — sourced from the catalogue ``name`` column; blank ("") for
+                # instruments with no display name or on the manifest-backed path
+                # (prediction/sports availability index carries no ``name``).
+                "name": str(row.get("name") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 "venue": str(row.get("venue") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 "instrument_type": str(row.get("instrument_type") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 "data_type": str(row.get("data_type") or ""),  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
@@ -550,6 +566,60 @@ async def get_catalogue_filter_options(
     }
 
 
+class _EchoBuffer:
+    """Write-through pseudo-buffer for ``csv.writer`` — each ``write()`` call's
+    argument is returned as-is (never accumulated). This is what lets
+    ``csv.writer``'s row-serialization (quoting/escaping identical to
+    ``DataFrame.to_csv``'s default ``QUOTE_MINIMAL``) drive a streaming
+    generator instead of building an in-memory string (the standard
+    Django "Streaming CSV" pattern)."""
+
+    def write(self, value: str) -> str:
+        return value
+
+
+# Rows per emitted chunk on the streamed CSV response. Bounds peak memory to
+# O(batch) instead of O(total rows) and — the actual fix — means the HTTP
+# response uses chunked transfer encoding (no upfront ``Content-Length``)
+# rather than one fully-buffered body. See ``_iter_catalogue_csv_chunks``.
+_CSV_STREAM_BATCH_ROWS = 5_000
+
+
+def _iter_catalogue_csv_chunks(rows: list[dict[str, object]]) -> Iterator[str]:
+    """Yield the catalogue CSV as bounded-size text chunks: the header row
+    first, then ``_CSV_STREAM_BATCH_ROWS``-row batches. Never materialises the
+    whole CSV as one string.
+
+    Root-cause context (data_status_catalogue_csv_download_500_sports_tradfi_
+    2026_07_18): the previous implementation built the FULL CSV via
+    ``DataFrame.to_csv()`` and returned it as one buffered ``Response``. For a
+    large asset_group (tradfi: 1,060,790 rows -> a 67 MiB CSV, measured
+    2026-07-20) that exceeds Cloud Run's ~32 MiB (33,554,432 byte) BUFFERED-
+    response cap; the platform itself rejects the oversized response before
+    it reaches the client — Cloud Run logged "Response size was too large.
+    Please consider reducing response size." with NO Python exception
+    anywhere in the app (confirmed via Cloud Logging: no traceback near the
+    tradfi request's response timestamp, only that platform WARNING) — the
+    500 the client saw did not originate in this endpoint's own error
+    handling at all. cefi's export (32,879,539 bytes) narrowly fits under the
+    cap today, which is why it "worked" — the same bug, just not yet tripped.
+    Pairing this generator with ``StreamingResponse`` (chunked transfer
+    encoding, no ``Content-Length``) is not subject to that buffered-response
+    cap regardless of asset_group size. ``lineterminator="\\n"`` matches
+    ``DataFrame.to_csv()``'s default (``csv.writer``'s own default is
+    ``\\r\\n``) — keeps the emitted bytes identical to the pre-fix output."""
+    writer = csv.writer(_EchoBuffer(), lineterminator="\n")
+    yield writer.writerow(_CATALOGUE_CSV_COLUMNS)
+    batch: list[str] = []
+    for i, row in enumerate(rows, start=1):
+        batch.append(writer.writerow([row.get(col, "") for col in _CATALOGUE_CSV_COLUMNS]))
+        if i % _CSV_STREAM_BATCH_ROWS == 0:
+            yield "".join(batch)
+            batch = []
+    if batch:
+        yield "".join(batch)
+
+
 @router.get("/download-catalogue-csv")
 async def download_catalogue_csv(
     service: str = Query(..., description="Service name"),
@@ -559,9 +629,15 @@ async def download_catalogue_csv(
     data_type: str | None = Query(None, description="Optional data_type narrow"),
     search: str | None = Query(None, description="Case-insensitive substring match on instrument_id"),
     mvp_only: bool = Query(False, description="Restrict the export to is_mvp-true instruments"),
-) -> Response:
+) -> StreamingResponse:
     """Stream the availability-derived catalogue as CSV — matches ``/catalogue``
-    (same search + mvp_only filter, same shared row-builder) exactly."""
+    (same search + mvp_only filter, same shared row-builder) exactly.
+
+    Emitted as a genuinely CHUNKED HTTP response (``StreamingResponse`` over
+    ``_iter_catalogue_csv_chunks``, not a single buffered body) — see that
+    function's docstring for why: a large asset_group's full CSV can exceed
+    Cloud Run's buffered-response cap even though row-building itself never
+    raises."""
     try:
         rows = _build_catalogue_rows(
             service=service,
@@ -576,11 +652,13 @@ async def download_catalogue_csv(
         logger.exception("Error in download_catalogue_csv")
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from exc
 
-    csv_df = pd.DataFrame(data=rows or None, columns=_CATALOGUE_CSV_COLUMNS)
-    csv_text = csv_df.to_csv(index=False)
     filename = f"{service}_{asset_group}_catalogue.csv"
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Row-Count": str(len(rows)),
     }
-    return Response(content=csv_text, media_type="text/csv; charset=utf-8", headers=headers)
+    return StreamingResponse(
+        _iter_catalogue_csv_chunks(rows),
+        media_type="text/csv; charset=utf-8",
+        headers=headers,
+    )
