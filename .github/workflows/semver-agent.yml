@@ -880,15 +880,24 @@ jobs:
         continue-on-error: true
         env:
           CICD_EVENTS_BUCKET: ${{ vars.CICD_EVENTS_BUCKET || 'unified-trading-cicd-events' }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_ID: ${{ github.job }}
         run: |
           set -euo pipefail
           LEDGER_FILE="$RUNNER_TEMP/semver_alert_ledger.jsonl"
           [ -s "$LEDGER_FILE" ] || { echo "no queued alerts"; exit 0; }
           DATE_PARTITION=$(date -u +"%Y-%m-%d")
-          OBJECT_PATH="cicd/alerts/${DATE_PARTITION}/alerts.jsonl"
+          # ONE OBJECT PER RUN (root-cause fix, not a mitigation — alerts_ledger_race_two_remaining_writers_2026_07_21.md):
+          # the OLD path (cp-down -> append -> cp-up onto the shared alerts.jsonl) was an unlocked
+          # read-modify-write — any other writer into the same date-partition (notify-slack.yml, or
+          # another concurrent semver-agent run) could silently clobber it. deployment-api's reader
+          # (_repo_ci_alerts.py::_read_ledgers_sync) already walks the WHOLE cicd/alerts/{date}/
+          # prefix and parses every blob it finds — it never assumed a single filename — so writing
+          # this run's queued pages straight to their own never-overwritten object eliminates the
+          # race with zero reader changes: no read, no local merge, no lock. Matches the pattern
+          # already proven in persist-event/action.yml's GCS/S3 event writes.
+          UNIQUE_KEY="${RUN_ID}-${JOB_ID}-$(date -u +%s%N)-${RANDOM}"
+          OBJECT_PATH="cicd/alerts/${DATE_PARTITION}/${UNIQUE_KEY}.jsonl"
           GCS_URI="gs://${CICD_EVENTS_BUCKET}/${OBJECT_PATH}"
-          LOCAL_FILE="$RUNNER_TEMP/alerts_merged.jsonl"
-          gsutil cp "$GCS_URI" "$LOCAL_FILE" 2>/dev/null || : > "$LOCAL_FILE"
-          cat "$LEDGER_FILE" >> "$LOCAL_FILE"
-          gsutil cp "$LOCAL_FILE" "$GCS_URI"
+          gsutil cp "$LEDGER_FILE" "$GCS_URI"
           echo "$(wc -l < "$LEDGER_FILE" | tr -d ' ') CRITICAL page(s) persisted to $GCS_URI"
