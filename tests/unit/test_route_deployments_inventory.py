@@ -382,6 +382,47 @@ def test_build_inventory_surfaces_leaked_resources_on_non_running_vms() -> None:
     assert leaked.cost_basis == "inferred"
 
 
+def test_build_inventory_surfaces_orphan_reap_verdict_on_stopped_vm() -> None:
+    """Fleet-tab consolidation: a STOPPED/TERMINATED VM's row carries reap_verdict/grace_hours/
+    stopped_age_hours/monthly_disk_usd, joined from the SAME orphans SSOT
+    (`_fleet_inventory.build_orphan_inventory`) the `/api/fleet/orphans` endpoint uses — the cost
+    estimate must match exactly (no second estimator), and an ephemeral VM stopped well past the
+    24h grace window verdicts `reap`."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    vm_details_by_name: dict[str, dict[str, object]] = {
+        "adhoc-stopped-vm": {
+            "status": "TERMINATED",
+            "boot_disk_name": "adhoc-stopped-vm-boot",
+            "last_stop_timestamp": "2026-06-20T12:00:00Z",  # 48h before _FIXED_NOW — past 24h grace
+        },
+    }
+    disk_details: dict[str, dict[str, object]] = {"adhoc-stopped-vm-boot": {"size_gb": 100, "type": "pd-standard"}}
+    items = build_inventory([], {}, _FIXED_NOW, vm_details_by_name, disk_details=disk_details)
+    row = next(i for i in items if i.name == "adhoc-stopped-vm")
+    assert row.reap_verdict == "reap"
+    assert row.grace_hours == 24.0
+    assert row.stopped_age_hours == pytest.approx(48.0)
+    assert row.monthly_disk_usd == 5.2  # 100 GB * 0.052 (pd-standard) — same rate as /api/fleet/orphans
+
+
+def test_build_inventory_running_vm_has_no_orphan_fields() -> None:
+    """A RUNNING VM is not in the orphan candidate set — reap_verdict/grace_hours/stopped_age_hours/
+    monthly_disk_usd all stay honestly None (never a fabricated non-orphan default)."""
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entries = _vm_entries()
+    vm_details_by_name: dict[str, dict[str, object]] = {
+        "cefi-binance-spot-20260622-014158": {"status": "RUNNING"},
+    }
+    items = build_inventory(entries, {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
+    running = {i.name: i for i in items}["cefi-binance-spot-20260622-014158"]
+    assert running.reap_verdict is None
+    assert running.grace_hours is None
+    assert running.stopped_age_hours is None
+    assert running.monthly_disk_usd is None
+
+
 def test_build_inventory_running_vm_has_no_leaked_resources() -> None:
     """A RUNNING VM with a data disk reports has_unreleased_resources=False (in-use, not leaked);
     a registry VM with no GCE join reports honest None (couldn't determine)."""

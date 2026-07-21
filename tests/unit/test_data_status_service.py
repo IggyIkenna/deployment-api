@@ -2025,6 +2025,60 @@ class TestDefiLegacyVenueFilter:
         )
 
 
+class TestCefiDefiHybridVenueWhitelist:
+    """Regression for the turbo-API captured-data hiding bug.
+
+    HYPERLIQUID and ASTER are CEFI-registered hybrid on-chain-CLOB venues
+    with real, currently-captured chain-side rows under ``asset_group=defi``
+    (HYPERLIQUID's own L1 chain; ASTER on BSC) that UAC's ``ALL_DEFI_VENUES``
+    registry has never declared. Before the fix, ``_allowed_defi_venue_chain_pairs``
+    was sourced purely from UAC and silently dropped both venues' rows before
+    they ever reached the DEFI aggregator -- confirmed live 2026-07-10 (3.77M /
+    1.07M real rows respectively). See
+    ``issues/defi_turbo_api_hides_real_captured_data_2026_07_07.md``.
+    """
+
+    def test_hyperliquid_and_aster_pairs_are_in_the_whitelist(self):
+        svc = _make_svc()
+        allowed = svc._allowed_defi_venue_chain_pairs()
+        assert ("HYPERLIQUID", "HYPERLIQUID") in allowed
+        assert ("ASTER", "BSC") in allowed
+
+    def test_hyperliquid_and_aster_rows_survive_the_defi_whitelist_filter(self):
+        """Real captured DEFI-category rows for both hybrid venues must not
+        be dropped by ``_filter_to_canonical_defi_venues`` -- reproduces the
+        exact shape confirmed live against the GCS DEFI manifest: real
+        captured rows under (venue=HYPERLIQUID, chain=HYPERLIQUID) and
+        (venue=ASTER, chain=BSC), alongside an unrelated non-DeFi leak row
+        that must still be dropped.
+        """
+        svc = _make_svc()
+        mixed_df = pd.DataFrame(
+            {
+                "date": ["2026-06-01", "2026-06-01", "2026-06-01"],
+                "venue": ["HYPERLIQUID", "ASTER", "COINBASE-SPOT"],
+                "chain": ["HYPERLIQUID", "BSC", "ETHEREUM"],
+                "service_name": ["market-tick-data-service"] * 3,
+                "data_type": ["perp_funding"] * 3,
+                "capture_status": ["captured"] * 3,
+                "row_count": [3768971, 1066091, 10],
+            }
+        )
+
+        filtered = svc._filter_to_canonical_defi_venues(mixed_df)
+        filtered_venues_chains = set(zip(filtered["venue"].tolist(), filtered["chain"].tolist(), strict=True))
+
+        assert ("HYPERLIQUID", "HYPERLIQUID") in filtered_venues_chains, (
+            "real captured HYPERLIQUID DEFI-chain row must survive the whitelist filter"
+        )
+        assert ("ASTER", "BSC") in filtered_venues_chains, (
+            "real captured ASTER DEFI-chain row must survive the whitelist filter"
+        )
+        assert ("COINBASE-SPOT", "ETHEREUM") not in filtered_venues_chains, (
+            "non-DeFi CEFI-oracle-source leak row must still be dropped"
+        )
+
+
 class TestMTDSHonestCoverage:
     """MTDS honest-coverage aggregator (Phase 6c).
 

@@ -94,6 +94,8 @@ from deployment_api.routes._cloud_scheduler import (
     SchedulerJobStatus,
     list_scheduler_jobs,
 )
+from deployment_api.routes._fleet_inventory import DEFAULT_GRACE_HOURS, build_orphan_inventory
+from deployment_api.routes._fleet_types import OrphanEntry
 from deployment_api.routes._gcp_cloud_functions import (
     CloudFunctionStatus,
     list_cloud_functions,
@@ -453,6 +455,16 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     # = authoritative. Colour-only in the UI, no text label; reused by future approx sources
     # (single-timestamp kinds, unmanaged-VM fallback) per the plan's one-convention decision.
     basis: str | None = None
+    # Orphan/idle-spend join (Fleet-tab consolidation, 2026-07-21) — reused verbatim from the
+    # `/api/fleet/orphans` SSOT (`_fleet_inventory.build_orphan_inventory`), never re-derived, so the
+    # verdict/cost estimate never drifts between the two surfaces. Populated ONLY for VM rows
+    # currently in a STOPPED/SUSPENDED/TERMINATED state (the orphan candidate set); None for a
+    # running VM or any non-VM kind — honest absence, never a fabricated "not an orphan" default.
+    # OrphanVerdict: reap|keep_within_grace|keep_not_ephemeral|keep_retained|keep_no_timestamp
+    reap_verdict: str | None = None
+    grace_hours: float | None = None  # stopped-age threshold (hours) the verdict above was computed against
+    stopped_age_hours: float | None = None  # hours since last_stop_timestamp (falls back to creation)
+    monthly_disk_usd: float | None = None  # ESTIMATE — boot-disk idle cost, same rate model as the orphans endpoint
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -714,6 +726,7 @@ def _vm_item(
     object_deltas: dict[str, int | None] | None = None,
     disk_details: dict[str, dict[str, object]] | None = None,
     addresses: dict[str, dict[str, object]] | None = None,
+    orphan: OrphanEntry | None = None,
 ) -> DeploymentItem:
     """Build an inventory item from a VM deployment-registry entry.
 
@@ -726,6 +739,9 @@ def _vm_item(
     ``object_deltas`` is the BATCH-umbrella asset_group -> manifest object-delta
     map the caller batches once per census cycle (``_batched_object_deltas``) —
     feeds the composite classifier's ``stalled``.
+    ``orphan`` is this VM's entry (by name) from the orphans SSOT
+    (``_fleet_inventory.build_orphan_inventory``), if it is currently stopped —
+    ``None`` for a running VM (honest absence, never re-derived here).
     """
     target = _classify_vm(entry.vm_name)
     hb_age = _heartbeat_age_seconds(entry, now)
@@ -778,6 +794,10 @@ def _vm_item(
         started_at=entry.started_at or None,
         completed_at=entry.completed_at,
         last_heartbeat_at=entry.last_heartbeat_at or None,
+        reap_verdict=orphan.verdict if orphan is not None else None,
+        grace_hours=DEFAULT_GRACE_HOURS if orphan is not None else None,
+        stopped_age_hours=orphan.stopped_age_hours if orphan is not None else None,
+        monthly_disk_usd=orphan.monthly_disk_usd if orphan is not None else None,
     )
 
 
@@ -1072,6 +1092,7 @@ def _unmanaged_vm_item(
     *,
     disk_details: dict[str, dict[str, object]] | None = None,
     addresses: dict[str, dict[str, object]] | None = None,
+    orphan: OrphanEntry | None = None,
 ) -> DeploymentItem:
     """Build an inventory row for a LIVE GCE instance that has NO deployment-registry entry.
 
@@ -1085,6 +1106,7 @@ def _unmanaged_vm_item(
     registry entry to source them from. Classification degrades to a minimal NONE-umbrella row
     (never hidden) when the name can't be resolved. Provenance is ``control-plane`` for a managed
     out-of-band prefix, else ``adhoc`` (reconciliation's UNKNOWN set).
+    ``orphan`` — see ``_vm_item``'s docstring; same orphans-SSOT join, None when running.
     """
     raw_status = str(details.get("status") or "")
     try:
@@ -1117,6 +1139,10 @@ def _unmanaged_vm_item(
         health_status=raw_status or None,
         boot_disk_name=str(details.get("boot_disk_name") or "") or None,
         labels=cast(dict[str, str], labels) if labels else None,
+        reap_verdict=orphan.verdict if orphan is not None else None,
+        grace_hours=DEFAULT_GRACE_HOURS if orphan is not None else None,
+        stopped_age_hours=orphan.stopped_age_hours if orphan is not None else None,
+        monthly_disk_usd=orphan.monthly_disk_usd if orphan is not None else None,
     )
 
 
@@ -1173,8 +1199,19 @@ def build_inventory(
     per-service classification failure is logged + skipped, same shard-level
     isolation as the VM loop above — one bad service name never blocks the rest
     of the census.
+
+    Orphan/idle-spend join (Fleet-tab consolidation) — every STOPPED/SUSPENDED/TERMINATED VM in
+    ``vm_details_by_name`` gets its ``reap_verdict``/``grace_hours``/``stopped_age_hours``/
+    ``monthly_disk_usd`` populated from the SAME orphans SSOT (``_fleet_inventory.build_orphan_inventory``)
+    the ``/api/fleet/orphans`` endpoint uses — computed ONCE here (pure, no new GCE call; reuses the
+    already-fetched ``vm_details_by_name``/``disk_details``), never a second estimator. A running VM
+    (or ``None``/``{}`` census) simply has no entry in the lookup, so those fields stay honestly ``None``.
     """
     details_by_name = vm_details_by_name or {}
+    orphan_by_name: dict[str, OrphanEntry] = {}
+    if vm_details_by_name:
+        orphan_inventory = build_orphan_inventory(vm_details_by_name, disk_details or {}, now, DEFAULT_GRACE_HOURS)
+        orphan_by_name = {o.name: o for o in orphan_inventory.orphans}
     items: list[DeploymentItem] = []
     for entry in vm_entries:
         try:
@@ -1192,6 +1229,7 @@ def build_inventory(
                     object_deltas=object_deltas,
                     disk_details=disk_details,
                     addresses=addresses,
+                    orphan=orphan_by_name.get(entry.vm_name),
                 )
             )
         except UnclassifiedDeploymentError as exc:
@@ -1213,6 +1251,7 @@ def build_inventory(
                     now,
                     disk_details=disk_details,
                     addresses=addresses,
+                    orphan=orphan_by_name.get(unmanaged_name),
                 )
             )
     if cloud_run_status:
