@@ -1480,7 +1480,9 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
     ]
 
 
-def _load_aws_items(now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_REGIONS) -> list[DeploymentItem]:
+def _load_aws_items(
+    now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_REGIONS
+) -> tuple[list[DeploymentItem], dict[str, str]]:
     """Census + classify the live AWS estate into inventory items (Phase 5 parity), multi-region.
 
     Reuses the curated ``_vm_lifecycle_class`` prefix resolver so AWS umbrella derivation matches
@@ -1488,27 +1490,35 @@ def _load_aws_items(now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_RE
     the ``?all_regions`` sweep) with per-region isolation — a region's census failure (no creds /
     boto3 absent / API down / unsupported) degrades to empty for THAT region and never blocks the
     others or the GCP inventory. AWS rides the same ``DeploymentItem`` contract.
+
+    Also returns the ``{instance_id: Name-tag}`` map collected across every region's EC2 census
+    (decision 3, AWS cost attribution) — ``_attach_costs`` needs it to resolve an AWS CUR row's
+    ARN/instance-id ``resource_id`` to the friendly name the items are keyed on.
     """
 
-    def _one(region: str) -> list[DeploymentItem]:
+    def _one(region: str) -> tuple[list[DeploymentItem], dict[str, str]]:
+        instance_id_by_name: dict[str, str] = {}
         try:
             item_dicts = load_aws_inventory(
                 region=region,
                 aws_account_id=_cfg.aws_account_id or "",
                 lifecycle_for_name=_vm_lifecycle_class,
+                instance_id_by_name=instance_id_by_name,
             )
-            return [DeploymentItem(**d) for d in item_dicts]  # type: ignore[arg-type]
+            return [DeploymentItem(**d) for d in item_dicts], instance_id_by_name  # type: ignore[arg-type]
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("inventory: AWS census for region %s degraded: %s", region, exc)
-            return []
+            return [], {}
 
     if not regions:
-        return []
+        return [], {}
     items: list[DeploymentItem] = []
+    instance_id_by_name: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="aws-region") as pool:
-        for region_items in pool.map(_one, regions):
+        for region_items, region_instance_id_by_name in pool.map(_one, regions):
             items.extend(region_items)
-    return items
+            instance_id_by_name.update(region_instance_id_by_name)
+    return items, instance_id_by_name
 
 
 def _list_json_keys(client: StorageClient, bucket: str, prefix: str) -> list[str]:
@@ -1802,7 +1812,7 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
     # the whole inventory — the cold path is ~max(slowest census) not their sum, and never
     # exceeds _PROVIDER_CENSUS_TIMEOUT_SEC per provider.
     aws_regions = _aws_regions_for_scope(region_scope)
-    f_aws: Future[list[DeploymentItem]] | None = (
+    f_aws: Future[tuple[list[DeploymentItem], dict[str, str]]] | None = (
         _census_pool.submit(_load_aws_items, now, aws_regions) if want_aws else None
     )
 
@@ -1879,23 +1889,38 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
                 census_vm_names.add(vm_item.name)
         _prune_stale_alert_state(census_vm_names)
 
+    aws_instance_id_by_name: dict[str, str] = {}
     if f_aws is not None:
-        aws_items: list[DeploymentItem] = _census_or_degrade("aws", f_aws, [])
+        aws_items, aws_instance_id_by_name = _census_or_degrade("aws", f_aws, ([], {}))
         items.extend(aws_items)
 
-    _attach_costs(items)
+    _attach_costs(items, aws_instance_id_by_name)
     return items
 
 
-def _attach_costs(items: list[DeploymentItem]) -> None:
+def _aws_instance_id_from_resource_id(resource_id: str) -> str | None:
+    """Parse the EC2 instance-id out of an AWS CUR ``line_item_resource_id``.
+
+    That column is usually a full ARN (``arn:aws:ec2:<region>:<acct>:instance/i-...``) but some
+    exports carry the bare instance-id — handle both. Returns ``None`` for any non-EC2-instance
+    resource_id (buckets, other services, GCP's already-short names, ...).
+    """
+    tail = resource_id.rsplit("instance/", 1)[-1] if "instance/" in resource_id else resource_id
+    return tail if tail.startswith("i-") else None
+
+
+def _attach_costs(items: list[DeploymentItem], aws_instance_id_by_name: dict[str, str] | None = None) -> None:
     """Best-effort: attach the 3 USD cost figures per target by name == billing resource_id.
 
     Reuses the cost-observability service's CACHED billing window (WS-E) — one aggregation per
     inventory refresh (the inventory itself is cached), not per request. A GCP VM's billing
     ``resource.name`` is its instance name (== the deployment item name); Cloud Run job/service
     names match likewise. AWS ``resource_id`` is an ARN/instance-id that won't match the friendly
-    name → those rows keep ``None`` (honest absence, never a fabricated 0). A billing-source
-    failure or mock-without-facts leaves every cost field ``None`` — cost NEVER breaks the census.
+    name directly — ``aws_instance_id_by_name`` (the EC2 census's ``{instance_id: Name tag}``, built
+    in ``_load_aws_items``) resolves it to the friendly name first so the AWS row joins the same
+    way GCP does. No mapping found (unmapped instance, non-EC2 AWS resource, GCP row) → that row
+    keeps ``None`` (honest absence, never a fabricated 0). A billing-source failure or
+    mock-without-facts leaves every cost field ``None`` — cost NEVER breaks the census.
     """
     try:
         cost_by_resource = CostObservabilityService().per_resource_daily(days=7)
@@ -1903,6 +1928,12 @@ def _attach_costs(items: list[DeploymentItem]) -> None:
         # best-effort enrichment — cost must never break the inventory census.
         logger.warning("[deployments-inventory] cost enrichment skipped (best-effort): %s", exc)
         return
+    if aws_instance_id_by_name:
+        for resource_id, rc in list(cost_by_resource.items()):
+            instance_id = _aws_instance_id_from_resource_id(resource_id)
+            friendly_name = aws_instance_id_by_name.get(instance_id) if instance_id else None
+            if friendly_name is not None and friendly_name not in cost_by_resource:
+                cost_by_resource[friendly_name] = rc
     for item in items:
         rc = cost_by_resource.get(item.name)
         if rc is not None:

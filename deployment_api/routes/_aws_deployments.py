@@ -393,6 +393,7 @@ def load_aws_inventory(
     region: str,
     aws_account_id: str,
     lifecycle_for_name: LifecycleResolver,
+    instance_id_by_name: dict[str, str] | None = None,
 ) -> list[DeploymentItemDict]:
     """Census + classify the live AWS estate into inventory item dicts.
 
@@ -402,6 +403,14 @@ def load_aws_inventory(
     any AWS error (no creds / boto3 absent / API down / unsupported region) — a Lambda
     census failure never blocks EC2/Batch and vice versa (shard-level failure isolation
     across kinds).
+
+    ``instance_id_by_name``, when passed, is UPDATED in place with this region's
+    ``{instance_id: Name-tag}`` census pairs — the billing join key (an AWS CUR row's
+    ``line_item_resource_id`` is an ARN/instance-id, never the friendly Name tag) needs
+    this mapping, and this is the one place the raw ``AwsInstanceCensus`` objects (which
+    carry both fields) exist before they're flattened into item dicts that drop
+    ``instance_id``. Optional + additive so existing callers (``fleet_reconciliation``,
+    tests) are unaffected.
 
     The census import is deferred (not a top-level import) to match the
     ``_cloud_run_executions`` ``_gcp_sdk`` pattern: ``deployment_service.backends`` pulls
@@ -429,6 +438,8 @@ def load_aws_inventory(
     )
 
     instances = list_ec2_census(region=region)
+    if instance_id_by_name is not None:
+        instance_id_by_name.update({inst.instance_id: inst.name for inst in instances if inst.instance_id})
     batch_jobs = list_batch_census(region=region)
     ecs_services = list_ecs_census(region=region)
     lambda_functions = list_lambda_census(region=region)

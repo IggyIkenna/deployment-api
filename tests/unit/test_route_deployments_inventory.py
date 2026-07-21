@@ -1795,7 +1795,7 @@ def test_inventory_route_hung_provider_degrades_other_kinds_survive(client_inven
                 side_effect=_hanging_services,
             ),
             patch("deployment_api.routes.deployments_inventory.list_cloud_functions", return_value={}),
-            patch("deployment_api.routes.deployments_inventory._load_aws_items", return_value=[]),
+            patch("deployment_api.routes.deployments_inventory._load_aws_items", return_value=([], {})),
         ):
             mock_cfg.is_mock_mode.return_value = False
             mock_cfg.require_gcp_project_id.return_value = "test-project"

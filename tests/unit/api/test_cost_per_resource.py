@@ -121,3 +121,46 @@ def test_attach_costs_never_raises_on_billing_failure() -> None:
     with patch.object(inv.CostObservabilityService, "per_resource_daily", side_effect=RuntimeError("bq down")):
         inv._attach_costs(items)  # must not raise — cost is best-effort
     assert items[0].cost_actual_usd is None
+
+
+def test_attach_costs_resolves_aws_arn_via_instance_census() -> None:
+    """decision 3: an AWS CUR row keyed by ARN resolves to the friendly item name via the
+    EC2 census's {instance_id: Name-tag} map, instead of staying permanently unjoined."""
+    items = [
+        DeploymentItem(
+            name="af-backfill-20260719-180545",
+            kind="VM",
+            umbrella="BATCH",
+            cloud="AWS",
+            service="s",
+            asset_group="sports",
+            status="running",
+        ),
+    ]
+    arn = "arn:aws:ec2:ap-northeast-1:427895769566:instance/i-0123456789abcdef0"
+    fake = {arn: ResourceDailyCost(actual_usd=4.43, avg_7d_usd=4.43, projected_24h_usd=4.43)}
+    instance_id_by_name = {"i-0123456789abcdef0": "af-backfill-20260719-180545"}
+    with patch.object(inv.CostObservabilityService, "per_resource_daily", return_value=fake):
+        inv._attach_costs(items, instance_id_by_name)  # pyright: ignore[reportPrivateUsage]
+    assert items[0].cost_actual_usd == 4.43
+
+
+def test_attach_costs_unmapped_aws_row_stays_honest_none() -> None:
+    """An AWS ARN with no entry in the instance census (e.g. a terminated/untagged instance
+    the census no longer sees) stays None — never a fabricated $0."""
+    items = [
+        DeploymentItem(
+            name="af-backfill-unmapped",
+            kind="VM",
+            umbrella="BATCH",
+            cloud="AWS",
+            service="s",
+            asset_group="",
+            status="running",
+        ),
+    ]
+    arn = "arn:aws:ec2:ap-northeast-1:427895769566:instance/i-deadbeefdeadbeef0"
+    fake = {arn: ResourceDailyCost(actual_usd=1.0, avg_7d_usd=1.0, projected_24h_usd=1.0)}
+    with patch.object(inv.CostObservabilityService, "per_resource_daily", return_value=fake):
+        inv._attach_costs(items, {})  # empty census map → no resolution possible
+    assert items[0].cost_actual_usd is None
