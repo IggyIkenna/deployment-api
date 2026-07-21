@@ -193,6 +193,156 @@ class TestReadAlertingServiceSync:
             assert _read_alerting_service_sync(days=1) == []
 
 
+class TestParseKillSwitchAuditRow:
+    def test_armed_row_shape(self) -> None:
+        from datetime import UTC, datetime
+
+        from deployment_api.routes._repo_ci_alerts import _parse_kill_switch_audit_row
+
+        row = {
+            "event_type": "armed",
+            "switch_id": "GLOBAL_EMERGENCY",
+            "provenance": "OPERATOR_MANUAL",
+            "event_timestamp": datetime(2026, 7, 21, 12, 0, tzinfo=UTC),
+            "actor": "operator1",
+            "recovery_mode": None,
+            "cooldown_seconds_elapsed": None,
+            "metadata_json": "{}",
+        }
+        parsed = _parse_kill_switch_audit_row(row)
+        assert parsed is not None
+        assert parsed["kind"] == "kill_switch_armed"
+        assert parsed["alert_class"] == "kill_switch_armed"
+        assert parsed["repo"] == "unified-trading-library"
+        assert parsed["workflow_name"] == "kill-switch-GLOBAL_EMERGENCY"
+        assert "operator1" in parsed["message"]
+        assert "OPERATOR_MANUAL" in parsed["message"]
+        # armed/disarmed has no severity concept per FIELD_COVERAGE — never fabricated.
+        assert parsed["severity"] is None
+        assert parsed["timestamp"] == "2026-07-21T12:00:00+00:00"
+
+    def test_disarmed_row_shape(self) -> None:
+        from datetime import UTC, datetime
+
+        from deployment_api.routes._repo_ci_alerts import _parse_kill_switch_audit_row
+
+        row = {
+            "event_type": "disarmed",
+            "switch_id": "GLOBAL_EMERGENCY",
+            "provenance": None,
+            "event_timestamp": datetime(2026, 7, 21, 13, 0, tzinfo=UTC),
+            "actor": "operator2",
+            "recovery_mode": "MANUAL_UNKILL",
+            "cooldown_seconds_elapsed": 30.0,
+            "metadata_json": "{}",
+        }
+        parsed = _parse_kill_switch_audit_row(row)
+        assert parsed is not None
+        assert parsed["kind"] == "kill_switch_disarmed"
+        assert "operator2" in parsed["message"]
+        assert "MANUAL_UNKILL" in parsed["message"]
+
+    def test_missing_required_field_skipped(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import _parse_kill_switch_audit_row
+
+        assert _parse_kill_switch_audit_row({"event_type": "armed", "switch_id": "X"}) is None
+        assert _parse_kill_switch_audit_row({"switch_id": "X", "event_timestamp": None}) is None
+
+
+class TestReadKillSwitchAuditLogSync:
+    def test_reads_and_parses_parquet_blobs(self) -> None:
+        import io
+        from datetime import UTC, datetime
+        from unittest.mock import MagicMock
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from deployment_api.routes._repo_ci_alerts import _read_kill_switch_audit_log_sync
+
+        row = {
+            "event_type": "armed",
+            "switch_id": "GLOBAL_EMERGENCY",
+            "provenance": "OPERATOR_MANUAL",
+            "event_timestamp": datetime(2026, 7, 21, 9, 0, tzinfo=UTC),
+            "actor": "operator1",
+            "recovery_mode": None,
+            "cooldown_seconds_elapsed": None,
+            "metadata_json": "{}",
+        }
+        buf = io.BytesIO()
+        pq.write_table(pa.Table.from_pylist([row]), buf)
+        raw = buf.getvalue()
+
+        blob = MagicMock()
+        blob.name = "2026-07-21/20260721T090000-GLOBAL_EMERGENCY-abcd1234.parquet"
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = [blob]
+
+        with (
+            patch(
+                "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+                return_value="test-kill-switch-audit-log",
+            ),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+            patch("deployment_api.routes._repo_ci_alerts.download_from_storage", return_value=raw),
+        ):
+            entries = _read_kill_switch_audit_log_sync(days=1)
+        assert len(entries) == 1
+        assert entries[0]["alert_class"] == "kill_switch_armed"
+        mock_client.list_blobs.assert_called_once_with("test-kill-switch-audit-log", prefix="2026-07-21/")
+
+    def test_non_parquet_blobs_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from deployment_api.routes._repo_ci_alerts import _read_kill_switch_audit_log_sync
+
+        blob = MagicMock()
+        blob.name = "2026-07-21/.keep"
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = [blob]
+
+        with (
+            patch(
+                "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+                return_value="test-kill-switch-audit-log",
+            ),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+        ):
+            entries = _read_kill_switch_audit_log_sync(days=1)
+        assert entries == []
+
+    def test_bucket_resolution_failure_returns_empty(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import _read_kill_switch_audit_log_sync
+
+        with patch(
+            "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+            side_effect=RuntimeError("no yaml"),
+        ):
+            assert _read_kill_switch_audit_log_sync(days=1) == []
+
+    def test_malformed_parquet_skipped_not_raised(self) -> None:
+        from unittest.mock import MagicMock
+
+        from deployment_api.routes._repo_ci_alerts import _read_kill_switch_audit_log_sync
+
+        blob = MagicMock()
+        blob.name = "2026-07-21/junk.parquet"
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = [blob]
+
+        with (
+            patch(
+                "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+                return_value="test-kill-switch-audit-log",
+            ),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+            patch("deployment_api.routes._repo_ci_alerts.download_from_storage", return_value=b"not parquet"),
+        ):
+            entries = _read_kill_switch_audit_log_sync(days=1)
+        assert entries == []
+
+
 class TestReadLedgersSync:
     """deployment_alerts_ingestion_completeness_2026_07_20.md todo 5 (QG 5.69): the CI-alerts
     bucket resolves via resolve_bucket_name(), never a hardcoded literal."""

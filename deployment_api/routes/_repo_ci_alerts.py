@@ -22,6 +22,8 @@ import logging
 import time
 from typing import NotRequired, TypedDict, cast
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from unified_trading_library import (
     BucketNamingError,
     download_from_storage,
@@ -221,6 +223,85 @@ def _read_alerting_service_sync(days: int) -> list[AlertEntryDict]:
     return entries
 
 
+def _parse_kill_switch_audit_row(row: dict[str, object]) -> AlertEntryDict | None:
+    """Parse one row from a ``KillSwitchBus`` arm/disarm parquet audit file.
+
+    Row shape matches ``unified_trading_library.kill_switch.audit_log._event_row()`` exactly
+    (``event_type``/``switch_id``/``provenance``/``event_timestamp``/``actor``/``recovery_mode``/
+    ``cooldown_seconds_elapsed``/``metadata_json``) — a read-only PROJECTION of that writer's schema,
+    never re-derived (``deployment_alerts_ingestion_completeness_2026_07_20.md`` todo 9). ``severity``
+    is intentionally omitted (structurally ABSENT for this plane — armed/disarmed is not a
+    paging-tier axis — per ``FIELD_COVERAGE`` in ``unified_api_contracts.alerting.ledger``).
+    """
+    event_type = row.get("event_type")
+    switch_id = row.get("switch_id")
+    ts = row.get("event_timestamp")
+    if not event_type or not switch_id or ts is None:
+        return None
+    timestamp = ts.isoformat() if isinstance(ts, dt.datetime) else str(ts)
+    alert_class = f"kill_switch_{event_type}"
+    actor = str(row.get("actor") or "")
+    if event_type == "armed":
+        provenance = row.get("provenance")
+        message = f"Kill switch {switch_id} armed by {actor}"
+        if provenance:
+            message += f" (provenance={provenance})"
+    else:
+        recovery_mode = row.get("recovery_mode")
+        message = f"Kill switch {switch_id} disarmed by {actor}"
+        if recovery_mode:
+            message += f" (recovery_mode={recovery_mode})"
+    return AlertEntryDict(
+        kind=alert_class,
+        timestamp=timestamp,
+        repo="unified-trading-library",
+        workflow_name=f"kill-switch-{switch_id}",
+        severity=None,
+        conclusion=None,
+        message=message,
+        run_url=None,
+        alert_class=alert_class,
+    )
+
+
+def _read_kill_switch_audit_log_sync(days: int) -> list[AlertEntryDict]:
+    """List + read the last N days of ``KillSwitchBus`` arm/disarm parquet audit files.
+
+    Read-only projection of ``unified_trading_library.kill_switch.audit_log``'s
+    ``ParquetAuditLogWriter`` store — bounded day-partitioned reads only (single-walk discipline),
+    mirrors ``_read_alerting_service_sync``'s per-date prefix walk against the dedicated
+    kill-switch-audit-log bucket (resolved via ``resolve_bucket_name()``, never hardcoded). Never
+    touches the write path (``deployment_alerts_ingestion_completeness_2026_07_20.md`` todo 9).
+    """
+    dates = [(dt.datetime.now(dt.UTC) - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)]
+    entries: list[AlertEntryDict] = []
+    try:
+        bucket = resolve_bucket_name(cloud="gcp", kind="kill-switch-audit-log")
+        client = get_storage_client()
+    except Exception as exc:
+        logger.warning("[REPO-CI] kill-switch audit-log bucket resolution failed: %s", exc)
+        return entries
+    for date in dates:
+        prefix = f"{date}/"
+        try:
+            for blob in client.list_blobs(bucket, prefix=prefix):
+                if not blob.name.endswith(".parquet"):
+                    continue
+                raw = download_from_storage(bucket, blob.name)
+                try:
+                    table = pq.read_table(pa.BufferReader(raw))
+                except Exception as exc:
+                    logger.warning("[REPO-CI] kill-switch audit-log parquet parse failed for %s: %s", blob.name, exc)
+                    continue
+                for row in table.to_pylist():
+                    parsed = _parse_kill_switch_audit_row(row)
+                    if parsed:
+                        entries.append(parsed)
+        except Exception as exc:
+            logger.warning("[REPO-CI] kill-switch audit-log read failed for %s: %s", prefix, exc)
+    return entries
+
+
 def derive_streams(entries: list[AlertEntryDict]) -> list[AlertStreamDict]:
     """Group chronologically-sorted entries into (repo, workflow) lifecycle streams.
 
@@ -297,6 +378,10 @@ def _read_ledgers_sync(days: int) -> list[AlertEntryDict]:
     # #uts-live-alerts/#data-pipeline-alerts (deployment_alerts_ingestion_completeness_2026_07_20.md
     # todo 3). A best-effort merge: a read failure here must not blank out the CI ledgers above.
     entries.extend(_read_alerting_service_sync(days))
+    # KillSwitchBus arm/disarm parquet audit log — a cheap read-only projection of an existing
+    # store (deployment_alerts_ingestion_completeness_2026_07_20.md todo 9). Best-effort merge, same
+    # pattern as the alerting-service store above.
+    entries.extend(_read_kill_switch_audit_log_sync(days))
     return entries
 
 
