@@ -37,7 +37,7 @@ class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (
 
     kind: str  # "alert" | "event" | "vm_down" | "worker_liveness" | "git_health" | "consolidator_down"
     timestamp: str
-    repo: str
+    repo: str  # the EMITTING repo/service (see subject_repo for the repo the alert is ABOUT)
     workflow_name: str
     severity: str | None  # alerts only
     conclusion: str | None
@@ -48,6 +48,11 @@ class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (
     # its ``/deployments/{name}`` detail (parity #4). Absent for CI alerts (no target). NotRequired so
     # only the alert path that carries a target sets it.
     deployment_target: NotRequired[str | None]
+    # The repo the alert is ABOUT (distinct from ``repo``, the emitter) — populated for slack_alert
+    # rows written after deployment_alerts_ingestion_completeness_2026_07_20.md todo 4 landed;
+    # structurally absent (None) for older rows and for planes with no repo-scoped subject.
+    # NotRequired so alerting_service/zombie_watchdog rows (no subject concept) simply omit it.
+    subject_repo: NotRequired[str | None]
 
 
 class AlertStreamDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
@@ -85,6 +90,12 @@ def _parse_line(line: str) -> AlertEntryDict | None:
         # the unified ledger surfaces all alert domains, not just CI/CD.
         alert_class = str(obj.get("alert_class") or "")
         kind = alert_class if alert_class else "alert"
+        # subject_repo: the repo the alert is ABOUT (todo 4). Writers that emit it (notify-slack.yml
+        # since deployment_alerts_ingestion_completeness_2026_07_20.md, deployment-api's own
+        # _persist_alert) set it explicitly; older rows / writers that haven't been updated yet carry
+        # no such key, so this degrades to None (structurally absent) rather than misreporting the
+        # emitter as the subject.
+        subject_repo = str(obj.get("subject_repo")) if obj.get("subject_repo") else None
         return AlertEntryDict(
             kind=kind,
             timestamp=str(obj.get("timestamp") or ""),
@@ -98,18 +109,24 @@ def _parse_line(line: str) -> AlertEntryDict | None:
             # The infra/deployment watchers (vm_down / worker_liveness / deployment lifecycle) flatten
             # ``details.vm_name`` to the top level → the /deployments/{name} deep-link target (#4).
             deployment_target=str(obj.get("vm_name") or obj.get("deployment_id") or "") or None,
+            subject_repo=subject_repo,
         )
     if event_type == "github_workflow_event":
+        # gha_ci_events plane: `repo_name` IS the subject — each repo's own workflow reports on
+        # itself, so subject_repo == repo here (no separate emitter concept; FIELD_COVERAGE table
+        # in unified_api_contracts.alerting.ledger).
+        repo_name = str(obj.get("repo_name") or "")
         return AlertEntryDict(
             kind="event",
             timestamp=str(obj.get("timestamp") or ""),
-            repo=str(obj.get("repo_name") or ""),
+            repo=repo_name,
             workflow_name=str(obj.get("workflow_name") or ""),
             severity=None,
             conclusion=str(obj.get("conclusion")) if obj.get("conclusion") else None,
             message=None,
             run_url=None,
             alert_class=None,
+            subject_repo=repo_name or None,
         )
     return None
 

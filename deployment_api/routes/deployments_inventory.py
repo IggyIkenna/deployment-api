@@ -613,7 +613,15 @@ def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None
     return max(0.0, (ended - started).total_seconds() / 3600.0)
 
 
-def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, message: str, dedup_key: str) -> None:
+def _persist_alert(
+    *,
+    alert_class: str,
+    workflow_name: str,
+    severity: str,
+    message: str,
+    dedup_key: str,
+    subject_repo: str | None = None,
+) -> None:
     """Append one JSONL row to the shared GCS alert ledger — best-effort, never raises.
 
     Mirrors agent-orchestrator's ``notifications.slack._persist_to_gcs`` write shape exactly
@@ -621,6 +629,12 @@ def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, messa
     ``GET /api/alerts`` (``_repo_ci_alerts.py``'s ``_parse_line``) picks these up alongside
     CI/CD + other watcher alerts with zero reader-side changes. Shard-level isolation: a
     ledger-write failure logs a warning and never breaks the inventory computation it rides on.
+
+    ``subject_repo`` is the repo the alert is ABOUT, distinct from ``repo`` (the emitter, always
+    "deployment-api" here) — see the ``FIELD_COVERAGE`` contract in ``unified_api_contracts.alerting``
+    and `deployment_alerts_ingestion_completeness_2026_07_20.md` todo 4. Callers with no repo-scoped
+    subject (e.g. VM-health alerts) simply omit it, matching the ``zombie_watchdog`` plane's
+    structural absence rather than fabricating a value.
     """
     try:
         date = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -629,6 +643,7 @@ def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, messa
             "event_type": "slack_alert",
             "timestamp": datetime.now(UTC).isoformat(),
             "repo": "deployment-api",
+            "subject_repo": subject_repo,
             "workflow_name": workflow_name,
             "severity": severity,
             "conclusion": None,

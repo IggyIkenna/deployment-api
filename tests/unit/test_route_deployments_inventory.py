@@ -858,8 +858,42 @@ def test_persist_alert_writes_expected_row_shape() -> None:
     assert row["event_type"] == "slack_alert"
     assert row["alert_class"] == "oom-risk"
     assert row["repo"] == "deployment-api"
+    assert row["subject_repo"] is None  # no repo-scoped subject for a VM-health alert
     assert row["workflow_name"] == "vm-health-cefi-binance-spot"
     assert row["severity"] == "CRITICAL"
+
+
+def test_persist_alert_writes_subject_repo_distinct_from_emitter() -> None:
+    """deployment_alerts_ingestion_completeness_2026_07_20.md todo 4: subject_repo (the repo the
+    alert is ABOUT) must be populated distinctly from repo (the emitter, always deployment-api)."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    written_data = b""
+
+    def _fake_download(bucket: str, path: str) -> bytes:
+        raise FileNotFoundError("no existing blob")
+
+    def _fake_upload(bucket: str, path: str, data: bytes, content_type: str | None = None) -> str:
+        nonlocal written_data
+        written_data = data
+        return f"gs://{bucket}/{path}"
+
+    with (
+        patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
+        patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
+    ):
+        _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
+            alert_class="cross-repo-regression",
+            workflow_name="ci-status-update",
+            severity="CRITICAL",
+            message="unified-trading-library CI regression",
+            dedup_key="qg-fail:unified-trading-library:live-defi-rollout",
+            subject_repo="unified-trading-library",
+        )
+    row = json.loads(written_data.decode("utf-8").strip())
+    assert row["repo"] == "deployment-api"
+    assert row["subject_repo"] == "unified-trading-library"
+    assert row["repo"] != row["subject_repo"]
 
 
 def test_persist_alert_never_raises_on_storage_failure() -> None:
