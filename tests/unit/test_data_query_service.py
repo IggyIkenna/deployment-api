@@ -175,68 +175,120 @@ class TestGetVenueFilters:
 
 
 class TestGetInstrumentsList:
-    """Tests for DataQueryService.get_instruments_list."""
+    """Tests for DataQueryService.get_instruments_list.
+
+    Reuses the ``_load_search_corpus`` patch pattern from
+    ``TestSearchInstruments`` — ``get_instruments_list`` shares the same
+    canonical-ID corpus loader as ``search_instruments`` (both bypass GCS
+    in tests; the loader itself is integration-tested against real
+    buckets separately).
+    """
 
     def _make_service(self):
         dqs = _load_dqs()
         return dqs(project_id="test-project")
 
+    @pytest.fixture(autouse=True)
+    def _clear_corpus_cache(self):
+        DataQueryService._corpus_cache.clear()
+        yield
+        DataQueryService._corpus_cache.clear()
+
+    def _patch(self, monkeypatch, rows: list[dict[str, str]]):
+        monkeypatch.setattr(DataQueryService, "_load_search_corpus", lambda _self, _category: list(rows))
+
     @pytest.mark.asyncio
-    async def test_returns_instruments_from_blobs(self):
+    async def test_returns_instruments_from_corpus(self, monkeypatch):
         svc = self._make_service()
-        blobs = [
-            SimpleNamespace(name="cefi/binance/spot/BTC-USDT.parquet"),
-            SimpleNamespace(name="cefi/binance/spot/ETH-USDT.parquet"),
-        ]
-        with patch.object(_dqs_mod, "list_objects", return_value=blobs):
-            result = await svc.get_instruments_list("cefi")
+        self._patch(
+            monkeypatch,
+            [
+                {"canonical_id": "BTC-USDT", "venue": "BINANCE", "instrument_type": "SPOT"},
+                {"canonical_id": "ETH-USDT", "venue": "BINANCE", "instrument_type": "SPOT"},
+            ],
+        )
+        result = await svc.get_instruments_list("cefi")
         assert result["asset_group"] == "cefi"
-        assert "BTC-USDT" in result["instruments"] or len(result["instruments"]) >= 0
+        keys = {row["instrument_key"] for row in result["instruments"]}
+        assert keys == {"BTC-USDT", "ETH-USDT"}
+        assert result["total_in_file"] == 2
+        assert result["returned_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_venue_filter_builds_path(self):
+    async def test_venue_filter_is_exact_case_insensitive(self, monkeypatch):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_objects", return_value=[]) as mock_list:
-            await svc.get_instruments_list("cefi", venue="BINANCE")
-        # The path should include the venue
-        call_args = mock_list.call_args
-        assert "BINANCE" in call_args[0][1]
+        self._patch(
+            monkeypatch,
+            [
+                {"canonical_id": "BTC-USDT", "venue": "BINANCE", "instrument_type": "SPOT"},
+                {"canonical_id": "BTC-USDT-PERP", "venue": "BYBIT", "instrument_type": "PERPETUAL"},
+            ],
+        )
+        result = await svc.get_instruments_list("cefi", venue="binance")
+        assert [row["instrument_key"] for row in result["instruments"]] == ["BTC-USDT"]
 
     @pytest.mark.asyncio
-    async def test_instrument_type_spot_maps_to_spot_pairs(self):
+    async def test_instrument_type_filter_is_exact_case_insensitive(self, monkeypatch):
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_objects", return_value=[]) as mock_list:
-            await svc.get_instruments_list("cefi", instrument_type="SPOT")
-        call_args = mock_list.call_args
-        assert "spot_pairs" in call_args[0][1]
+        self._patch(
+            monkeypatch,
+            [
+                {"canonical_id": "BTC-USDT", "venue": "BINANCE", "instrument_type": "SPOT"},
+                {"canonical_id": "BTC-USDT-PERP", "venue": "BINANCE", "instrument_type": "PERPETUAL"},
+            ],
+        )
+        result = await svc.get_instruments_list("cefi", instrument_type="spot")
+        assert [row["instrument_key"] for row in result["instruments"]] == ["BTC-USDT"]
 
     @pytest.mark.asyncio
-    async def test_deduplicates_instruments(self):
+    async def test_search_filters_by_substring_token_and_match(self, monkeypatch):
         svc = self._make_service()
-        blobs = [
-            SimpleNamespace(name="a/b/BTC-USDT.parquet"),
-            SimpleNamespace(name="a/c/BTC-USDT.parquet"),
-        ]
-        with patch.object(_dqs_mod, "list_objects", return_value=blobs):
-            result = await svc.get_instruments_list("cefi")
-        instruments = result["instruments"]
-        assert instruments.count("BTC-USDT") == 1
+        self._patch(
+            monkeypatch,
+            [
+                {"canonical_id": "BINANCE:SPOT:BTC-USDT", "venue": "BINANCE", "instrument_type": "SPOT"},
+                {"canonical_id": "BINANCE:SPOT:ETH-USDT", "venue": "BINANCE", "instrument_type": "SPOT"},
+            ],
+        )
+        result = await svc.get_instruments_list("cefi", search="btc")
+        assert [row["instrument_key"] for row in result["instruments"]] == ["BINANCE:SPOT:BTC-USDT"]
+        assert result["search"] == "btc"
 
     @pytest.mark.asyncio
-    async def test_error_returns_error_dict(self):
+    async def test_search_was_previously_ignored_now_actually_filters(self, monkeypatch):
+        """Regression: the pre-fix endpoint accepted no ``search`` param at all —
+        typing in the UI's instrument-search box silently returned everything."""
         svc = self._make_service()
-        with patch.object(_dqs_mod, "list_objects", side_effect=RuntimeError("error")):
-            result = await svc.get_instruments_list("cefi")
+        self._patch(
+            monkeypatch,
+            [{"canonical_id": f"INSTR-{i:03d}", "venue": "BINANCE", "instrument_type": "SPOT"} for i in range(20)],
+        )
+        result = await svc.get_instruments_list("cefi", search="INSTR-005")
+        assert len(result["instruments"]) == 1
+        assert result["instruments"][0]["instrument_key"] == "INSTR-005"
+
+    @pytest.mark.asyncio
+    async def test_error_returns_error_dict(self, monkeypatch):
+        svc = self._make_service()
+
+        def _raise(_self, _category):
+            raise RuntimeError("error")
+
+        monkeypatch.setattr(DataQueryService, "_load_search_corpus", _raise)
+        result = await svc.get_instruments_list("cefi")
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_limit_respected(self):
+    async def test_limit_respected(self, monkeypatch):
         svc = self._make_service()
-        blobs = [SimpleNamespace(name=f"a/b/INSTR-{i:03d}.parquet") for i in range(20)]
-        with patch.object(_dqs_mod, "list_objects", return_value=blobs):
-            result = await svc.get_instruments_list("cefi", limit=5)
-        assert len(result["instruments"]) <= 5
-        assert result["truncated"] is True
+        self._patch(
+            monkeypatch,
+            [{"canonical_id": f"INSTR-{i:03d}", "venue": "BINANCE", "instrument_type": "SPOT"} for i in range(20)],
+        )
+        result = await svc.get_instruments_list("cefi", limit=5)
+        assert len(result["instruments"]) == 5
+        assert result["total_in_file"] == 20
+        assert result["returned_count"] == 5
 
 
 def _availability_rows(

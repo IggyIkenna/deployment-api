@@ -195,80 +195,75 @@ class DataQueryService:
         asset_group: str,
         venue: str | None = None,
         instrument_type: str | None = None,
+        search: str | None = None,
         limit: int = 100,
     ) -> dict[str, object]:
         """
-        Get list of instruments for an asset group.
+        List canonical instruments for an asset group, with optional filters.
+
+        Reuses the same canonical-ID corpus as :meth:`search_instruments`
+        (:meth:`_load_search_corpus` — per-venue ``instruments.parquet``
+        files under ``instrument_availability/by_date/``, 5-minute
+        in-process cache) instead of parsing bare filenames off a raw GCS
+        object listing: that legacy approach never carried venue/
+        instrument_type per result and had no way to apply ``search`` at
+        all (the frontend has sent ``search`` since it was written; the
+        backend silently ignored it).
 
         Args:
-            asset_group: Asset group (cefi, tradfi, defi)
-            venue: Optional venue filter
-            instrument_type: Optional instrument type filter
-            limit: Maximum number of instruments to return
+            asset_group: Asset group (cefi, tradfi, defi, prediction, sports).
+            venue: Optional exact venue filter (case-insensitive).
+            instrument_type: Optional exact instrument_type filter (case-insensitive).
+            search: Optional case-insensitive substring/token search over
+                canonical instrument IDs — whitespace tokenises into an
+                AND-match, mirroring :meth:`search_instruments`'s convention.
+            limit: Maximum number of instruments to return.
 
         Returns:
-            Dictionary containing instruments list
+            ``{asset_group, instruments: [{instrument_key, venue,
+            instrument_type}], total_in_file, returned_count, search}`` —
+            ``instruments`` matches the frontend's ``InstrumentSearchResult[]``
+            contract (``deployment-ui/src/api/client.ts``).
         """
         try:
-            # Map to instruments bucket
-            bucket_name = resolve_bucket_name(
-                cloud="gcp", kind="instruments-store", asset_group=cast(AssetGroup, asset_group)
-            )
-
-            # Build path based on filters
-            path = ""
-            if venue:
-                path = f"{venue}/"
-            if instrument_type:
-                # Map instrument type to folder structure
-                type_mapping = {
-                    "SPOT": "spot_pairs",
-                    "PERPETUAL": "perps",
-                    "FUTURE": "futures",
-                    "OPTION": "options",
-                    "EQUITY": "equities",
-                    "BOND": "bonds",
-                    "ETF": "etfs",
-                }
-                folder = type_mapping.get(instrument_type.upper())
-                if folder:
-                    path += f"{folder}/"
-
-            # List files to find instruments
-            objects_list: list[ObjectInfo] = list_objects(bucket_name, path, max_results=limit * 2)
-
-            instruments: list[str] = []
-            truncated_instr: bool = False
-            for obj in objects_list:
-                # Extract instrument name from path
-                # Assuming structure like: venue/type/instrument_name.parquet
-                parts = obj.name.split("/")
-                if len(parts) >= 2:
-                    filename = parts[-1]
-                    # Remove file extension
-                    instrument_name = filename.rsplit(".", 1)[0] if "." in filename else filename
-
-                    if instrument_name and instrument_name not in instruments:
-                        instruments.append(instrument_name)
-
-                        if len(instruments) >= limit:
-                            truncated_instr = True
-                            break
-
-            instruments_result: dict[str, object] = {
-                "asset_group": asset_group,
-                "venue": venue,
-                "instrument_type": instrument_type,
-                "instruments": sorted(instruments),
-                "total_count": len(instruments),
-                "truncated": truncated_instr,
-            }
-
-            return instruments_result
-
+            corpus = self._load_search_corpus(asset_group.lower())
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Error getting instruments list: %s", e)
             return {"error": str(e)}
+
+        venue_lower = venue.strip().lower() if venue else None
+        itype_lower = instrument_type.strip().lower() if instrument_type else None
+        search_tokens = [t.lower() for t in (search or "").split() if t.strip()]
+
+        filtered: list[dict[str, str]] = []
+        for row in corpus:
+            if venue_lower and row["venue"].lower() != venue_lower:
+                continue
+            if itype_lower and row["instrument_type"].lower() != itype_lower:
+                continue
+            if search_tokens:
+                cid_lower = row["canonical_id"].lower()
+                if not all(t in cid_lower for t in search_tokens):
+                    continue
+            filtered.append(row)
+
+        filtered.sort(key=lambda r: (r["canonical_id"], r["venue"]))
+        limited = filtered[:limit]
+
+        return {
+            "asset_group": asset_group,
+            "instruments": [
+                {
+                    "instrument_key": row["canonical_id"],
+                    "venue": row["venue"],
+                    "instrument_type": row["instrument_type"],
+                }
+                for row in limited
+            ],
+            "total_in_file": len(filtered),
+            "returned_count": len(limited),
+            "search": search,
+        }
 
     # Categories the search walks when no specific category is requested. Order
     # matters for deterministic test output — keep alphabetical except SPORTS
