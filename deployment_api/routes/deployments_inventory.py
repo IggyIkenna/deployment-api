@@ -380,7 +380,9 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     # Last DEPLOY/modify time — distinct from last_run_at (last INVOKE). Set for kinds whose last-run
     # is not honestly observable without a paid metric (AWS Lambda: last_run_at stays None; this
     # carries fn.last_modified so the UI can show last-*modified* with a tooltip, never a mislabelled
-    # last-run). None for kinds that report a real last_run_at.
+    # last-run). Also carries CLOUD_RUN_SERVICE's update_time/create_time (WS-2 decision 2 — the
+    # always-on proxy timestamp; closes the audit-found asymmetry vs its ECS_SERVICE twin, which
+    # instead reports this via last_run_at). None for kinds that report a real last_run_at.
     last_modified_at: str | None = None
     exit_code: int | None = None
     heartbeat_age_seconds: int | None = None
@@ -937,6 +939,13 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
     umbrella requirement; that resolved umbrella is discarded in favour of
     ``DeploymentUmbrella.NONE`` below (the resolver has no NONE lifecycle_class
     mapping to derive it from — see ``UMBRELLA_FOR_LIFECYCLE_CLASS``).
+
+    ``last_modified_at`` carries ``status.last_deployed_at`` (the service's ``update_time``/
+    ``create_time`` — a Tier-0 free win off the same list call, closing the audit-found asymmetry
+    vs ``ECS_SERVICE``): ``DeploymentItem.last_modified_at`` is already the SSOT field for
+    "deploy/modify time, distinct from last_run_at/last-invoke" (see its docstring — the same role
+    it plays for AWS Lambda), so this reuses it rather than adding a parallel field with identical
+    meaning. Feeds the always-on-kind sort-last + proxy-timestamp UI treatment (decision 2).
     """
     target = classify_deployment_target(
         status.name,
@@ -959,6 +968,7 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
             ready=status.ready, min_instance_count=status.min_instance_count
         ),
         last_run_at=None,
+        last_modified_at=status.last_deployed_at,
         exit_code=None,
         heartbeat_age_seconds=None,
         captured_progress=None,

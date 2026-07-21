@@ -1959,6 +1959,8 @@ class _FakeRunV2Service:
     latest_ready_revision: str = ""
     latest_created_revision: str = ""
     uri: str = ""
+    update_time: datetime | None = None
+    create_time: datetime | None = None
 
 
 def test_region_from_resource_name_parses_location_segment() -> None:
@@ -2057,6 +2059,70 @@ def test_list_cloud_run_services_not_ready_when_reconciling() -> None:
     assert result[0].state == "CONDITION_RECONCILING"
 
 
+def _wire_fake_services_client(fake_service: _FakeRunV2Service) -> dict[str, ModuleType]:
+    """The sys.modules patch dict shared by every list_cloud_run_services fake-SDK test."""
+
+    class _FakeServicesClient:
+        def list_services(self, request: object, timeout: float | None = None) -> list[_FakeRunV2Service]:
+            del request, timeout
+            return [fake_service]
+
+    class _FakeRunV2Namespace:
+        ServicesClient = _FakeServicesClient
+
+        class ListServicesRequest:
+            def __init__(self, *, parent: str) -> None:
+                self.parent = parent
+
+    fake_module = ModuleType("deployment_service.backends._gcp_sdk")
+    fake_module.run_v2 = _FakeRunV2Namespace  # type: ignore[attr-defined]
+    fake_backends_pkg = ModuleType("deployment_service.backends")
+    fake_backends_pkg._gcp_sdk = fake_module  # type: ignore[attr-defined]
+    return {"deployment_service.backends": fake_backends_pkg, "deployment_service.backends._gcp_sdk": fake_module}
+
+
+def test_list_cloud_run_services_maps_last_deployed_at_from_update_time() -> None:
+    """last_deployed_at = update_time (WS-2/#4 — the Tier-0 free-win proxy for latest-revision
+    create time, closing the audit-found asymmetry vs ECS_SERVICE)."""
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+        update_time=datetime(2026, 6, 20, 8, 0, 0, tzinfo=UTC),
+        create_time=datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC),
+    )
+    with patch.dict(sys.modules, _wire_fake_services_client(fake_service)):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result[0].last_deployed_at == "2026-06-20T08:00:00+00:00"
+
+
+def test_list_cloud_run_services_falls_back_to_create_time_when_never_updated() -> None:
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+        update_time=None,
+        create_time=datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC),
+    )
+    with patch.dict(sys.modules, _wire_fake_services_client(fake_service)):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result[0].last_deployed_at == "2026-06-01T00:00:00+00:00"
+
+
+def test_list_cloud_run_services_last_deployed_at_none_when_neither_timestamp_present() -> None:
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+    )
+    with patch.dict(sys.modules, _wire_fake_services_client(fake_service)):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result[0].last_deployed_at is None
+
+
 def test_list_cloud_run_services_degrades_on_gcp_error() -> None:
     """A GCP import/list failure degrades to an empty list, never raises."""
     from deployment_api.routes import _cloud_run_services
@@ -2106,6 +2172,31 @@ def test_build_inventory_includes_cloud_run_service_with_umbrella_sentinel() -> 
     # Ready + default min-instances 0 → an idle scale-to-zero service (the live row now
     # carries the D.3 sub-taxonomy on composite_health_status, not just a running/pending flag).
     assert item.composite_health_status == "scaled-to-zero"
+
+
+def test_build_inventory_cloud_run_service_carries_last_deployed_at_as_last_modified_at() -> None:
+    """The row builder maps status.last_deployed_at onto DeploymentItem.last_modified_at — the
+    existing SSOT field for "deploy time, distinct from last-invoke" (shared with AWS Lambda),
+    never a duplicate field. last_run_at stays honestly None (still no true invoke signal)."""
+    from deployment_api.routes._cloud_run_services import CloudRunServiceStatus
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    services = [
+        CloudRunServiceStatus(
+            name="deployment-api",
+            ready=True,
+            state="CONDITION_SUCCEEDED",
+            revision="deployment-api-00007-abc",
+            region="asia-northeast1",
+            uri="",
+            last_deployed_at="2026-06-20T08:00:00+00:00",
+        )
+    ]
+    item = next(
+        i for i in build_inventory([], {}, _FIXED_NOW, cloud_run_services=services) if i.kind == "CLOUD_RUN_SERVICE"
+    )
+    assert item.last_modified_at == "2026-06-20T08:00:00+00:00"
+    assert item.last_run_at is None
 
 
 def test_build_inventory_wires_cloud_run_service_health_taxonomy() -> None:
