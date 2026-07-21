@@ -423,7 +423,7 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     # absence, never a fabricated 0). Matched to the target by name == billing resource_id.
     cost_actual_usd: float | None = None  # net cost on the most recent COMPLETE billing day
     cost_avg_7d_usd: float | None = None  # avg net cost over days actually billed (not ÷7 fixed window)
-    cost_projected_24h_usd: float | None = None  # projected $/day if it runs 24h (peak observed day)
+    cost_projected_24h_usd: float | None = None  # most recent COMPLETE day's net; partial-day-normalised fallback
     # WS-2 date-range overlap (raw registry interval, ISO) — None for kinds with no registry entry
     # (Cloud Run jobs/services, unmanaged VMs, ...); populated only in ``_vm_item``. Distinct from
     # ``last_run_at`` (which conflates started/completed for display) because the overlap formula

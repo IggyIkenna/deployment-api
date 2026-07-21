@@ -299,15 +299,20 @@ class CostObservabilityService:
         * ``avg_7d_usd`` — total net over the window ÷ the count of days the resource actually has
           billing rows (NOT the fixed window length — a 1-day-old resource averages over its 1 day,
           not 7, so it doesn't read as artificially cheap).
-        * ``projected_24h_usd`` — the PEAK observed daily net over the window: the day the resource
-          ran fullest ≈ a full 24h day (data-only, no rate-card). Reflects the time-proportional
-          spend; non-time SKUs (egress/requests) don't scale with runtime.
+        * ``projected_24h_usd`` — net on the most recent COMPLETE billing day (so a resource with any
+          complete day legitimately reads ``actual_usd == projected_24h_usd``); falls back to the
+          latest PARTIAL day normalised to a full 24h (``day_cost / hours_billed x 24``) only when no
+          complete day exists yet. ``hours_billed`` is wall-clock hours elapsed since UTC midnight for
+          that partial day — not a new hourly billing query (the snapshot is daily-grained) — floored
+          at 1h so the first few minutes of a new day don't produce a runaway multiplier.
 
         Rows with no ``resource_id`` (no billing granularity) are skipped — the caller shows None.
         """
         start, end, _ = self._window(days)
         table = self._window_table(start, end, force=force)
-        today = datetime.now(UTC).date().isoformat()
+        now = datetime.now(UTC)
+        today = now.date().isoformat()
+        hours_billed = max((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 3600, 1.0)
 
         by_res_day: dict[str, dict[str, float]] = {}
         for rid, day, net in self._agg(
@@ -322,10 +327,11 @@ class CostObservabilityService:
             daily = list(day_net.values())
             complete_days = [d for d in day_net if d < today]
             latest = max(complete_days) if complete_days else max(day_net)
+            projected_24h = day_net[max(complete_days)] if complete_days else day_net[latest] / hours_billed * 24
             out[resource_id] = ResourceDailyCost(
                 actual_usd=round(day_net[latest], 2),
                 avg_7d_usd=round(sum(daily) / len(daily), 2),
-                projected_24h_usd=round(max(daily), 2),
+                projected_24h_usd=round(projected_24h, 2),
             )
         return out
 
