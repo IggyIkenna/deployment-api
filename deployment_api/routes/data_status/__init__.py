@@ -101,6 +101,7 @@ from deployment_api.routes.data_status import _catalogue
 from deployment_api.routes.data_status import _axis_census
 from deployment_api.routes.data_status import _distinct_values
 from deployment_api.routes.data_status import _coverage_grid
+from deployment_api.routes.data_status import _coverage_drift_run
 
 # isort: on
 
