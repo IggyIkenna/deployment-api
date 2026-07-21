@@ -242,6 +242,7 @@ EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_SOURCE_DELIVERY_LAG",
     "EXPECTED_BOOKMAKER_NO_LEAGUE_COVERAGE",
     "EXPECTED_NO_PROVIDER_COVERAGE",
+    "EXPECTED_REFERENCE_ONLY_NO_CAPTURE_PATH",  # reference-only holdings leg, no capture path by design (UAC parity)
     "EXPECTED_NOT_ENOUGH_TVL",  # DeFi sub-TVL pool — outside MVP capture universe (UAC parity)
     "EXPECTED_ACQUISITION_PENDING",  # governance-token registry acquisition not yet completed (UAC parity, IS R2c)
     "EXPECTED_WRITE_GATE_NAN_THRESHOLD_EXCEEDED",  # write-gate NaN cap — feature-service parity (UAC)

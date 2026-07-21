@@ -212,18 +212,40 @@ class TestGrainAwareCanonicalCompare:
     def test_defi_bare_venues_canonical_but_real_drift_still_flagged(self) -> None:
         from deployment_api.routes.data_status import enumerate_distinct_values
 
-        payload = _payload("defi", ["UNISWAP_V2", "AAVE_V3", "VENUS", "AAVE", "YEARNV3", "COMPOUND"], [])
+        payload = _payload("defi", ["UNISWAP_V2", "AAVE_V3", "VENUS", "AAVEV3", "YEARNV3"], [])
         axes, non_canonical = enumerate_distinct_values(payload, "defi")
         badge = {e["value"]: e["is_canonical"] for e in axes["venues"]}
         # bare canonical venues no longer false-flagged
         assert badge["UNISWAP_V2"] is True
         assert badge["AAVE_V3"] is True
         assert badge["VENUS"] is True
-        # genuine version/underscore drift MUST survive
-        assert badge["AAVE"] is False
+        # genuine concatenation/underscore drift (no registry entry under any phase) MUST survive
+        assert badge["AAVEV3"] is False
         assert badge["YEARNV3"] is False
-        assert badge["COMPOUND"] is False
-        assert non_canonical["venues"] == 3
+        assert non_canonical["venues"] == 2
+
+    def test_defi_bare_pipeline_phase_venue_is_canonical_not_drift(self) -> None:
+        """D1b (audit 2026-07-20 RESULT): the vocabulary check compares against
+        ``ALL_DEFI_VENUES`` (registered, live+pipeline), NOT the phase=="live"
+        capability subset. AAVE-ETHEREUM/COMPOUND-ETHEREUM/UNISWAP-ETHEREUM are
+        genuinely registered (pipeline phase, no IS adapter yet) — badging them
+        drift would be a false alarm confusing "not yet capturable" with "not a
+        real name". ⚠️ CAVEAT: bare UNISWAP additionally has its OWN separate,
+        already-tracked issue (Track1 P2, distinct_values_noncanonical_audit
+        Progress Log — per-pool V2/V3/V4 version-derivation, 199,397 rows,
+        BLOCKED-OPERATOR-DECISION) — this badge going canonical does NOT mean
+        that issue is resolved; it only means the drift PANEL (a naming-vocabulary
+        detector) is no longer the right place to surface an already-tracked,
+        already-gated data-completeness question."""
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        payload = _payload("defi", ["AAVE", "COMPOUND", "UNISWAP"], [])
+        axes, non_canonical = enumerate_distinct_values(payload, "defi")
+        badge = {e["value"]: e["is_canonical"] for e in axes["venues"]}
+        assert badge["AAVE"] is True
+        assert badge["COMPOUND"] is True
+        assert badge["UNISWAP"] is True
+        assert non_canonical["venues"] == 0
 
     def test_defi_instrument_types_case_insensitive(self) -> None:
         from deployment_api.routes.data_status import enumerate_distinct_values
