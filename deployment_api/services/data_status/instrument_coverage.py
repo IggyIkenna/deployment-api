@@ -6,6 +6,7 @@ public + legacy-underscore name, so callers keep importing from
 ``deployment_api.services.data_status_service``.
 """
 
+import io
 import logging
 from collections import Counter
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from unified_api_contracts import (
 )
 
 import deployment_api.services.data_status_service as _dss
+from deployment_api.utils.storage_client import get_storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -61,18 +63,62 @@ def _normalize_instrument_id_for_match(instrument_id: str) -> str:
     return normalized
 
 
+def _read_cefi_catalogue_existence_windows(cloud: object) -> dict[str, tuple[str | None, str | None]]:
+    """Read ``prod/catalog.parquet`` for cefi and return per-instrument existence windows.
+
+    ``{instrument_id: (available_from, available_to)}`` — the identity-level
+    lifecycle source (one row per instrument; mirrors
+    ``catalogue_lifecycle.py::_read_catalogue``'s bucket/path/projection
+    pattern, kept local here rather than importing that module's private
+    helper cross-module). Fail-open: any GCS/parse error or a missing
+    ``available_from``/``available_to`` column returns ``{}`` — callers must
+    treat an empty dict exactly like "no window data available" and fall back
+    to the pre-existing date-agnostic behaviour, never raise.
+    """
+    try:
+        bucket = _dss.resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
+        raw = get_storage_client().download_bytes(bucket, "prod/catalog.parquet")
+        df = pd.read_parquet(io.BytesIO(raw), columns=["instrument_id", "available_from", "available_to"])
+    except Exception as exc:
+        logger.warning("cefi catalogue existence-window read failed (%s) — falling back to date-agnostic", exc)
+        return {}
+    if df.empty or "instrument_id" not in df.columns:
+        return {}
+
+    windows: dict[str, tuple[str | None, str | None]] = {}
+    has_from = "available_from" in df.columns
+    has_to = "available_to" in df.columns
+    for row_id, row_from, row_to in zip(
+        df["instrument_id"].astype(str),
+        df["available_from"] if has_from else pd.Series([None] * len(df)),
+        df["available_to"] if has_to else pd.Series([None] * len(df)),
+        strict=True,
+    ):
+        row_id_s = row_id.strip()
+        if not row_id_s or row_id_s.lower() in ("nan", "none", ""):
+            continue
+        af = None if pd.isna(row_from) else str(row_from)[:10]
+        at = None if pd.isna(row_to) else str(row_to)[:10]
+        windows[row_id_s] = (af, at)
+    return windows
+
+
 def build_cefi_is_instruments_provider(
     cloud: object,
-) -> Callable[[str, str], list[str] | None] | None:
+) -> tuple[Callable[[str, str], list[str] | None] | None, dict[str, tuple[str | None, str | None]]]:
     """Build an instruments_provider backed by the live IS cefi catalog.
 
     Reads the instruments-store-cefi-* availability index ONCE, builds a
     ``{venue: list[instrument_id]}`` map, and returns a closure that answers
-    ``(venue, data_type) -> list[str]``.
+    ``(venue, data_type) -> list[str]``, alongside a SEPARATE per-instrument
+    existence-window dict (see :func:`_read_cefi_catalogue_existence_windows`)
+    so :func:`per_instrument_coverage` can clip its denominator to days each
+    instrument actually existed, instead of a blanket
+    ``|instruments| x |dates|`` cross-product.
 
-    Fail-open: any GCS / parse error returns ``None`` (NOT a provider) so the
-    CALLER injects no provider at all and the per-instrument denominator path
-    falls back to UAC's MVP seed tables with the default cap — current
+    Fail-open: any GCS / parse error returns ``(None, {})`` (NOT a provider) so
+    the CALLER injects no provider at all and the per-instrument denominator
+    path falls back to UAC's MVP seed tables with the default cap — current
     behaviour when IS is unavailable.  Returning a ``lambda: None`` provider
     here would be WRONG: UAC only falls back to its MVP seed when the provider
     OBJECT is ``None``; a non-None provider that *returns* ``None`` yields an
@@ -82,24 +128,27 @@ def build_cefi_is_instruments_provider(
     The catalog read is performed eagerly at call-time (not lazily per
     (venue, dt) invocation) so the returned callable is cheap to call many
     times within one request: one GCS read → O(N) Python loop → per-venue
-    dicts.
+    dicts. The existence-window read is a SEPARATE, small object
+    (``prod/catalog.parquet`` in the SAME bucket) — not a second whole-corpus
+    walk.
     """
+    windows = _read_cefi_catalogue_existence_windows(cloud)
     try:
         bucket = _dss.resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
         df: pd.DataFrame = _dss.read_availability_index(bucket)
         if df.empty or "venue" not in df.columns:
             logger.warning("cefi IS catalog empty or missing 'venue' column — falling back to MVP seed")
-            return None
+            return None, windows
 
         # Support both column name conventions used by IS catalog parquets.
         id_col = "instrument_id" if "instrument_id" in df.columns else "instrument_key"
         if id_col not in df.columns:
             logger.warning("cefi IS catalog has neither 'instrument_id' nor 'instrument_key' — falling back")
-            return None
+            return None, windows
 
-        # Build {venue: sorted list of instrument_ids} — date-agnostic for now
-        # (IS catalog available_from/to lifecycle filtering is reserved for a
-        # future walk once the full universe stabilises).
+        # Build {venue: sorted list of instrument_ids}. Existence-window
+        # clipping (available_from/to) is applied downstream in
+        # per_instrument_coverage via `windows` above, not here.
         venue_map: dict[str, list[str]] = {}
         for row_venue, row_id in zip(df["venue"].astype(str), df[id_col].astype(str), strict=True):
             row_venue_s = row_venue.strip()
@@ -121,7 +170,7 @@ def build_cefi_is_instruments_provider(
             "cefi IS catalog read failed (%s) — falling back to MVP seed",
             exc,
         )
-        return None
+        return None, windows
 
     def _provider(venue: str, _data_type: str) -> list[str] | None:
         """Return IS instrument_ids for venue, or None to fall back to MVP seed."""
@@ -131,7 +180,22 @@ def build_cefi_is_instruments_provider(
             return None
         return result
 
-    return _provider
+    return _provider, windows
+
+
+def _clip_dates_to_window(dates: set[str], window: tuple[str | None, str | None] | None) -> frozenset[str]:
+    """Intersect ``dates`` (ISO ``YYYY-MM-DD`` strings) with an instrument's existence window.
+
+    ``window=None`` (no catalogue entry for this instrument) returns ``dates``
+    unclipped — fail-open per-instrument, matching this module's existing
+    fail-open convention: we never penalize an instrument for missing
+    catalogue lifecycle data we simply don't have. ISO date strings compare
+    correctly lexicographically, so no ``datetime`` parsing is needed.
+    """
+    if window is None:
+        return frozenset(dates)
+    af, at = window
+    return frozenset(d for d in dates if (af is None or d >= af) and (at is None or d <= at))
 
 
 def per_instrument_coverage(
@@ -141,6 +205,7 @@ def per_instrument_coverage(
     expected_dates: set[str],
     cap: int | None,
     instruments_provider: Callable[[str, str], list[str] | None] | None = None,
+    instrument_windows: dict[str, tuple[str | None, str | None]] | None = None,
 ) -> dict[str, object]:
     """Phase 8D — compute the per-(instrument_id, date) denominator for a
     per-instrument shard ``data_type``.
@@ -189,6 +254,17 @@ def per_instrument_coverage(
         injected for CEFI so the denominator uses the live IS catalog
         rather than the UAC MVP seed tables.  ``None`` preserves existing
         behaviour for non-CEFI asset_groups.
+    instrument_windows:
+        Optional ``{instrument_id: (available_from, available_to)}`` from
+        :func:`_read_cefi_catalogue_existence_windows`. When supplied, the
+        denominator (and numerator) are CLIPPED per-instrument to the days
+        each instrument actually existed, instead of a blanket
+        ``|instruments| x |dates|`` cross-product — this is the fix for the
+        "MTDS should only ask 'did we capture it' over days IS says the
+        instrument existed" correctness bug. An instrument absent from this
+        dict (or ``instrument_windows=None``/``{}`` entirely) falls back to
+        the full, unclipped ``expected_dates`` — fail-open, never penalizes
+        missing catalogue lifecycle data.
 
     Returns
     -------
@@ -276,9 +352,31 @@ def per_instrument_coverage(
     found_pairs: set[tuple[str, str]] = set(found_iid_dates_zipped)
 
     n_instruments = len(expected_instruments)
-    n_dates = len(expected_dates)
-    expected_count = n_instruments * n_dates
-    found_count = len(found_pairs)
+    # Per-instrument existence-window clipping (see `_clip_dates_to_window` +
+    # the `instrument_windows` docstring above) — replaces the blanket
+    # `n_instruments * len(expected_dates)` cross-product, which counted
+    # structurally impossible (instrument, day) pairs (before listing / after
+    # delisting) as "missing shards". Keyed by NORMALIZED instrument_id (bug
+    # #4 pattern below) since `instrument_windows` comes from the catalogue
+    # (canonical ids) while `found_pairs`' iid component comes from the
+    # manifest (which can diverge in casing/whitespace/@SUFFIX from the
+    # catalogue form).
+    per_instrument_expected: dict[str, frozenset[str]] = {
+        _normalize_instrument_id_for_match(iid): _clip_dates_to_window(
+            expected_dates, (instrument_windows or {}).get(iid)
+        )
+        for iid in expected_instruments
+    }
+    expected_count = sum(len(dates) for dates in per_instrument_expected.values())
+    # Numerator clipped to the SAME per-instrument window as the denominator —
+    # a found pair outside an instrument's declared existence window (stale
+    # catalogue, or a genuine anomaly) is excluded from both sides rather than
+    # inflating completion_pct past what the denominator represents.
+    found_count = sum(
+        1
+        for iid, d in found_pairs
+        if d in per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset(expected_dates))
+    )
 
     # Counter does both the per-instrument count AND gives us
     # ``instruments_with_shards`` as ``.keys()`` in one pass — replaces the
@@ -326,10 +424,11 @@ def per_instrument_coverage(
         per_instrument: dict[str, dict[str, object]] = {}
         for iid in expected_instruments:
             found = normalized_iid_counts.get(_normalize_instrument_id_for_match(iid), 0)
+            iid_expected = len(per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset()))
             per_instrument[iid] = {
                 "found": found,
-                "expected": n_dates,
-                "completion_pct": min(round(found / max(1, n_dates) * 100, 2), 100.0),
+                "expected": iid_expected,
+                "completion_pct": min(round(found / max(1, iid_expected) * 100, 2), 100.0),
             }
         entry["per_instrument"] = per_instrument
 

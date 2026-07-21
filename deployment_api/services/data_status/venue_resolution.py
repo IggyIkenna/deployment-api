@@ -215,8 +215,9 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         # returns a provider that always yields None → UAC MVP seed is used.
         # For all other asset_groups the provider stays None (existing behaviour).
         _cefi_instruments_provider: Callable[[str, str], list[str] | None] | None = None
+        _cefi_instrument_windows: dict[str, tuple[str | None, str | None]] = {}
         if category.upper() == "CEFI":
-            _cefi_instruments_provider = build_cefi_is_instruments_provider(cloud)
+            _cefi_instruments_provider, _cefi_instrument_windows = build_cefi_is_instruments_provider(cloud)
 
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
@@ -239,6 +240,7 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
                 end_date,
                 venue_mapping,
                 instruments_provider=_cefi_instruments_provider,
+                instrument_windows=_cefi_instrument_windows,
             )
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))

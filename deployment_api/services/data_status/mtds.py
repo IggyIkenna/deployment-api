@@ -584,6 +584,7 @@ def mtds_honest_coverage_for_venue(
     window_end: str,
     venue_mapping: VenueMapping,
     instruments_provider: Callable[[str, str], list[str] | None] | None = None,
+    instrument_windows: dict[str, tuple[str | None, str | None]] | None = None,
 ) -> dict[str, object]:
     """Honest-coverage rollup for one ``(category, venue)`` pair.
 
@@ -696,6 +697,7 @@ def mtds_honest_coverage_for_venue(
                 expected_dates,
                 _instr_cap,
                 instruments_provider=instruments_provider,
+                instrument_windows=instrument_windows,
             )
             dt_entries[dt] = dt_entry
             expected_count = int(cast(int, dt_entry["expected_shards"]))
