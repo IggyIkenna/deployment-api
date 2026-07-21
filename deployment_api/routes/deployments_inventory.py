@@ -41,7 +41,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import cast
 
@@ -368,6 +368,14 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     service: str
     asset_group: str
     status: str  # running|succeeded|failed|stopped|stale|pending|unknown
+    # WS-2 per-kind date-range support matrix (what ``_apply_date_range`` actually has to match on):
+    #   INTERVAL (started_at+completed_at/last_heartbeat_at, true start/end) — VM rows with a
+    #     registry entry (``_vm_item``); see ``_vm_overlap_basis``.
+    #   SINGLE-TIMESTAMP (this field only, no interval) — unmanaged/AWS-EC2 VMs (creation time),
+    #     Cloud Run jobs + AWS Batch jobs (last run), Cloud Scheduler (last fire); see
+    #     ``_SINGLE_TIMESTAMP_KINDS``/``_single_timestamp_overlaps``. Always basis="approx" on match.
+    #   NONE (no timestamp signal at all) — Cloud Run/ECS services, Cloud Functions, disks, static
+    #     IPs; ``_apply_date_range`` passes these through unfiltered regardless of the query range.
     last_run_at: str | None = None
     # Last DEPLOY/modify time — distinct from last_run_at (last INVOKE). Set for kinds whose last-run
     # is not honestly observable without a paid metric (AWS Lambda: last_run_at stays None; this
@@ -422,8 +430,20 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     # None when the resource has no billing row yet (export lag / no resource-granularity — honest
     # absence, never a fabricated 0). Matched to the target by name == billing resource_id.
     cost_actual_usd: float | None = None  # net cost on the most recent COMPLETE billing day
-    cost_avg_7d_usd: float | None = None  # trailing-7-day average daily net cost
-    cost_projected_24h_usd: float | None = None  # projected $/day if it runs 24h (peak observed day)
+    cost_avg_7d_usd: float | None = None  # avg net cost over days actually billed (not ÷7 fixed window)
+    cost_projected_24h_usd: float | None = None  # most recent COMPLETE day's net; partial-day-normalised fallback
+    # WS-2 date-range overlap (raw registry interval, ISO) — None for kinds with no registry entry
+    # (Cloud Run jobs/services, unmanaged VMs, ...); populated only in ``_vm_item``. Distinct from
+    # ``last_run_at`` (which conflates started/completed for display) because the overlap formula
+    # in ``_vm_overlap_basis`` needs the two bounds separately.
+    started_at: str | None = None
+    completed_at: str | None = None
+    last_heartbeat_at: str | None = None
+    # Honest-uncertainty marker (WS-2 decision 4) — "approx" when a field above is DERIVED rather
+    # than authoritative (today: a heartbeat-stale VM's effective end for date-range overlap). None
+    # = authoritative. Colour-only in the UI, no text label; reused by future approx sources
+    # (single-timestamp kinds, unmanaged-VM fallback) per the plan's one-convention decision.
+    basis: str | None = None
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -439,6 +459,13 @@ class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API cont
     # with a failed/not-yet-shipped census is simply absent from the map (honest degradation,
     # never a KeyError or a fabricated zero for a kind the caller didn't ask about).
     counts_by_kind: dict[str, int] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+    # WS-2 date-range archive floor (decision 5) — set only when the request carried date_from/
+    # date_to. ``archive_floor`` is the earliest day the archive actually retains (the real 30-day
+    # GCS TTL); ``date_range_out_of_range`` is True when the requested date_from predates it, so the
+    # UI can show an explicit "no data before <archive_floor>" banner instead of a silent partial
+    # result. None/False for a request with no date filter.
+    archive_floor: str | None = None
+    date_range_out_of_range: bool = False
 
 
 class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -718,6 +745,9 @@ def _vm_item(
             umbrella=target.umbrella,
             object_delta=object_delta,
         ),
+        started_at=entry.started_at or None,
+        completed_at=entry.completed_at,
+        last_heartbeat_at=entry.last_heartbeat_at or None,
     )
 
 
@@ -1161,6 +1191,132 @@ def build_inventory(
     return items
 
 
+# Heartbeat-staleness threshold for the date-range overlap formula — the SAME constant
+# ``DeploymentsRegistry.reap_stale`` uses (``max_age_hours: int = 6``,
+# unified_trading_library/deployment_registry.py). Reusing it keeps "still running" honest for
+# overlap math: the 2026-07-20 audit found 219 registry rows reading ``status=running`` while only
+# 12 GCE instances were actually RUNNING — a naive ``completed_at is None -> still open`` overlap
+# test would badly overcount those heartbeat-stale zombies as live for every date range.
+_REAP_STALE_HOURS = 6
+
+
+def _parse_date_query(raw: str | None, *, end_of_day: bool) -> datetime | None:
+    """Parse a ``date_from``/``date_to`` query value to a UTC datetime; 400s on a bad value.
+
+    Accepts a bare ``YYYY-MM-DD`` (anchored to 00:00:00, or 23:59:59.999999 when ``end_of_day`` so a
+    single-day range ``date_from == date_to`` is still inclusive) or a full ISO-8601 instant (used
+    exactly as given).
+    """
+    if not raw:
+        return None
+    parsed = _parse_iso(raw)
+    if parsed is None:
+        raise HTTPException(status_code=400, detail=f"invalid date {raw!r} — expected YYYY-MM-DD or ISO-8601")
+    if end_of_day and len(raw) == 10:  # bare date, no time component
+        return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed
+
+
+def _vm_overlap_basis(
+    *,
+    started_at: datetime | None,
+    completed_at: datetime | None,
+    last_heartbeat_at: datetime | None,
+    now: datetime,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> tuple[bool, str | None]:
+    """VM/registry overlap test against ``[date_from, date_to]`` (WS-2 date-range filter).
+
+    ``effective_end`` = ``completed_at`` when the row is terminal; else ``last_heartbeat_at`` once
+    the heartbeat is stale (``>_REAP_STALE_HOURS``); else the row is truly live and open-ended
+    (always overlaps). A heartbeat-derived ``effective_end`` is honestly approximate, so the caller
+    gets ``basis="approx"`` back to stamp on the row (decision 4 — colour-only, no text label).
+    ``started_at is None`` (no interval data at all) never filters the row OUT — honest-absence, it
+    simply isn't date-range-scoped.
+    """
+    if date_from is None and date_to is None:
+        return True, None
+    if started_at is None:
+        return True, None
+    if date_to is not None and started_at > date_to:
+        return False, None
+    if completed_at is not None:
+        return (date_from is None or completed_at >= date_from), None
+    if last_heartbeat_at is not None and (now - last_heartbeat_at) > timedelta(hours=_REAP_STALE_HOURS):
+        return (date_from is None or last_heartbeat_at >= date_from), "approx"
+    return True, None  # open-ended — truly live, always overlaps
+
+
+# Kinds with only ONE observable timestamp — no true start/end interval exists (WS-2 decision:
+# match on it anyway, honestly marked approx). CLOUD_RUN_JOB covers BOTH the GCP Cloud Run job
+# builder and the AWS Batch (Fargate) builder — they share this wire kind (see ``_aws_deployments``
+# ``_batch_item``). SCHEDULER is Cloud Scheduler's single fire time (``last_attempt_at``).
+_SINGLE_TIMESTAMP_KINDS = frozenset({DeploymentKind.CLOUD_RUN_JOB.value, "SCHEDULER"})
+
+
+def _single_timestamp_overlaps(
+    last_run_at: datetime | None, date_from: datetime | None, date_to: datetime | None
+) -> tuple[bool, str | None]:
+    """Point-in-range test for a kind with only ONE observable timestamp, not a true interval:
+    an unmanaged VM's creation time, a Cloud Run/AWS Batch job's last run, or a Cloud Scheduler
+    job's last fire (``item.last_run_at`` in every case — the field the respective row builders
+    already populate it into). The single point stands in for the whole interval, so a MATCH is
+    always ``basis="approx"`` — never claimed authoritative. ``last_run_at is None`` (no signal at
+    all) is never filtered out — honest-absence, same convention as ``_vm_overlap_basis``.
+    """
+    if date_from is None and date_to is None:
+        return True, None
+    if last_run_at is None:
+        return True, None
+    if date_from is not None and last_run_at < date_from:
+        return False, "approx"
+    if date_to is not None and last_run_at > date_to:
+        return False, "approx"
+    return True, "approx"
+
+
+def _apply_date_range(
+    items: list[DeploymentItem],
+    now: datetime,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> list[DeploymentItem]:
+    """Scope registry-backed + single-timestamp rows to ``[date_from, date_to]`` (WS-2 overlap query).
+
+    VM rows with a real registry interval (``started_at`` set) use ``_vm_overlap_basis``. VM rows
+    with NO interval (unmanaged/AWS-EC2 — no registry entry to source one from) fall back to the
+    single-timestamp match on ``last_run_at``, same as Cloud Run jobs/AWS Batch/Scheduler
+    (``_SINGLE_TIMESTAMP_KINDS``). Every other kind (services, functions, disks, ...) passes through
+    unfiltered — they carry no timestamp signal at all to scope on. Never mutates a cached
+    ``DeploymentItem`` in place: ``_inventory_cache`` entries are shared across concurrent requests
+    with different date ranges, so a stamped ``basis`` must land on a COPY, not the cached object.
+    """
+    if date_from is None and date_to is None:
+        return items
+    kept: list[DeploymentItem] = []
+    for item in items:
+        started_at = _parse_iso(item.started_at) if item.kind == DeploymentKind.VM.value else None
+        if started_at is not None:
+            overlaps, basis = _vm_overlap_basis(
+                started_at=started_at,
+                completed_at=_parse_iso(item.completed_at),
+                last_heartbeat_at=_parse_iso(item.last_heartbeat_at),
+                now=now,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        elif item.kind == DeploymentKind.VM.value or item.kind in _SINGLE_TIMESTAMP_KINDS:
+            overlaps, basis = _single_timestamp_overlaps(_parse_iso(item.last_run_at), date_from, date_to)
+        else:
+            kept.append(item)
+            continue
+        if not overlaps:
+            continue
+        kept.append(item.model_copy(update={"basis": basis}) if basis else item)
+    return kept
+
+
 def _filter_items(
     items: list[DeploymentItem],
     *,
@@ -1407,6 +1563,52 @@ def _load_registry_entries(now: datetime) -> list[DeploymentRegistryEntry]:
     archive_keys = [key for prefix in archive_prefixes for key in _list_json_keys(client, bucket, prefix)]
     recent = _download_entries_parallel(client, bucket, archive_keys)
     return active + recent
+
+
+# GCS lifecycle TTL on ``deployments/archive/`` — live-confirmed 2026-07-20 (earliest day-prefix is
+# exactly 30 days before the latest). The default cold-path census stays on the cheap
+# ``_ARCHIVE_WINDOW_DAYS`` (7-day) window; a date-range query needs its OWN bounded read up to this
+# real floor, never the whole 30-day corpus unless the requested range actually spans it.
+_ARCHIVE_RETENTION_DAYS = 30
+
+
+def _archive_floor_date(now: datetime) -> date:
+    """The earliest day the archive actually retains data for (the real 30-day GCS floor)."""
+    return (now - timedelta(days=_ARCHIVE_RETENTION_DAYS - 1)).date()
+
+
+def _load_registry_entries_for_date_range(
+    now: datetime, date_from: datetime | None, date_to: datetime | None
+) -> tuple[list[DeploymentRegistryEntry], bool]:
+    """Day-partitioned archive read scoped to ``[date_from, date_to]``, up to the 30-day GCS floor.
+
+    Bypasses the default cold-path's 7-day ``_ARCHIVE_WINDOW_DAYS`` cap — a date-range query reads
+    exactly the requested days directly (``deployments/archive/<day>/`` prefixes), still a BOUNDED
+    listing, never a whole-corpus walk. Returns ``(entries, out_of_range)``: ``out_of_range`` is True
+    when the requested ``date_from`` predates the real retention floor (decision 5 — the caller turns
+    this into an explicit "no data before `<date>`" banner, never a silently clipped partial result).
+    An empty/backwards clipped window (e.g. the whole request predates the floor) returns ``[]`` with
+    ``out_of_range`` still correctly reported.
+    """
+    floor_date = _archive_floor_date(now)
+    today = now.date()
+    range_start = date_from.date() if date_from is not None else floor_date
+    range_end = date_to.date() if date_to is not None else today
+    out_of_range = range_start < floor_date
+    clipped_start = max(range_start, floor_date)
+    clipped_end = min(range_end, today)
+    if clipped_start > clipped_end:
+        return [], out_of_range
+
+    client = get_storage_client()
+    bucket = DEFAULT_BUCKET
+    day_count = (clipped_end - clipped_start).days + 1
+    prefixes = [
+        f"{ARCHIVE_PREFIX}{(clipped_start + timedelta(days=offset)).isoformat()}/" for offset in range(day_count)
+    ]
+    keys = [key for prefix in prefixes for key in _list_json_keys(client, bucket, prefix)]
+    entries = _download_entries_parallel(client, bucket, keys)
+    return entries, out_of_range
 
 
 def _scheduler_item(entry: SchedulerJobStatus) -> DeploymentItem:
@@ -1820,6 +2022,17 @@ def get_deployment_inventory(
         "geographic equivalent. Only regional resources (Cloud Run / functions / scheduler) honour "
         "this — VMs / disks / IPs are all-region aggregated regardless.",
     ),
+    date_from: str | None = Query(
+        None,
+        description="Scope VM/registry rows to those overlapping [date_from, date_to] (YYYY-MM-DD or "
+        "ISO-8601). VM overlap = started_at <= date_to AND effective_end >= date_from, where "
+        "effective_end is completed_at, or last_heartbeat_at once heartbeat-stale (>6h), or "
+        "open-ended while truly live. Other kinds (no registry interval) are unaffected.",
+    ),
+    date_to: str | None = Query(
+        None,
+        description="See date_from. A bare date is inclusive of its whole day.",
+    ),
 ) -> DeploymentInventoryResponse:
     """Unified deployment inventory: every VM + Cloud Run job, classified by umbrella.
 
@@ -1831,7 +2044,26 @@ def get_deployment_inventory(
     """
     now = datetime.now(UTC)
     region_scope = _normalize_region_scope(region, all_regions)
+    parsed_date_from = _parse_date_query(date_from, end_of_day=False)
+    parsed_date_to = _parse_date_query(date_to, end_of_day=True)
     items = _load_inventory(now, cloud=cloud, region_scope=region_scope)
+
+    archive_floor_str: str | None = None
+    out_of_range = False
+    if parsed_date_from is not None or parsed_date_to is not None:
+        floor_date = _archive_floor_date(now)
+        archive_floor_str = floor_date.isoformat()
+        out_of_range = parsed_date_from is not None and parsed_date_from.date() < floor_date
+        # Bypass the default 7-day archive cap for THIS date-range request only — a bounded,
+        # day-partitioned read of exactly the requested range (never the whole 30-day corpus
+        # unless asked), merged in alongside any VM already present from the cached census
+        # (never re-added, never double-counted). Never runs in mock mode / cloud=aws-only.
+        if not _cfg.is_mock_mode() and (cloud is None or cloud.upper() == DeploymentCloud.GCP.value):
+            range_entries, _ = _load_registry_entries_for_date_range(now, parsed_date_from, parsed_date_to)
+            existing_vm_names = {item.name for item in items if item.kind == DeploymentKind.VM.value}
+            items = items + [_vm_item(entry, now) for entry in range_entries if entry.vm_name not in existing_vm_names]
+
+    items = _apply_date_range(items, now, parsed_date_from, parsed_date_to)
     filtered = _filter_items(
         items,
         umbrella=umbrella,
@@ -1849,6 +2081,8 @@ def get_deployment_inventory(
         vm_count=vm_count,
         cloud_run_job_count=job_count,
         counts_by_kind=_counts_by_kind(filtered),
+        archive_floor=archive_floor_str,
+        date_range_out_of_range=out_of_range,
     )
 
 

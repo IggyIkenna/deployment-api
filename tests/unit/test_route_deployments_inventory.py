@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import ModuleType
 from unittest.mock import patch
 
@@ -1151,6 +1151,579 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
     ]
     assert consolidator
     assert any(c["status"] == "succeeded" for c in consolidator)
+
+
+# ---------------------------------------------------------------------------
+# WS-2 date-range overlap (deployment_ui_date_range_filter_and_search) — VM/registry rows
+# ---------------------------------------------------------------------------
+
+
+def test_vm_overlap_basis_no_range_always_overlaps() -> None:
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    overlaps, basis = _vm_overlap_basis(
+        started_at=datetime(2026, 6, 1, tzinfo=UTC),
+        completed_at=None,
+        last_heartbeat_at=datetime(2026, 6, 22, tzinfo=UTC),
+        now=_FIXED_NOW,
+        date_from=None,
+        date_to=None,
+    )
+    assert overlaps is True
+    assert basis is None
+
+
+def test_vm_overlap_basis_no_interval_data_never_filtered_out() -> None:
+    """Honest-absence: a row with no started_at at all is never dropped by the date filter."""
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    overlaps, basis = _vm_overlap_basis(
+        started_at=None,
+        completed_at=None,
+        last_heartbeat_at=None,
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    assert overlaps is True
+    assert basis is None
+
+
+def test_vm_overlap_basis_started_after_range_excluded() -> None:
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    overlaps, basis = _vm_overlap_basis(
+        started_at=datetime(2026, 6, 15, tzinfo=UTC),
+        completed_at=None,
+        last_heartbeat_at=_FIXED_NOW,
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    assert overlaps is False
+    assert basis is None
+
+
+def test_vm_overlap_basis_terminal_row_inside_range() -> None:
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    overlaps, basis = _vm_overlap_basis(
+        started_at=datetime(2026, 6, 5, tzinfo=UTC),
+        completed_at=datetime(2026, 6, 6, tzinfo=UTC),
+        last_heartbeat_at=datetime(2026, 6, 6, tzinfo=UTC),
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    assert overlaps is True
+    assert basis is None
+
+
+def test_vm_overlap_basis_terminal_row_completed_before_range() -> None:
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    overlaps, basis = _vm_overlap_basis(
+        started_at=datetime(2026, 5, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 5, 20, tzinfo=UTC),
+        last_heartbeat_at=datetime(2026, 5, 20, tzinfo=UTC),
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    assert overlaps is False
+    assert basis is None
+
+
+def test_vm_overlap_basis_truly_live_row_always_overlaps_once_started() -> None:
+    """No completed_at, fresh (<6h) heartbeat -> open-ended, overlaps any range starting after
+    started_at (an unbounded live interval has no upper edge to fall short of)."""
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    overlaps, basis = _vm_overlap_basis(
+        started_at=datetime(2026, 6, 5, tzinfo=UTC),
+        completed_at=None,
+        last_heartbeat_at=_FIXED_NOW,  # fresh vs now
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 1, tzinfo=UTC),
+        date_to=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    assert overlaps is True
+    assert basis is None
+
+
+def test_vm_overlap_basis_heartbeat_stale_row_uses_last_heartbeat_as_approx_end() -> None:
+    """No completed_at, heartbeat >6h stale -> effective_end = last_heartbeat_at, basis=approx
+    (the 219-rows-vs-12-actually-running gap the 2026-07-20 audit found)."""
+    from deployment_api.routes.deployments_inventory import _vm_overlap_basis
+
+    stale_heartbeat = datetime(2026, 6, 22, 5, 0, 0, tzinfo=UTC)  # 7h before _FIXED_NOW (12:00)
+    overlaps, basis = _vm_overlap_basis(
+        started_at=datetime(2026, 6, 20, tzinfo=UTC),
+        completed_at=None,
+        last_heartbeat_at=stale_heartbeat,
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 23, tzinfo=UTC),  # after the stale heartbeat -> excluded
+        date_to=datetime(2026, 6, 25, tzinfo=UTC),
+    )
+    assert overlaps is False
+    assert basis == "approx"
+
+    overlaps2, basis2 = _vm_overlap_basis(
+        started_at=datetime(2026, 6, 20, tzinfo=UTC),
+        completed_at=None,
+        last_heartbeat_at=stale_heartbeat,
+        now=_FIXED_NOW,
+        date_from=datetime(2026, 6, 21, tzinfo=UTC),  # before the stale heartbeat -> included
+        date_to=datetime(2026, 6, 25, tzinfo=UTC),
+    )
+    assert overlaps2 is True
+    assert basis2 == "approx"
+
+
+def test_parse_date_query_bare_date_and_end_of_day() -> None:
+    from deployment_api.routes.deployments_inventory import _parse_date_query
+
+    start = _parse_date_query("2026-06-01", end_of_day=False)
+    assert start == datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
+    end = _parse_date_query("2026-06-01", end_of_day=True)
+    assert end == datetime(2026, 6, 1, 23, 59, 59, 999999, tzinfo=UTC)
+    assert _parse_date_query(None, end_of_day=True) is None
+
+
+def test_parse_date_query_invalid_raises_400() -> None:
+    from fastapi import HTTPException
+
+    from deployment_api.routes.deployments_inventory import _parse_date_query
+
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_date_query("not-a-date", end_of_day=False)
+    assert exc_info.value.status_code == 400
+
+
+def test_apply_date_range_no_op_without_params() -> None:
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    items = [
+        DeploymentItem(
+            name="x", kind="VM", umbrella="BATCH", cloud="GCP", service="x", asset_group="cefi", status="running"
+        )
+    ]
+    assert _apply_date_range(items, _FIXED_NOW, None, None) is items
+
+
+def test_apply_date_range_never_mutates_cached_item_and_skips_non_vm_kinds() -> None:
+    """The inventory cache is shared across concurrent requests with different date ranges — a
+    stamped basis must land on a copy, never the cached DeploymentItem itself."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    vm = DeploymentItem(
+        name="stale-vm",
+        kind="VM",
+        umbrella="BATCH",
+        cloud="GCP",
+        service="stale-vm",
+        asset_group="cefi",
+        status="running",
+        started_at="2026-06-20T00:00:00Z",
+        completed_at=None,
+        last_heartbeat_at="2026-06-22T05:00:00Z",  # 7h before _FIXED_NOW -> stale
+    )
+    job = DeploymentItem(
+        name="a-job",
+        kind="CLOUD_RUN_JOB",
+        umbrella="BATCH",
+        cloud="GCP",
+        service="a-job",
+        asset_group="cefi",
+        status="succeeded",
+    )
+    out = _apply_date_range([vm, job], _FIXED_NOW, datetime(2026, 6, 19, tzinfo=UTC), datetime(2026, 6, 23, tzinfo=UTC))
+    assert len(out) == 2
+    out_vm = next(i for i in out if i.name == "stale-vm")
+    assert out_vm.basis == "approx"
+    assert out_vm is not vm  # a copy, never a mutation of the shared/cached instance
+    assert vm.basis is None  # the original cached object stays untouched
+    out_job = next(i for i in out if i.name == "a-job")
+    assert out_job is job  # non-VM kinds pass through unchanged (no interval to scope on)
+
+
+def test_inventory_route_date_range_filters_terminal_vm_rows(client_inventory: TestClient) -> None:
+    """Route-level wiring: date_from/date_to excludes a VM whose interval doesn't overlap."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    entries = [
+        _FakeEntry(
+            vm_name="cefi-in-range",
+            started_at="2026-06-05T00:00:00Z",
+            completed_at="2026-06-06T00:00:00Z",
+            status="failed",
+            exit_code=0,
+        ),
+        _FakeEntry(
+            vm_name="defi-out-of-range",
+            started_at="2026-05-01T00:00:00Z",
+            completed_at="2026-05-02T00:00:00Z",
+            status="failed",
+            exit_code=0,
+        ),
+    ]
+    _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=entries),
+        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
+        patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
+        patch_inventory_secondary_census(_inv_mod),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get(
+            "/api/deployments/inventory", params={"date_from": "2026-06-01", "date_to": "2026-06-10"}
+        )
+    assert resp.status_code == 200
+    names = {i["name"] for i in resp.json()["items"]}
+    assert "cefi-in-range" in names
+    assert "defi-out-of-range" not in names
+
+
+def test_inventory_route_invalid_date_returns_400(client_inventory: TestClient) -> None:
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/inventory", params={"date_from": "not-a-date"})
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# WS-2 archive range-read (deployment_ui_date_range_filter_and_search-002) — bypass the default
+# 7-day _ARCHIVE_WINDOW_DAYS cap for date-range queries, up to the real 30-day GCS floor
+# ---------------------------------------------------------------------------
+
+
+def test_archive_floor_date_is_29_days_before_now() -> None:
+    from deployment_api.routes.deployments_inventory import _archive_floor_date
+
+    assert _archive_floor_date(_FIXED_NOW) == datetime(2026, 5, 24, tzinfo=UTC).date()
+
+
+def test_load_registry_entries_for_date_range_reads_only_the_requested_bounded_window() -> None:
+    """Bounded, day-partitioned read — only the requested days, never the whole corpus."""
+    from deployment_api.routes.deployments_inventory import _load_registry_entries_for_date_range
+
+    requested_prefixes: list[str] = []
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            requested_prefixes.append(prefix)
+            return []
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            raise KeyError(blob_path)
+
+    with patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()):
+        entries, out_of_range = _load_registry_entries_for_date_range(
+            _FIXED_NOW,
+            datetime(2026, 6, 18, tzinfo=UTC),
+            datetime(2026, 6, 20, tzinfo=UTC),
+        )
+    assert entries == []
+    assert out_of_range is False
+    # Exactly the 3 requested days — a bounded read, not the whole 30-day corpus.
+    assert requested_prefixes == [
+        "deployments/archive/2026-06-18/",
+        "deployments/archive/2026-06-19/",
+        "deployments/archive/2026-06-20/",
+    ]
+
+
+def test_load_registry_entries_for_date_range_out_of_range_clips_to_floor() -> None:
+    """date_from predating the 30-day floor -> out_of_range=True, and the read CLIPS to the floor
+    day forward rather than attempting the unavailable span."""
+    from deployment_api.routes.deployments_inventory import _load_registry_entries_for_date_range
+
+    requested_prefixes: list[str] = []
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            requested_prefixes.append(prefix)
+            return []
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            raise KeyError(blob_path)
+
+    with patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()):
+        entries, out_of_range = _load_registry_entries_for_date_range(
+            _FIXED_NOW,
+            datetime(2026, 1, 1, tzinfo=UTC),  # long before the 30-day floor (2026-05-24)
+            datetime(2026, 5, 25, tzinfo=UTC),
+        )
+    assert entries == []
+    assert out_of_range is True
+    assert requested_prefixes == ["deployments/archive/2026-05-24/", "deployments/archive/2026-05-25/"]
+
+
+def test_load_registry_entries_for_date_range_beyond_today_clips_to_today() -> None:
+    """A date_to beyond today clips to today — never requests a not-yet-written future prefix."""
+    from deployment_api.routes.deployments_inventory import _load_registry_entries_for_date_range
+
+    requested_prefixes: list[str] = []
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            requested_prefixes.append(prefix)
+            return []
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            raise KeyError(blob_path)
+
+    with patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()):
+        _entries, out_of_range = _load_registry_entries_for_date_range(
+            _FIXED_NOW,
+            datetime(2026, 6, 21, tzinfo=UTC),
+            datetime(2026, 7, 1, tzinfo=UTC),  # after _FIXED_NOW's date (2026-06-22)
+        )
+    assert out_of_range is False
+    assert requested_prefixes == ["deployments/archive/2026-06-21/", "deployments/archive/2026-06-22/"]
+
+
+def test_inventory_route_date_range_merges_archive_range_entries_and_reports_floor(
+    client_inventory: TestClient,
+) -> None:
+    """date_from/date_to reaching beyond the default 7-day census pulls in the extra archived VM
+    via the dedicated range read, dedupes against what's already present, and the response reports
+    archive_floor / date_range_out_of_range for the UI banner (decision 5)."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+    from deployment_api.routes.deployments_inventory import _archive_floor_date
+
+    now = datetime.now(UTC)
+    recent_entry = _FakeEntry(
+        vm_name="cefi-recent",
+        started_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        status="failed",
+        exit_code=0,
+    )
+    old_entry = _FakeEntry(
+        vm_name="cefi-old-in-archive-window",
+        started_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        status="failed",
+        exit_code=0,
+    )
+    _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=[recent_entry]),
+        patch(
+            "deployment_api.routes.deployments_inventory._load_registry_entries_for_date_range",
+            return_value=([recent_entry, old_entry], False),
+        ),
+        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
+        patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
+        patch_inventory_secondary_census(_inv_mod),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get(
+            "/api/deployments/inventory",
+            params={"date_from": (now - timedelta(days=10)).date().isoformat(), "date_to": now.date().isoformat()},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    names = [i["name"] for i in body["items"] if i["kind"] == "VM"]
+    assert names.count("cefi-recent") == 1  # present in BOTH sources, never duplicated
+    assert "cefi-old-in-archive-window" in names  # only reachable via the range-scoped read
+    assert body["archive_floor"] == _archive_floor_date(now).isoformat()
+    assert body["date_range_out_of_range"] is False
+
+
+def test_inventory_route_date_range_out_of_range_flag(client_inventory: TestClient) -> None:
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/inventory", params={"date_from": "2000-01-01"})
+    assert resp.status_code == 200
+    assert resp.json()["date_range_out_of_range"] is True
+
+
+def test_inventory_route_no_date_params_leaves_archive_floor_none(client_inventory: TestClient) -> None:
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/inventory")
+    body = resp.json()
+    assert body["archive_floor"] is None
+    assert body["date_range_out_of_range"] is False
+
+
+# ---------------------------------------------------------------------------
+# WS-2 single-timestamp date-range match (deployment_ui_date_range_filter_and_search-003) —
+# unmanaged VMs (no registry interval) + Cloud Run jobs / AWS Batch / Scheduler
+# ---------------------------------------------------------------------------
+
+
+def test_single_timestamp_overlaps_no_range_always_true() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(datetime(2026, 6, 1, tzinfo=UTC), None, None)
+    assert overlaps is True
+    assert basis is None
+
+
+def test_single_timestamp_overlaps_no_timestamp_never_filtered_out() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        None, datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is True
+    assert basis is None
+
+
+def test_single_timestamp_overlaps_within_range_is_approx() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        datetime(2026, 6, 5, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is True
+    assert basis == "approx"
+
+
+def test_single_timestamp_overlaps_before_range_excluded() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        datetime(2026, 5, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is False
+    assert basis == "approx"
+
+
+def test_single_timestamp_overlaps_after_range_excluded() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is False
+    assert basis == "approx"
+
+
+def test_apply_date_range_unmanaged_vm_falls_back_to_single_timestamp() -> None:
+    """A VM row with NO registry interval (started_at=None, e.g. an unmanaged/AWS-EC2 VM) still
+    gets scoped, via last_run_at — never silently exempted from the filter just because it has no
+    interval."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    unmanaged_in_range = DeploymentItem(
+        name="adhoc-vm-in-range",
+        kind="VM",
+        umbrella="NONE",
+        cloud="GCP",
+        service="adhoc-vm-in-range",
+        asset_group="",
+        status="running",
+        last_run_at="2026-06-05T00:00:00Z",
+        started_at=None,
+    )
+    unmanaged_out_of_range = DeploymentItem(
+        name="adhoc-vm-out-of-range",
+        kind="VM",
+        umbrella="NONE",
+        cloud="GCP",
+        service="adhoc-vm-out-of-range",
+        asset_group="",
+        status="running",
+        last_run_at="2026-05-01T00:00:00Z",
+        started_at=None,
+    )
+    out = _apply_date_range(
+        [unmanaged_in_range, unmanaged_out_of_range],
+        _FIXED_NOW,
+        datetime(2026, 6, 1, tzinfo=UTC),
+        datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    names = {i.name for i in out}
+    assert names == {"adhoc-vm-in-range"}
+    assert next(i for i in out if i.name == "adhoc-vm-in-range").basis == "approx"
+
+
+def test_apply_date_range_cloud_run_job_and_scheduler_use_single_timestamp() -> None:
+    """CLOUD_RUN_JOB (covers GCP Cloud Run + AWS Batch, same wire kind) and SCHEDULER both scope
+    on last_run_at, same as an unmanaged VM."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    job_in_range = DeploymentItem(
+        name="manifest-consolidator-cefi",
+        kind="CLOUD_RUN_JOB",
+        umbrella="BATCH",
+        cloud="GCP",
+        service="manifest-consolidator",
+        asset_group="cefi",
+        status="succeeded",
+        last_run_at="2026-06-05T00:00:00Z",
+    )
+    job_out_of_range = DeploymentItem(
+        name="manifest-consolidator-defi",
+        kind="CLOUD_RUN_JOB",
+        umbrella="BATCH",
+        cloud="AWS",  # AWS Batch job — same CLOUD_RUN_JOB wire kind
+        service="manifest-consolidator",
+        asset_group="defi",
+        status="succeeded",
+        last_run_at="2026-05-01T00:00:00Z",
+    )
+    scheduler_in_range = DeploymentItem(
+        name="vm-zombie-watchdog-scheduler",
+        kind="SCHEDULER",
+        umbrella="NONE",
+        cloud="GCP",
+        service="vm-zombie-watchdog",
+        asset_group="",
+        status="running",
+        last_run_at="2026-06-08T00:00:00Z",
+    )
+    out = _apply_date_range(
+        [job_in_range, job_out_of_range, scheduler_in_range],
+        _FIXED_NOW,
+        datetime(2026, 6, 1, tzinfo=UTC),
+        datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    names = {i.name for i in out}
+    assert names == {"manifest-consolidator-cefi", "vm-zombie-watchdog-scheduler"}
+    assert all(i.basis == "approx" for i in out)
+
+
+def test_apply_date_range_no_timestamp_kinds_pass_through_regardless_of_range() -> None:
+    """A kind with NO timestamp signal at all (services/functions/...) is never scoped by the
+    date filter, even if it were somehow stamped with a value outside the range."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    service = DeploymentItem(
+        name="deployment-api",
+        kind="CLOUD_RUN_SERVICE",
+        umbrella="NONE",
+        cloud="GCP",
+        service="deployment-api",
+        asset_group="",
+        status="running",
+        last_run_at="2020-01-01T00:00:00Z",  # would be WAY out of range if it were checked
+    )
+    out = _apply_date_range([service], _FIXED_NOW, datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC))
+    assert out == [service]
+    assert out[0].basis is None  # passthrough — never stamped, never mutated
 
 
 # ---------------------------------------------------------------------------

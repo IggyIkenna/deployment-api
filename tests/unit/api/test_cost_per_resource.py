@@ -35,11 +35,11 @@ def _day(n: int) -> str:
 
 
 def test_per_resource_daily_three_values() -> None:
-    # vm-a ran 3 days: $10 two days ago, $20 yesterday, $5 partial today.
+    # vm-a ran 3 days: $30 (peak) two days ago, $20 (most recent COMPLETE day) yesterday, $5 partial today.
     recs = [
-        _rec("vm-a", _day(2), 10.0),
+        _rec("vm-a", _day(2), 30.0),
         _rec("vm-a", _day(1), 20.0),
-        _rec("vm-a", _day(0), 5.0),  # today (partial) — excluded from "actual"
+        _rec("vm-a", _day(0), 5.0),  # today (partial) — excluded from "actual" / "projected"
         _rec("vm-b", _day(1), 7.0),
     ]
     svc = CostObservabilityService()
@@ -48,9 +48,26 @@ def test_per_resource_daily_three_values() -> None:
 
     a = out["vm-a"]
     assert a.actual_usd == 20.0  # most recent COMPLETE day (yesterday), not today's partial $5
-    assert a.avg_7d_usd == round((10.0 + 20.0 + 5.0) / 7, 2)  # total net ÷ window
-    assert a.projected_24h_usd == 20.0  # peak observed daily (≈ a full 24h day)
+    assert a.avg_7d_usd == round(
+        (30.0 + 20.0 + 5.0) / 3, 2
+    )  # total net ÷ days actually billed (3), not the 7-day window
+    assert a.projected_24h_usd == 20.0  # most recent COMPLETE day (yesterday), NOT the $30 peak two days ago
     assert out["vm-b"].actual_usd == 7.0
+
+
+def test_per_resource_daily_24h_partial_day_normalized() -> None:
+    # vm-d has ONLY today's partial billing row — no complete day exists yet, so projected_24h_usd
+    # normalises the partial day to a full 24h instead of reporting the raw partial figure.
+    recs = [_rec("vm-d", _day(0), 6.0)]
+    svc = CostObservabilityService()
+    now = datetime.now(UTC)
+    hours_billed = max((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 3600, 1.0)
+    with patch.object(svc, "_window_table", return_value=records_to_table(recs)):
+        out = svc.per_resource_daily(days=7)
+
+    d = out["vm-d"]
+    assert d.actual_usd == 6.0  # no complete day → falls back to the latest (partial) day, raw
+    assert d.projected_24h_usd == round(6.0 / hours_billed * 24, 2)  # normalised, not the raw $6
 
 
 def test_per_resource_daily_net_of_credits() -> None:
