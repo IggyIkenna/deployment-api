@@ -289,10 +289,18 @@ class TestGrainAwareCanonicalCompare:
 
     def test_cefi_venue_axis_keeps_exact_compare(self) -> None:
         """Only defi venues are bare-based; cefi's suffix IS part of the canonical
-        venue identity, so the exact test must be preserved."""
+        venue identity, so the exact test must be preserved.
+
+        `OKX-FUTURES` was promoted to canonical 2026-07-21 (real, actively-captured
+        cefi venue — VENUES_BY_ASSET_GROUP['cefi'] in market_data_categories.py — it
+        was previously missing from that list, a false-negative drift alarm, not a
+        genuinely non-canonical venue). `OKX-MARGIN` is not a registered cefi venue
+        under any name and stands in as the negative exact-compare case instead.
+        """
         from deployment_api.routes.data_status import enumerate_distinct_values
 
-        axes, _ = enumerate_distinct_values(_payload("cefi", ["BINANCE-SPOT", "OKX-FUTURES"], []), "cefi")
+        axes, _ = enumerate_distinct_values(_payload("cefi", ["BINANCE-SPOT", "OKX-FUTURES", "OKX-MARGIN"], []), "cefi")
         badge = {e["value"]: e["is_canonical"] for e in axes["venues"]}
         assert badge["BINANCE-SPOT"] is True
-        assert badge["OKX-FUTURES"] is False
+        assert badge["OKX-FUTURES"] is True
+        assert badge["OKX-MARGIN"] is False
