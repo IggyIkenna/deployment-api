@@ -96,6 +96,12 @@ def _ensure_services_mocked() -> None:
     # tests monkey-patch the provider functions on the real service module directly.
     real_cost_observability = importlib.import_module("deployment_api.services.cost_observability")
 
+    # artifact_pipeline is a pure cloud-metadata reader + pydantic consumer (the /ops/artifacts
+    # page — artifact_pipeline_observability_2026_07_17.md). Same shape as cost_observability: no
+    # circular-import risk; its unit tests monkey-patch the provider functions on the real module.
+    # The stubbed services package below has __path__=[] so a dotted import can't reach it otherwise.
+    real_artifact_pipeline = importlib.import_module("deployment_api.services.artifact_pipeline")
+
     # catalogue_lifecycle is a pure pandas + storage_client + UAC resolve_bucket_name
     # consumer (new-listings / upcoming-expiries — P2). No circular-import risk; its
     # unit tests + routes/catalogue_lifecycle.py + routes/__init__.py's eager import
@@ -172,6 +178,10 @@ def _ensure_services_mocked() -> None:
     # Re-register cost_observability as a real module (cost-observability plan Phase A).
     # The sys.modules entry alone satisfies the dotted import its tests use.
     sys.modules["deployment_api.services.cost_observability"] = real_cost_observability
+
+    # Re-register artifact_pipeline as a real module (artifact-pipeline observability plan).
+    # The sys.modules entry alone satisfies the dotted import its tests + routes/artifacts.py use.
+    sys.modules["deployment_api.services.artifact_pipeline"] = real_artifact_pipeline
 
     # Re-register catalogue_lifecycle as a real module (P2 new-listings/expiries).
     sys.modules["deployment_api.services.catalogue_lifecycle"] = real_catalogue_lifecycle

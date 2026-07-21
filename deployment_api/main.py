@@ -43,6 +43,7 @@ from deployment_api.middleware import (
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
+    artifacts,
     backfill_launch,
     builds,
     builds_history,
@@ -224,6 +225,7 @@ _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM Health"])
 _authenticated_router.include_router(costs.router, prefix="/api", tags=["Costs"])
+_authenticated_router.include_router(artifacts.router, prefix="/api", tags=["Artifacts"])
 _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
