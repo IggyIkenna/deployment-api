@@ -326,6 +326,46 @@ class DefiStatusMixin(DataStatusCliMixin):
             merged = promote_prediction_cqg_from_instrument_id(merged)
         return merged
 
+    # ── CEFI/DEFI hybrid on-chain-CLOB venues — deployment-api-local supplement ──
+    # HYPERLIQUID and ASTER are primarily declared as CEFI venues in UAC
+    # (`cefi_instrument_universe.py` / `cefi_perp_venue_endpoints.py` -- CEFI
+    # holds their instrument/CLOB definitions) but both ALSO have real,
+    # currently-flowing chain-side capture under `asset_group=defi`
+    # (HYPERLIQUID's own L1 chain, ASTER on BSC) that UAC's `ALL_DEFI_VENUES`
+    # registry has never declared. Confirmed live 2026-07-10 via a direct GCS
+    # manifest read: 3,768,971 real `(HYPERLIQUID, HYPERLIQUID)` rows
+    # (2023-11-01 -> 2026-05-31) and 1,066,091 real `(ASTER, BSC)` rows
+    # (2024-04-03 -> 2026-05-31), both 100% dropped by the UAC-only whitelist
+    # below before ever reaching the DEFI aggregator --
+    # `issues/defi_turbo_api_hides_real_captured_data_2026_07_07.md`.
+    #
+    # NOT a double-counting risk: this whitelist only gates rows read from
+    # DEFI-category buckets (`_read_defi_merged_index`, `cat.lower() ==
+    # "defi"`) -- CEFI's own coverage numbers are computed from a completely
+    # separate CEFI-category bucket read elsewhere in this service. Admitting
+    # these two (venue, chain) pairs here surfaces the chain-side rows exactly
+    # once, matching the operator-confirmed architecture (2026-07-07,
+    # `issues/honest_coverage_shard_dimension_model_definitional_data_2026_07_07.md`
+    # Update S3): CEFI holds instrument definitions, DEFI holds chain-level
+    # settlement data -- two distinct row sets, not the same rows counted
+    # twice. Chain spelling matches the RAW manifest value (``HYPERLIQUID``),
+    # not UAC's canonical chain-enum spelling (``HYPERLIQUID_L1``) -- this
+    # whitelist matches on the raw stored string, same as every other entry
+    # built from ``ALL_DEFI_VENUES``/``LEGACY_DEFI_VENUE_ALIASES`` below.
+    #
+    # Deliberately local to deployment-api: this dispatch's edit boundary is
+    # deployment-api/deployment-ui only (Track 6,
+    # `defi_consolidated_closeout_2026_07_18.md`). The durable home for this
+    # declaration is UAC's `ALL_DEFI_VENUES` + `DEFI_VENUE_DATA_TYPE_CAPABILITIES`
+    # -- this local supplement is a stopgap until that lands, not a
+    # replacement for it.
+    _CEFI_DEFI_HYBRID_VENUE_CHAIN_PAIRS: ClassVar[frozenset[tuple[str, str]]] = frozenset(
+        {
+            ("HYPERLIQUID", "HYPERLIQUID"),
+            ("ASTER", "BSC"),
+        }
+    )
+
     @classmethod
     def _allowed_defi_venue_chain_pairs(cls) -> frozenset[tuple[str, str]]:
         """Return the canonical ``(venue_upper, chain_upper)`` set for DeFi.
@@ -335,6 +375,9 @@ class DefiStatusMixin(DataStatusCliMixin):
         underscore forms like ``AAVE_V3`` that pre-2026-04 manifests
         carry). Adding both shapes means the filter accepts canonical
         rows AND legacy-underscore rows that haven't yet been migrated.
+        Also unions in :attr:`_CEFI_DEFI_HYBRID_VENUE_CHAIN_PAIRS` (see its
+        docstring above) so the CEFI/DEFI hybrid on-chain-CLOB venues'
+        real captured chain-side rows aren't silently dropped.
         """
         from unified_api_contracts.registry import (
             ALL_DEFI_VENUES,
@@ -356,6 +399,7 @@ class DefiStatusMixin(DataStatusCliMixin):
                 continue
             _, chain = canonical.rsplit("-", 1)
             pairs.add((legacy.upper(), chain.upper()))
+        pairs |= cls._CEFI_DEFI_HYBRID_VENUE_CHAIN_PAIRS
         return frozenset(pairs)
 
     def _filter_to_canonical_defi_venues(self, index: pd.DataFrame) -> pd.DataFrame:
