@@ -70,7 +70,7 @@ from unified_trading_library import (
     download_from_storage,
     get_storage_client,
     upload_to_storage,
-    vm_run_log_rolling_uri,
+    vm_log_stream_uri,
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -100,6 +100,7 @@ from deployment_api.routes._leaked_resources import (
     orphaned_disk,
     orphaned_static_ip,
 )
+from deployment_api.routes._run_log_resolution import resolve_run_log_location
 
 # Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
 # and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
@@ -380,7 +381,9 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     # Last DEPLOY/modify time — distinct from last_run_at (last INVOKE). Set for kinds whose last-run
     # is not honestly observable without a paid metric (AWS Lambda: last_run_at stays None; this
     # carries fn.last_modified so the UI can show last-*modified* with a tooltip, never a mislabelled
-    # last-run). None for kinds that report a real last_run_at.
+    # last-run). Also carries CLOUD_RUN_SERVICE's update_time/create_time (WS-2 decision 2 — the
+    # always-on proxy timestamp; closes the audit-found asymmetry vs its ECS_SERVICE twin, which
+    # instead reports this via last_run_at). None for kinds that report a real last_run_at.
     last_modified_at: str | None = None
     exit_code: int | None = None
     heartbeat_age_seconds: int | None = None
@@ -432,6 +435,10 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     cost_actual_usd: float | None = None  # net cost on the most recent COMPLETE billing day
     cost_avg_7d_usd: float | None = None  # avg net cost over days actually billed (not ÷7 fixed window)
     cost_projected_24h_usd: float | None = None  # most recent COMPLETE day's net; partial-day-normalised fallback
+    # "complete" | "partial" | None (no billing row yet). "partial" means `cost_actual_usd` /
+    # `cost_projected_24h_usd` fall back to a still-accruing day (no complete billing day exists yet)
+    # — the UI colour-codes off this, no text label (decision 4, 2026-07-20).
+    cost_basis: str | None = None
     # WS-2 date-range overlap (raw registry interval, ISO) — None for kinds with no registry entry
     # (Cloud Run jobs/services, unmanaged VMs, ...); populated only in ``_vm_item``. Distinct from
     # ``last_run_at`` (which conflates started/completed for display) because the overlap formula
@@ -702,12 +709,11 @@ def _vm_item(
     object_delta = None
     if target.umbrella == DeploymentUmbrella.BATCH:
         object_delta = (object_deltas or {}).get(target.asset_group)
-    run_log = ""
-    completed_at = entry.completed_at
-    if completed_at and len(completed_at) >= 10:
-        date_stamp = completed_at[:10].replace("-", "")
-        if date_stamp.isdigit():
-            run_log = vm_run_log_rolling_uri(entry.vm_name, date_stamp)
+    # Live-first read path (WS-4 decision 2): the live streaming path is always the
+    # primary candidate for ANY vm regardless of completed_at — replaces the broken
+    # completed_at[:10]-keyed rolling-date guess, which 404s because the archiver
+    # writes daily rolling copies keyed by cron-run date, not completion date.
+    run_log = vm_log_stream_uri(entry.vm_name)
     details = vm_details or {}
     labels = details.get("labels")
     has_unreleased, unreleased = detect_unreleased_resources(
@@ -937,6 +943,13 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
     umbrella requirement; that resolved umbrella is discarded in favour of
     ``DeploymentUmbrella.NONE`` below (the resolver has no NONE lifecycle_class
     mapping to derive it from — see ``UMBRELLA_FOR_LIFECYCLE_CLASS``).
+
+    ``last_modified_at`` carries ``status.last_deployed_at`` (the service's ``update_time``/
+    ``create_time`` — a Tier-0 free win off the same list call, closing the audit-found asymmetry
+    vs ``ECS_SERVICE``): ``DeploymentItem.last_modified_at`` is already the SSOT field for
+    "deploy/modify time, distinct from last_run_at/last-invoke" (see its docstring — the same role
+    it plays for AWS Lambda), so this reuses it rather than adding a parallel field with identical
+    meaning. Feeds the always-on-kind sort-last + proxy-timestamp UI treatment (decision 2).
     """
     target = classify_deployment_target(
         status.name,
@@ -959,6 +972,7 @@ def _cloud_run_service_item(status: CloudRunServiceStatus) -> DeploymentItem:
             ready=status.ready, min_instance_count=status.min_instance_count
         ),
         last_run_at=None,
+        last_modified_at=status.last_deployed_at,
         exit_code=None,
         heartbeat_age_seconds=None,
         captured_progress=None,
@@ -1470,7 +1484,9 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
     ]
 
 
-def _load_aws_items(now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_REGIONS) -> list[DeploymentItem]:
+def _load_aws_items(
+    now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_REGIONS
+) -> tuple[list[DeploymentItem], dict[str, str]]:
     """Census + classify the live AWS estate into inventory items (Phase 5 parity), multi-region.
 
     Reuses the curated ``_vm_lifecycle_class`` prefix resolver so AWS umbrella derivation matches
@@ -1478,27 +1494,35 @@ def _load_aws_items(now: datetime, regions: tuple[str, ...] = _CONFIGURED_AWS_RE
     the ``?all_regions`` sweep) with per-region isolation — a region's census failure (no creds /
     boto3 absent / API down / unsupported) degrades to empty for THAT region and never blocks the
     others or the GCP inventory. AWS rides the same ``DeploymentItem`` contract.
+
+    Also returns the ``{instance_id: Name-tag}`` map collected across every region's EC2 census
+    (decision 3, AWS cost attribution) — ``_attach_costs`` needs it to resolve an AWS CUR row's
+    ARN/instance-id ``resource_id`` to the friendly name the items are keyed on.
     """
 
-    def _one(region: str) -> list[DeploymentItem]:
+    def _one(region: str) -> tuple[list[DeploymentItem], dict[str, str]]:
+        instance_id_by_name: dict[str, str] = {}
         try:
             item_dicts = load_aws_inventory(
                 region=region,
                 aws_account_id=_cfg.aws_account_id or "",
                 lifecycle_for_name=_vm_lifecycle_class,
+                instance_id_by_name=instance_id_by_name,
             )
-            return [DeploymentItem(**d) for d in item_dicts]  # type: ignore[arg-type]
+            return [DeploymentItem(**d) for d in item_dicts], instance_id_by_name  # type: ignore[arg-type]
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("inventory: AWS census for region %s degraded: %s", region, exc)
-            return []
+            return [], {}
 
     if not regions:
-        return []
+        return [], {}
     items: list[DeploymentItem] = []
+    instance_id_by_name: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=min(8, len(regions)), thread_name_prefix="aws-region") as pool:
-        for region_items in pool.map(_one, regions):
+        for region_items, region_instance_id_by_name in pool.map(_one, regions):
             items.extend(region_items)
-    return items
+            instance_id_by_name.update(region_instance_id_by_name)
+    return items, instance_id_by_name
 
 
 def _list_json_keys(client: StorageClient, bucket: str, prefix: str) -> list[str]:
@@ -1792,7 +1816,7 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
     # the whole inventory — the cold path is ~max(slowest census) not their sum, and never
     # exceeds _PROVIDER_CENSUS_TIMEOUT_SEC per provider.
     aws_regions = _aws_regions_for_scope(region_scope)
-    f_aws: Future[list[DeploymentItem]] | None = (
+    f_aws: Future[tuple[list[DeploymentItem], dict[str, str]]] | None = (
         _census_pool.submit(_load_aws_items, now, aws_regions) if want_aws else None
     )
 
@@ -1869,23 +1893,38 @@ def _compute_inventory(now: datetime, cloud: str | None, region_scope: str = "")
                 census_vm_names.add(vm_item.name)
         _prune_stale_alert_state(census_vm_names)
 
+    aws_instance_id_by_name: dict[str, str] = {}
     if f_aws is not None:
-        aws_items: list[DeploymentItem] = _census_or_degrade("aws", f_aws, [])
+        aws_items, aws_instance_id_by_name = _census_or_degrade("aws", f_aws, ([], {}))
         items.extend(aws_items)
 
-    _attach_costs(items)
+    _attach_costs(items, aws_instance_id_by_name)
     return items
 
 
-def _attach_costs(items: list[DeploymentItem]) -> None:
+def _aws_instance_id_from_resource_id(resource_id: str) -> str | None:
+    """Parse the EC2 instance-id out of an AWS CUR ``line_item_resource_id``.
+
+    That column is usually a full ARN (``arn:aws:ec2:<region>:<acct>:instance/i-...``) but some
+    exports carry the bare instance-id — handle both. Returns ``None`` for any non-EC2-instance
+    resource_id (buckets, other services, GCP's already-short names, ...).
+    """
+    tail = resource_id.rsplit("instance/", 1)[-1] if "instance/" in resource_id else resource_id
+    return tail if tail.startswith("i-") else None
+
+
+def _attach_costs(items: list[DeploymentItem], aws_instance_id_by_name: dict[str, str] | None = None) -> None:
     """Best-effort: attach the 3 USD cost figures per target by name == billing resource_id.
 
     Reuses the cost-observability service's CACHED billing window (WS-E) — one aggregation per
     inventory refresh (the inventory itself is cached), not per request. A GCP VM's billing
     ``resource.name`` is its instance name (== the deployment item name); Cloud Run job/service
     names match likewise. AWS ``resource_id`` is an ARN/instance-id that won't match the friendly
-    name → those rows keep ``None`` (honest absence, never a fabricated 0). A billing-source
-    failure or mock-without-facts leaves every cost field ``None`` — cost NEVER breaks the census.
+    name directly — ``aws_instance_id_by_name`` (the EC2 census's ``{instance_id: Name tag}``, built
+    in ``_load_aws_items``) resolves it to the friendly name first so the AWS row joins the same
+    way GCP does. No mapping found (unmapped instance, non-EC2 AWS resource, GCP row) → that row
+    keeps ``None`` (honest absence, never a fabricated 0). A billing-source failure or
+    mock-without-facts leaves every cost field ``None`` — cost NEVER breaks the census.
     """
     try:
         cost_by_resource = CostObservabilityService().per_resource_daily(days=7)
@@ -1893,12 +1932,19 @@ def _attach_costs(items: list[DeploymentItem]) -> None:
         # best-effort enrichment — cost must never break the inventory census.
         logger.warning("[deployments-inventory] cost enrichment skipped (best-effort): %s", exc)
         return
+    if aws_instance_id_by_name:
+        for resource_id, rc in list(cost_by_resource.items()):
+            instance_id = _aws_instance_id_from_resource_id(resource_id)
+            friendly_name = aws_instance_id_by_name.get(instance_id) if instance_id else None
+            if friendly_name is not None and friendly_name not in cost_by_resource:
+                cost_by_resource[friendly_name] = rc
     for item in items:
         rc = cost_by_resource.get(item.name)
         if rc is not None:
             item.cost_actual_usd = rc.actual_usd
             item.cost_avg_7d_usd = rc.avg_7d_usd
             item.cost_projected_24h_usd = rc.projected_24h_usd
+            item.cost_basis = rc.cost_basis
 
 
 def _store_inventory(cache_key: str, items: list[DeploymentItem]) -> None:
@@ -2194,6 +2240,50 @@ def get_deployment_detail(name: str) -> DeploymentDetailResponse:
         host_metrics_window=entry.host_metrics_window,
         run_history=run_history,
         object_delta=object_delta,
+    )
+
+
+class RunLogMetadataResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Size + last-modified for a VM's run.log — resolved live-first, archive-fallback."""
+
+    name: str
+    exists: bool
+    location: str | None = None  # "live" | "archive"; None when no log object exists anywhere
+    uri: str = ""
+    size_bytes: int | None = None
+    last_modified: str | None = None
+
+
+@router.get("/deployments/{name}/run-log/metadata", response_model=RunLogMetadataResponse)
+def get_run_log_metadata(name: str) -> RunLogMetadataResponse:
+    """Size + last-modified for ``name``'s run.log — live-first, archive-fallback (WS-4 decision 2).
+
+    Tries ``vm-logs/{name}/run.log`` first (regardless of ``completed_at``); on miss, falls back to
+    the durable final-snapshot archive path. ``location`` tells the UI which one resolved so it can
+    label the panel ("showing archive copy" vs live). ``exists=False`` means neither path has an
+    object yet (e.g. a VM that completed before the final-snapshot writer shipped) — an honest
+    "no log available" state, never a silent blank panel.
+    """
+    if _cfg.is_mock_mode():
+        return RunLogMetadataResponse(
+            name=name,
+            exists=True,
+            location="live",
+            uri=f"gs://deployment-scripts-mock/vm-logs/{name}/run.log",  # noqa: gs-uri (mock fixture URI)
+            size_bytes=842_331,
+            last_modified="2026-07-21T04:00:00Z",
+        )
+    project_id = _cfg.require_gcp_project_id()
+    resolved = resolve_run_log_location(name, project_id)
+    if resolved.metadata is None:
+        return RunLogMetadataResponse(name=name, exists=False)
+    return RunLogMetadataResponse(
+        name=name,
+        exists=True,
+        location=resolved.location,
+        uri=resolved.uri,
+        size_bytes=resolved.metadata.size,
+        last_modified=resolved.metadata.last_modified,
     )
 
 

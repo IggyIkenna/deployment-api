@@ -1125,10 +1125,6 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
             "deployment_api.routes.deployments_inventory.latest_execution_by_job",
             return_value=cr_status,
         ),
-        patch(
-            "deployment_api.routes.deployments_inventory.vm_run_log_rolling_uri",
-            return_value="gs://deployment-scripts-test/log-archive/rolling/run.log",
-        ),
         # Secondary GCP censuses (services/functions/scheduler/disks/IPs/object-deltas/costs)
         # → honest-empty, credential-free: no real socket to GCP (offline / pytest-socket safe).
         patch_inventory_secondary_census(_inv_mod),
@@ -1795,7 +1791,7 @@ def test_inventory_route_hung_provider_degrades_other_kinds_survive(client_inven
                 side_effect=_hanging_services,
             ),
             patch("deployment_api.routes.deployments_inventory.list_cloud_functions", return_value={}),
-            patch("deployment_api.routes.deployments_inventory._load_aws_items", return_value=[]),
+            patch("deployment_api.routes.deployments_inventory._load_aws_items", return_value=([], {})),
         ):
             mock_cfg.is_mock_mode.return_value = False
             mock_cfg.require_gcp_project_id.return_value = "test-project"
@@ -1959,6 +1955,8 @@ class _FakeRunV2Service:
     latest_ready_revision: str = ""
     latest_created_revision: str = ""
     uri: str = ""
+    update_time: datetime | None = None
+    create_time: datetime | None = None
 
 
 def test_region_from_resource_name_parses_location_segment() -> None:
@@ -2057,6 +2055,70 @@ def test_list_cloud_run_services_not_ready_when_reconciling() -> None:
     assert result[0].state == "CONDITION_RECONCILING"
 
 
+def _wire_fake_services_client(fake_service: _FakeRunV2Service) -> dict[str, ModuleType]:
+    """The sys.modules patch dict shared by every list_cloud_run_services fake-SDK test."""
+
+    class _FakeServicesClient:
+        def list_services(self, request: object, timeout: float | None = None) -> list[_FakeRunV2Service]:
+            del request, timeout
+            return [fake_service]
+
+    class _FakeRunV2Namespace:
+        ServicesClient = _FakeServicesClient
+
+        class ListServicesRequest:
+            def __init__(self, *, parent: str) -> None:
+                self.parent = parent
+
+    fake_module = ModuleType("deployment_service.backends._gcp_sdk")
+    fake_module.run_v2 = _FakeRunV2Namespace  # type: ignore[attr-defined]
+    fake_backends_pkg = ModuleType("deployment_service.backends")
+    fake_backends_pkg._gcp_sdk = fake_module  # type: ignore[attr-defined]
+    return {"deployment_service.backends": fake_backends_pkg, "deployment_service.backends._gcp_sdk": fake_module}
+
+
+def test_list_cloud_run_services_maps_last_deployed_at_from_update_time() -> None:
+    """last_deployed_at = update_time (WS-2/#4 — the Tier-0 free-win proxy for latest-revision
+    create time, closing the audit-found asymmetry vs ECS_SERVICE)."""
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+        update_time=datetime(2026, 6, 20, 8, 0, 0, tzinfo=UTC),
+        create_time=datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC),
+    )
+    with patch.dict(sys.modules, _wire_fake_services_client(fake_service)):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result[0].last_deployed_at == "2026-06-20T08:00:00+00:00"
+
+
+def test_list_cloud_run_services_falls_back_to_create_time_when_never_updated() -> None:
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+        update_time=None,
+        create_time=datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC),
+    )
+    with patch.dict(sys.modules, _wire_fake_services_client(fake_service)):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result[0].last_deployed_at == "2026-06-01T00:00:00+00:00"
+
+
+def test_list_cloud_run_services_last_deployed_at_none_when_neither_timestamp_present() -> None:
+    from deployment_api.routes import _cloud_run_services
+
+    fake_service = _FakeRunV2Service(
+        name="projects/test-project/locations/asia-northeast1/services/deployment-api",
+        terminal_condition=_FakeTerminalCondition(state=_FakeConditionState(name="CONDITION_SUCCEEDED")),
+    )
+    with patch.dict(sys.modules, _wire_fake_services_client(fake_service)):
+        result = _cloud_run_services.list_cloud_run_services("test-project")
+    assert result[0].last_deployed_at is None
+
+
 def test_list_cloud_run_services_degrades_on_gcp_error() -> None:
     """A GCP import/list failure degrades to an empty list, never raises."""
     from deployment_api.routes import _cloud_run_services
@@ -2106,6 +2168,31 @@ def test_build_inventory_includes_cloud_run_service_with_umbrella_sentinel() -> 
     # Ready + default min-instances 0 → an idle scale-to-zero service (the live row now
     # carries the D.3 sub-taxonomy on composite_health_status, not just a running/pending flag).
     assert item.composite_health_status == "scaled-to-zero"
+
+
+def test_build_inventory_cloud_run_service_carries_last_deployed_at_as_last_modified_at() -> None:
+    """The row builder maps status.last_deployed_at onto DeploymentItem.last_modified_at — the
+    existing SSOT field for "deploy time, distinct from last-invoke" (shared with AWS Lambda),
+    never a duplicate field. last_run_at stays honestly None (still no true invoke signal)."""
+    from deployment_api.routes._cloud_run_services import CloudRunServiceStatus
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    services = [
+        CloudRunServiceStatus(
+            name="deployment-api",
+            ready=True,
+            state="CONDITION_SUCCEEDED",
+            revision="deployment-api-00007-abc",
+            region="asia-northeast1",
+            uri="",
+            last_deployed_at="2026-06-20T08:00:00+00:00",
+        )
+    ]
+    item = next(
+        i for i in build_inventory([], {}, _FIXED_NOW, cloud_run_services=services) if i.kind == "CLOUD_RUN_SERVICE"
+    )
+    assert item.last_modified_at == "2026-06-20T08:00:00+00:00"
+    assert item.last_run_at is None
 
 
 def test_build_inventory_wires_cloud_run_service_health_taxonomy() -> None:
@@ -2164,3 +2251,67 @@ def test_build_inventory_skips_unclassifiable_cloud_run_service() -> None:
     ]
     items = build_inventory([], {}, _FIXED_NOW, cloud_run_services=services)
     assert not [i for i in items if i.kind == "CLOUD_RUN_SERVICE"]
+
+
+# ---------------------------------------------------------------------------
+# GET /deployments/{name}/run-log/metadata — WS-4 decision 2 read-path resolution
+# ---------------------------------------------------------------------------
+
+
+def test_run_log_metadata_live_path_resolved(client_inventory: TestClient) -> None:
+    """Live path hit: response carries its size/last-modified + location="live"."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        bucket="deployment-scripts-test",
+        size=842_331,
+        last_modified="2026-07-21T04:00:00Z",
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+                location="live",
+                metadata=live_meta,
+            ),
+        ) as mock_resolve,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/metadata")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert body["location"] == "live"
+    assert body["size_bytes"] == 842_331
+    assert body["last_modified"] == "2026-07-21T04:00:00Z"
+    mock_resolve.assert_called_once_with("cefi-binance-spot-20260622-014158", "test-project")
+
+
+def test_run_log_metadata_honest_absence_when_neither_path_exists(client_inventory: TestClient) -> None:
+    """Neither live nor archive object exists: honest exists=False, never a dead link."""
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/log-archive/final/some-old-vm/run.log",
+                location="archive",
+                metadata=None,
+            ),
+        ),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get("/api/deployments/some-old-vm/run-log/metadata")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False
+    assert body["size_bytes"] is None

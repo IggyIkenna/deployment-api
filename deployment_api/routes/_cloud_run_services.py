@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,13 @@ class CloudRunServiceStatus:
             (``template.scaling.min_instance_count``), ``0`` when scale-to-zero
             or unreadable — lets the health classifier tell an always-on service
             (min > 0 → ``serving``) from an idle scale-to-zero one.
+        last_deployed_at: ISO-8601 ``update_time`` (falls back to ``create_time``) off the
+            SAME ``Service`` resource this call already fetched — a Tier-0 free win, no extra
+            RPC. Bumped on every new-revision deploy, so it approximates "when the latest
+            revision was created" without the per-service ``GetRevision`` call that would cost.
+            Closes the audit-found asymmetry vs its AWS twin ``ECS_SERVICE``
+            (``last_run_at = updated_at or created_at``, ``_aws_deployments.py``) — Cloud Run
+            services previously carried NO timestamp at all. ``None`` on a read/parse failure.
     """
 
     name: str
@@ -75,6 +83,15 @@ class CloudRunServiceStatus:
     region: str
     uri: str
     min_instance_count: int = 0
+    last_deployed_at: str | None = None
+
+
+def _iso(value: object) -> str | None:
+    """Best-effort ISO-8601 from a Cloud Run timestamp (proto-plus datetime), else None."""
+    if not isinstance(value, datetime):
+        return None
+    dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return dt.isoformat()
 
 
 def _region_from_resource_name(full_name: str, fallback: str) -> str:
@@ -132,6 +149,9 @@ def list_cloud_run_services(
                 min_instances = int(getattr(scaling, "min_instance_count", 0) or 0)
             except (TypeError, ValueError):
                 min_instances = 0
+            last_deployed_at = _iso(getattr(service, "update_time", None)) or _iso(
+                getattr(service, "create_time", None)
+            )
             result.append(
                 CloudRunServiceStatus(
                     name=short_name,
@@ -141,6 +161,7 @@ def list_cloud_run_services(
                     region=_region_from_resource_name(full_name, region),
                     uri=str(getattr(service, "uri", "") or ""),
                     min_instance_count=min_instances,
+                    last_deployed_at=last_deployed_at,
                 )
             )
         return result
