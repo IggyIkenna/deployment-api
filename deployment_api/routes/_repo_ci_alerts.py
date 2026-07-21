@@ -20,11 +20,15 @@ import logging
 import time
 from typing import NotRequired, TypedDict, cast
 
-from unified_trading_library import download_from_storage, get_storage_client, resolve_bucket_name
+from unified_trading_library import (
+    BucketNamingError,
+    download_from_storage,
+    get_storage_client,
+    resolve_bucket_name,
+)
 
 logger = logging.getLogger(__name__)
 
-_BUCKET = "unified-trading-cicd-events"
 _CACHE_TTL_SECONDS = 60.0
 _DEFAULT_DAYS = 2
 _MAX_ITEMS = 400
@@ -239,33 +243,39 @@ def derive_streams(entries: list[AlertEntryDict]) -> list[AlertStreamDict]:
 
 def _read_ledgers_sync(days: int) -> list[AlertEntryDict]:
     """List + read the last N days of alert/event JSONL blobs from GCS."""
-    client = get_storage_client()
-    dates = [(dt.datetime.now(dt.UTC) - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)]
     entries: list[AlertEntryDict] = []
-    # Alerts ledger: one stream per date.
-    for date in dates:
-        for prefix in (f"cicd/alerts/{date}/",):
-            try:
-                for blob in client.list_blobs(_BUCKET, prefix=prefix):
-                    raw = download_from_storage(_BUCKET, blob.name)
-                    for line in raw.decode("utf-8", errors="replace").splitlines():
-                        parsed = _parse_line(line)
-                        if parsed:
-                            entries.append(parsed)
-            except Exception as exc:
-                logger.warning("[REPO-CI] alert ledger read failed for %s: %s", prefix, exc)
-    # Events ledger: per-repo per-date — list once per date across repos via delimiter walk.
     try:
-        for blob in client.list_blobs(_BUCKET, prefix="cicd/events/"):
-            if not any(f"/{date}/" in blob.name for date in dates):
-                continue
-            raw = download_from_storage(_BUCKET, blob.name)
-            for line in raw.decode("utf-8", errors="replace").splitlines():
-                parsed = _parse_line(line)
-                if parsed:
-                    entries.append(parsed)
-    except Exception as exc:
-        logger.warning("[REPO-CI] events ledger read failed: %s", exc)
+        bucket = resolve_bucket_name(cloud="gcp", kind="cicd-events")
+    except BucketNamingError as exc:
+        logger.warning("[REPO-CI] cicd-events bucket resolution failed: %s", exc)
+        bucket = None
+    if bucket is not None:
+        client = get_storage_client()
+        dates = [(dt.datetime.now(dt.UTC) - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)]
+        # Alerts ledger: one stream per date.
+        for date in dates:
+            for prefix in (f"cicd/alerts/{date}/",):
+                try:
+                    for blob in client.list_blobs(bucket, prefix=prefix):
+                        raw = download_from_storage(bucket, blob.name)
+                        for line in raw.decode("utf-8", errors="replace").splitlines():
+                            parsed = _parse_line(line)
+                            if parsed:
+                                entries.append(parsed)
+                except Exception as exc:
+                    logger.warning("[REPO-CI] alert ledger read failed for %s: %s", prefix, exc)
+        # Events ledger: per-repo per-date — list once per date across repos via delimiter walk.
+        try:
+            for blob in client.list_blobs(bucket, prefix="cicd/events/"):
+                if not any(f"/{date}/" in blob.name for date in dates):
+                    continue
+                raw = download_from_storage(bucket, blob.name)
+                for line in raw.decode("utf-8", errors="replace").splitlines():
+                    parsed = _parse_line(line)
+                    if parsed:
+                        entries.append(parsed)
+        except Exception as exc:
+            logger.warning("[REPO-CI] events ledger read failed: %s", exc)
     # alerting-service's own store — its own bucket, ~20 alert classes feeding
     # #uts-live-alerts/#data-pipeline-alerts (deployment_alerts_ingestion_completeness_2026_07_20.md
     # todo 3). A best-effort merge: a read failure here must not blank out the CI ledgers above.
