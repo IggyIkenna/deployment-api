@@ -2433,3 +2433,79 @@ def test_run_log_tail_lines_query_param_clamped_to_config_cap(client_inventory: 
         max_bytes=262_144,
         max_lines=300,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /deployments/{name}/run-log/download — short-lived signed URL (decision 4)
+# ---------------------------------------------------------------------------
+
+
+def test_run_log_download_live_path_resolved(client_inventory: TestClient) -> None:
+    """Live path hit: a signed download URL is generated for the resolved bucket/object."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        bucket="deployment-scripts-test",
+        size=842_331,
+        last_modified="2026-07-21T04:00:00Z",
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+                location="live",
+                metadata=live_meta,
+            ),
+        ) as mock_resolve,
+        patch(
+            "deployment_api.routes.deployments_inventory.generate_download_url",
+            return_value="https://storage.googleapis.com/deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log?X-Goog-Signature=abc",
+        ) as mock_signed_url,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_download_url_expiry_minutes = 15
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/download")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert body["location"] == "live"
+    assert body["download_url"].startswith("https://storage.googleapis.com/")
+    assert body["expires_in_seconds"] == 900
+    mock_resolve.assert_called_once_with("cefi-binance-spot-20260622-014158", "test-project")
+    mock_signed_url.assert_called_once_with(
+        "deployment-scripts-test",
+        "vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        expiry_minutes=15,
+    )
+
+
+def test_run_log_download_honest_absence_when_neither_path_exists(client_inventory: TestClient) -> None:
+    """Neither live nor archive object exists: honest exists=False, no signed URL generated."""
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/log-archive/final/some-old-vm/run.log",
+                location="archive",
+                metadata=None,
+            ),
+        ),
+        patch("deployment_api.routes.deployments_inventory.generate_download_url") as mock_signed_url,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get("/api/deployments/some-old-vm/run-log/download")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False
+    assert body["download_url"] == ""
+    mock_signed_url.assert_not_called()

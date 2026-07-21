@@ -68,7 +68,9 @@ from unified_trading_library import (
     DeploymentRegistryEntry,
     StorageClient,
     download_from_storage,
+    generate_download_url,
     get_storage_client,
+    split_gcs_uri,
     upload_to_storage,
     vm_log_stream_uri,
 )
@@ -2346,6 +2348,49 @@ def get_run_log_tail(name: str, lines: int | None = None) -> RunLogTailResponse:
         lines=tail_lines,
         line_count=len(tail_lines),
         tail_bytes=tail_bytes,
+    )
+
+
+class RunLogDownloadResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Short-lived signed URL for a VM's run.log — client downloads directly from GCS."""
+
+    name: str
+    exists: bool
+    location: str | None = None  # "live" | "archive"; None when no log object exists anywhere
+    download_url: str = ""
+    expires_in_seconds: int = 0
+
+
+@router.get("/deployments/{name}/run-log/download", response_model=RunLogDownloadResponse)
+def get_run_log_download(name: str) -> RunLogDownloadResponse:
+    """Signed download URL for ``name``'s run.log (WS-4 decision 4).
+
+    Resolves the object live-first/archive-fallback (same resolution as the metadata/tail
+    endpoints), then returns a short-lived signed URL the client downloads directly from
+    GCS — the API never streams the object (up to 13.4MB observed, 20-30MB plausible)
+    through itself.
+    """
+    if _cfg.is_mock_mode():
+        return RunLogDownloadResponse(
+            name=name,
+            exists=True,
+            location="live",
+            download_url=f"https://storage.googleapis.com/deployment-scripts-mock/vm-logs/{name}/run.log?mock-signed",
+            expires_in_seconds=_cfg.run_log_download_url_expiry_minutes * 60,
+        )
+    project_id = _cfg.require_gcp_project_id()
+    resolved = resolve_run_log_location(name, project_id)
+    if resolved.metadata is None:
+        return RunLogDownloadResponse(name=name, exists=False)
+    bucket, object_path = split_gcs_uri(resolved.uri)
+    expiry_minutes = _cfg.run_log_download_url_expiry_minutes
+    url = generate_download_url(bucket, object_path, expiry_minutes=expiry_minutes)
+    return RunLogDownloadResponse(
+        name=name,
+        exists=True,
+        location=resolved.location,
+        download_url=url,
+        expires_in_seconds=expiry_minutes * 60,
     )
 
 
