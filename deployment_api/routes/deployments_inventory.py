@@ -368,6 +368,14 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     service: str
     asset_group: str
     status: str  # running|succeeded|failed|stopped|stale|pending|unknown
+    # WS-2 per-kind date-range support matrix (what ``_apply_date_range`` actually has to match on):
+    #   INTERVAL (started_at+completed_at/last_heartbeat_at, true start/end) — VM rows with a
+    #     registry entry (``_vm_item``); see ``_vm_overlap_basis``.
+    #   SINGLE-TIMESTAMP (this field only, no interval) — unmanaged/AWS-EC2 VMs (creation time),
+    #     Cloud Run jobs + AWS Batch jobs (last run), Cloud Scheduler (last fire); see
+    #     ``_SINGLE_TIMESTAMP_KINDS``/``_single_timestamp_overlaps``. Always basis="approx" on match.
+    #   NONE (no timestamp signal at all) — Cloud Run/ECS services, Cloud Functions, disks, static
+    #     IPs; ``_apply_date_range`` passes these through unfiltered regardless of the query range.
     last_run_at: str | None = None
     # Last DEPLOY/modify time — distinct from last_run_at (last INVOKE). Set for kinds whose last-run
     # is not honestly observable without a paid metric (AWS Lambda: last_run_at stays None; this
@@ -1240,16 +1248,47 @@ def _vm_overlap_basis(
     return True, None  # open-ended — truly live, always overlaps
 
 
+# Kinds with only ONE observable timestamp — no true start/end interval exists (WS-2 decision:
+# match on it anyway, honestly marked approx). CLOUD_RUN_JOB covers BOTH the GCP Cloud Run job
+# builder and the AWS Batch (Fargate) builder — they share this wire kind (see ``_aws_deployments``
+# ``_batch_item``). SCHEDULER is Cloud Scheduler's single fire time (``last_attempt_at``).
+_SINGLE_TIMESTAMP_KINDS = frozenset({DeploymentKind.CLOUD_RUN_JOB.value, "SCHEDULER"})
+
+
+def _single_timestamp_overlaps(
+    last_run_at: datetime | None, date_from: datetime | None, date_to: datetime | None
+) -> tuple[bool, str | None]:
+    """Point-in-range test for a kind with only ONE observable timestamp, not a true interval:
+    an unmanaged VM's creation time, a Cloud Run/AWS Batch job's last run, or a Cloud Scheduler
+    job's last fire (``item.last_run_at`` in every case — the field the respective row builders
+    already populate it into). The single point stands in for the whole interval, so a MATCH is
+    always ``basis="approx"`` — never claimed authoritative. ``last_run_at is None`` (no signal at
+    all) is never filtered out — honest-absence, same convention as ``_vm_overlap_basis``.
+    """
+    if date_from is None and date_to is None:
+        return True, None
+    if last_run_at is None:
+        return True, None
+    if date_from is not None and last_run_at < date_from:
+        return False, "approx"
+    if date_to is not None and last_run_at > date_to:
+        return False, "approx"
+    return True, "approx"
+
+
 def _apply_date_range(
     items: list[DeploymentItem],
     now: datetime,
     date_from: datetime | None,
     date_to: datetime | None,
 ) -> list[DeploymentItem]:
-    """Scope VM/registry rows to ``[date_from, date_to]`` (WS-2 overlap query).
+    """Scope registry-backed + single-timestamp rows to ``[date_from, date_to]`` (WS-2 overlap query).
 
-    Every other kind passes through unfiltered — they carry no registry interval (a later todo adds
-    the single-timestamp match for Cloud Run jobs/scheduler/unmanaged VMs). Never mutates a cached
+    VM rows with a real registry interval (``started_at`` set) use ``_vm_overlap_basis``. VM rows
+    with NO interval (unmanaged/AWS-EC2 — no registry entry to source one from) fall back to the
+    single-timestamp match on ``last_run_at``, same as Cloud Run jobs/AWS Batch/Scheduler
+    (``_SINGLE_TIMESTAMP_KINDS``). Every other kind (services, functions, disks, ...) passes through
+    unfiltered — they carry no timestamp signal at all to scope on. Never mutates a cached
     ``DeploymentItem`` in place: ``_inventory_cache`` entries are shared across concurrent requests
     with different date ranges, so a stamped ``basis`` must land on a COPY, not the cached object.
     """
@@ -1257,17 +1296,21 @@ def _apply_date_range(
         return items
     kept: list[DeploymentItem] = []
     for item in items:
-        if item.kind != DeploymentKind.VM.value:
+        started_at = _parse_iso(item.started_at) if item.kind == DeploymentKind.VM.value else None
+        if started_at is not None:
+            overlaps, basis = _vm_overlap_basis(
+                started_at=started_at,
+                completed_at=_parse_iso(item.completed_at),
+                last_heartbeat_at=_parse_iso(item.last_heartbeat_at),
+                now=now,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        elif item.kind == DeploymentKind.VM.value or item.kind in _SINGLE_TIMESTAMP_KINDS:
+            overlaps, basis = _single_timestamp_overlaps(_parse_iso(item.last_run_at), date_from, date_to)
+        else:
             kept.append(item)
             continue
-        overlaps, basis = _vm_overlap_basis(
-            started_at=_parse_iso(item.started_at),
-            completed_at=_parse_iso(item.completed_at),
-            last_heartbeat_at=_parse_iso(item.last_heartbeat_at),
-            now=now,
-            date_from=date_from,
-            date_to=date_to,
-        )
         if not overlaps:
             continue
         kept.append(item.model_copy(update={"basis": basis}) if basis else item)

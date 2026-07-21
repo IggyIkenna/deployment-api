@@ -1568,6 +1568,165 @@ def test_inventory_route_no_date_params_leaves_archive_floor_none(client_invento
 
 
 # ---------------------------------------------------------------------------
+# WS-2 single-timestamp date-range match (deployment_ui_date_range_filter_and_search-003) —
+# unmanaged VMs (no registry interval) + Cloud Run jobs / AWS Batch / Scheduler
+# ---------------------------------------------------------------------------
+
+
+def test_single_timestamp_overlaps_no_range_always_true() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(datetime(2026, 6, 1, tzinfo=UTC), None, None)
+    assert overlaps is True
+    assert basis is None
+
+
+def test_single_timestamp_overlaps_no_timestamp_never_filtered_out() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        None, datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is True
+    assert basis is None
+
+
+def test_single_timestamp_overlaps_within_range_is_approx() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        datetime(2026, 6, 5, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is True
+    assert basis == "approx"
+
+
+def test_single_timestamp_overlaps_before_range_excluded() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        datetime(2026, 5, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is False
+    assert basis == "approx"
+
+
+def test_single_timestamp_overlaps_after_range_excluded() -> None:
+    from deployment_api.routes.deployments_inventory import _single_timestamp_overlaps
+
+    overlaps, basis = _single_timestamp_overlaps(
+        datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC)
+    )
+    assert overlaps is False
+    assert basis == "approx"
+
+
+def test_apply_date_range_unmanaged_vm_falls_back_to_single_timestamp() -> None:
+    """A VM row with NO registry interval (started_at=None, e.g. an unmanaged/AWS-EC2 VM) still
+    gets scoped, via last_run_at — never silently exempted from the filter just because it has no
+    interval."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    unmanaged_in_range = DeploymentItem(
+        name="adhoc-vm-in-range",
+        kind="VM",
+        umbrella="NONE",
+        cloud="GCP",
+        service="adhoc-vm-in-range",
+        asset_group="",
+        status="running",
+        last_run_at="2026-06-05T00:00:00Z",
+        started_at=None,
+    )
+    unmanaged_out_of_range = DeploymentItem(
+        name="adhoc-vm-out-of-range",
+        kind="VM",
+        umbrella="NONE",
+        cloud="GCP",
+        service="adhoc-vm-out-of-range",
+        asset_group="",
+        status="running",
+        last_run_at="2026-05-01T00:00:00Z",
+        started_at=None,
+    )
+    out = _apply_date_range(
+        [unmanaged_in_range, unmanaged_out_of_range],
+        _FIXED_NOW,
+        datetime(2026, 6, 1, tzinfo=UTC),
+        datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    names = {i.name for i in out}
+    assert names == {"adhoc-vm-in-range"}
+    assert next(i for i in out if i.name == "adhoc-vm-in-range").basis == "approx"
+
+
+def test_apply_date_range_cloud_run_job_and_scheduler_use_single_timestamp() -> None:
+    """CLOUD_RUN_JOB (covers GCP Cloud Run + AWS Batch, same wire kind) and SCHEDULER both scope
+    on last_run_at, same as an unmanaged VM."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    job_in_range = DeploymentItem(
+        name="manifest-consolidator-cefi",
+        kind="CLOUD_RUN_JOB",
+        umbrella="BATCH",
+        cloud="GCP",
+        service="manifest-consolidator",
+        asset_group="cefi",
+        status="succeeded",
+        last_run_at="2026-06-05T00:00:00Z",
+    )
+    job_out_of_range = DeploymentItem(
+        name="manifest-consolidator-defi",
+        kind="CLOUD_RUN_JOB",
+        umbrella="BATCH",
+        cloud="AWS",  # AWS Batch job — same CLOUD_RUN_JOB wire kind
+        service="manifest-consolidator",
+        asset_group="defi",
+        status="succeeded",
+        last_run_at="2026-05-01T00:00:00Z",
+    )
+    scheduler_in_range = DeploymentItem(
+        name="vm-zombie-watchdog-scheduler",
+        kind="SCHEDULER",
+        umbrella="NONE",
+        cloud="GCP",
+        service="vm-zombie-watchdog",
+        asset_group="",
+        status="running",
+        last_run_at="2026-06-08T00:00:00Z",
+    )
+    out = _apply_date_range(
+        [job_in_range, job_out_of_range, scheduler_in_range],
+        _FIXED_NOW,
+        datetime(2026, 6, 1, tzinfo=UTC),
+        datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    names = {i.name for i in out}
+    assert names == {"manifest-consolidator-cefi", "vm-zombie-watchdog-scheduler"}
+    assert all(i.basis == "approx" for i in out)
+
+
+def test_apply_date_range_no_timestamp_kinds_pass_through_regardless_of_range() -> None:
+    """A kind with NO timestamp signal at all (services/functions/...) is never scoped by the
+    date filter, even if it were somehow stamped with a value outside the range."""
+    from deployment_api.routes.deployments_inventory import DeploymentItem, _apply_date_range
+
+    service = DeploymentItem(
+        name="deployment-api",
+        kind="CLOUD_RUN_SERVICE",
+        umbrella="NONE",
+        cloud="GCP",
+        service="deployment-api",
+        asset_group="",
+        status="running",
+        last_run_at="2020-01-01T00:00:00Z",  # would be WAY out of range if it were checked
+    )
+    out = _apply_date_range([service], _FIXED_NOW, datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 10, tzinfo=UTC))
+    assert out == [service]
+    assert out[0].basis is None  # passthrough — never stamped, never mutated
+
+
+# ---------------------------------------------------------------------------
 # Census hang isolation (deployment_obs_backend_kinds_health P0) — a slow/hung provider
 # degrades to an honest EMPTY census for its OWN kind and never blocks the whole inventory
 # (the >240s / 0-byte cockpit hang). WS-B / shard-level failure isolation.
