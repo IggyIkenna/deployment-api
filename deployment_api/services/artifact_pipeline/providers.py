@@ -41,6 +41,13 @@ _GCP_REGION = "asia-northeast1"
 # free ~60-day window measured in the plan; the window filter trims to the requested range.
 _CLOUD_BUILD_SCAN = 400
 
+# Per-RPC deadline for the Cloud Build list. Without it a long-lived gRPC channel that has gone stale
+# (token expiry / dropped connection after the process idles ~1h) makes the call hang *indefinitely* —
+# and `safe` cannot catch a hang, only an exception. With a deadline a stale channel raises
+# DeadlineExceeded, `safe` degrades to [], and the endpoint never wedges. A cold 400-build scan is
+# ~5s, so 30s is comfortably above a legitimate call while bounding the failure mode.
+_RPC_TIMEOUT_SECONDS = 30.0
+
 
 def safe[T](loader: Callable[[], list[T]], source: str) -> list[T]:
     """Run one provider; on ANY failure log it and return `[]` so peers still render.
@@ -168,6 +175,7 @@ def gcp_cloud_builds(cfg: DeploymentApiConfig, scan: int = _CLOUD_BUILD_SCAN) ->
     parent = f"projects/{project}/locations/{_GCP_REGION}"
     request = cb.ListBuildsRequest(parent=parent, page_size=100)  # default order: create_time desc
     facts: list[BuildFact] = []
-    for build in islice(client.list_builds(request=request), scan):  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # cloudbuild stubs incomplete
+    pager = client.list_builds(request=request, timeout=_RPC_TIMEOUT_SECONDS)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # cloudbuild stubs incomplete
+    for build in islice(pager, scan):  # pyright: ignore[reportUnknownArgumentType]  # cloudbuild stubs incomplete
         facts.append(_build_to_fact(build))
     return facts

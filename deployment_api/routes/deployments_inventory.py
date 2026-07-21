@@ -39,6 +39,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, date, datetime, timedelta
@@ -68,7 +69,6 @@ from unified_trading_library import (
     BucketNamingError,
     DeploymentRegistryEntry,
     StorageClient,
-    download_from_storage,
     generate_download_url,
     get_storage_client,
     resolve_bucket_name,
@@ -621,13 +621,24 @@ def _persist_alert(
     dedup_key: str,
     subject_repo: str | None = None,
 ) -> None:
-    """Append one JSONL row to the shared GCS alert ledger — best-effort, never raises.
+    """Write one JSONL row to its own object in the shared GCS alert ledger — best-effort, never
+    raises.
 
-    Mirrors agent-orchestrator's ``notifications.slack._persist_to_gcs`` write shape exactly
-    (same bucket/path/row fields; ``repo`` names the writing SERVICE, not the alerting VM) so
-    ``GET /api/alerts`` (``_repo_ci_alerts.py``'s ``_parse_line``) picks these up alongside
-    CI/CD + other watcher alerts with zero reader-side changes. Shard-level isolation: a
-    ledger-write failure logs a warning and never breaks the inventory computation it rides on.
+    Mirrors agent-orchestrator's ``notifications.slack._persist_to_gcs`` row shape exactly (same
+    bucket/fields; ``repo`` names the writing SERVICE, not the alerting VM) so ``GET /api/alerts``
+    (``_repo_ci_alerts.py``'s ``_parse_line`` via its ``cicd/alerts/{date}/`` prefix walk) picks
+    these up alongside CI/CD + other watcher alerts with zero reader-side changes. Shard-level
+    isolation: a ledger-write failure logs a warning and never breaks the inventory computation it
+    rides on.
+
+    ONE OBJECT PER ALERT (root-cause fix, not a mitigation — 2026-07-21): the prior implementation
+    downloaded the whole day's shared ``alerts.jsonl``, appended one line, and re-uploaded it — an
+    unlocked read-modify-write. Two overlapping calls silently clobbered each other (structurally
+    identical to `persist_cicd_event_ledger_read_modify_write_race_2026_07_17.md`, which fixes the
+    sibling events-ledger writer the same way). ``_read_ledgers_sync()`` already walks the whole
+    ``cicd/alerts/{date}/`` prefix and parses every blob it finds — it never assumed a single
+    filename — so a never-overwritten unique object per call eliminates the race with zero reader
+    changes: no read, no merge, no lock.
 
     ``subject_repo`` is the repo the alert is ABOUT, distinct from ``repo`` (the emitter, always
     "deployment-api" here) — see the ``FIELD_COVERAGE`` contract in ``unified_api_contracts.alerting``
@@ -638,7 +649,7 @@ def _persist_alert(
     try:
         bucket = resolve_bucket_name(cloud="gcp", kind="cicd-events")
         date = datetime.now(UTC).strftime("%Y-%m-%d")
-        blob_path = f"cicd/alerts/{date}/alerts.jsonl"
+        blob_path = f"cicd/alerts/{date}/{uuid.uuid4().hex}.jsonl"
         row: dict[str, object] = {
             "event_type": "slack_alert",
             "timestamp": datetime.now(UTC).isoformat(),
@@ -653,12 +664,7 @@ def _persist_alert(
             "alert_class": alert_class,
         }
         line = json.dumps(row)
-        try:
-            existing = download_from_storage(bucket, blob_path).decode("utf-8", errors="replace")
-        except (OSError, ValueError, RuntimeError):  # blob may not exist yet -> start fresh
-            existing = ""
-        new_content = (existing.rstrip("\n") + "\n" + line + "\n").lstrip("\n")
-        upload_to_storage(bucket, blob_path, new_content.encode("utf-8"), content_type="application/jsonl")
+        upload_to_storage(bucket, blob_path, (line + "\n").encode("utf-8"), content_type="application/jsonl")
     except (BucketNamingError, OSError, ValueError, RuntimeError) as exc:
         logger.warning("inventory: alert-ledger persist failed (%s/%s): %s", alert_class, workflow_name, exc)
 
