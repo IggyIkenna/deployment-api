@@ -48,7 +48,17 @@ drift. :func:`_comparison_set` resolves the grain for exactly those pairs:
     but the operator-locked DeFi naming SSOT stores **bare venue + a separate
     ``chain=`` segment**, so the manifest carries ``UNISWAP_V2``. Bare-vs-
     composite never matched → 76/76 DeFi venues badged non-canonical. Now
-    compared against the bare bases.
+    compared against the bare bases of ``ALL_DEFI_VENUES`` — the full
+    registered VOCABULARY (live + ``pipeline`` phase), **not**
+    ``VENUES_BY_ASSET_GROUP['defi']`` (the ``phase == "live"`` CAPABILITY
+    subset a naive first pass used, D1b correction 2026-07-20). A
+    ``pipeline``-phase venue is genuinely registered but not yet
+    IS-producible — badging it drift conflates "no adapter yet" with "not a
+    real name". Flipping such a venue to ``live`` to silence the badge would
+    be WRONG (breaks ``defi_venues.py``'s own
+    ``phase=="live" <=> IS-producible`` invariant; independently confirmed
+    2026-07-20 when a premature ``live`` flip on ``CHAINLINK-*`` broke the
+    LDR→main promotion gate and had to be reverted, ``uac@83f17c46``).
   - ``(defi, instrument_types)`` — the DeFi manifest column is canonically
     LOWERCASE (operator ruling) while the enum is UPPERCASE → case-insensitive
     for defi ONLY. cefi/tradfi keep the exact test: their canonical
@@ -76,6 +86,7 @@ from typing import cast
 from fastapi import HTTPException
 from unified_api_contracts import InstrumentType
 from unified_api_contracts.registry import (
+    ALL_DEFI_VENUES,
     DATA_TYPES_BY_ASSET_GROUP,
     MAINNET_CHAIN_IDS,
     VENUES_BY_ASSET_GROUP,
@@ -259,7 +270,20 @@ def _comparison_set(axis: str, asset_group: str) -> tuple[frozenset[str], bool]:
     """
     canonical = _canonical_set(axis, asset_group)
     if axis == "venues" and asset_group == "defi":
-        return _defi_bare_venue_bases(canonical), False
+        # D1b (audit 2026-07-20 RESULT — corrects the original D1 fix): compare
+        # against ALL_DEFI_VENUES (the full registered VOCABULARY, live + pipeline
+        # phase), NOT VENUES_BY_ASSET_GROUP['defi'] (the phase == "live" CAPABILITY
+        # subset returned by _canonical_set above). A `pipeline`-phase venue
+        # (ANKR/FRAX/MAKER/STADER/STAKEWISE/SWELL/ACROSS/STARGATE/FLASHBOTS/MANTLE —
+        # registered, genesis-dated, but IS has no adapter yet) is legitimate
+        # vocabulary the manifest can carry; badging it as naming DRIFT confuses a
+        # capability gap with a naming gap. Flipping such a venue to `live` in the
+        # registry to "fix" this would be WRONG — it would assert IS can produce it
+        # when it cannot, breaking `defi_venues.py`'s own
+        # `phase=="live" <=> IS-producible` invariant (independently confirmed
+        # 2026-07-20: uac@83f17c46 reverted CHAINLINK-* to `pipeline` after exactly
+        # that class of premature `live` flip broke the LDR->main promotion gate).
+        return _defi_bare_venue_bases(frozenset(ALL_DEFI_VENUES)), False
     if axis == "instrument_types" and asset_group == "defi":
         return frozenset(v.casefold() for v in canonical), True
     return canonical, False
