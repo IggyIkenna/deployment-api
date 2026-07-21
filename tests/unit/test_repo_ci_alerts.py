@@ -9,7 +9,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unified_trading_library import setup_events
 
-from deployment_api.routes._repo_ci_alerts import AlertEntryDict, _parse_line, derive_streams
+from deployment_api.routes._repo_ci_alerts import (
+    AlertEntryDict,
+    _parse_alerting_service_line,
+    _parse_line,
+    derive_streams,
+)
 
 setup_events("deployment-api", "test")
 
@@ -58,6 +63,44 @@ class TestParseLine:
         assert _parse_line("[1,2]") is None
 
 
+class TestParseAlertingServiceLine:
+    def test_delivery_record_shape(self) -> None:
+        line = (
+            '{"alert_id":"a1","channel":"slack","status":"sent","response_detail":"accepted",'
+            '"event_name":"DP_VM_STALL","alert_class":"DP_VM_STALL","severity":"warning",'
+            '"message":"VM stalled","service":"alerting-service","deployment_target":"cefi-aster-1",'
+            '"timestamp":"2026-07-21T12:00:00Z"}'
+        )
+        parsed = _parse_alerting_service_line(line)
+        assert parsed is not None
+        assert parsed["kind"] == "DP_VM_STALL"
+        assert parsed["workflow_name"] == "DP_VM_STALL"
+        assert parsed["repo"] == ""
+        assert parsed["severity"] == "warning"
+        assert parsed["message"] == "VM stalled"
+        assert parsed["alert_class"] == "DP_VM_STALL"
+        assert parsed["deployment_target"] == "cefi-aster-1"
+
+    def test_decision_record_shape_uses_triggered_at(self) -> None:
+        line = (
+            '{"alert_id":"a2","rule_id":"margin_breach","triggered_at":"2026-07-21T11:00:00Z",'
+            '"severity":"CRITICAL","alert_class":"MARGIN_BREACH","message":"margin low",'
+            '"metric_value":0.1,"threshold":0.2}'
+        )
+        parsed = _parse_alerting_service_line(line)
+        assert parsed is not None
+        assert parsed["timestamp"] == "2026-07-21T11:00:00Z"
+        assert parsed["alert_class"] == "MARGIN_BREACH"
+        assert parsed.get("deployment_target") is None
+
+    def test_missing_timestamp_skipped(self) -> None:
+        assert _parse_alerting_service_line('{"alert_class":"X"}') is None
+
+    def test_junk_lines_skipped(self) -> None:
+        assert _parse_alerting_service_line("not json") is None
+        assert _parse_alerting_service_line("[1,2]") is None
+
+
 class TestDeriveStreams:
     def test_current_and_previous_pairing(self) -> None:
         entries = [
@@ -84,6 +127,42 @@ class TestDeriveStreams:
     def test_single_entry_stream_has_no_previous(self) -> None:
         streams = derive_streams([_entry("2026-06-10T10:00:00Z", "a", "w", "WARNING", None)])
         assert streams[0]["previous"] is None
+
+
+class TestReadAlertingServiceSync:
+    def test_merges_history_blobs_into_entries(self) -> None:
+        from unittest.mock import MagicMock
+
+        from deployment_api.routes._repo_ci_alerts import _read_alerting_service_sync
+
+        blob = MagicMock()
+        blob.name = "alerting/history/date=2026-07-21/abc123.jsonl"
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = [blob]
+        line = (
+            b'{"alert_id":"a1","event_name":"CONSOLIDATOR_DOWN","alert_class":"CONSOLIDATOR_DOWN",'
+            b'"severity":"critical","message":"consolidator down","timestamp":"2026-07-21T09:00:00Z"}\n'
+        )
+        with (
+            patch("deployment_api.routes._repo_ci_alerts.resolve_bucket_name", return_value="alerting-service-test"),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+            patch("deployment_api.routes._repo_ci_alerts.download_from_storage", return_value=line),
+        ):
+            entries = _read_alerting_service_sync(days=1)
+        assert len(entries) == 1
+        assert entries[0]["alert_class"] == "CONSOLIDATOR_DOWN"
+        mock_client.list_blobs.assert_called_once_with(
+            "alerting-service-test", prefix="alerting/history/date=2026-07-21/"
+        )
+
+    def test_bucket_resolution_failure_returns_empty(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import _read_alerting_service_sync
+
+        with patch(
+            "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+            side_effect=RuntimeError("no yaml"),
+        ):
+            assert _read_alerting_service_sync(days=1) == []
 
 
 @pytest.fixture
