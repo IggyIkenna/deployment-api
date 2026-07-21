@@ -253,6 +253,108 @@ class TestReadLedgersSync:
         assert entries == [fallback_entry]
 
 
+class TestLoadAlertsPayloadPagination:
+    """deployment_alerts_ingestion_completeness_2026_07_20.md todo 8: the old `_DEFAULT_DAYS = 2`
+    / `_MAX_ITEMS = 400` couldn't support a real date-range filter, and a page past 400 rows was
+    silently truncated. Now: a wider default window + explicit offset/limit pagination + a
+    `capped` signal instead of a silent short list."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_entries_cache(self) -> None:
+        # _entries_cache is keyed by `days` and shared module state — every test here uses
+        # days=1, so without a reset each test after the first would silently reuse the prior
+        # test's patched entries instead of exercising its own patch.
+        from deployment_api.routes import _repo_ci_alerts
+
+        _repo_ci_alerts._entries_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    @staticmethod
+    def _alert_entries(n: int) -> list[AlertEntryDict]:
+        return [
+            AlertEntryDict(
+                kind="alert",
+                timestamp=f"2026-07-{(i % 28) + 1:02d}T00:00:00Z",
+                repo="r",
+                workflow_name=f"wf-{i}",
+                severity="INFO",
+                conclusion=None,
+                message="m",
+                run_url=None,
+            )
+            for i in range(n)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_capped_true_when_more_rows_than_limit(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import load_alerts_payload
+
+        entries = self._alert_entries(10)
+        with patch(
+            "deployment_api.routes._repo_ci_alerts._read_ledgers_sync",
+            return_value=entries,
+        ):
+            payload = await load_alerts_payload(days=1, offset=0, limit=4)
+        assert payload["total_count"] == 10
+        assert payload["returned_count"] == 4
+        assert payload["capped"] is True
+
+    @pytest.mark.asyncio
+    async def test_capped_false_when_all_rows_fit(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import load_alerts_payload
+
+        entries = self._alert_entries(3)
+        with patch(
+            "deployment_api.routes._repo_ci_alerts._read_ledgers_sync",
+            return_value=entries,
+        ):
+            payload = await load_alerts_payload(days=1, offset=0, limit=400)
+        assert payload["total_count"] == 3
+        assert payload["returned_count"] == 3
+        assert payload["capped"] is False
+
+    @pytest.mark.asyncio
+    async def test_offset_advances_the_page(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import load_alerts_payload
+
+        entries = self._alert_entries(10)
+        with patch(
+            "deployment_api.routes._repo_ci_alerts._read_ledgers_sync",
+            return_value=entries,
+        ):
+            page1 = await load_alerts_payload(days=1, offset=0, limit=4)
+            page2 = await load_alerts_payload(days=1, offset=4, limit=4)
+        assert [a["workflow_name"] for a in page1["alerts"]] != [a["workflow_name"] for a in page2["alerts"]]
+        assert page2["offset"] == 4
+        assert page2["capped"] is True  # 10 total, offset 4 + 4 returned = 8 < 10
+
+    @pytest.mark.asyncio
+    async def test_days_clamped_to_max(self) -> None:
+        from deployment_api.routes._repo_ci_alerts import _MAX_DAYS, load_alerts_payload
+
+        with patch(
+            "deployment_api.routes._repo_ci_alerts._read_ledgers_sync",
+            return_value=[],
+        ) as mock_read:
+            payload = await load_alerts_payload(days=9999, offset=0, limit=10)
+        assert payload["days"] == _MAX_DAYS
+        mock_read.assert_called_once_with(_MAX_DAYS)
+
+    @pytest.mark.asyncio
+    async def test_streams_derive_from_full_window_not_just_the_page(self) -> None:
+        """A stream whose only entry falls outside the requested page must still surface —
+        streams are a bounded (repo, workflow) roll-up, not a row-count-bounded list."""
+        from deployment_api.routes._repo_ci_alerts import load_alerts_payload
+
+        entries = self._alert_entries(10)
+        with patch(
+            "deployment_api.routes._repo_ci_alerts._read_ledgers_sync",
+            return_value=entries,
+        ):
+            payload = await load_alerts_payload(days=1, offset=0, limit=2)
+        assert len(payload["alerts"]) == 2
+        assert len(payload["streams"]) == 10  # every (repo, workflow) pair still represented
+
+
 @pytest.fixture
 def client_alerts() -> TestClient:
     from deployment_api.routes.repo_ci import router

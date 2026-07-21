@@ -15,24 +15,37 @@ Plan: deployment_ui_monitoring_pane_2026_06_19.md (unified ledger UI P1).
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 
-from ._repo_ci_alerts import AlertsPayloadDict, load_alerts_payload
+from ._repo_ci_alerts import (
+    _DEFAULT_DAYS,
+    _DEFAULT_PAGE_SIZE,
+    _MAX_DAYS,
+    _MAX_PAGE_SIZE,
+    AlertsPayloadDict,
+    load_alerts_payload,
+)
 from ._repo_ci_mocks import _mock_alerts
 
 router = APIRouter()
 
 
 @router.get("/alerts")
-async def get_unified_alerts() -> AlertsPayloadDict:
-    """Return all persisted alerts across all alert classes.
+async def get_unified_alerts(
+    days: int = Query(_DEFAULT_DAYS, ge=1, le=_MAX_DAYS),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+) -> AlertsPayloadDict:
+    """Return persisted alerts across all alert classes, paginated over a bounded day-window.
 
     Shape is a superset of /api/repo-ci/alerts: same fields, extensible `kind`
-    (currently "alert" | "event" for CI/CD; INFRA P1 adds non-CI kinds).
+    (currently "alert" | "event" for CI/CD; INFRA P1 adds non-CI kinds). `days`/`offset`/`limit`
+    let Plan B's date-range filter query past the default window without a silent truncation —
+    see `capped` in the response.
     """
     cfg = DeploymentApiConfig()
     if cfg.is_mock_mode():
         return _mock_alerts()
-    return await load_alerts_payload()
+    return await load_alerts_payload(days=days, offset=offset, limit=limit)

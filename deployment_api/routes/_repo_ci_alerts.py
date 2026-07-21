@@ -32,10 +32,19 @@ from unified_trading_library import (
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 60.0
-_DEFAULT_DAYS = 2
-_MAX_ITEMS = 400
+# deployment_alerts_ingestion_completeness_2026_07_20.md todo 8: 2 days / a silent 400-item cap
+# couldn't support Plan B's date-range filter. Widened retention to 30 days (bounded
+# day-partitioned reads, unchanged single-walk discipline) with real offset/limit pagination
+# instead of a truncation — a caller past the last page gets an explicit `capped` signal, never a
+# silently short list.
+_DEFAULT_DAYS = 30
+_MAX_DAYS = 30
+_DEFAULT_PAGE_SIZE = 400
+_MAX_PAGE_SIZE = 2000
 
-_cache: tuple[float, AlertsPayloadDict] | None = None
+# Keyed by the (clamped) `days` window — each window's raw entries are cached independently so
+# pagination (offset/limit) never triggers a re-fetch, only a re-slice of the cached entries.
+_entries_cache: dict[int, tuple[float, list[AlertEntryDict]]] = {}
 
 
 class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
@@ -76,8 +85,14 @@ class AlertsPayloadDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shap
 
     generated_at: str
     source: str
-    alerts: list[AlertEntryDict]  # newest first (capped)
-    streams: list[AlertStreamDict]  # one per (repo, workflow), worst-current first
+    alerts: list[AlertEntryDict]  # newest first, this page only (see offset/limit/capped)
+    streams: list[AlertStreamDict]  # one per (repo, workflow), worst-current first, over the FULL window
+    days: int  # the day window actually served (clamped to _MAX_DAYS)
+    total_count: int  # total alert-class entries in the requested window, pre-pagination
+    returned_count: int  # len(alerts) — how many landed on this page
+    offset: int
+    limit: int
+    capped: bool  # True when more entries exist beyond this page — never a silent short list
 
 
 def _parse_line(line: str) -> AlertEntryDict | None:
@@ -285,22 +300,58 @@ def _read_ledgers_sync(days: int) -> list[AlertEntryDict]:
     return entries
 
 
-async def load_alerts_payload(source: str = "live", days: int = _DEFAULT_DAYS) -> AlertsPayloadDict:
-    """Read the ledgers (cached 60 s) and shape the alerts + lifecycle streams payload."""
-    global _cache
+async def _get_cached_entries(days: int) -> list[AlertEntryDict]:
+    """Read (or reuse the cached) sorted ledger entries for a given day-window.
+
+    Cached per `days` value so re-paginating (offset/limit) the SAME window never re-triggers a
+    GCS read — only re-reading a wider/narrower window does.
+    """
     now = time.monotonic()
-    if _cache is not None and now - _cache[0] < _CACHE_TTL_SECONDS:
-        return _cache[1]
+    cached = _entries_cache.get(days)
+    if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
+        return cached[1]
     entries = await asyncio.to_thread(_read_ledgers_sync, days)
     entries.sort(key=lambda e: e["timestamp"], reverse=True)
+    _entries_cache[days] = (now, entries)
+    return entries
+
+
+async def load_alerts_payload(
+    source: str = "live",
+    days: int = _DEFAULT_DAYS,
+    offset: int = 0,
+    limit: int = _DEFAULT_PAGE_SIZE,
+) -> AlertsPayloadDict:
+    """Read the ledgers (cached 60 s per window) and shape the paginated alerts +
+    lifecycle-streams payload.
+
+    Bounded day-partitioned reads only (single-walk discipline unchanged) — `days` is clamped to
+    `_MAX_DAYS` so a caller can't force an unbounded walk. `offset`/`limit` paginate the alerts
+    list explicitly; `capped` tells the caller whether more rows exist beyond this page, so a
+    truncation is never silent.
+    """
+    days = max(1, min(days, _MAX_DAYS))
+    offset = max(0, offset)
+    limit = max(1, min(limit, _MAX_PAGE_SIZE))
+    entries = await _get_cached_entries(days)
     # Include all alert-class entries (CI "alert" + non-CI kinds) in the alerts list.
     # "event" (promotion workflow state) entries are streams-only, not alerts.
-    alerts = [e for e in entries if e["kind"] != "event"][:_MAX_ITEMS]
+    alert_entries = [e for e in entries if e["kind"] != "event"]
+    total_count = len(alert_entries)
+    page = alert_entries[offset : offset + limit]
     payload = AlertsPayloadDict(
         generated_at=dt.datetime.now(dt.UTC).isoformat(),
         source=source,
-        alerts=alerts,
-        streams=derive_streams(entries[:_MAX_ITEMS]),
+        alerts=page,
+        # Streams derive from the FULL window (not just this page) — the (repo, workflow)
+        # lifecycle roll-up is already bounded by cardinality, not row count, so slicing it by
+        # page would silently drop streams whose entries all fall outside the current page.
+        streams=derive_streams(entries),
+        days=days,
+        total_count=total_count,
+        returned_count=len(page),
+        offset=offset,
+        limit=limit,
+        capped=offset + len(page) < total_count,
     )
-    _cache = (now, payload)
     return payload

@@ -31,7 +31,14 @@ from ._code_builds_aws import (
     is_aws_provider,
     list_codebuild_projects_sync,
 )
-from ._repo_ci_alerts import AlertsPayloadDict, load_alerts_payload
+from ._repo_ci_alerts import (
+    _DEFAULT_DAYS,
+    _DEFAULT_PAGE_SIZE,
+    _MAX_DAYS,
+    _MAX_PAGE_SIZE,
+    AlertsPayloadDict,
+    load_alerts_payload,
+)
 from ._repo_ci_escalations import fetch_active_escalations
 from ._repo_ci_fleet import fetch_fleet_git_health
 from ._repo_ci_github import (
@@ -842,13 +849,18 @@ async def get_repo_detail(
 
 
 @router.get("/alerts")
-async def get_alerts() -> AlertsPayloadDict:
+async def get_alerts(
+    days: int = Query(_DEFAULT_DAYS, ge=1, le=_MAX_DAYS),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+) -> AlertsPayloadDict:
     """Alert-ledger traceability: every Slack alert + workflow state event, grouped into
-    (repo, workflow) lifecycle streams with current vs previous state (operator 2026-06-10)."""
+    (repo, workflow) lifecycle streams with current vs previous state (operator 2026-06-10).
+    `days`/`offset`/`limit` paginate over a bounded day-window — see `capped` in the response."""
     cfg = DeploymentApiConfig()
     if cfg.is_mock_mode():
         return _mock_alerts()
-    return await load_alerts_payload()
+    return await load_alerts_payload(days=days, offset=offset, limit=limit)
 
 
 @router.get("/fleet-git-health")

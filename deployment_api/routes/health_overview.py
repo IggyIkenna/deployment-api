@@ -205,7 +205,12 @@ async def _alerts_tile() -> HealthTile:
     from deployment_api.routes._repo_ci_mocks import _mock_alerts  # pyright: ignore[reportPrivateUsage]
 
     try:
-        payload = _mock_alerts() if _cfg.is_mock_mode() else await load_alerts_payload()
+        # Explicit narrow window: this tile's "open alerts right now" signal predates
+        # deployment_alerts_ingestion_completeness_2026_07_20.md todo 8, which widened
+        # load_alerts_payload's DEFAULT day-window to 30 (for Plan B's date-range filter). A
+        # health-ping tile wants "recent", not "everything in the last month" — pin the
+        # pre-existing 2-day recency window explicitly so this call site's behavior is unchanged.
+        payload = _mock_alerts() if _cfg.is_mock_mode() else await load_alerts_payload(days=2)
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("health-overview: alerts tile failed: %s", exc)
         return HealthTile(

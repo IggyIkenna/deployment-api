@@ -429,7 +429,19 @@ def _mock_alerts() -> AlertsPayloadDict:
         ),
     ]
     ordered = sorted(entries, key=lambda e: e["timestamp"], reverse=True)
-    return AlertsPayloadDict(generated_at=_now_iso(), source="mock", alerts=ordered, streams=derive_streams(entries))
+    return AlertsPayloadDict(
+        generated_at=_now_iso(),
+        source="mock",
+        alerts=ordered,
+        streams=derive_streams(entries),
+        # Fixture is small + static — always a single, uncapped page.
+        days=30,
+        total_count=len(ordered),
+        returned_count=len(ordered),
+        offset=0,
+        limit=len(ordered),
+        capped=False,
+    )
 
 
 def _mock_fleet_git_health() -> FleetGitHealthProxyDict:
