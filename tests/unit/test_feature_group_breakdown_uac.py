@@ -7,7 +7,7 @@ Covers:
 * ``_clip_dates_to_feature_coverage`` returns the input window unchanged
   when no UAC ``FEATURE_COVERAGE_START`` floor is registered.
 * It clips ``start_date`` to the floor when registered (e.g.
-  ``aave_lending_rates`` → 2022-03-16 Aave V3 mainnet launch).
+  ``lending_rates`` → 2022-03-16 Aave V3 mainnet launch).
 * ``_build_feature_group_breakdown_uac`` falls through to the legacy
   observed-dates inference when the service is unregistered.
 * When the service IS registered, the denominator becomes
@@ -18,6 +18,15 @@ NOTE (2026-05-14): features-* sub-family service names
 (features-onchain-service, features-volatility-service, features-delta-one-service,
 features-sports-service) were consolidated into ``features-service`` in UAC
 ``EXPECTED_FEATURE_GROUPS_BY_SERVICE``. Tests updated to use ``features-service``.
+
+NOTE (2026-07-21): the onchain feature_group vocabulary was reconciled to the
+WRITER's names (uac@e9faf32e, operator ruling 2026-07-21) — the old
+Aave-specific registry names (``aave_lending_rates``, ``aave_utilization``,
+``aave_risk_params``, ``lst_staking_yields``, ``eigen_rewards``,
+``aave_rate_impact``) were renamed to the protocol-agnostic writer names
+(``lending_rates``, ``utilization``, ``risk_params``, ``lst_yields``,
+``rewards``, ``rate_impact``). Tests updated to the new vocabulary; floor
+dates in ``FEATURE_COVERAGE_START`` are unchanged.
 """
 
 from __future__ import annotations
@@ -39,10 +48,10 @@ def test_clip_unregistered_pair_returns_input_unchanged() -> None:
     assert (start, end) == ("2020-01-01", "2026-05-07")
 
 
-def test_clip_registered_aave_lending_rates_pushes_start_forward() -> None:
+def test_clip_registered_lending_rates_pushes_start_forward() -> None:
     """Aave V3 mainnet launched 2022-03-16; pre-launch dates drop out."""
     start, end = DataStatusService._clip_dates_to_feature_coverage(
-        "features-service", "aave_lending_rates", "2020-01-01", "2026-05-07"
+        "features-service", "lending_rates", "2020-01-01", "2026-05-07"
     )
     assert start == "2022-03-16"
     assert end == "2026-05-07"
@@ -51,7 +60,7 @@ def test_clip_registered_aave_lending_rates_pushes_start_forward() -> None:
 def test_clip_does_not_push_end_forward() -> None:
     """Floor only clips start; end is preserved."""
     start, end = DataStatusService._clip_dates_to_feature_coverage(
-        "features-service", "aave_lending_rates", "2023-06-01", "2024-12-31"
+        "features-service", "lending_rates", "2023-06-01", "2024-12-31"
     )
     assert start == "2023-06-01"  # already after the floor
     assert end == "2024-12-31"
@@ -106,9 +115,9 @@ def test_uac_breakdown_registered_service_uses_uac_denominator(
     features-service (consolidated from all sub-family services 2026-05-14)
     has all onchain + delta-one + sports feature_groups. With 5 days in the
     window for an Aave-derived fg (clipped post-2022-03-16), one observed
-    date for ``aave_lending_rates`` produces dates_found=1, dates_expected=5
-    (the window), missing=4. Other fgs (e.g. lst_staking_yields, defillama_tvl)
-    get 0 found / 5 expected entries.
+    date for ``lending_rates`` produces dates_found=1, dates_expected=5
+    (the window), missing=4. Other fgs (e.g. lst_yields) get 0 found / 5
+    expected entries.
     """
     from unified_api_contracts.canonical.domain.features.registry import (
         EXPECTED_FEATURE_GROUPS_BY_SERVICE,
@@ -116,7 +125,7 @@ def test_uac_breakdown_registered_service_uses_uac_denominator(
 
     df = _venue_df(
         [
-            {"date": "2024-01-01", "feature_group": "aave_lending_rates"},
+            {"date": "2024-01-01", "feature_group": "lending_rates"},
         ]
     )
     out = service_instance._build_feature_group_breakdown_uac(
@@ -126,15 +135,15 @@ def test_uac_breakdown_registered_service_uses_uac_denominator(
     # appear in the result. Use the UAC constant directly to avoid hardcoding a stale count.
     expected_count = len(EXPECTED_FEATURE_GROUPS_BY_SERVICE["features-service"])
     assert len(out) == expected_count
-    aave_entry = out["aave_lending_rates"]
-    assert isinstance(aave_entry, dict)
-    assert aave_entry["dates_found"] == 1
+    lending_entry = out["lending_rates"]
+    assert isinstance(lending_entry, dict)
+    assert lending_entry["dates_found"] == 1
     # 5-day window, all post-floor 2022-03-16.
-    assert aave_entry["dates_expected"] == 5
-    assert aave_entry["dates_missing"] == 4
+    assert lending_entry["dates_expected"] == 5
+    assert lending_entry["dates_missing"] == 4
 
     # A feature_group with 0 observed dates still appears with expected dates.
-    lst_entry = out["lst_staking_yields"]
+    lst_entry = out["lst_yields"]
     assert isinstance(lst_entry, dict)
     assert lst_entry["dates_found"] == 0
     assert lst_entry["dates_expected"] == 5
@@ -147,17 +156,17 @@ def test_uac_breakdown_pre_floor_dates_clipped(
     """Aave V3 floor (2022-03-16) clips pre-launch dates from the denominator."""
     df = _venue_df(
         [
-            {"date": "2022-03-16", "feature_group": "aave_lending_rates"},
+            {"date": "2022-03-16", "feature_group": "lending_rates"},
         ]
     )
     out = service_instance._build_feature_group_breakdown_uac(
         df, "2022-01-01", "2022-03-17", service="features-service"
     )
-    aave_entry = out["aave_lending_rates"]
-    assert isinstance(aave_entry, dict)
+    lending_entry = out["lending_rates"]
+    assert isinstance(lending_entry, dict)
     # Pre-2022-03-16 dropped → 2 days expected (2022-03-16 + 2022-03-17), not 76.
-    assert aave_entry["dates_expected"] == 2
-    assert aave_entry["dates_found"] == 1
+    assert lending_entry["dates_expected"] == 2
+    assert lending_entry["dates_found"] == 1
 
 
 def test_uac_breakdown_empty_expected_list_falls_through(
@@ -198,25 +207,27 @@ def test_uac_breakdown_observed_but_unexpected_group_surfaces_as_drift(
     """A feature_group present in the manifest but absent from the UAC expected
     list must surface as an explicit ``is_unexpected`` bucket, not be dropped.
 
-    This is the onchain vocabulary-split case: the manifest carries the WRITER's
-    names (e.g. ``lending_rates``) while the UAC registry expects a disjoint set
-    (``aave_lending_rates`` ...). Silently dropping the observed value renders a
-    vocabulary drift as a phantom coverage hole; surfacing it renders the drift
-    AS a drift. Verified: the observed writer-name appears, flagged unexpected,
-    while the expected registry names still appear (flagged not-unexpected).
+    This is the pre-2026-07-21-rename legacy-name case: manifest rows written
+    before the writer-name reconciliation (uac@e9faf32e) carry the OLD
+    Aave-specific name (``aave_lending_rates``), which the UAC registry no
+    longer expects after the rename to the protocol-agnostic ``lending_rates``.
+    Silently dropping the observed legacy value would render pre-rename rows
+    as a phantom coverage hole; surfacing it renders the drift AS a drift.
+    Verified: the legacy writer-name appears, flagged unexpected, while the
+    current registry name still appears (flagged not-unexpected).
     """
     df = _venue_df(
         [
-            {"date": "2024-01-01", "feature_group": "lending_rates"},
-            {"date": "2024-01-02", "feature_group": "lending_rates"},
+            {"date": "2024-01-01", "feature_group": "aave_lending_rates"},
+            {"date": "2024-01-02", "feature_group": "aave_lending_rates"},
         ]
     )
     out = service_instance._build_feature_group_breakdown_uac(
         df, "2024-01-01", "2024-01-05", service="features-service"
     )
-    # The observed-but-unexpected writer name is NOT dropped.
-    assert "lending_rates" in out
-    drift_entry = out["lending_rates"]
+    # The observed-but-unexpected legacy writer name is NOT dropped.
+    assert "aave_lending_rates" in out
+    drift_entry = out["aave_lending_rates"]
     assert isinstance(drift_entry, dict)
     assert drift_entry["is_unexpected"] is True
     assert drift_entry["dates_found"] == 2
@@ -224,7 +235,7 @@ def test_uac_breakdown_observed_but_unexpected_group_surfaces_as_drift(
     assert drift_entry["dates_missing"] == 0
     assert drift_entry["dates_expected"] == 2
 
-    # Registry-expected groups still appear and are flagged not-unexpected.
-    aave_entry = out["aave_lending_rates"]
-    assert isinstance(aave_entry, dict)
-    assert aave_entry["is_unexpected"] is False
+    # Registry-current name still appears and is flagged not-unexpected.
+    lending_entry = out["lending_rates"]
+    assert isinstance(lending_entry, dict)
+    assert lending_entry["is_unexpected"] is False

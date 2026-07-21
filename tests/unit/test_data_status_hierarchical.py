@@ -899,7 +899,7 @@ def _features_onchain_manifest() -> pd.DataFrame:
         {
             "venue": "LIDO",
             "chain": "ETHEREUM",
-            "feature_group": "lst_staking_yields",
+            "feature_group": "lst_yields",
             "feature_family": "onchain",
             "timeframe": "1d",
             "instrument_id": "stETH",
@@ -910,7 +910,7 @@ def _features_onchain_manifest() -> pd.DataFrame:
         {
             "venue": "AAVE_V3-ARBITRUM",
             "chain": "ARBITRUM",
-            "feature_group": "aave_lending_rates",
+            "feature_group": "lending_rates",
             "feature_family": "",  # missing — fallback should fill via UAC.
             "timeframe": "1h",
             "instrument_id": "USDC",
@@ -953,11 +953,11 @@ class TestFeatureFamilyAxis:
         df = _features_onchain_manifest()
         stamped = _hier._stamp_feature_family(df)  # pyright: ignore[reportPrivateUsage]
         # Pre-stamped rows preserve their write-time value (writer wins).
-        lst = stamped[stamped["feature_group"] == "lst_staking_yields"].iloc[0]
+        lst = stamped[stamped["feature_group"] == "lst_yields"].iloc[0]
         assert lst["feature_family"] == "onchain"
-        # Read-side UAC fallback fills the blank aave_lending_rates row.
-        aave = stamped[stamped["feature_group"] == "aave_lending_rates"].iloc[0]
-        assert aave["feature_family"] == "onchain"
+        # Read-side UAC fallback fills the blank lending_rates row.
+        lending = stamped[stamped["feature_group"] == "lending_rates"].iloc[0]
+        assert lending["feature_family"] == "onchain"
         # Pre-stamped volatility rows survive even though the placeholder
         # feature_group has no UAC mapping (writer is the SSOT).
         vol = stamped[stamped["instrument_id"] == "BTC"].iloc[0]

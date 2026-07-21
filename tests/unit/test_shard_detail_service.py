@@ -715,7 +715,7 @@ class TestResolveInstrumentTypeAuto:
                 data_type="lst_yields",
                 day="2026-04-18",
                 venue="LIDO",
-                feature_group="lst_staking_yields",
+                feature_group="lst_yields",
             )
         assert resp.available is False
         assert resp.feature_family == "onchain"
@@ -812,10 +812,10 @@ class TestResolveInstrumentTypeAuto:
                 instrument_type="LST",
                 data_type="lst_yields",
                 day="2026-04-18",
-                feature_group="lst_staking_yields",
+                feature_group="lst_yields",
             )
         # Multi-value detected → falls back to UAC mapping for
-        # ``lst_staking_yields`` (onchain).
+        # ``lst_yields`` (onchain).
         assert resp.available is True
         assert resp.feature_family == "onchain"
 
