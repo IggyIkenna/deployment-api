@@ -434,6 +434,10 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     cost_actual_usd: float | None = None  # net cost on the most recent COMPLETE billing day
     cost_avg_7d_usd: float | None = None  # avg net cost over days actually billed (not ÷7 fixed window)
     cost_projected_24h_usd: float | None = None  # most recent COMPLETE day's net; partial-day-normalised fallback
+    # "complete" | "partial" | None (no billing row yet). "partial" means `cost_actual_usd` /
+    # `cost_projected_24h_usd` fall back to a still-accruing day (no complete billing day exists yet)
+    # — the UI colour-codes off this, no text label (decision 4, 2026-07-20).
+    cost_basis: str | None = None
     # WS-2 date-range overlap (raw registry interval, ISO) — None for kinds with no registry entry
     # (Cloud Run jobs/services, unmanaged VMs, ...); populated only in ``_vm_item``. Distinct from
     # ``last_run_at`` (which conflates started/completed for display) because the overlap formula
@@ -1940,6 +1944,7 @@ def _attach_costs(items: list[DeploymentItem], aws_instance_id_by_name: dict[str
             item.cost_actual_usd = rc.actual_usd
             item.cost_avg_7d_usd = rc.avg_7d_usd
             item.cost_projected_24h_usd = rc.projected_24h_usd
+            item.cost_basis = rc.cost_basis
 
 
 def _store_inventory(cache_key: str, items: list[DeploymentItem]) -> None:

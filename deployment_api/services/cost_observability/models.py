@@ -8,6 +8,7 @@ built from a list of those. Adding a fourth cloud is a new adapter, not a UI cha
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -81,6 +82,10 @@ class ResourceDailyCost:  # CORRECT-LOCAL: internal per-resource cost signal, no
     actual_usd: float  # net cost on the most recent COMPLETE billing day
     avg_7d_usd: float  # average net cost over days the resource actually has billing rows (not ÷7)
     projected_24h_usd: float  # most recent COMPLETE day's net; partial-day-normalised (÷hours x24) fallback
+    # "complete" when `actual_usd`/`projected_24h_usd` come from a COMPLETE billing day; "partial" when
+    # no complete day exists yet and both fall back to the latest (still-accruing) day. UI colour-codes
+    # off this — no text label (operator decision 4, 2026-07-20).
+    cost_basis: Literal["partial", "complete"]
 
 
 class CloudSummary(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model

@@ -305,6 +305,10 @@ class CostObservabilityService:
           complete day exists yet. ``hours_billed`` is wall-clock hours elapsed since UTC midnight for
           that partial day — not a new hourly billing query (the snapshot is daily-grained) — floored
           at 1h so the first few minutes of a new day don't produce a runaway multiplier.
+        * ``cost_basis`` — ``"complete"`` when a complete billing day exists (``actual_usd`` /
+          ``projected_24h_usd`` both come from it); ``"partial"`` when no complete day exists yet and
+          both fall back to the latest, still-accruing day. The UI colour-codes ``actual_usd`` off this
+          flag (no text label — operator decision 4, 2026-07-20).
 
         Rows with no ``resource_id`` (no billing granularity) are skipped — the caller shows None.
         """
@@ -332,6 +336,7 @@ class CostObservabilityService:
                 actual_usd=round(day_net[latest], 2),
                 avg_7d_usd=round(sum(daily) / len(daily), 2),
                 projected_24h_usd=round(projected_24h, 2),
+                cost_basis="complete" if complete_days else "partial",
             )
         return out
 
