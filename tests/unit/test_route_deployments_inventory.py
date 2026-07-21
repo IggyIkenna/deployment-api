@@ -2315,3 +2315,121 @@ def test_run_log_metadata_honest_absence_when_neither_path_exists(client_invento
     body = resp.json()
     assert body["exists"] is False
     assert body["size_bytes"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /deployments/{name}/run-log/tail — bounded byte-range tail
+# ---------------------------------------------------------------------------
+
+
+def test_run_log_tail_live_path_resolved(client_inventory: TestClient) -> None:
+    """Live path hit: bounded tail read + line split, capped to the configured line count."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        bucket="deployment-scripts-test",
+        size=10_000_000,
+        last_modified="2026-07-21T04:00:00Z",
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+                location="live",
+                metadata=live_meta,
+            ),
+        ) as mock_resolve,
+        patch(
+            "deployment_api.routes.deployments_inventory.read_run_log_tail",
+            return_value=(["line1", "line2", "line3"], 262_144),
+        ) as mock_tail,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_tail_max_lines = 300
+        mock_cfg.run_log_tail_max_bytes = 262_144
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/tail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert body["location"] == "live"
+    assert body["size_bytes"] == 10_000_000
+    assert body["lines"] == ["line1", "line2", "line3"]
+    assert body["line_count"] == 3
+    assert body["tail_bytes"] == 262_144
+    mock_resolve.assert_called_once_with("cefi-binance-spot-20260622-014158", "test-project")
+    mock_tail.assert_called_once_with(
+        "gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        10_000_000,
+        max_bytes=262_144,
+        max_lines=300,
+    )
+
+
+def test_run_log_tail_honest_absence_when_neither_path_exists(client_inventory: TestClient) -> None:
+    """Neither live nor archive object exists: honest exists=False, no GCS read attempted."""
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/log-archive/final/some-old-vm/run.log",
+                location="archive",
+                metadata=None,
+            ),
+        ),
+        patch("deployment_api.routes.deployments_inventory.read_run_log_tail") as mock_tail,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_tail_max_lines = 300
+        resp = client_inventory.get("/api/deployments/some-old-vm/run-log/tail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False
+    assert body["lines"] == []
+    assert body["line_count"] == 0
+    mock_tail.assert_not_called()
+
+
+def test_run_log_tail_lines_query_param_clamped_to_config_cap(client_inventory: TestClient) -> None:
+    """A ``lines`` query above the configured cap is clamped, never passed through raw."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/vm-x/run.log", bucket="deployment-scripts-test", size=1000, last_modified="2026-07-21T04:00:00Z"
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/vm-x/run.log", location="live", metadata=live_meta
+            ),
+        ),
+        patch(
+            "deployment_api.routes.deployments_inventory.read_run_log_tail",
+            return_value=([], 0),
+        ) as mock_tail,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_tail_max_lines = 300
+        mock_cfg.run_log_tail_max_bytes = 262_144
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/tail?lines=5000")
+    assert resp.status_code == 200
+    mock_tail.assert_called_once_with(
+        "gs://deployment-scripts-test/vm-logs/vm-x/run.log",
+        1000,
+        max_bytes=262_144,
+        max_lines=300,
+    )

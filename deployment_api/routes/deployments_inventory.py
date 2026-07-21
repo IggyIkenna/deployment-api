@@ -101,6 +101,7 @@ from deployment_api.routes._leaked_resources import (
     orphaned_static_ip,
 )
 from deployment_api.routes._run_log_resolution import resolve_run_log_location
+from deployment_api.routes._run_log_tail import read_run_log_tail
 
 # Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
 # and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
@@ -2284,6 +2285,67 @@ def get_run_log_metadata(name: str) -> RunLogMetadataResponse:
         uri=resolved.uri,
         size_bytes=resolved.metadata.size,
         last_modified=resolved.metadata.last_modified,
+    )
+
+
+class RunLogTailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Bounded tail of a VM's run.log — capped lines from a capped byte-range read."""
+
+    name: str
+    exists: bool
+    location: str | None = None  # "live" | "archive"; None when no log object exists anywhere
+    uri: str = ""
+    size_bytes: int | None = None
+    last_modified: str | None = None
+    lines: list[str] = []
+    line_count: int = 0
+    tail_bytes: int = 0  # actual bytes read from GCS for this tail (<= configured max_bytes)
+
+
+@router.get("/deployments/{name}/run-log/tail", response_model=RunLogTailResponse)
+def get_run_log_tail(name: str, lines: int | None = None) -> RunLogTailResponse:
+    """Bounded tail of ``name``'s run.log — byte-range read of only the last
+    ``DeploymentApiConfig.run_log_tail_max_bytes`` (default 256KB), split to the last
+    ``lines`` (clamped to ``run_log_tail_max_lines``, default 300). Never loads the full
+    object into API memory or the response — the GCS read itself is capped at
+    ``run_log_tail_max_bytes`` regardless of the object's real size (observed up to
+    13.4MB; 20-30MB is a plausible worst case).
+    """
+    line_cap = _cfg.run_log_tail_max_lines
+    max_lines = line_cap if lines is None else max(1, min(lines, line_cap))
+    if _cfg.is_mock_mode():
+        mock_lines = [f"[mock] run.log line {i}" for i in range(max_lines)]
+        return RunLogTailResponse(
+            name=name,
+            exists=True,
+            location="live",
+            uri=f"gs://deployment-scripts-mock/vm-logs/{name}/run.log",  # noqa: gs-uri (mock fixture URI)
+            size_bytes=842_331,
+            last_modified="2026-07-21T04:00:00Z",
+            lines=mock_lines,
+            line_count=len(mock_lines),
+            tail_bytes=sum(len(line.encode("utf-8")) + 1 for line in mock_lines),
+        )
+    project_id = _cfg.require_gcp_project_id()
+    resolved = resolve_run_log_location(name, project_id)
+    if resolved.metadata is None:
+        return RunLogTailResponse(name=name, exists=False)
+    tail_lines, tail_bytes = read_run_log_tail(
+        resolved.uri,
+        resolved.metadata.size,
+        max_bytes=_cfg.run_log_tail_max_bytes,
+        max_lines=max_lines,
+    )
+    return RunLogTailResponse(
+        name=name,
+        exists=True,
+        location=resolved.location,
+        uri=resolved.uri,
+        size_bytes=resolved.metadata.size,
+        last_modified=resolved.metadata.last_modified,
+        lines=tail_lines,
+        line_count=len(tail_lines),
+        tail_bytes=tail_bytes,
     )
 
 
