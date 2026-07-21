@@ -841,6 +841,7 @@ def test_persist_alert_writes_expected_row_shape() -> None:
         return f"gs://{bucket}/{path}"
 
     with (
+        patch.object(_inv_mod, "resolve_bucket_name", return_value="unified-trading-cicd-events"),
         patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
         patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
     ):
@@ -851,6 +852,7 @@ def test_persist_alert_writes_expected_row_shape() -> None:
             message="cefi-binance-spot is oom-risk",
             dedup_key="vm-health-cefi-binance-spot-oom-risk",
         )
+    # QG 5.69: bucket comes from resolve_bucket_name(), never a hardcoded literal.
     assert written_bucket == "unified-trading-cicd-events"
     assert written_path.startswith("cicd/alerts/")
     assert written_path.endswith("/alerts.jsonl")
@@ -879,6 +881,7 @@ def test_persist_alert_writes_subject_repo_distinct_from_emitter() -> None:
         return f"gs://{bucket}/{path}"
 
     with (
+        patch.object(_inv_mod, "resolve_bucket_name", return_value="unified-trading-cicd-events"),
         patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
         patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
     ):

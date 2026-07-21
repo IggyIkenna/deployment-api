@@ -65,11 +65,13 @@ from unified_trading_library import (
     ACTIVE_PREFIX,
     ARCHIVE_PREFIX,
     DEFAULT_BUCKET,
+    BucketNamingError,
     DeploymentRegistryEntry,
     StorageClient,
     download_from_storage,
     generate_download_url,
     get_storage_client,
+    resolve_bucket_name,
     split_gcs_uri,
     upload_to_storage,
     vm_log_stream_uri,
@@ -341,9 +343,6 @@ def _census_or_degrade[T](label: str, future: Future[T], default: T) -> T:
 _vm_entry_by_name_cache: dict[str, DeploymentRegistryEntry] = {}
 _vm_entry_by_name_lock = threading.Lock()
 
-# Shared GCS alert ledger (same store notify-slack.yml + agent-orchestrator's watchers
-# write to) — GET /api/alerts reads it via _repo_ci_alerts.py, no reader-side change needed.
-_ALERTS_BUCKET = "unified-trading-cicd-events"
 # D.3 composite states this todo alerts on. "stalled" cannot occur yet (its manifest
 # object-delta signal is a separate, not-yet-shipped sibling todo — see
 # _composite_health_status) but is included so no code change is needed once it lands.
@@ -637,6 +636,7 @@ def _persist_alert(
     structural absence rather than fabricating a value.
     """
     try:
+        bucket = resolve_bucket_name(cloud="gcp", kind="cicd-events")
         date = datetime.now(UTC).strftime("%Y-%m-%d")
         blob_path = f"cicd/alerts/{date}/alerts.jsonl"
         row: dict[str, object] = {
@@ -654,12 +654,12 @@ def _persist_alert(
         }
         line = json.dumps(row)
         try:
-            existing = download_from_storage(_ALERTS_BUCKET, blob_path).decode("utf-8", errors="replace")
+            existing = download_from_storage(bucket, blob_path).decode("utf-8", errors="replace")
         except (OSError, ValueError, RuntimeError):  # blob may not exist yet -> start fresh
             existing = ""
         new_content = (existing.rstrip("\n") + "\n" + line + "\n").lstrip("\n")
-        upload_to_storage(_ALERTS_BUCKET, blob_path, new_content.encode("utf-8"), content_type="application/jsonl")
-    except (OSError, ValueError, RuntimeError) as exc:
+        upload_to_storage(bucket, blob_path, new_content.encode("utf-8"), content_type="application/jsonl")
+    except (BucketNamingError, OSError, ValueError, RuntimeError) as exc:
         logger.warning("inventory: alert-ledger persist failed (%s/%s): %s", alert_class, workflow_name, exc)
 
 

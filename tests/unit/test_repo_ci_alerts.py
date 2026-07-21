@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unified_trading_library import setup_events
+from unified_trading_library import BucketNamingError, setup_events
 
 from deployment_api.routes._repo_ci_alerts import (
     AlertEntryDict,
@@ -191,6 +191,66 @@ class TestReadAlertingServiceSync:
             side_effect=RuntimeError("no yaml"),
         ):
             assert _read_alerting_service_sync(days=1) == []
+
+
+class TestReadLedgersSync:
+    """deployment_alerts_ingestion_completeness_2026_07_20.md todo 5 (QG 5.69): the CI-alerts
+    bucket resolves via resolve_bucket_name(), never a hardcoded literal."""
+
+    def test_resolves_bucket_and_reads_ledgers(self) -> None:
+        from unittest.mock import MagicMock
+
+        from deployment_api.routes._repo_ci_alerts import _read_ledgers_sync
+
+        alert_blob = MagicMock()
+        alert_blob.name = "cicd/alerts/2026-07-21/alerts.jsonl"
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = [alert_blob]
+        line = (
+            b'{"event_type":"slack_alert","timestamp":"2026-07-21T09:00:00Z","repo":"deployment-api",'
+            b'"workflow_name":"vm-health-x","severity":"CRITICAL","message":"m"}\n'
+        )
+        with (
+            patch(
+                "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+                return_value="unified-trading-cicd-events",
+            ),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+            patch("deployment_api.routes._repo_ci_alerts.download_from_storage", return_value=line),
+            patch("deployment_api.routes._repo_ci_alerts._read_alerting_service_sync", return_value=[]),
+        ):
+            entries = _read_ledgers_sync(days=1)
+        assert any(e["workflow_name"] == "vm-health-x" for e in entries)
+        mock_client.list_blobs.assert_any_call("unified-trading-cicd-events", prefix="cicd/alerts/2026-07-21/")
+
+    def test_bucket_resolution_failure_degrades_to_alerting_service_only(self) -> None:
+        """A cicd-events resolution failure must not blank the alerting-service merge —
+        best-effort degradation, matching the pattern _read_alerting_service_sync already uses."""
+        from deployment_api.routes._repo_ci_alerts import AlertEntryDict, _read_ledgers_sync
+
+        fallback_entry = AlertEntryDict(
+            kind="alert",
+            timestamp="2026-07-21T09:00:00Z",
+            repo="",
+            workflow_name="CONSOLIDATOR_DOWN",
+            severity="CRITICAL",
+            conclusion=None,
+            message="m",
+            run_url=None,
+            alert_class="CONSOLIDATOR_DOWN",
+        )
+        with (
+            patch(
+                "deployment_api.routes._repo_ci_alerts.resolve_bucket_name",
+                side_effect=BucketNamingError("no yaml"),
+            ),
+            patch(
+                "deployment_api.routes._repo_ci_alerts._read_alerting_service_sync",
+                return_value=[fallback_entry],
+            ),
+        ):
+            entries = _read_ledgers_sync(days=1)
+        assert entries == [fallback_entry]
 
 
 @pytest.fixture
