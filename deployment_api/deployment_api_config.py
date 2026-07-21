@@ -678,6 +678,35 @@ class DeploymentApiConfig(UnifiedCloudConfig):
     )
 
     # =========================================================================
+    # RUN.LOG TAIL ENDPOINT (WS-4)
+    # =========================================================================
+
+    run_log_tail_max_bytes: int = Field(
+        default=256 * 1024,  # 256 KiB
+        validation_alias=AliasChoices("RUN_LOG_TAIL_MAX_BYTES"),
+        description=(
+            "Max bytes read from the tail of a VM's run.log via a GCS byte-range read "
+            "(never the full object — observed sizes run 362KB-13.4MB). Bounds both API "
+            "memory and response size regardless of the real object size."
+        ),
+    )
+
+    run_log_tail_max_lines: int = Field(
+        default=300,
+        validation_alias=AliasChoices("RUN_LOG_TAIL_MAX_LINES"),
+        description="Max lines returned by the run.log tail endpoint, taken from the end of the byte-range read.",
+    )
+
+    run_log_download_url_expiry_minutes: int = Field(
+        default=15,
+        validation_alias=AliasChoices("RUN_LOG_DOWNLOAD_URL_EXPIRY_MINUTES"),
+        description=(
+            "Validity window for the signed download URL returned by GET .../run-log/download (decision 4: "
+            "short-lived, client downloads directly from GCS — the API never streams the object itself)."
+        ),
+    )
+
+    # =========================================================================
     # DERIVED PROPERTIES
     # =========================================================================
 

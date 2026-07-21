@@ -56,11 +56,39 @@ class TestParseLine:
         assert parsed["kind"] == "event"
         assert parsed["repo"] == "greeks-service"
         assert parsed["conclusion"] == "failure"
+        # gha_ci_events plane: repo_name IS the subject (each repo reports on itself).
+        assert parsed.get("subject_repo") == "greeks-service"
 
     def test_junk_lines_skipped(self) -> None:
         assert _parse_line("not json") is None
         assert _parse_line('{"event_type":"unknown"}') is None
         assert _parse_line("[1,2]") is None
+
+    def test_slack_alert_subject_repo_distinct_from_emitter(self) -> None:
+        """deployment_alerts_ingestion_completeness_2026_07_20.md todo 4: a cross-repo watcher
+        (e.g. ci-status-update.yml, running in unified-trading-pm) reports on unified-trading-library
+        — repo must stay the emitter while subject_repo carries the actual regression's repo."""
+        line = (
+            '{"event_type":"slack_alert","timestamp":"2026-07-21T12:00:00Z","repo":"unified-trading-pm",'
+            '"subject_repo":"unified-trading-library","workflow_name":"ci-status-update",'
+            '"severity":"CRITICAL","conclusion":"failure","run_url":"u","message":"CI regression"}'
+        )
+        parsed = _parse_line(line)
+        assert parsed is not None
+        assert parsed["repo"] == "unified-trading-pm"
+        assert parsed.get("subject_repo") == "unified-trading-library"
+        assert parsed["repo"] != parsed.get("subject_repo")
+
+    def test_slack_alert_subject_repo_absent_on_old_rows(self) -> None:
+        """A row written before todo 4 (no subject_repo key at all) degrades to None, not the
+        emitter — never silently misreport the emitter as the subject."""
+        line = (
+            '{"event_type":"slack_alert","timestamp":"2026-06-10T12:00:00Z","repo":"unified-trading-pm",'
+            '"workflow_name":"sit-unlock","severity":"INFO","conclusion":"success","run_url":"u","message":"ok"}'
+        )
+        parsed = _parse_line(line)
+        assert parsed is not None
+        assert parsed.get("subject_repo") is None
 
 
 class TestParseAlertingServiceLine:

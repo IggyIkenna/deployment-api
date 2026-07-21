@@ -858,8 +858,42 @@ def test_persist_alert_writes_expected_row_shape() -> None:
     assert row["event_type"] == "slack_alert"
     assert row["alert_class"] == "oom-risk"
     assert row["repo"] == "deployment-api"
+    assert row["subject_repo"] is None  # no repo-scoped subject for a VM-health alert
     assert row["workflow_name"] == "vm-health-cefi-binance-spot"
     assert row["severity"] == "CRITICAL"
+
+
+def test_persist_alert_writes_subject_repo_distinct_from_emitter() -> None:
+    """deployment_alerts_ingestion_completeness_2026_07_20.md todo 4: subject_repo (the repo the
+    alert is ABOUT) must be populated distinctly from repo (the emitter, always deployment-api)."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    written_data = b""
+
+    def _fake_download(bucket: str, path: str) -> bytes:
+        raise FileNotFoundError("no existing blob")
+
+    def _fake_upload(bucket: str, path: str, data: bytes, content_type: str | None = None) -> str:
+        nonlocal written_data
+        written_data = data
+        return f"gs://{bucket}/{path}"
+
+    with (
+        patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
+        patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
+    ):
+        _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
+            alert_class="cross-repo-regression",
+            workflow_name="ci-status-update",
+            severity="CRITICAL",
+            message="unified-trading-library CI regression",
+            dedup_key="qg-fail:unified-trading-library:live-defi-rollout",
+            subject_repo="unified-trading-library",
+        )
+    row = json.loads(written_data.decode("utf-8").strip())
+    assert row["repo"] == "deployment-api"
+    assert row["subject_repo"] == "unified-trading-library"
+    assert row["repo"] != row["subject_repo"]
 
 
 def test_persist_alert_never_raises_on_storage_failure() -> None:
@@ -2315,3 +2349,197 @@ def test_run_log_metadata_honest_absence_when_neither_path_exists(client_invento
     body = resp.json()
     assert body["exists"] is False
     assert body["size_bytes"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /deployments/{name}/run-log/tail — bounded byte-range tail
+# ---------------------------------------------------------------------------
+
+
+def test_run_log_tail_live_path_resolved(client_inventory: TestClient) -> None:
+    """Live path hit: bounded tail read + line split, capped to the configured line count."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        bucket="deployment-scripts-test",
+        size=10_000_000,
+        last_modified="2026-07-21T04:00:00Z",
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+                location="live",
+                metadata=live_meta,
+            ),
+        ) as mock_resolve,
+        patch(
+            "deployment_api.routes.deployments_inventory.read_run_log_tail",
+            return_value=(["line1", "line2", "line3"], 262_144),
+        ) as mock_tail,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_tail_max_lines = 300
+        mock_cfg.run_log_tail_max_bytes = 262_144
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/tail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert body["location"] == "live"
+    assert body["size_bytes"] == 10_000_000
+    assert body["lines"] == ["line1", "line2", "line3"]
+    assert body["line_count"] == 3
+    assert body["tail_bytes"] == 262_144
+    mock_resolve.assert_called_once_with("cefi-binance-spot-20260622-014158", "test-project")
+    mock_tail.assert_called_once_with(
+        "gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        10_000_000,
+        max_bytes=262_144,
+        max_lines=300,
+    )
+
+
+def test_run_log_tail_honest_absence_when_neither_path_exists(client_inventory: TestClient) -> None:
+    """Neither live nor archive object exists: honest exists=False, no GCS read attempted."""
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/log-archive/final/some-old-vm/run.log",
+                location="archive",
+                metadata=None,
+            ),
+        ),
+        patch("deployment_api.routes.deployments_inventory.read_run_log_tail") as mock_tail,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_tail_max_lines = 300
+        resp = client_inventory.get("/api/deployments/some-old-vm/run-log/tail")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False
+    assert body["lines"] == []
+    assert body["line_count"] == 0
+    mock_tail.assert_not_called()
+
+
+def test_run_log_tail_lines_query_param_clamped_to_config_cap(client_inventory: TestClient) -> None:
+    """A ``lines`` query above the configured cap is clamped, never passed through raw."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/vm-x/run.log", bucket="deployment-scripts-test", size=1000, last_modified="2026-07-21T04:00:00Z"
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/vm-x/run.log", location="live", metadata=live_meta
+            ),
+        ),
+        patch(
+            "deployment_api.routes.deployments_inventory.read_run_log_tail",
+            return_value=([], 0),
+        ) as mock_tail,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_tail_max_lines = 300
+        mock_cfg.run_log_tail_max_bytes = 262_144
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/tail?lines=5000")
+    assert resp.status_code == 200
+    mock_tail.assert_called_once_with(
+        "gs://deployment-scripts-test/vm-logs/vm-x/run.log",
+        1000,
+        max_bytes=262_144,
+        max_lines=300,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /deployments/{name}/run-log/download — short-lived signed URL (decision 4)
+# ---------------------------------------------------------------------------
+
+
+def test_run_log_download_live_path_resolved(client_inventory: TestClient) -> None:
+    """Live path hit: a signed download URL is generated for the resolved bucket/object."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        bucket="deployment-scripts-test",
+        size=842_331,
+        last_modified="2026-07-21T04:00:00Z",
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+                location="live",
+                metadata=live_meta,
+            ),
+        ) as mock_resolve,
+        patch(
+            "deployment_api.routes.deployments_inventory.generate_download_url",
+            return_value="https://storage.googleapis.com/deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log?X-Goog-Signature=abc",
+        ) as mock_signed_url,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        mock_cfg.run_log_download_url_expiry_minutes = 15
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/download")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert body["location"] == "live"
+    assert body["download_url"].startswith("https://storage.googleapis.com/")
+    assert body["expires_in_seconds"] == 900
+    mock_resolve.assert_called_once_with("cefi-binance-spot-20260622-014158", "test-project")
+    mock_signed_url.assert_called_once_with(
+        "deployment-scripts-test",
+        "vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        expiry_minutes=15,
+    )
+
+
+def test_run_log_download_honest_absence_when_neither_path_exists(client_inventory: TestClient) -> None:
+    """Neither live nor archive object exists: honest exists=False, no signed URL generated."""
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/log-archive/final/some-old-vm/run.log",
+                location="archive",
+                metadata=None,
+            ),
+        ),
+        patch("deployment_api.routes.deployments_inventory.generate_download_url") as mock_signed_url,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get("/api/deployments/some-old-vm/run-log/download")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False
+    assert body["download_url"] == ""
+    mock_signed_url.assert_not_called()

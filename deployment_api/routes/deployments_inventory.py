@@ -68,7 +68,9 @@ from unified_trading_library import (
     DeploymentRegistryEntry,
     StorageClient,
     download_from_storage,
+    generate_download_url,
     get_storage_client,
+    split_gcs_uri,
     upload_to_storage,
     vm_log_stream_uri,
 )
@@ -101,6 +103,7 @@ from deployment_api.routes._leaked_resources import (
     orphaned_static_ip,
 )
 from deployment_api.routes._run_log_resolution import resolve_run_log_location
+from deployment_api.routes._run_log_tail import read_run_log_tail
 
 # Service-health sub-taxonomy classifiers (parent D.3). Defined in their own leaf module
 # and re-exported here (see __all__) because the AWS row builder in ``_aws_deployments`` —
@@ -610,7 +613,15 @@ def _uptime_hours(entry: DeploymentRegistryEntry, now: datetime) -> float | None
     return max(0.0, (ended - started).total_seconds() / 3600.0)
 
 
-def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, message: str, dedup_key: str) -> None:
+def _persist_alert(
+    *,
+    alert_class: str,
+    workflow_name: str,
+    severity: str,
+    message: str,
+    dedup_key: str,
+    subject_repo: str | None = None,
+) -> None:
     """Append one JSONL row to the shared GCS alert ledger — best-effort, never raises.
 
     Mirrors agent-orchestrator's ``notifications.slack._persist_to_gcs`` write shape exactly
@@ -618,6 +629,12 @@ def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, messa
     ``GET /api/alerts`` (``_repo_ci_alerts.py``'s ``_parse_line``) picks these up alongside
     CI/CD + other watcher alerts with zero reader-side changes. Shard-level isolation: a
     ledger-write failure logs a warning and never breaks the inventory computation it rides on.
+
+    ``subject_repo`` is the repo the alert is ABOUT, distinct from ``repo`` (the emitter, always
+    "deployment-api" here) — see the ``FIELD_COVERAGE`` contract in ``unified_api_contracts.alerting``
+    and `deployment_alerts_ingestion_completeness_2026_07_20.md` todo 4. Callers with no repo-scoped
+    subject (e.g. VM-health alerts) simply omit it, matching the ``zombie_watchdog`` plane's
+    structural absence rather than fabricating a value.
     """
     try:
         date = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -626,6 +643,7 @@ def _persist_alert(*, alert_class: str, workflow_name: str, severity: str, messa
             "event_type": "slack_alert",
             "timestamp": datetime.now(UTC).isoformat(),
             "repo": "deployment-api",
+            "subject_repo": subject_repo,
             "workflow_name": workflow_name,
             "severity": severity,
             "conclusion": None,
@@ -2284,6 +2302,110 @@ def get_run_log_metadata(name: str) -> RunLogMetadataResponse:
         uri=resolved.uri,
         size_bytes=resolved.metadata.size,
         last_modified=resolved.metadata.last_modified,
+    )
+
+
+class RunLogTailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Bounded tail of a VM's run.log — capped lines from a capped byte-range read."""
+
+    name: str
+    exists: bool
+    location: str | None = None  # "live" | "archive"; None when no log object exists anywhere
+    uri: str = ""
+    size_bytes: int | None = None
+    last_modified: str | None = None
+    lines: list[str] = []
+    line_count: int = 0
+    tail_bytes: int = 0  # actual bytes read from GCS for this tail (<= configured max_bytes)
+
+
+@router.get("/deployments/{name}/run-log/tail", response_model=RunLogTailResponse)
+def get_run_log_tail(name: str, lines: int | None = None) -> RunLogTailResponse:
+    """Bounded tail of ``name``'s run.log — byte-range read of only the last
+    ``DeploymentApiConfig.run_log_tail_max_bytes`` (default 256KB), split to the last
+    ``lines`` (clamped to ``run_log_tail_max_lines``, default 300). Never loads the full
+    object into API memory or the response — the GCS read itself is capped at
+    ``run_log_tail_max_bytes`` regardless of the object's real size (observed up to
+    13.4MB; 20-30MB is a plausible worst case).
+    """
+    line_cap = _cfg.run_log_tail_max_lines
+    max_lines = line_cap if lines is None else max(1, min(lines, line_cap))
+    if _cfg.is_mock_mode():
+        mock_lines = [f"[mock] run.log line {i}" for i in range(max_lines)]
+        return RunLogTailResponse(
+            name=name,
+            exists=True,
+            location="live",
+            uri=f"gs://deployment-scripts-mock/vm-logs/{name}/run.log",  # noqa: gs-uri (mock fixture URI)
+            size_bytes=842_331,
+            last_modified="2026-07-21T04:00:00Z",
+            lines=mock_lines,
+            line_count=len(mock_lines),
+            tail_bytes=sum(len(line.encode("utf-8")) + 1 for line in mock_lines),
+        )
+    project_id = _cfg.require_gcp_project_id()
+    resolved = resolve_run_log_location(name, project_id)
+    if resolved.metadata is None:
+        return RunLogTailResponse(name=name, exists=False)
+    tail_lines, tail_bytes = read_run_log_tail(
+        resolved.uri,
+        resolved.metadata.size,
+        max_bytes=_cfg.run_log_tail_max_bytes,
+        max_lines=max_lines,
+    )
+    return RunLogTailResponse(
+        name=name,
+        exists=True,
+        location=resolved.location,
+        uri=resolved.uri,
+        size_bytes=resolved.metadata.size,
+        last_modified=resolved.metadata.last_modified,
+        lines=tail_lines,
+        line_count=len(tail_lines),
+        tail_bytes=tail_bytes,
+    )
+
+
+class RunLogDownloadResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
+    """Short-lived signed URL for a VM's run.log — client downloads directly from GCS."""
+
+    name: str
+    exists: bool
+    location: str | None = None  # "live" | "archive"; None when no log object exists anywhere
+    download_url: str = ""
+    expires_in_seconds: int = 0
+
+
+@router.get("/deployments/{name}/run-log/download", response_model=RunLogDownloadResponse)
+def get_run_log_download(name: str) -> RunLogDownloadResponse:
+    """Signed download URL for ``name``'s run.log (WS-4 decision 4).
+
+    Resolves the object live-first/archive-fallback (same resolution as the metadata/tail
+    endpoints), then returns a short-lived signed URL the client downloads directly from
+    GCS — the API never streams the object (up to 13.4MB observed, 20-30MB plausible)
+    through itself.
+    """
+    if _cfg.is_mock_mode():
+        return RunLogDownloadResponse(
+            name=name,
+            exists=True,
+            location="live",
+            download_url=f"https://storage.googleapis.com/deployment-scripts-mock/vm-logs/{name}/run.log?mock-signed",
+            expires_in_seconds=_cfg.run_log_download_url_expiry_minutes * 60,
+        )
+    project_id = _cfg.require_gcp_project_id()
+    resolved = resolve_run_log_location(name, project_id)
+    if resolved.metadata is None:
+        return RunLogDownloadResponse(name=name, exists=False)
+    bucket, object_path = split_gcs_uri(resolved.uri)
+    expiry_minutes = _cfg.run_log_download_url_expiry_minutes
+    url = generate_download_url(bucket, object_path, expiry_minutes=expiry_minutes)
+    return RunLogDownloadResponse(
+        name=name,
+        exists=True,
+        location=resolved.location,
+        download_url=url,
+        expires_in_seconds=expiry_minutes * 60,
     )
 
 
