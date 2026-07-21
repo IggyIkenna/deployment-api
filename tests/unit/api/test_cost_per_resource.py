@@ -73,6 +73,48 @@ def test_per_resource_daily_24h_partial_day_normalized() -> None:
     assert d.cost_basis == "partial"  # no complete day exists yet
 
 
+def test_per_resource_daily_one_day_in_window_avg_equals_actual() -> None:
+    """Regression for the reported symptom: a resource with exactly ONE billing day in the
+    7-day window must show avg_7d_usd == actual_usd (not actual/7). Matches the live
+    reproduction (2026-07-21): resource_id=features-sports-sports-20260719-113257,
+    day_net={"2026-07-19": 4.432787} — buggy output was actual_usd=4.43, avg_7d_usd=0.63."""
+    recs = [_rec("vm-one-day", _day(1), 4.432787)]
+    svc = CostObservabilityService()
+    with patch.object(svc, "_window_table", return_value=records_to_table(recs)):
+        out = svc.per_resource_daily(days=7)
+
+    r = out["vm-one-day"]
+    assert r.actual_usd == round(4.432787, 2)
+    assert r.avg_7d_usd == r.actual_usd  # NOT actual/7 — the exact reported bug
+    assert r.projected_24h_usd == r.actual_usd
+    assert r.cost_basis == "complete"
+
+
+def test_per_resource_daily_n_active_days_avg_equals_sum_over_n() -> None:
+    # vm-multi has billing rows on 4 distinct complete days -> avg must divide by 4, not the
+    # 7-day window length.
+    recs = [_rec("vm-multi", _day(n), cost) for n, cost in zip((4, 3, 2, 1), (10.0, 20.0, 5.0, 15.0), strict=True)]
+    svc = CostObservabilityService()
+    with patch.object(svc, "_window_table", return_value=records_to_table(recs)):
+        out = svc.per_resource_daily(days=7)
+
+    r = out["vm-multi"]
+    assert r.avg_7d_usd == round((10.0 + 20.0 + 5.0 + 15.0) / 4, 2)
+
+
+def test_per_resource_daily_cost_basis_is_partial_iff_no_complete_day_exists() -> None:
+    """cost_basis is "partial" exactly when no complete billing day exists — a resource with at
+    least one complete day reads "complete" even alongside today's still-accruing partial row."""
+    with_complete = [_rec("vm-with-complete", _day(1), 10.0), _rec("vm-with-complete", _day(0), 3.0)]
+    only_partial = [_rec("vm-only-partial", _day(0), 3.0)]
+    svc = CostObservabilityService()
+    with patch.object(svc, "_window_table", return_value=records_to_table(with_complete + only_partial)):
+        out = svc.per_resource_daily(days=7)
+
+    assert out["vm-with-complete"].cost_basis == "complete"
+    assert out["vm-only-partial"].cost_basis == "partial"
+
+
 def test_per_resource_daily_net_of_credits() -> None:
     recs = [_rec("vm-c", _day(1), 30.0, credit=-12.0)]  # net = 18
     svc = CostObservabilityService()
