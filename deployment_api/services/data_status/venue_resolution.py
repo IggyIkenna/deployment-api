@@ -175,6 +175,8 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         end_date: str,
         venue_mapping: VenueMapping,
         cloud: str = "gcp",
+        scope: str = "could_exist",
+        service: str = "market-tick-data-service",
     ) -> tuple[dict[str, object], int, int]:
         """Override per-venue denominator with UAC-driven honest-coverage.
 
@@ -199,6 +201,27 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         At category level:
           - adds UAC-declared venues missing from manifest (zero-row entries)
           - returns the new aggregate ``(venue_found_total, venue_expected_total)``
+
+        ``scope``: ``"could_exist"`` (default) / ``"mvp"`` — mirrors the
+        venue-year-coverage grid's already-shipped ``CoverageScope`` toggle
+        (``routes/data_status/_coverage_scope.py``). For CEFI, ``"mvp"``
+        restricts each per-instrument-shard dt's denominator to UAC
+        ``is_mvp(...)`` instruments (via the live catalog's instrument_type
+        read). Non-per-instrument dt's and non-CEFI categories are unaffected
+        today — see :func:`mtds_honest_coverage_for_venue`'s docstring.
+
+        ``service`` (mtds_data_status_page_parity_2026_07_21): threaded
+        straight through to :func:`mtds_honest_coverage_for_venue`, which
+        threads it to ``get_expected_data_types_for_venue(venue,
+        service=service)`` — the CRITICAL fix all 3 adversarial reviews
+        converged on. Without it MDPS's expected-data-type list would
+        resolve to the FULL MTDS raw vocabulary instead of the narrowed
+        MDPS-derivable subset, producing permanent false
+        ``missing_data_types`` and tanking ``completion_pct``. Defaults to
+        ``"market-tick-data-service"`` — this function has only ever been
+        called (in production) from the ``is_mtds_honest_coverage_target``-gated
+        site in ``manifest.py``, which always passes an explicit service, so
+        the default only matters for a hypothetical direct caller.
         """
         expected_venues = mtds_expected_venues(category, venue_mapping)
 
@@ -215,8 +238,12 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         # returns a provider that always yields None → UAC MVP seed is used.
         # For all other asset_groups the provider stays None (existing behaviour).
         _cefi_instruments_provider: Callable[[str, str], list[str] | None] | None = None
+        _cefi_instrument_windows: dict[str, tuple[str | None, str | None]] = {}
+        _cefi_instrument_types: dict[str, str] = {}
         if category.upper() == "CEFI":
-            _cefi_instruments_provider = build_cefi_is_instruments_provider(cloud)
+            _cefi_instruments_provider, _cefi_instrument_windows, _cefi_instrument_types = (
+                build_cefi_is_instruments_provider(cloud)
+            )
 
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
@@ -239,6 +266,10 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
                 end_date,
                 venue_mapping,
                 instruments_provider=_cefi_instruments_provider,
+                instrument_windows=_cefi_instrument_windows,
+                scope=scope,
+                instrument_types=_cefi_instrument_types,
+                service=service,
             )
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))
@@ -297,6 +328,11 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
             venue_entry["missing_data_types"] = honest["missing_data_types"]
             venue_entry["honest_data_types"] = honest["data_types"]
             venue_entry["honest_axis"] = str(MTDS_CATEGORY_META[category.upper()]["axis"])
+            if "historical_coverage_gap" in honest:
+                # MDPS-only annotation (see mtds_honest_coverage_for_venue's
+                # docstring) — propagated onto the per-venue entry the UI
+                # actually reads. Absent entirely for MTDS.
+                venue_entry["historical_coverage_gap"] = honest["historical_coverage_gap"]
 
             new_venues[venue] = venue_entry
             total_found += found_shards

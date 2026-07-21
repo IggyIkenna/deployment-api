@@ -71,9 +71,12 @@ async def list_files_in_path(
 
 @router.get("/instruments")
 async def get_instruments_list(
-    asset_group: str = Query(..., description="Asset group (cefi, tradfi, defi)"),
-    venue: str | None = Query(None, description="Filter by venue"),
-    instrument_type: str | None = Query(None, description="Filter by instrument type"),
+    asset_group: str = Query(..., description="Asset group (cefi, tradfi, defi, prediction, sports)"),
+    venue: str | None = Query(None, description="Filter by venue (exact, case-insensitive)"),
+    instrument_type: str | None = Query(None, description="Filter by instrument type (exact, case-insensitive)"),
+    search: str | None = Query(
+        None, description="Case-insensitive substring/token search over canonical instrument IDs"
+    ),
     limit: int = Query(100, description="Maximum number of instruments"),
 ):
     """Get list of instruments for an asset group."""
@@ -82,6 +85,7 @@ async def get_instruments_list(
             asset_group=asset_group,
             venue=venue,
             instrument_type=instrument_type,
+            search=search,
             limit=limit,
         )
 

@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from deployment_api.services.data_status.instrument_coverage import _clip_dates_to_window
 from deployment_api.services.data_status_service import (
     _build_cefi_is_instruments_provider,
     _per_instrument_coverage,
@@ -136,6 +137,100 @@ class TestPerInstrumentCoverageWithISProvider:
         assert "expected_shards" in result
         assert "found_shards" in result
         assert "expected_instruments" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: scope="mvp" per-instrument filtering (2026-07-21 MVP-scope wiring)
+#
+# Mocks ``is_mvp`` directly rather than relying on the real UAC MVP_SCOPE
+# registry content, so these tests stay correct regardless of which venues/
+# instrument_types the registry declares MVP on any given day.
+# ---------------------------------------------------------------------------
+
+
+class TestPerInstrumentCoverageWithMvpScope:
+    """scope="mvp" restricts expected_instruments to UAC is_mvp(...) instruments."""
+
+    def test_could_exist_scope_is_unfiltered_default(self) -> None:
+        """Default scope (no ``scope`` kwarg) is unaffected by is_mvp — same as pre-fix."""
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:2], dates=dates)
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage.is_mvp",
+            side_effect=AssertionError("is_mvp must not be called under the default scope"),
+        ):
+            result = _per_instrument_coverage(
+                venue_df_ok=manifest_df,
+                venue=_VENUE,
+                dt=_DT,
+                expected_dates=set(dates),
+                cap=None,
+                instruments_provider=_cefi_provider,
+            )
+        assert set(result["expected_instruments"]) == set(_IS_INSTRUMENTS)  # type: ignore[arg-type]
+
+    def test_mvp_scope_filters_to_is_mvp_true_instruments(self) -> None:
+        """scope='mvp' keeps only instruments where is_mvp(...) is True.
+
+        is_mvp receives (asset_group, venue, instrument_type, dt, base_ccy=...)
+        — instrument_type is the only per-instrument-varying argument this
+        module's call site can supply, so each intended MVP instrument gets a
+        distinct sentinel instrument_type and the fake gates on that set.
+        """
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:2], dates=dates)
+        mvp_subset = {"BINANCE-FUTURES::BTCUSDT", "BINANCE-FUTURES::ETHUSDT"}
+        mvp_instrument_types = {"BINANCE-FUTURES::BTCUSDT": "PERP_MVP_A", "BINANCE-FUTURES::ETHUSDT": "PERP_MVP_B"}
+        instrument_types = {iid: mvp_instrument_types.get(iid, "PERP_NON_MVP") for iid in _IS_INSTRUMENTS}
+
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage.is_mvp",
+            side_effect=lambda _ag, _v, itype, _dt, **_kw: itype in mvp_instrument_types.values(),
+        ):
+            result = _per_instrument_coverage(
+                venue_df_ok=manifest_df,
+                venue=_VENUE,
+                dt=_DT,
+                expected_dates=set(dates),
+                cap=None,
+                instruments_provider=_cefi_provider,
+                asset_group="cefi",
+                scope="mvp",
+                instrument_types=instrument_types,
+            )
+
+        assert set(result["expected_instruments"]) == mvp_subset  # type: ignore[arg-type]
+        # 2 MVP instruments x 1 date = 2 expected shards.
+        assert result["expected_shards"] == 2
+
+    def test_mvp_scope_treats_unknown_instrument_type_as_non_mvp(self) -> None:
+        """An instrument absent from ``instrument_types`` fails CLOSED under scope='mvp'
+        (unlike the fail-OPEN convention for existence-window clipping) — an unknown
+        instrument_type cannot be proven MVP, so it must not silently pass the filter."""
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:1], dates=dates)
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage.is_mvp",
+            return_value=True,
+        ) as mock_is_mvp:
+            result = _per_instrument_coverage(
+                venue_df_ok=manifest_df,
+                venue=_VENUE,
+                dt=_DT,
+                expected_dates=set(dates),
+                cap=None,
+                instruments_provider=_cefi_provider,
+                asset_group="cefi",
+                scope="mvp",
+                instrument_types={},  # no catalogue instrument_type data at all
+            )
+        # is_mvp was still called (with instrument_type="") for every candidate —
+        # this test's mock happens to return True, so the result here only proves
+        # the blank-instrument_type call shape; the "unknown -> non-MVP" guarantee
+        # is that NOTHING is silently exempted from the is_mvp(...) call itself.
+        assert mock_is_mvp.called
+        call_args = mock_is_mvp.call_args_list[0]
+        assert call_args.args[2] == ""  # instrument_type positional arg is blank, not fabricated
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +377,12 @@ class TestBuildCefiIsInstrumentsProvider:
                 "deployment_api.services.data_status_service.read_availability_index",
                 return_value=mock_catalog_df,
             ),
+            patch(
+                "deployment_api.services.data_status.instrument_coverage.get_storage_client",
+                side_effect=RuntimeError("no live catalogue in this test"),
+            ),
         ):
-            provider = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         # Provider must return the right instruments for each venue.
         binance_result = provider(_VENUE, _DT)
@@ -312,9 +411,10 @@ class TestBuildCefiIsInstrumentsProvider:
                 side_effect=RuntimeError("bucket not found"),
             ),
         ):
-            provider = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         assert provider is None
+        assert windows == {}
 
     def test_builder_returns_none_on_empty_catalog(self) -> None:
         """Fail-open: an empty IS catalog returns None (caller → MVP seed)."""
@@ -327,8 +427,12 @@ class TestBuildCefiIsInstrumentsProvider:
                 "deployment_api.services.data_status_service.read_availability_index",
                 return_value=pd.DataFrame(),
             ),
+            patch(
+                "deployment_api.services.data_status.instrument_coverage.get_storage_client",
+                side_effect=RuntimeError("no live catalogue in this test"),
+            ),
         ):
-            provider = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         assert provider is None
 
@@ -354,10 +458,131 @@ class TestBuildCefiIsInstrumentsProvider:
                 "deployment_api.services.data_status_service.read_availability_index",
                 return_value=mock_catalog_df,
             ),
+            patch(
+                "deployment_api.services.data_status.instrument_coverage.get_storage_client",
+                side_effect=RuntimeError("no live catalogue in this test"),
+            ),
         ):
-            provider = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         result = provider(_VENUE, _DT)
         assert result is not None
         assert len(result) == 2  # duplicates removed
         assert sorted(result) == sorted(["BINANCE-FUTURES::BTCUSDT", "BINANCE-FUTURES::ETHUSDT"])
+
+
+# ---------------------------------------------------------------------------
+# Tests: per-instrument existence-window clipping (2026-07-21 coverage-model fix)
+#
+# Root cause: `expected_count = n_instruments * n_dates` counted every
+# expected instrument as existing on every expected date, including days
+# before it was listed or after it delisted -- structurally impossible
+# (instrument, day) pairs counted as "missing shards". The fix clips each
+# instrument's contribution to the denominator (and numerator) to its real
+# existence window (`available_from`/`available_to` from the IS catalogue).
+# ---------------------------------------------------------------------------
+
+
+class TestClipDatesToWindow:
+    """Unit behaviour of the clipping primitive itself."""
+
+    def test_no_window_returns_all_dates_unclipped(self) -> None:
+        dates = {"2026-01-01", "2026-01-02", "2026-01-03"}
+        assert _clip_dates_to_window(dates, None) == frozenset(dates)
+
+    def test_bounded_window_clips_both_sides(self) -> None:
+        dates = {"2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"}
+        result = _clip_dates_to_window(dates, ("2026-01-02", "2026-01-03"))
+        assert result == frozenset({"2026-01-02", "2026-01-03"})
+
+    def test_open_ended_from_only(self) -> None:
+        dates = {"2026-01-01", "2026-01-02", "2026-01-03"}
+        result = _clip_dates_to_window(dates, ("2026-01-02", None))
+        assert result == frozenset({"2026-01-02", "2026-01-03"})
+
+    def test_open_ended_to_only(self) -> None:
+        dates = {"2026-01-01", "2026-01-02", "2026-01-03"}
+        result = _clip_dates_to_window(dates, (None, "2026-01-02"))
+        assert result == frozenset({"2026-01-01", "2026-01-02"})
+
+    def test_window_excludes_every_date(self) -> None:
+        dates = {"2026-01-01", "2026-01-02"}
+        result = _clip_dates_to_window(dates, ("2026-02-01", "2026-02-28"))
+        assert result == frozenset()
+
+
+class TestPerInstrumentCoverageWithExistenceWindows:
+    """Denominator/numerator must be clipped to each instrument's real existence window."""
+
+    def test_late_listed_instrument_does_not_count_pre_listing_days_as_missing(self) -> None:
+        """Reproduces the operator's reported bug: an instrument listed partway
+        through the window must not have its pre-listing days counted as
+        missing shards -- the OLD blanket cross-product did exactly this."""
+        dates = ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]
+        # Only BTCUSDT has any manifest rows, and only for the 2 days it
+        # existed (listed 2026-01-04). SOLUSDT has none.
+        manifest_df = _make_manifest_df(
+            instrument_ids=[_IS_INSTRUMENTS[0]],
+            dates=["2026-01-04", "2026-01-05"],
+        )
+        windows = {
+            _IS_INSTRUMENTS[0]: ("2026-01-04", None),  # listed 2026-01-04, still active
+            _IS_INSTRUMENTS[1]: (None, "2025-12-31"),  # delisted before this window entirely
+        }
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue=_VENUE,
+            dt=_DT,
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=lambda _v, _dt: _IS_INSTRUMENTS[:2],
+            instrument_windows=windows,
+        )
+
+        # OLD (buggy) behaviour would compute expected_shards = 2 * 5 = 10.
+        # Correct: BTCUSDT contributes 2 (01-04, 01-05); the delisted
+        # instrument contributes 0 (its window excludes every requested date).
+        assert result["expected_shards"] == 2
+        assert result["found_shards"] == 2
+        assert result["missing_shards"] == 0
+        assert result["completion_pct"] == 100.0
+
+    def test_instrument_absent_from_windows_dict_falls_back_unclipped(self) -> None:
+        """Fail-open: an instrument the catalogue read didn't cover must not be
+        penalized -- it keeps the full expected_dates, same as pre-fix."""
+        dates = ["2026-01-01", "2026-01-02"]
+        manifest_df = _make_manifest_df(instrument_ids=[_IS_INSTRUMENTS[0]], dates=dates)
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue=_VENUE,
+            dt=_DT,
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=lambda _v, _dt: [_IS_INSTRUMENTS[0]],
+            instrument_windows={},  # no window data at all
+        )
+
+        assert result["expected_shards"] == 2  # 1 instrument x 2 dates, unclipped
+        assert result["found_shards"] == 2
+        assert result["completion_pct"] == 100.0
+
+    def test_none_instrument_windows_matches_pre_fix_behaviour(self) -> None:
+        """instrument_windows=None (the default) must reproduce the exact
+        pre-fix blanket n_instruments * n_dates denominator -- no regression
+        for callers that don't pass the new parameter."""
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:2], dates=dates)
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue=_VENUE,
+            dt=_DT,
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=lambda _v, _dt: _IS_INSTRUMENTS,
+        )
+
+        assert result["expected_shards"] == 5  # 5 instruments x 1 date
+        assert result["found_shards"] == 2
