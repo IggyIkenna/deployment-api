@@ -20,7 +20,7 @@ import logging
 import time
 from typing import NotRequired, TypedDict, cast
 
-from unified_trading_library import download_from_storage, get_storage_client
+from unified_trading_library import download_from_storage, get_storage_client, resolve_bucket_name
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,75 @@ def _parse_line(line: str) -> AlertEntryDict | None:
     return None
 
 
+def _parse_alerting_service_line(line: str) -> AlertEntryDict | None:
+    """Parse one JSONL line from alerting-service's own ``alerting/history/`` store.
+
+    Shape differs from the CI ledgers this module otherwise reads: no ``event_type``
+    discriminator, and two row shapes coexist there — delivery records
+    (``channel``/``status``/``response_detail``/``event_name``/``timestamp``) and decision
+    records (``rule_id``/``triggered_at``/``metric_value``/``threshold``) — both now
+    carrying the normalised ``alert_class``/``severity``/``message``/``service``/
+    ``deployment_target`` fields (``deployment_alerts_ingestion_completeness_2026_07_20.md``
+    todo 2). ``subject_repo``/``workflow`` have no concept here (infra/venue-scoped, not
+    repo-scoped — a structural absence, not a bug); ``alert_class`` stands in for both
+    ``kind`` and ``workflow_name`` so alerting-service classes group into their own streams.
+    """
+    try:
+        raw = cast(object, json.loads(line))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    obj = cast(dict[str, object], raw)
+    timestamp = str(obj.get("timestamp") or obj.get("triggered_at") or "")
+    if not timestamp:
+        return None
+    alert_class = str(obj.get("alert_class") or obj.get("event_name") or "") or None
+    deployment_target = str(obj.get("deployment_target")) if obj.get("deployment_target") else None
+    return AlertEntryDict(
+        kind=alert_class if alert_class else "alert",
+        timestamp=timestamp,
+        repo="",
+        workflow_name=alert_class or "",
+        severity=str(obj.get("severity") or "INFO"),
+        conclusion=None,
+        message=str(obj.get("message") or ""),
+        run_url=None,
+        alert_class=alert_class,
+        deployment_target=deployment_target,
+    )
+
+
+def _read_alerting_service_sync(days: int) -> list[AlertEntryDict]:
+    """List + read the last N days of alerting-service's own alert-history JSONL blobs.
+
+    Bounded day-partitioned reads only (single-walk discipline) — mirrors
+    ``_read_ledgers_sync``'s per-date prefix walk, against alerting-service's own
+    dedicated bucket (resolved via ``resolve_bucket_name()``, never hardcoded) instead
+    of the CI-alerts bucket.
+    """
+    dates = [(dt.datetime.now(dt.UTC) - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)]
+    entries: list[AlertEntryDict] = []
+    try:
+        bucket = resolve_bucket_name(cloud="gcp", kind="alerting-service")
+        client = get_storage_client()
+    except Exception as exc:
+        logger.warning("[REPO-CI] alerting-service bucket resolution failed: %s", exc)
+        return entries
+    for date in dates:
+        prefix = f"alerting/history/date={date}/"
+        try:
+            for blob in client.list_blobs(bucket, prefix=prefix):
+                raw = download_from_storage(bucket, blob.name)
+                for line in raw.decode("utf-8", errors="replace").splitlines():
+                    parsed = _parse_alerting_service_line(line)
+                    if parsed:
+                        entries.append(parsed)
+        except Exception as exc:
+            logger.warning("[REPO-CI] alerting-service ledger read failed for %s: %s", prefix, exc)
+    return entries
+
+
 def derive_streams(entries: list[AlertEntryDict]) -> list[AlertStreamDict]:
     """Group chronologically-sorted entries into (repo, workflow) lifecycle streams.
 
@@ -180,6 +249,10 @@ def _read_ledgers_sync(days: int) -> list[AlertEntryDict]:
                     entries.append(parsed)
     except Exception as exc:
         logger.warning("[REPO-CI] events ledger read failed: %s", exc)
+    # alerting-service's own store — its own bucket, ~20 alert classes feeding
+    # #uts-live-alerts/#data-pipeline-alerts (deployment_alerts_ingestion_completeness_2026_07_20.md
+    # todo 3). A best-effort merge: a read failure here must not blank out the CI ledgers above.
+    entries.extend(_read_alerting_service_sync(days))
     return entries
 
 
