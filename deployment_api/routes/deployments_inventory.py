@@ -41,7 +41,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import cast
 
@@ -451,6 +451,13 @@ class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API cont
     # with a failed/not-yet-shipped census is simply absent from the map (honest degradation,
     # never a KeyError or a fabricated zero for a kind the caller didn't ask about).
     counts_by_kind: dict[str, int] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+    # WS-2 date-range archive floor (decision 5) — set only when the request carried date_from/
+    # date_to. ``archive_floor`` is the earliest day the archive actually retains (the real 30-day
+    # GCS TTL); ``date_range_out_of_range`` is True when the requested date_from predates it, so the
+    # UI can show an explicit "no data before <archive_floor>" banner instead of a silent partial
+    # result. None/False for a request with no date filter.
+    archive_floor: str | None = None
+    date_range_out_of_range: bool = False
 
 
 class DeploymentDetailResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -1515,6 +1522,52 @@ def _load_registry_entries(now: datetime) -> list[DeploymentRegistryEntry]:
     return active + recent
 
 
+# GCS lifecycle TTL on ``deployments/archive/`` — live-confirmed 2026-07-20 (earliest day-prefix is
+# exactly 30 days before the latest). The default cold-path census stays on the cheap
+# ``_ARCHIVE_WINDOW_DAYS`` (7-day) window; a date-range query needs its OWN bounded read up to this
+# real floor, never the whole 30-day corpus unless the requested range actually spans it.
+_ARCHIVE_RETENTION_DAYS = 30
+
+
+def _archive_floor_date(now: datetime) -> date:
+    """The earliest day the archive actually retains data for (the real 30-day GCS floor)."""
+    return (now - timedelta(days=_ARCHIVE_RETENTION_DAYS - 1)).date()
+
+
+def _load_registry_entries_for_date_range(
+    now: datetime, date_from: datetime | None, date_to: datetime | None
+) -> tuple[list[DeploymentRegistryEntry], bool]:
+    """Day-partitioned archive read scoped to ``[date_from, date_to]``, up to the 30-day GCS floor.
+
+    Bypasses the default cold-path's 7-day ``_ARCHIVE_WINDOW_DAYS`` cap — a date-range query reads
+    exactly the requested days directly (``deployments/archive/<day>/`` prefixes), still a BOUNDED
+    listing, never a whole-corpus walk. Returns ``(entries, out_of_range)``: ``out_of_range`` is True
+    when the requested ``date_from`` predates the real retention floor (decision 5 — the caller turns
+    this into an explicit "no data before `<date>`" banner, never a silently clipped partial result).
+    An empty/backwards clipped window (e.g. the whole request predates the floor) returns ``[]`` with
+    ``out_of_range`` still correctly reported.
+    """
+    floor_date = _archive_floor_date(now)
+    today = now.date()
+    range_start = date_from.date() if date_from is not None else floor_date
+    range_end = date_to.date() if date_to is not None else today
+    out_of_range = range_start < floor_date
+    clipped_start = max(range_start, floor_date)
+    clipped_end = min(range_end, today)
+    if clipped_start > clipped_end:
+        return [], out_of_range
+
+    client = get_storage_client()
+    bucket = DEFAULT_BUCKET
+    day_count = (clipped_end - clipped_start).days + 1
+    prefixes = [
+        f"{ARCHIVE_PREFIX}{(clipped_start + timedelta(days=offset)).isoformat()}/" for offset in range(day_count)
+    ]
+    keys = [key for prefix in prefixes for key in _list_json_keys(client, bucket, prefix)]
+    entries = _download_entries_parallel(client, bucket, keys)
+    return entries, out_of_range
+
+
 def _scheduler_item(entry: SchedulerJobStatus) -> DeploymentItem:
     """Build an inventory row for one Cloud Scheduler job (WS-D #9) — the on-time / OVERDUE signal.
 
@@ -1951,6 +2004,22 @@ def get_deployment_inventory(
     parsed_date_from = _parse_date_query(date_from, end_of_day=False)
     parsed_date_to = _parse_date_query(date_to, end_of_day=True)
     items = _load_inventory(now, cloud=cloud, region_scope=region_scope)
+
+    archive_floor_str: str | None = None
+    out_of_range = False
+    if parsed_date_from is not None or parsed_date_to is not None:
+        floor_date = _archive_floor_date(now)
+        archive_floor_str = floor_date.isoformat()
+        out_of_range = parsed_date_from is not None and parsed_date_from.date() < floor_date
+        # Bypass the default 7-day archive cap for THIS date-range request only — a bounded,
+        # day-partitioned read of exactly the requested range (never the whole 30-day corpus
+        # unless asked), merged in alongside any VM already present from the cached census
+        # (never re-added, never double-counted). Never runs in mock mode / cloud=aws-only.
+        if not _cfg.is_mock_mode() and (cloud is None or cloud.upper() == DeploymentCloud.GCP.value):
+            range_entries, _ = _load_registry_entries_for_date_range(now, parsed_date_from, parsed_date_to)
+            existing_vm_names = {item.name for item in items if item.kind == DeploymentKind.VM.value}
+            items = items + [_vm_item(entry, now) for entry in range_entries if entry.vm_name not in existing_vm_names]
+
     items = _apply_date_range(items, now, parsed_date_from, parsed_date_to)
     filtered = _filter_items(
         items,
@@ -1969,6 +2038,8 @@ def get_deployment_inventory(
         vm_count=vm_count,
         cloud_run_job_count=job_count,
         counts_by_kind=_counts_by_kind(filtered),
+        archive_floor=archive_floor_str,
+        date_range_out_of_range=out_of_range,
     )
 
 

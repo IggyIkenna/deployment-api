@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import ModuleType
 from unittest.mock import patch
 
@@ -1392,6 +1392,179 @@ def test_inventory_route_invalid_date_returns_400(client_inventory: TestClient) 
         mock_cfg.is_mock_mode.return_value = True
         resp = client_inventory.get("/api/deployments/inventory", params={"date_from": "not-a-date"})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# WS-2 archive range-read (deployment_ui_date_range_filter_and_search-002) — bypass the default
+# 7-day _ARCHIVE_WINDOW_DAYS cap for date-range queries, up to the real 30-day GCS floor
+# ---------------------------------------------------------------------------
+
+
+def test_archive_floor_date_is_29_days_before_now() -> None:
+    from deployment_api.routes.deployments_inventory import _archive_floor_date
+
+    assert _archive_floor_date(_FIXED_NOW) == datetime(2026, 5, 24, tzinfo=UTC).date()
+
+
+def test_load_registry_entries_for_date_range_reads_only_the_requested_bounded_window() -> None:
+    """Bounded, day-partitioned read — only the requested days, never the whole corpus."""
+    from deployment_api.routes.deployments_inventory import _load_registry_entries_for_date_range
+
+    requested_prefixes: list[str] = []
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            requested_prefixes.append(prefix)
+            return []
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            raise KeyError(blob_path)
+
+    with patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()):
+        entries, out_of_range = _load_registry_entries_for_date_range(
+            _FIXED_NOW,
+            datetime(2026, 6, 18, tzinfo=UTC),
+            datetime(2026, 6, 20, tzinfo=UTC),
+        )
+    assert entries == []
+    assert out_of_range is False
+    # Exactly the 3 requested days — a bounded read, not the whole 30-day corpus.
+    assert requested_prefixes == [
+        "deployments/archive/2026-06-18/",
+        "deployments/archive/2026-06-19/",
+        "deployments/archive/2026-06-20/",
+    ]
+
+
+def test_load_registry_entries_for_date_range_out_of_range_clips_to_floor() -> None:
+    """date_from predating the 30-day floor -> out_of_range=True, and the read CLIPS to the floor
+    day forward rather than attempting the unavailable span."""
+    from deployment_api.routes.deployments_inventory import _load_registry_entries_for_date_range
+
+    requested_prefixes: list[str] = []
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            requested_prefixes.append(prefix)
+            return []
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            raise KeyError(blob_path)
+
+    with patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()):
+        entries, out_of_range = _load_registry_entries_for_date_range(
+            _FIXED_NOW,
+            datetime(2026, 1, 1, tzinfo=UTC),  # long before the 30-day floor (2026-05-24)
+            datetime(2026, 5, 25, tzinfo=UTC),
+        )
+    assert entries == []
+    assert out_of_range is True
+    assert requested_prefixes == ["deployments/archive/2026-05-24/", "deployments/archive/2026-05-25/"]
+
+
+def test_load_registry_entries_for_date_range_beyond_today_clips_to_today() -> None:
+    """A date_to beyond today clips to today — never requests a not-yet-written future prefix."""
+    from deployment_api.routes.deployments_inventory import _load_registry_entries_for_date_range
+
+    requested_prefixes: list[str] = []
+
+    @dataclass
+    class _Blob:
+        name: str
+
+    class _FakeStorage:
+        def list_blobs(self, *, bucket: str, prefix: str) -> list[_Blob]:
+            requested_prefixes.append(prefix)
+            return []
+
+        def download_bytes(self, *, bucket: str, blob_path: str) -> bytes:
+            raise KeyError(blob_path)
+
+    with patch("deployment_api.routes.deployments_inventory.get_storage_client", return_value=_FakeStorage()):
+        _entries, out_of_range = _load_registry_entries_for_date_range(
+            _FIXED_NOW,
+            datetime(2026, 6, 21, tzinfo=UTC),
+            datetime(2026, 7, 1, tzinfo=UTC),  # after _FIXED_NOW's date (2026-06-22)
+        )
+    assert out_of_range is False
+    assert requested_prefixes == ["deployments/archive/2026-06-21/", "deployments/archive/2026-06-22/"]
+
+
+def test_inventory_route_date_range_merges_archive_range_entries_and_reports_floor(
+    client_inventory: TestClient,
+) -> None:
+    """date_from/date_to reaching beyond the default 7-day census pulls in the extra archived VM
+    via the dedicated range read, dedupes against what's already present, and the response reports
+    archive_floor / date_range_out_of_range for the UI banner (decision 5)."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+    from deployment_api.routes.deployments_inventory import _archive_floor_date
+
+    now = datetime.now(UTC)
+    recent_entry = _FakeEntry(
+        vm_name="cefi-recent",
+        started_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        status="failed",
+        exit_code=0,
+    )
+    old_entry = _FakeEntry(
+        vm_name="cefi-old-in-archive-window",
+        started_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        status="failed",
+        exit_code=0,
+    )
+    _inv_mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch("deployment_api.routes.deployments_inventory._load_registry_entries", return_value=[recent_entry]),
+        patch(
+            "deployment_api.routes.deployments_inventory._load_registry_entries_for_date_range",
+            return_value=([recent_entry, old_entry], False),
+        ),
+        patch("deployment_api.routes.deployments_inventory.get_vm_instance_details", return_value={}),
+        patch("deployment_api.routes.deployments_inventory.latest_execution_by_job", return_value={}),
+        patch_inventory_secondary_census(_inv_mod),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get(
+            "/api/deployments/inventory",
+            params={"date_from": (now - timedelta(days=10)).date().isoformat(), "date_to": now.date().isoformat()},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    names = [i["name"] for i in body["items"] if i["kind"] == "VM"]
+    assert names.count("cefi-recent") == 1  # present in BOTH sources, never duplicated
+    assert "cefi-old-in-archive-window" in names  # only reachable via the range-scoped read
+    assert body["archive_floor"] == _archive_floor_date(now).isoformat()
+    assert body["date_range_out_of_range"] is False
+
+
+def test_inventory_route_date_range_out_of_range_flag(client_inventory: TestClient) -> None:
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/inventory", params={"date_from": "2000-01-01"})
+    assert resp.status_code == 200
+    assert resp.json()["date_range_out_of_range"] is True
+
+
+def test_inventory_route_no_date_params_leaves_archive_floor_none(client_inventory: TestClient) -> None:
+    with patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg:
+        mock_cfg.is_mock_mode.return_value = True
+        resp = client_inventory.get("/api/deployments/inventory")
+    body = resp.json()
+    assert body["archive_floor"] is None
+    assert body["date_range_out_of_range"] is False
 
 
 # ---------------------------------------------------------------------------
