@@ -14,6 +14,7 @@ from collections.abc import Callable
 import pandas as pd
 from unified_api_contracts import (
     get_expected_instruments_for_venue,
+    is_mvp,
 )
 
 import deployment_api.services.data_status_service as _dss
@@ -63,35 +64,45 @@ def _normalize_instrument_id_for_match(instrument_id: str) -> str:
     return normalized
 
 
-def _read_cefi_catalogue_existence_windows(cloud: object) -> dict[str, tuple[str | None, str | None]]:
-    """Read ``prod/catalog.parquet`` for cefi and return per-instrument existence windows.
+def _read_cefi_catalogue_metadata(
+    cloud: object,
+) -> tuple[dict[str, tuple[str | None, str | None]], dict[str, str]]:
+    """Read ``prod/catalog.parquet`` for cefi ONCE, return existence windows + instrument_type.
 
-    ``{instrument_id: (available_from, available_to)}`` — the identity-level
-    lifecycle source (one row per instrument; mirrors
-    ``catalogue_lifecycle.py::_read_catalogue``'s bucket/path/projection
-    pattern, kept local here rather than importing that module's private
-    helper cross-module). Fail-open: any GCS/parse error or a missing
-    ``available_from``/``available_to`` column returns ``{}`` — callers must
-    treat an empty dict exactly like "no window data available" and fall back
-    to the pre-existing date-agnostic behaviour, never raise.
+    ``({instrument_id: (available_from, available_to)}, {instrument_id: instrument_type})``
+    — the identity-level lifecycle + type source (one row per instrument;
+    mirrors ``catalogue_lifecycle.py::_read_catalogue``'s bucket/path/
+    projection pattern, kept local here rather than importing that module's
+    private helper cross-module). Both dicts come from the SAME parquet read
+    (not two round-trips) so :func:`per_instrument_coverage` can clip its
+    denominator to each instrument's real existence window AND evaluate UAC
+    ``is_mvp(...)`` per instrument for the ``scope=mvp`` filter. Fail-open:
+    any GCS/parse error or a missing column returns ``({}, {})`` — callers
+    must treat an empty dict exactly like "no data available" and fall back
+    to the pre-existing unclipped/unfiltered behaviour, never raise.
     """
     try:
         bucket = _dss.resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
         raw = get_storage_client().download_bytes(bucket, "prod/catalog.parquet")
-        df = pd.read_parquet(io.BytesIO(raw), columns=["instrument_id", "available_from", "available_to"])
+        df = pd.read_parquet(
+            io.BytesIO(raw), columns=["instrument_id", "available_from", "available_to", "instrument_type"]
+        )
     except Exception as exc:
-        logger.warning("cefi catalogue existence-window read failed (%s) — falling back to date-agnostic", exc)
-        return {}
+        logger.warning("cefi catalogue metadata read failed (%s) — falling back to date/scope-agnostic", exc)
+        return {}, {}
     if df.empty or "instrument_id" not in df.columns:
-        return {}
+        return {}, {}
 
     windows: dict[str, tuple[str | None, str | None]] = {}
+    instrument_types: dict[str, str] = {}
     has_from = "available_from" in df.columns
     has_to = "available_to" in df.columns
-    for row_id, row_from, row_to in zip(
+    has_itype = "instrument_type" in df.columns
+    for row_id, row_from, row_to, row_itype in zip(
         df["instrument_id"].astype(str),
         df["available_from"] if has_from else pd.Series([None] * len(df)),
         df["available_to"] if has_to else pd.Series([None] * len(df)),
+        df["instrument_type"] if has_itype else pd.Series([None] * len(df)),
         strict=True,
     ):
         row_id_s = row_id.strip()
@@ -100,51 +111,60 @@ def _read_cefi_catalogue_existence_windows(cloud: object) -> dict[str, tuple[str
         af = None if pd.isna(row_from) else str(row_from)[:10]
         at = None if pd.isna(row_to) else str(row_to)[:10]
         windows[row_id_s] = (af, at)
-    return windows
+        if row_itype is not None and not pd.isna(row_itype):
+            itype_s = str(row_itype).strip()
+            if itype_s:
+                instrument_types[row_id_s] = itype_s
+    return windows, instrument_types
 
 
 def build_cefi_is_instruments_provider(
     cloud: object,
-) -> tuple[Callable[[str, str], list[str] | None] | None, dict[str, tuple[str | None, str | None]]]:
+) -> tuple[
+    Callable[[str, str], list[str] | None] | None,
+    dict[str, tuple[str | None, str | None]],
+    dict[str, str],
+]:
     """Build an instruments_provider backed by the live IS cefi catalog.
 
     Reads the instruments-store-cefi-* availability index ONCE, builds a
     ``{venue: list[instrument_id]}`` map, and returns a closure that answers
-    ``(venue, data_type) -> list[str]``, alongside a SEPARATE per-instrument
-    existence-window dict (see :func:`_read_cefi_catalogue_existence_windows`)
-    so :func:`per_instrument_coverage` can clip its denominator to days each
-    instrument actually existed, instead of a blanket
-    ``|instruments| x |dates|`` cross-product.
+    ``(venue, data_type) -> list[str]``, alongside a per-instrument
+    existence-window dict AND a per-instrument ``instrument_type`` dict (see
+    :func:`_read_cefi_catalogue_metadata`) so :func:`per_instrument_coverage`
+    can (a) clip its denominator to days each instrument actually existed
+    instead of a blanket ``|instruments| x |dates|`` cross-product, and (b)
+    evaluate UAC ``is_mvp(...)`` per instrument for the ``scope=mvp`` filter.
 
-    Fail-open: any GCS / parse error returns ``(None, {})`` (NOT a provider) so
-    the CALLER injects no provider at all and the per-instrument denominator
-    path falls back to UAC's MVP seed tables with the default cap — current
-    behaviour when IS is unavailable.  Returning a ``lambda: None`` provider
-    here would be WRONG: UAC only falls back to its MVP seed when the provider
-    OBJECT is ``None``; a non-None provider that *returns* ``None`` yields an
-    EMPTY universe (denominator collapses to 0), not the seed.  This avoids
-    crashing the data-status request.
+    Fail-open: any GCS / parse error returns ``(None, {}, {})`` (NOT a
+    provider) so the CALLER injects no provider at all and the per-instrument
+    denominator path falls back to UAC's MVP seed tables with the default cap
+    — current behaviour when IS is unavailable.  Returning a ``lambda: None``
+    provider here would be WRONG: UAC only falls back to its MVP seed when the
+    provider OBJECT is ``None``; a non-None provider that *returns* ``None``
+    yields an EMPTY universe (denominator collapses to 0), not the seed.  This
+    avoids crashing the data-status request.
 
     The catalog read is performed eagerly at call-time (not lazily per
     (venue, dt) invocation) so the returned callable is cheap to call many
     times within one request: one GCS read → O(N) Python loop → per-venue
-    dicts. The existence-window read is a SEPARATE, small object
-    (``prod/catalog.parquet`` in the SAME bucket) — not a second whole-corpus
-    walk.
+    dicts. The existence-window + instrument_type read is a SEPARATE, small
+    object (``prod/catalog.parquet`` in the SAME bucket) — not a second
+    whole-corpus walk.
     """
-    windows = _read_cefi_catalogue_existence_windows(cloud)
+    windows, instrument_types = _read_cefi_catalogue_metadata(cloud)
     try:
         bucket = _dss.resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
         df: pd.DataFrame = _dss.read_availability_index(bucket)
         if df.empty or "venue" not in df.columns:
             logger.warning("cefi IS catalog empty or missing 'venue' column — falling back to MVP seed")
-            return None, windows
+            return None, windows, instrument_types
 
         # Support both column name conventions used by IS catalog parquets.
         id_col = "instrument_id" if "instrument_id" in df.columns else "instrument_key"
         if id_col not in df.columns:
             logger.warning("cefi IS catalog has neither 'instrument_id' nor 'instrument_key' — falling back")
-            return None, windows
+            return None, windows, instrument_types
 
         # Build {venue: sorted list of instrument_ids}. Existence-window
         # clipping (available_from/to) is applied downstream in
@@ -170,7 +190,7 @@ def build_cefi_is_instruments_provider(
             "cefi IS catalog read failed (%s) — falling back to MVP seed",
             exc,
         )
-        return None, windows
+        return None, windows, instrument_types
 
     def _provider(venue: str, _data_type: str) -> list[str] | None:
         """Return IS instrument_ids for venue, or None to fall back to MVP seed."""
@@ -180,7 +200,7 @@ def build_cefi_is_instruments_provider(
             return None
         return result
 
-    return _provider, windows
+    return _provider, windows, instrument_types
 
 
 def _clip_dates_to_window(dates: set[str], window: tuple[str | None, str | None] | None) -> frozenset[str]:
@@ -206,6 +226,9 @@ def per_instrument_coverage(
     cap: int | None,
     instruments_provider: Callable[[str, str], list[str] | None] | None = None,
     instrument_windows: dict[str, tuple[str | None, str | None]] | None = None,
+    asset_group: str = "cefi",
+    scope: str = "could_exist",
+    instrument_types: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Phase 8D — compute the per-(instrument_id, date) denominator for a
     per-instrument shard ``data_type``.
@@ -265,6 +288,25 @@ def per_instrument_coverage(
         dict (or ``instrument_windows=None``/``{}`` entirely) falls back to
         the full, unclipped ``expected_dates`` — fail-open, never penalizes
         missing catalogue lifecycle data.
+    asset_group:
+        Lowercase UAC asset_group key passed to ``is_mvp(...)`` when
+        ``scope="mvp"``. Defaults to ``"cefi"`` (the only asset_group this
+        module's live-catalog path serves today).
+    scope:
+        ``"could_exist"`` (default, current behaviour) / ``"mvp"`` — when
+        ``"mvp"``, ``expected_instruments`` is restricted to instruments
+        where UAC ``is_mvp(asset_group, venue, instrument_type, dt,
+        base_ccy=None)`` is True (``base_ccy`` is a known, pre-existing
+        blank axis for cefi — see ``_coverage_scope.py``'s
+        ``is_mvp_for_manifest_row`` docstring). An instrument absent from
+        ``instrument_types`` (unknown type) is treated as non-MVP under
+        ``scope="mvp"`` — fails CLOSED here (unlike the fail-open window
+        clipping) because an unknown instrument_type cannot be proven MVP.
+    instrument_types:
+        Optional ``{instrument_id: instrument_type}`` from
+        :func:`_read_cefi_catalogue_metadata`, required to evaluate
+        ``is_mvp(...)`` per instrument under ``scope="mvp"``. Ignored when
+        ``scope="could_exist"``.
 
     Returns
     -------
@@ -283,6 +325,12 @@ def per_instrument_coverage(
         instruments_provider=instruments_provider,
         cap=cap,
     )
+
+    if scope == "mvp":
+        types = instrument_types or {}
+        expected_instruments = [
+            iid for iid in expected_instruments if is_mvp(asset_group, venue, types.get(iid, ""), dt, base_ccy=None)
+        ]
 
     # Slice to the (venue, dt) rows once.
     if "data_type" in venue_df_ok.columns and not venue_df_ok.empty:

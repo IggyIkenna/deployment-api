@@ -585,6 +585,8 @@ def mtds_honest_coverage_for_venue(
     venue_mapping: VenueMapping,
     instruments_provider: Callable[[str, str], list[str] | None] | None = None,
     instrument_windows: dict[str, tuple[str | None, str | None]] | None = None,
+    scope: str = "could_exist",
+    instrument_types: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Honest-coverage rollup for one ``(category, venue)`` pair.
 
@@ -614,6 +616,15 @@ def mtds_honest_coverage_for_venue(
     panel even before adapters write parquet rows. See
     ``PREDICTION_DATA_TYPE_META`` docstring for ``expected_count_per_day``
     semantics.
+
+    ``scope``/``instrument_types`` — MVP-scope toggle (mirrors the
+    already-shipped venue-year-coverage grid's ``CoverageScope``, see
+    ``routes/data_status/_coverage_scope.py``). Threaded ONLY into the
+    per-instrument-shard (Tier-3) branch via :func:`per_instrument_coverage`
+    — a venue-level dt has no single ``instrument_type`` to evaluate UAC
+    ``is_mvp(...)`` against, so ``scope=mvp`` is a no-op on non-per-instrument
+    dt entries today (a known, deliberate limitation, not silently wrong: the
+    MVP concept is instrument-grained for cefi, not venue-grained).
     """
     expected_dts = list(_dss.get_expected_data_types_for_venue(venue))
     if category.upper() == "PREDICTION":
@@ -698,6 +709,9 @@ def mtds_honest_coverage_for_venue(
                 _instr_cap,
                 instruments_provider=instruments_provider,
                 instrument_windows=instrument_windows,
+                asset_group=category.lower(),
+                scope=scope,
+                instrument_types=instrument_types,
             )
             dt_entries[dt] = dt_entry
             expected_count = int(cast(int, dt_entry["expected_shards"]))

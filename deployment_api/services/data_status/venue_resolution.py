@@ -175,6 +175,7 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         end_date: str,
         venue_mapping: VenueMapping,
         cloud: str = "gcp",
+        scope: str = "could_exist",
     ) -> tuple[dict[str, object], int, int]:
         """Override per-venue denominator with UAC-driven honest-coverage.
 
@@ -199,6 +200,14 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         At category level:
           - adds UAC-declared venues missing from manifest (zero-row entries)
           - returns the new aggregate ``(venue_found_total, venue_expected_total)``
+
+        ``scope``: ``"could_exist"`` (default) / ``"mvp"`` — mirrors the
+        venue-year-coverage grid's already-shipped ``CoverageScope`` toggle
+        (``routes/data_status/_coverage_scope.py``). For CEFI, ``"mvp"``
+        restricts each per-instrument-shard dt's denominator to UAC
+        ``is_mvp(...)`` instruments (via the live catalog's instrument_type
+        read). Non-per-instrument dt's and non-CEFI categories are unaffected
+        today — see :func:`mtds_honest_coverage_for_venue`'s docstring.
         """
         expected_venues = mtds_expected_venues(category, venue_mapping)
 
@@ -216,8 +225,11 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         # For all other asset_groups the provider stays None (existing behaviour).
         _cefi_instruments_provider: Callable[[str, str], list[str] | None] | None = None
         _cefi_instrument_windows: dict[str, tuple[str | None, str | None]] = {}
+        _cefi_instrument_types: dict[str, str] = {}
         if category.upper() == "CEFI":
-            _cefi_instruments_provider, _cefi_instrument_windows = build_cefi_is_instruments_provider(cloud)
+            _cefi_instruments_provider, _cefi_instrument_windows, _cefi_instrument_types = (
+                build_cefi_is_instruments_provider(cloud)
+            )
 
         # Start from the (possibly remapped) dict (preserves instrument_types /
         # chains / capture_status_counts sub-structures built by
@@ -241,6 +253,8 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
                 venue_mapping,
                 instruments_provider=_cefi_instruments_provider,
                 instrument_windows=_cefi_instrument_windows,
+                scope=scope,
+                instrument_types=_cefi_instrument_types,
             )
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))

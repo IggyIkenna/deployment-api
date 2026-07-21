@@ -123,6 +123,7 @@ def _build_manifest_live_in_subprocess(
     cloud: str,
     pipeline_modes: list[str] | None,
     venue: list[str] | None,
+    scope: str,
 ) -> dict[str, object]:
     """Spawned-child entrypoint for ``bounded_subprocess.run_bounded``.
 
@@ -156,6 +157,7 @@ def _build_manifest_live_in_subprocess(
         cloud,
         pipeline_modes,
         venue,
+        scope,
     )
 
 
@@ -190,6 +192,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         chain: str | None = None,
         pipeline_modes: list[str] | None = None,
         venue: list[str] | None = None,
+        scope: str = "could_exist",
     ) -> dict[str, object]:
         """Return data status from manifest indices in TurboDataStatusResponse shape.
 
@@ -297,6 +300,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 cloud,
                 pipeline_modes,
                 venue,
+                scope,
                 rlimit_bytes=_LIVE_BUILD_CHILD_RLIMIT_BYTES,
                 timeout_s=_LIVE_BUILD_CHILD_TIMEOUT_S,
                 name=f"manifest-live-{service[:24]}",
@@ -424,6 +428,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         cloud: str = "gcp",
         pipeline_modes: list[str] | None = None,
         venue: list[str] | None = None,
+        scope: str = "could_exist",
     ) -> dict[str, object]:
         """Synchronous manifest status — returns TurboDataStatusResponse shape."""
         cat_list = self._resolve_cat_list(service, asset_groups)
@@ -466,6 +471,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             cloud=cloud,
             pipeline_modes=pipeline_modes,
             venue=venue,
+            scope=scope,
         )
 
         for cat in cat_list:
@@ -599,6 +605,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         cloud: str,
         pipeline_modes: list[str] | None,
         venue: list[str] | None = None,
+        scope: str = "could_exist",
     ) -> dict[str, dict[str, object]]:
         """Build every category's manifest entry, returning ``{cat: result}``. Three paths:
 
@@ -612,6 +619,13 @@ class ManifestStatusMixin(MissingShardsMixin):
           pools cap at ``_dss._MAX_BUILD_WORKERS`` to bound concurrent cell-grid memory (the OOM fix
           — fanning all 5 AGs out at once peaked at 8604 MiB and killed the 8 GiB instance).
         - SERIAL: a single category — fan-out overhead would dwarf the work.
+
+        ``scope != "could_exist"`` (i.e. ``"mvp"``) disables the process pool the
+        same way ``row_filters``/``pipeline_modes``/``venue`` already do:
+        ``build_category_in_subprocess``'s fixed positional signature doesn't
+        carry it across the fork boundary, so a non-default scope falls
+        through to the thread/serial paths below, which call
+        ``_build_manifest_category`` directly (kwargs, no pickling needed).
         """
         use_process_pool = (
             len(cat_list) > 1
@@ -619,6 +633,7 @@ class ManifestStatusMixin(MissingShardsMixin):
             and not row_filters
             and not pipeline_modes
             and not venue
+            and scope == "could_exist"
         )
         if use_process_pool:
             ctx = multiprocessing.get_context("fork")
@@ -656,6 +671,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                         cloud=cloud,
                         pipeline_modes=pipeline_modes,
                         venue=venue,
+                        scope=scope,
                     ): cat
                     for cat in cat_list
                 }
@@ -673,6 +689,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 cloud=cloud,
                 pipeline_modes=pipeline_modes,
                 venue=venue,
+                scope=scope,
             )
             for cat in cat_list
         }
@@ -690,6 +707,7 @@ class ManifestStatusMixin(MissingShardsMixin):
         cloud: str = "gcp",
         pipeline_modes: list[str] | None = None,
         venue: list[str] | None = None,
+        scope: str = "could_exist",
     ) -> dict[str, object]:
         """Build a single category entry for manifest status.
 
@@ -872,6 +890,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 end_date,
                 venue_mapping,
                 cloud=cloud,
+                scope=scope,
             )
 
         # When no venues or all are empty (sports instruments pattern), group

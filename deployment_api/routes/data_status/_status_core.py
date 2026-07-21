@@ -15,6 +15,7 @@ from fastapi import HTTPException, Query, Request
 
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
+from deployment_api.routes.data_status._coverage_scope import CoverageScope
 from deployment_api.services.data_status_mock import build_mock_coverage_summary, build_mock_turbo_response
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,15 @@ async def get_data_status_manifest(
         ),
     ),
     cloud: Literal["gcp", "aws"] = Query("gcp", description="Cloud provider for bucket reads"),
+    scope: CoverageScope = Query(
+        "could_exist",
+        description=(
+            "Coverage scope (denominator filter) — mirrors the venue-year-coverage grid's "
+            "'scope' toggle. 'could_exist' (DEFAULT) = current behaviour. 'mvp' = restrict "
+            "CEFI per-instrument-shard data_types to UAC is_mvp(...) instruments. Venue-level "
+            "(non-per-instrument) data_types and non-CEFI asset_groups are unaffected today."
+        ),
+    ),
 ):
     """Get data status from manifest availability indices (fastest path).
 
@@ -218,6 +228,7 @@ async def get_data_status_manifest(
             job_id=job_id,
             chain=chain,
             venue=venue,
+            scope=scope,
         )
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])

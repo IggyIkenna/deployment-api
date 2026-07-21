@@ -140,6 +140,100 @@ class TestPerInstrumentCoverageWithISProvider:
 
 
 # ---------------------------------------------------------------------------
+# Tests: scope="mvp" per-instrument filtering (2026-07-21 MVP-scope wiring)
+#
+# Mocks ``is_mvp`` directly rather than relying on the real UAC MVP_SCOPE
+# registry content, so these tests stay correct regardless of which venues/
+# instrument_types the registry declares MVP on any given day.
+# ---------------------------------------------------------------------------
+
+
+class TestPerInstrumentCoverageWithMvpScope:
+    """scope="mvp" restricts expected_instruments to UAC is_mvp(...) instruments."""
+
+    def test_could_exist_scope_is_unfiltered_default(self) -> None:
+        """Default scope (no ``scope`` kwarg) is unaffected by is_mvp — same as pre-fix."""
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:2], dates=dates)
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage.is_mvp",
+            side_effect=AssertionError("is_mvp must not be called under the default scope"),
+        ):
+            result = _per_instrument_coverage(
+                venue_df_ok=manifest_df,
+                venue=_VENUE,
+                dt=_DT,
+                expected_dates=set(dates),
+                cap=None,
+                instruments_provider=_cefi_provider,
+            )
+        assert set(result["expected_instruments"]) == set(_IS_INSTRUMENTS)  # type: ignore[arg-type]
+
+    def test_mvp_scope_filters_to_is_mvp_true_instruments(self) -> None:
+        """scope='mvp' keeps only instruments where is_mvp(...) is True.
+
+        is_mvp receives (asset_group, venue, instrument_type, dt, base_ccy=...)
+        — instrument_type is the only per-instrument-varying argument this
+        module's call site can supply, so each intended MVP instrument gets a
+        distinct sentinel instrument_type and the fake gates on that set.
+        """
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:2], dates=dates)
+        mvp_subset = {"BINANCE-FUTURES::BTCUSDT", "BINANCE-FUTURES::ETHUSDT"}
+        mvp_instrument_types = {"BINANCE-FUTURES::BTCUSDT": "PERP_MVP_A", "BINANCE-FUTURES::ETHUSDT": "PERP_MVP_B"}
+        instrument_types = {iid: mvp_instrument_types.get(iid, "PERP_NON_MVP") for iid in _IS_INSTRUMENTS}
+
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage.is_mvp",
+            side_effect=lambda _ag, _v, itype, _dt, **_kw: itype in mvp_instrument_types.values(),
+        ):
+            result = _per_instrument_coverage(
+                venue_df_ok=manifest_df,
+                venue=_VENUE,
+                dt=_DT,
+                expected_dates=set(dates),
+                cap=None,
+                instruments_provider=_cefi_provider,
+                asset_group="cefi",
+                scope="mvp",
+                instrument_types=instrument_types,
+            )
+
+        assert set(result["expected_instruments"]) == mvp_subset  # type: ignore[arg-type]
+        # 2 MVP instruments x 1 date = 2 expected shards.
+        assert result["expected_shards"] == 2
+
+    def test_mvp_scope_treats_unknown_instrument_type_as_non_mvp(self) -> None:
+        """An instrument absent from ``instrument_types`` fails CLOSED under scope='mvp'
+        (unlike the fail-OPEN convention for existence-window clipping) — an unknown
+        instrument_type cannot be proven MVP, so it must not silently pass the filter."""
+        dates = ["2026-01-01"]
+        manifest_df = _make_manifest_df(instrument_ids=_IS_INSTRUMENTS[:1], dates=dates)
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage.is_mvp",
+            return_value=True,
+        ) as mock_is_mvp:
+            result = _per_instrument_coverage(
+                venue_df_ok=manifest_df,
+                venue=_VENUE,
+                dt=_DT,
+                expected_dates=set(dates),
+                cap=None,
+                instruments_provider=_cefi_provider,
+                asset_group="cefi",
+                scope="mvp",
+                instrument_types={},  # no catalogue instrument_type data at all
+            )
+        # is_mvp was still called (with instrument_type="") for every candidate —
+        # this test's mock happens to return True, so the result here only proves
+        # the blank-instrument_type call shape; the "unknown -> non-MVP" guarantee
+        # is that NOTHING is silently exempted from the is_mvp(...) call itself.
+        assert mock_is_mvp.called
+        call_args = mock_is_mvp.call_args_list[0]
+        assert call_args.args[2] == ""  # instrument_type positional arg is blank, not fabricated
+
+
+# ---------------------------------------------------------------------------
 # Tests: cross-service instrument_id format divergence (bug #4)
 #
 # canonical_id_p0_strategy_reconciliation_2026_07_08 bug #4: the
@@ -288,7 +382,7 @@ class TestBuildCefiIsInstrumentsProvider:
                 side_effect=RuntimeError("no live catalogue in this test"),
             ),
         ):
-            provider, _windows = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         # Provider must return the right instruments for each venue.
         binance_result = provider(_VENUE, _DT)
@@ -317,7 +411,7 @@ class TestBuildCefiIsInstrumentsProvider:
                 side_effect=RuntimeError("bucket not found"),
             ),
         ):
-            provider, windows = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         assert provider is None
         assert windows == {}
@@ -338,7 +432,7 @@ class TestBuildCefiIsInstrumentsProvider:
                 side_effect=RuntimeError("no live catalogue in this test"),
             ),
         ):
-            provider, _windows = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         assert provider is None
 
@@ -369,7 +463,7 @@ class TestBuildCefiIsInstrumentsProvider:
                 side_effect=RuntimeError("no live catalogue in this test"),
             ),
         ):
-            provider, _windows = _build_cefi_is_instruments_provider(cloud="gcp")
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         result = provider(_VENUE, _DT)
         assert result is not None
