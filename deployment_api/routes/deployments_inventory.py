@@ -424,6 +424,18 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     cost_actual_usd: float | None = None  # net cost on the most recent COMPLETE billing day
     cost_avg_7d_usd: float | None = None  # trailing-7-day average daily net cost
     cost_projected_24h_usd: float | None = None  # projected $/day if it runs 24h (peak observed day)
+    # WS-2 date-range overlap (raw registry interval, ISO) — None for kinds with no registry entry
+    # (Cloud Run jobs/services, unmanaged VMs, ...); populated only in ``_vm_item``. Distinct from
+    # ``last_run_at`` (which conflates started/completed for display) because the overlap formula
+    # in ``_vm_overlap_basis`` needs the two bounds separately.
+    started_at: str | None = None
+    completed_at: str | None = None
+    last_heartbeat_at: str | None = None
+    # Honest-uncertainty marker (WS-2 decision 4) — "approx" when a field above is DERIVED rather
+    # than authoritative (today: a heartbeat-stale VM's effective end for date-range overlap). None
+    # = authoritative. Colour-only in the UI, no text label; reused by future approx sources
+    # (single-timestamp kinds, unmanaged-VM fallback) per the plan's one-convention decision.
+    basis: str | None = None
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -718,6 +730,9 @@ def _vm_item(
             umbrella=target.umbrella,
             object_delta=object_delta,
         ),
+        started_at=entry.started_at or None,
+        completed_at=entry.completed_at,
+        last_heartbeat_at=entry.last_heartbeat_at or None,
     )
 
 
@@ -1159,6 +1174,97 @@ def build_inventory(
         except UnclassifiedDeploymentError as exc:
             logger.warning("inventory: skipping unclassifiable Cloud Run service %r: %s", service_status.name, exc)
     return items
+
+
+# Heartbeat-staleness threshold for the date-range overlap formula — the SAME constant
+# ``DeploymentsRegistry.reap_stale`` uses (``max_age_hours: int = 6``,
+# unified_trading_library/deployment_registry.py). Reusing it keeps "still running" honest for
+# overlap math: the 2026-07-20 audit found 219 registry rows reading ``status=running`` while only
+# 12 GCE instances were actually RUNNING — a naive ``completed_at is None -> still open`` overlap
+# test would badly overcount those heartbeat-stale zombies as live for every date range.
+_REAP_STALE_HOURS = 6
+
+
+def _parse_date_query(raw: str | None, *, end_of_day: bool) -> datetime | None:
+    """Parse a ``date_from``/``date_to`` query value to a UTC datetime; 400s on a bad value.
+
+    Accepts a bare ``YYYY-MM-DD`` (anchored to 00:00:00, or 23:59:59.999999 when ``end_of_day`` so a
+    single-day range ``date_from == date_to`` is still inclusive) or a full ISO-8601 instant (used
+    exactly as given).
+    """
+    if not raw:
+        return None
+    parsed = _parse_iso(raw)
+    if parsed is None:
+        raise HTTPException(status_code=400, detail=f"invalid date {raw!r} — expected YYYY-MM-DD or ISO-8601")
+    if end_of_day and len(raw) == 10:  # bare date, no time component
+        return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed
+
+
+def _vm_overlap_basis(
+    *,
+    started_at: datetime | None,
+    completed_at: datetime | None,
+    last_heartbeat_at: datetime | None,
+    now: datetime,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> tuple[bool, str | None]:
+    """VM/registry overlap test against ``[date_from, date_to]`` (WS-2 date-range filter).
+
+    ``effective_end`` = ``completed_at`` when the row is terminal; else ``last_heartbeat_at`` once
+    the heartbeat is stale (``>_REAP_STALE_HOURS``); else the row is truly live and open-ended
+    (always overlaps). A heartbeat-derived ``effective_end`` is honestly approximate, so the caller
+    gets ``basis="approx"`` back to stamp on the row (decision 4 — colour-only, no text label).
+    ``started_at is None`` (no interval data at all) never filters the row OUT — honest-absence, it
+    simply isn't date-range-scoped.
+    """
+    if date_from is None and date_to is None:
+        return True, None
+    if started_at is None:
+        return True, None
+    if date_to is not None and started_at > date_to:
+        return False, None
+    if completed_at is not None:
+        return (date_from is None or completed_at >= date_from), None
+    if last_heartbeat_at is not None and (now - last_heartbeat_at) > timedelta(hours=_REAP_STALE_HOURS):
+        return (date_from is None or last_heartbeat_at >= date_from), "approx"
+    return True, None  # open-ended — truly live, always overlaps
+
+
+def _apply_date_range(
+    items: list[DeploymentItem],
+    now: datetime,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> list[DeploymentItem]:
+    """Scope VM/registry rows to ``[date_from, date_to]`` (WS-2 overlap query).
+
+    Every other kind passes through unfiltered — they carry no registry interval (a later todo adds
+    the single-timestamp match for Cloud Run jobs/scheduler/unmanaged VMs). Never mutates a cached
+    ``DeploymentItem`` in place: ``_inventory_cache`` entries are shared across concurrent requests
+    with different date ranges, so a stamped ``basis`` must land on a COPY, not the cached object.
+    """
+    if date_from is None and date_to is None:
+        return items
+    kept: list[DeploymentItem] = []
+    for item in items:
+        if item.kind != DeploymentKind.VM.value:
+            kept.append(item)
+            continue
+        overlaps, basis = _vm_overlap_basis(
+            started_at=_parse_iso(item.started_at),
+            completed_at=_parse_iso(item.completed_at),
+            last_heartbeat_at=_parse_iso(item.last_heartbeat_at),
+            now=now,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if not overlaps:
+            continue
+        kept.append(item.model_copy(update={"basis": basis}) if basis else item)
+    return kept
 
 
 def _filter_items(
@@ -1820,6 +1926,17 @@ def get_deployment_inventory(
         "geographic equivalent. Only regional resources (Cloud Run / functions / scheduler) honour "
         "this — VMs / disks / IPs are all-region aggregated regardless.",
     ),
+    date_from: str | None = Query(
+        None,
+        description="Scope VM/registry rows to those overlapping [date_from, date_to] (YYYY-MM-DD or "
+        "ISO-8601). VM overlap = started_at <= date_to AND effective_end >= date_from, where "
+        "effective_end is completed_at, or last_heartbeat_at once heartbeat-stale (>6h), or "
+        "open-ended while truly live. Other kinds (no registry interval) are unaffected.",
+    ),
+    date_to: str | None = Query(
+        None,
+        description="See date_from. A bare date is inclusive of its whole day.",
+    ),
 ) -> DeploymentInventoryResponse:
     """Unified deployment inventory: every VM + Cloud Run job, classified by umbrella.
 
@@ -1831,7 +1948,10 @@ def get_deployment_inventory(
     """
     now = datetime.now(UTC)
     region_scope = _normalize_region_scope(region, all_regions)
+    parsed_date_from = _parse_date_query(date_from, end_of_day=False)
+    parsed_date_to = _parse_date_query(date_to, end_of_day=True)
     items = _load_inventory(now, cloud=cloud, region_scope=region_scope)
+    items = _apply_date_range(items, now, parsed_date_from, parsed_date_to)
     filtered = _filter_items(
         items,
         umbrella=umbrella,
