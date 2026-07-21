@@ -359,10 +359,13 @@ def _mock_alerts() -> AlertsPayloadDict:
     """Mock alert ledger — CI/CD lifecycle pair + non-CI watcher alerts (worker_liveness,
     git_health) so the UI/playwright can assert all alert classes render in the unified pane."""
     entries: list[AlertEntryDict] = [
+        # Demonstrates the emitting-vs-subject fix: the central ci-status-update watcher always
+        # emits as unified-trading-pm (repo), but this alert is ABOUT deployment-api (subject_repo).
         AlertEntryDict(
             kind="alert",
             timestamp="2026-06-10T12:10:00Z",
             repo="unified-trading-pm",
+            subject_repo="deployment-api",
             workflow_name="ci-status-update",
             severity="CRITICAL",
             conclusion="failure",
@@ -374,6 +377,7 @@ def _mock_alerts() -> AlertsPayloadDict:
             kind="alert",
             timestamp="2026-06-10T12:50:00Z",
             repo="unified-trading-pm",
+            subject_repo="deployment-api",
             workflow_name="ci-status-update",
             severity="INFO",
             conclusion="success",

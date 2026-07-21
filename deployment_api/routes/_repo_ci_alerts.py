@@ -37,7 +37,7 @@ class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (
 
     kind: str  # "alert" | "event" | "vm_down" | "worker_liveness" | "git_health" | "consolidator_down"
     timestamp: str
-    repo: str
+    repo: str  # the EMITTING repo (who wrote this alert) — see ``subject_repo`` for who it's ABOUT
     workflow_name: str
     severity: str | None  # alerts only
     conclusion: str | None
@@ -48,6 +48,11 @@ class AlertEntryDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (
     # its ``/deployments/{name}`` detail (parity #4). Absent for CI alerts (no target). NotRequired so
     # only the alert path that carries a target sets it.
     deployment_target: NotRequired[str | None]
+    # The repo the alert is ABOUT, distinct from ``repo`` (the emitter) — the
+    # emitting-vs-subject-repo defect fix (deployment_alerts_ingestion_completeness_2026_07_20.md
+    # todo 4). ``None`` when the source has no repo concept at all (VM-scoped infra alerts,
+    # alerting-service). NotRequired so only the repo-scoped alert paths set it.
+    subject_repo: NotRequired[str | None]
 
 
 class AlertStreamDict(TypedDict):  # CORRECT-LOCAL: CI-alerts GCS payload shape (internal)
@@ -98,18 +103,27 @@ def _parse_line(line: str) -> AlertEntryDict | None:
             # The infra/deployment watchers (vm_down / worker_liveness / deployment lifecycle) flatten
             # ``details.vm_name`` to the top level → the /deployments/{name} deep-link target (#4).
             deployment_target=str(obj.get("vm_name") or obj.get("deployment_id") or "") or None,
+            # Writer-side fix (notify-slack.yml): ``subject_repo`` is the repo the alert is ABOUT,
+            # distinct from ``repo`` (the emitter — always unified-trading-pm for a central watcher).
+            # Older rows written before the fix carry no ``subject_repo`` key → None (honest absence,
+            # not back-filled to ``repo`` which would silently repeat the same defect).
+            subject_repo=str(obj.get("subject_repo")) if obj.get("subject_repo") else None,
         )
     if event_type == "github_workflow_event":
+        # This plane has no emitting-vs-subject defect: each repo's own promotion workflow persists
+        # its OWN state, so ``repo_name`` already IS the subject repo.
+        repo_name = str(obj.get("repo_name") or "")
         return AlertEntryDict(
             kind="event",
             timestamp=str(obj.get("timestamp") or ""),
-            repo=str(obj.get("repo_name") or ""),
+            repo=repo_name,
             workflow_name=str(obj.get("workflow_name") or ""),
             severity=None,
             conclusion=str(obj.get("conclusion")) if obj.get("conclusion") else None,
             message=None,
             run_url=None,
             alert_class=None,
+            subject_repo=repo_name or None,
         )
     return None
 
@@ -150,6 +164,7 @@ def _parse_alerting_service_line(line: str) -> AlertEntryDict | None:
         run_url=None,
         alert_class=alert_class,
         deployment_target=deployment_target,
+        subject_repo=None,  # structurally absent — infra/venue-scoped, not repo-scoped
     )
 
 
@@ -189,10 +204,17 @@ def derive_streams(entries: list[AlertEntryDict]) -> list[AlertStreamDict]:
     `current` = newest entry; `previous` = the one before it — the operator's "what is
     the state now and what was it last" traceability pair. Streams sort worst-first
     (CRITICAL current > WARNING > failure-conclusion > rest), then newest-first.
+
+    Groups by ``subject_repo`` when present, falling back to ``repo`` (the emitter) only for
+    entries with no subject_repo at all — older rows predating the fix, or sources with no repo
+    concept. This is the fix for "repo filtering returns the wrong repo": without it, every
+    slack_alert entry from a central watcher grouped under unified-trading-pm (the emitter)
+    instead of the repo the alert was actually about.
     """
     by_stream: dict[tuple[str, str], list[AlertEntryDict]] = {}
     for entry in entries:
-        by_stream.setdefault((entry["repo"], entry["workflow_name"]), []).append(entry)
+        subject = entry.get("subject_repo") or entry["repo"]
+        by_stream.setdefault((subject, entry["workflow_name"]), []).append(entry)
 
     def severity_rank(entry: AlertEntryDict) -> int:
         if entry["severity"] == "CRITICAL" or entry["conclusion"] == "failure":

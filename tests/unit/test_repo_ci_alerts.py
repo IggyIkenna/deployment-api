@@ -21,8 +21,15 @@ setup_events("deployment-api", "test")
 _PATCH_MOCK_MODE = "deployment_api.routes.repo_ci.DeploymentApiConfig.is_mock_mode"
 
 
-def _entry(ts: str, repo: str, wf: str, severity: str | None, conclusion: str | None) -> AlertEntryDict:
-    return AlertEntryDict(
+def _entry(
+    ts: str,
+    repo: str,
+    wf: str,
+    severity: str | None,
+    conclusion: str | None,
+    subject_repo: str | None = None,
+) -> AlertEntryDict:
+    entry = AlertEntryDict(
         kind="alert" if severity else "event",
         timestamp=ts,
         repo=repo,
@@ -32,6 +39,9 @@ def _entry(ts: str, repo: str, wf: str, severity: str | None, conclusion: str | 
         message="m" if severity else None,
         run_url=None,
     )
+    if subject_repo is not None:
+        entry["subject_repo"] = subject_repo
+    return entry
 
 
 class TestParseLine:
@@ -56,6 +66,33 @@ class TestParseLine:
         assert parsed["kind"] == "event"
         assert parsed["repo"] == "greeks-service"
         assert parsed["conclusion"] == "failure"
+        # No emitting-vs-subject defect on this plane: each repo reports on itself, so
+        # subject_repo mirrors repo (repo_name).
+        assert parsed["subject_repo"] == "greeks-service"
+
+    def test_slack_alert_subject_repo_distinct_from_emitter(self) -> None:
+        """The emitting-vs-subject defect fix: a central watcher (repo=unified-trading-pm) posting
+        about ANOTHER repo's CI regression must carry that repo as a distinct subject_repo."""
+        line = (
+            '{"event_type":"slack_alert","timestamp":"2026-06-10T12:00:00Z","repo":"unified-trading-pm",'
+            '"subject_repo":"unified-trading-library","workflow_name":"ci-status-update",'
+            '"severity":"CRITICAL","conclusion":"failure","run_url":"u","message":"CI REGRESSION"}'
+        )
+        parsed = _parse_line(line)
+        assert parsed is not None
+        assert parsed["repo"] == "unified-trading-pm"  # the emitter, unchanged
+        assert parsed["subject_repo"] == "unified-trading-library"  # the actual subject
+
+    def test_slack_alert_missing_subject_repo_is_none(self) -> None:
+        """A row written before the writer-side fix carries no subject_repo key — honest absence,
+        not silently back-filled from the emitter (which would repeat the same defect)."""
+        line = (
+            '{"event_type":"slack_alert","timestamp":"2026-06-10T12:00:00Z","repo":"unified-trading-pm",'
+            '"workflow_name":"sit-unlock","severity":"INFO","conclusion":"success","message":"ok"}'
+        )
+        parsed = _parse_line(line)
+        assert parsed is not None
+        assert parsed.get("subject_repo") is None
 
     def test_junk_lines_skipped(self) -> None:
         assert _parse_line("not json") is None
@@ -80,6 +117,7 @@ class TestParseAlertingServiceLine:
         assert parsed["message"] == "VM stalled"
         assert parsed["alert_class"] == "DP_VM_STALL"
         assert parsed["deployment_target"] == "cefi-aster-1"
+        assert parsed.get("subject_repo") is None  # structurally absent — infra/venue-scoped
 
     def test_decision_record_shape_uses_triggered_at(self) -> None:
         line = (
@@ -127,6 +165,41 @@ class TestDeriveStreams:
     def test_single_entry_stream_has_no_previous(self) -> None:
         streams = derive_streams([_entry("2026-06-10T10:00:00Z", "a", "w", "WARNING", None)])
         assert streams[0]["previous"] is None
+
+    def test_groups_by_subject_repo_not_emitter(self) -> None:
+        """The emitting-vs-subject fix at the stream layer: two alerts emitted by the SAME
+        central watcher (repo="unified-trading-pm") but about two DIFFERENT subject repos must
+        land in two separate streams, keyed by subject_repo — not collapse into one
+        unified-trading-pm stream."""
+        entries = [
+            _entry(
+                "2026-06-10T12:00:00Z",
+                "unified-trading-pm",
+                "ci-status-update",
+                "CRITICAL",
+                "failure",
+                subject_repo="unified-trading-library",
+            ),
+            _entry(
+                "2026-06-10T12:05:00Z",
+                "unified-trading-pm",
+                "ci-status-update",
+                "CRITICAL",
+                "failure",
+                subject_repo="execution-service",
+            ),
+        ]
+        streams = derive_streams(entries)
+        assert len(streams) == 2
+        repos = {s["repo"] for s in streams}
+        assert repos == {"unified-trading-library", "execution-service"}
+
+    def test_falls_back_to_emitter_when_subject_repo_absent(self) -> None:
+        """Old rows written before the fix (no subject_repo key at all) still group sanely by
+        the emitter, rather than erroring or dropping the entry."""
+        entries = [_entry("2026-06-10T10:00:00Z", "unified-trading-pm", "sit-unlock", "INFO", "success")]
+        streams = derive_streams(entries)
+        assert streams[0]["repo"] == "unified-trading-pm"
 
 
 class TestReadAlertingServiceSync:
