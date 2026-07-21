@@ -1,12 +1,14 @@
 """
 Alert-ledger reader for the repo-CI dashboard (operator traceability, 2026-06-10).
 
-Every Slack alert is persisted by notify-slack.yml to
-gs://{CICD_EVENTS_BUCKET}/cicd/alerts/{date}/alerts.jsonl, and every promotion workflow
-persists state events to cicd/events/{repo}/{date}/events.jsonl (persist-cicd-event.yml).
-This module reads BOTH and derives per-(repo, workflow) lifecycle STREAMS — the current
-state and the previous state — so any Slack page can be traced to its history on the
-dashboard instead of Slack scrollback.
+Every Slack alert is persisted by notify-slack.yml (or deployment-api's own `_persist_alert`) to
+gs://{CICD_EVENTS_BUCKET}/cicd/alerts/{date}/<unique>.jsonl, and every promotion workflow persists
+state events to cicd/events/{repo}/{date}/<unique>.jsonl (the `persist-event` composite action).
+One object per event/alert (not a shared per-day filename) since
+`deployment_alerts_ingestion_completeness_2026_07_20.md` todo 6 — this module has always read both
+ledgers as a PREFIX WALK (`list_blobs(prefix=...)`), so it required no reader change. This module
+reads BOTH and derives per-(repo, workflow) lifecycle STREAMS — the current state and the previous
+state — so any Slack page can be traced to its history on the dashboard instead of Slack scrollback.
 
 Plan: ci_dashboard_deployment_ui_2026_06_10.md (alert-history mirror, elevated to v1).
 """

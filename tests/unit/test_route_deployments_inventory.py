@@ -832,9 +832,6 @@ def test_persist_alert_writes_expected_row_shape() -> None:
     written_path = ""
     written_data = b""
 
-    def _fake_download(bucket: str, path: str) -> bytes:
-        raise FileNotFoundError("no existing blob")
-
     def _fake_upload(bucket: str, path: str, data: bytes, content_type: str | None = None) -> str:
         nonlocal written_bucket, written_path, written_data
         written_bucket, written_path, written_data = bucket, path, data
@@ -842,7 +839,6 @@ def test_persist_alert_writes_expected_row_shape() -> None:
 
     with (
         patch.object(_inv_mod, "resolve_bucket_name", return_value="unified-trading-cicd-events"),
-        patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
         patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
     ):
         _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
@@ -854,8 +850,10 @@ def test_persist_alert_writes_expected_row_shape() -> None:
         )
     # QG 5.69: bucket comes from resolve_bucket_name(), never a hardcoded literal.
     assert written_bucket == "unified-trading-cicd-events"
+    # One object per alert (race fix, todo 6) — no shared "alerts.jsonl" filename to clobber.
     assert written_path.startswith("cicd/alerts/")
-    assert written_path.endswith("/alerts.jsonl")
+    assert written_path.endswith(".jsonl")
+    assert "alerts.jsonl" not in written_path
     row = json.loads(written_data.decode("utf-8").strip())
     assert row["event_type"] == "slack_alert"
     assert row["alert_class"] == "oom-risk"
@@ -872,9 +870,6 @@ def test_persist_alert_writes_subject_repo_distinct_from_emitter() -> None:
 
     written_data = b""
 
-    def _fake_download(bucket: str, path: str) -> bytes:
-        raise FileNotFoundError("no existing blob")
-
     def _fake_upload(bucket: str, path: str, data: bytes, content_type: str | None = None) -> str:
         nonlocal written_data
         written_data = data
@@ -882,7 +877,6 @@ def test_persist_alert_writes_subject_repo_distinct_from_emitter() -> None:
 
     with (
         patch.object(_inv_mod, "resolve_bucket_name", return_value="unified-trading-cicd-events"),
-        patch.object(_inv_mod, "download_from_storage", side_effect=_fake_download),
         patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
     ):
         _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
@@ -899,11 +893,42 @@ def test_persist_alert_writes_subject_repo_distinct_from_emitter() -> None:
     assert row["repo"] != row["subject_repo"]
 
 
+def test_persist_alert_writes_unique_object_per_call() -> None:
+    """deployment_alerts_ingestion_completeness_2026_07_20.md todo 6: one object per alert, not a
+    shared per-day filename — two concurrent alerts must land at two DISTINCT paths so neither
+    overwrites the other (the read-modify-write race this replaces)."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    written_paths: list[str] = []
+
+    def _fake_upload(bucket: str, path: str, data: bytes, content_type: str | None = None) -> str:
+        written_paths.append(path)
+        return f"gs://{bucket}/{path}"
+
+    with (
+        patch.object(_inv_mod, "resolve_bucket_name", return_value="unified-trading-cicd-events"),
+        patch.object(_inv_mod, "upload_to_storage", side_effect=_fake_upload),
+    ):
+        for _ in range(2):
+            _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
+                alert_class="oom-risk",
+                workflow_name="vm-health-x",
+                severity="CRITICAL",
+                message="x is oom-risk",
+                dedup_key="vm-health-x-oom-risk",
+            )
+    assert len(written_paths) == 2
+    assert written_paths[0] != written_paths[1]
+
+
 def test_persist_alert_never_raises_on_storage_failure() -> None:
     """Shard-level isolation: a ledger-write failure never breaks the inventory computation."""
     from deployment_api.routes import deployments_inventory as _inv_mod
 
-    with patch.object(_inv_mod, "download_from_storage", side_effect=RuntimeError("gcs down")):
+    with (
+        patch.object(_inv_mod, "resolve_bucket_name", return_value="unified-trading-cicd-events"),
+        patch.object(_inv_mod, "upload_to_storage", side_effect=RuntimeError("gcs down")),
+    ):
         _inv_mod._persist_alert(  # pyright: ignore[reportPrivateUsage]
             alert_class="oom-risk",
             workflow_name="vm-health-x",
