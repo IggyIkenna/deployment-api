@@ -39,6 +39,12 @@ REAPABLE_LIFECYCLE_CLASSES: frozenset[LifecycleClass] = frozenset(
 # GCE states that mean "not running" — the orphan candidate set.
 _STOPPED_STATES: frozenset[str] = frozenset({"STOPPED", "SUSPENDED", "TERMINATED"})
 
+# The reap grace window, hours. Public so callers that reuse the orphan-verdict logic (the
+# deployments inventory join) share the SAME default instead of a second hardcoded 24.0 — the
+# `/orphans` + `/reap` endpoints' own `Query`/model defaults stay as-is (unrelated blast radius),
+# this constant is for NEW call sites.
+DEFAULT_GRACE_HOURS: float = 24.0
+
 # asia-northeast1 (Tokyo) published persistent-disk list rates, $/GB/month. ESTIMATE only.
 _DISK_MONTHLY_USD_PER_GB: dict[str, float] = {
     "pd-standard": 0.052,
