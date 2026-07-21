@@ -1125,10 +1125,6 @@ def test_inventory_route_live_path_mocks_registry_and_cloud_run(client_inventory
             "deployment_api.routes.deployments_inventory.latest_execution_by_job",
             return_value=cr_status,
         ),
-        patch(
-            "deployment_api.routes.deployments_inventory.vm_run_log_rolling_uri",
-            return_value="gs://deployment-scripts-test/log-archive/rolling/run.log",
-        ),
         # Secondary GCP censuses (services/functions/scheduler/disks/IPs/object-deltas/costs)
         # → honest-empty, credential-free: no real socket to GCP (offline / pytest-socket safe).
         patch_inventory_secondary_census(_inv_mod),

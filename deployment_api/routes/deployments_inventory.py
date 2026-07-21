@@ -70,7 +70,7 @@ from unified_trading_library import (
     download_from_storage,
     get_storage_client,
     upload_to_storage,
-    vm_run_log_rolling_uri,
+    vm_log_stream_uri,
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -708,12 +708,11 @@ def _vm_item(
     object_delta = None
     if target.umbrella == DeploymentUmbrella.BATCH:
         object_delta = (object_deltas or {}).get(target.asset_group)
-    run_log = ""
-    completed_at = entry.completed_at
-    if completed_at and len(completed_at) >= 10:
-        date_stamp = completed_at[:10].replace("-", "")
-        if date_stamp.isdigit():
-            run_log = vm_run_log_rolling_uri(entry.vm_name, date_stamp)
+    # Live-first read path (WS-4 decision 2): the live streaming path is always the
+    # primary candidate for ANY vm regardless of completed_at — replaces the broken
+    # completed_at[:10]-keyed rolling-date guess, which 404s because the archiver
+    # writes daily rolling copies keyed by cron-run date, not completion date.
+    run_log = vm_log_stream_uri(entry.vm_name)
     details = vm_details or {}
     labels = details.get("labels")
     has_unreleased, unreleased = detect_unreleased_resources(

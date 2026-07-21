@@ -29,7 +29,7 @@ from unified_trading_library import (
     DEFAULT_BUCKET,
     DeploymentRegistryEntry,
     DeploymentsRegistry,
-    vm_run_log_rolling_uri,
+    vm_run_log_final_uri,
     vm_serial_rolling_uri,
 )
 
@@ -131,18 +131,29 @@ def _to_model(
         is_running = details.get("status") == "RUNNING"
         data["health_status"] = _calculate_health_status(entry, is_running)
 
-    # Populate durable archive URIs for completed entries (rolling daily archive,
-    # no 14-day TTL unlike vm-logs/).
+    # Serial console: still rolling-archived daily (a separate mechanism from run.log,
+    # unaffected by the run.log final-snapshot fix below) — no 14-day TTL unlike vm-logs/.
     completed_at = data.get("completed_at")
     if completed_at and isinstance(completed_at, str) and len(completed_at) >= 10:
         try:
             date_stamp = completed_at[:10].replace("-", "")  # YYYYMMDD
             vm_name = str(data.get("vm_name", ""))  # noqa: qg-empty-fallback — registry blob display default
             if vm_name and date_stamp.isdigit():
-                data["archive_run_log_uri"] = vm_run_log_rolling_uri(vm_name, date_stamp)
                 data["archive_serial_uri"] = vm_serial_rolling_uri(vm_name, date_stamp)
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             pass
+
+    # Run-log archive candidate (WS-4 decision 2): the live path (log_uri, already set
+    # above from the registry entry) is the primary read path for ANY vm regardless of
+    # completed_at; archive_run_log_uri is the durable final-snapshot fallback, written
+    # once at actual VM completion (a fixed, deterministic path — no date needed).
+    # Replaces the broken completed_at[:10]-keyed rolling-date guess (vm_run_log_rolling_uri),
+    # which 404s because the archiver writes daily rolling copies keyed by cron-run date,
+    # not completion date.
+    if completed_at and isinstance(completed_at, str) and len(completed_at) >= 10:
+        vm_name = str(data.get("vm_name", ""))  # noqa: qg-empty-fallback — registry blob display default
+        if vm_name:
+            data["archive_run_log_uri"] = vm_run_log_final_uri(vm_name)
 
     return VmDeploymentEntryModel(**cast(dict[str, object], data))  # type: ignore[reportArgumentType]
 
@@ -319,7 +330,7 @@ def list_vm_deployments(
                     rows_in=30_000,
                     rows_out=30_000,
                     rows_error=0,
-                    archive_run_log_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/rolling/20260417/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
+                    archive_run_log_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/final/canonical-migration-cefi-20260418-042359/run.log",  # noqa: gs-uri (mock fixture URI)
                     archive_serial_uri=f"gs://deployment-scripts-{_MOCK_PID_TOKEN}/log-archive/serial-rolling/20260417/canonical-migration-cefi-20260418-042359/serial-console.txt",  # noqa: gs-uri (mock fixture URI)
                 ),
                 _mock_entry(
