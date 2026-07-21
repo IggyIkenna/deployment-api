@@ -296,7 +296,9 @@ class CostObservabilityService:
 
         * ``actual_usd`` — net on the most recent COMPLETE day (excludes today's partial/provisional
           figure when a completed day exists; falls back to the latest day otherwise).
-        * ``avg_7d_usd`` — total net over the window ÷ ``days`` (trailing daily average).
+        * ``avg_7d_usd`` — total net over the window ÷ the count of days the resource actually has
+          billing rows (NOT the fixed window length — a 1-day-old resource averages over its 1 day,
+          not 7, so it doesn't read as artificially cheap).
         * ``projected_24h_usd`` — the PEAK observed daily net over the window: the day the resource
           ran fullest ≈ a full 24h day (data-only, no rate-card). Reflects the time-proportional
           spend; non-time SKUs (egress/requests) don't scale with runtime.
@@ -322,7 +324,7 @@ class CostObservabilityService:
             latest = max(complete_days) if complete_days else max(day_net)
             out[resource_id] = ResourceDailyCost(
                 actual_usd=round(day_net[latest], 2),
-                avg_7d_usd=round(sum(daily) / days, 2),
+                avg_7d_usd=round(sum(daily) / len(daily), 2),
                 projected_24h_usd=round(max(daily), 2),
             )
         return out

@@ -48,7 +48,9 @@ def test_per_resource_daily_three_values() -> None:
 
     a = out["vm-a"]
     assert a.actual_usd == 20.0  # most recent COMPLETE day (yesterday), not today's partial $5
-    assert a.avg_7d_usd == round((10.0 + 20.0 + 5.0) / 7, 2)  # total net ÷ window
+    assert a.avg_7d_usd == round(
+        (10.0 + 20.0 + 5.0) / 3, 2
+    )  # total net ÷ days actually billed (3), not the 7-day window
     assert a.projected_24h_usd == 20.0  # peak observed daily (≈ a full 24h day)
     assert out["vm-b"].actual_usd == 7.0
 

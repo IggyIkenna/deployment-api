@@ -79,7 +79,7 @@ class ResourceDailyCost:  # CORRECT-LOCAL: internal per-resource cost signal, no
     """
 
     actual_usd: float  # net cost on the most recent COMPLETE billing day
-    avg_7d_usd: float  # trailing-window average daily net cost
+    avg_7d_usd: float  # average net cost over days the resource actually has billing rows (not ÷7)
     projected_24h_usd: float  # projected $/day if it runs 24h — the peak observed daily net (≈ a full day)
 
 
