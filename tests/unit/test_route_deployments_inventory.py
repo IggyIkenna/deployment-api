@@ -2251,3 +2251,67 @@ def test_build_inventory_skips_unclassifiable_cloud_run_service() -> None:
     ]
     items = build_inventory([], {}, _FIXED_NOW, cloud_run_services=services)
     assert not [i for i in items if i.kind == "CLOUD_RUN_SERVICE"]
+
+
+# ---------------------------------------------------------------------------
+# GET /deployments/{name}/run-log/metadata — WS-4 decision 2 read-path resolution
+# ---------------------------------------------------------------------------
+
+
+def test_run_log_metadata_live_path_resolved(client_inventory: TestClient) -> None:
+    """Live path hit: response carries its size/last-modified + location="live"."""
+    from unified_trading_library import BlobMetadata
+
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    live_meta = BlobMetadata(
+        name="vm-logs/cefi-binance-spot-20260622-014158/run.log",
+        bucket="deployment-scripts-test",
+        size=842_331,
+        last_modified="2026-07-21T04:00:00Z",
+    )
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/vm-logs/cefi-binance-spot-20260622-014158/run.log",
+                location="live",
+                metadata=live_meta,
+            ),
+        ) as mock_resolve,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get("/api/deployments/cefi-binance-spot-20260622-014158/run-log/metadata")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is True
+    assert body["location"] == "live"
+    assert body["size_bytes"] == 842_331
+    assert body["last_modified"] == "2026-07-21T04:00:00Z"
+    mock_resolve.assert_called_once_with("cefi-binance-spot-20260622-014158", "test-project")
+
+
+def test_run_log_metadata_honest_absence_when_neither_path_exists(client_inventory: TestClient) -> None:
+    """Neither live nor archive object exists: honest exists=False, never a dead link."""
+    from deployment_api.routes._run_log_resolution import RunLogLocation
+
+    with (
+        patch("deployment_api.routes.deployments_inventory._cfg") as mock_cfg,
+        patch(
+            "deployment_api.routes.deployments_inventory.resolve_run_log_location",
+            return_value=RunLogLocation(
+                uri="gs://deployment-scripts-test/log-archive/final/some-old-vm/run.log",
+                location="archive",
+                metadata=None,
+            ),
+        ),
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.require_gcp_project_id.return_value = "test-project"
+        resp = client_inventory.get("/api/deployments/some-old-vm/run-log/metadata")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False
+    assert body["size_bytes"] is None
