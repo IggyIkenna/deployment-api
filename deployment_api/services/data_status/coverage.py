@@ -293,7 +293,17 @@ class CoverageStatusMixin(VenueResolutionMixin):
         return counts, total  # pyright: ignore[reportUnknownVariableType]
 
     def _build_coverage_for_cat(self, service: str, cat: str, cloud: str = "gcp") -> dict[str, object] | None:
-        """Build one asset_group's coverage entry. Returns None if empty."""
+        """Build one asset_group's coverage entry. Returns None if empty.
+
+        Out of scope for the MDPS timeframe-aware honest-coverage extension
+        (mtds_data_status_page_parity_2026_07_21): this ``completion_pct``
+        (the offline rollup worker's coverage-summary surface, ``GET
+        /api/data-status/coverage``) is a SEPARATE, independent 4-state
+        tally over raw ``capture_status`` counts — it has no relationship to
+        ``mtds_honest_coverage_for_venue`` / ``per_instrument_coverage``'s
+        UAC-driven ``(venue, data_type, [timeframe,] date)`` shard-space math
+        and is NOT made timeframe-aware by that work.
+        """
         index = self._read_defi_merged_index(service, cat, cloud=cloud)
         if index.empty:
             return None

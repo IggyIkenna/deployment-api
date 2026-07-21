@@ -229,6 +229,7 @@ def per_instrument_coverage(
     asset_group: str = "cefi",
     scope: str = "could_exist",
     instrument_types: dict[str, str] | None = None,
+    timeframes: list[str] | None = None,
 ) -> dict[str, object]:
     """Phase 8D — compute the per-(instrument_id, date) denominator for a
     per-instrument shard ``data_type``.
@@ -307,6 +308,26 @@ def per_instrument_coverage(
         :func:`_read_cefi_catalogue_metadata`, required to evaluate
         ``is_mvp(...)`` per instrument under ``scope="mvp"``. Ignored when
         ``scope="could_exist"``.
+    timeframes:
+        ``None`` (default) preserves the pre-2026-07-21 behaviour
+        BYTE-FOR-BYTE — the denominator/numerator stay per-(instrument,
+        date), exactly as before this parameter existed. Every existing
+        MTDS caller passes nothing here.
+
+        When supplied (MDPS extension, mtds_data_status_page_parity_2026_07_21),
+        the denominator/numerator become per-(instrument, date, timeframe):
+        MDPS writes one candle parquet per (instrument, date, timeframe) — a
+        strictly finer shard grain than MTDS's per-(instrument, date) raw
+        ticks, since the SAME manifest ``data_type`` token (e.g. ``"trades"``)
+        now fans out across N candle timeframes in a separate ``timeframe``
+        column. ``expected_shards`` becomes ``|instruments| x |dates| x
+        |timeframes|`` (per-instrument existence-window clipping still
+        applies to the ``dates`` axis only — timeframes are not
+        existence-windowed); ``found_shards`` counts distinct
+        ``(instrument_id, date, timeframe)`` triples where ``timeframe`` is
+        read from the manifest's ``timeframe`` column and restricted to this
+        list. A manifest with no ``timeframe`` column (or all-blank values)
+        degrades to zero found triples (honestly 0%, never a KeyError).
 
     Returns
     -------
@@ -332,6 +353,11 @@ def per_instrument_coverage(
             iid for iid in expected_instruments if is_mvp(asset_group, venue, types.get(iid, ""), dt, base_ccy=None)
         ]
 
+    # ``None`` (every existing MTDS caller) -> multiplier 1, i.e. a
+    # complete no-op below. Only a non-empty ``timeframes`` list changes
+    # the arithmetic.
+    tf_multiplier = len(timeframes) if timeframes else 1
+
     # Slice to the (venue, dt) rows once.
     if "data_type" in venue_df_ok.columns and not venue_df_ok.empty:
         dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
@@ -354,10 +380,28 @@ def per_instrument_coverage(
         non_legacy_mask = ~legacy_mask
         non_legacy_instr = instrument_series[non_legacy_mask]
         non_legacy_dates = date_series[non_legacy_mask]
+        # MDPS-only (``timeframes is not None``): derive the timeframe series
+        # from the SAME ``non_legacy_mask``-filtered slice as ``non_legacy_instr``
+        # / ``non_legacy_dates`` (both computed one line above) -- NOT from the
+        # unfiltered ``dt_rows`` -- so it shares their exact index, keeping every
+        # later same-index boolean-mask operation (``iid_str``/``rd_str``/``tf_str``
+        # combined via ``&``) aligned. Building it from unfiltered ``dt_rows``
+        # instead is the real, review-confirmed pandas index-misalignment bug
+        # (2 of 3 reviews, independently) that fires whenever legacy rows
+        # (empty instrument_id) coexist with non-legacy rows in the same
+        # (venue, dt) slice. ``None`` (not an empty/blank Series) when
+        # ``timeframes`` isn't supplied -- skips this allocation entirely on
+        # the (far more common) MTDS call path.
+        non_legacy_tf: pd.Series | None = (
+            dt_rows["timeframe"].fillna("").astype(str)[non_legacy_mask]
+            if timeframes is not None and "timeframe" in dt_rows.columns
+            else None
+        )
     else:
         legacy_row_count = len(dt_rows)
         non_legacy_instr = pd.Series([], dtype=str)
         non_legacy_dates = pd.Series([], dtype=str)
+        non_legacy_tf = None
 
     # Legacy-row fallback: the aggregator hasn't seen any Phase-8C rows
     # for this (venue, dt) yet -- preserve the prior per-(venue, dt, date)
@@ -366,9 +410,18 @@ def per_instrument_coverage(
         found_dates_set = {str(d) for d in date_series.unique() if str(d)}  # pyright: ignore[reportAny]
         found_in_expected = found_dates_set & expected_dates
         missing_dates = sorted(expected_dates - found_dates_set)
-        expected_count = len(expected_dates)
+        # Review finding #3 (real gap, converged with the design's own Open
+        # Question 1): this fully-legacy branch has no per-instrument grain
+        # to fan out timeframes across, so it can only scale the AGGREGATE
+        # ``expected_count`` by ``len(timeframes)`` -- it cannot recover a
+        # timeframe-aware ``found_count`` from rows that never carried a
+        # timeframe axis in the first place. Without this multiply,
+        # ``expected_shards`` here would under-count by a factor of
+        # ``len(timeframes)`` relative to the Tier-3 branch below for the
+        # exact same (venue, dt) shape.
+        expected_count = len(expected_dates) * tf_multiplier
         found_count = len(found_in_expected)
-        return {
+        legacy_entry: dict[str, object] = {
             "expected_shards": expected_count,
             "found_shards": found_count,
             "missing_shards": max(0, expected_count - found_count),
@@ -380,6 +433,18 @@ def per_instrument_coverage(
             "missing_instruments": list(expected_instruments),
             "legacy_row_count": legacy_row_count,
         }
+        if timeframes is not None:
+            # Provenance marker (the review's alternative-acceptable fix,
+            # applied IN ADDITION to the multiply above rather than instead
+            # of it): tells a caller this slice's numerator did NOT get the
+            # timeframe-aware treatment the Tier-3 branch gives, even though
+            # its denominator was scaled to match — i.e. a 100% here is
+            # structurally unreachable whenever more than one timeframe is
+            # expected, which is the HONEST signal that this (venue, dt)
+            # needs the real per-instrument backfill, not a "this looks
+            # broken" false alarm.
+            legacy_entry["denominator_timeframe_aware"] = False
+        return legacy_entry
 
     # Phase 8D Tier-3 denominator.
     # Vectorised: build the (instrument_id, date) pair set with pandas mask
@@ -388,16 +453,30 @@ def per_instrument_coverage(
     # (venue, dt) pair; the masked path is dominated by the C-level isin().
     found_dates_in_window: set[str] = set()
     found_iid_dates_zipped: list[tuple[str, str]] = []
+    found_iid_date_tf_zipped: list[tuple[str, str, str]] = []
     if len(non_legacy_instr) > 0:
         iid_str = non_legacy_instr.astype(str).str.strip()
         rd_str = non_legacy_dates.astype(str)
         mask = (iid_str.str.len() > 0) & rd_str.isin(expected_dates)
+        if timeframes is not None:
+            # MDPS-only: AND in the timeframe restriction. ``tf_str`` is
+            # ``non_legacy_tf`` (built above from the SAME masked slice as
+            # ``iid_str``/``rd_str`` -- the bug #2 fix) when a ``timeframe``
+            # column exists, else an all-blank same-index Series so the
+            # ``.isin(timeframes)`` correctly matches nothing (0% found,
+            # never a KeyError) rather than raising on a missing column.
+            tf_str = non_legacy_tf if non_legacy_tf is not None else pd.Series("", index=iid_str.index)
+            mask = mask & tf_str.isin(timeframes)
         if bool(mask.any()):
             iid_kept = iid_str[mask].tolist()
             rd_kept = rd_str[mask].tolist()
             found_iid_dates_zipped = list(zip(iid_kept, rd_kept, strict=True))
             found_dates_in_window = set(rd_kept)
+            if timeframes is not None:
+                tf_kept = tf_str[mask].tolist()  # pyright: ignore[reportPossiblyUnboundVariable]
+                found_iid_date_tf_zipped = list(zip(iid_kept, rd_kept, tf_kept, strict=True))
     found_pairs: set[tuple[str, str]] = set(found_iid_dates_zipped)
+    found_triples: set[tuple[str, str, str]] = set(found_iid_date_tf_zipped)
 
     n_instruments = len(expected_instruments)
     # Per-instrument existence-window clipping (see `_clip_dates_to_window` +
@@ -408,28 +487,48 @@ def per_instrument_coverage(
     # #4 pattern below) since `instrument_windows` comes from the catalogue
     # (canonical ids) while `found_pairs`' iid component comes from the
     # manifest (which can diverge in casing/whitespace/@SUFFIX from the
-    # catalogue form).
+    # catalogue form). The existence window clips the DATE axis only —
+    # timeframes are not existence-windowed, hence the separate
+    # ``tf_multiplier`` factor below (MDPS only; 1 for every MTDS caller).
     per_instrument_expected: dict[str, frozenset[str]] = {
         _normalize_instrument_id_for_match(iid): _clip_dates_to_window(
             expected_dates, (instrument_windows or {}).get(iid)
         )
         for iid in expected_instruments
     }
-    expected_count = sum(len(dates) for dates in per_instrument_expected.values())
+    expected_count = sum(len(dates) for dates in per_instrument_expected.values()) * tf_multiplier
     # Numerator clipped to the SAME per-instrument window as the denominator —
     # a found pair outside an instrument's declared existence window (stale
     # catalogue, or a genuine anomaly) is excluded from both sides rather than
     # inflating completion_pct past what the denominator represents.
-    found_count = sum(
-        1
-        for iid, d in found_pairs
-        if d in per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset(expected_dates))
-    )
+    # MDPS (``timeframes is not None``): count distinct (instrument, date,
+    # timeframe) triples instead of (instrument, date) pairs — the ``d in
+    # per_instrument_expected[...]`` window-clip check is unchanged (it only
+    # ever looked at the date component).
+    if timeframes is not None:
+        found_count = sum(
+            1
+            for iid, d, _tf in found_triples
+            if d in per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset(expected_dates))
+        )
+    else:
+        found_count = sum(
+            1
+            for iid, d in found_pairs
+            if d in per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset(expected_dates))
+        )
 
     # Counter does both the per-instrument count AND gives us
     # ``instruments_with_shards`` as ``.keys()`` in one pass — replaces the
-    # prior O(|instruments|*|pairs|) ``sum(1 for ...)`` loop below.
-    iid_counts = Counter(iid for iid, _ in found_pairs)
+    # prior O(|instruments|*|pairs|) ``sum(1 for ...)`` loop below. MDPS
+    # (``timeframes is not None``): count per-(instrument, date, timeframe)
+    # triples so ``per_instrument["found"]`` below reflects the true
+    # timeframe-aware shard count, not a single (instrument, date) pair
+    # regardless of how many timeframes it actually has.
+    if timeframes is not None:
+        iid_counts = Counter(iid for iid, _d, _tf in found_triples)
+    else:
+        iid_counts = Counter(iid for iid, _d in found_pairs)
     # bug #4: match on the NORMALIZED instrument_id (see
     # _normalize_instrument_id_for_match) rather than the raw string, so a
     # casing / whitespace / @SUFFIX divergence between instruments-service's
@@ -472,7 +571,9 @@ def per_instrument_coverage(
         per_instrument: dict[str, dict[str, object]] = {}
         for iid in expected_instruments:
             found = normalized_iid_counts.get(_normalize_instrument_id_for_match(iid), 0)
-            iid_expected = len(per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset()))
+            iid_expected = (
+                len(per_instrument_expected.get(_normalize_instrument_id_for_match(iid), frozenset())) * tf_multiplier
+            )
             per_instrument[iid] = {
                 "found": found,
                 "expected": iid_expected,

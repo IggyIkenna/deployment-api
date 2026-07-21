@@ -870,13 +870,19 @@ class ManifestStatusMixin(MissingShardsMixin):
             cloud=cloud,
         )
 
-        # MTDS honest-coverage override (Phase 6c). For CEFI / TRADFI / DEFI /
+        # MTDS/MDPS honest-coverage override (Phase 6c; MDPS extension
+        # mtds_data_status_page_parity_2026_07_21). For CEFI / TRADFI / DEFI /
         # PREDICTION, recompute per-venue ``dates_found`` / ``dates_expected``
         # from the UAC-driven ``(venue, data_type, date)`` shard space AND
         # inject UAC-declared venues that had zero manifest rows. The old
         # path iterated only venues observed in the manifest, so a venue
         # missing completely (e.g. UPBIT with no trades shipped) was
         # invisible. SSOT: codex/02-data/mtds-data-source-coverage-matrix.md.
+        # ``service=service`` is the CRITICAL fix (all 3 adversarial reviews
+        # converged on it): without it, ``get_expected_data_types_for_venue``
+        # defaults to ``service=""`` and MDPS's expected-dt list resolves to
+        # the FULL MTDS raw vocabulary instead of the narrowed
+        # MDPS-derivable subset.
         if is_mtds_honest_coverage_target(service, cat):
             (
                 venues_dict,
@@ -891,6 +897,7 @@ class ManifestStatusMixin(MissingShardsMixin):
                 venue_mapping,
                 cloud=cloud,
                 scope=scope,
+                service=service,
             )
 
         # When no venues or all are empty (sports instruments pattern), group

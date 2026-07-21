@@ -40,6 +40,7 @@ from typing import cast
 import yaml
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
+    MDPS_CANONICAL_TIMEFRAMES,
     TRADFI_TICK_DATA_WINDOWS,
     is_in_tradfi_tick_window,
 )
@@ -49,8 +50,16 @@ from deployment_api.utils.pipeline_mode_paths import canonical_pipeline_mode_seg
 logger = logging.getLogger(__name__)
 
 
-# Valid timeframes for market-data-processing-service
-PROCESSING_TIMEFRAMES = ["15s", "1m", "5m", "15m", "1h", "4h", "24h"]
+# Valid timeframes for market-data-processing-service. Single-sourced from
+# the UAC ``MDPS_CANONICAL_TIMEFRAMES`` registry entry (mtds_data_status_page_parity_2026_07_21)
+# rather than a locally hardcoded list — this ALSO fixes a pre-existing,
+# unrelated bug: the prior literal list here carried the legacy ``"24h"``
+# token, but the MDPS writer's ``_normalise_timeframe`` normalises every
+# daily bar to ``"1d"`` before it ever reaches the manifest, so no real
+# manifest row's ``timeframe`` column has ever actually been ``"24h"`` —
+# every prefix generated from this constant for the daily bucket was
+# querying a GCS path that could never exist.
+PROCESSING_TIMEFRAMES: list[str] = list(MDPS_CANONICAL_TIMEFRAMES)
 
 # Data types that are downsampled (only these exist in processing service)
 PROCESSING_DATA_TYPES = ["trades", "derivative_ticker"]

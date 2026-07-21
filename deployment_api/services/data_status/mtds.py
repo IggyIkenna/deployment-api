@@ -19,6 +19,7 @@ from unified_api_contracts import (
 from unified_api_contracts.registry import (
     EMPTY_OR_DEPRECATED_DEFI_VENUES,
     get_coverage_windows,
+    get_expected_timeframes_for_venue_dt,
     get_lst_venue_genesis,
     is_in_tradfi_tick_window,
     venue_has_no_expected_defi_coverage,
@@ -215,10 +216,21 @@ PREDICTION_DATA_TYPE_META: dict[str, dict[str, object]] = {
 }
 
 
+# Services whose per-category manifest entries take the honest-coverage
+# override below. Extended 2026-07-21 (mtds_data_status_page_parity) to cover
+# market-data-processing-service (MDPS) alongside the original MTDS raw-tick
+# path — MDPS emits candles over the SAME (venue, category) shape (its
+# manifest ``data_type`` axis is the SOURCE token per the 2026-07-21 operator
+# ruling, with the candle timeframe in a separate ``timeframe`` column), so
+# the identical UAC-driven (venue, data_type, date) shard-space math applies,
+# service-scoped via ``get_expected_data_types_for_venue(..., service=...)``.
+_HONEST_COVERAGE_SERVICES: frozenset[str] = frozenset({"market-tick-data-service", "market-data-processing-service"})
+
+
 def is_mtds_honest_coverage_target(service: str, category: str) -> bool:
-    """True iff ``(service, category)`` should run the MTDS honest-coverage
+    """True iff ``(service, category)`` should run the MTDS/MDPS honest-coverage
     override. Excludes SPORTS (bookmaker axis is Phase 6d)."""
-    if service != "market-tick-data-service":
+    if service not in _HONEST_COVERAGE_SERVICES:
         return False
     cat_key = category.upper()
     return cat_key in MTDS_CATEGORY_META and cat_key != "SPORTS"
@@ -587,6 +599,7 @@ def mtds_honest_coverage_for_venue(
     instrument_windows: dict[str, tuple[str | None, str | None]] | None = None,
     scope: str = "could_exist",
     instrument_types: dict[str, str] | None = None,
+    service: str = "",
 ) -> dict[str, object]:
     """Honest-coverage rollup for one ``(category, venue)`` pair.
 
@@ -625,8 +638,44 @@ def mtds_honest_coverage_for_venue(
     ``is_mvp(...)`` against, so ``scope=mvp`` is a no-op on non-per-instrument
     dt entries today (a known, deliberate limitation, not silently wrong: the
     MVP concept is instrument-grained for cefi, not venue-grained).
+
+    ``service`` (added mtds_data_status_page_parity_2026_07_21, MDPS
+    extension): threaded to ``get_expected_data_types_for_venue(venue,
+    service=service)`` so the expected-dt list is narrowed correctly for
+    market-data-processing-service (MDPS) — see that function's docstring.
+    Defaults to ``""``, which is BYTE-FOR-BYTE the pre-2026-07-21 behaviour
+    (``get_expected_data_types_for_venue(venue)`` with no ``service=`` kwarg
+    at all) — every existing MTDS call path that doesn't pass ``service``
+    (including this module's own direct-call unit tests) is unaffected.
+
+    When ``service == "market-data-processing-service"``, the per-instrument
+    Tier-3 branch (:func:`per_instrument_coverage`) additionally becomes
+    TIMEFRAME-aware: MDPS writes one candle parquet per (instrument, date,
+    timeframe) — a strictly finer shard grain than MTDS's per-(instrument,
+    date) raw ticks — over UAC ``get_expected_timeframes_for_venue_dt``'s
+    canonical timeframe set. For any other ``service`` value the Tier-3
+    call is unchanged (``timeframes=None``). The Tier-2 venue-level branch
+    (below) is DELIBERATELY NOT made timeframe-aware in this pass — it is
+    out of the reviewed scope of this change (the 3 converged/individual
+    review findings this feature implements all concern the Tier-3
+    per-instrument branch specifically). MDPS's one remaining venue-level
+    derivable dt today is ``liquidations`` — a real, narrow residual gap
+    (its Tier-2 denominator will UNDER-multiply by ``len(timeframes)`` for
+    MDPS) flagged here for a follow-up, not silently dropped.
+
+    ``historical_coverage_gap`` (MDPS only, open design question DEFAULT
+    resolution): pre-cutover MDPS manifest rows written under the legacy
+    aggregated-``data_type`` convention (``data_type="ohlcv_1m"`` directly,
+    no separate ``timeframe`` column / no source-keyed ``data_type``) are
+    INVISIBLE to this function's source-keyed ``(venue, data_type)`` query —
+    they simply never match ``dt`` (a raw SOURCE token like ``"trades"``).
+    We do not attempt a reverse-mapping compat shim (real, separate design
+    work); instead every MDPS-scoped response is annotated
+    ``historical_coverage_gap=True`` so a consumer knows pre-cutover history
+    for this venue may be undercounted here.
     """
-    expected_dts = list(_dss.get_expected_data_types_for_venue(venue))
+    is_mdps = service == "market-data-processing-service"
+    expected_dts = list(_dss.get_expected_data_types_for_venue(venue, service=service))
     if category.upper() == "PREDICTION":
         # Union the UAC SchemaContract registry — surface the 3 newly-registered
         # PREDICTION data_types as expected rows even when adapters haven't
@@ -634,7 +683,7 @@ def mtds_honest_coverage_for_venue(
         # types is the honest "we know we're missing" signal).
         expected_dts = sorted(set(expected_dts) | set(PREDICTION_DATA_TYPE_META.keys()))
     if not expected_dts:
-        return {
+        empty_result: dict[str, object] = {
             "expected_shards": 0,
             "found_shards": 0,
             "missing_shards": 0,
@@ -642,6 +691,9 @@ def mtds_honest_coverage_for_venue(
             "expected_data_types": [],
             "missing_data_types": [],
         }
+        if is_mdps:
+            empty_result["historical_coverage_gap"] = True
+        return empty_result
 
     # Pre-filter to this venue once for speed.
     if "venue" not in filtered.columns or filtered.empty:
@@ -701,6 +753,15 @@ def mtds_honest_coverage_for_venue(
             # For other asset_groups: instruments_provider=None falls back to
             # UAC MVP seed tables (existing behaviour).
             _instr_cap: int | None = None if instruments_provider is not None else DEFAULT_PER_INSTRUMENT_SENTINEL_CAP
+            # MDPS timeframe-aware denominator (mtds_data_status_page_parity_2026_07_21):
+            # ``None`` for every non-MDPS caller — per_instrument_coverage's
+            # ``timeframes`` parameter defaults to ``None`` and reproduces its
+            # pre-existing (instrument, date) denominator byte-for-byte in that
+            # case, so this is a no-op for MTDS. Resolved per-(venue, dt) (not
+            # once globally) per UAC ``get_expected_timeframes_for_venue_dt``'s
+            # signature, which intentionally leaves room for a future per-dt
+            # override.
+            _tf_for_dt: list[str] | None = get_expected_timeframes_for_venue_dt(venue, dt) if is_mdps else None
             dt_entry = per_instrument_coverage(
                 venue_df_ok,
                 venue,
@@ -712,6 +773,7 @@ def mtds_honest_coverage_for_venue(
                 asset_group=category.lower(),
                 scope=scope,
                 instrument_types=instrument_types,
+                timeframes=_tf_for_dt,
             )
             dt_entries[dt] = dt_entry
             expected_count = int(cast(int, dt_entry["expected_shards"]))
@@ -777,7 +839,7 @@ def mtds_honest_coverage_for_venue(
         if found_count == 0 and expected_count > 0:
             missing_dts.append(dt)
 
-    return {
+    result: dict[str, object] = {
         "expected_shards": total_expected,
         "found_shards": total_found,
         "missing_shards": max(0, total_expected - total_found),
@@ -785,3 +847,12 @@ def mtds_honest_coverage_for_venue(
         "expected_data_types": sorted(expected_dts),
         "missing_data_types": missing_dts,
     }
+    if is_mdps:
+        # Open design question DEFAULT (see docstring): pre-cutover MDPS rows
+        # (legacy aggregated data_type) are invisible to this function's
+        # source-keyed query, not reverse-mapped. Flagged, never silently
+        # dropped. Never emitted for MTDS -- new key is additive-only and
+        # gated behind ``is_mdps`` so MTDS callers get a byte-for-byte
+        # unchanged dict.
+        result["historical_coverage_gap"] = True
+    return result
