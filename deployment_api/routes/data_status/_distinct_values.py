@@ -68,6 +68,23 @@ protected, permanently-accepted rows, not junk and not a naming fix waiting to
 happen — see
 ``unified_api_contracts.registry.TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES``.
 
+Same mechanism, third case (audit follow-up 2026-07-22, same plan § "D5 —
+bundle-grain recognition"): tradfi's AND cefi's ``instrument_types`` axis
+carries ``options_chain``/``futures_chain`` as the real, deliberate MTDS
+Tardis-writer bundle-grain ``instrument_type`` stamp (one manifest row per
+underlying per day, bundling every strike/expiry leg — see MTDS
+``tardis_bulk_download.py::shard_it_str``). Real captured rows at this axis
+(2026-07-21 live rollup): tradfi ``futures_chain`` 154,147 / ``options_chain``
+121,031. Neither is an ``InstrumentType`` enum member (that enum is
+per-CONTRACT grain — ``FUTURE``/``OPTION``, the individual legs the bundle
+contains) and neither should be added to it — see
+``unified_api_contracts.registry.CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES``.
+``combo`` is deliberately NOT part of this exception (mirrors this registry's
+own ``TRADFI_CHAIN_INSTRUMENT_TYPES`` exclusion — its leg-aware id format is
+unsettled); tradfi's lowercase ``combo``/``equity``/``etf``/``future``/
+``index`` spellings remain real, separately-owned case-drift (the in-flight
+tradfi uppercase migration), untouched by this entry.
+
 **Grain-aware exceptions (audit 2026-07-20).** For two (axis, asset_group)
 pairs the canonical set and the manifest column are keyed at DELIBERATELY
 different grains, so a raw exact test reports false drift rather than real
@@ -117,6 +134,7 @@ from unified_api_contracts import InstrumentType
 from unified_api_contracts.registry import (
     ALL_DEFI_VENUES,
     CEFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES,
+    CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES,
     DATA_TYPES_BY_ASSET_GROUP,
     MAINNET_CHAIN_IDS,
     SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
@@ -165,10 +183,26 @@ _BLANK_SENTINELS: frozenset[str] = frozenset({"", "none", "nan", "<na>", "null"}
 # folds to a canonical venue; they were only ever flagged here because this
 # panel had no way to see that fold — same "known, understood, not drift"
 # shape as the other two entries.
+#
+# ("instrument_types", "tradfi") / ("instrument_types", "cefi") added
+# 2026-07-22 (same plan, "D5 — bundle-grain recognition"): options_chain /
+# futures_chain are the real MTDS Tardis-writer bundle-grain instrument_type
+# stamp (one manifest row per underlying per day, bundling every strike/expiry
+# leg) — real captured rows (tradfi futures_chain 154,147 / options_chain
+# 121,031 at this axis, 2026-07-21 live rollup), never a member of the
+# InstrumentType enum (that enum is per-CONTRACT grain) and never going to be
+# added to it. `combo` is deliberately NOT included (its leg-aware id format
+# is unsettled — same exclusion this registry's own
+# TRADFI_CHAIN_INSTRUMENT_TYPES already makes); tradfi's lowercase
+# `combo`/`equity`/`etf`/`future`/`index` spellings are a separate,
+# already-classified finding (real case-drift owned by the in-flight tradfi
+# uppercase migration) untouched by this entry.
 _ACCEPTED_EXCEPTIONS: dict[tuple[str, str], frozenset[str]] = {
     ("venues", "sports"): SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
     ("venues", "cefi"): CEFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES,
     ("data_types", "tradfi"): TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES,
+    ("instrument_types", "tradfi"): CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES,
+    ("instrument_types", "cefi"): CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES,
 }
 
 # Each output axis, the coverage.json section its distinct values live in, and
