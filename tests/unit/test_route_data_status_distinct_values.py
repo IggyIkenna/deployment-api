@@ -287,6 +287,47 @@ class TestGrainAwareCanonicalCompare:
         assert tradfi_badge["futures"] is False
         assert tradfi_badge["equity"] is False
 
+    def test_tradfi_and_cefi_chain_bundle_instrument_types_are_accepted_exceptions_not_findings(self) -> None:
+        """Audit follow-up 2026-07-22 (distinct_values_noncanonical_audit_2026_07_20.md
+        § "D5 — bundle-grain recognition"): ``options_chain``/``futures_chain`` are
+        the real MTDS Tardis-writer bundle-grain ``instrument_type`` stamp on BOTH
+        tradfi and cefi — genuinely non-canonical (not ``InstrumentType`` enum
+        members) but never going to be relabelled/purged. Both must be ABSENT from
+        the ``instrument_types`` axis entirely on both asset_groups, contributing
+        zero findings, while a genuinely unclassified value on each asset_group
+        still gets flagged (the exclusion is scoped, not a blanket pass) — and
+        ``combo`` (deliberately excluded from the accepted-exception set, unlike
+        options_chain/futures_chain) still badges non-canonical on tradfi too.
+        """
+        from unified_api_contracts.registry import CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES
+
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        tradfi_axes, tradfi_nc = enumerate_distinct_values(
+            _payload("tradfi", ["CME"], ["options_chain", "futures_chain", "combo", "SOME_GENUINE_DRIFT_ITYPE"]),
+            "tradfi",
+        )
+        tradfi_values = {e["value"] for e in tradfi_axes["instrument_types"]}
+        assert tradfi_values.isdisjoint(CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES)
+        assert "combo" in tradfi_values  # deliberately NOT an accepted exception
+        assert "SOME_GENUINE_DRIFT_ITYPE" in tradfi_values
+        tradfi_badge = {e["value"]: e["is_canonical"] for e in tradfi_axes["instrument_types"]}
+        assert tradfi_badge["combo"] is False
+        assert tradfi_badge["SOME_GENUINE_DRIFT_ITYPE"] is False
+        # non_canonical_count counts ONLY the two genuine drift values — the two
+        # accepted chain-bundle values contribute zero findings.
+        assert tradfi_nc["instrument_types"] == 2
+
+        cefi_axes, cefi_nc = enumerate_distinct_values(
+            _payload("cefi", ["DERIBIT"], ["options_chain", "futures_chain", "perpetual"]), "cefi"
+        )
+        cefi_values = {e["value"] for e in cefi_axes["instrument_types"]}
+        assert cefi_values.isdisjoint(CHAIN_BUNDLE_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES)
+        assert "perpetual" in cefi_values
+        cefi_badge = {e["value"]: e["is_canonical"] for e in cefi_axes["instrument_types"]}
+        assert cefi_badge["perpetual"] is False  # cefi canonical is uppercase PERPETUAL
+        assert cefi_nc["instrument_types"] == 1
+
     def test_sports_odds_api_bookmakers_are_accepted_exceptions_not_findings(self) -> None:
         """Operator ruling 2026-07-22 (distinct_values_noncanonical_audit_2026_07_20.md
         § "Operator decisions — RULED 2026-07-22"): "do NOT add them, in fact
