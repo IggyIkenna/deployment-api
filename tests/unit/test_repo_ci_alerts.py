@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from unittest.mock import patch
 
 import pytest
@@ -163,8 +164,9 @@ class TestReadAlertingServiceSync:
 
         from deployment_api.routes._repo_ci_alerts import _read_alerting_service_sync
 
+        today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
         blob = MagicMock()
-        blob.name = "alerting/history/date=2026-07-21/abc123.jsonl"
+        blob.name = f"alerting/history/date={today}/abc123.jsonl"
         mock_client = MagicMock()
         mock_client.list_blobs.return_value = [blob]
         line = (
@@ -180,7 +182,7 @@ class TestReadAlertingServiceSync:
         assert len(entries) == 1
         assert entries[0]["alert_class"] == "CONSOLIDATOR_DOWN"
         mock_client.list_blobs.assert_called_once_with(
-            "alerting-service-test", prefix="alerting/history/date=2026-07-21/"
+            "alerting-service-test", prefix=f"alerting/history/date={today}/"
         )
 
     def test_bucket_resolution_failure_returns_empty(self) -> None:
@@ -274,8 +276,9 @@ class TestReadKillSwitchAuditLogSync:
         pq.write_table(pa.Table.from_pylist([row]), buf)
         raw = buf.getvalue()
 
+        today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
         blob = MagicMock()
-        blob.name = "2026-07-21/20260721T090000-GLOBAL_EMERGENCY-abcd1234.parquet"
+        blob.name = f"{today}/20260721T090000-GLOBAL_EMERGENCY-abcd1234.parquet"
         mock_client = MagicMock()
         mock_client.list_blobs.return_value = [blob]
 
@@ -290,7 +293,7 @@ class TestReadKillSwitchAuditLogSync:
             entries = _read_kill_switch_audit_log_sync(days=1)
         assert len(entries) == 1
         assert entries[0]["alert_class"] == "kill_switch_armed"
-        mock_client.list_blobs.assert_called_once_with("test-kill-switch-audit-log", prefix="2026-07-21/")
+        mock_client.list_blobs.assert_called_once_with("test-kill-switch-audit-log", prefix=f"{today}/")
 
     def test_non_parquet_blobs_skipped(self) -> None:
         from unittest.mock import MagicMock
@@ -352,8 +355,9 @@ class TestReadLedgersSync:
 
         from deployment_api.routes._repo_ci_alerts import _read_ledgers_sync
 
+        today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
         alert_blob = MagicMock()
-        alert_blob.name = "cicd/alerts/2026-07-21/alerts.jsonl"
+        alert_blob.name = f"cicd/alerts/{today}/alerts.jsonl"
         mock_client = MagicMock()
         mock_client.list_blobs.return_value = [alert_blob]
         line = (
@@ -371,7 +375,7 @@ class TestReadLedgersSync:
         ):
             entries = _read_ledgers_sync(days=1)
         assert any(e["workflow_name"] == "vm-health-x" for e in entries)
-        mock_client.list_blobs.assert_any_call("unified-trading-cicd-events", prefix="cicd/alerts/2026-07-21/")
+        mock_client.list_blobs.assert_any_call("unified-trading-cicd-events", prefix=f"cicd/alerts/{today}/")
 
     def test_bucket_resolution_failure_degrades_to_alerting_service_only(self) -> None:
         """A cicd-events resolution failure must not blank the alerting-service merge —
