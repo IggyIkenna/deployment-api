@@ -186,9 +186,20 @@ jobs:
             # ALSO escalate to the orchestrator (Max worker) so the conflict is actively resolved on
             # live-defi-rollout, not just parked in a human PR — "every alert → orchestrator" (2026-06-03).
             # Fired with GH_PAT: a repository_dispatch from GITHUB_TOKEN does NOT trigger workflows.
+            #
+            # MUST target unified-trading-pm, NOT ${GITHUB_REPOSITORY}: the escalate-to-orchestrator.yml
+            # LISTENER (repository_dispatch: types: [escalate-to-orchestrator], which actually POSTs
+            # /api/escalate) lives ONLY in unified-trading-pm. Every other repo has no such listener, so
+            # dispatching to ${GITHUB_REPOSITORY} (this repo) was a SILENT no-op there — GitHub accepts the
+            # dispatch (204) with nothing subscribed to receive it, and the unconditional `&&`-echo below
+            # then falsely reported "escalated conflict to orchestrator" even though no worker was ever
+            # spawned (confirmed 2026-07-22: deployment-ui PR #405 sat conflicting ~2h with
+            # /api/escalations/active reporting zero — the human PR was the ONLY real signal). PM's own
+            # copy of this file happened to work by coincidence (${GITHUB_REPOSITORY} == unified-trading-pm
+            # there); every other repo in the fleet was silently broken since this escalation step was added.
             REPO_NAME="${GITHUB_REPOSITORY##*/}"
             CONFLICT_PR="$(gh pr list --base live-defi-rollout --head main --state open --json number -q '.[0].number' 2>/dev/null || echo 0)"
-            GH_TOKEN="${GH_PAT:-}" gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
+            GH_TOKEN="${GH_PAT:-}" gh api "repos/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/dispatches" \
               -f event_type=escalate-to-orchestrator \
               -f "client_payload[repo]=${REPO_NAME}" \
               -f "client_payload[pr_number]=${CONFLICT_PR:-0}" \
