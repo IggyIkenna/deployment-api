@@ -39,6 +39,23 @@ The membership test is EXACT (case-sensitive) by DEFAULT — a case/plural drift
 (``lending`` vs ``LENDING``) is precisely what this panel must surface, so
 lower-casing both sides would defeat it.
 
+**Accepted-exception values (operator ruling 2026-07-22).** A small number of
+raw values are genuinely non-canonical AND the operator has explicitly ruled
+they must never surface as a finding here — distinct from "false drift" (the
+grain-aware exceptions below): these values ARE real drift, but a permanently
+ACCEPTED one, not something anyone is going to fix. Today this is exactly the
+20 sports ODDS_API fan-out bookmakers (BETMGM..WILLIAMHILL): the 2026-05-12
+scraper-deferral decision means no per-bookmaker capture adapter will ever be
+built, so flagging them every run is pure noise, not an actionable finding.
+:func:`_is_accepted_exception` drops these values from the enumeration
+entirely (mirrors :func:`_is_blank`'s "never enumerate this" precedent) —
+see :data:`_ACCEPTED_EXCEPTIONS` and
+``unified_api_contracts.registry.SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS``
+(``plans/active/distinct_values_noncanonical_audit_2026_07_20.md`` §
+"Operator decisions — RULED 2026-07-22"). They are NOT added to the canonical
+set (`VENUES_BY_ASSET_GROUP['sports']`) — that would misrepresent them as
+adapter-producible, which the operator explicitly rejected.
+
 **Grain-aware exceptions (audit 2026-07-20).** For two (axis, asset_group)
 pairs the canonical set and the manifest column are keyed at DELIBERATELY
 different grains, so a raw exact test reports false drift rather than real
@@ -89,6 +106,7 @@ from unified_api_contracts.registry import (
     ALL_DEFI_VENUES,
     DATA_TYPES_BY_ASSET_GROUP,
     MAINNET_CHAIN_IDS,
+    SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
     VENUES_BY_ASSET_GROUP,
 )
 
@@ -111,6 +129,16 @@ _CANONICAL_CHAINS: frozenset[str] = frozenset(MAINNET_CHAIN_IDS)
 # distinct value (honest-absence; the coverage rollup can carry a literal "" /
 # "None" / "nan" chain/instrument_type key for rows that never stamped one).
 _BLANK_SENTINELS: frozenset[str] = frozenset({"", "none", "nan", "<na>", "null"})
+
+# Values that are genuinely non-canonical but the operator has explicitly ruled
+# must never surface as a finding on this panel (operator ruling 2026-07-22,
+# distinct_values_noncanonical_audit_2026_07_20.md § "Operator decisions —
+# RULED 2026-07-22" — "do NOT add them, in fact remove them everywhere so they
+# don't come up in audit"). Keyed by (axis, asset_group); never made canonical
+# (see the module docstring's "Accepted-exception values" section).
+_ACCEPTED_EXCEPTIONS: dict[tuple[str, str], frozenset[str]] = {
+    ("venues", "sports"): SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
+}
 
 # Each output axis, the coverage.json section its distinct values live in, and
 # whether the values are that section's TOP-level keys (``by_venue`` /
@@ -188,6 +216,14 @@ def _read_honest_coverage_rollup() -> tuple[dict[str, object], str] | None:
 # ---------------------------------------------------------------------------
 def _is_blank(value: str) -> bool:
     return value.strip().lower() in _BLANK_SENTINELS
+
+
+def _is_accepted_exception(axis: str, asset_group: str, value: str) -> bool:
+    """Values deliberately excluded from the drift panel (see
+    :data:`_ACCEPTED_EXCEPTIONS` + the module docstring's "Accepted-exception
+    values" section). Not a canonicalisation — the value stays genuinely
+    non-canonical, it is just not treated as an actionable finding."""
+    return value in _ACCEPTED_EXCEPTIONS.get((axis, asset_group), frozenset())
 
 
 def _top_level_keys(section: object) -> set[str]:
@@ -300,7 +336,10 @@ def enumerate_distinct_values(
     ``{"value": <raw string>, "is_canonical": <bool>}`` sorted by value and
     ``non_canonical_count[axis]`` is how many of them failed the canonical check
     (the drift headline). Values are NOT collapsed/canonicalised — every raw
-    spelling variant survives, which is the entire point of the panel.
+    spelling variant survives, which is the entire point of the panel — EXCEPT
+    blank sentinels (:func:`_is_blank`) and operator-accepted-exception values
+    (:func:`_is_accepted_exception`, see :data:`_ACCEPTED_EXCEPTIONS`), both of
+    which are dropped before enumeration.
     """
     ag = asset_group.lower()
     axes: dict[str, list[dict[str, object]]] = {}
@@ -312,7 +351,7 @@ def enumerate_distinct_values(
         canonical, casefold = _comparison_set(axis, ag)
         entries: list[dict[str, object]] = []
         nc = 0
-        for value in sorted(v for v in raw_values if not _is_blank(v)):
+        for value in sorted(v for v in raw_values if not _is_blank(v) and not _is_accepted_exception(axis, ag, v)):
             is_canonical = (value.casefold() if casefold else value) in canonical
             if not is_canonical:
                 nc += 1

@@ -287,6 +287,42 @@ class TestGrainAwareCanonicalCompare:
         assert tradfi_badge["futures"] is False
         assert tradfi_badge["equity"] is False
 
+    def test_sports_odds_api_bookmakers_are_accepted_exceptions_not_findings(self) -> None:
+        """Operator ruling 2026-07-22 (distinct_values_noncanonical_audit_2026_07_20.md
+        § "Operator decisions — RULED 2026-07-22"): "do NOT add them, in fact
+        remove them everywhere so they don't come up in audit". The 20 ODDS_API
+        fan-out bookmakers must be ABSENT from the sports venues axis entirely
+        (not merely badged non-canonical) and must NOT contribute to
+        non_canonical_count — while a genuinely unclassified sports venue still
+        gets flagged, proving the exclusion is scoped, not a blanket sports pass.
+        """
+        from unified_api_contracts.registry import (
+            SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
+            VENUES_BY_ASSET_GROUP,
+        )
+
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        # Not canonical (operator explicitly rejected adding them back).
+        assert SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS.isdisjoint(VENUES_BY_ASSET_GROUP["sports"])
+
+        bookmakers = sorted(SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS)
+        payload = _payload("sports", [*bookmakers, "DRAFTKINGS", "SOME_GENUINE_DRIFT_VENUE"], [])
+        axes, non_canonical = enumerate_distinct_values(payload, "sports")
+
+        values = {e["value"] for e in axes["venues"]}
+        # The 20 accepted-exception bookmakers never appear at all.
+        assert values.isdisjoint(SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS)
+        # A real canonical venue and a real drift venue both still show up.
+        assert "DRAFTKINGS" in values
+        assert "SOME_GENUINE_DRIFT_VENUE" in values
+        badge = {e["value"]: e["is_canonical"] for e in axes["venues"]}
+        assert badge["DRAFTKINGS"] is True
+        assert badge["SOME_GENUINE_DRIFT_VENUE"] is False
+        # non_canonical_count counts ONLY the genuine drift venue — the 20
+        # accepted bookmakers contribute zero findings.
+        assert non_canonical["venues"] == 1
+
     def test_cefi_venue_axis_keeps_exact_compare(self) -> None:
         """Only defi venues are bare-based; cefi's suffix IS part of the canonical
         venue identity, so the exact test must be preserved.
