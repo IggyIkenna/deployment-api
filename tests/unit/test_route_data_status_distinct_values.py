@@ -323,6 +323,53 @@ class TestGrainAwareCanonicalCompare:
         # accepted bookmakers contribute zero findings.
         assert non_canonical["venues"] == 1
 
+    def test_tradfi_chain_snapshot_data_types_are_accepted_exceptions_not_findings(self) -> None:
+        """Audit follow-up 2026-07-22 (distinct_values_noncanonical_audit_2026_07_20.md
+        § "futures_chain tradfi remedy decision"): ``options_chain`` (242,210 real
+        captured rows) and ``futures_chain`` (8 real captured rows) are operator-
+        preserved chain-snapshot data_type values on tradfi — genuinely non-canonical
+        (they are bundle-grain instrument_types, not data_types) but never going to be
+        relabelled/purged. Both must be ABSENT from the tradfi data_types axis
+        entirely, contributing zero findings, while a genuinely unclassified tradfi
+        data_type still gets flagged (the exclusion is scoped, not a blanket pass).
+        """
+        from unified_api_contracts.registry import (
+            DATA_TYPES_BY_ASSET_GROUP,
+            TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES,
+        )
+
+        from deployment_api.routes.data_status import enumerate_distinct_values
+
+        # Not canonical (deliberately excluded from DATA_TYPES_BY_ASSET_GROUP).
+        assert TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES.isdisjoint(DATA_TYPES_BY_ASSET_GROUP["tradfi"])
+
+        payload = {
+            "by_venue_data_type": {
+                "tradfi": {
+                    "CME": {
+                        "options_chain": {"captured": 242210},
+                        "futures_chain": {"captured": 8},
+                        "ohlcv_1m": {"captured": 100},
+                        "SOME_GENUINE_DRIFT_DATA_TYPE": {"captured": 1},
+                    }
+                }
+            }
+        }
+        axes, non_canonical = enumerate_distinct_values(payload, "tradfi")
+
+        values = {e["value"] for e in axes["data_types"]}
+        # The two accepted-exception chain-snapshot values never appear at all.
+        assert values.isdisjoint(TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES)
+        # A real canonical data_type and a real drift data_type both still show up.
+        assert "ohlcv_1m" in values
+        assert "SOME_GENUINE_DRIFT_DATA_TYPE" in values
+        badge = {e["value"]: e["is_canonical"] for e in axes["data_types"]}
+        assert badge["ohlcv_1m"] is True
+        assert badge["SOME_GENUINE_DRIFT_DATA_TYPE"] is False
+        # non_canonical_count counts ONLY the genuine drift data_type — the two
+        # accepted chain-snapshot values contribute zero findings.
+        assert non_canonical["data_types"] == 1
+
     def test_cefi_venue_axis_keeps_exact_compare(self) -> None:
         """Only defi venues are bare-based; cefi's suffix IS part of the canonical
         venue identity, so the exact test must be preserved.

@@ -56,6 +56,18 @@ see :data:`_ACCEPTED_EXCEPTIONS` and
 set (`VENUES_BY_ASSET_GROUP['sports']`) — that would misrepresent them as
 adapter-producible, which the operator explicitly rejected.
 
+Same mechanism, second case (audit follow-up 2026-07-22, same plan §
+"futures_chain tradfi remedy decision"): tradfi's ``data_types`` axis carries
+``options_chain`` (242,210 rows, 100% captured — the Era-A mark_iv/greeks
+chain-snapshot cohort, operator PRESERVE-ruled) and ``futures_chain`` (8 rows,
+100% captured — the same bundle-grain shape, carved out on the same
+precedent). Neither belongs in ``DATA_TYPES_BY_ASSET_GROUP['tradfi']``
+(conceptually they are INSTRUMENT_TYPES — one bundle per underlying — not
+data_types; the data_type for the leaf rows is ``trades``), but both are real,
+protected, permanently-accepted rows, not junk and not a naming fix waiting to
+happen — see
+``unified_api_contracts.registry.TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES``.
+
 **Grain-aware exceptions (audit 2026-07-20).** For two (axis, asset_group)
 pairs the canonical set and the manifest column are keyed at DELIBERATELY
 different grains, so a raw exact test reports false drift rather than real
@@ -107,6 +119,7 @@ from unified_api_contracts.registry import (
     DATA_TYPES_BY_ASSET_GROUP,
     MAINNET_CHAIN_IDS,
     SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
+    TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES,
     VENUES_BY_ASSET_GROUP,
 )
 
@@ -136,8 +149,16 @@ _BLANK_SENTINELS: frozenset[str] = frozenset({"", "none", "nan", "<na>", "null"}
 # RULED 2026-07-22" — "do NOT add them, in fact remove them everywhere so they
 # don't come up in audit"). Keyed by (axis, asset_group); never made canonical
 # (see the module docstring's "Accepted-exception values" section).
+#
+# ("data_types", "tradfi") added 2026-07-22 (same plan, "futures_chain tradfi
+# remedy decision"): options_chain (242,210 rows) + futures_chain (8 rows) are
+# real, operator-preserved chain-snapshot rows — genuinely non-canonical
+# data_type values (they are bundle-grain INSTRUMENT_TYPES, not data_types) but
+# never going to be relabelled/purged, so they must stop badging as drift the
+# same way the sports bookmakers do.
 _ACCEPTED_EXCEPTIONS: dict[tuple[str, str], frozenset[str]] = {
     ("venues", "sports"): SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
+    ("data_types", "tradfi"): TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES,
 }
 
 # Each output axis, the coverage.json section its distinct values live in, and
