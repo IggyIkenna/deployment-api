@@ -132,6 +132,7 @@ class ConsolidatorHealth(BaseModel):  # CORRECT-LOCAL: FastAPI API contract mode
     verdict: str  # produced | producing | stale_output | fired_but_empty | empty | unknown  (data-correctness)
     index_age_seconds: float | None = None
     staleness_budget_seconds: int
+    trigger_cron: str | None = None  # Cloud Scheduler cron that fires this consolidator (e.g. "*/1 * * * *")
     last_successful_run_at: str | None = None
     pending_shard_count: int | None = None  # backlog: shards written since the last merge
     total_shard_count: int | None = None  # fan-in width: how many per-VM shards feed this index
@@ -501,6 +502,7 @@ def _consolidator_health(
         "asset_group": entry["asset_group"],
         "job_name": entry["job_name"] or "",
         "staleness_budget_seconds": budget,
+        "trigger_cron": entry.get("trigger_cron"),
     }
     exec_kind = exec_status.status if exec_status is not None else None
     exec_run_at = exec_status.last_run_at if exec_status is not None else None
@@ -821,6 +823,7 @@ def _mock_consolidator(
     exec_status: str = "succeeded",
     exec_exit: int | None = 0,
     reporting: bool = True,
+    trigger_cron: str = "*/1 * * * *",  # matches the live estate — every consolidator shares this cron
 ) -> ConsolidatorHealth:
     # Map the endpoint verdict back to the consolidator's self-reported run verdict for the mock.
     run_verdict = {"fired_but_empty": "empty", "stale_output": "failed", "empty": "empty"}.get(verdict, "produced")
@@ -835,6 +838,7 @@ def _mock_consolidator(
         verdict=verdict,
         index_age_seconds=age,
         staleness_budget_seconds=86400,
+        trigger_cron=trigger_cron,
         last_successful_run_at=ts if age is not None else None,
         pending_shard_count=pending,
         total_shard_count=total,

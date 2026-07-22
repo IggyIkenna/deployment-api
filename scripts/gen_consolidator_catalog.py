@@ -82,7 +82,17 @@ _TF_MAP_NAMES: tuple[str, ...] = (
     "manifest_consolidator_buckets_extended",
 )
 
+# Each bucket map is deployed by its own `google_cloud_scheduler_job` resource (one `for_each`
+# per map, ONE `schedule` literal shared by every entry in that map) — this pairs each map to
+# the resource that declares its trigger cadence, so a future divergence between the two maps'
+# schedules is picked up automatically on regen, not hand-maintained.
+_MAP_TO_SCHEDULER_RESOURCE: dict[str, str] = {
+    "manifest_consolidator_buckets": "manifest_consolidator_cron",
+    "manifest_consolidator_buckets_extended": "manifest_consolidator_cron_extended",
+}
+
 _PAIR_RE = re.compile(r'"(?P<key>[a-z0-9\-]+)"\s*=\s*"(?P<val>[^"]+)"')
+_SCHEDULE_RE = re.compile(r'schedule\s*=\s*"(?P<cron>[^"]+)"')
 
 
 def _workspace_root(start: Path) -> Path:
@@ -120,6 +130,32 @@ def _extract_map_block(text: str, map_name: str) -> str:
     raise ValueError(f"unbalanced braces parsing {map_name!r}")
 
 
+def _extract_resource_block(text: str, resource_type: str, resource_name: str) -> str:
+    """Return the ``{...}`` body of a top-level ``resource "<type>" "<name>" { ... }`` block."""
+    anchor = text.find(f'resource "{resource_type}" "{resource_name}" {{')
+    if anchor == -1:
+        raise ValueError(f"terraform resource {resource_type}.{resource_name!r} not found")
+    depth = 0
+    body_start = text.index("{", anchor)
+    for i in range(body_start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[body_start + 1 : i]
+    raise ValueError(f"unbalanced braces parsing resource {resource_type}.{resource_name!r}")
+
+
+def _extract_schedule(text: str, resource_name: str) -> str:
+    """The Cloud Scheduler cron literal (e.g. ``*/1 * * * *``) for one scheduler resource."""
+    block = _extract_resource_block(text, "google_cloud_scheduler_job", resource_name)
+    m = _SCHEDULE_RE.search(block)
+    if m is None:
+        raise ValueError(f"no schedule found in google_cloud_scheduler_job.{resource_name!r}")
+    return m.group("cron")
+
+
 def _decode_category(category: str) -> tuple[str, str | None]:
     """Split ``{kind}-{asset_group}`` → (kind, asset_group); flat categories → (category, None)."""
     for ag in _ASSET_GROUPS:
@@ -139,6 +175,7 @@ def build_catalog(tf_text: str) -> list[dict[str, str | None]]:
     entries: list[dict[str, str | None]] = []
     for map_name in _TF_MAP_NAMES:
         body = _extract_map_block(tf_text, map_name)
+        trigger_cron = _extract_schedule(tf_text, _MAP_TO_SCHEDULER_RESOURCE[map_name])
         for m in _PAIR_RE.finditer(body):
             category, tf_value = m.group("key"), m.group("val")
             if category.endswith("-legacy"):
@@ -153,6 +190,10 @@ def build_catalog(tf_text: str) -> list[dict[str, str | None]]:
                     "bucket_template": _bucket_template(tf_value),
                     # Stored as a string to keep the catalog a flat str/None map; the endpoint parses it.
                     "staleness_budget_seconds": str(_staleness_budget(kind, asset_group)),
+                    # The Cloud Scheduler cron that actually triggers this consolidator's Cloud Run job
+                    # (e.g. "*/1 * * * *") — declared config, not a live metric, so it's projected from
+                    # terraform exactly like staleness_budget_seconds, never read live from GCP.
+                    "trigger_cron": trigger_cron,
                 }
             )
     return entries
