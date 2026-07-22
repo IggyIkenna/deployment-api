@@ -127,16 +127,14 @@ def compute_capture_status_counts(df: pd.DataFrame) -> CaptureStatusCounts:
         attempted_failed=int((series == CAPTURE_STATUS_FAILED).sum()),
         expected_unattempted_known_empty=known_empty,
         expected_unattempted_pending_fetch=pending_fetch,
-        # OOW clip (operator direction 2026-06-23): the subset of
-        # ``empty_confirmed`` cells that are never-collectable (out-of-coverage
-        # lifecycle reasons + schedule-defining FIXTURES no-match-day empties).
-        # Populating it here makes ``compute_honest_coverage(counts)`` exclude
-        # those cells from BOTH numerator and denominator, so an out-of-life
-        # empty reads as a BLANK not a coverage success — matching the
-        # denominator math ``coverage.py`` already does. Every consumer that
-        # bases honest_coverage on ``compute_capture_status_counts``
-        # (``derive_capture_status_rates`` → panel rollup + per-venue breakdown)
-        # therefore returns the in-window-clipped %, consistent with coverage.py.
+        # out_of_window: the subset of ``empty_confirmed`` cells that are
+        # never-collectable (out-of-coverage lifecycle reasons + schedule-
+        # defining FIXTURES no-match-day empties). Since Part 4.1 (2026-07-22)
+        # ``compute_honest_coverage(counts)`` excludes ALL of ``empty_confirmed``
+        # from both numerator and denominator regardless of this sub-split, so
+        # populating it no longer changes the ratio — it is retained purely as
+        # a reporting breakdown (how much of the excluded empty_confirmed total
+        # was out-of-life vs in-window) for the deployment-ui drilldown.
         out_of_window=compute_out_of_window_count(df),
     )
 

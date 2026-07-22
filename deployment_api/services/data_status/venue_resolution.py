@@ -29,6 +29,7 @@ from deployment_api.services.data_status.mtds import (
     MTDS_CATEGORY_META,
     canonicalise_defi_data_types,
     mtds_expected_venues,
+    mtds_honest_coverage_for_bookmaker,
     mtds_honest_coverage_for_venue,
 )
 
@@ -257,20 +258,28 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         # get a zero-row entry surfaced as ``missing_data_types``.
         union_venues = set(new_venues.keys()) | set(expected_venues)
 
+        is_sports = category.upper() == "SPORTS"
         for venue in sorted(union_venues):
-            honest = mtds_honest_coverage_for_venue(
-                filtered,
-                venue,
-                category,
-                start_date,
-                end_date,
-                venue_mapping,
-                instruments_provider=_cefi_instruments_provider,
-                instrument_windows=_cefi_instrument_windows,
-                scope=scope,
-                instrument_types=_cefi_instrument_types,
-                service=service,
-            )
+            if is_sports:
+                # Phase 6d: bookmaker x league x fixture-date axis — the
+                # generic per-(venue, data_type, calendar-date) function
+                # below doesn't apply (no league dimension, no trading
+                # calendar). See mtds_honest_coverage_for_bookmaker's docstring.
+                honest = mtds_honest_coverage_for_bookmaker(filtered, venue, start_date, end_date)
+            else:
+                honest = mtds_honest_coverage_for_venue(
+                    filtered,
+                    venue,
+                    category,
+                    start_date,
+                    end_date,
+                    venue_mapping,
+                    instruments_provider=_cefi_instruments_provider,
+                    instrument_windows=_cefi_instrument_windows,
+                    scope=scope,
+                    instrument_types=_cefi_instrument_types,
+                    service=service,
+                )
             expected_shards = int(cast(int, honest["expected_shards"]))
             found_shards = int(cast(int, honest["found_shards"]))
             if expected_shards == 0:

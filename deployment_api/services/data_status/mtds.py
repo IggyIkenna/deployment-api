@@ -17,7 +17,9 @@ from unified_api_contracts import (
     is_per_instrument_shard_data_type,
 )
 from unified_api_contracts.registry import (
+    BOOKMAKER_LEAGUE_COVERAGE,
     EMPTY_OR_DEPRECATED_DEFI_VENUES,
+    expected_odds_api_bookmaker_keys,
     get_coverage_windows,
     get_expected_timeframes_for_venue_dt,
     get_lst_venue_genesis,
@@ -32,6 +34,9 @@ logger = logging.getLogger(__name__)
 from deployment_api.services.data_status.instrument_coverage import (
     DEFAULT_PER_INSTRUMENT_SENTINEL_CAP,
     per_instrument_coverage,
+)
+from deployment_api.services.data_status.sports_helpers import (
+    sports_expected_dates_for_league,
 )
 
 # TradFi data types that are only expected within tick windows (Databento cost mgmt).
@@ -94,13 +99,19 @@ MTDS_CATEGORY_META: dict[str, dict[str, object]] = {
         "unit": "shard_days",
     },
     "SPORTS": {
-        # MTDS SPORTS = bookmaker odds per league x per fixture-date. The
-        # honest-coverage helper below currently returns ``None`` so the
-        # existing instruments-service SPORTS path handles it. The category
-        # still needs to be in this map so the aggregator knows which UAC
-        # venue list to iterate (there is no ``all_bookmaker_venues`` yet —
-        # Phase 6d adds ``get_expected_bookmakers`` to UAC).
-        "venue_accessor": "",  # bookmakers resolved via sports accessor (Phase 6d)
+        # MTDS SPORTS = bookmaker odds per league x per fixture-date (Phase 6d,
+        # shipped 2026-07-22). "venue" here means BOOKMAKER; the accessor
+        # string is a sentinel ("bookmaker") ``mtds_expected_venues`` special-
+        # cases to UAC's ``expected_odds_api_bookmaker_keys()`` rather than a
+        # ``VenueMapping`` attribute name (bookmakers aren't in that class).
+        # The league x fixture-date sub-axis is NOT handled by the generic
+        # per-(venue, data_type, calendar-date) path every other category
+        # uses — see ``mtds_honest_coverage_for_bookmaker`` (dispatched from
+        # ``_apply_mtds_honest_coverage`` for this category only), which
+        # iterates each bookmaker's covered leagues (UAC
+        # ``BOOKMAKER_LEAGUE_COVERAGE``) and their real fixture dates
+        # (``sports_expected_dates_for_league``) instead of a trading calendar.
+        "venue_accessor": "bookmaker",
         "axis": "per_league_per_bookmaker_per_fixture_date",
         "tradfi_tick_gate": False,
         "record_empty_expected": False,  # bookmaker-dark day = attempted_failed
@@ -229,11 +240,13 @@ _HONEST_COVERAGE_SERVICES: frozenset[str] = frozenset({"market-tick-data-service
 
 def is_mtds_honest_coverage_target(service: str, category: str) -> bool:
     """True iff ``(service, category)`` should run the MTDS/MDPS honest-coverage
-    override. Excludes SPORTS (bookmaker axis is Phase 6d)."""
+    override. Includes SPORTS as of Phase 6d (2026-07-22) — dispatched to
+    ``mtds_honest_coverage_for_bookmaker`` instead of the generic per-venue
+    path, see ``_apply_mtds_honest_coverage``."""
     if service not in _HONEST_COVERAGE_SERVICES:
         return False
     cat_key = category.upper()
-    return cat_key in MTDS_CATEGORY_META and cat_key != "SPORTS"
+    return cat_key in MTDS_CATEGORY_META
 
 
 # DEFI data_type canonicalisation maps. Sub-dim buckets write the hyphenated
@@ -345,11 +358,16 @@ def mtds_expected_venues(cat: str, venue_mapping: VenueMapping) -> list[str]:
     if not accessor:
         return []
     # Accessor is either a property on VenueMapping (all_cefi_venues etc.)
-    # or one of the missing PREDICTION fallbacks.
+    # or one of the missing PREDICTION/SPORTS fallbacks.
     if accessor == "all_prediction_venues":
         # No UAC accessor for prediction venues yet — codex SSOT §1 lists
         # POLYMARKET + KALSHI. Hardcoded fallback mirrors the matrix.
         return ["KALSHI", "POLYMARKET"]
+    if accessor == "bookmaker":
+        # Phase 6d: bookmakers aren't a VenueMapping property (they're an
+        # Odds-API request-scope list, not a venue registry) — resolve via
+        # the dedicated UAC accessor instead.
+        return expected_odds_api_bookmaker_keys()
     venues = getattr(venue_mapping, accessor, None)
     if venues is None:
         return []
@@ -909,3 +927,133 @@ def mtds_honest_coverage_for_venue(
         # unchanged dict.
         result["historical_coverage_gap"] = True
     return result
+
+
+_SPORTS_ODDS_SOURCE_KEY = "odds_api"
+_SPORTS_ODDS_DATA_TYPE = "trades"
+
+
+def mtds_honest_coverage_for_bookmaker(
+    filtered: pd.DataFrame,
+    bookmaker: str,
+    window_start: str,
+    window_end: str,
+) -> dict[str, object]:
+    """Honest-coverage rollup for one SPORTS bookmaker (Phase 6d).
+
+    Sibling to :func:`mtds_honest_coverage_for_venue` for the ONE category
+    whose axis isn't per-(venue, data_type, calendar-date):
+    ``per_league_per_bookmaker_per_fixture_date``. The generic function
+    can't be reused here — it has no league dimension and its denominator
+    source (``mtds_expected_dates_for_venue_dt``, a trading-day calendar)
+    doesn't apply to sports fixture schedules. Reuses the SAME manifest
+    columns everything else does (``venue`` = bookmaker key, ``date`` =
+    fixture day, ``capture_status``/``error_reason`` as usual) plus
+    ``league_id``, which sports odds rows carry
+    (``venue_fetch.py::_build_sports_shard_path``:
+    ``venue={bookmaker}/league_id={league}/...instrument_type=odds/data_type=trades``).
+
+    For each league UAC's ``BOOKMAKER_LEAGUE_COVERAGE`` says this bookmaker
+    has ever priced (the SAME observed-coverage oracle
+    ``is_bookmaker_league_covered_exact`` uses on the sentinel-emission
+    path, so the denominator here can never disagree with what the writer
+    considers in-scope), gets real fixture dates via
+    ``sports_expected_dates_for_league`` (floor-clipped to the sport's
+    ``odds_api`` UAC coverage-start, e.g. the 2020-06 sports data floor —
+    NOT a raw calendar range) and counts distinct captured/empty_confirmed
+    dates for that (bookmaker, league) pair. A bookmaker UAC has never
+    observed pricing ANY league for (unobserved — ``BOOKMAKER_LEAGUE_COVERAGE``
+    has no entry) contributes 0 expected / 0 found, exactly like an
+    unrequested bookmaker: it renders as a zero-row entry via the caller's
+    union-of-expected-venues injection (:func:`mtds_expected_venues`'s
+    ``expected_odds_api_bookmaker_keys()`` branch), not as a silently-absent
+    row — the whole point of Phase 6d.
+
+    Returns the SAME shape as :func:`mtds_honest_coverage_for_venue` so
+    :func:`_apply_mtds_honest_coverage`'s per-venue loop is unchanged;
+    ``data_types`` is keyed by league_id here (not data_type — sports odds
+    has exactly one data_type, ``trades``, so league is the meaningful
+    per-cell breakdown the UI drilldown wants).
+    """
+    leagues = sorted(BOOKMAKER_LEAGUE_COVERAGE.get(bookmaker.strip().upper(), frozenset()))
+    if not leagues:
+        return {
+            "expected_shards": 0,
+            "found_shards": 0,
+            "missing_shards": 0,
+            "data_types": {},
+            "expected_data_types": [],
+            "missing_data_types": [_SPORTS_ODDS_DATA_TYPE],
+        }
+
+    if "venue" in filtered.columns and not filtered.empty:
+        bm_df = filtered[filtered["venue"].astype(str).str.upper() == bookmaker.strip().upper()]
+    else:
+        bm_df = filtered.iloc[0:0]
+
+    if "capture_status" in bm_df.columns:
+        status_s = bm_df["capture_status"].fillna("captured").astype(str)
+        reason_s = (
+            bm_df["error_reason"].fillna("").astype(str)
+            if "error_reason" in bm_df.columns
+            else pd.Series("", index=bm_df.index)
+        )
+        ok_mask = status_s.isin(["captured", "empty_confirmed"]) | (
+            (status_s == "expected_unattempted") & reason_s.str.startswith("EXPECTED_")
+        )
+    else:
+        ok_mask = pd.Series([True] * len(bm_df), index=bm_df.index)
+    bm_df_ok = bm_df[ok_mask] if not bm_df.empty else bm_df
+
+    league_entries: dict[str, object] = {}
+    total_expected = 0
+    total_found = 0
+    missing_leagues: list[str] = []
+
+    for league_id in leagues:
+        expected_dates = set(
+            sports_expected_dates_for_league(
+                league_id,
+                "per_league_per_fixture_date",
+                1,
+                window_start,
+                window_end,
+                source_key=_SPORTS_ODDS_SOURCE_KEY,
+                data_type=_SPORTS_ODDS_DATA_TYPE,
+            )
+        )
+        if not expected_dates:
+            continue
+
+        if "league_id" in bm_df_ok.columns and not bm_df_ok.empty:
+            league_rows = bm_df_ok[bm_df_ok["league_id"].astype(str) == league_id]
+        else:
+            league_rows = bm_df_ok.iloc[0:0]
+
+        found_dates_set = {str(d) for d in league_rows["date"].unique()} if not league_rows.empty else set()  # pyright: ignore[reportAny]
+        found_in_expected = found_dates_set & expected_dates
+        found_count = len(found_in_expected)
+        expected_count = len(expected_dates)
+
+        league_entries[league_id] = {
+            "expected_shards": expected_count,
+            "found_shards": found_count,
+            "missing_shards": max(0, expected_count - found_count),
+            "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+            "missing_dates": sorted(expected_dates - found_dates_set)[:500],
+            "dates_found_list": sorted(found_in_expected)[:500],
+            "unit": "fixture_dates",
+        }
+        total_expected += expected_count
+        total_found += found_count
+        if found_count == 0 and expected_count > 0:
+            missing_leagues.append(league_id)
+
+    return {
+        "expected_shards": total_expected,
+        "found_shards": total_found,
+        "missing_shards": max(0, total_expected - total_found),
+        "data_types": league_entries,
+        "expected_data_types": [_SPORTS_ODDS_DATA_TYPE],
+        "missing_data_types": [_SPORTS_ODDS_DATA_TYPE] if total_found == 0 and total_expected > 0 else [],
+    }
