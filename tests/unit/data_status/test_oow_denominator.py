@@ -180,21 +180,23 @@ class TestBuildCoverageMetricsOOWSurfacing:
 
 
 class TestCoveragePctDenominatorExclusion:
-    """Test that OOW cells are excluded from completion_pct denominator.
+    """Test that OOW cells are classified and surfaced correctly.
 
     Uses build_coverage_metrics indirectly since coverage.py's
-    _build_coverage_for_cat reads real GCS manifests. We verify the
-    denominator logic through the math:
-      denominator = captured + within_window_empty + failed + expected_unattempted
-      (NO out_of_window)
+    _build_coverage_for_cat reads real GCS manifests. Post-4.1 (2026-07-22)
+    ALL empty_confirmed is excluded from the ratio regardless of window
+    status — out_of_window is a pure reporting subset (see its docstring in
+    unified_api_contracts), so this class now verifies classification only,
+    not a denominator effect.
     """
 
     def test_defi_oow_exclusion_raises_completion_pct(self) -> None:
-        """Simulates defi scenario: OOW cells excluded → completion% improves.
+        """Simulates a defi scenario with a mix of in-window and OOW empties.
 
-        10 captured, 2 in-window empty, 3 OOW empty.
-        Without OOW exclusion: 10/15 = 66.67%
-        With OOW exclusion: 10/12 = 83.33%
+        10 captured, 2 in-window empty, 3 OOW empty, 0 attempted_failed.
+        Post-4.1, both are excluded from the ratio regardless: coverage =
+        10 / (10 + 0 + 0 + 0) = 100%. This test verifies out_of_window
+        classification is still correct (3), not a denominator effect.
         """
         rows = []
         rows += [{"capture_status": "captured", "error_reason": ""} for _ in range(10)]
@@ -285,11 +287,13 @@ class TestScheduleDefiningFixturesEmptyResolved:
         assert compute_out_of_window_count(df) == 1
 
     def test_fixtures_completion_pct_lifts_to_100(self) -> None:
-        """Golden-window shape: all FIXTURES empties resolve → completion ~100%.
+        """Golden-window shape: all FIXTURES empties are excluded (whether
+        classified out-of-window or not, post-4.1) → completion == 100%
+        since there are 0 attempted_failed / expected_unattempted cells.
 
         3445 captured + 233 SOURCE_RETURNED_ZERO (no-match-day) + 7732
-        EXPECTED_NO_FIXTURE (already OOW). After the data-type-aware fix every
-        empty is out-of-window → denominator == captured == 100%.
+        EXPECTED_NO_FIXTURE — all empty_confirmed, all excluded from the
+        ratio regardless of window status.
         """
         rows = []
         rows += [{"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"} for _ in range(3445)]
@@ -303,12 +307,10 @@ class TestScheduleDefiningFixturesEmptyResolved:
         ]
         df = pd.DataFrame(rows)
         oow_n = compute_out_of_window_count(df)
-        # All 233 SRZ + 7732 EXPECTED_NO_FIXTURE empties are out-of-window.
+        # All 233 SRZ + 7732 EXPECTED_NO_FIXTURE empties classify as out-of-window.
         assert oow_n == 233 + 7732
-        total_empty = 233 + 7732
-        within_window_empty = total_empty - oow_n
-        denominator = 3445 + within_window_empty  # captured + in-window gaps
-        completion_pct = 3445 / denominator * 100 if denominator else 0.0
+        counts = compute_capture_status_counts(df)
+        completion_pct = compute_honest_coverage(counts) * 100
         assert completion_pct == pytest.approx(100.0)
 
 
@@ -365,9 +367,12 @@ class TestComputeCaptureStatusCountsPopulatesOOW:
 
 
 class TestDeriveCaptureStatusRatesClipsHonestCoverage:
-    """``honest_coverage`` from the panel rollup + per-venue breakdown path now
-    excludes out-of-life empties from both numerator and denominator, matching
-    coverage.py. Before the fix the empties were credited → inflated %.
+    """``honest_coverage`` from the panel rollup + per-venue breakdown path
+    excludes ALL ``empty_confirmed`` cells from both numerator and denominator
+    (Part 4.1, 2026-07-22) — superseding the earlier 2026-06-23 fix that only
+    clipped the ``out_of_window`` subset. ``out_of_window`` is now a pure
+    reporting split of the (fully-excluded) empty total, with zero effect on
+    the ratio — see ``test_out_of_window_field_no_longer_affects_ratio``.
     """
 
     def test_oow_empties_do_not_inflate_when_failures_present(self) -> None:
@@ -424,7 +429,8 @@ class TestBuildCoverageMetricsCoverageClipped:
         rows += [{"capture_status": "attempted_failed", "error_reason": "TIMEOUT"} for _ in range(5)]
         df = pd.DataFrame(rows)
         result = build_coverage_metrics(df, "DEFI", capture_coverage_pct=50.0, total_expected_cells=20)
-        # coverage = clipped honest_coverage = 10/15, NOT the inflated 15/20.
+        # coverage = 10/15 (empty_confirmed always excluded post-4.1), NOT the
+        # pre-4.1-credit-formula's inflated 15/20.
         assert float(result["coverage"]) == pytest.approx(10 / 15, abs=1e-6)
         counts = result["capture_status_counts"]
         assert isinstance(counts, dict)
