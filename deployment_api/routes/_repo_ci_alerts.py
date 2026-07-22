@@ -39,7 +39,16 @@ _CACHE_TTL_SECONDS = 60.0
 # day-partitioned reads, unchanged single-walk discipline) with real offset/limit pagination
 # instead of a truncation — a caller past the last page gets an explicit `capped` signal, never a
 # silently short list.
-_DEFAULT_DAYS = 30
+#
+# _DEFAULT_DAYS deliberately stays narrower than _MAX_DAYS: the `alerting_service` plane writes one
+# object per alert event (~20-24k objects/day), and `_read_alerting_service_sync()` lists+downloads
+# each one individually and synchronously — a 30-day unqualified request walks 277k+ objects in one
+# request, which OOM-kills or 504s the Cloud Run container (measured 2026-07-22, see
+# deployment_alerts_ingestion_completeness_2026_07_20.md). Defaulting to 1 day keeps an unqualified
+# `/api/alerts` call inside what the reader can actually survive; the date-range picker can still
+# widen up to `_MAX_DAYS` explicitly. This is a stopgap, not a fix for the underlying per-object
+# read pattern.
+_DEFAULT_DAYS = 1
 _MAX_DAYS = 30
 _DEFAULT_PAGE_SIZE = 400
 _MAX_PAGE_SIZE = 2000

@@ -372,8 +372,11 @@ class TestDeriveCaptureStatusRatesClipsHonestCoverage:
 
     def test_oow_empties_do_not_inflate_when_failures_present(self) -> None:
         # 10 captured, 5 OOW empty, 5 attempted_failed.
-        # Legacy (out_of_window=0): (10+5)/(10+5+5) = 15/20 = 0.75 (inflated).
-        # Clipped: (10+0)/(10+0+5) = 10/15 = 0.6667 (true in-window coverage).
+        # Part 4.1 (2026-07-22 global consolidation, unified_api_contracts
+        # _honest_coverage_logic.py::compute_honest_coverage): empty_confirmed is
+        # excluded from BOTH numerator and denominator UNCONDITIONALLY — out_of_window
+        # is now a pure reporting subset that never changes the ratio.
+        # (10 captured) / (10 captured + 5 attempted_failed) = 10/15 = 0.6667.
         rows = []
         rows += [{"capture_status": "captured", "error_reason": ""} for _ in range(10)]
         rows += [{"capture_status": "empty_confirmed", "error_reason": "EXPECTED_PRE_GENESIS_CHAIN"} for _ in range(5)]
@@ -386,12 +389,17 @@ class TestDeriveCaptureStatusRatesClipsHonestCoverage:
         rates = derive_capture_status_rates(counts, total_expected_cells=20)
         assert rates["honest_coverage"] == pytest.approx(10 / 15, abs=1e-6)
 
-        # Sanity: the legacy (unclipped) value would have been the inflated 0.75.
+        # Part 4.1 invariant: out_of_window no longer participates in the formula at
+        # all, so zeroing it out (simulating the pre-4.1 "legacy" clip toggle) yields
+        # the SAME ratio, not the old inflated 0.75 — the reporting field is inert.
         legacy = counts._replace(out_of_window=0)
-        assert compute_honest_coverage(legacy) == pytest.approx(0.75, abs=1e-6)
+        assert compute_honest_coverage(legacy) == pytest.approx(10 / 15, abs=1e-6)
 
-    def test_within_window_empties_still_credited(self) -> None:
-        # In-window empties (holidays) are honest answers → stay in numerator.
+    def test_in_window_empties_also_excluded_under_part_4_1(self) -> None:
+        # Part 4.1 (2026-07-22): empty_confirmed is excluded from the ratio
+        # UNCONDITIONALLY — in-window empties (e.g. holidays) are no longer credited
+        # to the numerator, matching instruments-service's _count_statuses exactly.
+        # 8 captured / (8 captured + 2 attempted_failed) = 8/10 = 0.8.
         rows = []
         rows += [{"capture_status": "captured", "error_reason": ""} for _ in range(8)]
         rows += [{"capture_status": "empty_confirmed", "error_reason": "EXPECTED_HOLIDAY"} for _ in range(2)]
@@ -400,8 +408,7 @@ class TestDeriveCaptureStatusRatesClipsHonestCoverage:
         counts = compute_capture_status_counts(df)
         assert counts.out_of_window == 0
         rates = derive_capture_status_rates(counts, total_expected_cells=12)
-        # (8 + 2 in-window-empty) / (8 + 2 + 2) = 10/12.
-        assert rates["honest_coverage"] == pytest.approx(10 / 12, abs=1e-6)
+        assert rates["honest_coverage"] == pytest.approx(8 / 10, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
