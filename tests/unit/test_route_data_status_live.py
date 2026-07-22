@@ -338,6 +338,119 @@ class TestGetDataStatusTurboLive:
         assert r.status_code == 500
 
 
+class TestGetDataStatusTurboScopeParity:
+    """``scope`` MVP-toggle parity between ``/turbo`` and ``/manifest``.
+
+    ``deployment_api.services.DataAnalyticsService`` is globally replaced with
+    a bare ``MagicMock()`` class by ``tests/unit/conftest.py`` (perf — avoids
+    heavy imports), so the package-level ``data_analytics_service`` singleton
+    is NOT the real implementation here (unlike production) — it is always a
+    mock the test must configure, same as every other test in this file
+    (``TestGetDataStatusTurboLive`` above). ``mock_das.get_data_status_turbo``'s
+    ``side_effect`` below re-implements just enough of the real method (invoke
+    the ``from_data_status_service`` callback it was given) to exercise the
+    ROUTE's own ``_manifest_source`` closure for real — proving the closure
+    threads ``scope`` into ``data_status_service.get_manifest_status`` exactly
+    like ``/manifest`` (``TestGetDataStatusManifestLive``) does. The actual
+    MVP-filter narrowing (``filter_to_mvp`` / ``is_mvp``) is unit-tested at the
+    manifest layer separately (``test_route_venue_year_coverage_scope.py`` /
+    ``test_per_instrument_cefi_is_provider.py``); the cache-key differentiation
+    ``DataAnalyticsService.get_data_status_turbo`` itself owns is covered
+    directly against the REAL class in ``test_data_analytics_service.py``
+    (which loads the module standalone, bypassing this conftest mock).
+    """
+
+    @staticmethod
+    async def _turbo_side_effect(**kwargs: object) -> object:
+        """Re-implements the ONE thing the route depends on from the real
+        ``DataAnalyticsService.get_data_status_turbo``: invoking the
+        ``from_data_status_service`` callback it was handed. Lets the route's
+        real ``_manifest_source`` closure run end-to-end."""
+        callback = kwargs["from_data_status_service"]
+        return await callback(
+            service=kwargs["service"],
+            start_date=kwargs["start_date"],
+            end_date=kwargs["end_date"],
+            asset_groups=kwargs.get("asset_groups"),
+        )
+
+    def _mock_das(self) -> MagicMock:
+        mock_das = MagicMock()
+        mock_das.get_data_status_turbo = AsyncMock(side_effect=self._turbo_side_effect)
+        return mock_das
+
+    def test_scope_mvp_threaded_through_das_and_into_manifest_source(self, client_ds_live: TestClient) -> None:
+        mock_dss = MagicMock()
+        mock_dss.get_manifest_status = AsyncMock(return_value={"mode": "turbo", "service": "strategy-service"})
+        mock_das = self._mock_das()
+        with patch(_PATCH_DSS, mock_dss), patch(_PATCH_DAS, mock_das):
+            r = client_ds_live.get(
+                "/data-status/turbo",
+                params={
+                    "service": "strategy-service",
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-31",
+                    "scope": "mvp",
+                },
+            )
+        assert r.status_code == 200
+        # (1) the route thread scope into data_analytics_service.get_data_status_turbo
+        # (the turbo-mode cache-key input).
+        assert mock_das.get_data_status_turbo.call_args.kwargs["scope"] == "mvp"
+        # (2) the route's _manifest_source closure — invoked for real via the
+        # side_effect above — threads the SAME scope into get_manifest_status,
+        # the actual narrowing engine /manifest also calls.
+        mock_dss.get_manifest_status.assert_awaited_once()
+        assert mock_dss.get_manifest_status.await_args.kwargs["scope"] == "mvp"
+
+    def test_scope_defaults_to_could_exist(self, client_ds_live: TestClient) -> None:
+        mock_dss = MagicMock()
+        mock_dss.get_manifest_status = AsyncMock(return_value={"mode": "turbo", "service": "strategy-service"})
+        mock_das = self._mock_das()
+        with patch(_PATCH_DSS, mock_dss), patch(_PATCH_DAS, mock_das):
+            r = client_ds_live.get(
+                "/data-status/turbo",
+                params={"service": "strategy-service", "start_date": "2026-01-01", "end_date": "2026-01-31"},
+            )
+        assert r.status_code == 200
+        assert mock_das.get_data_status_turbo.call_args.kwargs["scope"] == "could_exist"
+        assert mock_dss.get_manifest_status.await_args.kwargs["scope"] == "could_exist"
+
+    def test_invalid_scope_rejected(self, client_ds_live: TestClient) -> None:
+        r = client_ds_live.get(
+            "/data-status/turbo",
+            params={
+                "service": "strategy-service",
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-31",
+                "scope": "bogus",
+            },
+        )
+        assert r.status_code == 422
+
+    def test_scope_mirrors_manifest_route(self, client_ds_live: TestClient) -> None:
+        """``/turbo?scope=mvp`` and ``/manifest?scope=mvp`` call ``get_manifest_status``
+        with the IDENTICAL ``scope`` value — the turbo panel's MVP toggle narrows
+        the SAME way the manifest-backed venue-year-coverage grid does."""
+        mock_dss = MagicMock()
+        mock_dss.get_manifest_status = AsyncMock(return_value={"mode": "turbo", "service": "strategy-service"})
+        mock_das = self._mock_das()
+        params = {
+            "service": "strategy-service",
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-31",
+            "scope": "mvp",
+        }
+        with patch(_PATCH_DSS, mock_dss), patch(_PATCH_DAS, mock_das):
+            r_manifest = client_ds_live.get("/data-status/manifest", params=params)
+            r_turbo = client_ds_live.get("/data-status/turbo", params=params)
+        assert r_manifest.status_code == 200
+        assert r_turbo.status_code == 200
+        manifest_scope = mock_dss.get_manifest_status.await_args_list[0].kwargs["scope"]
+        turbo_scope = mock_dss.get_manifest_status.await_args_list[1].kwargs["scope"]
+        assert manifest_scope == turbo_scope == "mvp"
+
+
 # ── GET /turbo/stats ──────────────────────────────────────────────────────────
 
 

@@ -318,6 +318,88 @@ class TestGetDataStatusTurbo:
         assert "error" in result
         assert len(self.svc._turbo_cache) == 0
 
+    def test_default_scope_is_could_exist_in_result_and_cache_key(self):
+        """No ``scope`` kwarg passed → behaves as ``could_exist`` (pre-scope
+        default-preserving behaviour) and lands its own cache-key slot."""
+        import asyncio
+
+        async def _src(**kw):
+            return {"service": "svc-scope-default"}
+
+        asyncio.run(
+            self.svc.get_data_status_turbo(
+                service="svc-scope-default",
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+                from_data_status_service=_src,
+            )
+        )
+        default_key = self.svc._generate_cache_key(
+            service="svc-scope-default", start_date="2026-01-01", end_date="2026-01-31", scope="could_exist"
+        )
+        assert self.svc.get_cached_result(default_key) is not None
+
+    def test_different_scope_values_do_not_share_a_cache_entry(self):
+        """A ``could_exist`` response must never be served back for an ``mvp``
+        request (or vice versa) — otherwise the MVP-scope toggle on ``/turbo``
+        would silently return the wrong (unfiltered or over-filtered)
+        denominator for whichever scope asked second. Same
+        ``service``/``start_date``/``end_date``/``asset_groups``/``venues``
+        for both calls — only ``scope`` differs."""
+        import asyncio
+
+        call_log: list[str] = []
+
+        async def _src(**kw):
+            call_log.append("called")
+            return {"service": "svc-scope-differentiated"}
+
+        first = asyncio.run(
+            self.svc.get_data_status_turbo(
+                service="svc-scope-differentiated",
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+                from_data_status_service=_src,
+                scope="could_exist",
+            )
+        )
+        second = asyncio.run(
+            self.svc.get_data_status_turbo(
+                service="svc-scope-differentiated",
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+                from_data_status_service=_src,
+                scope="mvp",
+            )
+        )
+        assert first["from_cache"] is False
+        assert second["from_cache"] is False, "an mvp request must NOT hit the could_exist cache entry"
+        assert len(call_log) == 2, "the fresh compute must run once per distinct scope, not be skipped by a cache hit"
+
+    def test_same_scope_repeated_call_is_a_cache_hit(self):
+        """Sanity counterpart — the SAME scope on a repeat call IS a cache hit
+        (pins that the scope-in-cache-key fix didn't accidentally disable
+        caching altogether)."""
+        import asyncio
+
+        call_log: list[str] = []
+
+        async def _src(**kw):
+            call_log.append("called")
+            return {"service": "svc-scope-repeat"}
+
+        for _ in range(2):
+            asyncio.run(
+                self.svc.get_data_status_turbo(
+                    service="svc-scope-repeat",
+                    start_date="2026-01-01",
+                    end_date="2026-01-31",
+                    from_data_status_service=_src,
+                    scope="mvp",
+                )
+            )
+        assert len(call_log) == 1, "the second identical-scope call should be served from cache"
+
 
 class TestEvictOldEntriesInvalidTimestamp:
     """Test _evict_old_entries with invalid cached_at timestamp (line 162)."""
