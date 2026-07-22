@@ -9,7 +9,8 @@
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-instruments-cefi",
       "bucket_template": "instruments-store-cefi-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "instruments-tradfi",
@@ -17,7 +18,8 @@
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-instruments-tradfi",
       "bucket_template": "instruments-store-tradfi-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "instruments-defi",
@@ -25,7 +27,8 @@
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-instruments-defi",
       "bucket_template": "instruments-store-defi-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "instruments-sports",
@@ -33,7 +36,8 @@
       "asset_group": "sports",
       "job_name": "uts-prod-manifest-consolidator-instruments-sports",
       "bucket_template": "instruments-store-sports-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "instruments-prediction",
@@ -41,7 +45,8 @@
       "asset_group": "prediction",
       "job_name": "uts-prod-manifest-consolidator-instruments-prediction",
       "bucket_template": "instruments-store-pred-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "market-data-cefi",
@@ -49,7 +54,8 @@
       "asset_group": "cefi",
       "job_name": "uts-prod-manifest-consolidator-market-data-cefi",
       "bucket_template": "market-data-tick-cefi-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "market-data-tradfi",
@@ -57,7 +63,8 @@
       "asset_group": "tradfi",
       "job_name": "uts-prod-manifest-consolidator-market-data-tradfi",
       "bucket_template": "market-data-tick-tradfi-{env}-{project}",
-      "staleness_budget_seconds": "120"
+      "staleness_budget_seconds": "120",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "market-data-defi",
@@ -65,7 +72,8 @@
       "asset_group": "defi",
       "job_name": "uts-prod-manifest-consolidator-market-data-defi",
       "bucket_template": "market-data-tick-defi-{env}-{project}",
-      "staleness_budget_seconds": "3600"
+      "staleness_budget_seconds": "3600",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "market-data-sports",
@@ -73,7 +81,8 @@
       "asset_group": "sports",
       "job_name": "uts-prod-manifest-consolidator-market-data-sports",
       "bucket_template": "market-data-tick-sports-{env}-{project}",
-      "staleness_budget_seconds": "120"
+      "staleness_budget_seconds": "120",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "market-data-prediction",
@@ -81,55 +90,35 @@
       "asset_group": "prediction",
       "job_name": "uts-prod-manifest-consolidator-market-data-prediction",
       "bucket_template": "market-data-tick-pred-{env}-{project}",
-      "staleness_budget_seconds": "120"
+      "staleness_budget_seconds": "120",
+      "trigger_cron": "*/1 * * * *"
     },
     {
-      "category": "features-delta-one-cefi",
-      "kind": "features-delta-one",
+      "category": "features-cefi",
+      "kind": "features",
       "asset_group": "cefi",
-      "job_name": "uts-prod-manifest-consolidator-features-delta-one-cefi",
-      "bucket_template": "features-delta-one-cefi-{project}",
-      "staleness_budget_seconds": "86400"
+      "job_name": "uts-prod-manifest-consolidator-features-cefi",
+      "bucket_template": "features-cefi-{env}-{project}",
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
-      "category": "features-delta-one-tradfi",
-      "kind": "features-delta-one",
-      "asset_group": "tradfi",
-      "job_name": "uts-prod-manifest-consolidator-features-delta-one-tradfi",
-      "bucket_template": "features-delta-one-tradfi-{project}",
-      "staleness_budget_seconds": "86400"
-    },
-    {
-      "category": "features-delta-one-defi",
-      "kind": "features-delta-one",
+      "category": "features-defi",
+      "kind": "features",
       "asset_group": "defi",
-      "job_name": "uts-prod-manifest-consolidator-features-delta-one-defi",
-      "bucket_template": "features-delta-one-defi-{project}",
-      "staleness_budget_seconds": "86400"
+      "job_name": "uts-prod-manifest-consolidator-features-defi",
+      "bucket_template": "features-defi-{env}-{project}",
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
-      "category": "features-volatility-cefi",
-      "kind": "features-volatility",
-      "asset_group": "cefi",
-      "job_name": "uts-prod-manifest-consolidator-features-volatility-cefi",
-      "bucket_template": "features-volatility-cefi-{project}",
-      "staleness_budget_seconds": "86400"
-    },
-    {
-      "category": "features-volatility-tradfi",
-      "kind": "features-volatility",
+      "category": "features-tradfi",
+      "kind": "features",
       "asset_group": "tradfi",
-      "job_name": "uts-prod-manifest-consolidator-features-volatility-tradfi",
-      "bucket_template": "features-volatility-tradfi-{project}",
-      "staleness_budget_seconds": "86400"
-    },
-    {
-      "category": "features-onchain-defi",
-      "kind": "features-onchain",
-      "asset_group": "defi",
-      "job_name": "uts-prod-manifest-consolidator-features-onchain-defi",
-      "bucket_template": "features-onchain-defi-{project}",
-      "staleness_budget_seconds": "86400"
+      "job_name": "uts-prod-manifest-consolidator-features-tradfi",
+      "bucket_template": "features-tradfi-{env}-{project}",
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "features-sports",
@@ -137,7 +126,8 @@
       "asset_group": "sports",
       "job_name": "uts-prod-manifest-consolidator-features-sports",
       "bucket_template": "features-sports-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "features-calendar",
@@ -145,7 +135,8 @@
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-features-calendar",
       "bucket_template": "features-calendar-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "strategy",
@@ -153,7 +144,8 @@
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-strategy",
       "bucket_template": "strategy-store-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "execution",
@@ -161,7 +153,8 @@
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-execution",
       "bucket_template": "execution-store-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     },
     {
       "category": "ml-training-artifacts",
@@ -169,7 +162,8 @@
       "asset_group": null,
       "job_name": "uts-prod-manifest-consolidator-ml-training-artifacts",
       "bucket_template": "ml-store-{env}-{project}",
-      "staleness_budget_seconds": "86400"
+      "staleness_budget_seconds": "86400",
+      "trigger_cron": "*/1 * * * *"
     }
   ]
 }
