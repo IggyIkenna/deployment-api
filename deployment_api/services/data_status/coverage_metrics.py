@@ -392,12 +392,13 @@ def derive_capture_status_rates(
     ``empty_rate`` / ``failure_rate`` are rounded to 4 dp and clamped to
     ``[0, 1]``.  Returns 0.0 for all rates when ``total_expected_cells`` is
     0 so callers always get a well-formed dict.
-    ``honest_coverage`` uses the canonical UAC formula
-    (``compute_honest_coverage``): numerator = captured +
-    (empty_confirmed - out_of_window) + expected_unattempted_known_empty. The
-    ``out_of_window`` subset is populated upstream by
-    ``compute_capture_status_counts`` so out-of-life empties are CLIPPED from
-    both numerator and denominator here — consistent with coverage.py.
+    ``honest_coverage`` is a passthrough of the canonical UAC formula
+    (``compute_honest_coverage`` — SSOT for the formula itself, not repeated
+    here to avoid the exact drift this docstring previously had: it still
+    described the pre-2026-07-22 Part 4.1 numerator after the formula moved
+    to numerator=captured only, denominator=captured+attempted_failed+
+    expected_unattempted_*, with ``empty_confirmed`` excluded entirely
+    regardless of ``out_of_window``).
     """
     captured = counts.captured
     empty = counts.empty_confirmed
