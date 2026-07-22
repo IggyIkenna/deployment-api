@@ -344,7 +344,7 @@ class TestProcessingServiceCombinatorics:
                 "venues": {
                     "BINANCE": {
                         "folders": ["spot"],
-                        "data_types": ["trades", "derivative_ticker", "book_snapshot_5"],
+                        "data_types": ["trades", "derivative_ticker", "book_snapshot_5", "options_chain"],
                     }
                 }
             }
@@ -364,8 +364,15 @@ class TestProcessingServiceCombinatorics:
         # Only PROCESSING_DATA_TYPES should appear
         dt_set = {c.data_type for c in combos}
         assert dt_set.issubset(set(PROCESSING_DATA_TYPES))
-        # book_snapshot_5 should NOT be present
-        assert "book_snapshot_5" not in dt_set
+        # book_snapshot_5 -- 2026-07-22: PROCESSING_DATA_TYPES is now
+        # single-sourced from UAC MDPS_DERIVABLE_DATA_TYPES (design item 14),
+        # which DOES include book_snapshot_5 (MDPS derives book5_ohlcv_*
+        # candles from it) -- correcting the prior stale 2-value hardcoded
+        # list, which silently excluded it. It IS present now.
+        assert "book_snapshot_5" in dt_set
+        # A raw dt with no MDPS candle form (e.g. options_chain -- no entry
+        # in UAC's _RAW_TO_PROCESSED_PREFIX) must still be filtered out.
+        assert "options_chain" not in dt_set
 
     def test_processing_service_adds_timeframes(self):
         pc = self._make_pc_with_cefi()

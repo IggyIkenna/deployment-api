@@ -20,6 +20,14 @@ MTDS -> MDPS honest-coverage extension:
 
 Also verifies every existing MTDS call path (``timeframes=None`` / no
 ``service=`` kwarg) is BYTE-FOR-BYTE unchanged.
+
+``TestTier2VenueLevelTimeframeAwareness`` below covers the 2026-07-22
+follow-up: the Tier-2 (venue-level, non-per-instrument) branch
+(``_tier2_dt_entry`` in ``deployment_api/services/data_status/mtds.py``),
+deliberately deferred from the original 2026-07-21 ship. MDPS's one current
+venue-level derivable dt is ``liquidations`` (confirmed NOT in UAC's
+``_PER_INSTRUMENT_SHARD_DATA_TYPES``, so it always dispatches to Tier-2,
+never Tier-3).
 """
 
 from __future__ import annotations
@@ -351,3 +359,207 @@ class TestLegacyRowFallbackTimeframeMultiplier:
         assert result["expected_shards"] == 1
         assert result["unit"] == "shard_days_legacy"
         assert "denominator_timeframe_aware" not in result
+
+
+class TestTier2VenueLevelTimeframeAwareness:
+    """2026-07-22 follow-up: the Tier-2 (venue-level, non-per-instrument)
+    branch (``_tier2_dt_entry``) is now ALSO timeframe-aware for MDPS,
+    mirroring the Tier-3 ``per_instrument_coverage`` pattern. MDPS's one
+    current venue-level derivable dt is ``liquidations`` -- confirmed NOT in
+    UAC's ``_PER_INSTRUMENT_SHARD_DATA_TYPES``, so ``BINANCE-FUTURES``
+    ``liquidations`` always dispatches here, never to the Tier-3 branch.
+    """
+
+    def test_expected_shards_is_dates_x_canonical_timeframes(self) -> None:
+        """1 date x 7 canonical MDPS timeframes; 3 of the 7 actually
+        captured -- found_shards must equal 3, not 1 (the pre-fix bug's
+        under-multiplied denominator would also silently mismatch a
+        found_shards computed from raw dates)."""
+        from unified_api_contracts import VenueMapping
+
+        rows = []
+        for tf in ("1m", "5m", "1h"):
+            rows.append(
+                [
+                    "2026-07-01",
+                    "BINANCE-FUTURES",
+                    "liquidations",
+                    "market-data-processing-service",
+                    "captured",
+                    "",
+                    "PERPETUAL",
+                    "",
+                    "",
+                    100,
+                    tf,
+                ]
+            )
+        df = _mdps_df(rows)
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "BINANCE-FUTURES",
+            "CEFI",
+            "2026-07-01",
+            "2026-07-01",
+            VenueMapping(),
+            service="market-data-processing-service",
+        )
+        data_types = honest["data_types"]
+        assert isinstance(data_types, dict)
+        dt_entry = data_types["liquidations"]
+        assert isinstance(dt_entry, dict)
+        # 1 expected date x 7 canonical timeframes.
+        assert dt_entry["expected_shards"] == 1 * 7
+        # 3 (date, timeframe) pairs actually captured.
+        assert dt_entry["found_shards"] == 3
+        assert dt_entry["missing_shards"] == 7 - 3
+        assert dt_entry["unit"] == "shard_days"
+
+    def test_timeframes_outside_canonical_set_are_not_counted(self) -> None:
+        """A row carrying a non-canonical/garbage timeframe token must not
+        inflate found_shards -- mirrors the Tier-3 'no KeyError, honestly 0%'
+        contract."""
+        from unified_api_contracts import VenueMapping
+
+        df = _mdps_df(
+            [
+                [
+                    "2026-07-01",
+                    "BINANCE-FUTURES",
+                    "liquidations",
+                    "market-data-processing-service",
+                    "captured",
+                    "",
+                    "PERPETUAL",
+                    "",
+                    "",
+                    100,
+                    "3w",  # not a canonical MDPS timeframe
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "BINANCE-FUTURES",
+            "CEFI",
+            "2026-07-01",
+            "2026-07-01",
+            VenueMapping(),
+            service="market-data-processing-service",
+        )
+        dt_entry = honest["data_types"]["liquidations"]  # type: ignore[index]
+        assert dt_entry["found_shards"] == 0
+        assert dt_entry["expected_shards"] == 7
+
+    def test_no_timeframe_column_degrades_to_zero_found_not_keyerror(self) -> None:
+        """A manifest slice with no ``timeframe`` column at all (an MTDS-shape
+        row that somehow lands under an MDPS-scoped query) degrades to zero
+        found pairs -- honestly 0%, never a KeyError -- matching the Tier-3
+        contract exactly. expected_shards still multiplies by the canonical
+        timeframe count (the denominator reflects what SHOULD exist,
+        independent of what the manifest slice happens to carry)."""
+        from unified_api_contracts import VenueMapping
+
+        df = _mtds_df(
+            [
+                [
+                    "2026-07-01",
+                    "BINANCE-FUTURES",
+                    "liquidations",
+                    "market-data-processing-service",
+                    "captured",
+                    "",
+                    "PERPETUAL",
+                    "",
+                    "",
+                    100,
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "BINANCE-FUTURES",
+            "CEFI",
+            "2026-07-01",
+            "2026-07-01",
+            VenueMapping(),
+            service="market-data-processing-service",
+        )
+        dt_entry = honest["data_types"]["liquidations"]  # type: ignore[index]
+        assert dt_entry["expected_shards"] == 7
+        assert dt_entry["found_shards"] == 0
+
+    def test_mtds_default_service_byte_for_byte_unchanged(self) -> None:
+        """Without service= (the real MTDS production call path), the Tier-2
+        denominator/numerator stay per-(venue, dt, date) exactly as before
+        this feature existed -- no timeframe multiplier, dates counted
+        directly regardless of any ``timeframe`` column."""
+        from unified_api_contracts import VenueMapping
+
+        df = _mtds_df(
+            [
+                [
+                    "2026-07-01",
+                    "BINANCE-FUTURES",
+                    "liquidations",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "PERPETUAL",
+                    "",
+                    "",
+                    100,
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "BINANCE-FUTURES",
+            "CEFI",
+            "2026-07-01",
+            "2026-07-01",
+            VenueMapping(),
+        )
+        dt_entry = honest["data_types"]["liquidations"]  # type: ignore[index]
+        # 1 expected date, NOT multiplied by any timeframe count.
+        assert dt_entry["expected_shards"] == 1
+        assert dt_entry["found_shards"] == 1
+        assert dt_entry["completion_pct"] == 100.0
+        assert "historical_coverage_gap" not in honest
+
+    def test_mtds_explicit_service_kwarg_also_byte_for_byte_unchanged(self) -> None:
+        """service="market-tick-data-service" (the real production value MTDS
+        calls now pass) is likewise unmultiplied."""
+        from unified_api_contracts import VenueMapping
+
+        df = _mdps_df(
+            [
+                [
+                    "2026-07-01",
+                    "BINANCE-FUTURES",
+                    "liquidations",
+                    "market-tick-data-service",
+                    "captured",
+                    "",
+                    "PERPETUAL",
+                    "",
+                    "",
+                    100,
+                    "1m",
+                ],
+            ]
+        )
+        honest = _dss_mod._mtds_honest_coverage_for_venue(
+            df,
+            "BINANCE-FUTURES",
+            "CEFI",
+            "2026-07-01",
+            "2026-07-01",
+            VenueMapping(),
+            service="market-tick-data-service",
+        )
+        dt_entry = honest["data_types"]["liquidations"]  # type: ignore[index]
+        # 1 expected date, NOT x7 -- and found is the raw per-date union
+        # (the row's timeframe value is irrelevant on this path).
+        assert dt_entry["expected_shards"] == 1
+        assert dt_entry["found_shards"] == 1

@@ -588,6 +588,107 @@ def _mtds_seeded_4state_dt_entry(
     return entry
 
 
+def _tier2_dt_entry(
+    venue_df_ok: pd.DataFrame,
+    dt: str,
+    expected_dates: set[str],
+    timeframes: list[str] | None,
+) -> dict[str, object]:
+    """Venue-level (Tier-2, non-per-instrument) per-(venue, dt, date) coverage entry.
+
+    Preserves the Phase 6d per-(venue, dt, date) denominator BYTE-FOR-BYTE
+    when ``timeframes=None`` (every existing MTDS caller — the pre-2026-07-22
+    behaviour of the inline branch this was extracted from). When
+    ``timeframes`` is supplied (MDPS Tier-2 follow-up,
+    mtds_data_status_page_parity_2026_07_21, implemented 2026-07-22), mirrors
+    the Tier-3 ``per_instrument_coverage`` pattern exactly: ``expected_shards``
+    multiplies by ``len(timeframes)`` and the found-set becomes distinct
+    ``(date, timeframe)`` pairs read from the manifest's ``timeframe`` column,
+    restricted to ``expected_dates`` AND ``timeframes``. A manifest slice with
+    no ``timeframe`` column (or all-blank values) degrades to zero found
+    pairs — honestly 0%, never a KeyError — matching the Tier-3 contract.
+    MDPS's one current venue-level derivable dt is ``liquidations``
+    (confirmed NOT in UAC's ``_PER_INSTRUMENT_SHARD_DATA_TYPES``, so it
+    always dispatches here, never to the Tier-3 branch).
+
+    FLAG-1 (TradFi v9 multi-source): the v9 manifest carries one row per
+    (venue, data_type, date, source) — e.g. databento + massive both
+    captured for the same date produce two rows. UNION semantics (≥1
+    captured → cell captured) are enforced via distinct-date dedup before
+    computing ``found_dates_set`` (the ``timeframes=None`` path). A
+    per-source breakdown is surfaced in ``per_source`` for the UI drilldown
+    (plan FLAG-1, operator 2026-06-02) — deliberately NOT timeframe-scoped
+    even for MDPS (a known, documented residual, same convention the Tier-3
+    ``per_instrument`` breakdown originally shipped with): it counts
+    distinct captured dates per source across ALL timeframes, not restricted
+    to ``timeframes``.
+    """
+    if "data_type" in venue_df_ok.columns:
+        dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
+    else:
+        dt_rows = venue_df_ok.iloc[0:0]
+
+    # ``None`` (every existing MTDS caller) -> multiplier 1, i.e. a
+    # complete no-op below. Only a non-empty ``timeframes`` list changes
+    # the arithmetic — mirrors ``per_instrument_coverage``'s Tier-3
+    # ``tf_multiplier`` exactly.
+    tf_multiplier = len(timeframes) if timeframes else 1
+    expected_count = len(expected_dates) * tf_multiplier
+
+    if timeframes is not None:
+        if "timeframe" in dt_rows.columns and not dt_rows.empty:
+            date_s = dt_rows["date"].astype(str)  # pyright: ignore[reportUnknownMemberType]
+            tf_s = dt_rows["timeframe"].fillna("").astype(str)  # pyright: ignore[reportUnknownMemberType]
+            tf_mask = date_s.isin(expected_dates) & tf_s.isin(timeframes)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            found_tf_pairs: set[tuple[str, str]] = {
+                (d, t)
+                for d, t in zip(date_s[tf_mask], tf_s[tf_mask], strict=True)  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
+            }
+        else:
+            found_tf_pairs = set()
+        found_dates_set: set[str] = {d for d, _t in found_tf_pairs}
+        found_in_expected: set[str] = found_dates_set
+        found_count = len(found_tf_pairs)
+    else:
+        # Union dedup: distinct dates regardless of how many sources
+        # have a captured/empty_confirmed row for that date.
+        found_dates_set = {str(d) for d in dt_rows["date"].unique()} if not dt_rows.empty else set()  # pyright: ignore[reportAny]
+        # Only count dates that fall inside the expected window — a row
+        # from before ``effective_start`` should not inflate ``found_shards``.
+        found_in_expected = found_dates_set & expected_dates  # pyright: ignore[reportUnknownVariableType]
+        found_count = len(found_in_expected)
+
+    missing_dates = sorted(expected_dates - found_dates_set)
+
+    # Per-source breakdown — free from the in-memory ``_index`` rows (the v9
+    # manifest denormalises source to the row level so this is a single
+    # groupby, no per-parquet scan). Only emitted when the ``source`` column
+    # is present (v9 manifests); v8 manifests omit it.
+    per_source: dict[str, object] = {}
+    if "source" in dt_rows.columns and not dt_rows.empty:
+        for src, src_group in dt_rows.groupby("source"):  # pyright: ignore[reportUnknownVariableType]
+            src_str = str(src)
+            src_dates = {str(d) for d in src_group["date"].unique()}  # pyright: ignore[reportAny]
+            src_found = src_dates & expected_dates  # pyright: ignore[reportUnknownVariableType]
+            per_source[src_str] = {
+                "found_shards": len(src_found),  # pyright: ignore[reportUnknownArgumentType]
+                "dates_found_list": sorted(src_found)[:500],  # pyright: ignore[reportUnknownVariableType]
+            }
+
+    entry: dict[str, object] = {
+        "expected_shards": expected_count,
+        "found_shards": found_count,
+        "missing_shards": max(0, expected_count - found_count),
+        "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
+        "missing_dates": missing_dates[:500],
+        "dates_found_list": sorted(found_in_expected)[:500],
+        "unit": "shard_days",
+    }
+    if per_source:
+        entry["per_source"] = per_source
+    return entry
+
+
 def mtds_honest_coverage_for_venue(
     filtered: pd.DataFrame,
     venue: str,
@@ -655,13 +756,12 @@ def mtds_honest_coverage_for_venue(
     date) raw ticks — over UAC ``get_expected_timeframes_for_venue_dt``'s
     canonical timeframe set. For any other ``service`` value the Tier-3
     call is unchanged (``timeframes=None``). The Tier-2 venue-level branch
-    (below) is DELIBERATELY NOT made timeframe-aware in this pass — it is
-    out of the reviewed scope of this change (the 3 converged/individual
-    review findings this feature implements all concern the Tier-3
-    per-instrument branch specifically). MDPS's one remaining venue-level
-    derivable dt today is ``liquidations`` — a real, narrow residual gap
-    (its Tier-2 denominator will UNDER-multiply by ``len(timeframes)`` for
-    MDPS) flagged here for a follow-up, not silently dropped.
+    (:func:`_tier2_dt_entry`) is ALSO timeframe-aware as of the 2026-07-22
+    follow-up (deferred from the original 2026-07-21 ship, which scoped only
+    the Tier-3 per-instrument branch per its 3 converged/individual review
+    findings) — MDPS's one venue-level derivable dt today is ``liquidations``,
+    which previously under-multiplied its denominator by ``len(timeframes)``;
+    see :func:`_tier2_dt_entry`'s docstring for the exact mirrored pattern.
 
     ``historical_coverage_gap`` (MDPS only, open design question DEFAULT
     resolution): pre-cutover MDPS manifest rows written under the legacy
@@ -745,6 +845,17 @@ def mtds_honest_coverage_for_venue(
 
         expected_dates = mtds_expected_dates_for_venue_dt(venue_mapping, venue, dt, category, window_start, window_end)
 
+        # MDPS timeframe-aware denominator (mtds_data_status_page_parity_2026_07_21,
+        # Tier-2 coverage extended 2026-07-22 — see ``_tier2_dt_entry``'s
+        # docstring): ``None`` for every non-MDPS caller. Both the Tier-3
+        # (``per_instrument_coverage``) and Tier-2 (``_tier2_dt_entry``)
+        # branches below treat ``timeframes=None`` as a complete no-op,
+        # reproducing their pre-2026-07-21 denominators byte-for-byte. Resolved
+        # per-(venue, dt) (not once globally) per UAC
+        # ``get_expected_timeframes_for_venue_dt``'s signature, which
+        # intentionally leaves room for a future per-dt override.
+        _tf_for_dt: list[str] | None = get_expected_timeframes_for_venue_dt(venue, dt) if is_mdps else None
+
         if is_per_instrument_shard_data_type(dt):
             # Phase 8D Tier-3 branch — per-(venue, dt, instrument_id,
             # date) denominator.
@@ -753,15 +864,6 @@ def mtds_honest_coverage_for_venue(
             # For other asset_groups: instruments_provider=None falls back to
             # UAC MVP seed tables (existing behaviour).
             _instr_cap: int | None = None if instruments_provider is not None else DEFAULT_PER_INSTRUMENT_SENTINEL_CAP
-            # MDPS timeframe-aware denominator (mtds_data_status_page_parity_2026_07_21):
-            # ``None`` for every non-MDPS caller — per_instrument_coverage's
-            # ``timeframes`` parameter defaults to ``None`` and reproduces its
-            # pre-existing (instrument, date) denominator byte-for-byte in that
-            # case, so this is a no-op for MTDS. Resolved per-(venue, dt) (not
-            # once globally) per UAC ``get_expected_timeframes_for_venue_dt``'s
-            # signature, which intentionally leaves room for a future per-dt
-            # override.
-            _tf_for_dt: list[str] | None = get_expected_timeframes_for_venue_dt(venue, dt) if is_mdps else None
             dt_entry = per_instrument_coverage(
                 venue_df_ok,
                 venue,
@@ -775,64 +877,15 @@ def mtds_honest_coverage_for_venue(
                 instrument_types=instrument_types,
                 timeframes=_tf_for_dt,
             )
-            dt_entries[dt] = dt_entry
-            expected_count = int(cast(int, dt_entry["expected_shards"]))
-            found_count = int(cast(int, dt_entry["found_shards"]))
         else:
             # Venue-level dt — preserve the Phase 6d per-(venue, dt, date)
-            # denominator.
-            #
-            # FLAG-1 (TradFi v9 multi-source): the v9 manifest carries one row
-            # per (venue, data_type, date, source) — e.g. databento + massive
-            # both captured for the same date produce two rows. The UNION
-            # semantics (≥1 captured → cell captured) are enforced here by
-            # ``dt_rows["date"].unique()``, which deduplicates across sources
-            # before computing found_dates_set. A per-source breakdown is also
-            # surfaced in ``per_source`` for the UI drilldown (plan FLAG-1,
-            # operator 2026-06-02: UNION + manifest-derived per-source breakdown).
-            if "data_type" in venue_df_ok.columns:
-                dt_rows = venue_df_ok[venue_df_ok["data_type"] == dt]
-                # Union dedup: distinct dates regardless of how many sources
-                # have a captured/empty_confirmed row for that date.
-                found_dates_set = {str(d) for d in dt_rows["date"].unique()}  # pyright: ignore[reportAny]
-            else:
-                dt_rows = venue_df_ok.iloc[0:0]
-                found_dates_set: set[str] = set()
-            # Only count dates that fall inside the expected window — a
-            # row from before ``effective_start`` should not inflate
-            # ``found_shards``.
-            found_in_expected = found_dates_set & expected_dates  # pyright: ignore[reportUnknownVariableType]
-            missing_dates = sorted(expected_dates - found_dates_set)  # pyright: ignore[reportUnknownVariableType]
-            expected_count = len(expected_dates)
-            found_count = len(found_in_expected)  # pyright: ignore[reportUnknownVariableType]
+            # denominator; timeframe-aware for MDPS as of 2026-07-22. See
+            # ``_tier2_dt_entry``'s docstring for the full contract.
+            dt_entry = _tier2_dt_entry(venue_df_ok, dt, expected_dates, _tf_for_dt)
 
-            # Per-source breakdown — free from the in-memory ``_index`` rows
-            # (the v9 manifest denormalises source to the row level so this is
-            # a single groupby, no per-parquet scan). Only emitted when the
-            # ``source`` column is present (v9 manifests); v8 manifests omit it.
-            per_source: dict[str, object] = {}
-            if "source" in dt_rows.columns and not dt_rows.empty:
-                for src, src_group in dt_rows.groupby("source"):  # pyright: ignore[reportUnknownVariableType]
-                    src_str = str(src)
-                    src_dates = {str(d) for d in src_group["date"].unique()}  # pyright: ignore[reportAny]
-                    src_found = src_dates & expected_dates  # pyright: ignore[reportUnknownVariableType]
-                    per_source[src_str] = {
-                        "found_shards": len(src_found),  # pyright: ignore[reportUnknownArgumentType]
-                        "dates_found_list": sorted(src_found)[:500],  # pyright: ignore[reportUnknownVariableType]
-                    }
-
-            dt_entry: dict[str, object] = {
-                "expected_shards": expected_count,
-                "found_shards": found_count,
-                "missing_shards": max(0, expected_count - found_count),
-                "completion_pct": min(round(found_count / max(1, expected_count) * 100, 2), 100.0),
-                "missing_dates": missing_dates[:500],
-                "dates_found_list": sorted(found_in_expected)[:500],  # pyright: ignore[reportUnknownVariableType]
-                "unit": "shard_days",
-            }
-            if per_source:
-                dt_entry["per_source"] = per_source
-            dt_entries[dt] = dt_entry
+        dt_entries[dt] = dt_entry
+        expected_count = int(cast(int, dt_entry["expected_shards"]))
+        found_count = int(cast(int, dt_entry["found_shards"]))
 
         total_expected += expected_count
         total_found += found_count
