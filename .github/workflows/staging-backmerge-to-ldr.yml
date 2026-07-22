@@ -146,9 +146,22 @@ jobs:
             # ALSO escalate to the orchestrator so the conflict is actively resolved on
             # live-defi-rollout, not just parked in a human PR — "every alert → orchestrator".
             # Fired with GH_PAT: a repository_dispatch from GITHUB_TOKEN does NOT trigger workflows.
+            #
+            # MUST target unified-trading-pm, NOT ${GITHUB_REPOSITORY}: the escalate-to-orchestrator.yml
+            # LISTENER (repository_dispatch: types: [escalate-to-orchestrator], which actually POSTs
+            # /api/escalate) lives ONLY in unified-trading-pm. Every other repo has no such listener, so
+            # dispatching to ${GITHUB_REPOSITORY} (this repo) is a SILENT no-op — GitHub accepts the
+            # dispatch (204) with nothing subscribed, and the unconditional `&&`-echo below then falsely
+            # reports "escalated conflict to orchestrator" even though no worker was ever spawned. Found
+            # 2026-07-22 while auditing the sibling bug in main-backmerge-to-ldr.yml (fixed same day,
+            # commit 1abc3c07f) — unlike that file, this template is rendered into 23 repos and NONE of
+            # them is unified-trading-pm, so this dispatch had a 0% real-escalation success rate in every
+            # repo it has ever run in (no "worked by coincidence in PM" case exists here). Fixed
+            # proactively: staging is retired/unused as of 2026-07-22, no live conflict was being masked
+            # — this closes the gap before staging is ever reactivated, not after.
             REPO_NAME="${GITHUB_REPOSITORY##*/}"
             CONFLICT_PR="$(gh pr list --base live-defi-rollout --head staging --state open --json number -q '.[0].number' 2>/dev/null || echo 0)"
-            GH_TOKEN="${GH_PAT:-}" gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
+            GH_TOKEN="${GH_PAT:-}" gh api "repos/${GITHUB_REPOSITORY_OWNER}/unified-trading-pm/dispatches" \
               -f event_type=escalate-to-orchestrator \
               -f "client_payload[repo]=${REPO_NAME}" \
               -f "client_payload[pr_number]=${CONFLICT_PR:-0}" \
