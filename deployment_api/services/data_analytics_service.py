@@ -206,11 +206,23 @@ class DataAnalyticsService:
         asset_groups: list[str] | None = None,
         venues: list[str] | None = None,
         pipeline_modes: list[str] | None = None,
+        scope: str = "could_exist",
     ) -> dict[str, object]:
         """Return data status with turbo-mode rollup cache.
 
         ``pipeline_modes`` is OR-semantics and bypasses the rollup cache
         (produces a per-mode breakdown not held in the fleet-wide cache).
+
+        ``scope`` mirrors the ``/manifest`` + venue-year-coverage grid's
+        ``scope`` toggle (``could_exist`` default / ``mvp`` / ``all`` — see
+        ``routes/data_status/_coverage_scope.py``). This method does no
+        aggregation of its own — the actual narrowing happens inside
+        ``from_data_status_service`` (the caller's closure already captures
+        ``scope`` and threads it into ``get_manifest_status(scope=...)``).
+        The ONLY thing this method needs ``scope`` for is the cache key:
+        without it, a cached ``could_exist`` response would be served back
+        for an ``mvp`` request (and vice versa) since every other input
+        param would be identical.
         """
         cache_key = self._generate_cache_key(
             service=service,
@@ -219,6 +231,7 @@ class DataAnalyticsService:
             asset_groups=asset_groups,
             venues=venues,
             pipeline_modes=",".join(sorted(pipeline_modes)) if pipeline_modes else None,
+            scope=scope,
         )
         cached_result = self.get_cached_result(cache_key)
         if cached_result is not None:

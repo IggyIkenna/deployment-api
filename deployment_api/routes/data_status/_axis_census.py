@@ -3,7 +3,20 @@
 ``GET /axis-value-census`` — per ``(service, asset_group)``, the RAW
 (uncanonicalised) distinct values + row counts of every enumerable manifest
 axis (``venue`` / ``chain`` / ``instrument_type`` / ``data_type`` / ``source``
-/ ``pipeline_mode``) present in the consolidated availability index.
+/ ``pipeline_mode`` / ``timeframe``) present in the consolidated availability
+index.
+
+**MDPS candle-layer extension (candle_feature issue todo 42, 2026-07-21):**
+MTDS (raw ticks) and MDPS (derived candles) share the same per-asset_group
+bucket, so a plain unfiltered read of ``service=="market-data-processing-
+service"`` silently returned the MTDS raw-tick census instead. Requesting
+this service now filters the read to MDPS's own ``service_name`` rows (see
+:func:`_filter_to_candle_rows`) and badges the ``data_type`` axis
+``is_canonical`` against the SOURCE ``DATA_TYPES_BY_ASSET_GROUP`` vocabulary
+(see :func:`_badge_data_type_against_source`) — NOT the aggregated
+``mdps_data_type_key`` vocabulary, per the corrected ruling in
+``candle_feature_canonical_path_divergence_2026_07_20.md`` that keeps the
+candle object path's ``data_type`` on SOURCE.
 
 **Why this exists (operator, 2026-07-18):** "used to list all the instrument
 types and data types and chains etc where relevant for this AG that existed
@@ -68,6 +81,7 @@ import logging
 
 import pandas as pd
 from fastapi import HTTPException, Query
+from unified_api_contracts.registry import DATA_TYPES_BY_ASSET_GROUP
 
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
@@ -83,6 +97,9 @@ logger = logging.getLogger(__name__)
 # original ask, and the exact axis a 2026-07-18 audit caught drifting —
 # stale ``source=barchart`` despite Barchart being retired) so the API stays
 # ahead of the UI and future axis additions there need no backend change.
+# ``timeframe`` (candle_feature issue todo 42, 2026-07-21) makes the census
+# useful on the MDPS candle layer, whose shard atom includes a timeframe the
+# raw-tick axes above never carried.
 AXIS_CENSUS_COLUMNS: tuple[str, ...] = (
     "venue",
     "chain",
@@ -90,7 +107,19 @@ AXIS_CENSUS_COLUMNS: tuple[str, ...] = (
     "data_type",
     "source",
     "pipeline_mode",
+    "timeframe",
 )
+
+# MTDS (raw ticks) and MDPS (derived candles) share the SAME per-asset_group
+# "market-data" bucket (``SERVICE_TO_KIND`` in
+# ``data_status_drilldown/_core.py``) — the availability_index rows for both
+# live side by side, disambiguated only by the ``service_name`` column. A
+# census requested for MTDS therefore already reads ~all rows in the bucket
+# (MDPS's handful of candle rows are noise), but a census requested for MDPS
+# must filter to ``service_name`` == this value or it silently returns the
+# MTDS raw-tick census instead of the candle one (candle_feature issue todo
+# 42, 2026-07-21).
+_CANDLE_SERVICE_NAME = "market-data-processing-service"
 
 # Sentinel spellings that mean "no value was recorded" — never counted as a
 # real distinct value (honest-absence; matches ``_catalogue.py::_distinct_
@@ -131,6 +160,37 @@ def _axis_value_counts(df: pd.DataFrame, column: str) -> list[dict[str, object]]
     return [{"value": str(value), "count": int(count)} for value, count in counts.items()]  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]
 
 
+def _filter_to_candle_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Restrict ``df`` to the MDPS candle rows in a shared MTDS/MDPS bucket.
+
+    ``service_name`` is always present in ``df`` here (the caller requests it
+    as an extra read column specifically for this filter — never rendered as
+    an axis itself), backfilled to ``""`` for legacy rows that predate the
+    column; those legacy rows correctly fail this exact-match and are
+    excluded, since they cannot be attributed to MDPS.
+    """
+    if df.empty or "service_name" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["service_name"] == _CANDLE_SERVICE_NAME]
+
+
+def _badge_data_type_against_source(entries: list[dict[str, object]], asset_group: str) -> list[dict[str, object]]:
+    """Badge each ``data_type`` census entry ``is_canonical`` against the
+    SOURCE ``DATA_TYPES_BY_ASSET_GROUP`` vocabulary.
+
+    MDPS candle object paths carry the SOURCE ``data_type``
+    (``derivative_ticker``/``trades``/...), never the aggregated
+    ``mdps_data_type_key`` (``deriv_ohlcv_15m``) — the corrected ruling in
+    ``candle_feature_canonical_path_divergence_2026_07_20.md`` ("CORRECTED
+    RULING 2026-07-21") keeps the path on SOURCE and re-points the MANIFEST to
+    match it instead. Badging against the aggregated vocabulary here would
+    reintroduce the superseded framing and flag every genuinely-canonical
+    candle row as drift.
+    """
+    canonical = frozenset(DATA_TYPES_BY_ASSET_GROUP.get(asset_group.lower(), []))
+    return [{**entry, "is_canonical": entry["value"] in canonical} for entry in entries]
+
+
 @router.get("/axis-value-census")
 async def get_axis_value_census(
     service: str = Query(..., description="Service name"),
@@ -148,18 +208,34 @@ async def get_axis_value_census(
     ``FUTURE``/``future``/``FUTURES`` all present for the same asset_group) —
     this endpoint intentionally returns the raw values undecided, not a
     pre-collapsed verdict.
+
+    When ``service == "market-data-processing-service"`` (the MDPS candle
+    layer, which shares its bucket with MTDS raw-tick rows) the manifest read
+    is additionally filtered to ``service_name`` rows attributable to MDPS
+    (see :func:`_filter_to_candle_rows`), and the ``data_type`` axis entries
+    each carry an extra ``is_canonical`` flag badged against the SOURCE
+    ``DATA_TYPES_BY_ASSET_GROUP`` vocabulary (see
+    :func:`_badge_data_type_against_source`) — every other ``(service,
+    asset_group)`` keeps the plain, unbadged ``{value, count}`` shape.
     """
+    is_candle_census = service == _CANDLE_SERVICE_NAME
+    read_columns = [*AXIS_CENSUS_COLUMNS, "service_name"] if is_candle_census else list(AXIS_CENSUS_COLUMNS)
     try:
         bucket = _ds.build_bucket_name(service, asset_group)
-        df = _ds._read_availability_index(bucket, columns=list(AXIS_CENSUS_COLUMNS))  # pyright: ignore[reportPrivateUsage]
+        df = _ds._read_availability_index(bucket, columns=read_columns)  # pyright: ignore[reportPrivateUsage]
     except (OSError, RuntimeError, ValueError) as exc:
         logger.exception("Error in get_axis_value_census")
         raise HTTPException(status_code=500, detail="Internal server error. Check server logs.") from exc
+
+    if is_candle_census:
+        df = _filter_to_candle_rows(df)
 
     axes: dict[str, list[dict[str, object]]] = {}
     truncated_axes: list[str] = []
     for axis in AXIS_CENSUS_COLUMNS:
         values = _axis_value_counts(df, axis)
+        if axis == "data_type" and is_candle_census:
+            values = _badge_data_type_against_source(values, asset_group)
         if len(values) > _MAX_VALUES_PER_AXIS:
             values = values[:_MAX_VALUES_PER_AXIS]
             truncated_axes.append(axis)

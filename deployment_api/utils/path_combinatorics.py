@@ -41,6 +41,7 @@ import yaml
 from unified_api_contracts.internal import MarketCategory
 from unified_api_contracts.registry import (
     MDPS_CANONICAL_TIMEFRAMES,
+    MDPS_DERIVABLE_DATA_TYPES,
     TRADFI_TICK_DATA_WINDOWS,
     is_in_tradfi_tick_window,
 )
@@ -61,8 +62,25 @@ logger = logging.getLogger(__name__)
 # querying a GCS path that could never exist.
 PROCESSING_TIMEFRAMES: list[str] = list(MDPS_CANONICAL_TIMEFRAMES)
 
-# Data types that are downsampled (only these exist in processing service)
-PROCESSING_DATA_TYPES = ["trades", "derivative_ticker"]
+# Data types that are downsampled (only these exist in processing service).
+# Single-sourced from the UAC ``MDPS_DERIVABLE_DATA_TYPES`` registry entry
+# (mtds_data_status_page_parity_2026_07_21 design item 14, implemented
+# 2026-07-22) rather than a locally hardcoded 2-value list — the same fix
+# already applied to ``PROCESSING_TIMEFRAMES`` above.
+#
+# **This is NOT a no-op single-sourcing rename** (correcting an earlier,
+# stale plan assumption that the two lists carried "the same 2 values"):
+# ``MDPS_DERIVABLE_DATA_TYPES`` is the FULL raw-source vocabulary MDPS
+# candle-derives from today (``trades``, ``book_snapshot_5``,
+# ``derivative_ticker``, ``liquidations``, the DEFI per-pool/index types,
+# ``ohlcv_1m``, ...) — the local list here had drifted to only 2 of those.
+# Widening this constant is the correct fix per the operator's "MDPS should
+# look basically same shards as MTDS" ruling and matches what
+# ``deployment_api.services.data_status.mtds`` already treats as
+# MDPS-derivable via ``get_expected_data_types_for_venue(service=...)`` — the
+# two lists were silently out of sync. Sorted for deterministic combinatorics
+# ordering (``MDPS_DERIVABLE_DATA_TYPES`` is a ``frozenset``).
+PROCESSING_DATA_TYPES: list[str] = sorted(MDPS_DERIVABLE_DATA_TYPES)
 
 # Calendar service feature types (not in sharding config since it's date-only sharding)
 CALENDAR_FEATURE_TYPES = ["temporal", "scheduled_events", "macro"]
@@ -526,7 +544,9 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
         Generate combinatorics for market-data-processing-service.
 
         This expands the base combinatorics with timeframes and filters to
-        only data_types that are downsampled (trades, derivative_ticker).
+        only data_types MDPS actually candle-derives from (single-sourced
+        from UAC ``MDPS_DERIVABLE_DATA_TYPES`` via ``PROCESSING_DATA_TYPES``
+        above — see that constant's docstring for the full list).
         """
         # Start with base combinatorics
         base = self.combinatorics
@@ -542,8 +562,7 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
             folder_set = {f.lower() for f in folders}
             base = [c for c in base if c.folder.lower() in folder_set]
 
-        # Filter to only data_types that are downsampled (processing service doesn't
-        # have book_snapshot_5, liquidations, etc.)
+        # Filter to only data_types MDPS actually derives candles from.
         valid_dt = {dt.lower() for dt in PROCESSING_DATA_TYPES}
         dt_set = {dt.lower() for dt in data_types} & valid_dt if data_types else valid_dt
         base = [c for c in base if c.data_type.lower() in dt_set]

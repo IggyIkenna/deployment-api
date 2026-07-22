@@ -20,6 +20,7 @@ import pytest
 # ``_dss_mod`` IS that canonical module. The old standalone loader (which
 # existed to dodge a since-fixed circular import via services/__init__)
 # created a second module instance whose patches the mixins never saw.
+import deployment_api.services.data_status.breakdowns_core as _bc_mod
 import deployment_api.services.data_status_service as _dss_mod
 
 DataStatusService = _dss_mod.DataStatusService
@@ -711,6 +712,82 @@ class TestFourStateClassification:
         assert result["trades"]["in_expected_coverage"] is True
         assert result["trades"]["out_of_scope"] is False
         assert result["trades"]["dates_blocked_on_raw"] == 0
+
+
+class TestMdpsSourceAxisClassification:
+    """mdps_datatype_axis_switch_breaks_generic_classifier_2026_07_21 (B1).
+
+    Post-752eaff, an MDPS manifest row's ``data_type`` is the RAW SOURCE
+    token (``"derivative_ticker"``, not the legacy aggregated
+    ``"deriv_ohlcv_1h"``). Before the fix, ``is_processed_data_type`` fell
+    through to ``False`` for every such row regardless of ``service``,
+    which also silently flipped ``out_of_scope`` to ``True`` for any
+    post-cutover MDPS row not independently declared in EXPECTED_COVERAGE.
+    Passing ``service=`` through must restore ``is_processed_data_type`` /
+    ``out_of_scope`` for MDPS's own scope while leaving every other
+    service (the token is genuinely raw there) unaffected.
+    """
+
+    def setup_method(self):
+        self.svc = DataStatusService(project_id="test-proj")
+
+    def _df(self):
+        return pd.DataFrame(
+            {
+                "date": ["2024-01-01"],
+                "venue": ["SOME-UNDECLARED-VENUE"],
+                "data_type": ["derivative_ticker"],
+            }
+        )
+
+    def test_source_keyed_mdps_row_is_recognised_as_processed(self):
+        """A SOURCE-keyed dt observed under MDPS's OWN service, not declared
+        in EXPECTED_COVERAGE for this venue -> processed, not out_of_scope."""
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01", "2024-01-02"]
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["derivative_ticker"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+            patch.object(_bc_mod, "is_expected", return_value=False),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                self._df(),
+                "SOME-UNDECLARED-VENUE",
+                "2024-01-01",
+                "2024-01-02",
+                vm,
+                service="market-data-processing-service",
+                category="CEFI",
+            )
+        assert "derivative_ticker" in result
+        assert result["derivative_ticker"]["is_processed_data_type"] is True
+        assert result["derivative_ticker"]["out_of_scope"] is False
+        assert result["derivative_ticker"]["dates_blocked_on_raw"] == 1
+
+    def test_same_source_token_stays_raw_under_mtds_service(self):
+        """The identical row, scoped to MTDS's own service, must NOT flip to
+        'processed' -- the token alone is ambiguous post-cutover; only the
+        service context disambiguates it."""
+        vm = MagicMock()
+        vm.get_expected_trading_dates.return_value = ["2024-01-01", "2024-01-02"]
+        with (
+            patch.object(_dss_mod, "get_expected_data_types_for_venue", return_value=["derivative_ticker"]),
+            patch.object(_dss_mod, "get_venue_data_type_start_date", return_value=None),
+            patch.object(_bc_mod, "is_expected", return_value=False),
+        ):
+            result = self.svc._build_data_type_breakdown(
+                self._df(),
+                "SOME-UNDECLARED-VENUE",
+                "2024-01-01",
+                "2024-01-02",
+                vm,
+                service="market-tick-data-service",
+                category="CEFI",
+            )
+        assert "derivative_ticker" in result
+        assert result["derivative_ticker"]["is_processed_data_type"] is False
+        assert result["derivative_ticker"]["out_of_scope"] is True
+        assert result["derivative_ticker"]["dates_blocked_on_raw"] == 0
 
 
 class TestReferenceDataBundleScope:

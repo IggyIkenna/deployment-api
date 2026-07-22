@@ -726,6 +726,22 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
         data_type token appears in PROCESSED_REQUIRES_RAW (e.g. CBOE emits
         ``ohlcv_15m`` natively while CeFi MDPS derives ``ohlcv_15m`` from
         trades — same token, different role per venue).
+
+        **SOURCE-axis MDPS rows** (post-752eaff, 2026-07-21 operator ruling):
+        an MDPS manifest row's ``data_type`` is the RAW SOURCE token
+        (``"trades"``, ``"derivative_ticker"``, ...), not the legacy
+        AGGREGATED ``{prefix}_{tf}`` key ``PROCESSED_REQUIRES_RAW`` is keyed
+        on. ``is_processed_data_type``/``get_raw_source_data_types`` resolve
+        this via the ``service=`` kwarg we pass through (UAC recognises a
+        SOURCE token as processed only under ``service ==
+        "market-data-processing-service"`` — the SAME token is genuinely raw
+        under any other service's manifest scope, e.g. MTDS's own). See
+        mdps_datatype_axis_switch_breaks_generic_classifier_2026_07_21.md.
+        This still can't recover full per-timeframe precision (candle
+        timeframe now lives outside the ``data_type`` axis this function
+        keys on) — that's the ``is_mtds_honest_coverage_target``-gated
+        timeframe-aware path's job; this generic path is the pre-honest-
+        coverage / SPORTS fallback.
         """
         # Reference-data bundle services scope off the instruments-service
         # catalogue (venue/day grain), NOT the market-data registry — the
@@ -739,11 +755,18 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
             return ref_scope_in, False, list(missing_dates), []
 
         scope_in = is_expected(category, venue, data_type) if category and venue else True
-        dt_is_processed = is_processed_data_type(data_type)
+        # ``service=service`` (mdps_datatype_axis_switch_breaks_generic_classifier_2026_07_21,
+        # B1): post-752eaff, an MDPS manifest row's ``data_type`` is the RAW
+        # SOURCE token (``"trades"``, ``"derivative_ticker"``, ...), which is
+        # ambiguous without service context — genuinely raw under MTDS's own
+        # manifest scope, but a processed candle row under MDPS's. Passing
+        # ``service`` lets both UAC calls disambiguate correctly; every other
+        # caller (``service=""``) is unaffected — see the UAC docstrings.
+        dt_is_processed = is_processed_data_type(data_type, service=service)
         apply_precondition = dt_is_processed and not scope_in
         if not (apply_precondition and missing_dates):
             return scope_in, dt_is_processed, list(missing_dates), []
-        raw_sources = get_raw_source_data_types(data_type)
+        raw_sources = get_raw_source_data_types(data_type, service=service)
         if not raw_sources:
             return scope_in, dt_is_processed, list(missing_dates), []
         raw_captured: set[str] = set()

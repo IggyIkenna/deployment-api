@@ -15,6 +15,7 @@ from fastapi import HTTPException, Query, Request
 
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
+from deployment_api.routes.data_status._coverage_scope import CoverageScope
 from deployment_api.services import DataStatusService
 from deployment_api.services.data_status_mock import build_mock_drilldown_tree, build_mock_turbo_response
 from deployment_api.services.deploy_missing import (
@@ -405,6 +406,15 @@ async def get_data_status_turbo(
     include_file_counts: bool = Query(False, description="Include per-date file counts"),
     include_dates_list: bool = Query(False, description="Include sorted list of dates found"),
     cloud: Literal["gcp", "aws"] = Query("gcp", description="Cloud provider for bucket reads"),
+    scope: CoverageScope = Query(
+        "could_exist",
+        description=(
+            "Coverage scope (denominator filter) — mirrors the venue-year-coverage grid's "
+            "'scope' toggle. 'could_exist' (DEFAULT) = current behaviour. 'mvp' = restrict "
+            "CEFI per-instrument-shard data_types to UAC is_mvp(...) instruments. Venue-level "
+            "(non-per-instrument) data_types and non-CEFI asset_groups are unaffected today."
+        ),
+    ),
 ):
     """Get data status with turbo mode caching (5-minute cache TTL)."""
     if _ds._cfg.is_mock_mode():  # pyright: ignore[reportPrivateUsage]
@@ -440,6 +450,7 @@ async def get_data_status_turbo(
                 asset_groups=asset_groups,
                 cloud=cloud,
                 pipeline_modes=_pipeline_modes,
+                scope=scope,
             )
 
         result = await _ds.data_analytics_service.get_data_status_turbo(
@@ -450,6 +461,7 @@ async def get_data_status_turbo(
             asset_groups=asset_group,
             venues=venue,
             pipeline_modes=_pipeline_modes,
+            scope=scope,
         )
 
         if "error" in result:
