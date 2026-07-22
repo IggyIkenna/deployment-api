@@ -164,7 +164,15 @@ class TestGetAxisValueCensus:
                 params={"service": "market-tick-data-service", "asset_group": "tradfi"},
             )
         body = r.json()
-        assert set(body["axes"].keys()) == {"venue", "chain", "instrument_type", "data_type", "source", "pipeline_mode"}
+        assert set(body["axes"].keys()) == {
+            "venue",
+            "chain",
+            "instrument_type",
+            "data_type",
+            "source",
+            "pipeline_mode",
+            "timeframe",
+        }
         assert body["axes"]["chain"] == []
         assert body["axes"]["data_type"] == []
 
@@ -198,7 +206,15 @@ class TestGetAxisValueCensus:
         assert r.status_code == 200
         mock_read.assert_called_once()
         _, kwargs = mock_read.call_args
-        assert set(kwargs["columns"]) == {"venue", "chain", "instrument_type", "data_type", "source", "pipeline_mode"}
+        assert set(kwargs["columns"]) == {
+            "venue",
+            "chain",
+            "instrument_type",
+            "data_type",
+            "source",
+            "pipeline_mode",
+            "timeframe",
+        }
 
     def test_empty_manifest_returns_zero_row_count_and_empty_axes(self, client_ds_axis_census: TestClient) -> None:
         with (
@@ -233,3 +249,142 @@ class TestGetAxisValueCensus:
                 params={"service": "nope", "asset_group": "defi"},
             )
         assert r.status_code == 500
+
+
+class TestCandleLayerCensus:
+    """MDPS (``market-data-processing-service``) shares its bucket with MTDS
+    (``market-tick-data-service``) — candle_feature issue todo 42, 2026-07-21.
+    A candle census must (a) request ``service_name`` as an extra read column
+    and filter rows down to MDPS's own, and (b) badge the ``data_type`` axis
+    against the SOURCE ``DATA_TYPES_BY_ASSET_GROUP`` vocabulary, never the
+    aggregated ``mdps_data_type_key`` one."""
+
+    def _mixed_mtds_mdps_df(self) -> pd.DataFrame:
+        # Same shared-bucket shape measured in the issue doc: MTDS raw-tick
+        # rows vastly outnumber the handful of MDPS candle rows, and the
+        # candle rows carry the SOURCE data_type on their manifest row.
+        return pd.DataFrame(
+            {
+                "venue": ["DERIBIT", "DERIBIT", "DERIBIT"],
+                "chain": ["", "", ""],
+                "instrument_type": ["PERPETUAL", "PERPETUAL", "PERPETUAL"],
+                "data_type": ["trades", "derivative_ticker", "derivative_ticker"],
+                "source": ["tardis", "tardis", "tardis"],
+                "pipeline_mode": ["batch_tardis", "batch_tardis", "batch_tardis"],
+                "timeframe": ["", "15m", "15m"],
+                "service_name": [
+                    "market-tick-data-service",
+                    "market-data-processing-service",
+                    "market-data-processing-service",
+                ],
+            }
+        )
+
+    def test_reader_requests_service_name_as_extra_column(self, client_ds_axis_census: TestClient) -> None:
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=self._mixed_mtds_mdps_df()) as mock_read,
+        ):
+            r = client_ds_axis_census.get(
+                "/data-status/axis-value-census",
+                params={"service": "market-data-processing-service", "asset_group": "cefi"},
+            )
+        assert r.status_code == 200
+        _, kwargs = mock_read.call_args
+        assert "service_name" in kwargs["columns"]
+
+    def test_candle_census_filters_out_mtds_rows(self, client_ds_axis_census: TestClient) -> None:
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=self._mixed_mtds_mdps_df()),
+        ):
+            r = client_ds_axis_census.get(
+                "/data-status/axis-value-census",
+                params={"service": "market-data-processing-service", "asset_group": "cefi"},
+            )
+        body = r.json()
+        # Only the 2 MDPS rows survive — the 1 MTDS row (data_type=trades) is
+        # excluded, so "trades" must not appear on the candle data_type axis.
+        assert body["row_count"] == 2
+        data_type_values = {d["value"] for d in body["axes"]["data_type"]}
+        assert data_type_values == {"derivative_ticker"}
+
+    def test_non_candle_service_is_unfiltered_and_unbadged(self, client_ds_axis_census: TestClient) -> None:
+        """A plain MTDS request is untouched by the candle-layer extension —
+        no ``service_name`` column requested, no filtering, no badging."""
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=self._mixed_mtds_mdps_df()) as mock_read,
+        ):
+            r = client_ds_axis_census.get(
+                "/data-status/axis-value-census",
+                params={"service": "market-tick-data-service", "asset_group": "cefi"},
+            )
+        body = r.json()
+        assert body["row_count"] == 3
+        _, kwargs = mock_read.call_args
+        assert "service_name" not in kwargs["columns"]
+        for row in body["axes"]["data_type"]:
+            assert set(row.keys()) == {"value", "count"}
+
+    def test_candle_data_type_badged_against_source_vocabulary(self, client_ds_axis_census: TestClient) -> None:
+        """``derivative_ticker`` is a genuine cefi SOURCE data_type
+        (``DATA_TYPES_BY_ASSET_GROUP["cefi"]``) so it must badge
+        ``is_canonical: true``; an aggregated ``mdps_data_type_key`` spelling
+        that is NOT in the source vocabulary must badge ``false`` — the
+        superseded aggregated-vocabulary framing this todo replaces."""
+        df = pd.DataFrame(
+            {
+                "venue": ["DERIBIT", "DERIBIT"],
+                "chain": ["", ""],
+                "instrument_type": ["PERPETUAL", "PERPETUAL"],
+                "data_type": ["derivative_ticker", "deriv_ohlcv_15m"],
+                "source": ["tardis", "tardis"],
+                "pipeline_mode": ["batch_tardis", "batch_tardis"],
+                "timeframe": ["15m", "15m"],
+                "service_name": ["market-data-processing-service", "market-data-processing-service"],
+            }
+        )
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=df),
+        ):
+            r = client_ds_axis_census.get(
+                "/data-status/axis-value-census",
+                params={"service": "market-data-processing-service", "asset_group": "cefi"},
+            )
+        body = r.json()
+        badges = {d["value"]: d["is_canonical"] for d in body["axes"]["data_type"]}
+        assert badges == {"derivative_ticker": True, "deriv_ohlcv_15m": False}
+        # Every other axis stays unbadged (only data_type gets the flag).
+        for row in body["axes"]["venue"]:
+            assert set(row.keys()) == {"value", "count"}
+
+    def test_candle_census_populates_timeframe_axis(self, client_ds_axis_census: TestClient) -> None:
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=self._mixed_mtds_mdps_df()),
+        ):
+            r = client_ds_axis_census.get(
+                "/data-status/axis-value-census",
+                params={"service": "market-data-processing-service", "asset_group": "cefi"},
+            )
+        body = r.json()
+        assert body["axes"]["timeframe"] == [{"value": "15m", "count": 2}]
+
+    def test_service_name_column_absent_returns_zero_rows(self, client_ds_axis_census: TestClient) -> None:
+        """Defensive: if the reader ever returned a frame without
+        ``service_name`` (e.g. a genuinely empty index), the candle filter
+        cannot attribute any row to MDPS and honestly reports zero, rather
+        than silently falling back to the unfiltered MTDS-dominated set."""
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=pd.DataFrame()),
+        ):
+            r = client_ds_axis_census.get(
+                "/data-status/axis-value-census",
+                params={"service": "market-data-processing-service", "asset_group": "cefi"},
+            )
+        body = r.json()
+        assert body["row_count"] == 0
+        assert all(v == [] for v in body["axes"].values())
