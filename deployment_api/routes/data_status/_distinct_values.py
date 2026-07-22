@@ -116,6 +116,7 @@ from fastapi import HTTPException
 from unified_api_contracts import InstrumentType
 from unified_api_contracts.registry import (
     ALL_DEFI_VENUES,
+    CEFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES,
     DATA_TYPES_BY_ASSET_GROUP,
     MAINNET_CHAIN_IDS,
     SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
@@ -156,8 +157,17 @@ _BLANK_SENTINELS: frozenset[str] = frozenset({"", "none", "nan", "<na>", "null"}
 # data_type values (they are bundle-grain INSTRUMENT_TYPES, not data_types) but
 # never going to be relabelled/purged, so they must stop badging as drift the
 # same way the sports bookmakers do.
+#
+# ("venues", "cefi") added 2026-07-22 (same plan, "D2 — cefi venue fold"):
+# OKX-SWAP/OKX-FUTURES (and the other CEFI_VENUE_FOLD dialect spellings —
+# legacy raw Tardis exchange ids, writer-side aliases) are real manifest
+# values instruments-service's own `_canon_venue()` already recognises and
+# folds to a canonical venue; they were only ever flagged here because this
+# panel had no way to see that fold — same "known, understood, not drift"
+# shape as the other two entries.
 _ACCEPTED_EXCEPTIONS: dict[tuple[str, str], frozenset[str]] = {
     ("venues", "sports"): SPORTS_ODDS_API_ACCEPTED_NONCANONICAL_BOOKMAKERS,
+    ("venues", "cefi"): CEFI_VENUE_ACCEPTED_NONCANONICAL_ALIASES,
     ("data_types", "tradfi"): TRADFI_CHAIN_SNAPSHOT_ACCEPTED_NONCANONICAL_DATA_TYPES,
 }
 
