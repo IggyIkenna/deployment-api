@@ -39,8 +39,25 @@ on:
   # bump → diverge → repeat → runaway breaker). A scheduled run is NOT GITHUB_TOKEN-gated, so it
   # sweeps the drift regardless of who pushed — the staging-axis mirror of main-backmerge-to-ldr's
   # drift-tick (which exists for the identical reason on the main axis).
-  schedule:
-    - cron: "10 * * * *" # hourly, offset from main-backmerge's :00 — convergence safety-net
+  # STOPPED 2026-07-23 (operator ruling; staging-machinery shutdown). The hourly cron above fired
+  # ~134×/week PER REPO × 24 repos ≈ 3,216 GitHub-HOSTED runs/week — each one a ~13-SECOND no-op
+  # billed a full minute (the 1-min-minimum tax), ≈ $84/mo — against a `staging` branch that has
+  # been frozen since 2026-06-27 and is 600-967 commits BEHIND live-defi-rollout in every repo,
+  # with 0 open PRs targeting it fleet-wide. The drift it exists to sweep cannot occur while
+  # nothing pushes to staging. NOT self-hostable: all 8 glue runners are registered to
+  # unified-trading-pm ONLY (fleet repos have 0; personal account => no org-level pool), so
+  # flipping runs-on would hang all 24 rendered copies — this is the KEEP-T class.
+  #
+  # KEPT REVERSIBLE — this is a comment-out, not a deletion, matching the precedent set by
+  # ldr-to-staging-promote.yml (2026-06-28). `push: [staging]` + `workflow_dispatch` below stay
+  # LIVE, so the moment anything actually lands on staging this still reconciles it. To resume the
+  # convergence safety-net when a repo is routed back THROUGH staging (a breaking/major bump or an
+  # operator decision flips `promotion_model` off `ldr_main` in workspace-manifest.json):
+  # UNCOMMENT the two lines below. NOTE: a `schedule:` fires from the DEFAULT branch, so this
+  # change only takes effect once promoted to `main`.
+  # SSOT: plans/active/issues/staging_workflow_shutdown_2026_07_23.md
+  # schedule:
+  #   - cron: "10 * * * *" # hourly, offset from main-backmerge's :00 — convergence safety-net
   workflow_dispatch: {}
 
 concurrency:
