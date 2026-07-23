@@ -18,7 +18,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from deployment_api.rate_limiting import endpoint_rate_limit
-from deployment_api.services.artifact_pipeline import ArtifactPipelineService, BuildsResponse
+from deployment_api.services.artifact_pipeline import ArtifactPipelineService, BuildsResponse, DeploysResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ artifact_service = ArtifactPipelineService()
 CloudFilter = Literal["all", "gcp", "aws"]
 LaneFilter = Literal["all", "image", "tarball"]
 BuildStatusFilter = Literal["all", "failed"]
+DeployChangeFilter = Literal["all", "code", "live", "fail"]
 
 # Longest selectable window — mirrors the service's `_MAX_DAYS` clamp and the `days` param `le=366`.
 MAX_RANGE_DAYS = 366
@@ -91,6 +92,29 @@ def get_artifact_builds(
         return artifact_service.builds(days, cloud, lane, status, start_date=start, end_date=end, force=refresh)
     except Exception as exc:
         logger.exception("artifact builds failed")
+        raise HTTPException(
+            status_code=502, detail={"code": "ARTIFACT_QUERY_FAILED", "message": "Artifact data unavailable"}
+        ) from exc
+
+
+@router.get("/artifacts/deploys", response_model=DeploysResponse)
+def get_artifact_deploys(
+    days: int = Query(30, ge=1, le=366, description="Window length in days (ending today)"),
+    cloud: CloudFilter = Query("all", description="Filter to one cloud"),
+    change: DeployChangeFilter = Query(
+        "all", description="Filter: 'code' hides config-only churn, 'live' = serving now, 'fail' = never went ready"
+    ),
+    start_date: date | None = Query(None, description=_START_DESC),
+    end_date: date | None = Query(None, description=_END_DESC),
+    refresh: bool = Query(False, description="Bypass the cache and re-query the deploy APIs"),
+    _rl: None = Depends(endpoint_rate_limit(30)),
+) -> DeploysResponse:
+    """The Deploy timeline view: every Cloud Run revision, its change-type, held-for, deployer."""
+    start, end = _resolve_range(start_date, end_date)
+    try:
+        return artifact_service.deploys(days, cloud, change, start_date=start, end_date=end, force=refresh)
+    except Exception as exc:
+        logger.exception("artifact deploys failed")
         raise HTTPException(
             status_code=502, detail={"code": "ARTIFACT_QUERY_FAILED", "message": "Artifact data unavailable"}
         ) from exc

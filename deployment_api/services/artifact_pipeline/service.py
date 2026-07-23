@@ -17,11 +17,17 @@ from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.artifact_pipeline import providers
 from deployment_api.services.artifact_pipeline.cache import ArtifactWindowCache
 from deployment_api.services.artifact_pipeline.models import (
+    CHANGE_CONFIG,
+    CHANGE_FAILED,
     BuildFact,
     BuildRow,
     BuildsResponse,
     BuildsStats,
     BuildStep,
+    DeployFact,
+    DeployRow,
+    DeploysResponse,
+    DeploysStats,
 )
 
 _MAX_DAYS = 366
@@ -144,12 +150,41 @@ def _sha_build_counts(facts: list[BuildFact]) -> dict[tuple[str, str], int]:
     return counts
 
 
+def _deploy_row(fact: DeployFact) -> DeployRow:
+    return DeployRow(
+        workload=fact.workload,
+        revision=fact.revision,
+        cloud=fact.cloud,
+        digest=fact.digest,
+        built_from=fact.built_from,
+        resolvable=fact.resolvable,
+        change_type=fact.change_type,
+        at=fact.at,
+        held_for=fact.held_for,
+        live=fact.live,
+        deployer=fact.deployer,
+        link_kind=fact.link_kind,
+        section=fact.section,
+    )
+
+
+def _deploys_stats(windowed: list[DeployFact], *, live_now: int) -> DeploysStats:
+    """Stat tiles from the data. `live_now` is a POINT-IN-TIME count over ALL facts, never the
+    windowed subset — narrowing the date range must not make "how many are live right now" lie."""
+    total = len(windowed)
+    config_only = sum(1 for f in windowed if f.change_type == CHANGE_CONFIG)
+    config_only_pct = round(100.0 * config_only / total, 1) if total else 0.0
+    failed = sum(1 for f in windowed if f.change_type == CHANGE_FAILED)
+    return DeploysStats(total=total, config_only_pct=config_only_pct, live_now=live_now, failed=failed)
+
+
 class ArtifactPipelineService:
     """Serves the /ops/artifacts views from the (cheaply cached) normalized provider facts."""
 
     def __init__(self) -> None:
         self._cfg = DeploymentApiConfig()
         self._build_facts: ArtifactWindowCache[list[BuildFact]] = ArtifactWindowCache()
+        self._deploy_facts: ArtifactWindowCache[list[DeployFact]] = ArtifactWindowCache()
 
     def _all_build_facts(self, *, force: bool = False) -> list[BuildFact]:
         """All build records (every lane, both clouds), briefly cached. `_safe` per source."""
@@ -161,6 +196,18 @@ class ArtifactPipelineService:
             return facts
 
         return self._build_facts.get_or_load("builds", _load, force=force)
+
+    def _all_deploy_facts(self, *, force: bool = False) -> list[DeployFact]:
+        """All deploy records (every workload, both clouds), briefly cached. `_safe` per source."""
+
+        def _load() -> list[DeployFact]:
+            facts: list[DeployFact] = []
+            facts += providers.safe(lambda: providers.gcp_cloud_run_revisions(self._cfg), "gcp_cloud_run_revisions")
+            # AWS App Runner/ECS operations + GCE VM launches (the tarball-lane deploy) are later
+            # increments — each `_safe`, mirroring how AWS CodeBuild is deferred for `builds()`.
+            return facts
+
+        return self._deploy_facts.get_or_load("deploys", _load, force=force)
 
     def builds(
         self,
@@ -207,4 +254,49 @@ class ArtifactPipelineService:
             generated_at=_now_iso(),
             rows=rows,
             stats=_builds_stats(windowed),
+        )
+
+    def deploys(
+        self,
+        days: int,
+        cloud: str = "all",
+        change: str = "all",
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        force: bool = False,
+    ) -> DeploysResponse:
+        """The Deploy timeline view: every Cloud Run revision, its change-type, held-for, deployer.
+
+        `change` mirrors the design mock's filter chips exactly: "code" hides the config-only churn
+        (same digest redeployed, nothing shipped), "live" is what's serving right now, "fail" is a
+        revision that never went ready.
+        """
+        all_facts = self._all_deploy_facts(force=force)
+        lo, hi = _resolve_window(days, start_date, end_date)
+        windowed = [f for f in all_facts if _in_window(f.at, lo, hi)]
+
+        rows: list[DeployRow] = []
+        for f in windowed:
+            if cloud != "all" and f.cloud != cloud:
+                continue
+            if change == "code" and f.change_type == CHANGE_CONFIG:
+                continue
+            if change == "live" and not f.live:
+                continue
+            if change == "fail" and f.change_type != CHANGE_FAILED:
+                continue
+            rows.append(_deploy_row(f))
+
+        # live_now is a POINT-IN-TIME count over ALL facts, not the windowed subset (see
+        # `_deploys_stats`) — a narrow date range must not undercount what's serving right now.
+        live_now = sum(1 for f in all_facts if f.live)
+
+        return DeploysResponse(
+            days=days,
+            start_date=lo.isoformat(),
+            end_date=hi.isoformat(),
+            generated_at=_now_iso(),
+            rows=rows,
+            stats=_deploys_stats(windowed, live_now=live_now),
         )
