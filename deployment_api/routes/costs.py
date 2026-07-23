@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # health-overview cost tile, which imports it).
 cost_service = CostObservabilityService()
 
-Dimension = Literal["service", "resource", "bucket", "region", "day", "sku", "zone", "label"]
+Dimension = Literal["service", "resource", "bucket", "region", "day", "sku", "zone", "label", "waste"]
 CloudFilter = Literal["all", "gcp", "aws", "github"]
 # Which GCP business label the `label` dimension groups by (GCP-only; AWS/GitHub → "(unlabeled)").
 LabelKey = Literal["purpose", "category", "venue", "asset_group"]

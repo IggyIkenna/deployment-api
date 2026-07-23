@@ -38,6 +38,22 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="GCS bucket for deployment state storage",
     )
 
+    # =========================================================================
+    # ALERTS-LEDGER CONFIGURATION
+    # =========================================================================
+
+    alerting_service_source_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ALERTING_SERVICE_SOURCE_ENABLED"),
+        description=(
+            "Kill switch for the alerting-service source plane in /api/alerts "
+            "(see alerts_endpoint_per_object_gcs_read_performance_2026_07_23.md — its bucket writes "
+            "one object per alert event, ~20-24k objects/day, and the reader lists+downloads each one "
+            "sequentially). Default True (unchanged behavior). Set False to skip this plane while the "
+            "underlying per-object read pattern is unfixed, without falling back to mock data."
+        ),
+    )
+
     data_status_disable_process_pool: bool = Field(
         default=False,
         validation_alias=AliasChoices("DATA_STATUS_DISABLE_PROCESS_POOL"),

@@ -56,6 +56,12 @@ _DISK_MONTHLY_USD_PER_GB: dict[str, float] = {
 # an unknown-type estimate is conservative rather than inflated.
 _DEFAULT_DISK_RATE: float = 0.052
 
+# Average days/month (365.25 / 12) — same constant convention as cost_observability's
+# _AVG_DAYS_PER_MONTH, used to prorate a disk's monthly-rate estimate by its actual stopped
+# duration into a "cost incurred so far" figure (still list-rate, still an ESTIMATE — no live
+# billing query, just the same rate applied to elapsed time instead of a full month).
+_AVG_HOURS_PER_MONTH: float = 24 * 30.44
+
 
 def _classify(vm_name: str) -> LifecycleClass:
     """Longest-prefix lifecycle class for a VM name (EPHEMERAL_BATCH default on unknown)."""
@@ -76,6 +82,19 @@ def _monthly_disk_usd(size_gb: int | None, disk_type: str | None) -> float:
 # Public alias so the leaked-resource detector (_leaked_resources) reuses this ONE disk cost model —
 # estimates never drift between the orphans endpoint and the deployments inventory.
 monthly_disk_usd = _monthly_disk_usd
+
+
+def _cost_incurred_usd(monthly_usd: float, stopped_age_hours: float | None) -> float:
+    """Estimated $ a stopped VM's boot disk has accrued SINCE it stopped (not a full month).
+
+    Same list-rate model as ``_monthly_disk_usd``, prorated by elapsed stopped-time — an operator
+    asking "how much has this idle VM actually cost so far" wants THIS, not the monthly run-rate
+    (which answers "how much will it cost per month if left as-is"). 0.0 when the age is unknown
+    (mirrors the honest-absence contract the rest of this module already follows).
+    """
+    if stopped_age_hours is None:
+        return 0.0
+    return round(monthly_usd * stopped_age_hours / _AVG_HOURS_PER_MONTH, 2)
 
 
 def _stopped_age_hours(stopped_ts: str, creation_ts: str, now: datetime) -> float | None:
@@ -138,6 +157,7 @@ def _orphan_entry(
     age = _stopped_age_hours(stopped_ts, creation_ts, now)
     verdict = _verdict(lifecycle, labels, age, grace_hours)
     lifecycle_value: VmLifecycleClass = lifecycle.value
+    monthly_usd = _monthly_disk_usd(boot_disk_gb, boot_disk_type)
 
     return OrphanEntry(
         name=name,
@@ -147,7 +167,8 @@ def _orphan_entry(
         stopped_age_hours=age,
         boot_disk_gb=boot_disk_gb,
         boot_disk_type=boot_disk_type,
-        monthly_disk_usd=_monthly_disk_usd(boot_disk_gb, boot_disk_type),
+        monthly_disk_usd=monthly_usd,
+        cost_incurred_usd=_cost_incurred_usd(monthly_usd, age),
         reapable=verdict == "reap",
         verdict=verdict,
     )
@@ -179,6 +200,8 @@ def build_orphan_inventory(
         reapable_total=len(reapable),
         monthly_idle_usd=round(sum(o.monthly_disk_usd for o in orphans), 2),
         monthly_reapable_usd=round(sum(o.monthly_disk_usd for o in reapable), 2),
+        total_idle_cost_incurred_usd=round(sum(o.cost_incurred_usd for o in orphans), 2),
+        total_reapable_cost_incurred_usd=round(sum(o.cost_incurred_usd for o in reapable), 2),
         orphans=orphans,
     )
 

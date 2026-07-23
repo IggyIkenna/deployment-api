@@ -1416,6 +1416,27 @@ def test_breakdown_resource_disk_not_flagged_when_attached(monkeypatch: pytest.M
     assert rows["ikenna-windows-tokyo-restored"].is_idle is False
 
 
+def test_breakdown_waste_dimension_filters_to_idle_rows_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dimension=waste reuses the SAME per-resource classification as dimension=resource, filtered
+    to is_idle rows — vm-1 (not waste) must be absent, and the header total/total_groups must
+    reflect the WASTE-ONLY scope (74.57 / 2), not the full resource scope (84.57 / 3)."""
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_with_waste)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: {"ikenna-windows-tokyo-restored"})
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    result = s.breakdown("waste", "gcp", days=1)
+    rows = {row.label: row for row in result.rows}
+    assert set(rows) == {"harsh-static-ip", "ikenna-windows-tokyo-restored"}
+    assert rows["harsh-static-ip"].waste_kind == waste.WASTE_IDLE_STATIC_IP
+    assert rows["ikenna-windows-tokyo-restored"].waste_kind == waste.WASTE_ORPHANED_DISK
+    assert result.total_groups == 2
+    assert result.total == 74.57  # 5.95 + 68.62 — vm-1's 10.0 excluded from the header total too
+    assert rows["harsh-static-ip"].share_pct == round(5.95 / 74.57 * 100, 1)
+
+
 def test_breakdown_resource_surfaces_cheap_waste_below_the_top_n_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cost-waste is cheap by nature, so a plain top-N-by-cost cap would hide it. The idle IP
     must still surface even when far more than _BREAKDOWN_LIMIT pricier resources outrank it."""

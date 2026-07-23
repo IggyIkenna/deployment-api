@@ -14,8 +14,25 @@ on:
   pull_request:
     branches: [staging]
     types: [opened, reopened, synchronize]
-  repository_dispatch:
-    types: [staging-locked, staging-unlocked]
+  # STOPPED 2026-07-23 (operator ruling; staging-machinery shutdown). This dispatch listener fired
+  # ~132×/week PER REPO × 24 repos ≈ 3,168 GitHub-HOSTED runs/week — each an ~8-SECOND no-op billed
+  # a full minute, ≈ $82/mo — to refresh the lock status of open staging PRs when there are ZERO
+  # open staging PRs anywhere in the fleet (verified across all 24 repos) and `staging` has been
+  # frozen since 2026-06-27.
+  #
+  # ONLY the repository_dispatch path is disabled. The `pull_request` trigger above stays LIVE ON
+  # PURPOSE: the `check-staging-lock` job posts the REQUIRED status check registered on the
+  # `require-staging-lock-check` ruleset in 16 of 24 repos, so disabling the whole workflow would
+  # hang any future staging PR forever on a check nothing reports. That job is already
+  # `if: github.event_name == 'pull_request'`-guarded and therefore never ran on this dispatch path
+  # anyway — only `refresh-open-prs` did, iterating an empty PR list every time.
+  #
+  # KEPT REVERSIBLE: UNCOMMENT the two lines below to restore the lock-state fan-out when a repo is
+  # routed back THROUGH staging. Its dispatchers (PM's sit-gate.yml / sit-unlock.yml /
+  # staging-to-main.yml) are left untouched — an unsubscribed dispatch is a harmless no-op.
+  # SSOT: plans/active/issues/staging_workflow_shutdown_2026_07_23.md
+  # repository_dispatch:
+  #   types: [staging-locked, staging-unlocked]
 
 permissions:
   contents: read
