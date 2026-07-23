@@ -22,10 +22,21 @@ from deployment_api.services.artifact_pipeline.models import (
     CHANGE_FAILED,
     CHANGE_NEW,
     CHANGE_ROLLBACK,
+    DRIFT_FLOATING,
+    DRIFT_HAND,
+    DRIFT_OK,
+    DRIFT_UNKNOWN,
     LANE_IMAGE,
     LANE_TARBALL,
+    SEV_DEFERRED,
+    SEV_HIGH,
+    SEV_LOW,
+    SEV_MED,
+    STATE_LEGACY,
+    STATE_RUNNING,
     BuildFact,
     DeployFact,
+    RegistryImageFact,
 )
 from deployment_api.services.artifact_pipeline.service import (
     _fmt_duration,
@@ -446,3 +457,211 @@ def test_resolve_range_too_long_rejected() -> None:
     with pytest.raises(HTTPException) as exc:
         _resolve_range(date(2020, 1, 1), date(2026, 7, 31))
     assert exc.value.status_code == 400
+
+
+# ── images view (per-repo roll-up of RegistryImageFact) ────────────────────────────────────────────
+def _reg_image(repo: str, digest: str, tags: list[str], pushed: str, *, size: int | None = 1000) -> RegistryImageFact:
+    return RegistryImageFact(
+        cloud="gcp",
+        registry="unified-trading-system",
+        repo=repo,
+        digest=digest,
+        tags=tags,
+        pushed_at=pushed,
+        size_bytes=size,
+    )
+
+
+def _image_svc_with(
+    monkeypatch: pytest.MonkeyPatch,
+    image_facts: list[RegistryImageFact],
+    deploy_facts: list[DeployFact] | None = None,
+) -> ArtifactPipelineService:
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", lambda _cfg, scan=5000: list(image_facts))
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: list(deploy_facts or []))
+    return ArtifactPipelineService()
+
+
+def test_images_aggregates_per_repo_and_flags_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    recent = "2026-07-20T00:00:00+00:00"
+    old = "2026-01-01T00:00:00+00:00"
+    facts = [
+        _reg_image("deployment-api", "sha256:AAA", ["abc1234"], recent, size=1000),
+        _reg_image("deployment-api", "sha256:BBB", ["def5678"], old, size=2000),
+        _reg_image("legacy-svc", "sha256:CCC", ["9999999"], old, size=500),
+    ]
+    live = [_deploy_fact("uts-shared-deployment-api", "r1", CHANGE_NEW, recent, live=True, digest="sha256:AAA")]
+    svc = _image_svc_with(monkeypatch, facts, live)
+    resp = svc.images()
+
+    rows = {r.repo: r for r in resp.rows}
+    assert rows["deployment-api"].image_count == 2
+    assert rows["deployment-api"].running_on == "uts-shared-deployment-api"
+    assert rows["deployment-api"].state == STATE_RUNNING
+    assert rows["deployment-api"].size_bytes == 3000  # both images' bytes, summed
+    assert rows["legacy-svc"].state == STATE_LEGACY  # no live workload, nothing pushed in >30d
+    assert resp.stats.total_repos == 2
+    assert resp.stats.running == 1
+    assert resp.stats.legacy == 1
+
+
+def test_images_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_cfg: object, scan: int = 5000) -> list[RegistryImageFact]:
+        raise RuntimeError("AR API down")
+
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", _boom)
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: [])
+    svc = ArtifactPipelineService()
+    resp = svc.images()
+    assert resp.rows == []
+    assert resp.stats.total_repos == 0
+
+
+# ── running view (the digest → AR tag → short SHA → build runtime join) ────────────────────────────
+def _running_svc_with(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    deploys: list[DeployFact],
+    images: list[RegistryImageFact] | None = None,
+    builds: list[BuildFact] | None = None,
+) -> ArtifactPipelineService:
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: list(deploys))
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", lambda _cfg, scan=5000: list(images or []))
+    monkeypatch.setattr(providers_mod, "gcp_cloud_builds", lambda _cfg, scan=400: list(builds or []))
+    return ArtifactPipelineService()
+
+
+def test_running_ok_when_sha_tag_resolves_to_a_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    deploys = [
+        _deploy_fact(
+            "uts-shared-deployment-api", "r1", CHANGE_NEW, "2026-07-21T00:00:00+00:00", live=True, digest="sha256:AAA"
+        )
+    ]
+    images = [_reg_image("deployment-api", "sha256:AAA", ["a557471", "0.10.0"], "2026-07-21T00:00:00+00:00")]
+    builds = [_fact("deployment-api", "a557471", "SUCCESS", "2026-07-21T00:00:00+00:00")]
+    svc = _running_svc_with(monkeypatch, deploys=deploys, images=images, builds=builds)
+    resp = svc.running()
+
+    assert resp.stats.services == 1
+    group = resp.groups[0]
+    assert group.service == "uts-shared-deployment-api"
+    assert group.fragmented is False
+    v = group.versions[0]
+    assert v.version == ":a557471"
+    assert v.built_from == "a557471"
+    assert v.artifact == "unified-trading-system/deployment-api"
+    assert DRIFT_OK in v.drift
+    assert v.hosts[0].name == "uts-shared-deployment-api"
+    assert v.hosts[0].kind == "Cloud Run svc"
+
+
+def test_running_flags_floating_latest_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    deploys = [_deploy_fact("svc", "r1", CHANGE_NEW, "2026-07-21T00:00:00+00:00", live=True, digest="sha256:BBB")]
+    images = [_reg_image("svc", "sha256:BBB", ["latest"], "2026-07-21T00:00:00+00:00")]
+    svc = _running_svc_with(monkeypatch, deploys=deploys, images=images)
+    resp = svc.running()
+
+    v = resp.groups[0].versions[0]
+    assert v.version == ":latest"
+    assert DRIFT_FLOATING in v.drift
+    assert resp.stats.floating == 1
+
+
+def test_running_flags_unresolved_digest_and_hand_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
+    unresolved = _deploy_fact(
+        "svc-a", "r1", CHANGE_NEW, "2026-07-21T00:00:00+00:00", live=True, digest="sha256:NOTFOUND"
+    )
+    hand = DeployFact(
+        cloud="gcp",
+        workload="svc-b",
+        revision="r2",
+        digest="sha256:CCC",
+        built_from="",
+        resolvable=False,
+        change_type=CHANGE_NEW,
+        at="2026-07-21T00:00:00+00:00",
+        live=True,
+        deployer="human@example.com",
+    )
+    images = [_reg_image("svc-b", "sha256:CCC", ["deadbee"], "2026-07-21T00:00:00+00:00")]
+    svc = _running_svc_with(monkeypatch, deploys=[unresolved, hand], images=images)
+    resp = svc.running()
+
+    by_service = {g.service: g.versions[0] for g in resp.groups}
+    assert DRIFT_UNKNOWN in by_service["svc-a"].drift  # digest not in the current AR inventory
+    assert DRIFT_HAND in by_service["svc-b"].drift  # deployed by a human, not Cloud Build
+    assert resp.stats.unknown == 1
+    assert resp.stats.hand == 1
+
+
+def test_running_only_includes_currently_live_revisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    deploys = [
+        _deploy_fact("svc", "r1", CHANGE_NEW, "2026-07-20T00:00:00+00:00", live=False, digest="sha256:AAA"),
+        _deploy_fact("svc", "r2", CHANGE_NEW, "2026-07-21T00:00:00+00:00", live=True, digest="sha256:BBB"),
+    ]
+    svc = _running_svc_with(monkeypatch, deploys=deploys)
+    resp = svc.running()
+    assert len(resp.groups) == 1
+    assert resp.groups[0].versions[0].digest == "sha256:BBB"
+
+
+def test_pick_sha_tag() -> None:
+    assert service_mod._pick_sha_tag(["0.10.0", "a557471"]) == "a557471"
+    assert service_mod._pick_sha_tag(["latest"]) == ""
+    assert service_mod._pick_sha_tag([]) == ""
+
+
+def test_repo_from_ar_uri() -> None:
+    uri = "asia-northeast1-docker.pkg.dev/proj/unified-trading-system/deployment-api@sha256:abc"
+    assert providers_mod._repo_from_ar_uri(uri) == "deployment-api"
+    assert providers_mod._repo_from_ar_uri("asia-northeast1-docker.pkg.dev/proj/other-repo/x@sha256:abc") == ""
+
+
+# ── health view (derived purely from the already-fetched facts — no new cloud calls) ───────────────
+def test_health_always_reports_aws_deferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = _running_svc_with(monkeypatch, deploys=[])
+    resp = svc.health()
+    aws = next(c for c in resp.conditions if "AWS" in c.condition)
+    assert aws.severity == SEV_DEFERRED
+    assert resp.stats.deferred >= 1
+
+
+def test_health_flags_live_failed_deploy_as_high(monkeypatch: pytest.MonkeyPatch) -> None:
+    deploys = [_deploy_fact("svc", "r1", CHANGE_FAILED, "2026-07-21T00:00:00+00:00", live=True)]
+    svc = _running_svc_with(monkeypatch, deploys=deploys)
+    resp = svc.health()
+    high = [c for c in resp.conditions if c.severity == SEV_HIGH]
+    assert len(high) == 1
+    assert "never went ready" in high[0].condition
+    assert resp.stats.high == 1
+
+
+def test_health_flags_recent_failures_dup_builds_and_registry_sprawl(monkeypatch: pytest.MonkeyPatch) -> None:
+    builds = [
+        _fact("svc-a", "111", "FAILURE", "2026-07-22T00:00:00+00:00"),
+        _fact("svc-b", "222", "SUCCESS", "2026-07-22T00:00:00+00:00"),
+        _fact("svc-b", "222", "SUCCESS", "2026-07-22T01:00:00+00:00"),  # dup of the row above
+    ]
+    images = [_reg_image("sprawl-svc", f"sha256:{i:04d}", [f"tag{i}"], "2026-07-20T00:00:00+00:00") for i in range(600)]
+    svc = _running_svc_with(monkeypatch, deploys=[], images=images, builds=builds)
+    resp = svc.health()
+
+    fail_cond = next(c for c in resp.conditions if "failed in the last 7 days" in c.condition)
+    assert fail_cond.severity == SEV_MED
+    assert fail_cond.count == "1"
+
+    dup_cond = next(c for c in resp.conditions if "built more than once" in c.condition)
+    assert dup_cond.severity == SEV_LOW
+    assert dup_cond.count == "1"
+
+    sprawl_cond = next(c for c in resp.conditions if "lifecycle/GC policy" in c.condition)
+    assert sprawl_cond.severity == SEV_LOW
+    assert sprawl_cond.count == "600"
+
+
+def test_health_stats_real_defects_excludes_deferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    deploys = [_deploy_fact("svc", "r1", CHANGE_FAILED, "2026-07-21T00:00:00+00:00", live=True)]
+    svc = _running_svc_with(monkeypatch, deploys=deploys)
+    resp = svc.health()
+    assert resp.stats.real_defects == resp.stats.high + resp.stats.med + resp.stats.low
+    assert resp.stats.deferred >= 1

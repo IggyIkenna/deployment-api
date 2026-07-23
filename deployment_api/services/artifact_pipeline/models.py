@@ -131,6 +131,25 @@ class ImageFact:  # CORRECT-LOCAL: internal registry-inventory row, not a cross-
     note: str = ""  # honest caveat for a roll-up / sampled row
 
 
+@dataclass
+class RegistryImageFact:  # CORRECT-LOCAL: internal per-image registry record, not a cross-service contract
+    """One concrete pushed image (one digest) in a registry.
+
+    The atom two different views are built from: `images()` aggregates this list per repo into the
+    `ImageFact` roll-up rows above; `running()`'s runtime join resolves a live workload's digest
+    against this list to recover the tags (and, through a matching `:<sha>` tag, the `BuildFact` that
+    produced it) — the digest→tag→SHA→build chain the plan calls "the runtime join".
+    """
+
+    cloud: str
+    registry: str
+    repo: str
+    digest: str  # "sha256:…" ("" honestly unknown)
+    tags: list[str] = field(default_factory=list)
+    pushed_at: str = ""  # ISO-8601 UTC ("" if unknown)
+    size_bytes: int | None = None
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 # API contract models — what the UI receives. Every response echoes `generated_at`; the two windowed
 # views (deploys, builds) also echo the resolved `start_date`/`end_date` (see the cost page: `days`
