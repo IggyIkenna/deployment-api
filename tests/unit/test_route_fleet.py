@@ -418,6 +418,22 @@ def test_orphan_inventory_grace_widens_reapable() -> None:
     assert inv.reapable_total == 2  # both ephemeral, neither keep-labelled
 
 
+def test_orphan_inventory_cost_incurred_prorates_by_stopped_age() -> None:
+    """cost_incurred_usd = monthly_disk_usd prorated by elapsed stopped-time, NOT the full month."""
+    from deployment_api.routes._fleet_inventory import build_orphan_inventory
+
+    inv = build_orphan_inventory(_orphan_details(), _disks(), _ORPHAN_NOW, 24.0)
+    by_name = {o.name: o for o in inv.orphans}
+    # 120h @ $2.6/mo, 2h @ $2.6/mo, 252h @ $11.05/mo, 252h @ $2.6/mo (730.56h/mo avg).
+    assert by_name["cefi-binance-spot-20260601"].cost_incurred_usd == 0.43
+    assert by_name["tradfi-databento-recent"].cost_incurred_usd == 0.01
+    assert by_name["strategy-live-eth-20260601"].cost_incurred_usd == 3.81
+    assert by_name["cefi-keepme-20260601"].cost_incurred_usd == 0.9
+    # Rollups sum the per-entry figures — idle = all 4, reapable = just the one "reap" verdict.
+    assert inv.total_idle_cost_incurred_usd == 5.15
+    assert inv.total_reapable_cost_incurred_usd == 0.43
+
+
 def test_orphan_inventory_empty_is_honest_zero() -> None:
     from deployment_api.routes._fleet_inventory import build_orphan_inventory
 
@@ -425,6 +441,8 @@ def test_orphan_inventory_empty_is_honest_zero() -> None:
     assert inv.stopped_total == 0
     assert inv.reapable_total == 0
     assert inv.monthly_idle_usd == 0.0
+    assert inv.total_idle_cost_incurred_usd == 0.0
+    assert inv.total_reapable_cost_incurred_usd == 0.0
     assert inv.orphans == []
 
 

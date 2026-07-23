@@ -527,6 +527,31 @@ class CostObservabilityService:
             # as malformed JSON; a null/absent key then falls back to "(unlabeled)".
             expr = f"COALESCE(NULLIF(json_extract_string(NULLIF(labels, ''), '$.{key}'), ''), '(unlabeled)')"
             rows_all = self._grouped(table, cwhere, cparams, cutoff, expr)
+        elif dimension == "waste":
+            # Idle static IPs / orphaned disks / idle elastic IPs — the SAME per-resource waste
+            # classification the "resource" dimension already flags (services.cost_observability.waste),
+            # filtered to just the flagged rows. The filter isn't SQL-expressible (orphaned-disk needs
+            # the live GCP unattached-disk cross-ref, not just a SKU substring match), so it runs in
+            # Python over the already-built resource rows rather than as a WHERE clause.
+            rows_all = [
+                r for r in self._by_resource(table, cwhere, cparams, cutoff, None, window_days=len(dates)) if r.is_idle
+            ]
+            # The pre-computed `totals` above cover ALL resource spend in this scope (waste + non-waste
+            # alike) — re-derive the true totals for the waste-only scope from the filtered rows
+            # themselves so the header total, "Other" residual, and share_pct all stay internally
+            # consistent (mirrors why the "bucket" dimension narrows `scope_where` instead — that
+            # narrowing isn't available here since the predicate can't run in SQL).
+            totals = (
+                round(sum(r.cost for r in rows_all), 2),
+                round(sum(r.gross for r in rows_all), 2),
+                round(sum(r.credit for r in rows_all), 2),
+            )
+            native_totals = (
+                round(sum(r.cost_native for r in rows_all), 2),
+                round(sum(r.gross_native for r in rows_all), 2),
+                round(sum(r.credit_native for r in rows_all), 2),
+            )
+            total = totals[0]
         else:  # service (default)
             rows_all = self._grouped(table, cwhere, cparams, cutoff, "service")
 

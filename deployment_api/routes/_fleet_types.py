@@ -85,6 +85,9 @@ class OrphanEntry(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     boot_disk_gb: int | None
     boot_disk_type: str | None
     monthly_disk_usd: float  # ESTIMATE — asia-northeast1 list rate x GB
+    # ESTIMATE — monthly_disk_usd prorated by stopped_age_hours (list-rate x actual idle time so
+    # far, not a real billing query). 0.0 when stopped_age_hours is unknown.
+    cost_incurred_usd: float
     reapable: bool
     verdict: OrphanVerdict
 
@@ -96,8 +99,10 @@ class OrphanInventoryResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui respon
     grace_hours: float
     stopped_total: int
     reapable_total: int
-    monthly_idle_usd: float  # all stopped boot disks (ESTIMATE)
-    monthly_reapable_usd: float  # only the reapable subset (ESTIMATE)
+    monthly_idle_usd: float  # all stopped boot disks, CURRENT RATE (ESTIMATE)
+    monthly_reapable_usd: float  # only the reapable subset, CURRENT RATE (ESTIMATE)
+    total_idle_cost_incurred_usd: float  # all stopped boot disks, ACCRUED SO FAR (ESTIMATE)
+    total_reapable_cost_incurred_usd: float  # only the reapable subset, ACCRUED SO FAR (ESTIMATE)
     orphans: list[OrphanEntry] = Field(default_factory=list)
 
 
