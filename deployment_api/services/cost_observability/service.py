@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 
 import pyarrow as pa
@@ -44,11 +45,21 @@ from deployment_api.services.cost_observability.snapshot import (
     records_to_table,
 )
 from deployment_api.services.cost_observability.waste import (
+    DEFAULT_STALE_BACKUP_DAYS,
     WASTE_IDLE_ELASTIC_IP,
     WASTE_IDLE_STATIC_IP,
     WASTE_ORPHANED_DISK,
+    WASTE_ORPHANED_IMAGE,
+    WASTE_ORPHANED_MACHINE_IMAGE,
+    WASTE_ORPHANED_SNAPSHOT,
+    WASTE_STOPPED_VM_DISK,
 )
-from deployment_api.vm_utils import list_unattached_disk_names
+from deployment_api.vm_utils import (
+    list_orphaned_image_names,
+    list_stale_machine_image_names,
+    list_stale_snapshot_names,
+    list_unattached_disk_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -528,14 +539,19 @@ class CostObservabilityService:
             expr = f"COALESCE(NULLIF(json_extract_string(NULLIF(labels, ''), '$.{key}'), ''), '(unlabeled)')"
             rows_all = self._grouped(table, cwhere, cparams, cutoff, expr)
         elif dimension == "waste":
-            # Idle static IPs / orphaned disks / idle elastic IPs — the SAME per-resource waste
-            # classification the "resource" dimension already flags (services.cost_observability.waste),
-            # filtered to just the flagged rows. The filter isn't SQL-expressible (orphaned-disk needs
-            # the live GCP unattached-disk cross-ref, not just a SKU substring match), so it runs in
-            # Python over the already-built resource rows rather than as a WHERE clause.
+            # Idle static IPs / orphaned disks / orphaned images+machine-images+snapshots / idle
+            # elastic IPs — the SAME per-resource waste classification the "resource" dimension
+            # already flags (services.cost_observability.waste), filtered to just the flagged rows.
+            # The filter isn't SQL-expressible (each needs a live GCP cross-ref, not just a SKU
+            # substring match), so it runs in Python over the already-built resource rows rather
+            # than as a WHERE clause. `stopped_vm_disk` rows are a DIFFERENT shape (a disk's
+            # post-compute-stop cost sub-window, not a resource's whole-window cost) computed
+            # separately, then merged in and re-sorted.
             rows_all = [
                 r for r in self._by_resource(table, cwhere, cparams, cutoff, None, window_days=len(dates)) if r.is_idle
             ]
+            rows_all.extend(self._stopped_vm_disk_waste_rows(table, cwhere, cparams))
+            rows_all.sort(key=lambda r: r.cost, reverse=True)
             # The pre-computed `totals` above cover ALL resource spend in this scope (waste + non-waste
             # alike) — re-derive the true totals for the waste-only scope from the filtered rows
             # themselves so the header total, "Other" residual, and share_pct all stay internally
@@ -698,7 +714,7 @@ class CostObservabilityService:
         window_days: int | None = None,
     ) -> list[BreakdownRow]:
         # Heavy money grouping in DuckDB (168K rows → ~13K groups). agg_cols occupy t[2:11]; then
-        # service(11), kind(12), machine(13-15), waste flags(16-18).
+        # service(11), kind(12), machine(13-15), waste flags(16-21).
         kind_filter = " AND resource_kind = 'bucket'" if kind == KIND_BUCKET else ""
         base = self._agg(
             table,
@@ -710,14 +726,19 @@ class CostObservabilityService:
             "arg_max(memory_gb, day) FILTER (WHERE machine_type <> '') AS mmem, "
             "BOOL_OR(sku LIKE '%Static Ip Charge%') AS w_ip, "
             "BOOL_OR(sku LIKE '%PD Capacity%') AS w_pd, "
-            "BOOL_OR(sku LIKE '%ElasticIP:IdleAddress%') AS w_eip "
+            "BOOL_OR(sku LIKE '%ElasticIP:IdleAddress%') AS w_eip, "
+            "BOOL_OR(sku LIKE '%Storage Machine Image%') AS w_mimg, "
+            "BOOL_OR(sku LIKE '%Storage Image%' AND sku NOT LIKE '%Storage Machine Image%') AS w_img, "
+            "BOOL_OR(sku LIKE '%Storage PD Snapshot%') AS w_snap "
             f"FROM cost_records WHERE {cwhere} AND resource_id <> ''{kind_filter} "
             "GROUP BY cloud, resource_id ORDER BY net DESC, resource_id",
             list(cparams),
         )
         # Storage detail (bucket-kind rows only) — a small subset (~350 buckets x their SKUs), so
         # reuse the tested Python component/class classifiers rather than re-deriving them in SQL.
-        unattached: frozenset[str] = self._unattached_disk_names() if kind is None else frozenset()
+        unattached, orphaned_images, stale_machine_images, stale_snapshots = (
+            self._waste_cross_refs() if kind is None else (frozenset(), frozenset(), frozenset(), frozenset())
+        )
         comp_by_res: dict[tuple[str, str], dict[str, float]] = {}
         class_by_res: dict[tuple[str, str], dict[str, float]] = {}
         for c, rid, sku, uunit, uamt, net in self._agg(
@@ -748,6 +769,12 @@ class CostObservabilityService:
                     waste = WASTE_IDLE_STATIC_IP
                 elif c == CLOUD_GCP and bool(t[17]) and rid in unattached:
                     waste = WASTE_ORPHANED_DISK
+                elif c == CLOUD_GCP and bool(t[19]) and rid in stale_machine_images:
+                    waste = WASTE_ORPHANED_MACHINE_IMAGE
+                elif c == CLOUD_GCP and bool(t[20]) and rid in orphaned_images:
+                    waste = WASTE_ORPHANED_IMAGE
+                elif c == CLOUD_GCP and bool(t[21]) and rid in stale_snapshots:
+                    waste = WASTE_ORPHANED_SNAPSHOT
                 elif c == CLOUD_AWS and bool(t[18]):
                     waste = WASTE_IDLE_ELASTIC_IP
             row = self._agg_row(
@@ -799,6 +826,121 @@ class CostObservabilityService:
         if not project_id:
             return frozenset()
         return frozenset(list_unattached_disk_names(project_id))
+
+    def _orphaned_image_names(self) -> frozenset[str]:
+        """Custom-image names NOT referenced as `source_image` by any live disk — see waste.py."""
+        project_id = self._cfg.gcp_project_id
+        if not project_id:
+            return frozenset()
+        return frozenset(list_orphaned_image_names(project_id))
+
+    def _stale_machine_image_names(self) -> frozenset[str]:
+        project_id = self._cfg.gcp_project_id
+        if not project_id:
+            return frozenset()
+        return frozenset(list_stale_machine_image_names(project_id, DEFAULT_STALE_BACKUP_DAYS, datetime.now(UTC)))
+
+    def _stale_snapshot_names(self) -> frozenset[str]:
+        project_id = self._cfg.gcp_project_id
+        if not project_id:
+            return frozenset()
+        return frozenset(list_stale_snapshot_names(project_id, DEFAULT_STALE_BACKUP_DAYS, datetime.now(UTC)))
+
+    def _waste_cross_refs(self) -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
+        """Run the 4 independent live-GCP waste cross-refs CONCURRENTLY (mirrors the
+        `ThreadPoolExecutor` pattern in `routes._cloud_run_executions`) — sequential, these measured
+        ~6s combined live (unattached disks/orphaned images/stale machine images/stale snapshots each
+        their own Compute API round-trip); none depends on another's result.
+        """
+        fns: tuple[Callable[[], frozenset[str]], ...] = (
+            self._unattached_disk_names,
+            self._orphaned_image_names,
+            self._stale_machine_image_names,
+            self._stale_snapshot_names,
+        )
+        with ThreadPoolExecutor(max_workers=len(fns), thread_name_prefix="waste-xref") as pool:
+            unattached, orphaned_images, stale_machine_images, stale_snapshots = pool.map(lambda f: f(), fns)
+        return unattached, orphaned_images, stale_machine_images, stale_snapshots
+
+    def _stopped_vm_disk_waste_rows(
+        self, table: pa.Table, cwhere: str, cparams: Sequence[object]
+    ) -> list[BreakdownRow]:
+        """Disk (`PD Capacity`) spend billed AFTER a VM's own compute usage stopped appearing.
+
+        Compute-usage rows key off `projects/<num>/instances/<name>`; the SAME VM's disk rows key
+        off the bare disk name (`<name>` for the boot disk) — two different `resource_id`s for one
+        logical VM (verified live: `E2 Instance Core running in Japan` vs `Storage PD Capacity in
+        Japan` for `cefi-binance-futures-2020-heavy-...`). Stripping the `projects/.../instances/`
+        prefix joins them under one `vm_key`.
+
+        For each `vm_key` with BOTH a compute day and a LATER disk day inside the query window: the
+        row's `cost` is the disk cost strictly after the last compute day — i.e. only the idle
+        portion, not the resource's whole-window cost (unlike the SKU-classified waste kinds in
+        `_by_resource`, where the whole flagged row IS the waste). This is real billed $, not a
+        list-rate estimate, and needs no live GCP call — a VM already reaped shows up exactly the
+        same way a still-stopped one does, since both are pure billing history.
+
+        A VM whose compute usage started before the query window (so `MIN(day)` of the window
+        already finds it mid-run, with no compute row at all if it fully finished earlier) can't be
+        distinguished here from a disk with no VM component — both show zero compute days — so this
+        under-counts left-truncated cases rather than risk a false positive. Widen `days` to recover
+        them.
+
+        ONE query, not one-per-`vm_key`: `aggregate_arrow` opens a fresh in-memory DuckDB connection
+        and re-registers the whole (~168K-row) window table on EVERY call (thread-safety, see
+        `snapshot.aggregate_arrow`) — a per-`vm_key` follow-up loop paid that setup cost dozens of
+        times, measured live at ~12s for a 30-day window (vs. ~1s for this single-query form). The
+        `vm_keys` CTE finds the compute/disk day pair; `disk_rows` re-derives the same `vm_key` per
+        disk row (SQL has no CTE-result reuse across the join otherwise) and joins on
+        `day > last_compute_day` to sum only the post-compute-stop portion.
+        """
+        rows = self._agg(
+            table,
+            f"WITH vm_keys AS ("  # nosec B608 — cwhere is code-internal ('cloud = ?' or 'TRUE'); user params bound
+            "  SELECT COALESCE(NULLIF(regexp_extract(resource_id, 'instances/(.*)$', 1), ''), resource_id) AS vm_key, "
+            "    MAX(day) FILTER (WHERE sku LIKE '%Instance Core%' OR sku LIKE '%Instance Ram%') AS last_compute_day, "
+            "    MAX(day) FILTER (WHERE sku LIKE '%PD Capacity%') AS last_disk_day "
+            f"  FROM cost_records WHERE {cwhere} AND cloud = 'gcp' AND resource_id <> '' "
+            "  GROUP BY vm_key "
+            "  HAVING last_compute_day IS NOT NULL AND last_disk_day IS NOT NULL AND last_disk_day > last_compute_day"
+            "), disk_rows AS ("
+            "  SELECT COALESCE(NULLIF(regexp_extract(resource_id, 'instances/(.*)$', 1), ''), resource_id) AS vm_key, "
+            "    day, cost, credit, cost_native, credit_native, currency "
+            f"  FROM cost_records WHERE {cwhere} AND cloud = 'gcp' AND sku LIKE '%PD Capacity%'"
+            ") "
+            "SELECT vk.vm_key, vk.last_compute_day, vk.last_disk_day, "
+            "  SUM(dr.cost + dr.credit), SUM(dr.cost), SUM(dr.credit), "
+            "  SUM(dr.cost_native + dr.credit_native), SUM(dr.cost_native), SUM(dr.credit_native), "
+            "  ANY_VALUE(dr.currency) "
+            "FROM vm_keys vk JOIN disk_rows dr ON dr.vm_key = vk.vm_key AND dr.day > vk.last_compute_day "
+            "GROUP BY vk.vm_key, vk.last_compute_day, vk.last_disk_day",
+            [*cparams, *cparams],
+        )
+        out: list[BreakdownRow] = []
+        for vm_key, last_compute_day, last_disk_day, net, gross, credit, net_n, gross_n, credit_n, currency in rows:
+            cost = round(_f(net), 2)
+            if abs(cost) < 0.01:
+                continue
+            vm_key_s, compute_day_s = _s(vm_key), _s(last_compute_day)
+            out.append(
+                BreakdownRow(
+                    label=f"{vm_key_s} (idle since {compute_day_s})",
+                    cloud=CLOUD_GCP,
+                    cost=cost,
+                    gross=round(_f(gross), 2),
+                    credit=round(_f(credit), 2),
+                    currency=_s(currency) or "USD",
+                    cost_native=round(_f(net_n), 2),
+                    gross_native=round(_f(gross_n), 2),
+                    credit_native=round(_f(credit_n), 2),
+                    detail=f"disk billed {compute_day_s} → {_s(last_disk_day)} after compute usage stopped",
+                    resource_kind=KIND_VM,
+                    is_idle=True,
+                    waste_kind=WASTE_STOPPED_VM_DISK,
+                )
+            )
+        out.sort(key=lambda r: r.cost, reverse=True)
+        return out
 
     def _by_day(
         self, table: pa.Table, cwhere: str, cparams: Sequence[object], cutoff: str, dates: list[str]

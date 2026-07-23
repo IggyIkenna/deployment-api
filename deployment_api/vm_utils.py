@@ -8,6 +8,7 @@ adapted for deployment-api's needs.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import cast
 
 from google.cloud import compute_v1
@@ -169,6 +170,113 @@ def list_unattached_disk_names(project_id: str) -> set[str]:
         return unattached
     except Exception as exc:
         logger.warning("list_unattached_disk_names(%s) failed: %s", project_id, exc)
+        return set()
+
+
+def _list_disk_source_image_names(project_id: str) -> set[str]:
+    """Image names currently backing at least one live disk (internal — see `list_orphaned_image_names`).
+
+    A ``Disk.source_image`` is the full image self-link (``.../global/images/<name>``); only the
+    trailing ``<name>`` segment is kept so it matches ``Image.name`` directly.
+    """
+    client = compute_v1.DisksClient()
+    request = compute_v1.AggregatedListDisksRequest(project=project_id)
+    referenced: set[str] = set()
+    for _zone_url, scoped_list in client.aggregated_list(request=request, timeout=_RPC_TIMEOUT_SEC):
+        disks = getattr(scoped_list, "disks", None)
+        if not disks:
+            continue
+        for disk in disks:
+            source_image = str(getattr(cast(object, disk), "source_image", "") or "")
+            if source_image:
+                referenced.add(source_image.rsplit("/", 1)[-1])
+    return referenced
+
+
+def list_orphaned_image_names(project_id: str) -> set[str]:
+    """Return custom-image names NOT currently backing any live disk.
+
+    Every image in the project, minus every image referenced (live) as some disk's `source_image` —
+    the remainder traces back to nothing currently provisioned from it, while still billing `Storage
+    Image` every month. On failure returns an empty set — orphan detection degrades to "flag
+    nothing", never a false-positive claim (mirrors ``list_unattached_disk_names``).
+    """
+    try:
+        images_client = compute_v1.ImagesClient()
+        request = compute_v1.ListImagesRequest(project=project_id)
+        all_images = {
+            str(getattr(cast(object, img), "name", ""))
+            for img in images_client.list(request=request, timeout=_RPC_TIMEOUT_SEC)
+        }
+        orphaned = {name for name in all_images if name} - _list_disk_source_image_names(project_id)
+        logger.info(
+            "list_orphaned_image_names(%s): %d orphaned of %d images", project_id, len(orphaned), len(all_images)
+        )
+        return orphaned
+    except Exception as exc:
+        logger.warning("list_orphaned_image_names(%s) failed: %s", project_id, exc)
+        return set()
+
+
+def _age_days(creation_ts: str, now: datetime) -> float | None:
+    """Days since ``creation_ts`` (a GCP RFC3339 ``creationTimestamp``), or None if unparseable."""
+    if not creation_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(creation_ts)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return max(0.0, (now - ts).total_seconds() / 86400.0)
+
+
+def list_stale_machine_image_names(project_id: str, min_age_days: float, now: datetime) -> set[str]:
+    """Return Machine Image names older than ``min_age_days``.
+
+    Machine Images (full-VM backup artifacts) carry no "attached"/"in use" signal the way a disk or
+    address does — restoring one doesn't leave a live back-reference. Age is the only available
+    staleness proxy, so this is a heuristic, not a definitive orphan claim (unlike
+    ``list_unattached_disk_names``'s live cross-ref). On failure returns an empty set.
+    """
+    try:
+        client = compute_v1.MachineImagesClient()
+        request = compute_v1.ListMachineImagesRequest(project=project_id)
+        stale: set[str] = set()
+        for mi in client.list(request=request, timeout=_RPC_TIMEOUT_SEC):
+            mi_typed = cast(object, mi)
+            name = str(getattr(mi_typed, "name", ""))
+            age = _age_days(str(getattr(mi_typed, "creation_timestamp", "") or ""), now)
+            if name and age is not None and age >= min_age_days:
+                stale.add(name)
+        logger.info("list_stale_machine_image_names(%s): %d stale (>= %s d)", project_id, len(stale), min_age_days)
+        return stale
+    except Exception as exc:
+        logger.warning("list_stale_machine_image_names(%s) failed: %s", project_id, exc)
+        return set()
+
+
+def list_stale_snapshot_names(project_id: str, min_age_days: float, now: datetime) -> set[str]:
+    """Return Disk Snapshot names older than ``min_age_days``.
+
+    A snapshot is, by design, never "attached" to anything — GCP tracks no back-reference at all —
+    so age is the only available staleness proxy (same heuristic caveat as
+    ``list_stale_machine_image_names``). On failure returns an empty set.
+    """
+    try:
+        client = compute_v1.SnapshotsClient()
+        request = compute_v1.ListSnapshotsRequest(project=project_id)
+        stale: set[str] = set()
+        for snap in client.list(request=request, timeout=_RPC_TIMEOUT_SEC):
+            snap_typed = cast(object, snap)
+            name = str(getattr(snap_typed, "name", ""))
+            age = _age_days(str(getattr(snap_typed, "creation_timestamp", "") or ""), now)
+            if name and age is not None and age >= min_age_days:
+                stale.add(name)
+        logger.info("list_stale_snapshot_names(%s): %d stale (>= %s d)", project_id, len(stale), min_age_days)
+        return stale
+    except Exception as exc:
+        logger.warning("list_stale_snapshot_names(%s) failed: %s", project_id, exc)
         return set()
 
 
