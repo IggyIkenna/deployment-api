@@ -1504,6 +1504,266 @@ def test_breakdown_bucket_dimension_skips_fleet_lookup(monkeypatch: pytest.Monke
     assert calls["n"] == 0  # bucket dimension never needs the unattached-disk cross-ref
 
 
+# --- new waste kinds: images / machine images / snapshots (pure classifiers) --
+def test_is_gcp_image_storage_sku_matches_regional_variants() -> None:
+    assert waste.is_gcp_image_storage_sku("Storage Image in Japan") is True
+    assert waste.is_gcp_image_storage_sku("Storage PD Capacity in Japan") is False
+
+
+def test_is_gcp_machine_image_storage_sku_is_disjoint_from_plain_image() -> None:
+    assert waste.is_gcp_machine_image_storage_sku("Storage Machine Image in Japan") is True
+    assert waste.is_gcp_machine_image_storage_sku("Storage Image in Japan") is False
+
+
+def test_is_gcp_snapshot_storage_sku_matches_regional_variants() -> None:
+    assert waste.is_gcp_snapshot_storage_sku("Storage PD Snapshot in Asia") is True
+    assert waste.is_gcp_snapshot_storage_sku("Storage Image in Japan") is False
+
+
+def test_is_gcp_compute_usage_sku_matches_core_and_ram_any_family() -> None:
+    assert waste.is_gcp_compute_usage_sku("E2 Instance Core running in Japan") is True
+    assert waste.is_gcp_compute_usage_sku("N2 Instance Ram running in Japan") is True
+    assert waste.is_gcp_compute_usage_sku("Storage PD Capacity in Japan") is False
+
+
+def test_classify_waste_orphaned_image_needs_cross_ref() -> None:
+    assert (
+        waste.classify_waste(
+            cloud="gcp",
+            sku="Storage Image in Japan",
+            resource_id="stale-image",
+            unattached_disk_names=frozenset(),
+            orphaned_image_names=frozenset({"stale-image"}),
+        )
+        == waste.WASTE_ORPHANED_IMAGE
+    )
+    # referenced by a live disk → not flagged, even though the SKU matches
+    assert (
+        waste.classify_waste(
+            cloud="gcp",
+            sku="Storage Image in Japan",
+            resource_id="in-use-image",
+            unattached_disk_names=frozenset(),
+            orphaned_image_names=frozenset(),
+        )
+        == ""
+    )
+
+
+def test_classify_waste_orphaned_machine_image_and_snapshot() -> None:
+    assert (
+        waste.classify_waste(
+            cloud="gcp",
+            sku="Storage Machine Image in Japan",
+            resource_id="old-machine-image",
+            unattached_disk_names=frozenset(),
+            stale_machine_image_names=frozenset({"old-machine-image"}),
+        )
+        == waste.WASTE_ORPHANED_MACHINE_IMAGE
+    )
+    assert (
+        waste.classify_waste(
+            cloud="gcp",
+            sku="Storage PD Snapshot in Asia",
+            resource_id="old-snapshot",
+            unattached_disk_names=frozenset(),
+            stale_snapshot_names=frozenset({"old-snapshot"}),
+        )
+        == waste.WASTE_ORPHANED_SNAPSHOT
+    )
+
+
+# --- new waste kinds: images / machine images / snapshots (service-level) ----
+def _fake_gcp_backup_artifacts(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    return [
+        CostRecord(
+            cloud="gcp",
+            day=start.isoformat(),
+            service="Compute Engine",
+            resource_id="stale-image",
+            resource_kind="other",
+            region="asia-northeast1",
+            cost=2.22,
+            sku="Storage Image in Japan",
+        ),
+        CostRecord(
+            cloud="gcp",
+            day=start.isoformat(),
+            service="Compute Engine",
+            resource_id="old-machine-image",
+            resource_kind="other",
+            region="asia-northeast1",
+            cost=3.33,
+            sku="Storage Machine Image in Japan",
+        ),
+        CostRecord(
+            cloud="gcp",
+            day=start.isoformat(),
+            service="Compute Engine",
+            resource_id="old-snapshot",
+            resource_kind="other",
+            region="asia-northeast1",
+            cost=1.11,
+            sku="Storage PD Snapshot in Asia",
+        ),
+    ]
+
+
+def test_breakdown_waste_flags_orphaned_image_machine_image_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_backup_artifacts)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_orphaned_image_names", lambda _project_id: {"stale-image"})
+    monkeypatch.setattr(
+        svc, "list_stale_machine_image_names", lambda _project_id, _min_age_days, _now: {"old-machine-image"}
+    )
+    monkeypatch.setattr(svc, "list_stale_snapshot_names", lambda _project_id, _min_age_days, _now: {"old-snapshot"})
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    rows = {row.label: row for row in s.breakdown("waste", "gcp", days=1).rows}
+    assert rows["stale-image"].waste_kind == waste.WASTE_ORPHANED_IMAGE
+    assert rows["old-machine-image"].waste_kind == waste.WASTE_ORPHANED_MACHINE_IMAGE
+    assert rows["old-snapshot"].waste_kind == waste.WASTE_ORPHANED_SNAPSHOT
+
+
+def test_breakdown_resource_does_not_flag_backup_artifacts_when_not_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_backup_artifacts)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_orphaned_image_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_stale_machine_image_names", lambda _project_id, _min_age_days, _now: set())
+    monkeypatch.setattr(svc, "list_stale_snapshot_names", lambda _project_id, _min_age_days, _now: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    rows = {row.label: row for row in s.breakdown("resource", "gcp", days=1).rows}
+    assert rows["stale-image"].is_idle is False
+    assert rows["old-machine-image"].is_idle is False
+    assert rows["old-snapshot"].is_idle is False
+
+
+# --- new waste kind: stopped_vm_disk (billing-history reconstruction) --------
+def _fake_gcp_stopped_vm(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+    """A VM whose compute usage runs day0 only; its boot disk keeps billing day0-day2.
+
+    Mirrors the real billing export's two DISTINCT resource_ids for one logical VM: compute rows
+    key off ``projects/<num>/instances/<name>``, disk rows off the bare ``<name>`` — proving the
+    ``instances/`` prefix-strip join. Days 1-2's disk cost (post-compute) is the expected waste.
+    """
+    day0 = start
+    recs: list[CostRecord] = [
+        CostRecord(
+            cloud="gcp",
+            day=day0.isoformat(),
+            service="Compute Engine",
+            resource_id="projects/123/instances/my-backfill-vm",
+            resource_kind="vm",
+            region="asia-northeast1",
+            cost=8.0,
+            sku="E2 Instance Core running in Japan",
+        ),
+        CostRecord(
+            cloud="gcp",
+            day=day0.isoformat(),
+            service="Compute Engine",
+            resource_id="projects/123/instances/my-backfill-vm",
+            resource_kind="vm",
+            region="asia-northeast1",
+            cost=4.0,
+            sku="E2 Instance Ram running in Japan",
+        ),
+    ]
+    d = day0
+    while d < end:
+        recs.append(
+            CostRecord(
+                cloud="gcp",
+                day=d.isoformat(),
+                service="Compute Engine",
+                resource_id="my-backfill-vm",
+                resource_kind="other",
+                region="asia-northeast1",
+                cost=0.5,
+                sku="Storage PD Capacity in Japan",
+            )
+        )
+        d = date.fromordinal(d.toordinal() + 1)
+    return recs
+
+
+def test_breakdown_waste_stopped_vm_disk_only_counts_post_compute_days(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_stopped_vm)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_orphaned_image_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_stale_machine_image_names", lambda _project_id, _min_age_days, _now: set())
+    monkeypatch.setattr(svc, "list_stale_snapshot_names", lambda _project_id, _min_age_days, _now: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    # 3-day window: day0 (compute + disk), day1, day2 (disk only) — disk bills 0.5/day for 3 days
+    # (1.5 total) but ONLY day1+day2 (1.0) is waste — day0's disk cost paid for real compute work.
+    result = s.breakdown("waste", "gcp", days=3)
+    rows = [r for r in result.rows if r.waste_kind == waste.WASTE_STOPPED_VM_DISK]
+    assert len(rows) == 1
+    assert rows[0].cost == 1.0
+    assert "my-backfill-vm" in rows[0].label
+    assert rows[0].is_idle is True
+
+
+def test_breakdown_waste_stopped_vm_disk_absent_when_compute_still_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A VM whose disk NEVER outlives its own compute usage must not be flagged."""
+
+    def _fake_gcp_still_running(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
+        recs: list[CostRecord] = []
+        d = start
+        while d < end:
+            iso = d.isoformat()
+            recs.append(
+                CostRecord(
+                    cloud="gcp",
+                    day=iso,
+                    service="Compute Engine",
+                    resource_id="projects/123/instances/still-running-vm",
+                    resource_kind="vm",
+                    region="asia-northeast1",
+                    cost=8.0,
+                    sku="E2 Instance Core running in Japan",
+                )
+            )
+            recs.append(
+                CostRecord(
+                    cloud="gcp",
+                    day=iso,
+                    service="Compute Engine",
+                    resource_id="still-running-vm",
+                    resource_kind="other",
+                    region="asia-northeast1",
+                    cost=0.5,
+                    sku="Storage PD Capacity in Japan",
+                )
+            )
+            d = date.fromordinal(d.toordinal() + 1)
+        return recs
+
+    monkeypatch.setattr(svc, "gcp_facts", _fake_gcp_still_running)
+    monkeypatch.setattr(svc, "aws_facts", lambda *a, **k: [])
+    monkeypatch.setattr(svc, "github_facts", lambda start, end: [])
+    monkeypatch.setattr(svc, "list_unattached_disk_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_orphaned_image_names", lambda _project_id: set())
+    monkeypatch.setattr(svc, "list_stale_machine_image_names", lambda _project_id, _min_age_days, _now: set())
+    monkeypatch.setattr(svc, "list_stale_snapshot_names", lambda _project_id, _min_age_days, _now: set())
+    s = CostObservabilityService()
+    monkeypatch.setattr(type(s._cfg), "is_mock_mode", lambda _self: False)
+
+    result = s.breakdown("waste", "gcp", days=3)
+    assert all(r.waste_kind != waste.WASTE_STOPPED_VM_DISK for r in result.rows)
+
+
 def _fake_gcp_storage(_table: str, start: date, end: date, _cutoff: date) -> list[CostRecord]:
     """One bucket with a storage-volume SKU (Coldline) + an operations SKU (excluded — count unit)."""
     recs: list[CostRecord] = []

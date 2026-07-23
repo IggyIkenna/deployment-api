@@ -140,7 +140,9 @@ class BreakdownRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     # sum) — not a real group; the UI pins it to the bottom, excludes it from sort, and skips its bar.
     is_aggregate: bool = False
     is_idle: bool = False  # cost-waste flag (resource dimension only) — see services.cost_observability.waste
-    waste_kind: str = ""  # "" | idle_static_ip | orphaned_disk | idle_elastic_ip
+    # "" | idle_static_ip | orphaned_disk | idle_elastic_ip | stopped_vm_disk | orphaned_image |
+    # orphaned_machine_image | orphaned_snapshot — see services.cost_observability.waste
+    waste_kind: str = ""
     # Bucket-only (dimension=bucket rows): derived from the storage-volume SKUs' usage_amount,
     # never Cloud Monitoring/CloudWatch. None when the row isn't a bucket or carries no storage-
     # volume usage this window.
