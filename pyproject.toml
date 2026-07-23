@@ -94,6 +94,7 @@ max-complexity = 26
 # TID251 noqa is consumed by the ratchet's --isolated run (check_ruff_rule_ratchet.py) which
 # selects TID251 directly; regular ruff doesn't select TID251 → the directive appears unused.
 "deployment_api/routes/_ci_status_firestore_store.py" = ["RUF100"]
+"deployment_api/services/artifact_pipeline/providers.py" = ["RUF100"]
 "deployment_api/main.py" = ["E402"]
 "deployment_api/routes/service_status_fast_data.py" = ["E402"]
 "deployment_api/routes/deployment_state.py" = ["C901"]

@@ -33,6 +33,7 @@ from deployment_api.services.artifact_pipeline.models import (
     LANE_IMAGE,
     BuildFact,
     DeployFact,
+    RegistryImageFact,
 )
 
 logger = logging.getLogger(__name__)
@@ -371,4 +372,72 @@ def gcp_cloud_run_revisions(cfg: DeploymentApiConfig) -> list[DeployFact]:
         pager = client.list_revisions(request=request, timeout=_RPC_TIMEOUT_SECONDS)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         revisions = list(islice(pager, _CLOUD_RUN_REVISION_SCAN))  # pyright: ignore[reportUnknownArgumentType]
         facts.extend(_classify_service_revisions(svc.name, revisions, svc.revision))
+    return facts
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# GCP Artifact Registry → RegistryImageFact (the `images` view's source + the `running` view's
+# digest→tag→SHA join target)
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# The one canonical AR repository every service's Cloud Build push lands in (Codex fix 2026-07-23:
+# `dual-cloud-image-builds.md` says "unified-trading" — that name 404s; the real one is
+# "unified-trading-system", ~1.5 TB). One `list_docker_images` call over it returns every image for
+# every service — there is no need to enumerate a repo per service.
+_AR_REGISTRY = "unified-trading-system"
+
+# MEASURED 2026-07-23: the whole registry is 3365 images across 20 repos, ~4s cold with page_size
+# 1000 (dominated by market-tick-data-service's 1901). This cap is a runaway-safety net, not a real
+# trim — the registry would have to grow ~1.5x before it started truncating.
+_AR_IMAGE_SCAN = 5000
+
+
+def _repo_from_ar_uri(uri: str) -> str:
+    """The service/repo name segment of an AR image URI, or "" if it's not under `_AR_REGISTRY`.
+
+    URI shape: `{host}/{project}/{_AR_REGISTRY}/{repo}@sha256:{digest}`.
+    """
+    marker = f"/{_AR_REGISTRY}/"
+    if marker not in uri:
+        return ""
+    return uri.split(marker, 1)[1].split("@", 1)[0]
+
+
+def gcp_artifact_registry_images(cfg: DeploymentApiConfig, scan: int = _AR_IMAGE_SCAN) -> list[RegistryImageFact]:
+    """List every pushed image in the canonical AR registry as RegistryImageFacts.
+
+    One row per digest (an image can carry several tags — a version tag, a short-SHA tag, and
+    sometimes `:latest` all pointing at the same digest). The sanctioned deferred-import boundary
+    for Artifact Registry (mirrors `routes/builds.py`'s `_list_ar_tags_from_repo`, sync client here
+    since the rest of this module is sync).
+    """
+    from itertools import islice
+
+    from google.cloud import artifactregistry_v1  # noqa: TID251 — the sanctioned AR boundary, mirrors routes/builds.py
+
+    project = _project_id(cfg)
+    client = artifactregistry_v1.ArtifactRegistryClient()
+    parent = f"projects/{project}/locations/{_GCP_REGION}/repositories/{_AR_REGISTRY}"
+    request = artifactregistry_v1.ListDockerImagesRequest(parent=parent, page_size=1000)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # AR stubs incomplete
+    pager = client.list_docker_images(request=request, timeout=_RPC_TIMEOUT_SECONDS)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # AR stubs incomplete
+
+    facts: list[RegistryImageFact] = []
+    for img in islice(pager, scan):  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]  # AR stubs incomplete
+        uri = str(getattr(img, "uri", "") or "")
+        repo = _repo_from_ar_uri(uri)
+        if not repo:
+            continue  # a roll-up/other-repository image outside the canonical registry — skip, don't guess
+        digest = uri.rsplit("@", 1)[-1] if "@" in uri else ""
+        size = getattr(img, "image_size_bytes", None)
+        facts.append(
+            RegistryImageFact(
+                cloud="gcp",
+                registry=_AR_REGISTRY,
+                repo=repo,
+                digest=digest,
+                tags=[str(t) for t in _as_item_list(getattr(img, "tags", None))],
+                pushed_at=_iso_or_empty(getattr(img, "upload_time", None)),
+                size_bytes=int(size) if isinstance(size, (int, float)) and size else None,
+            )
+        )
     return facts

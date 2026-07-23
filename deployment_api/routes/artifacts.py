@@ -18,7 +18,14 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from deployment_api.rate_limiting import endpoint_rate_limit
-from deployment_api.services.artifact_pipeline import ArtifactPipelineService, BuildsResponse, DeploysResponse
+from deployment_api.services.artifact_pipeline import (
+    ArtifactPipelineService,
+    BuildsResponse,
+    DeploysResponse,
+    HealthResponse,
+    ImagesResponse,
+    RunningResponse,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -115,6 +122,52 @@ def get_artifact_deploys(
         return artifact_service.deploys(days, cloud, change, start_date=start, end_date=end, force=refresh)
     except Exception as exc:
         logger.exception("artifact deploys failed")
+        raise HTTPException(
+            status_code=502, detail={"code": "ARTIFACT_QUERY_FAILED", "message": "Artifact data unavailable"}
+        ) from exc
+
+
+@router.get("/artifacts/images", response_model=ImagesResponse)
+def get_artifact_images(
+    cloud: CloudFilter = Query("all", description="Filter to one cloud"),
+    refresh: bool = Query(False, description="Bypass the cache and re-query the registry APIs"),
+    _rl: None = Depends(endpoint_rate_limit(30)),
+) -> ImagesResponse:
+    """The Artifacts view: every registry repo, rolled up from its pushed images."""
+    try:
+        return artifact_service.images(cloud, force=refresh)
+    except Exception as exc:
+        logger.exception("artifact images failed")
+        raise HTTPException(
+            status_code=502, detail={"code": "ARTIFACT_QUERY_FAILED", "message": "Artifact data unavailable"}
+        ) from exc
+
+
+@router.get("/artifacts/running", response_model=RunningResponse)
+def get_artifact_running(
+    refresh: bool = Query(False, description="Bypass the cache and re-query the runtime + registry APIs"),
+    _rl: None = Depends(endpoint_rate_limit(30)),
+) -> RunningResponse:
+    """The headline view: every live workload, its runtime-joined version, and a drift verdict."""
+    try:
+        return artifact_service.running(force=refresh)
+    except Exception as exc:
+        logger.exception("artifact running failed")
+        raise HTTPException(
+            status_code=502, detail={"code": "ARTIFACT_QUERY_FAILED", "message": "Artifact data unavailable"}
+        ) from exc
+
+
+@router.get("/artifacts/health", response_model=HealthResponse)
+def get_artifact_health(
+    refresh: bool = Query(False, description="Bypass the cache and re-derive from fresh source data"),
+    _rl: None = Depends(endpoint_rate_limit(30)),
+) -> HealthResponse:
+    """Measured pipeline conditions, severity-ranked — derived from the other views' own facts."""
+    try:
+        return artifact_service.health(force=refresh)
+    except Exception as exc:
+        logger.exception("artifact health failed")
         raise HTTPException(
             status_code=502, detail={"code": "ARTIFACT_QUERY_FAILED", "message": "Artifact data unavailable"}
         ) from exc
