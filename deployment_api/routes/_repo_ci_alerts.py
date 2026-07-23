@@ -31,7 +31,10 @@ from unified_trading_library import (
     resolve_bucket_name,
 )
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
+
 logger = logging.getLogger(__name__)
+_cfg = DeploymentApiConfig()
 
 _CACHE_TTL_SECONDS = 60.0
 # deployment_alerts_ingestion_completeness_2026_07_20.md todo 8: 2 days / a silent 400-item cap
@@ -386,7 +389,14 @@ def _read_ledgers_sync(days: int) -> list[AlertEntryDict]:
     # alerting-service's own store — its own bucket, ~20 alert classes feeding
     # #uts-live-alerts/#data-pipeline-alerts (deployment_alerts_ingestion_completeness_2026_07_20.md
     # todo 3). A best-effort merge: a read failure here must not blank out the CI ledgers above.
-    entries.extend(_read_alerting_service_sync(days))
+    # Gated behind alerting_service_source_enabled — see
+    # alerts_endpoint_per_object_gcs_read_performance_2026_07_23.md: this plane's per-object
+    # sequential read is the one that OOMs/504s the container, so it can be switched off
+    # independently of the other (cheap) planes while the underlying pattern is unfixed.
+    if _cfg.alerting_service_source_enabled:
+        entries.extend(_read_alerting_service_sync(days))
+    else:
+        logger.info("[REPO-CI] alerting-service source plane disabled (ALERTING_SERVICE_SOURCE_ENABLED=false)")
     # KillSwitchBus arm/disarm parquet audit log — a cheap read-only projection of an existing
     # store (deployment_alerts_ingestion_completeness_2026_07_20.md todo 9). Best-effort merge, same
     # pattern as the alerting-service store above.
