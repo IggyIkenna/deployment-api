@@ -21,13 +21,18 @@ never guessed — the service turns that into an explicit drift flag, never a fa
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from typing import cast
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.artifact_pipeline.models import (
+    CHANGE_CONFIG,
+    CHANGE_FAILED,
+    CHANGE_NEW,
+    CHANGE_ROLLBACK,
     LANE_IMAGE,
     BuildFact,
+    DeployFact,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,25 @@ def safe[T](loader: Callable[[], list[T]], source: str) -> list[T]:
 def _project_id(cfg: DeploymentApiConfig) -> str:
     """Resolve the GCP project id (raises inside `safe`'s try if unset — degrades to [])."""
     return cfg.require_gcp_project_id()
+
+
+def _as_item_list(value: object) -> list[object]:
+    """Normalize a protobuf repeated field (or a plain list/tuple, or None) to a Python list.
+
+    MEASURED 2026-07-23: google-cloud repeated fields (`Build.steps`, `Build.images`,
+    `Revision.containers`, `Revision.conditions`, …) are runtime instances of
+    `proto.marshal.collections.repeated.Repeated` / `RepeatedComposite` — NOT `list`/`tuple` — so
+    an `isinstance(x, (list, tuple))` gate (the pattern used elsewhere in this codebase for proto
+    maps) silently drops every real field while a hand-built test double using a plain list sails
+    through. Any non-None, non-string iterable is treated as a sequence; anything else degrades to
+    `[]` rather than raising.
+    """
+    if value is None or isinstance(value, (str, bytes)):
+        return []
+    try:
+        return list(cast("Iterable[object]", value))
+    except TypeError:
+        return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -106,11 +130,8 @@ def _duration_seconds(create_time: object, finish_time: object) -> float | None:
 
 def _build_steps(build: object) -> list[tuple[str, str, float]]:
     """Extract (step-id, status, seconds) for the drawer's step timeline, defensively."""
-    steps_raw: object = getattr(build, "steps", None)
-    if not isinstance(steps_raw, (list, tuple)):
-        return []
     out: list[tuple[str, str, float]] = []
-    for step in cast("list[object]", steps_raw):
+    for step in _as_item_list(getattr(build, "steps", None)):
         name = str(getattr(step, "id", "") or getattr(step, "name", "") or "")
         status_obj: object = getattr(step, "status", None)
         status = str(getattr(status_obj, "name", "") or "")
@@ -122,10 +143,8 @@ def _build_steps(build: object) -> list[tuple[str, str, float]]:
 
 def _produced_image(build: object) -> str:
     """The first image the build produced (`build.images[0]`), or "" — for the 'Produced' cell."""
-    images: object = getattr(build, "images", None)
-    if isinstance(images, (list, tuple)) and images:
-        return str(cast("list[object]", images)[0])
-    return ""
+    images = _as_item_list(getattr(build, "images", None))
+    return str(images[0]) if images else ""
 
 
 def _build_to_fact(build: object) -> BuildFact:
@@ -178,4 +197,178 @@ def gcp_cloud_builds(cfg: DeploymentApiConfig, scan: int = _CLOUD_BUILD_SCAN) ->
     pager = client.list_builds(request=request, timeout=_RPC_TIMEOUT_SECONDS)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # cloudbuild stubs incomplete
     for build in islice(pager, scan):  # pyright: ignore[reportUnknownArgumentType]  # cloudbuild stubs incomplete
         facts.append(_build_to_fact(build))
+    return facts
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# GCP Cloud Run revisions → DeployFact (the image lane's deploy history)
+#
+# AWS App Runner/ECS operations and GCE VM launches (the tarball-lane "deploy") are later
+# increments — deferred the same way AWS CodeBuild was deferred for the builds view: this ships
+# the active production path (GCP Cloud Run) first, each `_safe`-isolated so a later addition
+# never risks what already works.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# Per-service revision cap (newest-first). MEASURED 2026-07-23: the busiest live service carries
+# 255 revisions and a full 16-service/690-revision scan takes ~9s cold — comfortably fast, so this
+# is a generous safety ceiling (a runaway redeploy loop), not a real trim; the window filter in
+# `service.py` does the actual date-range narrowing.
+_CLOUD_RUN_REVISION_SCAN = 300
+
+
+def _digest_from_image(image_ref: str) -> str:
+    """The `@sha256:...` digest off a Cloud Run container image ref, or "" if not digest-pinned.
+
+    Cloud Run resolves the deploy-time tag (the pipeline deploys `:$SHORT_SHA`, a mutable tag) to
+    a digest AT DEPLOY TIME and stores that resolved digest on the revision — so this is honestly
+    provable, not a guess, even though the deploy command itself used a tag.
+    """
+    if "@sha256:" in image_ref:
+        return image_ref.split("@", 1)[1]
+    return ""
+
+
+def _revision_ready(revision: object) -> bool:
+    """Did this revision's `Ready` condition report CONDITION_SUCCEEDED?
+
+    Defensive: an unreadable/absent conditions list defaults to ready=True rather than mislabeling
+    every revision "failed" on a stub/shape surprise (the honest-unknown default leans toward not
+    fabricating a red).
+    """
+    conditions = _as_item_list(getattr(revision, "conditions", None))
+    if not conditions:
+        return True
+    for cond in conditions:
+        if str(getattr(cond, "type_", "")) == "Ready":
+            state_obj: object = getattr(cond, "state", None)
+            return str(getattr(state_obj, "name", "")) == "CONDITION_SUCCEEDED"
+    return True
+
+
+def _format_deployer(creator: str) -> str:
+    """A short, honest label for `revision.creator` — a CI service account, or a human email as-is."""
+    if not creator:
+        return ""
+    if creator.endswith("@cloudbuild.gserviceaccount.com"):
+        return "Cloud Build"
+    if "gserviceaccount.com" in creator:
+        return creator.split("@", 1)[0]
+    return creator  # a human email — surfaced verbatim; hand-deploy classification is the Running view's job
+
+
+def _revision_image(revision: object) -> str:
+    """The first container's image ref off a Revision, or "" when no container is readable."""
+    containers = _as_item_list(getattr(revision, "containers", None))
+    return str(getattr(containers[0], "image", "") or "") if containers else ""
+
+
+def _classify_service_revisions(
+    workload: str, revisions_newest_first: Sequence[object], live_revision: str
+) -> list[DeployFact]:
+    """One service's revisions (newest-first from the API) → classified, chronologically-ordered DeployFacts.
+
+    Two passes over the oldest-first order: change-type walks forward tracking the digest sequence
+    (unresolvable-digest and never-ready revisions never claim a false "config-only" match);
+    held-for looks ONE STEP AHEAD to the revision that replaced it (the newest revision has no
+    successor yet, so it holds "" — still current, not "held for zero"). `built_from`/`resolvable`
+    stay honestly empty — the digest→SHA join is the Running view's runtime-join, not this view's.
+    """
+    oldest_first = list(reversed(revisions_newest_first))
+    parsed: list[tuple[str, str, bool, object, str]] = [
+        (
+            str(getattr(rev, "name", "") or "").rsplit("/", 1)[-1],
+            _digest_from_image(_revision_image(rev)),
+            _revision_ready(rev),
+            getattr(rev, "create_time", None),
+            _format_deployer(str(getattr(rev, "creator", "") or "")),
+        )
+        for rev in oldest_first
+    ]
+
+    facts: list[DeployFact] = []
+    seen_digests: set[str] = set()
+    prev_digest: str | None = None
+    for i, (short_name, digest, ready, created, deployer) in enumerate(parsed):
+        if not digest:
+            change_type = CHANGE_FAILED if not ready else CHANGE_NEW
+        elif not ready:
+            change_type = CHANGE_FAILED
+        elif prev_digest is None:
+            change_type = CHANGE_NEW
+        elif digest == prev_digest:
+            change_type = CHANGE_CONFIG
+        elif digest in seen_digests:
+            change_type = CHANGE_ROLLBACK
+        else:
+            change_type = CHANGE_NEW
+        if digest:
+            seen_digests.add(digest)
+            prev_digest = digest
+
+        held_for = ""
+        if i + 1 < len(parsed):
+            next_created = parsed[i + 1][3]
+            if created is not None and next_created is not None:
+                secs = _duration_seconds(created, next_created)  # the successor's create_time minus this one's
+                if secs is not None:
+                    held_for = _fmt_span(secs)
+
+        facts.append(
+            DeployFact(
+                cloud="gcp",
+                workload=workload,
+                revision=short_name,
+                digest=digest,
+                built_from="",
+                resolvable=False,
+                change_type=change_type,
+                at=_iso_or_empty(created),
+                held_for=held_for,
+                live=short_name == live_revision,
+                deployer=deployer,
+                link_kind="revision",
+            )
+        )
+
+    return facts
+
+
+def _fmt_span(seconds: float) -> str:
+    """Human duration for 'held for', up to day granularity: '41s' / '3h12m' / '2d4h'."""
+    total = int(seconds)
+    if total < 0:
+        return ""
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s" if total >= 60 else f"{total}s"
+    if total < 86400:
+        return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+    return f"{total // 86400}d{(total % 86400) // 3600}h"
+
+
+def gcp_cloud_run_revisions(cfg: DeploymentApiConfig) -> list[DeployFact]:
+    """List every live Cloud Run service's revision history as classified DeployFacts.
+
+    Reuses the inventory's `list_cloud_run_services` (already `_gcp_sdk`-bounded, already honestly
+    degrades to [] on failure) both to enumerate workloads and to resolve which revision is
+    currently live — no second services-list RPC. Then lists each service's revisions
+    (`RevisionsClient`, the same `_gcp_sdk` boundary) and classifies them per-service.
+    """
+    from itertools import islice
+
+    from deployment_service.backends import _gcp_sdk
+
+    from deployment_api.routes._cloud_run_services import list_cloud_run_services
+
+    project = _project_id(cfg)
+    services = list_cloud_run_services(project, region=_GCP_REGION)
+    run_v2 = _gcp_sdk.run_v2
+    client = run_v2.RevisionsClient()
+
+    facts: list[DeployFact] = []
+    for svc in services:
+        parent = f"projects/{project}/locations/{_GCP_REGION}/services/{svc.name}"
+        request = run_v2.ListRevisionsRequest(parent=parent)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # run_v2 stubs incomplete
+        pager = client.list_revisions(request=request, timeout=_RPC_TIMEOUT_SECONDS)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        revisions = list(islice(pager, _CLOUD_RUN_REVISION_SCAN))  # pyright: ignore[reportUnknownArgumentType]
+        facts.extend(_classify_service_revisions(svc.name, revisions, svc.revision))
     return facts

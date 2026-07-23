@@ -1,13 +1,14 @@
 """Unit tests for the artifact-pipeline service + route (the /ops/artifacts backend).
 
-Mocks the provider at the module seam (`providers.gcp_cloud_builds`) so nothing touches a cloud —
-`--block-network` safe. Covers the pure helpers, the builds view's window filtering / stats / dup /
-cross-lane / filters, and the route's loud 400 range gate.
+Mocks the provider at the module seam (`providers.gcp_cloud_builds` / `gcp_cloud_run_revisions`) so
+nothing touches a cloud — `--block-network` safe. Covers the pure helpers, the builds + deploys
+views' window filtering / stats / filters, the Cloud Run revision classifier, and the route's loud
+400 range gate.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi import HTTPException
@@ -16,7 +17,16 @@ from deployment_api.routes.artifacts import _resolve_range
 from deployment_api.services.artifact_pipeline import ArtifactPipelineService
 from deployment_api.services.artifact_pipeline import providers as providers_mod
 from deployment_api.services.artifact_pipeline import service as service_mod
-from deployment_api.services.artifact_pipeline.models import LANE_IMAGE, LANE_TARBALL, BuildFact
+from deployment_api.services.artifact_pipeline.models import (
+    CHANGE_CONFIG,
+    CHANGE_FAILED,
+    CHANGE_NEW,
+    CHANGE_ROLLBACK,
+    LANE_IMAGE,
+    LANE_TARBALL,
+    BuildFact,
+    DeployFact,
+)
 from deployment_api.services.artifact_pipeline.service import (
     _fmt_duration,
     _in_window,
@@ -204,6 +214,215 @@ def test_builds_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPat
     resp = svc.builds(30)  # `safe` swallows the failure → empty, honest, never a 5xx
     assert resp.rows == []
     assert resp.stats.total == 0
+
+
+# ── deploys view ────────────────────────────────────────────────────────────────────────────────
+def _deploy_fact(
+    workload: str,
+    revision: str,
+    change_type: str,
+    at: str,
+    *,
+    live: bool = False,
+    digest: str = "sha256:abc",
+    held_for: str = "",
+) -> DeployFact:
+    return DeployFact(
+        cloud="gcp",
+        workload=workload,
+        revision=revision,
+        digest=digest,
+        built_from="",
+        resolvable=False,
+        change_type=change_type,
+        at=at,
+        held_for=held_for,
+        live=live,
+        deployer="Cloud Build",
+        link_kind="revision",
+    )
+
+
+def _deploy_svc_with(monkeypatch: pytest.MonkeyPatch, facts: list[DeployFact]) -> ArtifactPipelineService:
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: list(facts))
+    return ArtifactPipelineService()
+
+
+def test_deploys_windowing_and_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    facts = [
+        _deploy_fact("svc-a", "svc-a-00001", CHANGE_NEW, "2026-07-10T00:00:00+00:00", held_for="2h"),
+        _deploy_fact("svc-a", "svc-a-00002", CHANGE_CONFIG, "2026-07-11T00:00:00+00:00", held_for="1h"),
+        _deploy_fact("svc-a", "svc-a-00003", CHANGE_NEW, "2026-07-12T00:00:00+00:00", live=True),
+        _deploy_fact("svc-b", "svc-b-00001", CHANGE_FAILED, "2026-07-12T00:00:00+00:00"),
+        _deploy_fact("svc-old", "svc-old-00001", CHANGE_NEW, "2026-06-01T00:00:00+00:00", live=True),  # out of window
+    ]
+    svc = _deploy_svc_with(monkeypatch, facts)
+    resp = svc.deploys(31, start_date=date(2026, 7, 1), end_date=date(2026, 7, 31))
+
+    assert len(resp.rows) == 4  # the out-of-window row is excluded
+    assert resp.stats.total == 4
+    assert resp.stats.failed == 1
+    assert resp.stats.config_only_pct == 25.0  # 1 of 4 windowed rows is config-only
+    # live_now is a POINT-IN-TIME count over ALL facts (incl. the out-of-window one), never windowed
+    assert resp.stats.live_now == 2
+
+
+def test_deploys_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    facts = [
+        _deploy_fact("svc-a", "r1", CHANGE_NEW, "2026-07-10T00:00:00+00:00"),
+        _deploy_fact("svc-a", "r2", CHANGE_CONFIG, "2026-07-11T00:00:00+00:00"),
+        _deploy_fact("svc-a", "r3", CHANGE_NEW, "2026-07-12T00:00:00+00:00", live=True),
+        _deploy_fact("svc-b", "r4", CHANGE_FAILED, "2026-07-12T00:00:00+00:00"),
+    ]
+    svc = _deploy_svc_with(monkeypatch, facts)
+    window = {"start_date": date(2026, 7, 1), "end_date": date(2026, 7, 31)}
+
+    code_only = svc.deploys(31, change="code", **window)
+    assert [r.revision for r in code_only.rows] == ["r1", "r3", "r4"]  # config-only (r2) hidden
+
+    live_only = svc.deploys(31, change="live", **window)
+    assert [r.revision for r in live_only.rows] == ["r3"]
+
+    fail_only = svc.deploys(31, change="fail", **window)
+    assert [r.revision for r in fail_only.rows] == ["r4"]
+
+    # stats are computed over the whole (change-unfiltered) window, not the filtered subset
+    assert fail_only.stats.total == 4
+
+
+def test_deploys_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_cfg: object) -> list[DeployFact]:
+        raise RuntimeError("cloud run API down")
+
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", _boom)
+    svc = ArtifactPipelineService()
+    resp = svc.deploys(30)  # `safe` swallows the failure → empty, honest, never a 5xx
+    assert resp.rows == []
+    assert resp.stats.total == 0
+    assert resp.stats.live_now == 0
+
+
+# ── Cloud Run revisions provider — classification + the RepeatedComposite fix ─────────────────────
+class _FakeContainer:
+    def __init__(self, image: str) -> None:
+        self.image = image
+
+
+class _FakeConditionState:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeCondition:
+    def __init__(self, type_: str, state_name: str) -> None:
+        self.type_ = type_
+        self.state = _FakeConditionState(state_name)
+
+
+class _FakeRevision:
+    """A minimal stand-in for a `run_v2.Revision` — exercises the getattr-defensive extraction
+    without needing the real protobuf types. Iterables are plain Python lists (NOT `RepeatedComposite`)
+    on purpose — see `test_as_item_list_handles_non_list_sequence` for the proto-shape regression."""
+
+    def __init__(
+        self,
+        name: str,
+        image: str,
+        *,
+        ready: bool = True,
+        created: datetime | None = None,
+        creator: str = "",
+    ) -> None:
+        self.name = name
+        self.containers = [_FakeContainer(image)] if image else []
+        self.conditions = [_FakeCondition("Ready", "CONDITION_SUCCEEDED" if ready else "CONDITION_FAILED")]
+        self.create_time = created
+        self.creator = creator
+
+
+def test_as_item_list_handles_non_list_sequence() -> None:
+    """The regression: a protobuf `RepeatedComposite` is a Sequence but NOT a list/tuple — an
+    `isinstance(x, (list, tuple))` gate silently drops it (measured live 2026-07-23: Build.steps,
+    Build.images, and Revision.containers/conditions all fail that check)."""
+
+    class _ProtoLikeSequence:
+        """Iterable + indexable + has __len__, like `proto.marshal.collections.repeated.Repeated` —
+        deliberately NOT a list/tuple subclass."""
+
+        def __init__(self, items: list[object]) -> None:
+            self._items = items
+
+        def __iter__(self):
+            return iter(self._items)
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+    assert providers_mod._as_item_list(None) == []
+    assert providers_mod._as_item_list("not-a-sequence") == []
+    assert providers_mod._as_item_list([1, 2]) == [1, 2]
+    assert providers_mod._as_item_list(_ProtoLikeSequence([1, 2, 3])) == [1, 2, 3]
+
+
+def test_digest_from_image() -> None:
+    pinned = "asia-northeast1-docker.pkg.dev/p/r/svc@sha256:abc123"
+    assert providers_mod._digest_from_image(pinned) == "sha256:abc123"
+    assert providers_mod._digest_from_image("asia-northeast1-docker.pkg.dev/p/r/svc:latest") == ""
+    assert providers_mod._digest_from_image("") == ""
+
+
+def test_format_deployer() -> None:
+    assert providers_mod._format_deployer("") == ""
+    assert providers_mod._format_deployer("1060025368044@cloudbuild.gserviceaccount.com") == "Cloud Build"
+    assert providers_mod._format_deployer("unified-trading-sa@p.iam.gserviceaccount.com") == "unified-trading-sa"
+    assert providers_mod._format_deployer("someone@example.com") == "someone@example.com"
+
+
+def test_revision_ready_reads_the_ready_condition() -> None:
+    ready_rev = _FakeRevision("r1", "img@sha256:x", ready=True)
+    failed_rev = _FakeRevision("r2", "img@sha256:x", ready=False)
+    assert providers_mod._revision_ready(ready_rev) is True
+    assert providers_mod._revision_ready(failed_rev) is False
+
+
+def test_classify_service_revisions_new_config_rollback_failed() -> None:
+    t0 = datetime(2026, 7, 20, 0, 0, 0, tzinfo=UTC)
+    t1 = datetime(2026, 7, 20, 1, 0, 0, tzinfo=UTC)  # +1h
+    t2 = datetime(2026, 7, 20, 3, 0, 0, tzinfo=UTC)  # +2h
+    t3 = datetime(2026, 7, 20, 3, 30, 0, tzinfo=UTC)  # +30m
+    t4 = datetime(2026, 7, 20, 4, 0, 0, tzinfo=UTC)  # +30m
+
+    revisions_newest_first = [
+        _FakeRevision("svc-00005", "img@sha256:BROKEN", ready=False, created=t4, creator="human@example.com"),
+        _FakeRevision("svc-00004", "img@sha256:AAA", ready=True, created=t3, creator="Cloud Build"),  # rollback→AAA
+        _FakeRevision("svc-00003", "img@sha256:BBB", ready=True, created=t2, creator="Cloud Build"),  # new
+        _FakeRevision("svc-00002", "img@sha256:AAA", ready=True, created=t1, creator="Cloud Build"),  # config (== t0)
+        _FakeRevision("svc-00001", "img@sha256:AAA", ready=True, created=t0, creator="Cloud Build"),  # first → new
+    ]
+
+    facts = providers_mod._classify_service_revisions("svc", revisions_newest_first, live_revision="svc-00005")
+    by_name = {f.revision: f for f in facts}
+
+    assert by_name["svc-00001"].change_type == CHANGE_NEW  # first revision ever seen
+    assert by_name["svc-00002"].change_type == CHANGE_CONFIG  # same digest as 00001 — nothing shipped
+    assert by_name["svc-00003"].change_type == CHANGE_NEW  # a genuinely new digest
+    assert by_name["svc-00004"].change_type == CHANGE_ROLLBACK  # reverted to AAA, seen at 00001/00002
+    assert by_name["svc-00005"].change_type == CHANGE_FAILED  # never went ready
+
+    # held_for looks ONE STEP AHEAD to the successor; the newest revision has none yet.
+    assert by_name["svc-00001"].held_for == "1h00m"
+    assert by_name["svc-00002"].held_for == "2h00m"
+    assert by_name["svc-00003"].held_for == "30m00s"
+    assert by_name["svc-00004"].held_for == "30m00s"
+    assert by_name["svc-00005"].held_for == ""
+
+    # `live` matches the passed-in live_revision, independent of change_type — a failed revision
+    # can still be "what Cloud Run currently has", per the `deployment-service` finding.
+    assert by_name["svc-00005"].live is True
+    assert by_name["svc-00001"].live is False
+
+    assert by_name["svc-00005"].deployer == "human@example.com"
+    assert by_name["svc-00001"].deployer == "Cloud Build"
 
 
 # ── route range gate ──────────────────────────────────────────────────────────────────────────────
