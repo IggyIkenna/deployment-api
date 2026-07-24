@@ -114,6 +114,16 @@ from .routes import (
     vm_health,
 )
 
+# MEASURED 2026-07-24: no handler was ever attached to the root logger in this process (no
+# basicConfig / ServiceBootstrap-style setup existed), so every logger.warning()/logger.error()
+# call anywhere in this app — including artifact_pipeline.providers.safe()'s per-source failure
+# isolation — was silently discarded. Cloud Run only ships whatever the container actually writes
+# to stdout/stderr; with zero handlers there was nothing to ship, so prod ran with ZERO
+# application-level log lines in Cloud Logging (confirmed via `gcloud logging read`, only the
+# auto-generated HTTP access logs existed). Mirrors the level-from-LOG_LEVEL pattern in
+# unified_trading_library.service_framework.bootstrap.ServiceBootstrap._setup_logging().
+logging.basicConfig(level=logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
