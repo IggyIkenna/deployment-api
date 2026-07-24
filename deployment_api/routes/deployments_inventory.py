@@ -2016,25 +2016,40 @@ def _store_inventory(cache_key: str, items: list[DeploymentItem]) -> None:
         _inventory_cache[cache_key] = (time.monotonic(), items)
 
 
-def _refresh_inventory(cache_key: str, cloud: str | None, region_scope: str) -> None:
-    """Background cache refresh — recompute + store, then clear the in-flight flag."""
+def _refresh_inventory(cache_key: str, cloud: str | None, region_scope: str) -> list[DeploymentItem] | None:
+    """Background cache refresh — recompute + store, then clear the in-flight flag.
+
+    Returns the freshly computed items so a cold-path caller can bound-wait on this SAME
+    submission (see ``_load_inventory``) instead of double-submitting; returns ``None`` on a
+    failed compute (the stale snapshot, if any, is left untouched — never poisoned).
+    """
     try:
-        _store_inventory(cache_key, _compute_inventory(datetime.now(UTC), cloud, region_scope))
+        items = _compute_inventory(datetime.now(UTC), cloud, region_scope)
+        _store_inventory(cache_key, items)
+        return items
     except (HTTPException, OSError, ValueError, RuntimeError) as exc:
         # Keep the stale snapshot on a failed refresh — never poison the cache.
         logger.warning("inventory: background refresh for %s failed: %s", cache_key, exc)
+        return None
     finally:
         with _inventory_lock:
             _inventory_refreshing.discard(cache_key)
 
 
-def _kick_background_refresh(cache_key: str, cloud: str | None, region_scope: str) -> None:
-    """Schedule exactly one background refresh per cache key (stale-while-revalidate)."""
+def _kick_background_refresh(
+    cache_key: str, cloud: str | None, region_scope: str
+) -> Future[list[DeploymentItem] | None] | None:
+    """Schedule exactly one background refresh per cache key (stale-while-revalidate).
+
+    Returns the submitted ``Future`` so a cold-path caller can bound-wait on the SAME
+    submission; returns ``None`` if a refresh for this key is already in flight (another poll
+    already triggered it — never double-submit the same census).
+    """
     with _inventory_lock:
         if cache_key in _inventory_refreshing:
-            return
+            return None
         _inventory_refreshing.add(cache_key)
-    _inventory_refresh_pool.submit(_refresh_inventory, cache_key, cloud, region_scope)
+    return _inventory_refresh_pool.submit(_refresh_inventory, cache_key, cloud, region_scope)
 
 
 def _load_inventory(now: datetime, cloud: str | None = None, region_scope: str = "") -> list[DeploymentItem]:
@@ -2048,8 +2063,13 @@ def _load_inventory(now: datetime, cloud: str | None = None, region_scope: str =
     * **Stale** (> TTL) → the stale snapshot is served instantly AND a single background
       refresh is kicked off, so the operator never waits on the slow census after the
       first ever load (the cockpit polls repeatedly → always warm).
-    * **Cold** (no snapshot) → computed synchronously, under a lock so a burst of polls
-      collapses to ONE census, not N.
+    * **Cold** (no snapshot) → the SAME background refresh is kicked off (in-flight guard
+      collapses a burst of first-polls to ONE census, not N) and this caller bound-waits on it
+      for up to ``_PROVIDER_CENSUS_TIMEOUT_SEC``. A cold census that finishes within the bound
+      returns the real items; one that doesn't degrades to an honest empty placeholder — the
+      compute keeps running in the background regardless (a thread mid-census can't be
+      cancelled) and warms the cache for the next poll, so a freshly-scaled Cloud Run instance
+      (``minScale=1``/``maxScale=20``, in-process cache) never blocks a caller past the bound.
     """
     if _cfg.is_mock_mode():
         return _mock_inventory(now)
@@ -2063,14 +2083,22 @@ def _load_inventory(now: datetime, cloud: str | None = None, region_scope: str =
             _kick_background_refresh(cache_key, cloud, region_scope)
         return cached[1]
 
-    # Cold path — lock so concurrent first-polls trigger exactly ONE census.
-    with _inventory_lock:
-        cached = _inventory_cache.get(cache_key)
-        if cached is not None:
-            return cached[1]
-        items = _compute_inventory(now, cloud, region_scope)
-        _inventory_cache[cache_key] = (time.monotonic(), items)
-        return items
+    future = _kick_background_refresh(cache_key, cloud, region_scope)
+    if future is None:
+        # Another poll already triggered the cold compute concurrently — don't wait twice;
+        # serve an honest empty placeholder, the next poll lands on the now-warm(er) cache.
+        return []
+    try:
+        items = future.result(timeout=_PROVIDER_CENSUS_TIMEOUT_SEC)
+    except FutureTimeoutError:
+        logger.warning(
+            "inventory: cold census for %s exceeded %.0fs — degraded to empty placeholder; "
+            "background compute continues and will warm the cache",
+            cache_key,
+            _PROVIDER_CENSUS_TIMEOUT_SEC,
+        )
+        return []
+    return items if items is not None else []
 
 
 # ---------------------------------------------------------------------------
