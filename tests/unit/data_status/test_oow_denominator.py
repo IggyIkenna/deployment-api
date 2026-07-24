@@ -231,9 +231,17 @@ class TestScheduleDefiningFixturesEmptyResolved:
     def test_fixtures_source_returned_zero_is_out_of_window(self) -> None:
         df = pd.DataFrame(
             [
-                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
-                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
-                {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"},
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "FIXTURES_SCHEDULE",
+                },
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "FIXTURES_SCHEDULE",
+                },
+                {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES_SCHEDULE"},
             ]
         )
         # Both FIXTURES no-match-day empties are now out-of-window (resolved).
@@ -262,13 +270,21 @@ class TestScheduleDefiningFixturesEmptyResolved:
         """Only the FIXTURES SRZ rows are resolved; enrichment SRZ rows stay gaps."""
         df = pd.DataFrame(
             [
-                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "FIXTURES_SCHEDULE",
+                },
                 {
                     "capture_status": "empty_confirmed",
                     "error_reason": "SOURCE_RETURNED_ZERO",
                     "data_type": "FIXTURE_STATS",
                 },
-                {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_NO_FIXTURE", "data_type": "FIXTURES"},
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "EXPECTED_NO_FIXTURE",
+                    "data_type": "FIXTURES_SCHEDULE",
+                },
             ]
         )
         # FIXTURES SRZ (resolved) + EXPECTED_NO_FIXTURE (lifecycle OOW) = 2; the
@@ -296,13 +312,23 @@ class TestScheduleDefiningFixturesEmptyResolved:
         ratio regardless of window status.
         """
         rows = []
-        rows += [{"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"} for _ in range(3445)]
         rows += [
-            {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"}
+            {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES_SCHEDULE"} for _ in range(3445)
+        ]
+        rows += [
+            {
+                "capture_status": "empty_confirmed",
+                "error_reason": "SOURCE_RETURNED_ZERO",
+                "data_type": "FIXTURES_SCHEDULE",
+            }
             for _ in range(233)
         ]
         rows += [
-            {"capture_status": "empty_confirmed", "error_reason": "EXPECTED_NO_FIXTURE", "data_type": "FIXTURES"}
+            {
+                "capture_status": "empty_confirmed",
+                "error_reason": "EXPECTED_NO_FIXTURE",
+                "data_type": "FIXTURES_SCHEDULE",
+            }
             for _ in range(7732)
         ]
         df = pd.DataFrame(rows)
@@ -353,8 +379,12 @@ class TestComputeCaptureStatusCountsPopulatesOOW:
     def test_fixtures_schedule_empty_is_oow(self) -> None:
         df = pd.DataFrame(
             [
-                {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES"},
-                {"capture_status": "empty_confirmed", "error_reason": "SOURCE_RETURNED_ZERO", "data_type": "FIXTURES"},
+                {"capture_status": "captured", "error_reason": "", "data_type": "FIXTURES_SCHEDULE"},
+                {
+                    "capture_status": "empty_confirmed",
+                    "error_reason": "SOURCE_RETURNED_ZERO",
+                    "data_type": "FIXTURES_SCHEDULE",
+                },
             ]
         )
         counts = compute_capture_status_counts(df)

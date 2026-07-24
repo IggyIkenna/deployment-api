@@ -123,7 +123,19 @@ async def _cancel_background_tasks() -> None:
     if _background_task:
         _background_task.cancel()
         try:
-            await asyncio.wait_for(_background_task, timeout=5)
+            # 20s, not 5s (MEASURED root cause, 2026-07-24): the reaper tick this task hosts
+            # (background_sync._run_deployment_reaper) does a blocking, uninterruptible
+            # ThreadPoolExecutor call — list_running_vm_names() + a per-blob sequential
+            # download of every `deployments/active/*.json` (background_sync.py's own comment
+            # measured ~138s at ~3k stale entries) + one archive write per reaped entry.
+            # asyncio cancellation cannot stop a `run_in_executor` call once its thread has
+            # started, so a 5s budget almost never covers a real tick: prod stderr showed this
+            # exact CancelledError recurring at background_sync.py:72 many times/day, which is
+            # why `deployments/active/` was stuck at ~400 entries instead of draining toward the
+            # true running-VM count. 20s leaves headroom under gunicorn's graceful_timeout=30
+            # (gunicorn.conf.py) for the sequential waits below (6s) plus lock release/cache
+            # shutdown that must still run after this returns.
+            await asyncio.wait_for(_background_task, timeout=20)
         except asyncio.CancelledError as e:
             logger.debug("Suppressed %s during operation: %s", type(e).__name__, e)
         except TimeoutError:
