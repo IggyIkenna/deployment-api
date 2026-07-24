@@ -142,6 +142,13 @@ RUN chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8080
 ENV PORT=8080
+# MEASURED 2026-07-24: never set anywhere in this image. Python block-buffers stdout when it
+# isn't a TTY (always true in a container), so log/print output sits in an ~8KB buffer until it
+# fills or the process exits cleanly. Combined with this service's observed crash-looping
+# (Uncaught signal 6 recurring, one real OOM kill), buffered output was lost before ever
+# reaching the pipe Cloud Run captures — zero app-level log lines ever reached Cloud Logging,
+# regardless of what the app itself logged. Standard fix: force unbuffered stdio.
+ENV PYTHONUNBUFFERED=1
 # No OTLP collector sidecar is deployed (single-container Cloud Run), so OpenTelemetry
 # would export into the void at localhost:4317 and spam failed-export retries. Disable
 # tracing at the image level so every deploy is quiet regardless of runtime env.
