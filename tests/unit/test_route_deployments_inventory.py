@@ -1913,6 +1913,55 @@ def test_inventory_route_hung_provider_degrades_other_kinds_survive(client_inven
 
 
 # ---------------------------------------------------------------------------
+# Background refresh pool concurrency bound (deployment_api_inventory_cold_path_concurrent_oom
+# P0) — two DIFFERENT cache-key cold/stale refreshes must never run truly concurrently: each
+# fans out through its own _census_pool (max_workers=10) plus several per-provider region pools,
+# so 2 concurrent full computations OOM-killed the container in prod (17,002 MiB vs a 16,384 MiB
+# limit). max_workers=1 on _inventory_refresh_pool restores full serialization across cache keys.
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_refresh_pool_is_bounded_to_one_worker() -> None:
+    """Regression guard: the background refresh pool must stay at max_workers=1 so two
+    DIFFERENT cache-key refreshes can never fan out their full census concurrently."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    assert _inv_mod._inventory_refresh_pool._max_workers == 1  # pyright: ignore[reportPrivateUsage]
+
+
+def test_inventory_refresh_pool_serializes_different_cache_keys() -> None:
+    """Two DIFFERENT cache-key refreshes submitted back-to-back run ONE AT A TIME, never
+    overlapping — asserts the actual serialization behavior (not just the pool's nominal size),
+    so a future accidental resize can't silently regress this."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    first_running = threading.Event()
+    release_first = threading.Event()
+    second_started_while_first_ran = threading.Event()
+
+    def _first() -> str:
+        first_running.set()
+        release_first.wait(timeout=10)  # self-releases as a safety net if the test forgets
+        return "first"
+
+    def _second() -> str:
+        if first_running.is_set() and not release_first.is_set():
+            second_started_while_first_ran.set()
+        return "second"
+
+    fut1 = _inv_mod._inventory_refresh_pool.submit(_first)  # pyright: ignore[reportPrivateUsage]
+    try:
+        assert first_running.wait(timeout=5)  # the first task has actually started
+        fut2 = _inv_mod._inventory_refresh_pool.submit(_second)  # pyright: ignore[reportPrivateUsage]
+        time.sleep(0.2)  # give a (buggy, >1-worker) pool a chance to start _second concurrently
+        assert not second_started_while_first_ran.is_set()  # second must NOT have started yet
+    finally:
+        release_first.set()
+    assert fut1.result(timeout=5) == "first"
+    assert fut2.result(timeout=5) == "second"
+
+
+# ---------------------------------------------------------------------------
 # parallel registry reader (the perf fix — concurrent GCS reads, per-key isolation)
 # ---------------------------------------------------------------------------
 
