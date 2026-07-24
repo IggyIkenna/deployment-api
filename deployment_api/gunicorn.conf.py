@@ -9,6 +9,7 @@ Environment variables:
     PORT: Port to bind to (default: 8080)
 """
 
+import faulthandler
 from typing import Protocol
 
 from deployment_api.settings import PORT as _PORT
@@ -78,8 +79,17 @@ def post_fork(server: _GunicornServer, worker: _GunicornWorker) -> None:
     ``worker_identity.set_worker_age`` so the ASGI app — once it starts inside this SAME
     forked process — can elect a single leader worker for singleton background tasks
     (see ``deployment_api.utils.worker_identity`` + ``deployment_api.lifespan``).
+
+    Also enables ``faulthandler`` per-worker (post-fork, not in the preloaded master) so a
+    fatal signal — including the ``SIGABRT`` gunicorn's own Arbiter sends via
+    ``murder_workers()`` to a worker whose heartbeat exceeds ``timeout`` (300s here) —
+    dumps every thread's Python stack to stderr before the process dies. Diagnoses the
+    undiagnosed `Uncaught signal: 6` crash-loop tracked in
+    plans/active/issues/deployment_api_sigabrt_crash_loop_2026_07_24.md: today the crash
+    leaves zero Python-level trace, only Cloud Run's generic sandbox message.
     """
     set_worker_age(worker.age)
+    faulthandler.enable()
 
 
 def pre_exec(server: _GunicornServer) -> None:
