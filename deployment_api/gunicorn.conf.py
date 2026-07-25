@@ -80,15 +80,38 @@ def post_fork(server: _GunicornServer, worker: _GunicornWorker) -> None:
     forked process — can elect a single leader worker for singleton background tasks
     (see ``deployment_api.utils.worker_identity`` + ``deployment_api.lifespan``).
 
-    Also enables ``faulthandler`` per-worker (post-fork, not in the preloaded master) so a
-    fatal signal — including the ``SIGABRT`` gunicorn's own Arbiter sends via
-    ``murder_workers()`` to a worker whose heartbeat exceeds ``timeout`` (300s here) —
-    dumps every thread's Python stack to stderr before the process dies. Diagnoses the
-    undiagnosed `Uncaught signal: 6` crash-loop tracked in
-    plans/active/issues/deployment_api_sigabrt_crash_loop_2026_07_24.md: today the crash
-    leaves zero Python-level trace, only Cloud Run's generic sandbox message.
+    ``faulthandler.enable()`` is deliberately NOT called here (see ``post_worker_init``
+    below for why a call at this point is silently neutered).
     """
     set_worker_age(worker.age)
+
+
+def post_worker_init(worker: _GunicornWorker) -> None:
+    """Called after the worker is fully initialized (signals set up, WSGI/ASGI app
+    loaded) — the LAST gunicorn hook before it enters its request-serving run loop.
+
+    Enables ``faulthandler`` here, not in ``post_fork``. Root cause of the undiagnosed
+    `Uncaught signal: 6` crash-loop with zero Python-level trace
+    (plans/active/issues/deployment_api_sigabrt_crash_loop_2026_07_24.md): a
+    ``faulthandler.enable()`` call in ``post_fork`` DOES install a C-level SIGABRT
+    handler, but it is silently uninstalled moments later —
+    ``Worker.init_process()`` (called by the Arbiter right after ``post_fork``) calls
+    ``self.init_signals()``, and this app's ``worker_class`` is
+    ``uvicorn.workers.UvicornWorker``, whose ``init_signals()`` override
+    (``uvicorn/workers.py``) does ``for s in self.SIGNALS: signal.signal(s, signal.SIG_DFL)``
+    — ``self.SIGNALS`` (``gunicorn/workers/base.py``) is
+    ``[SIGABRT, SIGHUP, SIGQUIT, SIGINT, SIGTERM, SIGUSR1, SIGUSR2, SIGWINCH, SIGCHLD]``,
+    which INCLUDES SIGABRT. So every worker's SIGABRT disposition is reset to the raw
+    kernel default (``SIG_DFL``) microseconds after ``faulthandler.enable()`` runs —
+    when the Arbiter's ``murder_workers()`` (or any other SIGABRT source) actually fires,
+    there is no handler left to dump anything; the kernel just terminates the process,
+    which is exactly what Cloud Run's sandbox reports as "Uncaught signal: 6" with zero
+    Python-level trace. ``post_worker_init`` runs AFTER ``init_signals()`` (and after
+    ``load_wsgi()``), and nothing downstream — uvicorn's own ``Server`` only ever
+    installs handlers for SIGINT/SIGTERM (``uvicorn/server.py``'s ``HANDLED_SIGNALS``),
+    never SIGABRT — touches SIGABRT's disposition again, so a ``faulthandler.enable()``
+    call here actually sticks for the rest of the worker's life.
+    """
     faulthandler.enable()
 
 
