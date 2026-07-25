@@ -476,6 +476,17 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     grace_hours: float | None = None  # stopped-age threshold (hours) the verdict above was computed against
     stopped_age_hours: float | None = None  # hours since last_stop_timestamp (falls back to creation)
     monthly_disk_usd: float | None = None  # ESTIMATE — boot-disk idle cost, same rate model as the orphans endpoint
+    # Inline Resources column (deployment-ui Deployments.tsx's ResourceCell) — the single
+    # most-recent D.1 host-metrics sample, same fields as DeploymentDetailResponse's flat
+    # metrics (mirrored from `entry.cpu_pct`/etc. in `_vm_item()`, not re-derived). Deliberately
+    # NOT `host_metrics_window` — that stays detail-only by design (see
+    # DeploymentDetailResponse's docstring: keeps the ~200-target list payload small). None for a
+    # kind without D.1 capture or a VM absent from this cycle's census — honest absence, never a
+    # fabricated 0.0.
+    cpu_pct: float | None = None
+    mem_pct: float | None = None
+    mem_slope: float | None = None
+    disk_pct: float | None = None
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -809,6 +820,10 @@ def _vm_item(
         grace_hours=DEFAULT_GRACE_HOURS if orphan is not None else None,
         stopped_age_hours=orphan.stopped_age_hours if orphan is not None else None,
         monthly_disk_usd=orphan.monthly_disk_usd if orphan is not None else None,
+        cpu_pct=entry.cpu_pct,
+        mem_pct=entry.mem_pct,
+        mem_slope=entry.mem_slope,
+        disk_pct=entry.disk_pct,
     )
 
 
