@@ -8,12 +8,13 @@ cache initialization, and resource cleanup.
 import asyncio
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager, suppress
 from typing import cast
 
 from fastapi import FastAPI
-from unified_trading_library import fastapi_uei_lifespan
+from unified_trading_library import fastapi_uei_lifespan, log_event
 
 from deployment_api.background_sync import (
     STATE_BUCKET,
@@ -246,6 +247,16 @@ async def lifespan(app: FastAPI):
         if is_leader_worker():
             _background_task = asyncio.create_task(_auto_sync_running_deployments())
             logger.info("Background auto-sync task started (leader worker)")
+            # TEMP DIAGNOSTIC (deployment_registry_reaper_not_draining_stale_entries_2026_07_24.md):
+            # stdout/stderr from this process never reaches Cloud Logging for reasons still
+            # undiagnosed (confirmed via a raw sys.stderr.write() that also never appeared), but
+            # log_event() publishes over Pub/Sub — a transport already PROVEN working this session
+            # (real STARTED/STOPPED events observed live). Using it here sidesteps the stdout
+            # mystery entirely to directly verify the leader-election branch fires in prod.
+            log_event(
+                "REAPER_LEADER_ELECTED",
+                details={"pid": os.getpid()},
+            )
         else:
             logger.info("Background auto-sync task skipped (non-leader worker)")
 
