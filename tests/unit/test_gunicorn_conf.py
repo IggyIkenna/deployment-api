@@ -60,6 +60,36 @@ class TestPostFork:
         assert worker_identity.is_leader_worker() is True
 
 
+class TestPostWorkerInit:
+    def test_enables_faulthandler(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """deployment_api_sigabrt_crash_loop_2026_07_24 todo 3: faulthandler must be
+        (re-)enabled in post_worker_init, not post_fork — a post_fork-only call gets
+        silently uninstalled by UvicornWorker.init_signals()'s SIG_DFL reset loop
+        before any real SIGABRT ever fires. See the hook's docstring for the full
+        gunicorn/uvicorn call-order trace."""
+        conf = _load_gunicorn_conf()
+        enable_calls: list[bool] = []
+        monkeypatch.setattr(conf.faulthandler, "enable", lambda: enable_calls.append(True))
+
+        conf.post_worker_init(MagicMock())
+
+        assert enable_calls == [True]
+
+    def test_post_fork_no_longer_calls_faulthandler_enable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression guard: post_fork's faulthandler.enable() call is a no-op (silently
+        uninstalled seconds later) — it must not be re-added there without also removing
+        it from post_worker_init, which would just recreate this bug's exact symptom."""
+        conf = _load_gunicorn_conf()
+        enable_calls: list[bool] = []
+        monkeypatch.setattr(conf.faulthandler, "enable", lambda: enable_calls.append(True))
+        worker = MagicMock()
+        worker.age = 0
+
+        conf.post_fork(MagicMock(), worker)
+
+        assert enable_calls == []
+
+
 class TestModuleShape:
     def test_workers_setting_present(self) -> None:
         conf = _load_gunicorn_conf()
