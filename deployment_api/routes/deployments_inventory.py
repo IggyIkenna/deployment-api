@@ -293,7 +293,18 @@ _inventory_cache: dict[str, tuple[float, list[DeploymentItem]]] = {}
 _inventory_lock = threading.Lock()
 # cache keys with an in-flight background refresh (so we kick off exactly one).
 _inventory_refreshing: set[str] = set()
-_inventory_refresh_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="inv-refresh")
+# max_workers=1 (HARD RULE — see deployment_api_inventory_cold_path_concurrent_oom_2026_07_24.md):
+# this pool is the ONLY thing standing between "one caller waits too long" (the bug the
+# stale-while-revalidate design fixed) and "two DIFFERENT cache keys' full census fan-outs run
+# truly concurrently and OOM the container" (the regression that design introduced — each
+# _compute_inventory call internally fans out via _census_pool max_workers=10 plus several
+# per-provider region pools up to max_workers=8 each; 2 concurrent full computations measured
+# 17,002 MiB against a 16,384 MiB limit and got SIGKILL'd). A single worker restores the OLD
+# code's process-wide serialization (only one cold census in flight at a time) while keeping the
+# NEW per-caller 45s bound from _load_inventory/_kick_background_refresh — the two properties are
+# orthogonal and compose. Do NOT raise this back to >1 without also bounding total concurrent
+# fan-out some other way (see the issue doc's other candidate approaches).
+_inventory_refresh_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inv-refresh")
 
 # Per-provider census wall-clock bound. Each provider census (GCE VM registry / Cloud Run
 # jobs / Cloud Run services / Cloud Functions / AWS) runs on its own worker; if one hangs
