@@ -213,6 +213,58 @@ def test_build_inventory_surfaces_tier0_free_wins() -> None:
     assert job.machine_type is None
 
 
+def test_build_inventory_surfaces_inline_resources_column() -> None:
+    """deployment_registry_firestore_p0_unblock_2026_07_14.md's inline-Resources-column
+    todo: cpu_pct/mem_pct/mem_slope/disk_pct must reach the thin-list DeploymentItem
+    (deployment-ui's ResourceCell reads them there), not just the detail popover — before
+    this fix they were silently dropped even though _FakeEntry/the real registry entry
+    always carried them.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entry = _FakeEntry(
+        vm_name="cefi-binance-spot-20260622-014158",
+        asset_group="cefi",
+        cpu_pct=42.5,
+        mem_pct=61.0,
+        mem_slope=1.2,
+        disk_pct=78.3,
+    )
+    items = build_inventory([entry], {}, _FIXED_NOW)  # type: ignore[arg-type]
+    vm = next(i for i in items if i.name == "cefi-binance-spot-20260622-014158")
+
+    assert vm.cpu_pct == pytest.approx(42.5)
+    assert vm.mem_pct == pytest.approx(61.0)
+    assert vm.mem_slope == pytest.approx(1.2)
+    assert vm.disk_pct == pytest.approx(78.3)
+
+    # A legacy row with no D.1 sample carries the entry's honest 0.0 default — not
+    # fabricated, but distinguishable from a genuinely absent (non-VM) kind below.
+    legacy = _FakeEntry(vm_name="defi-paper-trading-20260622", asset_group="defi")
+    items_legacy = build_inventory([legacy], {}, _FIXED_NOW)  # type: ignore[arg-type]
+    vm_legacy = next(i for i in items_legacy if i.name == "defi-paper-trading-20260622")
+    assert vm_legacy.cpu_pct == 0.0
+
+    # Cloud Run jobs have no registry entry / D.1 capture — honest None, never 0.0.
+    from deployment_api.routes._cloud_run_executions import CloudRunExecutionStatus
+
+    cr_status = {
+        "prd-manifest-consolidator-cefi": CloudRunExecutionStatus(
+            job_name="prd-manifest-consolidator-cefi",
+            status="succeeded",
+            last_run_at="2026-06-22T06:00:00Z",
+            exit_code=0,
+            log_uri="https://logs",
+        ),
+    }
+    items_with_job = build_inventory([legacy], cr_status, _FIXED_NOW)  # type: ignore[arg-type]
+    job = next(i for i in items_with_job if i.kind == "CLOUD_RUN_JOB")
+    assert job.cpu_pct is None
+    assert job.mem_pct is None
+    assert job.mem_slope is None
+    assert job.disk_pct is None
+
+
 def test_build_inventory_full_estate_surfaces_unmanaged_vms() -> None:
     """WS-D full-estate census: a live GCE instance with NO registry entry becomes an `unmanaged`
     row (never invisible), carrying its raw GCE state; provenance is adhoc (or control-plane for a

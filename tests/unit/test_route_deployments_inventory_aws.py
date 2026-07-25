@@ -570,6 +570,12 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
             self.rows_out = 0
             self.rows_error = 0
             self.events_emitted = 0
+            # D.1 host metric vector (0.0 defaults mirror the real DeploymentRegistryEntry's
+            # honestly-unknown legacy-row default) — _vm_item() reads these unconditionally.
+            self.cpu_pct = 0.0
+            self.mem_pct = 0.0
+            self.mem_slope = 0.0
+            self.disk_pct = 0.0
 
     gcp_entry = _FakeEntry("cefi-binance-spot-20260622-gcp")
     mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache
