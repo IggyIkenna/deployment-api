@@ -23,6 +23,9 @@ _config = DeploymentApiConfig()
 # Named in snake_case; canonical env var is the GCP project env var (handled by UnifiedCloudConfig).
 gcp_project_id = _config.gcp_project_id
 GCS_REGION = _config.gcs_region
+# Expected invoker service account on the OIDC token presented to POST /api/internal/reap-tick
+# (Cloud Scheduler -> reap endpoint auth; see deployment_api/routes/_reap_scheduler.py).
+REAP_SCHEDULER_INVOKER_SA = _config.reap_scheduler_invoker_sa
 # GCP Cloud Build region — PINNED to asia-northeast1, the workspace canonical region where ALL
 # Cloud Build triggers + the Artifact Registry live (cloudbuild.yaml is asia-northeast1 fleet-wide;
 # operator matched-region decision 2026-05-11). Deliberately NOT GCS_REGION: that config can resolve
