@@ -9,6 +9,7 @@ Environment variables:
     PORT: Port to bind to (default: 8080)
 """
 
+import faulthandler
 import os
 
 # Read directly from env to avoid triggering the full UTL→UAC import chain
@@ -60,8 +61,54 @@ def pre_fork(server: object, worker: object) -> None:  # pyright: ignore[reportA
 
 
 def post_fork(server: object, worker: object) -> None:  # pyright: ignore[reportAny]
-    """Called just after a worker has been forked."""
-    pass
+    """Called just after a worker has been forked.
+
+    Records this worker's gunicorn-assigned age (spawn-order counter) in-process via
+    ``worker_identity.set_worker_age`` so the ASGI app — once it starts inside this SAME
+    forked process — can elect a single leader worker for singleton background tasks
+    (see ``deployment_api.utils.worker_identity`` + ``deployment_api.lifespan``).
+    Imported HERE (deferred, function-local) rather than at module level: by the time
+    ``post_fork`` runs, ``preload_app``'s own import of the ASGI app has already
+    succeeded once in the master and is cached in ``sys.modules``, so importing
+    ``deployment_api.settings`` here is safe/cheap — a module-level import in THIS
+    config file would instead run during gunicorn's config-file load, before the app
+    is preloaded, and can hard-crash gunicorn startup on a missing env var (confirmed
+    empirically — see the sibling ``deployment_api/gunicorn.conf.py`` dead-file finding
+    in deployment_registry_reaper_not_draining_stale_entries_2026_07_24.md).
+
+    ``faulthandler.enable()`` is deliberately NOT called here (see ``post_worker_init``
+    below for why a call at this point is silently neutered).
+    """
+    from deployment_api.utils.worker_identity import set_worker_age
+
+    set_worker_age(worker.age)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
+
+
+def post_worker_init(worker: object) -> None:  # pyright: ignore[reportAny]
+    """Called after the worker is fully initialized (signals set up, WSGI/ASGI app
+    loaded) — the LAST gunicorn hook before it enters its request-serving run loop.
+
+    Enables ``faulthandler`` here, not in ``post_fork``. Root cause of the undiagnosed
+    `Uncaught signal: 6` crash-loop with zero Python-level trace
+    (plans/active/issues/deployment_api_sigabrt_crash_loop_2026_07_24.md): a
+    ``faulthandler.enable()`` call in ``post_fork`` DOES install a C-level SIGABRT
+    handler, but it is silently uninstalled moments later — ``Worker.init_process()``
+    (called by the Arbiter right after ``post_fork``) calls ``self.init_signals()``,
+    and this app's ``worker_class`` is ``uvicorn.workers.UvicornWorker``, whose
+    ``init_signals()`` override (``uvicorn/workers.py``) does
+    ``for s in self.SIGNALS: signal.signal(s, signal.SIG_DFL)`` — ``Worker.SIGNALS``
+    (``gunicorn/workers/base.py``) is
+    ``[SIGABRT, SIGHUP, SIGQUIT, SIGINT, SIGTERM, SIGUSR1, SIGUSR2, SIGWINCH, SIGCHLD]``,
+    which INCLUDES SIGABRT. So every worker's SIGABRT disposition is reset to the raw
+    kernel default microseconds after ``faulthandler.enable()`` runs — by the time a
+    real SIGABRT fires there is no handler left to dump anything. ``post_worker_init``
+    runs AFTER ``init_signals()`` (and after ``load_wsgi()``), and nothing downstream —
+    uvicorn's own ``Server`` only ever installs handlers for SIGINT/SIGTERM
+    (``uvicorn/server.py``'s ``HANDLED_SIGNALS``) — touches SIGABRT's disposition again,
+    so a ``faulthandler.enable()`` call here actually sticks for the rest of the
+    worker's life.
+    """
+    faulthandler.enable()
 
 
 def pre_exec(server: object) -> None:  # pyright: ignore[reportAny]
