@@ -1,10 +1,17 @@
 """
-Unit tests for deployment_api/gunicorn.conf.py.
+Unit tests for the repo-root gunicorn.conf.py — the file Dockerfile/Dockerfile.dashboard
+actually ``COPY`` and reference via ``gunicorn ... -c /app/gunicorn.conf.py``. A prior
+``deployment_api/gunicorn.conf.py`` duplicate existed and was where the leader-election
+(``post_fork``) and faulthandler (``post_worker_init``) fixes were originally written —
+but that file was NEVER loaded by either Dockerfile, so both fixes were silently inert in
+production despite passing this same test suite (see
+plans/active/issues/deployment_registry_reaper_not_draining_stale_entries_2026_07_24.md).
+Deleted that dead file; this test now exercises the ONE file gunicorn actually loads.
 
-The file is loaded by gunicorn as a config FILE (``gunicorn -c deployment_api/gunicorn.conf.py``),
-not imported via a normal dotted path — its name (``gunicorn.conf.py``) embeds a dot, so
-``import deployment_api.gunicorn.conf`` isn't a legal module path. Load it the same way,
-via ``importlib.util.spec_from_file_location``, to exercise it in isolation.
+The file is loaded by gunicorn as a config FILE (``gunicorn -c gunicorn.conf.py``), not
+imported via a normal dotted path — its name (``gunicorn.conf.py``) embeds a dot, so
+``import gunicorn.conf`` isn't a legal module path. Load it the same way, via
+``importlib.util.spec_from_file_location``, to exercise it in isolation.
 """
 
 import importlib.util
@@ -16,12 +23,12 @@ import pytest
 
 from deployment_api.utils import worker_identity
 
-_CONF_PATH = Path(__file__).parent.parent.parent / "deployment_api" / "gunicorn.conf.py"
+_CONF_PATH = Path(__file__).parent.parent.parent / "gunicorn.conf.py"
 
 
 def _load_gunicorn_conf():
-    """Fresh-load deployment_api/gunicorn.conf.py as an isolated module."""
-    spec = importlib.util.spec_from_file_location("deployment_api._test_gunicorn_conf", _CONF_PATH)
+    """Fresh-load the repo-root gunicorn.conf.py as an isolated module."""
+    spec = importlib.util.spec_from_file_location("_test_gunicorn_conf", _CONF_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
