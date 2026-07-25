@@ -40,8 +40,10 @@ async def get_fixtures_browse(
 
     Date window is either today-relative (``days_back``/``days_forward``, the
     default) or ABSOLUTE when ``start_date``/``end_date`` is given — the latter
-    can address any range in history, span-capped server-side. ``league_id`` is
-    a case-insensitive substring against the raw catalogue league key OR its
+    can address ANY range in the catalogue's full history, UNCAPPED (the
+    single-file catalogue source filters an already-loaded in-memory frame, so
+    span no longer affects read cost — see ``fixtures_browser.py``). ``league_id``
+    is a case-insensitive substring against the raw catalogue league key OR its
     resolved human display_name (e.g. "Allsvenskan" matches the numeric id it
     resolves to); ``team`` is a case-insensitive substring across home/away
     team name and id (matches either side of the fixture).
