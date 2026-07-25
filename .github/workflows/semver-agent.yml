@@ -1,18 +1,34 @@
 name: Semver Agent
 
-# Computes the next semver for this repo based on diff analysis since last staging_versions
+# Computes the next semver for this repo based on diff analysis since the last released
 # baseline, then dispatches a version-bump event to unified-trading-pm with the computed version.
 #
-# TRIGGER: Fires ONLY when the "quality-gates-v2" workflow passes on the staging branch.
-# This ensures semver bumps are computed AFTER SIT validates staging and the code
-# is promoted from staging — not prematurely at feature-branch time.
+# TRIGGER (retargeted 2026-07-25, cicd_mvp_ldr_to_main_pipeline Phase 4): fires on a
+# `push` to `main`. In the LDR→main-direct model (staging DORMANT) a commit reaches `main`
+# ONLY via the LDR→main promote PR, which already required-checks `quality-gates-v2` before
+# merge — so the tree that lands on `main` is already v2-validated and semver need not re-wait
+# for a post-merge v2 run. (Previously fired on `branches: [staging]`; the staging drain was
+# stopped 2026-06-28 per staging_dormant_mode, so staging never advanced → semver went dead
+# fleet-wide → zero tags minted → no wheels published. This retarget is the fix.)
 #
 # Pipeline position:
-#   feature branch → staging → [this workflow] → label check → bump → SIT → main
+#   LDR → [LDR→main promote PR, v2-gated] → main → [this workflow] → compute bump → mint tag → publish
 #
-# If commit label disagrees with API diff, posts FAILING commit status on staging HEAD to block staging-to-main.yml
+# The `semver-agent/label-check` commit status is ADVISORY only (not a required check;
+# cicd_mvp Phase 1) — it is posted on the main HEAD for visibility, never to block promotion.
 #
-# Placeholders replaced by rollout-semver-agent.sh:
+# NOTE (major-bump / 1.0.0 graduation): a POST-1.0.0 major bump is NOT auto-dispatched — it
+# opens an approval issue and is resolved by a human routing THROUGH staging
+# (`quickmerge --to-staging --user-approved`), per the "breaking/major bump routes through
+# staging" rule. Only the normal minor/patch (and pre-1.0.0 breaking→MINOR) auto-flow is
+# retargeted to main below; the graduation path deliberately still references staging.
+#
+# Placeholders replaced by the rollout tool (rollout-workflow-templates.sh):
+#   git-tag — "git-tag" (mint vX.Y.Z tags) or "pyproject.toml" (legacy commit path)
+#                        — substituted from workspace-manifest.json's per-repo version_source.
+#   (rollout-semver-agent.sh does NOT substitute git-tag — use
+#    rollout-workflow-templates.sh --template semver-agent.yml for git-tag repos.)
+# Placeholders (also):
 #   deployment-api  — e.g. market-tick-data-service
 #   deployment_api — e.g. market_tick_data_service (underscore form)
 #
@@ -34,19 +50,14 @@ name: Semver Agent
 #   GH_PAT  — cross-repo dispatch and issue creation
 
 on:
-  workflow_run:
-    workflows: ["quality-gates-v2"]
-    types: [completed]
-    branches: [staging]
-  # The LDR-trunk decoupling (2026-06-10) dropped push:[staging] quality-gates-v2
-  # — v2 now runs on the LDR→staging PR (base=staging), NOT on the staging branch
-  # itself — so the workflow_run trigger above stopped firing and the staging→main
-  # promotion + version-bump dispatch went DEAD fleet-wide (idle since v2@staging
-  # last ran). Also fire on a direct push to staging (the LDR→staging Tier-C drain
-  # and reconcile update staging via push), so promotion resumes. The job gate
-  # OR's the push path and every head_sha ref falls back to github.sha under push.
+  # Retargeted staging → main (cicd_mvp Phase 4, 2026-07-25). A commit reaches `main`
+  # only through the v2-required LDR→main promote PR, so the tree is already validated —
+  # no need to re-gate on a post-merge `workflow_run: quality-gates-v2` (that leg was also
+  # dead here anyway: with staging dormant, v2 no longer ran on the staging branch). A
+  # plain push:[main] fires exactly once per promote-merge, and every commit-SHA ref in
+  # the job resolves to `github.sha` (= main HEAD) under the push event.
   push:
-    branches: [staging]
+    branches: [main]
 
 env:
   GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -67,16 +78,15 @@ jobs:
     name: Semver Agent — deployment-api
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Only run when Quality Gates passed (workflow_run path) — never on failure;
-    # the push:[staging] path is implicitly gated (staging is only updated by a
-    # green LDR→staging promotion / admin reconcile).
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'push'
+    # push:[main] is implicitly gated: `main` is only updated by a green, v2-required
+    # LDR→main promote PR (or an admin reconcile), so the tree is already validated.
+    if: github.event_name == 'push'
 
     steps:
-      - name: Checkout repo at staging commit
+      - name: Checkout repo at main commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
@@ -96,23 +106,23 @@ jobs:
             codex/10-audit/
 
       # ── BUMP-RATE CIRCUIT BREAKER (incident 2026-06-10: instruments-service runaway
-      # 0.3.0→0.30.0 at 1 bump/min). A dead baseline writer (PM update-repo-version)
-      # freezes staging_versions → the range-based chore-skip never fires → every
-      # QG-green re-bumps forever. A runaway must SELF-HALT, not wait for a human to
-      # notice version 0.30.0. "Pending bump" = a `chore(release): bump version to X`
-      # commit on staging in the last hour (the bump exists but its release never
-      # completed — a healthy cycle records the baseline + promotes before the next).
-      # ≥3 pending bumps (or ≥3 consecutive at the staging tip, clock-skew independent)
-      # → REFUSE to compute/dispatch another bump + page CRITICAL + fail the run loudly.
+      # 0.3.0→0.30.0 at 1 bump/min). A dead baseline freezes the released version → the
+      # range-based chore-skip never fires → every QG-green re-bumps forever. A runaway
+      # must SELF-HALT, not wait for a human to notice version 0.30.0. "Pending bump" =
+      # a `chore(release): bump version to X` commit on main in the last hour (legacy
+      # path — a healthy cycle records the baseline before the next; git-tag repos mint a
+      # v* TAG instead, counted separately below). ≥3 pending bumps (or ≥3 consecutive at
+      # the main tip, clock-skew independent) → REFUSE to compute/dispatch another bump +
+      # page CRITICAL + fail the run loudly.
       # Plan: plans/active/issues/semver_version_bump_skip_ci_promotion_block_2026_06_09.md §15.
-      - name: Bump-rate circuit breaker (≥3 pending bumps on staging)
+      - name: Bump-rate circuit breaker (≥3 pending bumps on main)
         run: |
           set -euo pipefail
 
-          # Scan the LIVE staging tip, not the (possibly stale) workflow_run head_sha —
+          # Scan the LIVE main tip, not the (possibly stale) triggering github.sha —
           # during a runaway, newer bump commits land between trigger and execution.
-          git fetch origin staging --quiet 2>/dev/null || true
-          SCAN_REF=$(git rev-parse --verify --quiet origin/staging || echo "HEAD")
+          git fetch origin main --quiet 2>/dev/null || true
+          SCAN_REF=$(git rev-parse --verify --quiet origin/main || echo "HEAD")
 
           RECENT_BUMPS=$(git log --since="1 hour ago" --format=%s "$SCAN_REF" 2>/dev/null \
             | grep -cE '^chore\(release\): bump version to ' || true)
@@ -130,9 +140,9 @@ jobs:
           # immediately-newer neighbour is ALSO a bump (no content commit between)
           # is the genuine runaway signature (the baseline never recorded, so the
           # bump re-fires on itself). A HEALTHY high-velocity repo bumps ONCE per
-          # LDR->staging drain — each bump preceded by a real `feat:`/`fix:` drain
+          # LDR->main promote — each bump preceded by a real `feat:`/`fix:` promote
           # commit — yielding a strictly-climbing version sequence with ZERO
-          # adjacent bump pairs. The */15 drain cadence alone produces up to ~4
+          # adjacent bump pairs. The */15 promote cadence alone produces up to ~4
           # legitimate bumps/hr, so the pre-2026-06-21 raw `RECENT_BUMPS>=3/hr`
           # count false-tripped on exactly that interleaved climb (incident:
           # deployment-service 0.15->0.16->0.17, 1-consecutive-at-tip, 2026-06-21).
@@ -172,7 +182,7 @@ jobs:
           # A content-backed climbing sequence has 0 re-bump pairs => never trips.
           if [ "$REBUMP_PAIRS" -ge 2 ] || [ "$CONSECUTIVE" -ge 3 ] || [ "$RECENT_BUMPS" -ge 6 ]; then
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            TEXT=":rotating_light: *CRITICAL — semver-agent BUMP-RATE CIRCUIT BREAKER tripped* | deployment-api | runaway re-bump signature on staging: ${REBUMP_PAIRS} adjacent re-bump pair(s) / ${CONSECUTIVE} consecutive at tip / ${RECENT_BUMPS} bump(s)/hr (trip: pairs>=2 OR consecutive>=3 OR rate>=6). A bump with NO content commit between it and the prior bump => the baseline never recorded. Check the PM baseline writer (update-repo-version.yml) health + staging_versions[deployment-api]. REFUSING to dispatch another bump. ${RUN_URL}"
+            TEXT=":rotating_light: *CRITICAL — semver-agent BUMP-RATE CIRCUIT BREAKER tripped* | deployment-api | runaway re-bump signature on main: ${REBUMP_PAIRS} adjacent re-bump pair(s) / ${CONSECUTIVE} consecutive at tip / ${RECENT_BUMPS} bump(s)/hr (trip: pairs>=2 OR consecutive>=3 OR rate>=6). A bump with NO content commit between it and the prior bump => the baseline never recorded. For git-tag repos check the latest v* tag vs the manifest versions[deployment-api]; for legacy repos check the PM baseline writer (update-repo-version.yml). REFUSING to dispatch another bump. ${RUN_URL}"
             # Best-effort page on the canonical #ci-failures webhook; the loud signal is
             # the run failure either way (a missing webhook must not mask the halt).
             case "${SLACK_WEBHOOK_URL:-}" in
@@ -189,7 +199,7 @@ jobs:
                 severity:"CRITICAL", conclusion:"", run_url:$ru, message:$t}' \
               >> "$RUNNER_TEMP/semver_alert_ledger.jsonl" || true
             echo "SEMVER_ALERT_EMITTED=1" >> "$GITHUB_ENV"
-            echo "::error::Bump-rate circuit breaker: ${REBUMP_PAIRS} adjacent re-bump pair(s) / ${CONSECUTIVE} consecutive at staging tip / ${RECENT_BUMPS} bumps/hr (trip: pairs>=2 OR consecutive>=3 OR rate>=6). Refusing to dispatch another bump."
+            echo "::error::Bump-rate circuit breaker: ${REBUMP_PAIRS} adjacent re-bump pair(s) / ${CONSECUTIVE} consecutive at main tip / ${RECENT_BUMPS} bumps/hr (trip: pairs>=2 OR consecutive>=3 OR rate>=6). Refusing to dispatch another bump."
             exit 1
           fi
 
@@ -200,7 +210,7 @@ jobs:
         env:
           # Pass the triggering commit message via env — never inline $\{\{ \}\} in run:
           # (a multi-line / quoted commit message would break the shell or inject).
-          TRIGGER_COMMIT_MSG: ${{ github.event.head_commit.message || github.event.workflow_run.head_commit.message }}
+          TRIGGER_COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
 
@@ -224,7 +234,7 @@ jobs:
           esac
 
           echo "=== Semver Agent: deployment-api ==="
-          echo "Triggered by Quality Gates passing on staging (SHA: ${{ github.event.workflow_run.head_sha || github.sha }})"
+          echo "Triggered by push to main (SHA: ${{ github.sha }})"
 
           # ── semver_policy check: read from PM manifest ──
           PM_MANIFEST_POLICY=$(gh api "repos/${GH_ORG}/unified-trading-pm/contents/workspace-manifest.json" \
@@ -260,7 +270,7 @@ jobs:
             echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
             echo "bump=patch" >> "$GITHUB_OUTPUT"
             echo "bump_reason=always_patch policy (no label check)" >> "$GITHUB_OUTPUT"
-            SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+            SHA="${{ github.sha }}"
             OWNER="${{ github.repository_owner }}"
             gh api POST "/repos/${OWNER}/deployment-api/statuses/${SHA}" \
               --field state=success \
@@ -275,7 +285,7 @@ jobs:
                 -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
                 -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/${OWNER}/unified-trading-pm/dispatches" \
-                -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"staging\", \"commit_sha\": \"${SHA}\", \"is_breaking\": \"false\"}}") || HTTP_STATUS="000"
+                -d "{\"event_type\": \"version-bump\", \"client_payload\": {\"repo\": \"deployment-api\", \"version\": \"${NEW_VERSION}\", \"branch\": \"main\", \"commit_sha\": \"${SHA}\", \"is_breaking\": \"false\"}}") || HTTP_STATUS="000"
               if [ "$HTTP_STATUS" = "204" ]; then
                 DISPATCH_OK="true"
                 echo "Dispatched successfully to unified-trading-pm (always_patch, attempt ${ATTEMPT})"
@@ -287,7 +297,7 @@ jobs:
             done
             if [ "$DISPATCH_OK" != "true" ]; then
               RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | deployment-api v${NEW_VERSION} (always_patch) | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM staging_versions baseline will NOT record ${NEW_VERSION} → re-bump-loop fuel. Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
+              TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | deployment-api v${NEW_VERSION} (always_patch) | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM versions baseline will NOT record ${NEW_VERSION} → re-bump-loop fuel. Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
               case "${SLACK_WEBHOOK_URL:-}" in
                 https://*)
                   curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
@@ -306,27 +316,39 @@ jobs:
             exit 0
           fi
 
-          # ── Step 1: Read staging_versions baseline from PM workspace-manifest.json ──
+          # ── Step 1: Determine the last-released baseline version ──
+          # git-tag repos: the latest v* TAG is the authoritative last-released version —
+          # self-contained, immune to PM-manifest staleness (the dormant staging_versions
+          # map is frozen post-cutover; e.g. UTL read 0.43.0 there vs a live 0.56.0 tag,
+          # which would have scanned ~13 versions of ancient history → a spurious breaking/
+          # minor over-bump, exactly the 2026-06-09 cascade class). Legacy repos: read the
+          # stable `versions` map from PM's workspace-manifest.json — the map that
+          # update-repo-version.yml writes on the branch=main dispatch this workflow now sends.
           echo ""
-          echo "--- Step 1: Reading staging_versions baseline from PM ---"
+          echo "--- Step 1: Reading last-released baseline ---"
 
-          PM_MANIFEST=$(gh api "repos/${GH_ORG}/unified-trading-pm/contents/workspace-manifest.json" \
-            --jq '.content' | base64 -d 2>/dev/null || echo "")
-
-          if [ -n "$PM_MANIFEST" ]; then
-            BASELINE=$(echo "$PM_MANIFEST" | python3 -c "
+          if [ "$VERSION_SOURCE" = "git-tag" ]; then
+            git fetch origin --tags --quiet 2>/dev/null || true
+            BASELINE=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//' || echo "")
+            [ -z "$BASELINE" ] && BASELINE="0.0.0"
+            echo "Baseline (latest git tag) for deployment-api: $BASELINE"
+          else
+            PM_MANIFEST=$(gh api "repos/${GH_ORG}/unified-trading-pm/contents/workspace-manifest.json" \
+              --jq '.content' | base64 -d 2>/dev/null || echo "")
+            if [ -n "$PM_MANIFEST" ]; then
+              BASELINE=$(echo "$PM_MANIFEST" | python3 -c "
           import json, sys
           m = json.load(sys.stdin)
-          staging = m.get('staging_versions', {})
-          v = staging.get('deployment-api', '')
+          versions = m.get('versions', {})
+          v = versions.get('deployment-api', '')
           print(v if v else '0.0.0')
           " 2>/dev/null || echo "0.0.0")
-          else
-            echo "WARNING: Could not fetch PM manifest — defaulting baseline to 0.0.0"
-            BASELINE="0.0.0"
+            else
+              echo "WARNING: Could not fetch PM manifest — defaulting baseline to 0.0.0"
+              BASELINE="0.0.0"
+            fi
+            echo "Baseline (PM versions map) for deployment-api: $BASELINE"
           fi
-
-          echo "Baseline staging version for deployment-api: $BASELINE"
 
           # ── Step 2: Determine commit range for diff ──
           echo ""
@@ -487,7 +509,7 @@ jobs:
           echo "Resolved bump category: $BUMP"
 
           # ── Label vs API diff mismatch check ──
-          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          SHA="${{ github.sha }}"
           OWNER="${{ github.repository_owner }}"
 
           # Determine what the commit message signals
@@ -510,11 +532,15 @@ jobs:
 
           if [ "$EXPECTED_FROM_LABEL" != "none" ] && [ "$EXPECTED_FROM_LABEL" != "$BUMP" ]; then
             echo "MISMATCH: commit label says $EXPECTED_FROM_LABEL but API diff resolves $BUMP"
-            echo "Posting FAILING commit status to block staging-to-main promotion."
+            echo "Posting ADVISORY (non-blocking) semver-agent/label-check status on the main HEAD."
+            # label-check is ADVISORY only (cicd_mvp Phase 1) — it is NOT a required check, so a
+            # failure status here surfaces the mismatch on the main commit for visibility but
+            # never blocks promotion (the promote PR already merged on v2+SIT). We still skip the
+            # bump on a mismatch so a mislabelled commit does not mint a wrong-magnitude version.
             gh api POST "/repos/${OWNER}/deployment-api/statuses/${SHA}" \
               --field state=failure \
               --field context="semver-agent/label-check" \
-              --field description="Label mismatch: commit says ${EXPECTED_FROM_LABEL}, API diff says ${BUMP}. Fix commit message and re-push to staging." || true
+              --field description="Label mismatch (advisory): commit says ${EXPECTED_FROM_LABEL}, API diff says ${BUMP}. Fix the commit message on the next change." || true
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           else
@@ -605,7 +631,7 @@ jobs:
           **Current version:** \`$CURRENT\`
           **Proposed version:** \`$NEXT\`
           **Reason:** $BUMP_REASON
-          **Triggered by:** Quality Gates passing on \`staging\` (SHA: \`${{ github.event.workflow_run.head_sha || github.sha }}\`)
+          **Triggered by:** A commit landing on \`main\` (SHA: \`${{ github.sha }}\`)
 
           ---
 
@@ -677,7 +703,7 @@ jobs:
           set -euo pipefail
 
           # Phase-2 (D13): "git-tag" repos mint a vX.Y.Z tag (zero pyproject commits);
-          # legacy repos write the version line to pyproject.toml on staging.
+          # legacy repos write the version line to pyproject.toml on main.
           VERSION_SOURCE="git-tag"
           NEW_VERSION="${{ steps.compute.outputs.new_version }}"
           CURRENT="${{ steps.compute.outputs.current_version }}"
@@ -700,7 +726,12 @@ jobs:
             git push origin "v${NEW_VERSION}"
             echo "Tagged + pushed v${NEW_VERSION}"
           else
-            # Legacy static-version repo: sed the version line + chore(release) commit to staging.
+            # Legacy static-version repo: sed the version line + chore(release) commit to main.
+            # (No repo uses this path today — all Python repos are version_source=git-tag — but
+            # keep it consistent with the main trigger so it never commits to dormant staging;
+            # a re-introduced legacy repo would need the bot to have main-push rights, same as it
+            # needed staging-push rights before. The compute-step chore-skip makes the resulting
+            # push:[main] re-trigger loop-safe.)
             # Replace the version line in pyproject.toml (anchored to the CURRENT value the
             # compute step read, so we never touch a dependency version line by accident).
             if ! grep -qE "^version = \"${CURRENT}\"" pyproject.toml; then
@@ -720,16 +751,16 @@ jobs:
             git add pyproject.toml
             git commit -m "chore(release): bump version to ${NEW_VERSION}"
 
-            # Push to staging. The job checked out the staging head_sha (detached); push the
-            # commit explicitly to refs/heads/staging. Retry once on a benign non-FF race
-            # (another commit landed on staging since checkout) by rebasing onto it.
-            git fetch origin staging --quiet
-            if ! git push origin "HEAD:refs/heads/staging"; then
-              echo "Non-FF push to staging — rebasing onto origin/staging and retrying once."
-              git rebase origin/staging
-              git push origin "HEAD:refs/heads/staging"
+            # Push to main. The job checked out the main head_sha (detached); push the
+            # commit explicitly to refs/heads/main. Retry once on a benign non-FF race
+            # (another commit landed on main since checkout) by rebasing onto it.
+            git fetch origin main --quiet
+            if ! git push origin "HEAD:refs/heads/main"; then
+              echo "Non-FF push to main — rebasing onto origin/main and retrying once."
+              git rebase origin/main
+              git push origin "HEAD:refs/heads/main"
             fi
-            echo "Committed + pushed chore(release): bump version to ${NEW_VERSION} on staging."
+            echo "Committed + pushed chore(release): bump version to ${NEW_VERSION} on main."
           fi
 
       - name: Dispatch version-bump to unified-trading-pm
@@ -739,15 +770,15 @@ jobs:
 
           REPO="deployment-api"
           VERSION="${{ steps.compute.outputs.new_version }}"
-          BRANCH="staging"
-          COMMIT_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          BRANCH="main"
+          COMMIT_SHA="${{ github.sha }}"
           OWNER="${{ github.repository_owner }}"
 
           IS_BREAKING="${{ steps.compute.outputs.is_breaking }}"
           echo "Dispatching version-bump: repo=$REPO version=$VERSION branch=$BRANCH commit_sha=$COMMIT_SHA is_breaking=$IS_BREAKING"
 
           # Baseline-writer SPOF hardening (incident 2026-06-10): a lost version-bump
-          # dispatch freezes the PM staging_versions baseline → fuels the re-bump loop.
+          # dispatch freezes the PM versions baseline → fuels the re-bump loop.
           # Retry up to 3× with backoff; on final failure page CRITICAL (the silent
           # single-shot failure was the SPOF). Plan: semver_version_bump_skip_ci_promotion_block §15.
           HTTP_STATUS=""
@@ -770,7 +801,7 @@ jobs:
 
           if [ "$DISPATCH_OK" != "true" ]; then
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | deployment-api v${VERSION} | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM staging_versions baseline will NOT record ${VERSION} → every future QG-green on staging may re-bump (runaway-loop fuel, incident 2026-06-10). Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
+            TEXT=":rotating_light: *CRITICAL — semver-agent version-bump dispatch FAILED* | deployment-api v${VERSION} | dispatch to unified-trading-pm returned HTTP ${HTTP_STATUS} after 3 attempts. The PM versions baseline will NOT record ${VERSION} → every future QG-green on main may re-bump (runaway-loop fuel, incident 2026-06-10). Re-dispatch manually + check update-repo-version.yml health. ${RUN_URL}"
             case "${SLACK_WEBHOOK_URL:-}" in
               https://*)
                 curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
@@ -836,7 +867,7 @@ jobs:
           fi
 
       # ── SLACK NOTIFY (#ci-failures) — FAILURE-ONLY ───────────────────────────
-      # A routine pre-SIT SUCCESS post is pure lifecycle noise: semver-agent runs on EVERY staging
+      # A routine SUCCESS post is pure lifecycle noise: semver-agent runs on EVERY main
       # promotion, so a green run carries no signal (operator 2026-06-24 — "don't tell me something
       # succeeded if there was no previous failure"). The genuine semver failure modes (bump-rate
       # circuit-breaker / schema-dispatch failure) already curl their own DETAILED severity:CRITICAL
@@ -850,9 +881,9 @@ jobs:
           STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          # semver-agent always runs on staging branch. Failure-only (see `if:` above) — STATUS is
+          # semver-agent always runs on the main branch. Failure-only (see `if:` above) — STATUS is
           # never `success` here, so the text is unambiguously a failure alert.
-          TEXT=":red_circle: *semver-agent FAILED* | deployment-api | ${STATUS} | branch: staging (pre-SIT) — version-bump / schema-dispatch / push step failed — ${RUN_URL}"
+          TEXT=":red_circle: *semver-agent FAILED* | deployment-api | ${STATUS} | branch: main (post-promote) — version-bump / schema-dispatch / tag-mint step failed — ${RUN_URL}"
           # Best-effort -- never fail the run on a missing/misconfigured webhook.
           case "${SLACK_WEBHOOK_URL:-}" in
             https://*)
