@@ -8,6 +8,7 @@ cache initialization, and resource cleanup.
 import asyncio
 import json
 import logging
+import sys
 from contextlib import asynccontextmanager, suppress
 from typing import cast
 
@@ -190,6 +191,18 @@ def _release_deployment_locks() -> None:
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     global _background_task, _shutdown_event, _events_drain_task, _prewarm_task, _catalogue_lifecycle_warm_task
+
+    # TEMP DIAGNOSTIC (deployment_registry_reaper_not_draining_stale_entries_2026_07_24.md): prod
+    # shows TOTAL stdout/stderr silence for this revision (zero application log lines of ANY kind,
+    # not just reaper-related) despite both prior root causes (wrong gunicorn file, CancelledError)
+    # being confirmed fixed. Writing directly to stderr (a bare print call is codex-banned in
+    # production code) bypasses the `logging` module entirely — if this line is absent from Cloud
+    # Logging, the problem is stdout/stderr capture / lifespan never running; if it IS present but
+    # the logger.info() calls below still aren't, the problem is `logging` module configuration
+    # (e.g. a dictConfig with disable_existing_loggers=True wiping the basicConfig() handler set
+    # at main.py import time, before gunicorn forks workers).
+    sys.stderr.write("[STARTUP-DIAGNOSTIC] lifespan entered\n")
+    sys.stderr.flush()
 
     async with fastapi_uei_lifespan("deployment-api", entrypoint="gunicorn/uvicorn"):
         # Startup
