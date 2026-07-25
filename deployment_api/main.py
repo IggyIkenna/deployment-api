@@ -43,6 +43,7 @@ from deployment_api.middleware import (
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
+    _reap_scheduler,
     artifacts,
     backfill_launch,
     builds,
@@ -270,6 +271,10 @@ _authenticated_router.include_router(client_treasury.router, prefix="/api", tags
 # Kill-switch router already declares /api/kill-switch prefix + verify_api_key
 # dependency internally; include directly on app so we don't double-gate.
 app.include_router(kill_switch_routes.router)
+# Cloud Scheduler reap-tick: OIDC-authed internally (verify_reap_scheduler_oidc), NOT
+# verify_any_auth (X-API-Key/Firebase is the wrong scheme for a machine-to-machine
+# Cloud Scheduler caller) — include directly on app, not under _authenticated_router.
+app.include_router(_reap_scheduler.router, prefix="/api", tags=["Deployment Registry Reaper"])
 app.include_router(_authenticated_router)
 
 

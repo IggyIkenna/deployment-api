@@ -131,6 +131,16 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Service account email for deployments",
     )
 
+    # Cloud Scheduler -> POST /api/internal/reap-tick OIDC invoker identity (config, not a secret —
+    # this is checked AGAINST the caller's Google-signed OIDC token, not used to authenticate
+    # outbound; empty = the endpoint refuses every caller). See
+    # deployment_registry_reaper_not_draining_stale_entries_2026_07_24.md.
+    reap_scheduler_invoker_sa: str = Field(
+        default="",
+        validation_alias=AliasChoices("REAP_SCHEDULER_INVOKER_SA"),
+        description="Expected SA email on the OIDC token Cloud Scheduler presents to /api/internal/reap-tick",
+    )
+
     # AWS CodeBuild build-status reader (repo-CI Image column, ?provider=aws). Config, not secrets.
     aws_codebuild_region: str = Field(
         default="ap-northeast-1",
