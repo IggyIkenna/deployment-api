@@ -181,6 +181,15 @@ SPORTS_DATA_TYPE_META: dict[str, dict[str, object]] = {
         "axis": "per_league_per_fixture_date",
         "unit": "fixture_dates",
     },
+    # Understat shot-level data — same 5 leagues, same per-(date,league) atom as XG.
+    # Registered 2026-07-26 (was absent, so the Data Status tab filtered it out
+    # entirely — see plans/active/issues/understat_bulk_download_backfill_2026_06_29.md §5).
+    "XG_SHOTS": {
+        "source": "understat",
+        "classifications": ("Prediction",),
+        "axis": "per_league_per_fixture_date",
+        "unit": "fixture_dates",
+    },
     # Transfermarkt — 55 leagues (Prediction 33 + Features 22).
     # PLAYER_VALUES is a weekly periodic snapshot from transfermarkt, not a
     # per-fixture-date feed. The 2026-04-29 reconciliation deleted 167k phantom
