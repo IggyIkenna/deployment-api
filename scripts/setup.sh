@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Epic: deployment_and_user_management_master
+# Epic: infrastructure_master
 # Lifecycle: permanent
 # Delete-when: NA
 # CANONICAL SETUP — unified-trading-system
@@ -21,12 +21,13 @@
 #
 #   ── REPO TYPE DETECTION (runs first) ──────────────────────────────────────
 #   Detects repo type before any setup steps:
-#     UI repo:     package.json present, no pyproject.toml → npm install path
+#     UI repo:     package.json present, no pyproject.toml → npm/pnpm/yarn install path
+#                  (auto-detected from lock file: pnpm-lock.yaml > yarn.lock > package-lock.json)
 #     Python repo: pyproject.toml present → Python venv path (steps 1-13)
 #
 #   ── UI REPO PATH (React/TypeScript) ───────────────────────────────────────
 #   UI.1. Check Node.js version
-#   UI.2. Run npm install (idempotent: skips if node_modules newer than package.json)
+#   UI.2. Run <pkg-mgr> install (auto-detected: pnpm/yarn/npm; idempotent: skips if node_modules newer than lock file)
 #   UI.3. Check TypeScript / tsc available
 #   UI.4. Build library dist/ if missing (only for repos where "main" points to dist/)
 #         Library repos (e.g. unified-trading-ui-kit) have dist/ gitignored; consumers
@@ -162,17 +163,30 @@ fi
 ISSUES=0
 
 # ── REPO TYPE DETECTION ─────────────────────────────────────────────────────
-# UI repos (React/TypeScript): have package.json, no pyproject.toml
-# Python repos: have pyproject.toml (may also have package.json for tooling)
+# UI repos (React/TypeScript): have package.json + EITHER no pyproject.toml, OR a
+#   CONFIG-ONLY pyproject (tooling sections only — no [build-system], no [project] →
+#   no installable package, no declared deps; e.g. unified-trading-system-ui per
+#   tooling_config_standardization_2026_05_26.md). For the config-only case the Python
+#   is stdlib-only codemods under scripts/ + ruff/basedpyright run from the workspace
+#   venv — there is nothing to `uv pip install -e .` (no build backend → setuptools
+#   flat-layout discovery chokes on app/lib/hooks/… → exit 1, and `set -e` quickmerge
+#   then aborts). So take the Node/UI path: npm install, no per-repo venv.
+# Python repos: have a pyproject.toml WITH a [build-system] or [project] (installable
+#   package / declared deps), and run the venv path below.
 IS_UI_REPO=false
-if [ -f "package.json" ] && [ ! -f "pyproject.toml" ]; then
-    IS_UI_REPO=true
+if [ -f "package.json" ]; then
+    if [ ! -f "pyproject.toml" ]; then
+        IS_UI_REPO=true
+    elif ! grep -qE '^\[build-system\]' pyproject.toml && ! grep -qE '^\[project\]' pyproject.toml; then
+        echo -e "  ${BLUE}Config-only pyproject (no [build-system]/[project]) — Node/tooling repo, taking UI path${NC}"
+        IS_UI_REPO=true
+    fi
 fi
 
 # ── UI REPO FLOW ─────────────────────────────────────────────────────────────
 # For UI repos, skip all Python steps and run npm install instead, then exit.
 if [ "$IS_UI_REPO" = true ]; then
-    echo -e "  ${BLUE}UI repo detected (package.json, no pyproject.toml)${NC}"
+    echo -e "  ${BLUE}UI repo detected (Node toolchain — package.json)${NC}"
 
     log_step "Node.js version"
     if command -v node &>/dev/null; then
@@ -184,30 +198,53 @@ if [ "$IS_UI_REPO" = true ]; then
         [ "$CHECK_ONLY" = true ] || exit 1
     fi
 
-    log_step "npm / node_modules"
+    # Detect package manager from lock-file (SSOT: whichever lock file is committed).
+    # pnpm-lock.yaml → pnpm, yarn.lock → yarn, else default to npm.
+    if [ -f "pnpm-lock.yaml" ]; then
+        PKG_MGR="pnpm"
+        PKG_LOCK="pnpm-lock.yaml"
+        PKG_INSTALL_ARGS="install --silent"
+    elif [ -f "yarn.lock" ]; then
+        PKG_MGR="yarn"
+        PKG_LOCK="yarn.lock"
+        PKG_INSTALL_ARGS="install --silent"
+    else
+        PKG_MGR="npm"
+        PKG_LOCK="package-lock.json"
+        PKG_INSTALL_ARGS="install --silent --legacy-peer-deps"
+    fi
+
+    log_step "$PKG_MGR / node_modules"
     if [ "$IN_CI" = true ]; then
         log_skip "CI mode — dependencies managed by CI"
     elif [ "$CHECK_ONLY" = true ]; then
         if [ -d "node_modules" ]; then
             log_ok "node_modules exists"
         else
-            log_fail "node_modules missing — run: npm install"
+            log_fail "node_modules missing — run: $PKG_MGR install"
             ISSUES=$((ISSUES + 1))
         fi
-    elif [ -d "node_modules" ] && [ "$FORCE" != true ]; then
-        # Re-install when package.json is newer than package-lock.json (reliable: lock file is
-        # only updated by a *successful* npm install, so any edit to package.json will trigger
-        # reinstall here even if node_modules dir mtime was touched by a failed prior install).
-        if [ ! -f "package-lock.json" ] || [ "package.json" -nt "package-lock.json" ]; then
-            log_warn "package.json changed (or no lock file) — running npm install"
-            npm install --silent --legacy-peer-deps
-            log_ok "npm install complete"
-        else
-            log_skip "node_modules up to date (package-lock.json in sync)"
-        fi
     else
-        npm install --silent --legacy-peer-deps
-        log_ok "npm install complete"
+        if ! command -v "$PKG_MGR" &>/dev/null; then
+            log_fail "$PKG_MGR not found — install: npm install -g $PKG_MGR (lock file $PKG_LOCK present)"
+            ISSUES=$((ISSUES + 1))
+            [ "$CHECK_ONLY" = true ] || exit 1
+        fi
+        if [ -d "node_modules" ] && [ "$FORCE" != true ]; then
+            # Re-install when package.json is newer than the lock file (reliable: lock file is
+            # only updated by a *successful* install, so any edit to package.json will trigger
+            # reinstall here even if node_modules dir mtime was touched by a failed prior install).
+            if [ ! -f "$PKG_LOCK" ] || [ "package.json" -nt "$PKG_LOCK" ]; then
+                log_warn "package.json changed (or no $PKG_LOCK) — running $PKG_MGR install"
+                $PKG_MGR $PKG_INSTALL_ARGS
+                log_ok "$PKG_MGR install complete"
+            else
+                log_skip "node_modules up to date ($PKG_LOCK in sync)"
+            fi
+        else
+            $PKG_MGR $PKG_INSTALL_ARGS
+            log_ok "$PKG_MGR install complete"
+        fi
     fi
 
     log_step "TypeScript / build tools"
@@ -238,10 +275,10 @@ if [ "$IS_UI_REPO" = true ]; then
             fi
             if [ "$DIST_EMPTY" = true ] || [ "$FORCE" = true ]; then
                 log_step "Build library dist/ (main points to dist/, dist/ missing or empty)"
-                if npm run build --silent 2>&1; then
-                    log_ok "npm run build complete — dist/ ready"
+                if $PKG_MGR run build --silent 2>&1; then
+                    log_ok "$PKG_MGR run build complete — dist/ ready"
                 else
-                    log_warn "npm run build failed — consumers may fail to import; run: npm run build"
+                    log_warn "$PKG_MGR run build failed — consumers may fail to import; run: $PKG_MGR run build"
                     ISSUES=$((ISSUES + 1))
                 fi
             else
@@ -261,7 +298,7 @@ if [ "$IS_UI_REPO" = true ]; then
         echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
         echo "  Next steps:"
-        echo "    npm run dev                            # Start dev server"
+        echo "    $PKG_MGR run dev                          # Start dev server"
         echo "    bash scripts/quality-gates.sh          # Run quality gates"
         echo "    bash scripts/quickmerge.sh \"message\"   # Full merge pipeline"
         echo ""
@@ -356,11 +393,20 @@ if [ "$IN_CI" = true ]; then
     log_skip "CI mode"
 elif [ "$CHECK_ONLY" = true ]; then
     command -v uv &>/dev/null && log_ok "uv available" || { log_fail "uv not found"; ISSUES=$((ISSUES + 1)); }
-elif command -v uv &>/dev/null; then
-    log_skip "uv already installed ($(uv --version 2>&1 | head -1))"
+# uv is pinned for lockfile determinism — an unpinned uv reformats uv.lock (revision bump)
+# even with identical deps, dirtying trees + jamming the FF-pull cron.
+# SSOT for the pin: plans/active/uv_lockfile_determinism_2026_06_02.md (Phase 1 will move
+# this constant into resolve-canonical-versions.py so it is read, not hardcoded in 3 places).
+elif command -v uv &>/dev/null && uv --version 2>&1 | grep -q '0\.10\.8'; then
+    log_skip "uv 0.10.8 already installed (pinned)"
+elif command -v curl &>/dev/null; then
+    # uv-managed CPython has no pip; a pip-installed uv wouldn't replace the active binary either.
+    curl -LsSf "https://astral.sh/uv/0.10.8/install.sh" | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh >/dev/null 2>&1
+    hash -r
+    log_ok "Installed/realigned uv 0.10.8 (pinned, astral installer)"
 else
-    "$PYTHON_CMD" -m pip install uv --quiet 2>/dev/null
-    log_ok "Installed uv"
+    "$PYTHON_CMD" -m pip install uv==0.10.8 --quiet 2>/dev/null || pip install uv==0.10.8 --quiet 2>/dev/null
+    log_ok "Installed uv 0.10.8 (pinned, pip fallback)"
 fi
 
 # ── [4] VENV CREATION ──────────────────────────────────────────────────────
@@ -530,6 +576,11 @@ elif [ "$CHECK_ONLY" = true ]; then
     log_skip "Check mode"
 elif [ ! -f "pyproject.toml" ]; then
     log_skip "No pyproject.toml"
+elif ! grep -qE '^\[build-system\]' pyproject.toml; then
+    # Config-only pyproject (no [build-system] → not an installable package; e.g. PM, or a
+    # frontend repo's tooling-only pyproject that reaches the Python path). `uv pip install -e .`
+    # has no build backend and would fail setuptools flat-layout discovery — nothing to install.
+    log_skip "Config-only pyproject (no [build-system]) — no installable package"
 else
     if ! uv pip install -e . --quiet 2>/dev/null; then
         log_fail "Project editable install failed — check pyproject.toml and uv.lock"
