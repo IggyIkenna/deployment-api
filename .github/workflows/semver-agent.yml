@@ -719,8 +719,17 @@ jobs:
             git config user.name "semver-agent[bot]"
             git config user.email "semver-rollout[bot]@users.noreply.github.com"
             if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
-              echo "Tag v${NEW_VERSION} already exists — idempotent, nothing to do."
-              exit 0
+              # Existence alone isn't proof this is a genuine re-run: a same-name tag can exist on
+              # an unreachable commit (e.g. a manual one-off tagged on the LDR/backmerge side of the
+              # promotion boundary, never an ancestor of main's own squash-commit chain — see
+              # hatch_vcs_main_tag_ancestry_gap_breaks_cross_repo_pip_install_2026_07_26.md). Treating
+              # that as idempotent silently wedges every future mint at the same NEW_VERSION forever.
+              if git merge-base --is-ancestor "v${NEW_VERSION}" HEAD 2>/dev/null; then
+                echo "Tag v${NEW_VERSION} already exists and is an ancestor of HEAD — idempotent, nothing to do."
+                exit 0
+              fi
+              echo "::error::Tag v${NEW_VERSION} exists but is NOT an ancestor of HEAD — stale/unreachable same-name tag, not a genuine re-run. Refusing to silently no-op or force-move a shared ref (that needs human reconciliation, see hatch_vcs_main_tag_ancestry_gap_breaks_cross_repo_pip_install_2026_07_26.md)." >&2
+              exit 1
             fi
             git tag -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
             git push origin "v${NEW_VERSION}"
