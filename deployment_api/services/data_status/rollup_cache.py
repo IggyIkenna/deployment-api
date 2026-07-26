@@ -22,14 +22,22 @@ logger = logging.getLogger(__name__)
 
 ALL_DEFI_GHOST_VENUES: frozenset[str] = DEPRECATED_DEFI_GHOST_VENUE_NAMES
 
-# Infrastructure/oracle entries that appear in DeFi sub-buckets but are NOT
-# DeFi protocols — they pollute the chain venue breakdown. Checked on the
-# prefix (before the first "-") so both "ALCHEMY" and "ALCHEMY-ETHEREUM" match.
+# Bare, chain-less infrastructure/oracle venue strings that appear in DeFi manifest
+# rows but are NOT DeFi protocols — they pollute the chain venue breakdown. Matched
+# on the FULL venue string only (never a prefix): "ALCHEMY" is real chainless RPC-
+# provider noise (token_transfers_handler.py reads it via a bare venue="ALCHEMY"
+# instruments lookup) and must be excluded, but "ALCHEMY-ARBITRUM"/"ALCHEMY-ETHEREUM"
+# etc. are real, capability-registered ALL_DEFI_VENUES entries with genuinely
+# captured data and must NOT be excluded just because they share the "ALCHEMY"
+# prefix — a prior prefix-based match here silently stripped ANKR-ETHEREUM (LST
+# protocol) and every ALCHEMY-<chain>/COINBASE-ETHEREUM venue from the rollup venue
+# list + per-chain breakdown (found + fixed 2026-07-26,
+# defi_venue_lst_rates_residual_2026_07_24.md).
 DEFI_NON_PROTOCOL_VENUE_PREFIXES: frozenset[str] = frozenset(
     {
-        "COINBASE",  # COINBASE-SPOT — CeFi oracle source leaking from oracle-prices bucket
-        "ALCHEMY",  # gas-fee RPC provider — data tracked in gas-fees sub-bucket
-        "ANKR",  # LST staking RPC provider — data tracked in lst-rates sub-bucket
+        "COINBASE",  # bare CeFi oracle source leaking from oracle-prices bucket
+        "ALCHEMY",  # bare gas-fee/token-addr RPC provider (token_transfers_handler.py)
+        "ANKR",  # bare LST staking RPC provider label (distinct from ANKR-ETHEREUM)
         "GAS_FEES",  # data_type string appearing as venue (defensive)
     }
 )
@@ -73,9 +81,7 @@ def strip_defi_ghost_venues(cat_payload: dict[str, object]) -> dict[str, object]
 
     def _excluded(v: str) -> bool:
         prefix = v.split("-", 1)[0]
-        return (
-            v in ALL_DEFI_GHOST_VENUES or prefix in ALL_DEFI_GHOST_VENUES or prefix in DEFI_NON_PROTOCOL_VENUE_PREFIXES
-        )
+        return v in ALL_DEFI_GHOST_VENUES or prefix in ALL_DEFI_GHOST_VENUES or v in DEFI_NON_PROTOCOL_VENUE_PREFIXES
 
     venues = cat_payload.get("venues")
     if isinstance(venues, dict):

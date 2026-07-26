@@ -371,7 +371,7 @@ class DomainBreakdownsMixin(SportsStatusMixin):
                 for v in (sorted(chain_df["venue"].unique()) if not chain_df.empty else [])  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportUnknownMemberType,reportUnknownVariableType]
                 if v not in ALL_DEFI_GHOST_VENUES
                 and str(v).split("-", 1)[0] not in ALL_DEFI_GHOST_VENUES  # pyright: ignore[reportUnknownArgumentType]
-                and str(v).split("-", 1)[0] not in DEFI_NON_PROTOCOL_VENUE_PREFIXES  # pyright: ignore[reportUnknownArgumentType]
+                and str(v) not in DEFI_NON_PROTOCOL_VENUE_PREFIXES  # pyright: ignore[reportUnknownArgumentType]
             ]
 
             venue_expected_dates = self._venue_expected_dates_for_chain(

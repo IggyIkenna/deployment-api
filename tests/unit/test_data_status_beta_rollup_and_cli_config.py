@@ -90,6 +90,31 @@ def test_strip_non_defi_chains_drops_cefi_keeps_defi() -> None:
     assert rollup_cache.strip_non_defi_chains(tradfi, "TRADFI") == tradfi
 
 
+def test_strip_defi_ghost_venues_keeps_real_prefix_sharing_venues() -> None:
+    """DEFI_NON_PROTOCOL_VENUE_PREFIXES must match on the FULL bare venue string,
+    never a prefix — a prior prefix-based check silently stripped ANKR-ETHEREUM
+    (a real, capability-registered LST protocol venue with genuinely captured
+    lst_rates data) and every ALCHEMY-<chain>/COINBASE-ETHEREUM venue out of the
+    rollup venue list, just because they share a prefix with the bare noise
+    strings "ANKR"/"ALCHEMY"/"COINBASE" (found 2026-07-26,
+    defi_venue_lst_rates_residual_2026_07_24.md)."""
+    payload = {
+        "venues": {
+            "ANKR-ETHEREUM": {},
+            "ALCHEMY-ARBITRUM": {},
+            "COINBASE-ETHEREUM": {},
+            "ALCHEMY": {},  # bare noise string -- must still be excluded
+            "COINBASE": {},  # bare noise string -- must still be excluded
+            "UNISWAP_V3-ETHEREUM": {},
+        }
+    }
+    out = rollup_cache.strip_defi_ghost_venues(payload)
+    remaining = set(out["venues"])  # pyright: ignore[reportArgumentType]
+    assert {"ANKR-ETHEREUM", "ALCHEMY-ARBITRUM", "COINBASE-ETHEREUM", "UNISWAP_V3-ETHEREUM"} <= remaining
+    assert "ALCHEMY" not in remaining
+    assert "COINBASE" not in remaining
+
+
 def test_slice_rollup_strips_stale_cefi_chains_keeps_defi() -> None:
     """A pre-P7-fix rollup blob carrying ``cefi.chains=['SOLANA','ZKSYNC']`` must
     render cefi venue-only through the slicer, while defi keeps its chains — so the
