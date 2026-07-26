@@ -34,6 +34,18 @@ DEFAULT_PER_INSTRUMENT_SENTINEL_CAP: int = 50
 PER_INSTRUMENT_BREAKDOWN_MAX_SIZE: int = 20
 
 
+# bug_c_normalize_id_collision_options_futures_2026_07_22: OPTION and dated-FUTURE
+# ids embed real distinguishing identity (expiry [+ strike + side]) in the
+# @-suffix — measured 66,137x/135.9x colliding when blanket-stripped. Every other
+# instrument_type (PERPETUAL/SPOT_PAIR/COMBO measured 1.00x collision-safe; any
+# other/unrecognised type has no contrary evidence) keeps the pre-existing
+# strip-on-@ behaviour — a DENY-list, not an allow-list, so an id with no
+# derivable type segment at all (e.g. an older ``VENUE::SYMBOL`` shape still
+# used by some call sites — an empty/absent type segment is simply not in this
+# set) is unaffected.
+_AT_SUFFIX_UNSAFE_TO_STRIP_TYPES: frozenset[str] = frozenset({"OPTION", "FUTURE"})
+
+
 def _normalize_instrument_id_for_match(instrument_id: str) -> str:
     """Normalize an instrument_id for cross-service Tier-3 coverage matching.
 
@@ -55,13 +67,34 @@ def _normalize_instrument_id_for_match(instrument_id: str) -> str:
     deployment-api) called out in canonical_instrument_id_audit_2026_07_08.
     A residual mismatch after this normalization is a genuine "still
     doesn't match" case, not something this function tries to paper over.
+
+    instrument_type-aware ``@``-stripping (bug_c_normalize_id_collision_
+    options_futures_2026_07_22, direction (b)): for OPTION and dated-FUTURE
+    ids the ``@``-suffix encodes real distinguishing identity — expiry date
+    (+ strike + side for options), e.g.
+    ``DERIBIT:OPTION:BTC-USD@INV-20190405-3250-C`` — so blanket-stripping
+    collapses thousands of genuinely distinct instruments onto one key
+    (measured 66,137x for DERIBIT OPTION). The canonical id grammar
+    (``build_instrument_id``: ``VENUE:INSTRUMENT_TYPE:SYMBOL``) puts the
+    type as the SECOND colon segment, so this checks it structurally —
+    working identically for both catalogue-form and manifest-form ids
+    without a separate ``{instrument_id: instrument_type}`` lookup (which
+    would need a dict keyed on the very divergent-form ids this function
+    normalizes away). Every type OTHER than OPTION/FUTURE keeps the
+    pre-existing strip-on-``@`` behaviour (a deny-list, not an allow-list),
+    so an id with no derivable type segment (e.g. a legacy ``VENUE::SYMBOL``
+    shape) is unaffected.
     """
     if not instrument_id:
         return ""
     normalized = "".join(instrument_id.split()).upper()  # strip/collapse ALL whitespace
-    if "@" in normalized:
-        normalized = normalized.split("@", 1)[0]
-    return normalized
+    if "@" not in normalized:
+        return normalized
+    parts = normalized.split(":")
+    instrument_type = parts[1] if len(parts) >= 2 else ""
+    if instrument_type in _AT_SUFFIX_UNSAFE_TO_STRIP_TYPES:
+        return normalized
+    return normalized.split("@", 1)[0]
 
 
 def _read_cefi_catalogue_metadata(

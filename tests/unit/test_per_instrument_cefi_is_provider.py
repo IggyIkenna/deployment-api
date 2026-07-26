@@ -345,6 +345,94 @@ class TestPerInstrumentCoverageCrossServiceFormatDivergence:
         )
 
 
+class TestNormalizeInstrumentIdForMatchOptionFutureCollision:
+    """bug_c_normalize_id_collision_options_futures_2026_07_22: OPTION and dated-
+    FUTURE ids must NOT collapse onto one normalized key — their @-suffix is real
+    distinguishing identity (expiry/strike/side), not a settlement/chain tag."""
+
+    def test_option_ids_with_different_expiry_strike_side_stay_distinct(self) -> None:
+        from deployment_api.services.data_status.instrument_coverage import (
+            _normalize_instrument_id_for_match,
+        )
+
+        ids = [
+            "DERIBIT:OPTION:BTC-USD@INV-20190405-3250-C",
+            "DERIBIT:OPTION:BTC-USD@INV-20190405-3250-P",  # same expiry/strike, other side
+            "DERIBIT:OPTION:BTC-USD@INV-20260601-4500-C",  # different expiry/strike
+        ]
+        normalized = {_normalize_instrument_id_for_match(iid) for iid in ids}
+        assert len(normalized) == 3, f"OPTION ids collapsed: {normalized!r}"
+
+    def test_dated_future_ids_with_different_expiry_stay_distinct(self) -> None:
+        from deployment_api.services.data_status.instrument_coverage import (
+            _normalize_instrument_id_for_match,
+        )
+
+        ids = [
+            "DERIBIT:FUTURE:AVAX-USDC@LIN-20260401",
+            "DERIBIT:FUTURE:AVAX-USDC@LIN-20260601",
+        ]
+        normalized = {_normalize_instrument_id_for_match(iid) for iid in ids}
+        assert len(normalized) == 2, f"dated-FUTURE ids collapsed: {normalized!r}"
+
+    def test_perpetual_settlement_suffix_still_collapses_as_before(self) -> None:
+        # The fix must NOT regress the pre-existing, measured-safe PERPETUAL/
+        # SPOT_PAIR/COMBO @-strip behaviour this module relies on elsewhere.
+        from deployment_api.services.data_status.instrument_coverage import (
+            _normalize_instrument_id_for_match,
+        )
+
+        assert _normalize_instrument_id_for_match(
+            "BINANCE-FUTURES:PERPETUAL:BTC-USDT@LIN"
+        ) == _normalize_instrument_id_for_match("BINANCE-FUTURES:PERPETUAL:BTC-USDT")
+
+    def test_deribit_options_denominator_no_longer_collapses(self) -> None:
+        """Integration-level: _per_instrument_coverage's expected_shards for a
+        DERIBIT-options-shaped universe must scale with the real instrument
+        count, not collapse to a handful of normalized keys (the live
+        completion_pct=100.0%-clamp false-clean symptom)."""
+        options_universe = [
+            "DERIBIT:OPTION:BTC-USD@INV-20190405-3250-C",
+            "DERIBIT:OPTION:BTC-USD@INV-20190405-3250-P",
+            "DERIBIT:OPTION:BTC-USD@INV-20260601-4500-C",
+            "DERIBIT:OPTION:ETH-USD@INV-20260601-3000-C",
+        ]
+
+        def _options_provider(venue: str, _data_type: str) -> list[str] | None:
+            return options_universe if venue == "DERIBIT" else None
+
+        dates = ["2026-01-01"]
+        # Only ONE of the 4 options actually has a captured manifest row.
+        manifest_df = pd.DataFrame(
+            [
+                {
+                    "venue": "DERIBIT",
+                    "data_type": "options_chain",
+                    "instrument_id": options_universe[0],
+                    "date": dates[0],
+                    "capture_status": "captured",
+                }
+            ]
+        )
+
+        result = _per_instrument_coverage(
+            venue_df_ok=manifest_df,
+            venue="DERIBIT",
+            dt="options_chain",
+            expected_dates=set(dates),
+            cap=None,
+            instruments_provider=_options_provider,
+        )
+
+        # Pre-fix, all 4 options normalized to the SAME key ("DERIBIT:OPTION:
+        # BTC-USD" / "...ETH-USD"), so expected_shards collapsed to 2 (distinct
+        # keys) * 1 date instead of the true 4 * 1. Post-fix each stays distinct.
+        assert result["expected_shards"] == 4, f"denominator still collapsing: {result!r}"
+        assert result["found_shards"] == 1
+        missing_instruments: set[str] = set(result["missing_instruments"])  # type: ignore[assignment]
+        assert missing_instruments == set(options_universe[1:])
+
+
 # ---------------------------------------------------------------------------
 # Tests: _build_cefi_is_instruments_provider
 # ---------------------------------------------------------------------------
