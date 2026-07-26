@@ -5,13 +5,17 @@ Plan: features_sports_honest_coverage_2026_05_05.md, Phase 8.B.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pandas as pd
 
 from deployment_api.services.coverage_drift import (
     DRIFT_THRESHOLD_PCT,
     DriftEvent,
+    PreNotifiedDrift,
     _coverage_per_calc_league,
     detect_drift,
+    filter_pre_notified,
     known_calculators,
 )
 
@@ -235,3 +239,72 @@ class TestKnownCalculators:
 class TestThreshold:
     def test_default_threshold_is_5pt(self) -> None:
         assert DRIFT_THRESHOLD_PCT == 5.0
+
+
+class TestFilterPreNotified:
+    def _event(self, calc: str = "team_form", league_id: str = "EPL") -> DriftEvent:
+        return DriftEvent(
+            calc=calc,
+            league_id=league_id,
+            previous_coverage_pct=100.0,
+            current_coverage_pct=50.0,
+            drift_pct=50.0,
+        )
+
+    def test_no_pre_notifications_all_still_page(self) -> None:
+        events = [self._event()]
+        still_page, suppressed = filter_pre_notified(events, [])
+        assert still_page == events
+        assert suppressed == []
+
+    def test_active_pre_notification_suppresses_matching_event(self) -> None:
+        events = [self._event()]
+        now = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+        pre_notified = [
+            PreNotifiedDrift(
+                calc="team_form",
+                league_id="EPL",
+                reason="Part 3 §3.3 relabel pass in progress",
+                expires_at=now + timedelta(hours=2),
+            )
+        ]
+        still_page, suppressed = filter_pre_notified(events, pre_notified, now=now)
+        assert still_page == []
+        assert suppressed == events
+
+    def test_expired_pre_notification_does_not_suppress(self) -> None:
+        events = [self._event()]
+        now = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+        pre_notified = [
+            PreNotifiedDrift(
+                calc="team_form",
+                league_id="EPL",
+                reason="stale pre-notification from an earlier remediation",
+                expires_at=now - timedelta(hours=1),
+            )
+        ]
+        still_page, suppressed = filter_pre_notified(events, pre_notified, now=now)
+        assert still_page == events
+        assert suppressed == []
+
+    def test_pre_notification_only_suppresses_matching_calc_league_pair(self) -> None:
+        events = [self._event(calc="team_form", league_id="EPL"), self._event(calc="team_xg", league_id="LA_LIGA")]
+        now = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+        pre_notified = [
+            PreNotifiedDrift(
+                calc="team_form",
+                league_id="EPL",
+                reason="only this pair is expected to move",
+                expires_at=now + timedelta(hours=2),
+            )
+        ]
+        still_page, suppressed = filter_pre_notified(events, pre_notified, now=now)
+        assert len(still_page) == 1
+        assert still_page[0].calc == "team_xg"
+        assert len(suppressed) == 1
+        assert suppressed[0].calc == "team_form"
+
+    def test_partitions_completely(self) -> None:
+        events = [self._event(calc="a", league_id="X"), self._event(calc="b", league_id="Y")]
+        still_page, suppressed = filter_pre_notified(events, [])
+        assert len(still_page) + len(suppressed) == len(events)
