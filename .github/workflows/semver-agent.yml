@@ -719,8 +719,38 @@ jobs:
             git config user.name "semver-agent[bot]"
             git config user.email "semver-rollout[bot]@users.noreply.github.com"
             if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
-              echo "Tag v${NEW_VERSION} already exists — idempotent, nothing to do."
-              exit 0
+              # ANCESTRY-AWARE idempotency (hatch_vcs_main_tag_ancestry_gap_breaks_cross_repo_pip_install_2026_07_26):
+              # tag EXISTENCE alone is not proof this release already happened — a tag minted
+              # off-mechanism on a commit that is NOT an ancestor of `main` (e.g. an LDR-only
+              # backmerge commit) makes `rev-parse` succeed forever while `main`'s own baseline
+              # never advances past it, so every future promote recomputes the SAME NEW_VERSION and
+              # silently no-ops here ("already exists — idempotent, nothing to do.") on every run,
+              # permanently. Distinguish genuine idempotency (re-run of an already-released commit)
+              # from a version collision (the tag exists but is unreachable from this commit) via
+              # ancestry, not existence.
+              if git merge-base --is-ancestor "v${NEW_VERSION}" HEAD 2>/dev/null; then
+                echo "Tag v${NEW_VERSION} already exists AND is an ancestor of this commit — genuinely idempotent, nothing to do."
+                exit 0
+              fi
+              # Existence without ancestry = a version collision, not a re-run. Do NOT silently
+              # exit 0 (that is exactly the "green run that did nothing" failure class) and do NOT
+              # auto-move the tag (re-pointing a published release tag is an operator-reserved
+              # action, never agent-automated). Loud-fail so a human sees it.
+              RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              TEXT=":rotating_light: *CRITICAL — semver-agent TAG-ANCESTRY COLLISION* | deployment-api | computed NEW_VERSION=v${NEW_VERSION} but that tag ALREADY EXISTS on a commit that is NOT an ancestor of the current main HEAD (${{ github.sha }}) — the tag was minted off-mechanism (e.g. directly on an LDR-only commit) and main's baseline can never advance past it automatically. Every future qualifying promote will keep recomputing v${NEW_VERSION} and hitting this same collision. Requires a human decision: either re-point the existing tag onto a main-ancestor commit with the SAME content (operator-only — never agent-automated), or mint a corrected release tag. See hatch_vcs_main_tag_ancestry_gap_breaks_cross_repo_pip_install_2026_07_26.md. ${RUN_URL}"
+              case "${SLACK_WEBHOOK_URL:-}" in
+                https://*)
+                  curl -s -o /dev/null -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                    --data "$(jq -n --arg t "$TEXT" '{text:$t}')" && echo "CRITICAL page sent to Slack" || true ;;
+                *) echo "SLACK_CI_WEBHOOK_URL not set/https — cannot page; failing the run loudly instead" ;;
+              esac
+              jq -n -c --arg t "$TEXT" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg ru "$RUN_URL" \
+                '{event_type:"slack_alert", timestamp:$ts, repo:"deployment-api", workflow_name:"semver-agent",
+                  severity:"CRITICAL", conclusion:"", run_url:$ru, message:$t}' \
+                >> "$RUNNER_TEMP/semver_alert_ledger.jsonl" || true
+              echo "SEMVER_ALERT_EMITTED=1" >> "$GITHUB_ENV"
+              echo "::error::Tag v${NEW_VERSION} exists but is NOT an ancestor of this main commit — version collision, not an idempotent re-run. Refusing to silently no-op."
+              exit 1
             fi
             git tag -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
             git push origin "v${NEW_VERSION}"
