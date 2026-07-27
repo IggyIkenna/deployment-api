@@ -43,6 +43,7 @@ from deployment_api.middleware import (
 from deployment_api.utils.service_utils import get_ui_dist_dir
 
 from .routes import (
+    _idle_spend_scheduler,
     _reap_scheduler,
     artifacts,
     backfill_launch,
@@ -113,6 +114,7 @@ from .routes import (
     vm_events,
     vm_events_ws,
     vm_health,
+    vm_resource_history,
 )
 
 # MEASURED 2026-07-24: no handler was ever attached to the root logger in this process (no
@@ -235,6 +237,7 @@ _authenticated_router.include_router(vm_admin.router, prefix="/api", tags=["VM A
 _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM Health"])
+_authenticated_router.include_router(vm_resource_history.router)  # Has its own prefix /api/vm-resources
 _authenticated_router.include_router(costs.router, prefix="/api", tags=["Costs"])
 _authenticated_router.include_router(artifacts.router, prefix="/api", tags=["Artifacts"])
 _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
@@ -275,6 +278,8 @@ app.include_router(kill_switch_routes.router)
 # verify_any_auth (X-API-Key/Firebase is the wrong scheme for a machine-to-machine
 # Cloud Scheduler caller) — include directly on app, not under _authenticated_router.
 app.include_router(_reap_scheduler.router, prefix="/api", tags=["Deployment Registry Reaper"])
+# Same OIDC scheme as the reap-tick above (same invoker SA, same trust boundary).
+app.include_router(_idle_spend_scheduler.router, prefix="/api", tags=["Idle Spend Snapshot"])
 app.include_router(_authenticated_router)
 
 

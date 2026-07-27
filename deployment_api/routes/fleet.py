@@ -39,6 +39,7 @@ from deployment_api.routes._fleet_types import (
     ReapResultEntry,
     VmCensusResponse,
 )
+from deployment_api.services.operational_data_writer import write_reap_event
 from deployment_api.vm_utils import delete_vm_instance, get_disk_details, get_vm_instance_details
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,14 @@ def reap_orphans(
                 orphan.zone,
                 orphan.monthly_disk_usd,
             )
+            write_reap_event(
+                project_id,
+                vm_name=orphan.name,
+                age_hours=orphan.stopped_age_hours,
+                reclaimed_usd_per_month=orphan.monthly_disk_usd,
+                actor="fleet-api-reap",
+                dry_run=False,
+            )
         results.append(
             ReapResultEntry(
                 name=orphan.name,
@@ -209,8 +218,23 @@ def delete_instance(
             status_code=409,
             detail=f"Refusing to delete RUNNING instance {name!r}; stop it first (this endpoint is for stopped VMs)",
         )
+    # Best-effort cost/age estimate for the reap_events row — reuses the SAME orphan
+    # computation as /orphans (grace_hours=0 so any stopped VM is included, not just
+    # the reapable-per-lifecycle-policy subset this endpoint doesn't gate on).
+    inventory = build_orphan_inventory({name: details}, get_disk_details(project_id), datetime.now(UTC), 0.0)
+    matched = next((o for o in inventory.orphans if o.name == name), None)
+
     deleted = delete_vm_instance(project_id, name, zone)
     logger.warning("DELETE instance %s (%s) via fleet API → deleted=%s", name, zone, deleted)
+    if deleted:
+        write_reap_event(
+            project_id,
+            vm_name=name,
+            age_hours=matched.stopped_age_hours if matched else None,
+            reclaimed_usd_per_month=matched.monthly_disk_usd if matched else 0.0,
+            actor="fleet-api-delete-instance",
+            dry_run=False,
+        )
     return DeleteInstanceResponse(name=name, zone=zone, deleted=deleted)
 
 
