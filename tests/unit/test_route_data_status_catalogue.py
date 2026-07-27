@@ -234,6 +234,26 @@ class TestGetInstrumentCatalogue:
             )
         assert r.status_code == 500
 
+    def test_manifest_read_is_column_projected(self, client_ds_catalogue: TestClient) -> None:
+        """Regression for read_availability_index_bare_defi_callers_2026_07_27.md:
+        this call site is reachable with a generic/defi-adjacent asset_group and
+        must never regress to a bare (unprojected) read of the up-to-1.58 GB
+        availability index — pins the exact call signature so a future edit can't
+        silently drop the projection back to a bare call."""
+        from deployment_api.services.manifest_source import DRILLDOWN_COLUMNS
+
+        with (
+            patch(_PATCH_BUILD_BUCKET, return_value="market-data-tick-cefi-prd-fake"),
+            patch(_PATCH_READ_INDEX, return_value=_manifest_df()) as mock_read,
+            patch(_PATCH_IS_MVP, return_value=True),
+        ):
+            r = client_ds_catalogue.get(
+                "/data-status/catalogue",
+                params={"service": "market-tick-data-service", "asset_group": "prediction"},
+            )
+        assert r.status_code == 200
+        mock_read.assert_called_once_with("market-data-tick-cefi-prd-fake", columns=DRILLDOWN_COLUMNS)
+
 
 class TestDownloadCatalogueCsv:
     def test_csv_matches_json_route_row_count(self, client_ds_catalogue: TestClient) -> None:

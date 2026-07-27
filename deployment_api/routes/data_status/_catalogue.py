@@ -57,6 +57,7 @@ from fastapi.responses import StreamingResponse
 import deployment_api.routes.data_status as _ds
 from deployment_api.routes.data_status import router
 from deployment_api.routes.data_status._coverage_scope import is_mvp_for_manifest_row
+from deployment_api.services.manifest_source import DRILLDOWN_COLUMNS
 from deployment_api.utils.storage_client import get_storage_client
 
 logger = logging.getLogger(__name__)
@@ -182,8 +183,18 @@ def _load_catalogue_frame(
     if ag in _IDENTITY_CATALOGUE_ASSET_GROUPS:
         df = _read_identity_catalogue(ag)
     else:
+        # read_availability_index_bare_defi_callers_2026_07_27.md: this is a bare
+        # read of the (up to 1.58 GB) availability index for prediction/sports (the
+        # two asset groups NOT in _IDENTITY_CATALOGUE_ASSET_GROUPS) — project to
+        # DRILLDOWN_COLUMNS (same broad projection manifest_source.py's own
+        # bare-fallback fix reuses) instead of decoding the full schema. Covers
+        # every column this module's downstream pipeline reads: instrument_id/
+        # venue/instrument_type/data_type (narrow + row fields), written_at (the
+        # dedup latest-wins sort key — dropping it would silently degrade dedup to
+        # insertion order), capture_status/error_reason/attempted_at (row fields),
+        # league_id/source (is_mvp_for_manifest_row's sports axes).
         bucket = _ds.build_bucket_name(service, asset_group)
-        df = _ds._read_availability_index(bucket)  # pyright: ignore[reportPrivateUsage]
+        df = _ds._read_availability_index(bucket, columns=DRILLDOWN_COLUMNS)  # pyright: ignore[reportPrivateUsage]
     if df.empty or "instrument_id" not in df.columns:
         return df
 

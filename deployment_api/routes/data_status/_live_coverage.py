@@ -448,13 +448,20 @@ def _read_live_manifest_rows(asset_group: str) -> list[object]:
     from unified_trading_library import read_availability_index  # noqa: imports-inside-functions
 
     from deployment_api.services.data_status_drilldown import build_bucket_name
+    from deployment_api.services.manifest_source import DRILLDOWN_COLUMNS
 
     try:
         bucket = build_bucket_name(_LIVE_STATUS_SERVICE, asset_group)
     except ValueError:
         return []
     try:
-        df = read_availability_index(bucket)
+        # read_availability_index_bare_defi_callers_2026_07_27.md: this ran
+        # unprojected against every asset_group's (incl. defi's up-to-1.58 GB)
+        # availability index on every /live poll. DRILLDOWN_COLUMNS covers every
+        # field _build_live_row reads (venue/chain/data_type/instrument_type/
+        # instrument_id/league_id/timeframe/feature_group/capture_status/
+        # attempted_at) plus pipeline_mode (the live-shard filter column below).
+        df = read_availability_index(bucket, columns=DRILLDOWN_COLUMNS)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning(
             "Live data-status: manifest read failed for %s/%s: %s",

@@ -65,7 +65,7 @@ def _mk_manifest_rows(
 def test_live_status_returns_empty_envelope_when_no_live_shards() -> None:
     """No ``live_<source>`` rows → empty envelope."""
 
-    def _empty_read(bucket):
+    def _empty_read(bucket, columns=None):
         return _mk_manifest_rows(pipeline_modes=["batch_databento", "batch_tardis"])
 
     client = TestClient(_build_app_with_data_status_router())
@@ -88,7 +88,7 @@ def test_live_status_returns_populated_rows_when_manifest_has_live_shards() -> N
     )
     empty_rows = _mk_manifest_rows(pipeline_modes=[])
 
-    def _read_per_bucket(bucket):
+    def _read_per_bucket(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return empty_rows
@@ -118,7 +118,7 @@ def test_live_status_captures_live_source_and_legacy_alias_via_prefix() -> None:
         venues=["binance", "bybit", "binance"],
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return _mk_manifest_rows(pipeline_modes=[])
@@ -142,7 +142,7 @@ def test_live_status_filters_by_asset_group_query_param() -> None:
     cefi_rows = _mk_manifest_rows(pipeline_modes=["live_binance"], venues=["binance"])
     defi_rows = _mk_manifest_rows(pipeline_modes=["live_onchain_rpc"], venues=["uniswap_v3"])
 
-    def _read_per_bucket(bucket):
+    def _read_per_bucket(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         if "defi" in bucket:
@@ -170,7 +170,7 @@ def test_live_status_derives_staleness_from_attempted_at() -> None:
         attempted_ats=[old_attempted],
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return _mk_manifest_rows(pipeline_modes=[])
@@ -199,7 +199,7 @@ def test_live_status_handles_missing_pipeline_mode_column_gracefully() -> None:
         },
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         return pre_v8
 
     client = TestClient(_build_app_with_data_status_router())
@@ -213,7 +213,7 @@ def test_live_status_handles_missing_pipeline_mode_column_gracefully() -> None:
 def test_live_status_handles_manifest_read_failure_gracefully() -> None:
     """Manifest read OSError → asset_group dropped + endpoint stays responsive."""
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         raise OSError("simulated bucket-not-found")
 
     client = TestClient(_build_app_with_data_status_router())
@@ -239,7 +239,7 @@ def test_live_status_capture_status_preserves_4_state_taxonomy() -> None:
         ],
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return _mk_manifest_rows(pipeline_modes=[])
@@ -265,7 +265,7 @@ def test_live_status_aggregates_across_multiple_asset_groups() -> None:
     defi_rows = _mk_manifest_rows(pipeline_modes=["live_onchain_rpc"], venues=["uniswap_v3"])
     tradfi_rows = _mk_manifest_rows(pipeline_modes=["live_databento"], venues=["cme"])
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         if "defi" in bucket:
@@ -314,7 +314,7 @@ def test_live_status_health_api_http_join_overrides_staleness() -> None:
         attempted_ats=[datetime.now(UTC) - timedelta(seconds=300)],  # 5 min stale per manifest
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return _mk_manifest_rows(pipeline_modes=[])
@@ -359,7 +359,7 @@ def test_live_status_health_api_http_failure_falls_back_to_manifest_staleness() 
         attempted_ats=[datetime.now(UTC) - timedelta(seconds=45)],
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return _mk_manifest_rows(pipeline_modes=[])
@@ -397,7 +397,7 @@ def test_live_status_health_api_empty_registry_uses_manifest_staleness() -> None
         attempted_ats=[datetime.now(UTC) - timedelta(seconds=20)],
     )
 
-    def _read(bucket):
+    def _read(bucket, columns=None):
         if "cefi" in bucket:
             return cefi_rows
         return _mk_manifest_rows(pipeline_modes=[])
@@ -417,6 +417,32 @@ def test_live_status_health_api_empty_registry_uses_manifest_staleness() -> None
         assert 18 <= row["staleness_seconds"] <= 25
     finally:
         data_status._cfg.live_pipeline_service_urls = original_urls
+
+
+def test_live_status_manifest_read_is_column_projected() -> None:
+    """Regression for read_availability_index_bare_defi_callers_2026_07_27.md:
+    this call site polls EVERY asset_group's (incl. defi's up-to-1.58 GB)
+    availability index on every /live request and must never regress to a bare
+    (unprojected) read — pins the exact call signature so a future edit can't
+    silently drop the projection back to a bare call."""
+    from deployment_api.services.manifest_source import DRILLDOWN_COLUMNS
+
+    cefi_rows = _mk_manifest_rows(pipeline_modes=["live_binance"], venues=["binance"])
+
+    def _read(bucket, columns=None):
+        if "cefi" in bucket:
+            return cefi_rows
+        return _mk_manifest_rows(pipeline_modes=[])
+
+    client = TestClient(_build_app_with_data_status_router())
+    with patch("unified_trading_library.read_availability_index", side_effect=_read) as mock_read:
+        response = client.get("/api/data-status/live?asset_group=cefi")
+
+    assert response.status_code == 200
+    mock_read.assert_called_once()
+    call_args, call_kwargs = mock_read.call_args
+    assert call_kwargs.get("columns") == DRILLDOWN_COLUMNS
+    assert "cefi" in call_args[0]
 
 
 def test_live_status_row_rejects_out_of_range_health_metrics() -> None:
