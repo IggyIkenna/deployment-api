@@ -366,6 +366,41 @@ steps:
         exit 0
     waitFor: ["push"]
 
+  # ── Re-resolve the data-pipeline monitor Cloud Run JOBS to this build's :latest ──
+  # Cloud Run Jobs pin the image digest at job-update time, so a rebuilt :latest is
+  # NOT picked up until the job is updated — without this step the 4 dp-* monitor
+  # jobs silently drift behind every deployment-api release until someone remembers
+  # a manual `gcloud run jobs update` (closes the gap tracked in
+  # plans/active/issues/monitor_jobs_auto_repin_and_alerting_cli_wiring_2026_06_24.md).
+  # Gated the SAME as `deploy` (real main-deploy trigger only, post scan-check) so a
+  # feature-branch or build-only :latest never repins the production monitor jobs.
+  # An earlier attempt at this step lived in deployment-service/cloudbuild.yaml
+  # guarded on _SERVICE_NAME==deployment-api — that file is NEVER built with that
+  # substitution by any live trigger, so it was silently unreachable dead code
+  # (verified 2026-07-27: monitor job run.googleapis.com/lastUpdatedTime predated
+  # weeks of real deployment-api main builds). This copy lives in the file the live
+  # `deployment-api-main-deploy` trigger actually builds, so it can execute.
+  # Failure-tolerant: a job absent in this env logs a WARN and does not fail the
+  # build (the image push + deploy already succeeded). Requires the Cloud Build SA
+  # to have roles/run.developer + roles/iam.serviceAccountUser on the jobs' runtime SA.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    id: "redeploy-monitor-jobs"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        if [ "${_DEPLOY}" != "true" ]; then
+          echo "redeploy-monitor-jobs: _DEPLOY=${_DEPLOY} — skipping (build-only trigger)"
+          exit 0
+        fi
+        IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
+        for job in uts-prod-monitoring-deadman uts-prod-dp-exit-code-monitor uts-prod-dp-heartbeat-watcher uts-prod-dp-meta-watchers; do
+          echo "Re-resolving $${job} -> $${IMG}"
+          gcloud run jobs update "$${job}" --image="$${IMG}" --region=asia-northeast1 --project="$PROJECT_ID" \
+            || echo "WARN: could not update $${job} (may not exist in this env) — image push still succeeded"
+        done
+    waitFor: ["scan-check"]
+
   # ── Deploy to Cloud Run (gated: deployment-api + _DEPLOY=true) ──────────────
   # Runs ONLY for the main-deploy trigger (which sets _DEPLOY=true); a guarded
   # NO-OP for the build-only triggers (feat/* / live-defi-rollout, _DEPLOY unset)
