@@ -33,7 +33,7 @@ router = APIRouter(prefix="/api/vm-resources", tags=["VM Resources"])
 _cfg = DeploymentApiConfig()
 
 
-class ResourceRollingWindowRow(BaseModel):
+class ResourceRollingWindowRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     vm_name: str
     service: str
     avg_cpu_pct: float | None
@@ -51,12 +51,12 @@ class ResourceRollingWindowRow(BaseModel):
     sample_count: int
 
 
-class ResourceRollingWindowResponse(BaseModel):
+class ResourceRollingWindowResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     window: WindowName
     rows: list[ResourceRollingWindowRow]
 
 
-class ProcessCategoryRow(BaseModel):
+class ProcessCategoryRow(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     category: str
     avg_cpu_pct: float | None
     max_cpu_pct: float | None
@@ -66,7 +66,7 @@ class ProcessCategoryRow(BaseModel):
     sample_count: int
 
 
-class ProcessCategoryBreakdownResponse(BaseModel):
+class ProcessCategoryBreakdownResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     vm_name: str
     window: WindowName
     rows: list[ProcessCategoryRow]
