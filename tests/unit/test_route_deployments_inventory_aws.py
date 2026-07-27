@@ -576,6 +576,8 @@ def test_inventory_route_gcp_unchanged_with_empty_aws() -> None:
             self.mem_pct = 0.0
             self.mem_slope = 0.0
             self.disk_pct = 0.0
+            self.image_digest = ""
+            self.git_commit = ""
 
     gcp_entry = _FakeEntry("cefi-binance-spot-20260622-gcp")
     mod._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]  # isolate the short-TTL cache

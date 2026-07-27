@@ -64,6 +64,8 @@ class _FakeEntry:
     workload_alive: bool = True
     host_metrics_window: list[dict[str, float | str]] = field(default_factory=list)
     extras: dict[str, str] = field(default_factory=dict)
+    image_digest: str = ""
+    git_commit: str = ""
 
 
 @pytest.fixture
@@ -263,6 +265,33 @@ def test_build_inventory_surfaces_inline_resources_column() -> None:
     assert job.mem_pct is None
     assert job.mem_slope is None
     assert job.disk_pct is None
+
+
+def test_build_inventory_surfaces_image_digest_and_git_commit() -> None:
+    """Artifact-pipeline cross-link (Phase 3b): a VM row carries the image/tarball it booted
+    straight off the registry entry, so /ops/artifacts can deep-link a version into the
+    Deployments view by git_commit. A pre-BoM row's "" defaults become an honest None, never a
+    fabricated empty string.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    stamped = _FakeEntry(
+        vm_name="cefi-binance-spot-20260622-014158",
+        asset_group="cefi",
+        image_digest="sha256:c05dd3d678ef",
+        git_commit="a557471",
+    )
+    items = build_inventory([stamped], {}, _FIXED_NOW)  # type: ignore[arg-type]
+    vm = next(i for i in items if i.name == "cefi-binance-spot-20260622-014158")
+    assert vm.image_digest == "sha256:c05dd3d678ef"
+    assert vm.git_commit == "a557471"
+
+    # A pre-BoM / not-yet-stamped row carries the entry's honest "" default, surfaced as None.
+    legacy = _FakeEntry(vm_name="defi-paper-trading-20260622", asset_group="defi")
+    items_legacy = build_inventory([legacy], {}, _FIXED_NOW)  # type: ignore[arg-type]
+    vm_legacy = next(i for i in items_legacy if i.name == "defi-paper-trading-20260622")
+    assert vm_legacy.image_digest is None
+    assert vm_legacy.git_commit is None
 
 
 def test_build_inventory_full_estate_surfaces_unmanaged_vms() -> None:
