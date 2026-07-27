@@ -18,7 +18,6 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     CommitEntryDict,
     DepBlockerDict,
     EscalationsProxyDict,
-    FleetGitHealthProxyDict,
     ImageSignalDict,
     LastGreenDict,
     OverviewResponseDict,
@@ -442,107 +441,6 @@ def _mock_alerts() -> AlertsPayloadDict:
         limit=len(ordered),
         capped=False,
     )
-
-
-def _mock_fleet_git_health() -> FleetGitHealthProxyDict:
-    """Mock fleet git-health — one laptop host with a clean + a drift-violating slot, so the
-    UI/playwright can assert the proxied-data path AND the orchestrator deep-link both render."""
-    return {
-        "available": True,
-        "reason": "",
-        "orchestrator_url": "https://api.agent-orchestrator.odum-research.com",
-        "data": {
-            "generated_at": "2026-06-10T13:00:00Z",
-            "scope": "fleet",
-            "summary": {
-                "hosts": 1,
-                "slots": 2,
-                "repos_total": 3,
-                "dirty": 1,
-                "behind": 1,
-                "ahead": 1,
-                "diverged": 0,
-                "clean": 1,
-                "drift_violations": 1,
-                "reporter_stale_slots": 0,
-                "ff_cron_stale_slots": 0,
-            },
-            "hosts": [
-                {
-                    "host": "laptop",
-                    "vm_id": None,
-                    "slots": [
-                        {
-                            "slot_id": 1,
-                            "host": "laptop",
-                            "reported_at": "2026-06-10T12:59:00Z",
-                            "reporter_stale": False,
-                            "ff_pull_last_run": "2026-06-10T12:58:00Z",
-                            "ff_pull_last_result": "ok",
-                            "ff_cron_stale": False,
-                            "repos": [
-                                {
-                                    "name": "unified-trading-pm",
-                                    "state": "clean",
-                                    "dirty_files": 0,
-                                    "ahead": 0,
-                                    "behind": 0,
-                                    "local_sha": "abc1234",
-                                    "not_clean_since": None,
-                                    "unpushed_plans": [],
-                                    "drift_violation": False,
-                                }
-                            ],
-                        },
-                        {
-                            "slot_id": 3,
-                            "host": "laptop",
-                            "reported_at": "2026-06-10T12:59:00Z",
-                            "reporter_stale": False,
-                            "ff_pull_last_run": "2026-06-10T12:58:00Z",
-                            "ff_pull_last_result": "skip:dirty",
-                            "ff_cron_stale": False,
-                            "repos": [
-                                {
-                                    "name": "mtds",
-                                    "state": "dirty",
-                                    "dirty_files": 3,
-                                    "ahead": 0,
-                                    "behind": 1,
-                                    "local_sha": "def5678",
-                                    "not_clean_since": "2026-06-10T12:30:00Z",
-                                    "unpushed_plans": [],
-                                    "drift_violation": False,
-                                },
-                                {
-                                    "name": "execution-service",
-                                    "state": "ahead",
-                                    "dirty_files": 0,
-                                    "ahead": 2,
-                                    "behind": 0,
-                                    "local_sha": "fed9876",
-                                    "not_clean_since": "2026-06-10T12:40:00Z",
-                                    "unpushed_plans": [],
-                                    "drift_violation": True,
-                                },
-                            ],
-                        },
-                    ],
-                }
-            ],
-            "drift_violations": [
-                {
-                    "host": "laptop",
-                    "slot": "3",
-                    "repo": "execution-service",
-                    "state": "ahead",
-                    "ahead": "2",
-                    "behind": "0",
-                }
-            ],
-            "vm_errors": [],
-        },
-    }
 
 
 def _mock_escalations() -> EscalationsProxyDict:

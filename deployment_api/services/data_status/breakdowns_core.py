@@ -433,12 +433,17 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
             # of phantom pre-launch dates).
             it_eff_start = max(start_date, min(it_dates)) if it_dates else start_date
             all_dates = set(venue_mapping.get_expected_trading_dates(venue, it_eff_start, end_date))
-            found = len(it_dates & all_dates)
+            it_found_dates = it_dates & all_dates
+            it_missing_dates = sorted(all_dates - it_found_dates)
+            found = len(it_found_dates)
             expected = len(all_dates)
 
             entry: dict[str, object] = {
                 "dates_found": found,
                 "dates_expected": expected,
+                "dates_missing": len(it_missing_dates),
+                "missing_dates": it_missing_dates,
+                "dates_found_list": sorted(it_found_dates),
                 "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             }
 
@@ -536,12 +541,17 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
             # for SOL is phantom).
             ul_eff_start = max(start_date, min(ul_dates)) if ul_dates else start_date
             all_dates = set(venue_mapping.get_expected_trading_dates(venue, ul_eff_start, end_date))
-            found = len(ul_dates & all_dates)
+            ul_found_dates = ul_dates & all_dates
+            ul_missing_dates = sorted(all_dates - ul_found_dates)
+            found = len(ul_found_dates)
             expected = len(all_dates)
 
             entry: dict[str, object] = {
                 "dates_found": found,
                 "dates_expected": expected,
+                "dates_missing": len(ul_missing_dates),
+                "missing_dates": ul_missing_dates,
+                "dates_found_list": sorted(ul_found_dates),
                 "completion_pct": min(round(found / max(1, expected) * 100, 2), 100.0),
             }
 

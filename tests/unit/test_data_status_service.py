@@ -1039,6 +1039,67 @@ class TestPhantomExpectedClamp:
         assert sol_expected == 1, f"SOL should be clamped to 1 day, got {sol_expected}"
         assert btc_expected > sol_expected, f"BTC ({btc_expected}) should span more days than SOL ({sol_expected})"
 
+    def test_instrument_type_breakdown_includes_missing_dates_and_found_list(self):
+        """dates_found_list / missing_dates surface the per-instrument_type gap detail (mirrors _build_data_type_breakdown)."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-03"],
+                "venue": ["DERIBIT"] * 2,
+                "instrument_type": ["options_chain"] * 2,
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.side_effect = lambda venue, start, end: (
+            pd.date_range(start, end, freq="D").strftime("%Y-%m-%d").tolist()
+        )
+
+        result = self.svc._build_instrument_type_breakdown(
+            df,
+            "DERIBIT",
+            "2024-01-01",
+            "2024-01-03",
+            vm,
+            has_data_type=False,
+            category="CEFI",
+            service="market-tick-data-service",
+        )
+
+        entry = result["options_chain"]
+        assert entry["dates_found_list"] == ["2024-01-01", "2024-01-03"]
+        assert entry["missing_dates"] == ["2024-01-02"]
+        assert entry["dates_missing"] == 1
+
+    def test_underlying_breakdown_includes_missing_dates_and_found_list(self):
+        """dates_found_list / missing_dates surface the per-underlying gap detail (mirrors _build_data_type_breakdown)."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-03"],
+                "venue": ["DERIBIT"] * 2,
+                "instrument_type": ["options_chain"] * 2,
+                "underlying": ["BTC"] * 2,
+            }
+        )
+        vm = MagicMock()
+        vm.get_expected_trading_dates.side_effect = lambda venue, start, end: (
+            pd.date_range(start, end, freq="D").strftime("%Y-%m-%d").tolist()
+        )
+
+        result = self.svc._build_underlying_breakdown(
+            df,
+            "DERIBIT",
+            "2024-01-01",
+            "2024-01-03",
+            vm,
+            has_data_type=False,
+            service="market-tick-data-service",
+            category="CEFI",
+        )
+
+        entry = result["BTC"]
+        assert entry["dates_found_list"] == ["2024-01-01", "2024-01-03"]
+        assert entry["missing_dates"] == ["2024-01-02"]
+        assert entry["dates_missing"] == 1
+
     def test_data_type_breakdown_falls_back_to_observed_min_when_uac_unknown(self):
         """When UAC has no declared dt start, use earliest observed date."""
         df = pd.DataFrame(

@@ -40,7 +40,6 @@ from ._repo_ci_alerts import (
     load_alerts_payload,
 )
 from ._repo_ci_escalations import fetch_active_escalations
-from ._repo_ci_fleet import fetch_fleet_git_health
 from ._repo_ci_github import (
     age_minutes,
     branch_head,
@@ -68,7 +67,6 @@ from ._repo_ci_mocks import (  # pyright: ignore[reportPrivateUsage]
     _mock_alerts,
     _mock_detail,
     _mock_escalations,
-    _mock_fleet_git_health,
     _mock_overview,
 )
 from ._repo_ci_stuck import (
@@ -86,7 +84,6 @@ from ._repo_ci_types import (  # pyright: ignore[reportPrivateUsage]
     CodebaseHealthDict,
     CommitEntryDict,
     EscalationsProxyDict,
-    FleetGitHealthProxyDict,
     ImageSignalDict,
     LastGreenDict,
     OverviewResponseDict,
@@ -861,17 +858,6 @@ async def get_alerts(
     if cfg.is_mock_mode():
         return _mock_alerts()
     return await load_alerts_payload(days=days, offset=offset, limit=limit)
-
-
-@router.get("/fleet-git-health")
-async def get_fleet_git_health() -> FleetGitHealthProxyDict:
-    """Proxy the agent-orchestrator's fleet git-health into the single devops pane
-    (operator decision v2, 2026-06-10). Degrades honestly + always returns the
-    orchestrator deep-link URL (git-health click-through goes to the AO UI)."""
-    cfg = DeploymentApiConfig()
-    if cfg.is_mock_mode():
-        return _mock_fleet_git_health()
-    return await fetch_fleet_git_health(default_project_id or "")
 
 
 @router.get("/escalations")

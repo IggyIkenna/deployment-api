@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 import pytest
 from fastapi import HTTPException
 
+from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.routes.artifacts import _resolve_range
 from deployment_api.services.artifact_pipeline import ArtifactPipelineService
 from deployment_api.services.artifact_pipeline import providers as providers_mod
@@ -28,6 +29,7 @@ from deployment_api.services.artifact_pipeline.models import (
     DRIFT_UNKNOWN,
     LANE_IMAGE,
     LANE_TARBALL,
+    REGISTRY_TARBALL_BUCKET,
     SEV_DEFERRED,
     SEV_HIGH,
     SEV_LOW,
@@ -223,6 +225,72 @@ def test_builds_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(providers_mod, "gcp_cloud_builds", _boom)
     svc = ArtifactPipelineService()
     resp = svc.builds(30)  # `safe` swallows the failure → empty, honest, never a 5xx
+    assert resp.rows == []
+    assert resp.stats.total == 0
+
+
+# ── Phase 3d: the GCS tarball-manifest bucket folded into builds()/images() ────────────────────────
+def test_builds_includes_tarball_lane_and_cross_lane_matches_image_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    image_facts = [_fact("features", "abc1234", "SUCCESS", "2026-07-10T00:00:00+00:00", lane=LANE_IMAGE)]
+    tarball_facts = [
+        BuildFact(
+            cloud="gcp",
+            lane=LANE_TARBALL,
+            repo="features",
+            build_id="features-code@abc1234def",
+            status="SUCCESS",
+            trigger="code-tarball-refresh",
+            sha="abc1234",
+            branch="live-defi-rollout",
+            started_at="2026-07-10T00:05:00+00:00",
+            produced="gs://deployment-scripts-test-project/code/features-code@abc1234def.tar.gz",
+        )
+    ]
+    monkeypatch.setattr(providers_mod, "gcp_cloud_builds", lambda _cfg, scan=400: list(image_facts))
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_builds", lambda _cfg, scan=20000: list(tarball_facts))
+    svc = ArtifactPipelineService()
+    resp = svc.builds(31, start_date=date(2026, 7, 1), end_date=date(2026, 7, 31))
+
+    tarball_row = next(r for r in resp.rows if r.lane == LANE_TARBALL)
+    assert tarball_row.repo == "features"
+    assert tarball_row.status == "SUCCESS"
+    assert tarball_row.produced.startswith("gs://deployment-scripts-test-project/code/")
+    # the tarball build shares (repo, sha) with the image-lane build → the ⇄ both-lanes badge fires
+    assert tarball_row.cross_lane is True
+    image_row = next(r for r in resp.rows if r.lane == LANE_IMAGE)
+    assert image_row.cross_lane is True
+
+
+def test_builds_tarball_lane_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    image_facts = [_fact("a", "111", "SUCCESS", "2026-07-10T00:00:00+00:00", lane=LANE_IMAGE)]
+    tarball_facts = [
+        BuildFact(
+            cloud="gcp",
+            lane=LANE_TARBALL,
+            repo="b",
+            build_id="b-code",
+            status="SUCCESS",
+            trigger="code-tarball-refresh",
+            sha="222",
+            branch="live-defi-rollout",
+            started_at="2026-07-11T00:00:00+00:00",
+        )
+    ]
+    monkeypatch.setattr(providers_mod, "gcp_cloud_builds", lambda _cfg, scan=400: list(image_facts))
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_builds", lambda _cfg, scan=20000: list(tarball_facts))
+    svc = ArtifactPipelineService()
+    tarball_only = svc.builds(31, lane="tarball", start_date=date(2026, 7, 1), end_date=date(2026, 7, 31))
+    assert [r.repo for r in tarball_only.rows] == ["b"]
+
+
+def test_builds_tarball_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_cfg: object, scan: int = 20000) -> list[BuildFact]:
+        raise RuntimeError("GCS list_blobs down")
+
+    monkeypatch.setattr(providers_mod, "gcp_cloud_builds", lambda _cfg, scan=400: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_builds", _boom)
+    svc = ArtifactPipelineService()
+    resp = svc.builds(30)  # the tarball provider's failure is isolated — never blanks the image lane
     assert resp.rows == []
     assert resp.stats.total == 0
 
@@ -505,6 +573,54 @@ def test_images_aggregates_per_repo_and_flags_running(monkeypatch: pytest.Monkey
     assert resp.stats.legacy == 1
 
 
+def test_images_tarball_lane_rows_use_a_distinct_registry_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    ar_facts = [_reg_image("deployment-api", "sha256:AAA", ["abc1234"], "2026-07-20T00:00:00+00:00")]
+    tarball_facts = [
+        RegistryImageFact(
+            cloud="gcp",
+            registry=REGISTRY_TARBALL_BUCKET,
+            repo="deployment-api",  # SAME repo name as the AR row above — must not collide with it
+            digest="",
+            tags=["abc1234"],
+            pushed_at="2026-07-20T00:05:00+00:00",
+            size_bytes=123,
+        ),
+        RegistryImageFact(
+            cloud="gcp",
+            registry=REGISTRY_TARBALL_BUCKET,
+            repo="alerting-service",
+            digest="",
+            tags=["floating"],
+            pushed_at="2026-01-01T00:00:00+00:00",  # stale — no live cross-ref exists for tarballs yet
+            size_bytes=456,
+        ),
+    ]
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", lambda _cfg, scan=5000: list(ar_facts))
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_images", lambda _cfg, scan=20000: list(tarball_facts))
+    svc = ArtifactPipelineService()
+    resp = svc.images()
+
+    ar_row = next(r for r in resp.rows if r.registry != REGISTRY_TARBALL_BUCKET and r.repo == "deployment-api")
+    tarball_row = next(r for r in resp.rows if r.registry == REGISTRY_TARBALL_BUCKET and r.repo == "deployment-api")
+    assert ar_row is not tarball_row  # two distinct rows, not merged, despite the shared repo name
+    assert tarball_row.running_on == ""  # honest absence — no digest to cross-ref a live workload against
+    assert resp.stats.total_repos == 3  # 2 tarball repos + 1 AR repo, none collided
+
+
+def test_images_tarball_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_cfg: object, scan: int = 20000) -> list[RegistryImageFact]:
+        raise RuntimeError("GCS list_blobs down")
+
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", lambda _cfg, scan=5000: [])
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_images", _boom)
+    svc = ArtifactPipelineService()
+    resp = svc.images()  # the tarball provider's failure is isolated — never blanks the AR lane
+    assert resp.rows == []
+    assert resp.stats.total_repos == 0
+
+
 def test_images_provider_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(_cfg: object, scan: int = 5000) -> list[RegistryImageFact]:
         raise RuntimeError("AR API down")
@@ -617,6 +733,127 @@ def test_repo_from_ar_uri() -> None:
     assert providers_mod._repo_from_ar_uri("asia-northeast1-docker.pkg.dev/proj/other-repo/x@sha256:abc") == ""
 
 
+# ── GCS tarball-manifest bucket provider (Phase 3d) — parsing + the live-shaped listing ─────────────
+def test_parse_tarball_stem_floating_and_pinned() -> None:
+    assert providers_mod._parse_tarball_stem("alerting-service-code") == ("alerting-service", "")
+    assert providers_mod._parse_tarball_stem("alerting-service-code@4b3aad7181cb782c1ea41677fa1e720765aad88f") == (
+        "alerting-service",
+        "4b3aad7181cb782c1ea41677fa1e720765aad88f",
+    )
+    assert providers_mod._parse_tarball_stem("batch-live-reconciliation-service-code@503ba57") == (
+        "batch-live-reconciliation-service",
+        "503ba57",
+    )
+    # bucket housekeeping files never end in "-code" — not a tarball stem at all
+    assert providers_mod._parse_tarball_stem("_refresh_status") is None
+    assert providers_mod._parse_tarball_stem("_test_write") is None
+
+
+class _FakeBlob:
+    def __init__(self, name: str, size: int, last_modified: str) -> None:
+        self.name = name
+        self.size = size
+        self.last_modified = last_modified
+
+
+class _FakeStorageClient:
+    def __init__(self, blobs: list[_FakeBlob]) -> None:
+        self._blobs = blobs
+
+    def list_blobs(self, *, bucket: str, prefix: str) -> list[_FakeBlob]:
+        assert bucket == "deployment-scripts-test-project"  # GCP_PROJECT_ID=test-project (tests/unit/conftest.py)
+        assert prefix == "code/"
+        return list(self._blobs)
+
+
+def _patch_tarball_bucket(monkeypatch: pytest.MonkeyPatch, blobs: list[_FakeBlob]) -> None:
+    import unified_trading_library
+
+    monkeypatch.setattr(unified_trading_library, "get_storage_client", lambda: _FakeStorageClient(blobs))
+
+
+def test_gcp_tarball_manifest_builds_reads_the_live_bucket_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mirrors the LIVE-VERIFIED (2026-07-27) object shape: a floating pointer + its paired SHA-pinned
+    copy for one repo, plus an unrelated housekeeping file that must be skipped."""
+    blobs = [
+        _FakeBlob("code/alerting-service-code.manifest.json", 512, "2026-07-12T12:15:54+00:00"),
+        _FakeBlob("code/alerting-service-code.tar.gz", 900_000, "2026-07-12T12:15:54+00:00"),
+        _FakeBlob(
+            "code/alerting-service-code@4b3aad7181cb782c1ea41677fa1e720765aad88f.manifest.json",
+            512,
+            "2026-07-12T12:15:54+00:00",
+        ),
+        _FakeBlob(
+            "code/alerting-service-code@4b3aad7181cb782c1ea41677fa1e720765aad88f.tar.gz",
+            900_000,
+            "2026-07-12T12:15:54+00:00",
+        ),
+        _FakeBlob("code/_refresh_status.json", 40, "2026-07-27T00:00:00+00:00"),
+    ]
+    _patch_tarball_bucket(monkeypatch, blobs)
+
+    builds = providers_mod.gcp_tarball_manifest_builds(DeploymentApiConfig())
+    assert len(builds) == 1  # the floating pointer is skipped — it duplicates the pinned build event
+    build = builds[0]
+    assert build.repo == "alerting-service"
+    assert build.lane == LANE_TARBALL
+    assert build.sha == "4b3aad7"  # truncated to 7 chars, matching Cloud Build's convention
+    assert build.status == "SUCCESS"
+    assert build.started_at == "2026-07-12T12:15:54+00:00"
+    assert build.produced == (
+        "gs://deployment-scripts-test-project/code/"
+        "alerting-service-code@4b3aad7181cb782c1ea41677fa1e720765aad88f.tar.gz"
+    )
+
+
+def test_gcp_tarball_manifest_images_counts_both_floating_and_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    blobs = [
+        _FakeBlob("code/alerting-service-code.manifest.json", 512, "2026-07-12T12:15:54+00:00"),
+        _FakeBlob("code/alerting-service-code.tar.gz", 900_000, "2026-07-12T12:15:54+00:00"),
+        _FakeBlob(
+            "code/alerting-service-code@4b3aad7181cb782c1ea41677fa1e720765aad88f.manifest.json",
+            512,
+            "2026-07-12T12:15:54+00:00",
+        ),
+        _FakeBlob(
+            "code/alerting-service-code@4b3aad7181cb782c1ea41677fa1e720765aad88f.tar.gz",
+            900_000,
+            "2026-07-12T12:15:54+00:00",
+        ),
+    ]
+    _patch_tarball_bucket(monkeypatch, blobs)
+
+    images = providers_mod.gcp_tarball_manifest_images(DeploymentApiConfig())
+    assert len(images) == 2  # unlike builds(), the Artifacts roll-up counts the floating pointer too
+    assert all(i.registry == REGISTRY_TARBALL_BUCKET for i in images)
+    assert all(i.digest == "" for i in images)  # tarballs carry no docker digest — honest absence
+    tags = {t for i in images for t in i.tags}
+    assert tags == {"floating", "4b3aad7"}
+
+
+def test_gcp_tarball_manifest_images_backfills_size_from_the_sibling_tarball(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The manifest object's own size (a small JSON file) must NOT be reported as the artifact's
+    size — the sibling `.tar.gz` object's size is the real one."""
+    blobs = [
+        _FakeBlob("code/deployment-api-code.manifest.json", 512, "2026-07-12T12:15:54+00:00"),
+        _FakeBlob("code/deployment-api-code.tar.gz", 12_345_678, "2026-07-12T12:15:54+00:00"),
+    ]
+    _patch_tarball_bucket(monkeypatch, blobs)
+    images = providers_mod.gcp_tarball_manifest_images(DeploymentApiConfig())
+    assert images[0].size_bytes == 12_345_678
+
+
+def test_gcp_tarball_manifest_images_honest_none_size_when_tarball_object_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An orphaned manifest with no matching `.tar.gz` (deleted, or a partial upload) reports an
+    honest `None` size — never a fabricated fallback to the manifest's own (unrelated) byte count."""
+    blobs = [_FakeBlob("code/orphaned-repo-code.manifest.json", 512, "2026-07-12T12:15:54+00:00")]
+    _patch_tarball_bucket(monkeypatch, blobs)
+    images = providers_mod.gcp_tarball_manifest_images(DeploymentApiConfig())
+    assert images[0].size_bytes is None
+
+
 # ── health view (derived purely from the already-fetched facts — no new cloud calls) ───────────────
 def test_health_always_reports_aws_deferred(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = _running_svc_with(monkeypatch, deploys=[])
@@ -665,3 +902,63 @@ def test_health_stats_real_defects_excludes_deferred(monkeypatch: pytest.MonkeyP
     resp = svc.health()
     assert resp.stats.real_defects == resp.stats.high + resp.stats.med + resp.stats.low
     assert resp.stats.deferred >= 1
+
+
+def _tarball_image(repo: str, *, sha: str = "abc1234") -> RegistryImageFact:
+    return RegistryImageFact(
+        cloud="gcp",
+        registry=REGISTRY_TARBALL_BUCKET,
+        repo=repo,
+        digest="",
+        tags=[sha],
+        pushed_at="2026-07-20T00:00:00+00:00",
+        size_bytes=100,
+    )
+
+
+def test_health_tarball_git_commit_gap_is_gated_on_tarball_data_existing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 3d (2026-07-27): the condition must NOT fire as a blanket always-on placeholder — only
+    when images() actually found tarball-lane repos (previously it fired unconditionally, `count="fleet"`)."""
+    svc_no_tarball = _running_svc_with(monkeypatch, deploys=[])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_images", lambda _cfg, scan=20000: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_builds", lambda _cfg, scan=20000: [])
+    resp_none = svc_no_tarball.health()
+    assert not any("tarball-lane workloads carry no measured git commit" in c.condition for c in resp_none.conditions)
+
+    monkeypatch.setattr(
+        providers_mod, "gcp_tarball_manifest_images", lambda _cfg, scan=20000: [_tarball_image("features")]
+    )
+    svc_with_tarball = ArtifactPipelineService()
+    resp_some = svc_with_tarball.health()
+    gap = next(c for c in resp_some.conditions if "tarball-lane workloads carry no measured git commit" in c.condition)
+    assert gap.count == "1 repos"
+    assert gap.severity == SEV_MED
+
+
+def test_health_flags_tarball_provider_likely_failed_when_ar_has_rows_but_tarball_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ar_facts = [_reg_image("deployment-api", "sha256:AAA", ["abc1234"], "2026-07-20T00:00:00+00:00")]
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", lambda _cfg, scan=5000: list(ar_facts))
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: [])
+    monkeypatch.setattr(providers_mod, "gcp_cloud_builds", lambda _cfg, scan=400: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_images", lambda _cfg, scan=20000: [])  # the symptom
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_builds", lambda _cfg, scan=20000: [])
+    svc = ArtifactPipelineService()
+    resp = svc.health()
+    failed = next(c for c in resp.conditions if "tarball-bucket provider returned zero rows" in c.condition)
+    assert failed.severity == SEV_MED
+    assert failed.tab == "art"
+
+
+def test_health_does_not_flag_tarball_provider_failure_when_ar_is_also_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When AR itself is empty too, this can't be distinguished from a genuine full outage — the
+    symptom-based condition requires AR rows present as proof images() itself is working."""
+    monkeypatch.setattr(providers_mod, "gcp_artifact_registry_images", lambda _cfg, scan=5000: [])
+    monkeypatch.setattr(providers_mod, "gcp_cloud_run_revisions", lambda _cfg: [])
+    monkeypatch.setattr(providers_mod, "gcp_cloud_builds", lambda _cfg, scan=400: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_images", lambda _cfg, scan=20000: [])
+    monkeypatch.setattr(providers_mod, "gcp_tarball_manifest_builds", lambda _cfg, scan=20000: [])
+    svc = ArtifactPipelineService()
+    resp = svc.health()
+    assert not any("tarball-bucket provider returned zero rows" in c.condition for c in resp.conditions)

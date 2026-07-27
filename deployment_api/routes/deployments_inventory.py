@@ -498,6 +498,13 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     mem_pct: float | None = None
     mem_slope: float | None = None
     disk_pct: float | None = None
+    # Artifact-pipeline cross-link (Phase 3b) — the image/tarball this VM booted, straight off its
+    # registry entry (`DeploymentRegistryEntry.image_digest`/`git_commit`), never re-derived. "" on
+    # the entry becomes None here (honest absence, e.g. a pre-BoM row or a tarball VM launched
+    # before the Phase 3c commit stamp) rather than a fabricated empty string. None for a kind with
+    # no registry entry (Cloud Run jobs/services, unmanaged VMs).
+    image_digest: str | None = None
+    git_commit: str | None = None
 
 
 class DeploymentInventoryResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -836,6 +843,8 @@ def _vm_item(
         mem_pct=entry.mem_pct,
         mem_slope=entry.mem_slope,
         disk_pct=entry.disk_pct,
+        image_digest=entry.image_digest or None,
+        git_commit=entry.git_commit or None,
     )
 
 
