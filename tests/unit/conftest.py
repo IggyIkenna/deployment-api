@@ -123,6 +123,17 @@ def _ensure_services_mocked() -> None:
     # import can't reach it otherwise).
     real_fixtures_browser = importlib.import_module("deployment_api.services.fixtures_browser")
 
+    # operational_data_queries is a pure SQL-string-builder + UTL get_analytics_client
+    # consumer (deployment_durable_operational_data_bigquery_2026_07_21.md). No
+    # circular-import risk; its unit tests + routes/vm_resource_history.py's eager
+    # import need the REAL module.
+    real_operational_data_queries = importlib.import_module("deployment_api.services.operational_data_queries")
+
+    # operational_data_writer is a pure UTL get_analytics_client/insert_rows consumer
+    # (same plan as above). No circular-import risk; its unit tests + routes/fleet.py's
+    # eager import need the REAL module.
+    real_operational_data_writer = importlib.import_module("deployment_api.services.operational_data_writer")
+
     # Build the top-level services package module (replacing the real one)
     services_mod = ModuleType("deployment_api.services")
     services_mod.__package__ = "deployment_api.services"
@@ -194,6 +205,13 @@ def _ensure_services_mocked() -> None:
     # Re-register fixtures_browser as a real module (P9 fixtures browser).
     sys.modules["deployment_api.services.fixtures_browser"] = real_fixtures_browser
     services_mod.fixtures_browser = real_fixtures_browser
+
+    # Re-register operational_data_queries + operational_data_writer as real modules
+    # (deployment_durable_operational_data_bigquery_2026_07_21.md).
+    sys.modules["deployment_api.services.operational_data_queries"] = real_operational_data_queries
+    services_mod.operational_data_queries = real_operational_data_queries
+    sys.modules["deployment_api.services.operational_data_writer"] = real_operational_data_writer
+    services_mod.operational_data_writer = real_operational_data_writer
 
     # Sub-module list — only modules that need mocking (circular import breakers).
     # Real modules (sync_service, event_processor, state_manager) are NOT mocked
