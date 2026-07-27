@@ -161,7 +161,12 @@ def read_manifest_index(bucket: str, *, date_window: tuple[str, str] | None = No
         # stale-tolerant full read below (identical to date_window=None).
 
     try:
-        live = read_availability_index(bucket)
+        # read_availability_index_bare_defi_callers_2026_07_27.md: bare fallback, executed
+        # whenever date_window is None or the pushdown branch above returns empty/raises —
+        # one cache-miss from an OOM on the 1.58 GB defi-prd index. Reuse the same
+        # DRILLDOWN_COLUMNS projection the pushdown branch already uses (no filters= here:
+        # this is the unfiltered, stale-tolerant full read).
+        live = read_availability_index(bucket, columns=DRILLDOWN_COLUMNS)
     except Exception as _live_err:  # monitoring read degrades to stale, never hard-fails the UI
         logger.warning(
             "data-status: live read_availability_index(%s) raised %s — falling back to the consolidated blob",
