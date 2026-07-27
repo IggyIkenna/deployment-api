@@ -350,6 +350,50 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return None
 
 
+def read_coverage_rollup_allow_stale(service: str) -> tuple[dict[str, object], str | None] | None:
+    """Read the coverage rollup blob IGNORING staleness — last-resort fallback for the live-build guard.
+
+    Companion to :func:`read_coverage_rollup_if_fresh`, mirrors
+    ``data_status_service._read_rollup_allow_stale`` for the manifest-status
+    live-build guard. Called ONLY when
+    :func:`~deployment_api.services.data_status.live_build_guard.estimate_live_build_bytes`
+    has already refused the ``/api/data-status/coverage-summary`` on-demand
+    build as too expensive (root-caused 2026-07-26,
+    deployment_api_honest_coverage_regression_2026_07_26.md — MTDS's
+    full-history build measures ~81 GB peak RSS for a single request) — a
+    stale coverage rollup (clearly marked) beats a hard structured refusal.
+
+    Returns ``(payload, last_modified_iso)`` if the blob exists at all
+    (however old), or ``None`` if it does not exist / cannot be read.
+    Deliberately bypasses ``ROLLUP_CACHE`` (keyed for the FRESH path) so this
+    rare fallback always reports the real current blob age.
+    """
+    try:
+        from unified_trading_library import get_storage_client
+
+        client = get_storage_client(project_id=_pid)
+        bucket_name = rollup_bucket()
+        blob_path = rollup_blob_path(service, "coverage")
+        if not client.blob_exists(bucket_name, blob_path):  # pyright: ignore[reportAttributeAccessIssue]
+            return None
+        meta = client.get_blob_metadata(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        last_modified_iso: str | None = None
+        if meta is not None and getattr(meta, "last_modified", None) is not None:
+            last_modified_iso = str(meta.last_modified)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportAttributeAccessIssue]
+        raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
+        import gzip
+
+        payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+        payload = json.loads(payload_bytes.decode("utf-8"))  # pyright: ignore[reportAny]
+        if not isinstance(payload, dict):
+            logger.warning("stale-fallback coverage rollup for %s is not a dict — ignoring", service)
+            return None
+        return payload, last_modified_iso  # pyright: ignore[reportUnknownVariableType]
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        logger.info("stale-fallback coverage rollup read failed for %s (%s)", service, exc)
+        return None
+
+
 def filter_coverage_to_asset_groups(
     rollup: dict[str, object], asset_groups_filter: list[str] | None
 ) -> dict[str, object]:

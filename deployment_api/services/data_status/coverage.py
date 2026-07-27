@@ -7,6 +7,7 @@ public + legacy-underscore name, so callers keep importing from
 """
 
 import asyncio
+import datetime as dt
 import logging
 from typing import cast
 
@@ -15,6 +16,44 @@ from unified_api_contracts import (
     OUT_OF_COVERAGE_WINDOW_REASONS,
     SCHEDULE_DEFINING_DATA_TYPES,
     EmptyConfirmedReason,
+)
+
+import deployment_api.services.data_status_service as _dss
+from deployment_api.services.data_status.live_build_guard import (
+    estimate_live_build_bytes,
+    would_exceed_budget,
+)
+from deployment_api.settings import (
+    DATA_STATUS_LIVE_BUILD_CHILD_RLIMIT_BYTES as _LIVE_BUILD_CHILD_RLIMIT_BYTES,
+)
+from deployment_api.settings import (
+    DATA_STATUS_LIVE_BUILD_CHILD_TIMEOUT_SECONDS as _LIVE_BUILD_CHILD_TIMEOUT_S,
+)
+from deployment_api.settings import (
+    DATA_STATUS_LIVE_BUILD_MEMORY_BUDGET_BYTES as _LIVE_BUILD_MEMORY_BUDGET_BYTES,
+)
+from deployment_api.utils.bounded_subprocess import BoundedSubprocessError, run_bounded
+
+# coverage-summary has no date-range param — it always builds the full
+# history, mirroring data_status_rollup_worker.py's _ROLLUP_START_DATE.
+_COVERAGE_FULL_HISTORY_START = "2018-01-01"
+
+# Services whose ON-DEMAND coverage-summary build is PROVEN to threaten the
+# shared container: coverage-summary has no date-range param to narrow (unlike
+# manifest-status), so it always attempts the same full-history shape the
+# manifest live-build guard measured at 81 GB (market-tick-data-service) / 56
+# GB-for-just-3-months (market-data-processing-service) peak RSS for a SINGLE
+# request — see live_build_guard's calibration anchors and
+# data_status_rollup_worker.py's per-service child-process memory-ceiling
+# comment ("no RAM tier through 64GB survives it"). Deliberately excludes
+# instruments-service: its on-demand build is also large (18 GB, same
+# incident) but its rollup blob has been reliably produced since the very
+# first rollup-worker run (2026-06), so it essentially never reaches this
+# on-demand path in production — gating it too would only add refusal
+# false-positives to its still-exercised on-demand unit-test coverage with
+# no matching production incident.
+_COVERAGE_SUMMARY_OOM_RISK_SERVICES: frozenset[str] = frozenset(
+    {"market-tick-data-service", "market-data-processing-service"}
 )
 
 # DATA-TYPE-AWARE schedule-empty resolution (operator direction 2026-06-23):
@@ -31,9 +70,29 @@ logger = logging.getLogger(__name__)
 
 from deployment_api.services.data_status.rollup_cache import (
     filter_coverage_to_asset_groups,
+    read_coverage_rollup_allow_stale,
     read_coverage_rollup_if_fresh,
 )
 from deployment_api.services.data_status.venue_resolution import VenueResolutionMixin
+
+
+def _build_coverage_summary_in_subprocess(
+    service: str,
+    asset_groups: list[str] | None,
+    cloud: str,
+) -> dict[str, object]:
+    """Spawned-child entrypoint for ``bounded_subprocess.run_bounded``.
+
+    Defense-in-depth layer 2 for the coverage-summary live-build OOM guard
+    (layer 1 is the pre-flight :func:`~deployment_api.services.data_status.live_build_guard.estimate_live_build_bytes`
+    refusal in :meth:`CoverageStatusMixin.get_coverage_summary`) — mirrors
+    ``manifest.py``'s ``_build_manifest_live_in_subprocess`` (see that
+    docstring for the full rationale). Constructs a fresh
+    ``DataStatusService`` inside the child rather than pickling a live
+    instance across the process boundary.
+    """
+    dss = _dss.DataStatusService()
+    return dss._get_coverage_summary_sync(service, asset_groups, cloud)  # pyright: ignore[reportPrivateUsage]
 
 
 class CoverageStatusMixin(VenueResolutionMixin):
@@ -56,13 +115,28 @@ class CoverageStatusMixin(VenueResolutionMixin):
     ) -> dict[str, object]:
         """Return shard counts and latest-day instrument totals per asset_group.
 
-        Two paths (mirrors :meth:`get_manifest_status`):
+        Three paths (mirrors :meth:`get_manifest_status`):
 
         1. **Rollup fast-path** — if a fresh coverage rollup blob exists at
            ``gs://{pid}-data-status-rollups/{service}/coverage.json.gz`` the
            response is read from there + filtered to the requested asset_groups
            in-memory. Sub-second.
-        2. **On-demand fall-through** — original synchronous compute that
+        2. **Live-build OOM guard** (root-caused 2026-07-26,
+           ``deployment_api_honest_coverage_regression_2026_07_26.md``): a
+           service whose rollup blob is missing/stale falls through to
+           ``_get_coverage_summary_sync``, which — like the manifest-status
+           on-demand build this guard was first added for — iterates the
+           FULL 2018-today availability index unconditionally (coverage-
+           summary takes no date-range param). For market-tick-data-service
+           this measures ~81 GB peak RSS for a SINGLE request (same
+           calibration anchor as the manifest guard) — enough to OOM-kill the
+           whole shared 16 GiB container and cancel every other in-flight
+           request, not just this one. A cheap pre-flight estimate refuses
+           the build outright (falling back to a stale rollup, or a
+           structured refusal) before ever attempting it; a build that DOES
+           pass the estimate still runs inside a resource-bounded spawned
+           child as defense-in-depth.
+        3. **On-demand fall-through** — the guarded synchronous compute that
            iterates the availability indices.
 
         See plan: ``data_status_offline_rollup_2026_05_06.md``.
@@ -74,7 +148,124 @@ class CoverageStatusMixin(VenueResolutionMixin):
         rollup = await asyncio.to_thread(read_coverage_rollup_if_fresh, service)
         if rollup is not None:
             return filter_coverage_to_asset_groups(rollup, asset_groups)
-        return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups, cloud)
+
+        # The guard below only engages for _COVERAGE_SUMMARY_OOM_RISK_SERVICES
+        # (see that constant's docstring) — every other service keeps the
+        # pre-existing, unguarded on-demand path exactly as before.
+        if service not in _COVERAGE_SUMMARY_OOM_RISK_SERVICES:
+            return await asyncio.to_thread(self._get_coverage_summary_sync, service, asset_groups, cloud)
+
+        # ── Layer 1: pre-flight refusal ──
+        cat_list = self._resolve_coverage_cat_list(service, asset_groups)
+        today = dt.datetime.now(dt.UTC).date().isoformat()
+        estimate_bytes = estimate_live_build_bytes(
+            service=service,
+            start_date=_COVERAGE_FULL_HISTORY_START,
+            end_date=today,
+            category_count=len(cat_list),
+        )
+        if would_exceed_budget(estimate_bytes, _LIVE_BUILD_MEMORY_BUDGET_BYTES):
+            logger.warning(
+                "coverage-summary live-build REFUSED (pre-flight) for service=%s: estimate=%dMB > budget=%dMB",
+                service,
+                estimate_bytes // (1024 * 1024),
+                _LIVE_BUILD_MEMORY_BUDGET_BYTES // (1024 * 1024),
+            )
+            return await self._coverage_summary_fallback(service, asset_groups, estimate_bytes)
+
+        # ── Layer 2: defense-in-depth ──
+        # Even an estimate under budget runs inside a resource-bounded spawned
+        # child (mirrors the manifest live-build guard) — an underestimate
+        # raises a catchable error in the throwaway child instead of
+        # OOM-killing this gunicorn worker (and every other request sharing
+        # its container).
+        try:
+            return await asyncio.to_thread(
+                run_bounded,
+                _build_coverage_summary_in_subprocess,
+                service,
+                asset_groups,
+                cloud,
+                rlimit_bytes=_LIVE_BUILD_CHILD_RLIMIT_BYTES,
+                timeout_s=_LIVE_BUILD_CHILD_TIMEOUT_S,
+                name=f"coverage-summary-live-{service[:24]}",
+            )
+        except BoundedSubprocessError as exc:
+            logger.error("coverage-summary live-build FAILED in bounded child for service=%s: %s", service, exc)
+            return await self._coverage_summary_fallback(service, asset_groups, estimate_bytes, child_error=str(exc))
+
+    async def _coverage_summary_fallback(
+        self,
+        service: str,
+        asset_groups: list[str] | None,
+        estimate_bytes: int,
+        *,
+        child_error: str | None = None,
+    ) -> dict[str, object]:
+        """Serve a stale coverage rollup if one exists, else a structured refusal.
+
+        Called when the pre-flight guard refuses the coverage-summary live
+        build outright, or the bounded child failed anyway. Mirrors
+        ``ManifestStatusMixin._live_build_fallback``.
+        """
+        stale = await asyncio.to_thread(read_coverage_rollup_allow_stale, service)
+        if stale is not None:
+            payload, last_modified_iso = stale
+            response = filter_coverage_to_asset_groups(payload, asset_groups)
+            response["stale"] = True
+            response["stale_as_of"] = last_modified_iso
+            response["stale_reason"] = (
+                "on-demand live build refused or failed (too large for a single request) "
+                "-- serving the last precomputed rollup instead"
+            )
+            logger.info(
+                "coverage-summary live-build for service=%s served STALE rollup (as_of=%s, child_error=%s)",
+                service,
+                last_modified_iso,
+                child_error,
+            )
+            return response
+
+        budget_mb = _LIVE_BUILD_MEMORY_BUDGET_BYTES // (1024 * 1024)
+        estimate_mb = estimate_bytes // (1024 * 1024)
+        detail = (
+            f"On-demand build estimated at ~{estimate_mb} MB, over the {budget_mb} MB safety budget "
+            "for a single request -- refused to protect the shared container from an OOM crash. "
+            "This service's full-history coverage summary is too large to compute on demand; "
+            "select fewer asset groups or wait for the next background rollup cycle."
+        )
+        if child_error is not None:
+            detail = f"On-demand build failed inside its resource-bounded child process ({child_error}). {detail}"
+        logger.info(
+            "coverage-summary live-build for service=%s refused with NO rollup fallback available: %s",
+            service,
+            detail,
+        )
+        return {
+            "service": service,
+            "mode": "live_build_refused",
+            "refused": True,
+            "detail": detail,
+            "estimated_bytes": estimate_bytes,
+            "budget_bytes": _LIVE_BUILD_MEMORY_BUDGET_BYTES,
+            "asset_groups": {},
+            "totals": {
+                "shards": 0,
+                "instrument_rows": 0,
+                "dates_across_categories": 0,
+                "latest_day_instruments": 0,
+                "unique_instruments": 0,
+                "capture_status_counts": {
+                    "captured": 0,
+                    "empty_confirmed": 0,
+                    "attempted_failed": 0,
+                    "expected_unattempted": 0,
+                    "out_of_window": 0,
+                },
+                "completion_pct": 0.0,
+            },
+            "totals_source": "refused-too-large",
+        }
 
     def _resolve_coverage_cat_list(self, service: str, asset_groups: list[str] | None) -> list[str]:
         """Pick which asset_groups to iterate for this service's coverage summary.
