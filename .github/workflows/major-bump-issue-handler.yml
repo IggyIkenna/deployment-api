@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   handle-major-bump:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, glue]
     # Only run on issues (not PRs) with the major-bump-pending label
     if: |
       github.event.issue.pull_request == null &&
@@ -306,7 +306,7 @@ jobs:
     name: Slack — Major Bump Handler Failure
     needs: [handle-major-bump]
     if: always() && needs.handle-major-bump.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, glue]
     steps:
       - name: Send Slack failure alert
         env:

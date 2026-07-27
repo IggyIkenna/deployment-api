@@ -60,6 +60,11 @@ jobs:
     uses: IggyIkenna/unified-trading-pm/.github/workflows/python-quality-gates-v2.yml@live-defi-rollout
     with:
       dep_repos: "unified-trading-library unified-api-contracts deployment-service"
+      # Empty (the vast majority of repos) -> the reusable workflow's own default -> ubuntu-latest.
+      # Non-empty only for repos in scripts/workflow-templates/self-hosted-qg-repos.txt — see
+      # unified-trading-pm/.github/workflows/python-quality-gates-v2.yml's own input doc for why this
+      # can't be a blanket default (github_actions_operator_gated_followups_2026_07_17.md).
+      self_hosted_runner_labels: '["self-hosted","glue"]'
     secrets: inherit
     # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
     # are derived inside the reusable workflow from github.repository (caller's repo name)
@@ -138,9 +143,10 @@ jobs:
   dispatch-cloud-build:
     name: Dispatch cloud-build trigger (main release)
     needs: quality-gates-v2
-    # Skip for a metadata-only commit (version bump or dep pin, fast-pathed by the reusable
-    # workflow): no code changed, so no image to rebuild.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.quality-gates-v2.outputs.metadata_only != 'true'
+    # Skip for a metadata-only commit (version bump or dep pin) OR a docs-only changeset (A1),
+    # both fast-pathed by the reusable workflow: no code changed, so no image to rebuild.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.quality-gates-v2.outputs.metadata_only != 'true' && needs.quality-gates-v2.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch qg-passed → cloud-build-router
@@ -160,20 +166,20 @@ jobs:
             -d "{\"event_type\": \"qg-passed\", \"client_payload\": {\"repo\": \"${REPO}\", \"branch\": \"${BRANCH}\", \"commit_sha\": \"${COMMIT_SHA}\", \"repo_type\": \"service\"}}"
           echo "Dispatched qg-passed for ${REPO}@${COMMIT_SHA} on ${BRANCH}"
 
-  # Notify ci-failure-watcher (event-driven path, plan L1555 / L1557). When quality-gates-v2
+  # Notify ci-health (event-driven path, plan L1555 / L1557). When quality-gates-v2
   # FAILS on any context (push or pull_request), fire a `ci-failure-alert` repository_dispatch
-  # into PM so ci-failure-watcher.yml wakes immediately instead of waiting up to 15 min for
+  # into PM so ci-health.yml wakes immediately instead of waiting up to 15 min for
   # the */15 cron. Addresses L1557 as a corollary: the watcher's --auto-recover runs within
   # seconds of a blocked promotion PR rather than on the next cron tick. The cron backstop
   # remains for failures in workflows that do NOT dispatch (backmerge, semver-agent, etc.).
   # Best-effort: a failed dispatch MUST NOT redden the run (gate already failed; cron catches it).
   notify-ci-watcher:
-    name: Notify ci-failure-watcher (event-driven, plan L1555)
+    name: Notify ci-health (event-driven, plan L1555)
     needs: quality-gates-v2
     if: always() && needs.quality-gates-v2.result == 'failure'
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch ci-failure-alert → PM ci-failure-watcher
+      - name: Dispatch ci-failure-alert → PM ci-health
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           GH_ORG: ${{ github.repository_owner }}
@@ -191,6 +197,6 @@ jobs:
             -f "client_payload[repo]=${REPO}" \
             -f "client_payload[branch]=${BRANCH}" \
             -f "client_payload[run_url]=${RUN_URL}" \
-            && echo "[notify-ci-watcher] dispatched ci-failure-alert for ${REPO}@${BRANCH} -> PM ci-failure-watcher." \
+            && echo "[notify-ci-watcher] dispatched ci-failure-alert for ${REPO}@${BRANCH} -> PM ci-health." \
             || echo "[notify-ci-watcher] dispatch failed (best-effort); cron backstop remains."
           exit 0
