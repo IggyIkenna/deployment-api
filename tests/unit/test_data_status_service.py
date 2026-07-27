@@ -21,6 +21,7 @@ import pytest
 # existed to dodge a since-fixed circular import via services/__init__)
 # created a second module instance whose patches the mixins never saw.
 import deployment_api.services.data_status.breakdowns_core as _bc_mod
+import deployment_api.services.data_status.coverage as _coverage_mod
 import deployment_api.services.data_status_service as _dss_mod
 
 DataStatusService = _dss_mod.DataStatusService
@@ -1352,6 +1353,97 @@ class TestGetCoverageSummary:
         assert counts["empty_confirmed"] == 0
         assert counts["attempted_failed"] == 0
         assert cat["completion_pct"] == 100.0
+
+
+# ── coverage-summary live-build guard (deployment_api/services/data_status/coverage.py) ──
+#
+# Root-caused 2026-07-26 (deployment_api_honest_coverage_regression_2026_07_26.md):
+# coverage-summary has no date-range param, so its on-demand fallback always
+# attempts the full 2018-today build — the exact shape that measured 81 GB
+# peak RSS for market-tick-data-service (same calibration anchor as the
+# manifest live-build guard), OOM-killing the shared 16 GiB container and
+# cancelling every other in-flight request. Mirrors TestManifestLiveBuildGuard's
+# inline-run_bounded-fake convention (never spawn a real child in a unit test).
+_PATCH_COVERAGE_RUN_BOUNDED = "deployment_api.services.data_status.coverage.run_bounded"
+
+
+class TestCoverageSummaryLiveBuildGuard:
+    @pytest.mark.asyncio
+    async def test_mtds_refused_without_attempting_live_build(self):
+        """market-tick-data-service coverage-summary must trip the pre-flight
+        refusal and never attempt the live build — run_bounded unasserted-called."""
+        svc = _make_svc()
+        with (
+            patch.object(_coverage_mod, "read_coverage_rollup_if_fresh", return_value=None),
+            patch.object(_coverage_mod, "read_coverage_rollup_allow_stale", return_value=None),
+            patch(_PATCH_COVERAGE_RUN_BOUNDED) as mock_run_bounded,
+        ):
+            result = await svc.get_coverage_summary("market-tick-data-service")
+
+        mock_run_bounded.assert_not_called()
+        assert result["refused"] is True
+        assert result["mode"] == "live_build_refused"
+        assert result["estimated_bytes"] > result["budget_bytes"]
+        assert result["asset_groups"] == {}
+
+    @pytest.mark.asyncio
+    async def test_mdps_refused_without_attempting_live_build(self):
+        """market-data-processing-service is the OTHER proven-catastrophic anchor
+        (56 GB for just 3 months) — same refusal path."""
+        svc = _make_svc()
+        with (
+            patch.object(_coverage_mod, "read_coverage_rollup_if_fresh", return_value=None),
+            patch.object(_coverage_mod, "read_coverage_rollup_allow_stale", return_value=None),
+            patch(_PATCH_COVERAGE_RUN_BOUNDED) as mock_run_bounded,
+        ):
+            result = await svc.get_coverage_summary("market-data-processing-service")
+
+        mock_run_bounded.assert_not_called()
+        assert result["refused"] is True
+
+    @pytest.mark.asyncio
+    async def test_mtds_serves_stale_rollup_when_available(self):
+        """A refused MTDS live build serves a stale coverage rollup (clearly
+        marked) instead of a bare error, when one exists."""
+        svc = _make_svc()
+        stale_payload = {"asset_groups": {"CEFI": {"total_shards": 1}}}
+        with (
+            patch.object(_coverage_mod, "read_coverage_rollup_if_fresh", return_value=None),
+            patch.object(
+                _coverage_mod, "read_coverage_rollup_allow_stale", return_value=(stale_payload, "2026-07-25T00:00:00Z")
+            ),
+            patch(_PATCH_COVERAGE_RUN_BOUNDED) as mock_run_bounded,
+        ):
+            result = await svc.get_coverage_summary("market-tick-data-service")
+
+        mock_run_bounded.assert_not_called()
+        assert result["stale"] is True
+        assert result["stale_as_of"] == "2026-07-25T00:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_uncalibrated_service_unaffected_still_returns_real_data(self):
+        """A service outside the OOM-risk set is NOT guarded — it keeps the
+        pre-existing, unguarded on-demand path (never touches run_bounded at
+        all, not even inline) and still returns real data."""
+        svc = _make_svc()
+        index = pd.DataFrame(
+            {
+                "date": ["2024-01-01", "2024-01-02"],
+                "venue": ["BINANCE", "BINANCE"],
+                "service_name": ["instruments-service", "instruments-service"],
+            }
+        )
+        with (
+            patch.object(_coverage_mod, "read_coverage_rollup_if_fresh", return_value=None),
+            patch.object(_dss_mod, "_read_index_cached", return_value=index),
+            patch(_PATCH_COVERAGE_RUN_BOUNDED) as mock_run_bounded,
+        ):
+            result = await svc.get_coverage_summary("instruments-service", asset_groups=["CEFI"])
+
+        mock_run_bounded.assert_not_called()
+        assert result["service"] == "instruments-service"
+        assert result["totals"]["shards"] == 2
+        assert "refused" not in result
 
 
 class TestGetManifestStatus:
