@@ -31,6 +31,8 @@ from deployment_api.services.artifact_pipeline.models import (
     CHANGE_NEW,
     CHANGE_ROLLBACK,
     LANE_IMAGE,
+    LANE_TARBALL,
+    REGISTRY_TARBALL_BUCKET,
     BuildFact,
     DeployFact,
     RegistryImageFact,
@@ -438,6 +440,143 @@ def gcp_artifact_registry_images(cfg: DeploymentApiConfig, scan: int = _AR_IMAGE
                 tags=[str(t) for t in _as_item_list(getattr(img, "tags", None))],
                 pushed_at=_iso_or_empty(getattr(img, "upload_time", None)),
                 size_bytes=int(size) if isinstance(size, (int, float)) and size else None,
+            )
+        )
+    return facts
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# GCS tarball-manifest bucket → BuildFact (Lane B builds) + RegistryImageFact (the Artifacts view's
+# tarball rows) — the gap confirmed 2026-07-24: no provider anywhere read this bucket, so the
+# tarball lane was silently absent (not filtered-empty) from every view that promises it.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# The VM-deployment code-tarball bucket (Lane B) is `deployment-scripts-{project_id}` — LIVE-VERIFIED
+# 2026-07-27 via `gcloud storage ls`, matching `code_tarball_refresh_scheduler.tf`'s
+# `gs://{code-bucket}/code/*-code.tar.gz` comment exactly. Bypasses `resolve_bucket_name()` today — a
+# pre-existing, separately-tracked issue (Phase 6 stretch, plan § "Prior art to ABSORB") — but derives
+# the project id from config rather than hardcoding it, unlike the shell scripts in this lane
+# (`setup-data-pipeline-vm.sh:47`, `create-code-tarballs.sh:46`), which is a separate, already-tracked
+# issue this provider doesn't need to repeat.
+_TARBALL_BUCKET_PREFIX = "deployment-scripts-"
+_TARBALL_PREFIX = "code/"
+_TARBALL_BRANCH = "live-defi-rollout"  # the refresh cron's only target (code_tarball_refresh_scheduler.tf)
+
+# Runaway-safety net, not a real trim — MEASURED 2026-07-27: ~4966 manifests / ~1046 tarballs live
+# (up from the plan's 2026-07-17 measurement of 4064/163; no lifecycle rule on `code/` means this
+# only grows). A `list_blobs` scan over this many objects is still a single cheap metadata call.
+_TARBALL_SCAN = 20000
+
+
+def _parse_tarball_stem(object_name: str) -> tuple[str, str] | None:
+    """`<repo>-code[@sha]` (an object's basename, suffix already stripped) → `(repo, sha)`.
+
+    `sha=""` for the floating (no-`@`) pointer. `create-code-tarballs.sh` always writes the SHA-pinned
+    copy as a `cp` of the floating manifest ON THE SAME BUILD (`:373`), so the floating name never
+    carries a build event distinct from the newest pin — callers building BUILD history skip it (no
+    double-count); callers building the Artifacts roll-up still count it (it IS a real, currently-live
+    artifact). Returns `None` for a name that isn't a tarball stem at all (the bucket's own
+    housekeeping files, e.g. `_refresh_status.json`, `_test_write.txt`).
+    """
+    stem, _, sha = object_name.partition("@")
+    if not stem.endswith("-code"):
+        return None
+    return stem[: -len("-code")], sha
+
+
+def _scan_tarball_bucket(cfg: DeploymentApiConfig, scan: int = _TARBALL_SCAN) -> dict[str, tuple[int | None, str]]:
+    """One `list_blobs` walk over `code/` → `{tarball_stem: (size_bytes, last_modified)}` for every
+    `.manifest.json`, where `size_bytes` is the SIBLING `.tar.gz` object's own size — NEVER the
+    manifest's own (unrelated, tiny-JSON) byte count — and is honestly `None` when no matching
+    tarball object exists (an orphaned manifest: deleted, or a partial upload).
+
+    Reads ZERO manifest bodies — every field either caller needs (repo, sha, size, timestamp) is
+    already on the object's own name/metadata, so this stays a single cheap metadata scan even at
+    ~5000 objects, never thousands of small downloads. `commit_sha`/`pyproject_version`/
+    `git_status_clean` living inside each manifest's JSON (per the plan's data-feasibility table) are
+    NOT read — `BuildFact`/`RegistryImageFact` have no fields for the latter two, and the SHA is
+    already in the object name.
+    """
+    from itertools import islice
+
+    from unified_trading_library import get_storage_client
+
+    bucket = f"{_TARBALL_BUCKET_PREFIX}{_project_id(cfg)}"
+    client = get_storage_client()
+    manifest_modified: dict[str, str] = {}
+    tarball_sizes: dict[str, int] = {}
+    blobs = client.list_blobs(bucket=bucket, prefix=_TARBALL_PREFIX)
+    for blob in islice(blobs, scan):
+        name = blob.name.rsplit("/", 1)[-1]
+        if name.endswith(".manifest.json"):
+            manifest_modified[name[: -len(".manifest.json")]] = blob.last_modified or ""
+        elif name.endswith(".tar.gz"):
+            tarball_sizes[name[: -len(".tar.gz")]] = blob.size
+
+    return {stem: (tarball_sizes.get(stem), modified) for stem, modified in manifest_modified.items()}
+
+
+def gcp_tarball_manifest_builds(cfg: DeploymentApiConfig, scan: int = _TARBALL_SCAN) -> list[BuildFact]:
+    """The tarball lane's build history — one `BuildFact` per SHA-pinned manifest (the floating
+    pointer is skipped: it never represents a build event distinct from the newest pin, see
+    `_parse_tarball_stem`).
+
+    Honesty: this bucket only ever records a SUCCESSFUL refresh — a failed one produces no new
+    manifest at all, so its absence is not observable here as an explicit `FAILURE` the way Cloud
+    Build reports one. Every row is `status="SUCCESS"` for exactly that reason, never a fabricated
+    failure rate for what this source structurally cannot see.
+    """
+    bucket = f"{_TARBALL_BUCKET_PREFIX}{_project_id(cfg)}"
+    facts: list[BuildFact] = []
+    for stem, (_size, modified) in _scan_tarball_bucket(cfg, scan).items():
+        parsed = _parse_tarball_stem(stem)
+        if parsed is None:
+            continue
+        repo, sha = parsed
+        if not sha:
+            continue  # the floating pointer duplicates the newest pin's build event
+        facts.append(
+            BuildFact(
+                cloud="gcp",
+                lane=LANE_TARBALL,
+                repo=repo,
+                build_id=stem,
+                status="SUCCESS",
+                trigger="code-tarball-refresh",
+                sha=sha[:7],  # match Cloud Build's `_sub_get(...)[:7]` convention for cross-lane (repo, sha) joins
+                branch=_TARBALL_BRANCH,
+                started_at=modified,
+                finished_at=modified,
+                produced=f"gs://{bucket}/{_TARBALL_PREFIX}{stem}.tar.gz",  # noqa: gs-uri — display string, config-derived bucket
+            )
+        )
+    return facts
+
+
+def gcp_tarball_manifest_images(cfg: DeploymentApiConfig, scan: int = _TARBALL_SCAN) -> list[RegistryImageFact]:
+    """The tarball lane's Artifacts-view rows — one `RegistryImageFact` per manifest (floating AND
+    pinned both count here — unlike the build-history reading, the Artifacts roll-up shows every
+    currently-live artifact, and the floating pointer is a real, currently-fetchable tarball).
+
+    `digest=""` always — a tarball carries no Docker digest (honest absence, not a fabricated one);
+    `service.images()`'s existing `running_on` cross-ref (keyed on digest) correctly never fires for
+    these rows, matching the Health view's already-tracked "no measured git commit" gap.
+    """
+    facts: list[RegistryImageFact] = []
+    for stem, (size, modified) in _scan_tarball_bucket(cfg, scan).items():
+        parsed = _parse_tarball_stem(stem)
+        if parsed is None:
+            continue
+        repo, sha = parsed
+        facts.append(
+            RegistryImageFact(
+                cloud="gcp",
+                registry=REGISTRY_TARBALL_BUCKET,
+                repo=repo,
+                digest="",
+                tags=[sha[:7]] if sha else ["floating"],
+                pushed_at=modified,
+                size_bytes=size,
             )
         )
     return facts

@@ -32,6 +32,10 @@ CLOUD_AWS = "aws"
 LANE_IMAGE = "image"  # Docker image → registry → Cloud Run / App Runner / ECS
 LANE_TARBALL = "tarball"  # code tarball → GCS/S3 → a GCE/EC2 VM runs source (a launch IS the deploy)
 
+# The tarball lane's `ImageFact.registry` key (Phase 3d) — distinct from the AR `unified-trading-system`
+# key so a tarball "repo" roll-up never collides with an AR repo of the same service name.
+REGISTRY_TARBALL_BUCKET = "gcs-tarball-bucket"
+
 # ── Drift classification for a running artifact version (the "What's running" flags) ────────────────
 # Ordered strongest-provenance → weakest. A group also carries `fragmented` when >1 version is live.
 DRIFT_PINNED = "pinned"  # @sha256 digest — immutable, provable

@@ -25,6 +25,7 @@ from deployment_api.services.artifact_pipeline.models import (
     DRIFT_OK,
     DRIFT_UNKNOWN,
     LANE_IMAGE,
+    REGISTRY_TARBALL_BUCKET,
     SEV_DEFERRED,
     SEV_HIGH,
     SEV_LOW,
@@ -369,7 +370,10 @@ class ArtifactPipelineService:
         def _load() -> list[BuildFact]:
             facts: list[BuildFact] = []
             facts += providers.safe(lambda: providers.gcp_cloud_builds(self._cfg), "gcp_cloud_builds")
-            # AWS CodeBuild (WIF) + the tarball-lane builds land in later increments — each `_safe`.
+            facts += providers.safe(
+                lambda: providers.gcp_tarball_manifest_builds(self._cfg), "gcp_tarball_manifest_builds"
+            )
+            # AWS CodeBuild (WIF) is a later increment — `_safe`, mirroring the tarball lane above.
             return facts
 
         return self._build_facts.get_or_load("builds", _load, force=force)
@@ -393,6 +397,9 @@ class ArtifactPipelineService:
             facts: list[RegistryImageFact] = []
             facts += providers.safe(
                 lambda: providers.gcp_artifact_registry_images(self._cfg), "gcp_artifact_registry_images"
+            )
+            facts += providers.safe(
+                lambda: providers.gcp_tarball_manifest_images(self._cfg), "gcp_tarball_manifest_images"
             )
             # AWS ECR is a later increment (parked/no credits today) — `_safe`, mirroring builds/deploys.
             return facts
@@ -645,21 +652,55 @@ class ArtifactPipelineService:
                 )
             )
 
-        conditions.append(
-            HealthCondition(
-                condition="VM tarball-lane workloads carry no measured git commit yet",
-                severity=SEV_MED,
-                count="fleet",
-                area="running · GCP tarball lane",
-                tab="running",
-                meaning=(
-                    'The GCE VM registry entry\'s git_commit/image_digest fields are stamped "" at launch today, '
-                    "so What's running can only cover the Cloud Run (image) lane until the launch-time stamp "
-                    "change lands."
-                ),
-                evidence="plans/active/artifact_pipeline_observability_2026_07_17.md § Honest gaps",
+        # Phase 3d (2026-07-27): builds()/images() now carry real tarball-lane data (the GCS bucket
+        # provider landed), but `running()` still can't join any of it — there is no VM-launch deploy
+        # provider yet (Phase 3d confirmed the plan's own earlier "Deploy timeline already treats a
+        # VM launch as the tarball deploy" claim was STALE; `deployment-api@72a0108`'s own commit
+        # message says GCE VM launches were explicitly deferred) and no VM stamps `git_commit` at
+        # boot yet (Phase 3c, not yet shipped). So this condition is now DATA-DRIVEN off the tarball
+        # repos images() actually found, not a fixed "fleet" placeholder — it fires only when tarball
+        # data exists to have this gap in the first place.
+        tarball_repos = sorted({r.repo for r in images_resp.rows if r.registry == REGISTRY_TARBALL_BUCKET})
+        if tarball_repos:
+            conditions.append(
+                HealthCondition(
+                    condition="VM tarball-lane workloads carry no measured git commit yet",
+                    severity=SEV_MED,
+                    count=f"{len(tarball_repos)} repos",
+                    area="running · GCP tarball lane",
+                    tab="running",
+                    meaning=(
+                        'The GCE VM registry entry\'s git_commit/image_digest fields are stamped "" at launch today, '
+                        "so What's running can only cover the Cloud Run (image) lane until the launch-time stamp "
+                        "change lands (Phase 3c)."
+                    ),
+                    evidence="plans/active/artifact_pipeline_observability_2026_07_17.md § Honest gaps",
+                )
             )
-        )
+        else:
+            # The bucket has ~5000 objects live (measured 2026-07-27) — zero tarball rows here is the
+            # SAME silent-empty symptom Phase 7 diagnosed for Artifact Registry before its IAM fix
+            # (a caught exception degrading to `[]`), not a "nothing to report" state. AR having real
+            # rows in the SAME response proves images() itself is working, isolating the suspect to
+            # the tarball provider specifically.
+            ar_rows = [r for r in images_resp.rows if r.registry != REGISTRY_TARBALL_BUCKET]
+            if ar_rows:
+                conditions.append(
+                    HealthCondition(
+                        condition="The tarball-bucket provider returned zero rows",
+                        severity=SEV_MED,
+                        count="0",
+                        area="artifacts · GCP tarball lane",
+                        tab="art",
+                        meaning=(
+                            "Artifact Registry rows loaded fine in this same response, so images() itself works — "
+                            "a live bucket with no rows here likely means gcp_tarball_manifest_images() raised and "
+                            "providers.safe() swallowed it (the same silent-empty failure mode Phase 7 found for AR "
+                            "before its IAM fix), not that the bucket is genuinely empty."
+                        ),
+                        evidence="the tarball-manifest bucket's code/ prefix (~5000 objects measured 2026-07-27)",
+                    )
+                )
 
         sprawl = [r for r in images_resp.rows if r.image_count >= _SPRAWL_IMAGE_COUNT]
         if sprawl:
