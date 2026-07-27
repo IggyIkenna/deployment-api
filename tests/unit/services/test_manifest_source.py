@@ -27,7 +27,10 @@ def test_live_mode_delegates_to_utl_reader() -> None:
     live_df = pd.DataFrame({"date": ["2026-01-01"]})
     with patch.object(manifest_source, "read_availability_index", return_value=live_df) as utl_read:
         out = manifest_source.read_manifest_index("market-data-tick-tradfi-prd-p")
-    utl_read.assert_called_once_with("market-data-tick-tradfi-prd-p")
+    # read_availability_index_bare_defi_callers_2026_07_27.md: the bare fallback is now
+    # column-projected to DRILLDOWN_COLUMNS (one cache-miss from an OOM on the 1.58 GB
+    # defi-prd index otherwise).
+    utl_read.assert_called_once_with("market-data-tick-tradfi-prd-p", columns=manifest_source.DRILLDOWN_COLUMNS)
     assert out is live_df
 
 
