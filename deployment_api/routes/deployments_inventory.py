@@ -356,10 +356,21 @@ def _census_or_degrade[T](label: str, future: Future[T], default: T) -> T:
 _vm_entry_by_name_cache: dict[str, DeploymentRegistryEntry] = {}
 _vm_entry_by_name_lock = threading.Lock()
 
-# D.3 composite states this todo alerts on. "stalled" cannot occur yet (its manifest
-# object-delta signal is a separate, not-yet-shipped sibling todo — see
-# _composite_health_status) but is included so no code change is needed once it lands.
-_ALERT_HEALTH_STATES = frozenset({"oom-risk", "stalled"})
+# D.3 composite states this todo alerts on. "stalled" fires only for the BATCH umbrella
+# today (LIVE/PAPER degrade to "unknown" — see _composite_health_status's docstring).
+# "hung" (a running VM whose GCE status is still RUNNING but its registry heartbeat has
+# exceeded _STALE_HEARTBEAT_MINUTES=15, computed in _vm_health.py) was added here 2026-07-27
+# per migration_vm_hung_detection_monitoring_gap_2026_07_27.md todo 1, closing Gap 1 (the
+# state was already computed correctly but structurally excluded from paging). A same-session
+# false-positive-risk investigation traced the heartbeat WRITE path (not the workload's data
+# -progress cadence, a distinct and legitimately variable signal already handled per-VM-class
+# by heartbeat_stall_watcher.py's PREFIX_IDLE_THRESHOLDS / _is_backfill_vm gate): every VM_TASK
+# launched via setup-data-pipeline-vm.sh installs the same 60s-interval HeartbeatDaemon
+# (deployment_service/vm/heartbeat_cli.py) unconditionally, live/backfill/canonical-migration
+# alike — 15 minutes is a uniform ~15x margin over that fixed 60s tick for every VM class, so
+# no per-VM-class override is needed for THIS signal (unlike the other two watchers' overrides,
+# which cover different, workload-paced signals this one does not use).
+_ALERT_HEALTH_STATES = frozenset({"oom-risk", "stalled", "hung"})
 
 # In-process last-alerted composite_health_status per VM name — fires an alert only on a
 # fresh TRANSITION into an alertable state, never on every ~45s cache-refresh poll while the
@@ -704,7 +715,8 @@ def _persist_alert(
 
 
 def _alert_on_health_transition(item: DeploymentItem) -> None:
-    """Fire a ledger alert on a fresh transition INTO oom-risk/stalled (never a repeat-poll spam).
+    """Fire a ledger alert on a fresh transition INTO oom-risk/stalled/hung (never a repeat-poll
+    spam).
 
     Always records the item's current state (even a non-alertable one, e.g. recovery back to
     ``working``) so the NEXT transition into an alertable state is detected correctly.
@@ -716,7 +728,7 @@ def _alert_on_health_transition(item: DeploymentItem) -> None:
     if status is None or status not in _ALERT_HEALTH_STATES or status == previous:
         return
     _persist_alert(
-        alert_class=status,  # "oom-risk" | "stalled"
+        alert_class=status,  # "oom-risk" | "stalled" | "hung"
         workflow_name=f"vm-health-{item.name}",
         severity="CRITICAL" if status == "oom-risk" else "WARNING",
         message=f"{item.name} ({item.service}/{item.asset_group}) is {status}",

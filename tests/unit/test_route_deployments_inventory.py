@@ -861,7 +861,7 @@ def test_cloud_function_item_builds_deployment_item() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Alerts: fire on transition into oom-risk/stalled, never on a repeat-poll
+# Alerts: fire on transition into oom-risk/stalled/hung, never on a repeat-poll
 # ---------------------------------------------------------------------------
 
 
@@ -911,9 +911,41 @@ def test_alert_on_health_transition_ignores_non_alertable_states() -> None:
 
     _inv_mod._last_alerted_health.clear()  # pyright: ignore[reportPrivateUsage]
     with patch.object(_inv_mod, "_persist_alert") as mock_persist:
-        for status in ("working", "hung", "dead", "disk-full", "unknown", None):
+        for status in ("working", "dead", "disk-full", "unknown", None):
             _inv_mod._alert_on_health_transition(_health_item("vm-a", status))  # pyright: ignore[reportPrivateUsage]
     mock_persist.assert_not_called()
+
+
+def test_alert_on_health_transition_fires_on_hung_transition() -> None:
+    """migration_vm_hung_detection_monitoring_gap_2026_07_27.md todo 1: "hung" is now a
+    member of _ALERT_HEALTH_STATES (Gap 1 fix) — a fresh transition into "hung" must fire
+    _persist_alert(...) exactly like oom-risk/stalled, and a VM already alerted for "hung"
+    must not re-page on every subsequent poll while the state persists (same dedup-by-
+    transition behavior the frozenset gate already provides for the other two states)."""
+    from deployment_api.routes import deployments_inventory as _inv_mod
+
+    _inv_mod._last_alerted_health.clear()  # pyright: ignore[reportPrivateUsage]
+    name = "canonical-migration-cefi-20260727-014158"
+
+    with patch.object(_inv_mod, "_persist_alert") as mock_persist:
+        _inv_mod._alert_on_health_transition(_health_item(name, "hung"))  # pyright: ignore[reportPrivateUsage]
+        # Same state next poll (the ~45s inventory cache-refresh cadence) -> no re-fire.
+        _inv_mod._alert_on_health_transition(_health_item(name, "hung"))  # pyright: ignore[reportPrivateUsage]
+        _inv_mod._alert_on_health_transition(_health_item(name, "hung"))  # pyright: ignore[reportPrivateUsage]
+    assert mock_persist.call_count == 1
+    call_kwargs = mock_persist.call_args.kwargs
+    assert call_kwargs["alert_class"] == "hung"
+    assert call_kwargs["severity"] == "WARNING"  # only oom-risk is CRITICAL
+    assert name in call_kwargs["workflow_name"]
+    assert call_kwargs["dedup_key"] == f"vm-health-{name}-hung"
+
+    with patch.object(_inv_mod, "_persist_alert") as mock_persist:
+        # Recovers -> not alertable, no fire, but records the state so the NEXT hang is a
+        # fresh transition again.
+        _inv_mod._alert_on_health_transition(_health_item(name, "working"))  # pyright: ignore[reportPrivateUsage]
+        # Re-enters hung -> a NEW transition -> fires again.
+        _inv_mod._alert_on_health_transition(_health_item(name, "hung"))  # pyright: ignore[reportPrivateUsage]
+    assert mock_persist.call_count == 1
 
 
 def test_persist_alert_writes_expected_row_shape() -> None:
