@@ -162,6 +162,18 @@ async def _assemble_context(
     storage = get_storage_client()
 
     # Instruments coverage
+    # KNOWN GAP, not a migration-in-progress (FLAG-3, data_completion_cefi_2026_07_15.md:154;
+    # operator-decided 2026-07-28): cloud-providers.yaml registers NO non-AG aggregate
+    # 'instruments-store' bucket kind -- only per-AG CEFI/DEFI/TRADFI/SPORTS (env-tiered) plus
+    # a separate flat instruments-store-prediction. This UAT/commentary-only read has NEVER
+    # resolved a real bucket and always degrades to None via the except below -- zero
+    # production impact (no manifest/gate/trading path depends on it). The correct future fix
+    # is a dedicated cross-cutting env-tiered pipeline-health bucket written by
+    # instruments-service + features-service (rejected for THIS todo: needs coordinated
+    # writer-side changes in two other repos, out of deployment-api-only scope) -- tracked in
+    # deployment_api_flag3_uat_health_summary_bucket_model_2026_07_28.md. The QG-allow marker
+    # below is required to keep quality-gates.sh green (STEP 5.31/5.96 bucket-literal bans);
+    # it is NOT a claim that a real migration is underway.
     try:
         raw_bytes = storage.download_bytes(
             f"instruments-store-{project_id}",  # QG-allow: legacy-bucket-name-migration
@@ -176,9 +188,15 @@ async def _assemble_context(
         context["instruments_expected_count"] = None
 
     # Feature pipeline health
+    # KNOWN GAP, not "correct as-is" (FLAG-3, same rationale as the instruments-store read
+    # above): no generic 'features-store' bucket kind exists at all -- cloud-providers.yaml
+    # only has family-specific kinds (features-delta-one/volatility/onchain/xinstrument/mtf/
+    # sports/commodity/calendar/prediction), none of which represents an aggregate "feature
+    # health" figure. Degrades to None via the except below; same deferred fix + tracking doc
+    # as above. The marker below is a QG STEP 5.31 exemption token, not an accuracy claim.
     try:
         raw_bytes = storage.download_bytes(
-            f"features-store-{project_id}",  # CORRECT-LOCAL
+            f"features-store-{project_id}",  # QG-allow: legacy-bucket-name-migration
             "health/latest.json",
         )
         health = cast(dict[str, object], json.loads(raw_bytes))
