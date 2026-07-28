@@ -20,7 +20,7 @@ ARG PROJECT_ID
 # cloudbuild) does NOT pass --build-arg BASE_IMAGE_DIGEST. An ARG declared after a FROM is
 # stage-scoped and invisible to a later FROM → empty digest → "invalid reference format".
 # Refreshed by update-dependency-version.yml on base-image republish.
-ARG BASE_IMAGE_DIGEST=sha256:afd58493c1bfe2925ed54d90223f2b14d8ba458069c8473c920fd4d5738ab0b0
+ARG BASE_IMAGE_DIGEST=sha256:ec21883c130cb53d06fbb0a69acd881650b5f575206c673b50ce74633bb618d1
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
 FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
@@ -115,6 +115,29 @@ RUN uv pip install --system --no-cache-dir --no-deps /tmp/_uac && rm -rf /tmp/_u
 COPY _deployment-service/ /tmp/deployment-service/
 RUN uv pip install --system --no-cache-dir --no-deps /tmp/deployment-service \
     && rm -rf /tmp/deployment-service
+
+# vm_zombie_watchdog.py is a top-level `scripts/` file in deployment-service, so the
+# `--no-deps` wheel install above (package-only) never carries it — it was structurally
+# absent from this image regardless of stage (the api-dev stage's `COPY scripts/
+# ./scripts/` below copies deployment-api's OWN unrelated scripts/ dir, not this repo's;
+# there was never a COPY sourcing _deployment-service/scripts/ anywhere). Every stalled-VM
+# auto-kill sweep failed silently in production with "vm_zombie_watchdog unavailable in
+# runtime" (heartbeat_stall_watcher_autokill_never_works_in_production_2026_07_27.md).
+# `scripts`/`scripts.vm` need no `__init__.py` (PEP 420 namespace packages) — the
+# directory landing under /app (already on sys.path via gunicorn's app-loader cwd-insert,
+# the same mechanism that resolves `deployment_api.main:app`) is sufficient.
+COPY _deployment-service/scripts/vm/vm_zombie_watchdog.py ./scripts/vm/vm_zombie_watchdog.py
+
+# The entire Layer-0 recovery-actuator family (relaunch_consolidator, relaunch_stalled_vm,
+# enter_safe_mode, restart_service, etc.) has the SAME structural gap: escalation.py's
+# `_ACTUATORS_AVAILABLE` probe (`find_spec("scripts.recovery.relaunch_consolidator")`) was
+# never satisfiable in this image either, so every DP_VM_STALL/CONSOLIDATOR_DOWN recovery
+# attempt short-circuited to "actuators_not_in_runtime" before instantiating any actuator —
+# fixing vm_zombie_watchdog alone restores the kill path but leaves auto-relaunch dead. This
+# package is self-contained (only unified_trading_library/unified_api_contracts + stdlib,
+# no cross-import on scripts.vm) and already carries its own __init__.py, so the whole
+# directory lands as a regular sub-package nested under the scripts/ namespace package.
+COPY _deployment-service/scripts/recovery/ ./scripts/recovery/
 
 # Install strategy-service — treasury_routes.py imports strategy_service.position.
 # buildspec.aws.yaml clones strategy-service@live-defi-rollout into _strategy-service/.

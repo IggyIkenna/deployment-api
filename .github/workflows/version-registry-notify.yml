@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   notify-version-registry:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, glue]
     steps:
       - name: Forward release tag to the PM version registry
         env:

@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   backmerge:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, glue]
     timeout-minutes: 6
     steps:
       # GitHub App installation token — separate 5000/hr pool from the shared user PAT.

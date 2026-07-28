@@ -13,22 +13,15 @@ can't silently come back.
 
 from __future__ import annotations
 
-from starlette.routing import Match
-
 
 def _first_matching_endpoint_name(path: str, method: str = "GET") -> str:
     """The endpoint function name of the FIRST app route that fully matches path."""
-    from fastapi.routing import APIRoute
+    from unified_trading_library import find_matching_route
 
     from deployment_api.main import app
 
-    scope = {"type": "http", "path": path, "method": method}
-    for route in app.routes:
-        if isinstance(route, APIRoute):
-            match, _ = route.matches(scope)
-            if match is Match.FULL:
-                return route.endpoint.__name__
-    return ""
+    route = find_matching_route(app, path, method)
+    return route.endpoint.__name__ if route is not None else ""
 
 
 def test_inventory_literal_not_shadowed_by_deployment_id() -> None:
