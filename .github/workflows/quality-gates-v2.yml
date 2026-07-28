@@ -64,7 +64,7 @@ jobs:
       # Non-empty only for repos in scripts/workflow-templates/self-hosted-qg-repos.txt — see
       # unified-trading-pm/.github/workflows/python-quality-gates-v2.yml's own input doc for why this
       # can't be a blanket default (github_actions_operator_gated_followups_2026_07_17.md).
-      self_hosted_runner_labels: '["self-hosted","glue"]'
+      self_hosted_runner_labels: ""
     secrets: inherit
     # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
     # are derived inside the reusable workflow from github.repository (caller's repo name)
