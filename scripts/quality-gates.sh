@@ -87,7 +87,7 @@ HARDCODED_PROTO_EXCLUDE_GLOBS=(
 # unified_cloud_interface equivalent (UCI covers storage/secrets) and deployment-api is GCP-specific
 # deploy tooling. Exclude from the cloud-SDK gate (parallels execution-service's cloud_kms.py exclusion).
 CLOUD_SDK_EXCLUDE_GLOBS=("!**/vm_utils.py")
-WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." && pwd)}"
+WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 BASE_QG_SCRIPT="${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
 if [ ! -f "${BASE_QG_SCRIPT}" ]; then
     # In-image (CI test-in-image) runs have no PM repo / no git → the base script is absent.
