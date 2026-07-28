@@ -145,7 +145,8 @@ jobs:
     needs: quality-gates-v2
     # Skip for a metadata-only commit (version bump or dep pin) OR a docs-only changeset (A1),
     # both fast-pathed by the reusable workflow: no code changed, so no image to rebuild.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+    if:
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.quality-gates-v2.outputs.metadata_only != 'true' && needs.quality-gates-v2.outputs.docs_only != 'true'
     runs-on: [self-hosted, glue]
     steps:
