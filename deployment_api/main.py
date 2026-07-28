@@ -51,6 +51,7 @@ from .routes import (
     builds_history,
     capabilities,
     catalogue_lifecycle,
+    change_freeze,
     chaos_injections,
     checklist,
     client_treasury,
@@ -108,6 +109,7 @@ from .routes import (
     venue_credentials,
     venue_date_ranges,
     venue_relaunch_estimate,
+    version_coherence,
     vm_admin,
     vm_cost_estimate,
     vm_deployments,
@@ -244,6 +246,8 @@ _authenticated_router.include_router(deployment_diff.router, tags=["Deployments"
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci
+_authenticated_router.include_router(version_coherence.router)  # Has its own prefix /api/version-coherence
+_authenticated_router.include_router(change_freeze.router)  # Has its own prefix /api/change-freeze
 _authenticated_router.include_router(fleet.router)  # Has its own prefix /api/fleet
 _authenticated_router.include_router(fleet_reconciliation.router, prefix="/api", tags=["Fleet Reconciliation"])
 _authenticated_router.include_router(unified_alerts.router, prefix="/api", tags=["Alerts"])  # GET /api/alerts
