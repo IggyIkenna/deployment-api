@@ -3,6 +3,14 @@
 This module provides utilities for fetching VM instance details from GCP.
 It's a lightweight version of deployment-service's gcp_instance_lister.py
 adapted for deployment-api's needs.
+
+Direct ``google.cloud.compute_v1`` import (not UTL's ``get_compute_engine_client()``):
+this module uses 8 distinct Compute client types (Instances/Disks/Images/MachineImages/
+Snapshots/Addresses/GlobalAddresses/Regions); UTL's ``ComputeEngineClient`` abstraction
+(``unified_trading_library.cloud_interface``, used by deployment-service's
+``gcp_instance_lister.py``) wraps only the Instances aggregated-list surface today, so a
+full migration would require extending that abstraction first — a separate, larger
+follow-up, not a same-session-safe refactor of live VM/disk/image census + delete logic.
 """
 
 from __future__ import annotations
@@ -11,7 +19,7 @@ import logging
 from datetime import UTC, datetime
 from typing import cast
 
-from google.cloud import compute_v1
+from google.cloud import compute_v1  # noqa: TID251 — see module docstring
 
 logger = logging.getLogger(__name__)
 
