@@ -48,7 +48,13 @@ jobs:
     # repository_dispatch run executes on the DEFAULT-branch ref and can never
     # re-report on a PR head — that path is handled by refresh-open-prs below.
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    # CI-cost Wave-2: off billed hosted minutes onto the self-hosted glue pool. This job never
+    # checks out or executes the PR's own code (read-only curl of the PM manifest via the GitHub
+    # API + a JSON parse) -- it does not carry the "untrusted PR code on ambient-credential host"
+    # risk the security posture doc warns about. Labels are a SUBSET match, so [self-hosted, glue]
+    # lands ONLY on the JIT-ephemeral pool -- never on glue-writer.
+    # SSOT: scripts/self-hosted-runners/README.md, codex/07-security/self-hosted-runner-security-posture.md
+    runs-on: [self-hosted, glue]
     steps:
       - name: Check PM staging lock status
         env:
@@ -89,7 +95,11 @@ jobs:
   refresh-open-prs:
     name: refresh-open-prs
     if: github.event_name == 'repository_dispatch'
-    runs-on: ubuntu-latest
+    # CI-cost Wave-2: same rationale as check-staging-lock above -- gh CLI calls only, no PR
+    # checkout/execution. (This job's repository_dispatch trigger is currently disabled at the PM
+    # source -- see the `on:` block above -- so it does not fire today; flipped for consistency and
+    # readiness if the dispatch is ever re-enabled.)
+    runs-on: [self-hosted, glue]
     steps:
       - name: Re-run stale Staging Lock Check runs on open staging PRs
         env:
