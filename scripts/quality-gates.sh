@@ -17,6 +17,17 @@ RUN_INTEGRATION=false
 PYTEST_WORKERS=${PYTEST_WORKERS:-4}
 LOCAL_DEPS=()
 MAX_DURATION=700
+# basedpyright's inner run_timeout (base-service.sh [4/6] TYPE CHECK) defaults to 120s — well under
+# the ~480s basedpyright runtime already documented by the MAX_DURATION 300->700 bump above. That
+# bump covered the OUTER script-wide budget but never raised the INNER per-subprocess kill timeout,
+# so under normal (let alone contended) CI load basedpyright hits run_timeout's SIGKILL at 120s and
+# the typecheck selector fails with "Type check FAILED/timeout (exit=124)" even though basedpyright
+# itself would have finished cleanly given more wall-clock. Confirmed 2026-07-28: LDR quality-gates-v2
+# on deployment-api#421 (promotion PR) red on the QG-slice-checks/typecheck selector at exactly 121s.
+# Sanctioned PYRIGHT_TIMEOUT override per codex/06-coding-standards/quality-gates.md (META-gate /
+# per-step timeout, not a substantive gate) — same pattern as execution-service (300s) /
+# greeks-service + e2e-testing (240s). 600s gives ~120s headroom over the documented 480s baseline.
+export PYRIGHT_TIMEOUT="${PYRIGHT_TIMEOUT:-600}"
 # Pre-existing violations uncovered after fixing step 3.5 (import patterns). Ratchet to 0 via
 # deployment_and_qg_strategy_implementation_2026_05_13.md Phase 3 (schema provenance, os.getenv, etc.).
 # Bumped 20→22: test-isolation fixes unmasked 2 additional pre-existing violations that were hidden
@@ -87,7 +98,7 @@ HARDCODED_PROTO_EXCLUDE_GLOBS=(
 # unified_cloud_interface equivalent (UCI covers storage/secrets) and deployment-api is GCP-specific
 # deploy tooling. Exclude from the cloud-SDK gate (parallels execution-service's cloud_kms.py exclusion).
 CLOUD_SDK_EXCLUDE_GLOBS=("!**/vm_utils.py")
-WORKSPACE_ROOT="${WORKSPACE_ROOT:-$(cd "$(git rev-parse --show-toplevel)/.." && pwd)}"
+WORKSPACE_ROOT="$(cd "$(git rev-parse --show-toplevel)/.." && pwd)"
 BASE_QG_SCRIPT="${WORKSPACE_ROOT}/unified-trading-pm/scripts/quality-gates-base/base-service.sh"
 if [ ! -f "${BASE_QG_SCRIPT}" ]; then
     # In-image (CI test-in-image) runs have no PM repo / no git → the base script is absent.

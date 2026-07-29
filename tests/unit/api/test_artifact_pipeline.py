@@ -8,7 +8,7 @@ views' window filtering / stats / filters, the Cloud Run revision classifier, an
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -874,10 +874,16 @@ def test_health_flags_live_failed_deploy_as_high(monkeypatch: pytest.MonkeyPatch
 
 
 def test_health_flags_recent_failures_dup_builds_and_registry_sprawl(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Relative to "now" (not a hardcoded literal): health()'s recent-failure/dup-build check
+    # uses a rolling 7-day trailing window off datetime.now(UTC), so a fixed calendar date
+    # silently ages out of the window as real time passes (it did — 2026-07-22 was in-window
+    # when written, out by 2026-07-29). 2 days ago has margin on both edges of the window.
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).replace(microsecond=0)
+    two_days_ago_plus_1h = two_days_ago + timedelta(hours=1)
     builds = [
-        _fact("svc-a", "111", "FAILURE", "2026-07-22T00:00:00+00:00"),
-        _fact("svc-b", "222", "SUCCESS", "2026-07-22T00:00:00+00:00"),
-        _fact("svc-b", "222", "SUCCESS", "2026-07-22T01:00:00+00:00"),  # dup of the row above
+        _fact("svc-a", "111", "FAILURE", two_days_ago.isoformat()),
+        _fact("svc-b", "222", "SUCCESS", two_days_ago.isoformat()),
+        _fact("svc-b", "222", "SUCCESS", two_days_ago_plus_1h.isoformat()),  # dup of the row above
     ]
     images = [_reg_image("sprawl-svc", f"sha256:{i:04d}", [f"tag{i}"], "2026-07-20T00:00:00+00:00") for i in range(600)]
     svc = _running_svc_with(monkeypatch, deploys=[], images=images, builds=builds)

@@ -369,11 +369,12 @@ def test_entry_budget_reads_catalog_then_falls_back() -> None:
     # Catalog carries the cadence-matched budget → used verbatim.
     assert _entry_budget({"asset_group": "defi", "staleness_budget_seconds": "120"}, 999) == 120
     assert _entry_budget({"asset_group": "cefi", "staleness_budget_seconds": "86400"}, 999) == 86400
-    # Missing/blank → legacy per-AG override (cefi=86400) then the passed default.
+    # Missing/blank → legacy per-AG override (cefi=86400, sports=1800) then the passed default.
     assert _entry_budget({"asset_group": "cefi"}, 120) == 86400
-    assert _entry_budget({"asset_group": "sports"}, 120) == 120
+    assert _entry_budget({"asset_group": "sports"}, 120) == 1800
+    assert _entry_budget({"asset_group": "tradfi"}, 120) == 120
     # Garbage budget → falls back, never raises.
-    assert _entry_budget({"asset_group": "sports", "staleness_budget_seconds": "oops"}, 120) == 120
+    assert _entry_budget({"asset_group": "sports", "staleness_budget_seconds": "oops"}, 120) == 1800
 
 
 def test_catalog_live_market_data_is_120_everything_else_86400() -> None:
@@ -544,11 +545,12 @@ def test_ag_health_default_omits_backlog_and_never_lists_when_fresh() -> None:
 
 
 def test_budget_for_cefi_overrides_default_others_pass_through() -> None:
-    """cefi (daily-batch market-tick, ~5-min consolidator) gets its 86400s tolerance; others default."""
+    """cefi/sports/defi each get their cadence-matched tolerance; unlisted asset_groups default."""
     from deployment_api.routes.health_consolidator import _budget_for
 
     assert _budget_for("cefi", 120) == 86400  # cadence-matched override
-    assert _budget_for("defi", 120) == 120  # ~per-minute consolidator → global default
+    assert _budget_for("sports", 120) == 1800  # ~11-min consolidator cadence → cadence-matched override
+    assert _budget_for("defi", 120) == 3600  # ~31-32min real merge cadence → cadence-matched override
     assert _budget_for("tradfi", 999) == 999  # default flows through unchanged
 
 

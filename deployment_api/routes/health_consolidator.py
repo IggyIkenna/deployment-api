@@ -91,7 +91,21 @@ def _market_data_kind(asset_group: str) -> str:
 # 86400s (``MANIFEST_CONSOLIDATED_STALENESS_SEC``) — mirror that so the health check matches the
 # AG's real cadence and only fires on a genuine >24h stall. Verified 2026-07-09 (Cloud Run
 # executions 5 min apart, index age climbing 174→228s under the 120s budget).
-_AG_STALENESS_BUDGET_SEC: dict[str, int] = {"cefi": 86400}
+# sports' consolidated blob refreshes on a ~11-min cadence (observed 17:00:41 -> 17:11:42 UTC),
+# so it routinely aged past the generic 120s default and false-flagged a healthy consolidator as
+# DOWN in this cockpit view — the identical class the cefi override fixed. 1800s (30min)
+# comfortably covers the observed cadence with margin while staying well under a horizon that
+# would mask a genuine multi-hour outage. defi had the same missing-override gap (its own real
+# merge cadence is ~31-32min — see
+# ``AG_CONSOLIDATOR_INFLIGHT_HORIZON_SEC["defi"]`` in the UTL module below), just undiscovered
+# longer because the long cadence made every read fall into the expensive per-VM-shard-merge
+# fallback almost every time rather than only occasionally
+# (defi_manifest_consolidator_staleness_budget_missing_2026_07_29.md). 3600s (1h) mirrors the same
+# margin philosophy as the sports fix. Mirrors
+# ``unified-trading-library/unified_trading_library/manifest_writer/_staleness_budget.py``'s
+# ``AG_STALENESS_BUDGET_SEC`` (duplicated, not imported — deployment-api depends on UTL, not vice
+# versa; keep the two dicts in sync).
+_AG_STALENESS_BUDGET_SEC: dict[str, int] = {"cefi": 86400, "sports": 1800, "defi": 3600}
 
 
 def _budget_for(asset_group: str, default: int) -> int:
