@@ -81,12 +81,18 @@ class TestGetSetCachedResult:
         from deployment_api.utils import data_status_cache
         from deployment_api.utils.bounded_cache import BoundedCache
 
+        # Fake monotonic clock — bounded_cache._monotonic() does a fresh time.monotonic()
+        # lookup on every call (by design, see its docstring), so patching time.monotonic
+        # lets us jump the clock past the TTL instead of sleeping for it.
+        fake_now = [1_000_000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now[0])
+
         short_lived = BoundedCache(name="test-data-status-cache-expiry", maxsize=8, ttl_seconds=0.01)
         monkeypatch.setattr(data_status_cache, "_cache", short_lived)
 
         data = {"service": "svc"}
         set_cached_result("svc", "2024-01-01", "2024-01-31", None, result=data)
-        time.sleep(0.05)
+        fake_now[0] += 0.05  # advance the fake clock past the TTL, no real sleep
 
         result = get_cached_result("svc", "2024-01-01", "2024-01-31", None)
         assert result is None
@@ -268,12 +274,16 @@ class TestExecCache:
         from deployment_api.utils import data_status_cache
         from deployment_api.utils.bounded_cache import BoundedCache
 
+        # See test_expired_entry_returns_none above — fake time.monotonic instead of sleeping.
+        fake_now = [1_000_000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: fake_now[0])
+
         short_lived = BoundedCache(name="test-data-status-cache-exec-expiry", maxsize=8, ttl_seconds=0.01)
         monkeypatch.setattr(data_status_cache, "_cache", short_lived)
 
         data = {"status": "ok"}
         set_exec_cached_result("/cfg.yaml", None, None, data)
-        time.sleep(0.05)
+        fake_now[0] += 0.05  # advance the fake clock past the TTL, no real sleep
 
         result = get_exec_cached_result("/cfg.yaml", None, None)
         assert result is None
