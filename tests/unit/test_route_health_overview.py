@@ -545,12 +545,12 @@ def test_ag_health_default_omits_backlog_and_never_lists_when_fresh() -> None:
 
 
 def test_budget_for_cefi_overrides_default_others_pass_through() -> None:
-    """cefi (daily-batch market-tick, ~5-min consolidator) gets its 86400s tolerance; others default."""
+    """cefi/sports/defi each get their cadence-matched tolerance; unlisted asset_groups default."""
     from deployment_api.routes.health_consolidator import _budget_for
 
     assert _budget_for("cefi", 120) == 86400  # cadence-matched override
     assert _budget_for("sports", 120) == 1800  # ~11-min consolidator cadence → cadence-matched override
-    assert _budget_for("defi", 120) == 120  # ~per-minute consolidator → global default
+    assert _budget_for("defi", 120) == 3600  # ~31-32min real merge cadence → cadence-matched override
     assert _budget_for("tradfi", 999) == 999  # default flows through unchanged
 
 
