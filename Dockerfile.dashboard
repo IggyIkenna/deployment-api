@@ -17,7 +17,7 @@ ARG PROJECT_ID
 # (this variant has the ui-builder stage first, unlike the regular Dockerfile). Refreshed by the
 # dependency fan-out (update-dependency-version.yml); cloudbuild may override:
 # --build-arg BASE_IMAGE_DIGEST=sha256:...
-ARG BASE_IMAGE_DIGEST=sha256:b460c1683ede71a860c54e56ce08b5d04d3aa51860faa15d6637ec756fbe0361
+ARG BASE_IMAGE_DIGEST=sha256:87a786d64363ff4cdd88e6f8f2202d32dcf971c4e58d2223f0750a6063d05790
 # ── Stage 0: build the Vite SPA ───────────────────────────────────────────
 FROM node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
