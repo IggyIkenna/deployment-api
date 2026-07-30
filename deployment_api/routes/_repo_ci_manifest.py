@@ -276,16 +276,31 @@ class ManifestView:
         return str(value) if value else "pyproject.toml"
 
     def deployed_version_for(self, repo: str) -> str | None:
-        """workspace-manifest.json.deployed_versions[repo] (image-level deploy signal).
+        """workspace-manifest.json.deployed_versions["prod"][repo]["version"] (image-level deploy signal).
 
         Stays manifest-sourced: deployed_versions is per-env image-deploy state committed to the
         manifest by the cloudbuild post-build step — it has no Firestore writer (the version registry
         tracks the RELEASED version, see release_version_for / the _ci_status_firestore_store scope note).
+
+        SHAPE FIX (post-cutover sweep F5, 2026-07-29): the writer (`cloud-build-router.yml`'s
+        populate-deployed-versions step) nests by env FIRST, then repo, with a dict value —
+        `deployed_versions[env][repo] = {version, image_tag, deployed_at, build_id}` — never a
+        flat `deployed_versions[repo]` string. A flat top-level lookup by repo name always misses
+        (repo names never collide with env names like "prod"), so this column read permanently
+        blank regardless of real deploy state. "prod" mirrors the dashboard's own jq query
+        (`cloud-build-router.yml`'s deployed_versions read-back, `.deployed_versions.prod[$dep]`) —
+        the only env this repo-CI dashboard surfaces.
         """
         deployed = self._raw.get("deployed_versions")
         if not isinstance(deployed, dict):
             return None
-        value = cast(dict[str, object], deployed).get(repo)
+        prod = cast(dict[str, object], deployed).get("prod")
+        if not isinstance(prod, dict):
+            return None
+        entry = cast(dict[str, object], prod).get(repo)
+        if not isinstance(entry, dict):
+            return None
+        value = cast(dict[str, object], entry).get("version")
         return str(value) if value else None
 
     def release_version_for(self, repo: str) -> str | None:

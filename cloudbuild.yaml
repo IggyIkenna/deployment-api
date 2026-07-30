@@ -458,9 +458,34 @@ steps:
         # data_status_ui_live_review_round3_2026_07_17 F2 (→16Gi/4CPU). If it recurs, add an
         # in-container asyncio.Semaphore capping CONCURRENT heavy catalogue loads (model on
         # _deploy_turbo._drilldown_build_semaphore) rather than bumping again.
+        # --execution-environment gen1 (2026-07-30, deployment_api_sigabrt_crash_loop_2026_07_24.md):
+        # was previously UNSET (ambiguous resolved default) — the SAME data-status manifest
+        # builder this service serves via GET /api/data-status/manifest
+        # (deployment_api/services/data_status/manifest.py's _dispatch_category_builds, a
+        # `multiprocessing.get_context("fork")` ProcessPoolExecutor running native
+        # pyarrow/pandas compute) is the exact code path this repo's own retired
+        # ${_ROLLUP_JOB} Cloud Run JOB confirmed crashes on gen2 ("Cloud Run Jobs are
+        # gen2-only and the native pyarrow/pandas compute crashes on gen2 (R7 follow-up #4);
+        # the gen1 service runs it fine" — see the ${_ROLLUP_SVC} sync step below, which was
+        # deliberately pinned gen1 for this reason). Pinning explicitly here matches that
+        # already-proven-safe pattern. This mitigates, but does not 100% confirm-fix, the
+        # `Uncaught signal: 6` crash-loop: the gunicorn-arbiter-timeout hypothesis that
+        # motivated the original `faulthandler.enable()` diagnostic work
+        # (`deployment-api@7ba17e2`/`3fea307`) is DEFINITIVELY REFUTED as of this commit —
+        # gunicorn's own `WORKER TIMEOUT (pid:%s)` critical log (which MUST precede any
+        # arbiter-initiated SIGABRT and is confirmed to reach stderr for other log lines) has
+        # ZERO occurrences in 30 days of Cloud Logging despite 106+ SIGABRTs — so whatever is
+        # sending SIGABRT is not gunicorn's own arbiter. See the issue doc's Progress Log for
+        # the full evidence chain (memory-limit-exceeded correlation, gen1/gen2 precedent,
+        # local faulthandler repro proving the Python-side fix is correct in isolation).
+        # Next dispatch: monitor the SIGABRT rate on the revision built from this commit; if
+        # it doesn't drop, the gen1 pin didn't fix it and the remaining candidate is a
+        # native-library signal-handler collision (pyarrow/Arrow C++ installing its own
+        # fatal-signal handler after `post_worker_init` already armed faulthandler).
         gcloud run deploy uts-shared-deployment-api --image "$$IMG" \
           --memory 16Gi \
           --cpu 4 \
+          --execution-environment gen1 \
           --update-env-vars WORKERS=2,AWS_ATHENA_READER_ROLE_ARN=arn:aws:iam::427895769566:role/gcp-cloudrun-athena-cost-reader \
           --region asia-northeast1 --project "$PROJECT_ID" --quiet
         # Sync the DEDICATED data-status rollup SERVICE (gen1, 16Gi, scale-to-zero) to the

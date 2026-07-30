@@ -24,7 +24,16 @@ _FIXTURE: dict[str, object] = {
         "locked_reason": "breaking cascade",
         "breaking_pending": ["greeks-service", "unified-trading-library"],
     },
-    "deployed_versions": {"greeks-service": "0.9.1"},
+    "deployed_versions": {
+        "prod": {
+            "greeks-service": {
+                "version": "0.9.1",
+                "image_tag": "abc123",
+                "deployed_at": "2026-07-29T00:00:00Z",
+                "build_id": "build-1",
+            }
+        }
+    },
 }
 
 _FIXTURE_CONSOLIDATES: dict[str, object] = {
@@ -69,9 +78,22 @@ class TestManifestView:
         assert view.staging_locked_reason == "breaking cascade"
 
     def test_deployed_version(self) -> None:
+        """Real writer shape (F5 shape-mismatch fix, 2026-07-29): deployed_versions["prod"][repo]["version"],
+        never a flat deployed_versions[repo] string — this fixture mirrors cloud-build-router.yml's
+        populate-deployed-versions step, not a hypothetical simplified shape."""
         view = manifest_view_from_raw(_FIXTURE)
         assert view.deployed_version_for("greeks-service") == "0.9.1"
         assert view.deployed_version_for("unified-trading-library") is None
+
+    def test_deployed_version_flat_shape_does_not_false_positive(self) -> None:
+        """A flat (pre-fix, wrong) shape must resolve to None, not silently succeed by accident —
+        proves the reader is genuinely reading the nested env layer, not just tolerant of any dict."""
+        view = manifest_view_from_raw({"deployed_versions": {"greeks-service": "0.9.1"}})
+        assert view.deployed_version_for("greeks-service") is None
+
+    def test_deployed_version_no_prod_env(self) -> None:
+        view = manifest_view_from_raw({"deployed_versions": {"staging": {"greeks-service": {"version": "0.1.0"}}}})
+        assert view.deployed_version_for("greeks-service") is None
 
     def test_release_version_for_manifest_seam(self) -> None:
         """No override (manifest_view_from_raw): release_version_for reads manifest versions{}."""

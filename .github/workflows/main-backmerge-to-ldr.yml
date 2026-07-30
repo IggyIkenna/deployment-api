@@ -11,14 +11,21 @@
 # the reverse-direction sibling of `tab-mirror-to-ldr.yml`.
 #
 # SAFETY CONTRACT (this is the important part):
-#   - NEVER force-pushes. It only does a `git merge` (additive) then an FF-only
-#     push to LDR. It can never overwrite or rewrite a developer's LDR work.
+#   - NEVER force-pushes. It only does a `git merge` (additive, or a `git merge-tree`
+#     explicit-base merge when the incoming commit carries a `Promoted-From-LDR:`
+#     trailer — see below) then an FF-only push to LDR. It can never overwrite or
+#     rewrite a developer's LDR work.
 #   - CLEAN merge  → silently merge-pushes into LDR (no PR noise). Rapid tab→LDR
 #     development is untouched: this fires only on `main` pushes, which are rare.
 #   - CONFLICT     → does NOTHING destructive. It opens (or refreshes) a visible
 #     `main → live-defi-rollout` PR for a human to resolve, and notifies the
 #     orchestrator. It never auto-resolves a conflict.
 #   - RACE (LDR moved mid-merge) → retries FF-only up to 3×; never clobbers.
+#   - SILENT-REVERT-LOSS GUARD (2026-07-29): a squash-promote's merge-base can be
+#     stale relative to a downstream LDR revert (see the in-body comment at the
+#     `Promoted-From-LDR` trailer check) — the explicit-base merge-tree path plus
+#     the `check_no_silent_revert_loss` safety net close this; a flagged case is
+#     treated as CONFLICT (routes to the human PR, never silently pushed).
 #
 # Concurrency: keyed on the destination ref so simultaneous back-merges serialize
 # (group shared with staging-backmerge-to-ldr so the two never race the same LDR push).
@@ -104,49 +111,148 @@ jobs:
           git config user.name "uts-backmerge-bot"
           git config user.email "uts-backmerge-bot@users.noreply.github.com"
 
+          # ── Silent-revert-loss fix (ldr_main_backmerge_silently_resurrects_reverted_commit_2026_07_29.md) ──
+          # Root cause: a squash-promote's commit has ONE parent — main's PREVIOUS tip — never the
+          # LDR SHA it actually squashed. If a revert (or any follow-up correction) lands on LDR
+          # AFTER that LDR SHA was read but the squash still merges to main, git's own computed
+          # merge-base(LDR-tip, squash-commit) resolves to a STALE ancestor that predates BOTH the
+          # original fix and its revert — so this 3-way merge reads the revert's own file content as
+          # "unchanged since base" and silently re-takes main's (stale, pre-revert) content. No
+          # conflict, no marker: `git log` shows the revert, the file content does not reflect it.
+          #
+          # Fix: `ldr-to-main-promote-fleet.yml` now stamps a `Promoted-From-LDR: <sha>` trailer on
+          # every squash-promote commit body — the EXACT LDR SHA that squash represents. When the
+          # incoming main commit carries that trailer, use `git merge-tree --write-tree
+          # --merge-base=<sha>` (git >=2.38) to force the 3-way merge onto that EXPLICIT, correct
+          # base instead of git's own (possibly-stale) computed one. A non-squash merge (e.g. this
+          # repo's own PM-only `ldr-to-main-promote.yml`, which uses `--merge` not `--squash`) keeps
+          # real ancestry and carries no trailer — it is not vulnerable to this class of bug at all,
+          # so the default `git merge` path below is unchanged for it.
+          #
+          # Oldest-first scan: if multiple promotes landed on main since LDR last back-merged, the
+          # EARLIEST trailer is the correct explicit base (the first point staleness could enter).
+          TRAILER_SHA=""
+          while IFS= read -r _candidate_sha; do
+            [ -z "$_candidate_sha" ] && continue
+            _msg="$(git log -1 --format=%B "$_candidate_sha" 2>/dev/null || echo "")"
+            _extracted="$(printf '%s' "$_msg" | grep -oE '^Promoted-From-LDR: [0-9a-f]{7,40}' | head -1 | awk '{print $2}')"
+            if [ -n "$_extracted" ] && git cat-file -e "${_extracted}^{commit}" 2>/dev/null; then
+              TRAILER_SHA="$_extracted"
+              echo "[backmerge] Promoted-From-LDR trailer found on ${_candidate_sha:0:8}: using ${TRAILER_SHA:0:12} as explicit merge-base"
+              break
+            fi
+          done < <(git log origin/live-defi-rollout..origin/main --reverse --format=%H 2>/dev/null)
+          [ -n "$TRAILER_SHA" ] || echo "[backmerge] no Promoted-From-LDR trailer in this range — default git-computed merge-base (unchanged behavior)"
+
+          # ── Candidate-2 safety net (defense-in-depth, not the root fix) ─────────────────────
+          # Narrowly scoped to a LOW false-positive signature: did this merge fully discard the
+          # effect of LDR's OWN MOST RECENT commit? (i.e. merge-result content for a file the last
+          # LDR commit touched exactly equals that commit's PARENT content, not the commit's own
+          # content). This is exactly the reported incident's shape (a revert immediately followed
+          # by a backmerge that silently undoes it) and catches it independent of whether the
+          # trailer fix above even applies (e.g. a genuine main-only revert with no trailer at all).
+          # $1=ldr_tip (this iteration's pre-merge LDR HEAD)  $2=result tree-ish (a tree OR commit).
+          # Echoes the flagged file list and returns 1 on a hit; silent 0 otherwise.
+          check_no_silent_revert_loss() {
+            local ldr_tip="$1" result_treeish="$2" ldr_parent changed_files flagged=""
+            ldr_parent="$(git rev-parse "${ldr_tip}^" 2>/dev/null)" || return 0
+            changed_files="$(git diff --name-only "$ldr_parent" "$ldr_tip" 2>/dev/null)" || return 0
+            [ -z "$changed_files" ] && return 0
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              local content_result content_parent content_tip
+              content_result="$(git show "${result_treeish}:${f}" 2>/dev/null || echo "__MISSING__")"
+              content_parent="$(git show "${ldr_parent}:${f}" 2>/dev/null || echo "__MISSING__")"
+              content_tip="$(git show "${ldr_tip}:${f}" 2>/dev/null || echo "__MISSING__")"
+              if [ "$content_result" = "$content_parent" ] && [ "$content_result" != "$content_tip" ]; then
+                flagged="$flagged $f"
+              fi
+            done <<< "$changed_files"
+            if [ -n "$flagged" ]; then
+              echo "$flagged"
+              return 1
+            fi
+            return 0
+          }
+
           DECISION="race"
           REASON="LDR kept advancing; exhausted retries"
           for attempt in 1 2 3; do
             git fetch origin live-defi-rollout --quiet
             git checkout -B _backmerge origin/live-defi-rollout --quiet
+            LDR_TIP="$(git rev-parse HEAD)"
+            MERGE_CONFLICT=false
+            SILENT_LOSS_FLAGGED=""
 
-            # Additive merge. --no-ff keeps a clear back-merge commit in history.
-            if ! git merge --no-ff --no-edit origin/main; then
-              # Guard 2 (cicd_contract_hardening § "Guard 2"): auto-resolve a ci_status-only
-              # workspace-manifest.json conflict. ci_status (+ coverage_pct / ci_failure_reason
-              # + top-level promotion state) is bot-written on main = the single authoritative
-              # home; LDR's copy is non-authoritative and goes stale (tab branches fork an older
-              # snapshot then FF-mirror it back), so the recurring textual conflict on those
-              # lines must NOT block the back-merge — it transitively dams the LDR→main
-              # promotion. The reconciler takes main's CI-automation fields and 3-way-merges
-              # everything else; a GENUINE non-CI manifest divergence (exit 2) still falls
-              # through to the human PR + orchestrator escalation below. workspace-manifest.json
-              # exists only in unified-trading-pm → this is a no-op in every other repo.
-              CONFLICTED="$(git diff --name-only --diff-filter=U)"
-              if [ "${CONFLICTED}" = "workspace-manifest.json" ] && [ -f scripts/cicd/reconcile_manifest_backmerge.py ]; then
-                MB="$(git merge-base HEAD MERGE_HEAD)"
-                git show "${MB}:workspace-manifest.json" > /tmp/bm_mb.json 2>/dev/null || echo '{}' > /tmp/bm_mb.json
-                git show ":2:workspace-manifest.json" > /tmp/bm_ours.json
-                git show ":3:workspace-manifest.json" > /tmp/bm_theirs.json
-                if python3 scripts/cicd/reconcile_manifest_backmerge.py \
-                     --base /tmp/bm_mb.json --ours /tmp/bm_ours.json --theirs /tmp/bm_theirs.json \
-                     --out workspace-manifest.json; then
-                  git add workspace-manifest.json
-                  git commit --no-edit --quiet
-                  echo "[backmerge] Guard 2: auto-resolved ci_status-only manifest conflict (main authoritative)"
-                  # fall through to the FF-only push below
+            if [ -n "$TRAILER_SHA" ]; then
+              # ── Explicit-base path (Candidate 1 — the root fix) ──────────────────────────
+              if MT_OUT="$(git merge-tree --write-tree --merge-base="$TRAILER_SHA" HEAD origin/main 2>&1)"; then
+                NEW_TREE="$(printf '%s\n' "$MT_OUT" | head -1)"
+                if SILENT_LOSS_FLAGGED="$(check_no_silent_revert_loss "$LDR_TIP" "$NEW_TREE")"; then
+                  NEW_COMMIT="$(git commit-tree "$NEW_TREE" -p "$LDR_TIP" -p "$(git rev-parse origin/main)" \
+                    -m "Merge remote-tracking branch 'origin/main' into _backmerge")"
+                  git reset --hard "$NEW_COMMIT" --quiet
+                  echo "[backmerge] explicit-base merge clean (base=${TRAILER_SHA:0:12}) — revert-safety preserved"
                 else
-                  git merge --abort || true
-                  DECISION="conflict"
-                  REASON="genuine non-ci_status manifest divergence — human resolution required"
-                  break
+                  MERGE_CONFLICT=true
                 fi
               else
-                git merge --abort || true
+                echo "[backmerge] explicit-base merge-tree reported a genuine conflict:"
+                printf '%s\n' "$MT_OUT"
+                MERGE_CONFLICT=true
+              fi
+            else
+              # ── Default path (git-computed merge-base) — UNCHANGED for non-squash promotes ──
+              if ! git merge --no-ff --no-edit origin/main; then
+                # Guard 2 (cicd_contract_hardening § "Guard 2"): auto-resolve a ci_status-only
+                # workspace-manifest.json conflict. ci_status (+ coverage_pct / ci_failure_reason
+                # + top-level promotion state) is bot-written on main = the single authoritative
+                # home; LDR's copy is non-authoritative and goes stale (tab branches fork an older
+                # snapshot then FF-mirror it back), so the recurring textual conflict on those
+                # lines must NOT block the back-merge — it transitively dams the LDR→main
+                # promotion. The reconciler takes main's CI-automation fields and 3-way-merges
+                # everything else; a GENUINE non-CI manifest divergence (exit 2) still falls
+                # through to the human PR + orchestrator escalation below. workspace-manifest.json
+                # exists only in unified-trading-pm → this is a no-op in every other repo.
+                CONFLICTED="$(git diff --name-only --diff-filter=U)"
+                if [ "${CONFLICTED}" = "workspace-manifest.json" ] && [ -f scripts/cicd/reconcile_manifest_backmerge.py ]; then
+                  MB="$(git merge-base HEAD MERGE_HEAD)"
+                  git show "${MB}:workspace-manifest.json" > /tmp/bm_mb.json 2>/dev/null || echo '{}' > /tmp/bm_mb.json
+                  git show ":2:workspace-manifest.json" > /tmp/bm_ours.json
+                  git show ":3:workspace-manifest.json" > /tmp/bm_theirs.json
+                  if python3 scripts/cicd/reconcile_manifest_backmerge.py \
+                       --base /tmp/bm_mb.json --ours /tmp/bm_ours.json --theirs /tmp/bm_theirs.json \
+                       --out workspace-manifest.json; then
+                    git add workspace-manifest.json
+                    git commit --no-edit --quiet
+                    echo "[backmerge] Guard 2: auto-resolved ci_status-only manifest conflict (main authoritative)"
+                    # fall through to the safety-net check below
+                  else
+                    git merge --abort || true
+                    MERGE_CONFLICT=true
+                  fi
+                else
+                  git merge --abort || true
+                  MERGE_CONFLICT=true
+                fi
+              fi
+              if [ "$MERGE_CONFLICT" != "true" ]; then
+                if ! SILENT_LOSS_FLAGGED="$(check_no_silent_revert_loss "$LDR_TIP" "HEAD")"; then
+                  MERGE_CONFLICT=true
+                fi
+              fi
+            fi
+
+            if [ "$MERGE_CONFLICT" = "true" ]; then
+              if [ -n "$SILENT_LOSS_FLAGGED" ]; then
+                DECISION="conflict"
+                REASON="safety-net: merge would silently discard LDR's own last commit's effect on:${SILENT_LOSS_FLAGGED} — human resolution required (no auto-resolve)"
+                echo "[backmerge] ⛔ SILENT-REVERT-LOSS SAFETY NET TRIPPED:${SILENT_LOSS_FLAGGED}"
+              else
                 DECISION="conflict"
                 REASON="main and LDR conflict — human resolution required (no auto-resolve)"
-                break
               fi
+              break
             fi
 
             # FF-only push (default push is non-destructive on the destination ref).

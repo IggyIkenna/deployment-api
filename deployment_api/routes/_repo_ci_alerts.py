@@ -20,6 +20,7 @@ import datetime as dt
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import NotRequired, TypedDict, cast
 
 import pyarrow as pa
@@ -55,6 +56,11 @@ _DEFAULT_DAYS = 1
 _MAX_DAYS = 30
 _DEFAULT_PAGE_SIZE = 400
 _MAX_PAGE_SIZE = 2000
+# alerts_endpoint_per_object_gcs_read_performance_2026_07_23.md: _read_alerting_service_sync
+# fetches objects on a bounded thread pool instead of one sequential HTTP round-trip per
+# object — matches the max_workers=32 convention already used for bulk GCS ops elsewhere in
+# this codebase (e.g. unified_trading_library.manifest_consolidator's shard pruning).
+_GCS_FETCH_MAX_WORKERS = 32
 
 # Keyed by the (clamped) `days` window — each window's raw entries are cached independently so
 # pagination (offset/limit) never triggers a re-fetch, only a re-slice of the cached entries.
@@ -205,6 +211,22 @@ def _parse_alerting_service_line(line: str) -> AlertEntryDict | None:
     )
 
 
+def _fetch_alerting_service_blob(bucket: str, blob_name: str) -> list[AlertEntryDict]:
+    """Download + parse one alerting-service history blob. Never raises — a single bad
+    object degrades to an empty result (best-effort merge, same posture as the caller)
+    instead of aborting the whole bounded-fetch batch it runs inside."""
+    try:
+        raw = download_from_storage(bucket, blob_name)
+    except Exception as exc:
+        logger.warning("[REPO-CI] alerting-service object read failed for %s: %s", blob_name, exc)
+        return []
+    return [
+        parsed
+        for line in raw.decode("utf-8", errors="replace").splitlines()
+        if (parsed := _parse_alerting_service_line(line))
+    ]
+
+
 def _read_alerting_service_sync(days: int) -> list[AlertEntryDict]:
     """List + read the last N days of alerting-service's own alert-history JSONL blobs.
 
@@ -212,6 +234,14 @@ def _read_alerting_service_sync(days: int) -> list[AlertEntryDict]:
     ``_read_ledgers_sync``'s per-date prefix walk, against alerting-service's own
     dedicated bucket (resolved via ``resolve_bucket_name()``, never hardcoded) instead
     of the CI-alerts bucket.
+
+    Listing stays a sequential per-date walk (cheap relative to downloads — see
+    alerts_endpoint_per_object_gcs_read_performance_2026_07_23.md), but the objects
+    it finds across the WHOLE window are downloaded together on a
+    ``_GCS_FETCH_MAX_WORKERS``-bounded thread pool instead of one sequential HTTP
+    round-trip per object — this is what keeps a full ``_MAX_DAYS`` window's
+    tens of thousands of per-event objects from reproducing the 240s+/OOM profile
+    that caused the 2026-07-22 incident.
     """
     dates = [(dt.datetime.now(dt.UTC) - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(days)]
     entries: list[AlertEntryDict] = []
@@ -221,17 +251,20 @@ def _read_alerting_service_sync(days: int) -> list[AlertEntryDict]:
     except Exception as exc:
         logger.warning("[REPO-CI] alerting-service bucket resolution failed: %s", exc)
         return entries
+
+    blob_names: list[str] = []
     for date in dates:
         prefix = f"alerting/history/date={date}/"
         try:
-            for blob in client.list_blobs(bucket, prefix=prefix):
-                raw = download_from_storage(bucket, blob.name)
-                for line in raw.decode("utf-8", errors="replace").splitlines():
-                    parsed = _parse_alerting_service_line(line)
-                    if parsed:
-                        entries.append(parsed)
+            blob_names.extend(blob.name for blob in client.list_blobs(bucket, prefix=prefix))
         except Exception as exc:
-            logger.warning("[REPO-CI] alerting-service ledger read failed for %s: %s", prefix, exc)
+            logger.warning("[REPO-CI] alerting-service ledger list failed for %s: %s", prefix, exc)
+    if not blob_names:
+        return entries
+
+    with ThreadPoolExecutor(max_workers=min(_GCS_FETCH_MAX_WORKERS, len(blob_names))) as executor:
+        for parsed_entries in executor.map(lambda name: _fetch_alerting_service_blob(bucket, name), blob_names):
+            entries.extend(parsed_entries)
     return entries
 
 
