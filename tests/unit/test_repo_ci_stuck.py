@@ -193,6 +193,37 @@ class TestDeriveSitState:
         )
         assert sit["staging_locked_reason"] is None
 
+    def test_dormant_mode_yields_unknown_not_false_even_when_otherwise_stuck(self) -> None:
+        # 2026-07-30 tri-state fix: while staging_dormant_mode is on, `breaking_pending` is a
+        # structurally meaningless input (its only writer never fires) — the input alone would
+        # otherwise compute stuck_in_sit=True here (pending + no run at all), but the honest
+        # answer under dormancy is "cannot currently tell", not a real False OR a leaked True.
+        sit = derive_sit_state(
+            repo="greeks-service",
+            breaking_pending=["greeks-service"],
+            staging_locked=False,
+            staging_locked_reason=None,
+            last_sit_run_status=None,
+            last_sit_run_age_min=None,
+            staging_dormant_mode=True,
+        )
+        assert sit["stuck_in_sit"] is None
+        # in_breaking_pending stays a real, honest reflection of the (structurally-empty) input.
+        assert sit["in_breaking_pending"]
+
+    def test_dormant_mode_default_false_preserves_prior_behavior(self) -> None:
+        # staging_dormant_mode defaults False — every pre-existing call site / test above keeps
+        # computing the real bool exactly as before this fix.
+        sit = derive_sit_state(
+            repo="greeks-service",
+            breaking_pending=["greeks-service"],
+            staging_locked=False,
+            staging_locked_reason=None,
+            last_sit_run_status=None,
+            last_sit_run_age_min=None,
+        )
+        assert sit["stuck_in_sit"] is True
+
 
 class TestDerivePromotionBlocked:
     """Slack↔/repos parity: a failing promotion PR surfaces at the repo level
