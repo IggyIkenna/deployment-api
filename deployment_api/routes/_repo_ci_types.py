@@ -105,7 +105,14 @@ class SitStateDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, 
     staging_locked_reason: str | None
     last_sit_run_status: str | None  # conclusion of the last cascade-qg-ordering run (PM repo)
     last_sit_run_age_min: int | None
-    stuck_in_sit: bool
+    # bool | None (2026-07-30 tri-state fix): `breaking_pending` is the ONLY writer for
+    # `in_breaking_pending`, and it is structurally, permanently empty while
+    # `staging_dormant_mode` is on (the current fleet default — no repo pushes to staging, so
+    # the writer never fires). A plain `False` under dormancy is a dishonest "not stuck" for an
+    # input that cannot currently mean anything; `None` marks it genuinely unknown so a consumer
+    # can suppress its contribution instead of reading it as a real negative signal. See
+    # /plans/active/issues/repo_ci_stuck_in_sit_tristate_2026_07_29.md.
+    stuck_in_sit: bool | None
 
 
 class ImageSignalDict(TypedDict):  # CORRECT-LOCAL: deployment-api response shape, not a domain contract

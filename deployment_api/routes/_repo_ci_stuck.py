@@ -137,6 +137,7 @@ def derive_sit_state(
     last_sit_run_status: str | None,
     last_sit_run_age_min: int | None,
     sit_stuck_minutes: int = DEFAULT_SIT_STUCK_MINUTES,
+    staging_dormant_mode: bool = False,
 ) -> SitStateDict:
     """Derive per-repo SIT visibility (operator add 2026-06-10).
 
@@ -144,15 +145,24 @@ def derive_sit_state(
     but the SIT/cascade machinery is not visibly progressing: no cascade run at all, the
     last run is older than the threshold, or the last run FAILED. This makes the
     cascade-evicted / jammed-cascade failure class visible instead of inferable.
+
+    Tri-state (2026-07-30): `breaking_pending` is written ONLY by a push to `staging`.
+    While `staging_dormant_mode` is on (fleet default — no repo pushes to staging), that
+    writer never fires, so `in_pending` is structurally always False and `stuck_in_sit`
+    could never honestly be computed either way — emit `None` (unknown) rather than a
+    dishonest `False`, so a consumer can suppress the contribution instead of reading a
+    fake "not stuck". See
+    /plans/active/issues/repo_ci_stuck_in_sit_tristate_2026_07_29.md.
     """
     in_pending = repo in breaking_pending
     stale_run = last_sit_run_age_min is None or last_sit_run_age_min > sit_stuck_minutes
     failed_run = last_sit_run_status in {"failure", "startup_failure", "timed_out", "cancelled"}
+    stuck_in_sit: bool | None = None if staging_dormant_mode else in_pending and (stale_run or failed_run)
     return SitStateDict(
         in_breaking_pending=in_pending,
         staging_locked=staging_locked,
         staging_locked_reason=staging_locked_reason if staging_locked else None,
         last_sit_run_status=last_sit_run_status,
         last_sit_run_age_min=last_sit_run_age_min,
-        stuck_in_sit=in_pending and (stale_run or failed_run),
+        stuck_in_sit=stuck_in_sit,
     )

@@ -520,6 +520,7 @@ async def _overview_row(
         staging_locked_reason=view.staging_locked_reason,
         last_sit_run_status=sit_run[0],
         last_sit_run_age_min=sit_run[1],
+        staging_dormant_mode=view.staging_dormant_mode(),
     )
     main_sha = next((b["sha"] for b in branches if b["branch"] == "main"), None)
     ci_status = view.ci_status_for(meta.name)
@@ -827,6 +828,7 @@ async def get_repo_detail(
         staging_locked_reason=view.staging_locked_reason,
         last_sit_run_status=sit_run[0],
         last_sit_run_age_min=sit_run[1],
+        staging_dormant_mode=view.staging_dormant_mode(),
     )
     main_sha = next((b["sha"] for b in branches if b["branch"] == "main"), None)
     return RepoDetailResponseDict(
