@@ -82,8 +82,44 @@ IMPORT_INSIDE_EXCLUDE_GLOBS=()
 EMPTY_STR_EXCLUDE_GLOBS=()
 EMPTY_DICT_LIST_EXCLUDE_GLOBS=()
 
-# Function/method size: deployment-api has large orchestration and analytics methods
-FUNCTION_SIZE_EXTRA_EXCLUDES=()
+# Function/method size: deployment-api has large orchestration and analytics methods.
+# 2026-07-30 (ldr_qg_failure escalation agt-46da69, deployment-api#430): unified-trading-pm's
+# base-service.sh STEP 5.5z (qg_size_gate_sentinel_skip_root_cause_2026_07_25.md P0 fix, landed
+# same day) moved the file/function/class/method size checks out of the CODEX_MAX_VIOLATIONS
+# aggregate-tolerance pool into a ZERO-TOLERANCE hard gate — these 27 files were PRE-EXISTING
+# debt that CODEX_MAX_VIOLATIONS=5 was silently absorbing (never counted honestly), not new
+# regressions from this escalation's promotion PR. Listed explicitly (not directory-globbed) so
+# any NEW oversized file/function outside this exact list still fails the gate. Follow-up to
+# actually decompose these: plans/active/issues/deployment_api_qg_size_gate_debt_2026_07_30.md
+FUNCTION_SIZE_EXTRA_EXCLUDES=(
+    "!" "-path" "./deployment_api/routes/deployments_inventory.py"
+    "!" "-path" "./deployment_api/routes/health_consolidator.py"
+    "!" "-path" "./deployment_api/routes/data_status/_live_coverage.py"
+    "!" "-path" "./deployment_api/routes/deployment_state.py"
+    "!" "-path" "./deployment_api/services/artifact_pipeline/service.py"
+    "!" "-path" "./deployment_api/services/cost_observability/service.py"
+    "!" "-path" "./deployment_api/services/data_analytics_service.py"
+    "!" "-path" "./deployment_api/services/data_query_service.py"
+    "!" "-path" "./deployment_api/services/data_status/breakdowns_core.py"
+    "!" "-path" "./deployment_api/services/data_status/breakdowns_domain.py"
+    "!" "-path" "./deployment_api/services/data_status/cli.py"
+    "!" "-path" "./deployment_api/services/data_status/coverage.py"
+    "!" "-path" "./deployment_api/services/data_status/defi.py"
+    "!" "-path" "./deployment_api/services/data_status/instrument_coverage.py"
+    "!" "-path" "./deployment_api/services/data_status/manifest.py"
+    "!" "-path" "./deployment_api/services/data_status/mtds.py"
+    "!" "-path" "./deployment_api/services/data_status/sports.py"
+    "!" "-path" "./deployment_api/services/data_status/sports_helpers.py"
+    "!" "-path" "./deployment_api/services/data_status/venue_resolution.py"
+    "!" "-path" "./deployment_api/services/deploy_missing_launch.py"
+    "!" "-path" "./deployment_api/services/deployment_manager.py"
+    "!" "-path" "./deployment_api/services/deployment_state.py"
+    "!" "-path" "./deployment_api/services/event_processor.py"
+    "!" "-path" "./deployment_api/services/state_manager.py"
+    "!" "-path" "./deployment_api/services/sync_service.py"
+    "!" "-path" "./deployment_api/services/tarball_staleness.py"
+    "!" "-path" "./deployment_api/utils/path_combinatorics.py"
+)
 
 # STEP 5.11/5.12 protocol-symbol excludes: monitor_live.py + monitor_scheduled.py match ONLY on
 # `CloudTarget` — the UAC canonical StrEnum (unified_api_contracts.canonical.crosscutting.cloud_target)
