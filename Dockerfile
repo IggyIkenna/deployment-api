@@ -26,18 +26,25 @@ FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2
 WORKDIR /app/ui
 
 # Build context expects ./ui/ to be the deployment-ui repo root (populated
-# by cloudbuild git-clone or local symlink). package*.json first for cache.
-COPY ui/package*.json ./
-RUN npm ci --prefer-offline 2>/dev/null || npm ci
+# by cloudbuild git-clone or local symlink). deployment-ui migrated npm→pnpm
+# 2026-07-29 (deployment-ui@de5b7af2bd, "fleet-standard package manager") —
+# package-lock.json no longer exists upstream, pnpm-lock.yaml is now the
+# lockfile of record. `npm ci` here breaks with "can only install with an
+# existing package-lock.json"; mirror deployment-ui's own Dockerfile (pnpm@10
+# via corepack-free `npm install -g pnpm`). package.json + lockfiles first
+# for cache.
+RUN npm install -g pnpm@10
+COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY ui/ ./
 # Tier-3 shared deploy: bake auth-skip into the SPA so the new Cloud Run
 # origin doesn't need to be whitelisted in the workspace's Google OAuth
 # client (would otherwise error 401: invalid_client). Vite envs are
-# build-time only — must be set BEFORE ``npm run build``.
+# build-time only — must be set BEFORE ``pnpm run build``.
 ENV VITE_SKIP_AUTH=true \
     VITE_MOCK_API=false
-RUN npm run build
+RUN pnpm run build
 
 # ── Stage 1: Python API base ────────────────────────────────────────────
 # BASE_IMAGE_DIGEST is declared GLOBALLY at the top (see the note there — it must precede the
