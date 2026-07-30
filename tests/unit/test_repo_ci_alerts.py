@@ -194,6 +194,71 @@ class TestReadAlertingServiceSync:
         ):
             assert _read_alerting_service_sync(days=1) == []
 
+    def test_concurrent_fetch_merges_all_blobs(self) -> None:
+        """alerts_endpoint_per_object_gcs_read_performance_2026_07_23.md: downloads now run on a
+        bounded thread pool instead of one sequential call per object — this proves the
+        concurrent path still merges every object's entries, none dropped by the fan-out."""
+        from unittest.mock import MagicMock
+
+        from deployment_api.routes._repo_ci_alerts import _read_alerting_service_sync
+
+        today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
+        blobs = []
+        for i in range(50):
+            blob = MagicMock()
+            blob.name = f"alerting/history/date={today}/obj{i}.jsonl"
+            blobs.append(blob)
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = blobs
+
+        def _fake_download(_bucket: str, path: str) -> bytes:
+            idx = path.split("obj")[1].split(".")[0]
+            return (
+                f'{{"alert_id":"a{idx}","event_name":"EVT_{idx}","alert_class":"EVT_{idx}",'
+                f'"severity":"INFO","message":"m{idx}","timestamp":"2026-07-21T09:00:00Z"}}\n'
+            ).encode()
+
+        with (
+            patch("deployment_api.routes._repo_ci_alerts.resolve_bucket_name", return_value="alerting-service-test"),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+            patch("deployment_api.routes._repo_ci_alerts.download_from_storage", side_effect=_fake_download),
+        ):
+            entries = _read_alerting_service_sync(days=1)
+        assert len(entries) == 50
+        assert {e["alert_class"] for e in entries} == {f"EVT_{i}" for i in range(50)}
+
+    def test_single_object_failure_does_not_drop_other_blobs(self) -> None:
+        """A single object's download raising must not abort the rest of the bounded-fetch
+        batch (best-effort merge posture, unchanged by the concurrency rewrite)."""
+        from unittest.mock import MagicMock
+
+        from deployment_api.routes._repo_ci_alerts import _read_alerting_service_sync
+
+        today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
+        good_blob = MagicMock()
+        good_blob.name = f"alerting/history/date={today}/good.jsonl"
+        bad_blob = MagicMock()
+        bad_blob.name = f"alerting/history/date={today}/bad.jsonl"
+        mock_client = MagicMock()
+        mock_client.list_blobs.return_value = [good_blob, bad_blob]
+
+        def _fake_download(_bucket: str, path: str) -> bytes:
+            if "bad" in path:
+                raise RuntimeError("object read failed")
+            return (
+                b'{"alert_id":"a1","event_name":"OK","alert_class":"OK",'
+                b'"severity":"INFO","message":"ok","timestamp":"2026-07-21T09:00:00Z"}\n'
+            )
+
+        with (
+            patch("deployment_api.routes._repo_ci_alerts.resolve_bucket_name", return_value="alerting-service-test"),
+            patch("deployment_api.routes._repo_ci_alerts.get_storage_client", return_value=mock_client),
+            patch("deployment_api.routes._repo_ci_alerts.download_from_storage", side_effect=_fake_download),
+        ):
+            entries = _read_alerting_service_sync(days=1)
+        assert len(entries) == 1
+        assert entries[0]["alert_class"] == "OK"
+
 
 class TestParseKillSwitchAuditRow:
     def test_armed_row_shape(self) -> None:
