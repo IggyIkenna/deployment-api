@@ -114,14 +114,19 @@ class TestGetCoverageSummaryMock:
         )
         assert r.status_code == 200
         data = r.json()
-        # 25000 (CEFI) + 40000 (TRADFI) + 10000 (DEFI) + 3800 (SPORTS).
-        assert data["totals"]["shards"] == 78800
-        assert data["totals"]["instrument_rows"] == 78800
+        # 25000 (CEFI) + 40000 (TRADFI) + 10000 (DEFI) + 3800 (SPORTS) + 800 (PREDICTION).
+        assert data["totals"]["shards"] == 79600
+        assert data["totals"]["instrument_rows"] == 79600
         asset_groups = data["asset_groups"]
-        assert set(asset_groups.keys()) == {"CEFI", "TRADFI", "DEFI", "SPORTS"}
+        # instruments-service carries no _SERVICE_CATEGORY_RESTRICTIONS entry, so live
+        # iterates all 5 MarketCategory values — the mock must match (2026-07-30 fix).
+        assert set(asset_groups.keys()) == {"CEFI", "TRADFI", "DEFI", "SPORTS", "PREDICTION"}
         cefi = asset_groups["CEFI"]
         assert cefi["total_shards"] == 25000
         assert cefi["capture_status_counts"]["captured"] > 0
+        prediction = asset_groups["PREDICTION"]
+        assert prediction["total_shards"] == 800
+        assert prediction["capture_status_counts"]["captured"] > 0
 
     def test_asset_groups_param_narrows_the_inventory(self, client_ds_mock: TestClient) -> None:
         r = client_ds_mock.get(
