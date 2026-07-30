@@ -421,6 +421,27 @@ _MOCK_COVERAGE_SEED: dict[str, dict[str, object]] = {
         "empty": 15,
         "failed": 2,
     },
+    # instruments-service (the default ``service``) is NOT in
+    # ``CoverageStatusMixin._SERVICE_CATEGORY_RESTRICTIONS``, so its
+    # coverage-summary always iterates all 5 MarketCategory values including
+    # PREDICTION (defi.py's restriction-map docstring: "Services NOT listed
+    # ... apply to ALL 5 categories"). Numbers mirror the event-driven
+    # PREDICTION seed already used by ``build_mock_turbo_response`` above
+    # (high attempt, low capture) so the two mock surfaces stay consistent;
+    # venue + primary axis match ``_MOCK_VENUES_BY_ASSET_GROUP`` /
+    # ``data_status_axis_matrix.PRIMARY_AXIS[("instruments-service", PREDICTION)] == "venue"``.
+    "PREDICTION": {
+        "total_shards": 800,
+        "unique_dates": 180,
+        "unique_venues": 1,
+        "date_range": {"start": "2024-01-01", "end": "2026-04-03"},
+        "latest_day": "2026-04-03",
+        "latest_day_instruments": {"EVENT_MARKET": 185},
+        "latest_day_total": 185,
+        "group_axis": "venue",
+        "empty": 550,
+        "failed": 65,
+    },
 }
 
 
