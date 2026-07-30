@@ -43,7 +43,7 @@ dependencies = [
     "anthropic>=0.87.0,<1.0.0",
     # Internal libraries
     "unified-trading-library>=0.65.0,<1.0.0",
-    "unified-api-contracts>=0.80.0,<1.0.0",
+    "unified-api-contracts>=0.81.0,<1.0.0",
     "deployment-service>=0.106.0,<1.0.0",
     "pytest>=9.0.3,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
