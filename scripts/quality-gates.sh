@@ -92,7 +92,6 @@ EMPTY_DICT_LIST_EXCLUDE_GLOBS=()
 # any NEW oversized file/function outside this exact list still fails the gate. Follow-up to
 # actually decompose these: plans/active/issues/deployment_api_qg_size_gate_debt_2026_07_30.md
 FUNCTION_SIZE_EXTRA_EXCLUDES=(
-    "!" "-path" "./deployment_api/services/data_query_service.py"
     "!" "-path" "./deployment_api/services/data_status/cli.py"
     "!" "-path" "./deployment_api/services/data_status/coverage.py"
     "!" "-path" "./deployment_api/services/data_status/defi.py"
