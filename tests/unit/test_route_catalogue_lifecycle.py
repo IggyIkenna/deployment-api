@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from deployment_api.services.catalogue_lifecycle import CatalogueLifecycleRow
+from deployment_api.services.catalogue_lifecycle import CatalogueLifecycleBuildBusyError, CatalogueLifecycleRow
 
 _PATCH_CFG = "deployment_api.routes.catalogue_lifecycle._cfg"
 _PATCH_NEW_LISTINGS_PAGE = "deployment_api.routes.catalogue_lifecycle.list_new_listings_page"
@@ -82,6 +82,14 @@ class TestNewListingsPagination:
             client_lifecycle.get("/instruments/new-listings?asset_group=defi&venue=UNISWAP")
         mocked.assert_called_once_with(max_age_days=30, asset_group="defi", venue="UNISWAP", limit=50, offset=0)
 
+    def test_busy_guard_sheds_load_as_503(self, client_lifecycle: TestClient) -> None:
+        """2026-07-31 OOM-kill investigation: the concurrent-build guard must
+        surface as a 503 + Retry-After, not a bare 500, so the UI can retry."""
+        with patch(_PATCH_NEW_LISTINGS_PAGE, side_effect=CatalogueLifecycleBuildBusyError("at capacity")):
+            resp = client_lifecycle.get("/instruments/new-listings")
+        assert resp.status_code == 503
+        assert resp.headers["retry-after"] == "5"
+
     def test_mock_mode_returns_empty_page(self) -> None:
         from deployment_api.routes.catalogue_lifecycle import router
 
@@ -112,6 +120,12 @@ class TestUpcomingExpiriesPagination:
         assert body["total_count"] == 10
         assert body["has_more"] is True
         mocked.assert_called_once_with(within_days=5, asset_group=None, venue=None, limit=1, offset=0)
+
+    def test_busy_guard_sheds_load_as_503(self, client_lifecycle: TestClient) -> None:
+        with patch(_PATCH_EXPIRIES_PAGE, side_effect=CatalogueLifecycleBuildBusyError("at capacity")):
+            resp = client_lifecycle.get("/instruments/upcoming-expiries")
+        assert resp.status_code == 503
+        assert resp.headers["retry-after"] == "5"
 
     def test_mock_mode_returns_empty_page(self) -> None:
         from deployment_api.routes.catalogue_lifecycle import router
