@@ -81,19 +81,47 @@ steps:
       - "."
     waitFor: ["pull-base", "verify-ui-context", "auth-precheck"]
 
+  # ── sha-tag-guard — first push wins ───────────────────────────────────
+  # AR image digests are content-addressed but the :$SHORT_SHA TAG is mutable
+  # (a re-push with the same tag re-points it at a different digest — silent
+  # drift for anything resolving the sha tag, mutable-tag incident: 7da9baf
+  # moved fb364cd9→f33b346a, 2026-07-13). First push wins: if AR already has
+  # :$SHORT_SHA, keep it and push :latest only. Mirrors cloudbuild.yaml exactly.
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "sha-tag-guard"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        set -e
+        IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+        EXISTING="$$(gcloud artifacts docker images describe "$$IMG" --format='value(image_summary.digest)' 2>/dev/null || true)"
+        if [ -n "$$EXISTING" ]; then
+          printf '%s' "$$EXISTING" > /workspace/.sha_tag_preexists
+          echo "sha-tag-guard: $$IMG already exists ($$EXISTING) — push will NOT re-stamp it"
+        else
+          echo "sha-tag-guard: $$IMG absent — this build's push creates it"
+        fi
+    waitFor: ["auth-precheck"]
+
   # ── Push (skip the QG step — we trust the upstream deployment-api QG) ─
   - name: "gcr.io/cloud-builders/docker"
     id: "push"
+    entrypoint: "bash"
     args:
-      [
-        "push",
-        "--all-tags",
-        "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}",
-      ]
-    waitFor: ["build"]
+      - "-c"
+      - |
+        set -e
+        REPO_IMG="asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}"
+        if [ -f /workspace/.sha_tag_preexists ]; then
+          echo "push: :$SHORT_SHA pre-exists (digest $$(cat /workspace/.sha_tag_preexists)) — immutable, pushing :latest only"
+          docker push "$$REPO_IMG:latest"
+        else
+          docker push --all-tags "$$REPO_IMG"
+        fi
+    waitFor: ["build", "sha-tag-guard"]
 
 images:
-  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
   - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
 
 options:
