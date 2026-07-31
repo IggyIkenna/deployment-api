@@ -135,7 +135,16 @@ jobs:
           while IFS= read -r _candidate_sha; do
             [ -z "$_candidate_sha" ] && continue
             _msg="$(git log -1 --format=%B "$_candidate_sha" 2>/dev/null || echo "")"
-            _extracted="$(printf '%s' "$_msg" | grep -oE '^Promoted-From-LDR: [0-9a-f]{7,40}' | head -1 | awk '{print $2}')"
+            # `|| true` is load-bearing, not cosmetic: under this script's own `set -o pipefail`
+            # (+ the step's `shell: bash -e {0}`), a candidate commit with NO trailer makes `grep`
+            # exit 1 (no match) — pipefail propagates that as the pipeline's exit status, and this
+            # bare assignment (not inside an if/while condition) then aborts the WHOLE SCRIPT under
+            # `-e`, silently, with zero output and no decision/reason recorded (confirmed via local
+            # `bash -e` repro — main_ci_red escalation agt-563fa4, 2026-07-31, features-service runs
+            # 30608403128/rerun/2nd-rerun, all 3 died here identically). Most candidates in the range
+            # WON'T carry the trailer (only squash-promotes do) so this is the common case, not an edge
+            # case — `|| true` lets the loop treat "no match" as the expected empty-extraction outcome.
+            _extracted="$(printf '%s' "$_msg" | grep -oE '^Promoted-From-LDR: [0-9a-f]{7,40}' | head -1 | awk '{print $2}' || true)"
             if [ -n "$_extracted" ] && git cat-file -e "${_extracted}^{commit}" 2>/dev/null; then
               TRAILER_SHA="$_extracted"
               echo "[backmerge] Promoted-From-LDR trailer found on ${_candidate_sha:0:8}: using ${TRAILER_SHA:0:12} as explicit merge-base"
