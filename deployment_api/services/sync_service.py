@@ -228,26 +228,38 @@ class SyncService:
         """Acquire quota and launch pending shards. Returns count launched."""
         from deployment_api.utils.quota_requirements import vm_quota_shape_from_compute_config
 
-        _orchestrator_cls = cast(
-            type[object],
-            _importlib.import_module("deployment_service.deployment.orchestrator").DeploymentOrchestrator,
-        )
-
         quota_shape = vm_quota_shape_from_compute_config(config)
         if not quota_shape:
             return 0
 
         batch_size = min(len(shards_to_launch), settings.DEFAULT_MAX_CONCURRENT)
+        acquired = self._try_acquire_quota_batch(quota_shape, batch_size)
+        if acquired == 0:
+            logger.debug("[SYNC_SERVICE] %s: No quota available for scheduling", deployment_id)
+            return 0
+
+        orch = self._build_shard_orchestrator(deployment_id, config)
+        if orch is None:
+            return 0
+
+        return self._launch_acquired_shards(orch, deployment_id, config, shards_to_launch, acquired, quota_shape)
+
+    def _try_acquire_quota_batch(self, quota_shape: object, batch_size: int) -> int:
+        """Acquire up to `batch_size` quota units for `quota_shape`. Returns count actually acquired."""
         _broker = self.quota_broker
         if _broker is None:
             return 0
         _try_acquire: object = getattr(_broker, "try_acquire_batch", None)
         if not callable(_try_acquire):
             return 0
-        acquired = int(_try_acquire(quota_shape, batch_size))  # pyright: ignore[reportArgumentType]
-        if acquired == 0:
-            logger.debug("[SYNC_SERVICE] %s: No quota available for scheduling", deployment_id)
-            return 0
+        return int(_try_acquire(quota_shape, batch_size))  # pyright: ignore[reportArgumentType]
+
+    def _build_shard_orchestrator(self, deployment_id: str, config: dict[str, object]) -> object | None:
+        """Build the DeploymentOrchestrator used to submit shards, or None if config is invalid."""
+        _orchestrator_cls = cast(
+            type[object],
+            _importlib.import_module("deployment_service.deployment.orchestrator").DeploymentOrchestrator,
+        )
 
         try:
             service_account_email = str(
@@ -255,10 +267,10 @@ class SyncService:
             )
         except ConfigurationError as e:
             logger.error("[SYNC_SERVICE] %s: %s", deployment_id, e)
-            return 0
+            return None
 
         _orch_factory = cast(Callable[..., object], _orchestrator_cls)
-        orch = _orch_factory(
+        return _orch_factory(
             project_id=self.project_id,
             region=config.get("region") or "asia-northeast1",
             service_account_email=service_account_email,
@@ -266,6 +278,16 @@ class SyncService:
             state_prefix=f"deployments.{self.deployment_env}",
         )
 
+    def _launch_acquired_shards(
+        self,
+        orch: object,
+        deployment_id: str,
+        config: dict[str, object],
+        shards_to_launch: list[dict[str, object]],
+        acquired: int,
+        quota_shape: object,
+    ) -> int:
+        """Submit up to `acquired` shards via `orch`, releasing quota on per-shard failure."""
         launched = 0
         launch_start = _time.time()
         for i in range(min(acquired, len(shards_to_launch))):
@@ -343,8 +365,6 @@ class SyncService:
         compute_type = compute_type_raw if isinstance(compute_type_raw, str) else "vm"
         shards_raw: object = state.get("shards") or []
         shards = cast(list[dict[str, object]], shards_raw) if isinstance(shards_raw, list) else []
-        updated = False
-        launched_this_tick = 0
         now = datetime.now(UTC)
 
         if not shards:
@@ -364,25 +384,33 @@ class SyncService:
                 if state.get("status") == "pending":
                     state["status"] = "running"
 
-        # Update overall deployment status if all shards are terminal
-        if updated:
-            all_terminal, has_failures = self.event_processor.check_all_shards_terminal(shards)
-            if self.event_processor.update_deployment_status(state, all_terminal, has_failures, now):
-                updated = True
-            state["updated_at"] = now.isoformat()
+        if not updated:
+            return False
 
-        # Save updated state
-        if updated:
-            return _save_and_notify(
-                self.save_deployment_state,
-                self.event_processor.notify_deployment_updated,
-                state_path,
-                state,
-                deployment_id,
-                launched_this_tick,
-            )
+        return self._finalize_and_save_deployment(deployment_id, state_path, state, shards, launched_this_tick, now)
 
-        return False
+    def _finalize_and_save_deployment(
+        self,
+        deployment_id: str,
+        state_path: str,
+        state: dict[str, object],
+        shards: list[dict[str, object]],
+        launched_this_tick: int,
+        now: datetime,
+    ) -> bool:
+        """Update overall deployment status from shard states, then persist + notify."""
+        all_terminal, has_failures = self.event_processor.check_all_shards_terminal(shards)
+        self.event_processor.update_deployment_status(state, all_terminal, has_failures, now)
+        state["updated_at"] = now.isoformat()
+
+        return _save_and_notify(
+            self.save_deployment_state,
+            self.event_processor.notify_deployment_updated,
+            state_path,
+            state,
+            deployment_id,
+            launched_this_tick,
+        )
 
     def _process_scheduling(self, deployment_id: str, state: dict[str, object]) -> int:
         """
@@ -439,7 +467,21 @@ class SyncService:
         if not active_states:
             return 0, 0
 
-        # Process deployments concurrently; prioritize those with running VMs
+        synced = self._process_active_states_parallel(active_states)
+
+        # Run orphan cleanup for recently-completed deployments
+        orphan_count = self._cleanup_recent_orphans(state_paths, active_states)
+        if orphan_count > 0:
+            logger.info(
+                "[SYNC_SERVICE] Fired %s orphan deletes for recently-completed deployments",
+                orphan_count,
+            )
+
+        return synced, len(active_states)
+
+    def _process_active_states_parallel(self, active_states: list[tuple[str, dict[str, object]]]) -> int:
+        """Prioritize deployments with running shards, then process them concurrently. Returns synced count."""
+
         def _running_count(state_tuple: tuple[str, dict[str, object]]) -> int:
             shards_r: object = state_tuple[1].get("shards") or []
             shards_l = cast(list[dict[str, object]], shards_r) if isinstance(shards_r, list) else []
@@ -454,21 +496,10 @@ class SyncService:
             state_path, state = state_tuple
             return 1 if self.process_deployment(state_path, state) else 0
 
-        # Process in parallel
         with ThreadPoolExecutor(max_workers=max_parallel) as executor:
             results = list(executor.map(process_deployment_tuple, active_states))
 
-        synced = sum(results)
-
-        # Run orphan cleanup for recently-completed deployments
-        orphan_count = self._cleanup_recent_orphans(state_paths, active_states)
-        if orphan_count > 0:
-            logger.info(
-                "[SYNC_SERVICE] Fired %s orphan deletes for recently-completed deployments",
-                orphan_count,
-            )
-
-        return synced, len(active_states)
+        return sum(results)
 
     def _cleanup_recent_orphans(
         self, state_paths: list[str], active_states: list[tuple[str, dict[str, object]]]
