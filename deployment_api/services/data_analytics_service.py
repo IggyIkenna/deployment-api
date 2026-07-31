@@ -210,19 +210,11 @@ class DataAnalyticsService:
     ) -> dict[str, object]:
         """Return data status with turbo-mode rollup cache.
 
-        ``pipeline_modes`` is OR-semantics and bypasses the rollup cache
-        (produces a per-mode breakdown not held in the fleet-wide cache).
-
-        ``scope`` mirrors the ``/manifest`` + venue-year-coverage grid's
-        ``scope`` toggle (``could_exist`` default / ``mvp`` / ``all`` — see
-        ``routes/data_status/_coverage_scope.py``). This method does no
-        aggregation of its own — the actual narrowing happens inside
-        ``from_data_status_service`` (the caller's closure already captures
-        ``scope`` and threads it into ``get_manifest_status(scope=...)``).
-        The ONLY thing this method needs ``scope`` for is the cache key:
-        without it, a cached ``could_exist`` response would be served back
-        for an ``mvp`` request (and vice versa) since every other input
-        param would be identical.
+        ``pipeline_modes`` is OR-semantics and bypasses the rollup cache (per-mode breakdown, not
+        fleet-wide-cached). ``scope`` mirrors the ``/manifest`` + venue-year-coverage grid's toggle
+        (``could_exist`` default / ``mvp`` / ``all``) — this method does no narrowing of its own
+        (that happens inside ``from_data_status_service``), it only needs ``scope`` for the cache
+        key, else a cached ``could_exist`` response would wrongly serve an ``mvp`` request.
         """
         cache_key = self._generate_cache_key(
             service=service,
@@ -382,21 +374,38 @@ class DataAnalyticsService:
         dates_data = cast(list[dict[str, object]], data_status_result["dates"])
         daily_completions, venue_stats = self._aggregate_dates_data(dates_data)
 
-        completion_rate_stats: dict[str, object] = {}
-        if daily_completions:
-            completion_rates = [cast(float, d["completion_rate"]) for d in daily_completions]
-            completion_rate_stats = {
-                "average": sum(completion_rates) / len(completion_rates),
-                "minimum": min(completion_rates),
-                "maximum": max(completion_rates),
-                "variance": self._calculate_variance(completion_rates),
-            }
+        completion_rate_stats = self._completion_rate_stats(daily_completions)
+        if completion_rate_stats:
             patterns["completion_rate"] = completion_rate_stats
-            trends["completion_trend"] = self._calculate_trend(completion_rates)
+            trends["completion_trend"] = self._calculate_trend(
+                [cast(float, d["completion_rate"]) for d in daily_completions]
+            )
 
         venue_reliability = self._build_venue_reliability(venue_stats)
         patterns["venue_reliability"] = venue_reliability
 
+        recommendations.extend(self._build_recommendations(completion_rate_stats, venue_reliability))
+        return analysis
+
+    def _completion_rate_stats(self, daily_completions: list[dict[str, object]]) -> dict[str, object]:
+        """Average/min/max/variance of a list of daily completion-rate entries."""
+        if not daily_completions:
+            return {}
+        completion_rates = [cast(float, d["completion_rate"]) for d in daily_completions]
+        return {
+            "average": sum(completion_rates) / len(completion_rates),
+            "minimum": min(completion_rates),
+            "maximum": max(completion_rates),
+            "variance": self._calculate_variance(completion_rates),
+        }
+
+    @staticmethod
+    def _build_recommendations(
+        completion_rate_stats: dict[str, object],
+        venue_reliability: dict[str, dict[str, object]],
+    ) -> list[str]:
+        """Plain-English recommendations from the computed completion/reliability stats."""
+        recommendations: list[str] = []
         if completion_rate_stats and cast(float, completion_rate_stats.get("average", 100)) < 90:
             recommendations.append("Overall completion rate is below 90% - investigate data pipeline issues")
 
@@ -407,8 +416,7 @@ class DataAnalyticsService:
         ]
         if problematic_venues:
             recommendations.append(f"Low reliability venues detected: {', '.join(problematic_venues[:5])}")
-
-        return analysis
+        return recommendations
 
     def _calculate_variance(self, values: list[float]) -> float:
         """Calculate variance of a list of values."""
@@ -448,19 +456,7 @@ class DataAnalyticsService:
         ],
         asset_groups: list[str] | None = None,
     ) -> dict[str, object]:
-        """
-        Aggregate data status across multiple services.
-
-        Args:
-            services: List of service names
-            start_date: Start date
-            end_date: End date
-            asset_groups: Asset groups filter
-            from_data_status_service: Callable to get service status
-
-        Returns:
-            Aggregated status across all services
-        """
+        """Aggregate data status across multiple services into one summary + per-service breakdown."""
         service_results: dict[str, dict[str, object]] = {}
         overall_summary: dict[str, object] = {
             "total_services": len(services),
@@ -478,46 +474,50 @@ class DataAnalyticsService:
         }
 
         service_completion_rates: list[float] = []
-
         for service in services:
-            try:
-                result = await from_data_status_service(
-                    service=service,
-                    start_date=start_date,
-                    end_date=end_date,
-                    asset_groups=asset_groups,
-                )
+            rate = await self._aggregate_one_service(
+                service, start_date, end_date, asset_groups, from_data_status_service, service_results, overall_summary
+            )
+            if rate is not None:
+                service_completion_rates.append(rate)
 
-                if "error" in result:
-                    service_results[service] = {
-                        "status": "error",
-                        "error": result["error"],
-                    }
-                    overall_summary["failed_services"] = cast(int, overall_summary["failed_services"]) + 1
-                else:
-                    # Calculate service completion rate
-                    service_rate = self._extract_completion_rate(result)
-                    service_results[service] = {
-                        "status": "success",
-                        "completion_rate": service_rate,
-                        "data": result,
-                    }
-                    service_completion_rates.append(service_rate)
-                    overall_summary["successful_services"] = cast(int, overall_summary["successful_services"]) + 1
-
-            except (OSError, ValueError, RuntimeError) as e:
-                logger.error("Error getting status for service %s: %s", service, e)
-                service_results[service] = {
-                    "status": "error",
-                    "error": str(e),
-                }
-                overall_summary["failed_services"] = cast(int, overall_summary["failed_services"]) + 1
-
-        # Calculate overall completion rate
         if service_completion_rates:
             overall_summary["overall_completion_rate"] = sum(service_completion_rates) / len(service_completion_rates)
 
         return aggregated
+
+    async def _aggregate_one_service(
+        self,
+        service: str,
+        start_date: str,
+        end_date: str,
+        asset_groups: list[str] | None,
+        from_data_status_service: Callable[..., Coroutine[Any, Any, dict[str, object]]],
+        service_results: dict[str, dict[str, object]],
+        overall_summary: dict[str, object],
+    ) -> float | None:
+        """Fetch + record one service's status; returns its completion rate on success, else None."""
+        try:
+            result = await from_data_status_service(
+                service=service,
+                start_date=start_date,
+                end_date=end_date,
+                asset_groups=asset_groups,
+            )
+            if "error" in result:
+                service_results[service] = {"status": "error", "error": result["error"]}
+                overall_summary["failed_services"] = cast(int, overall_summary["failed_services"]) + 1
+                return None
+
+            service_rate = self._extract_completion_rate(result)
+            service_results[service] = {"status": "success", "completion_rate": service_rate, "data": result}
+            overall_summary["successful_services"] = cast(int, overall_summary["successful_services"]) + 1
+            return service_rate
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.error("Error getting status for service %s: %s", service, e)
+            service_results[service] = {"status": "error", "error": str(e)}
+            overall_summary["failed_services"] = cast(int, overall_summary["failed_services"]) + 1
+            return None
 
     def _extract_completion_rate(self, data_status_result: dict[str, object]) -> float:
         """Extract completion rate from a data status result."""

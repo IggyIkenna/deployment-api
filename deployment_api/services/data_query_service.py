@@ -65,49 +65,14 @@ class DataQueryService:
         try:
             logger.info("Listing files in %s/%s", bucket_name, path)
 
-            files: list[dict[str, object]] = []
-            directories: set[str] = set()
-            truncated: bool = False
-
-            # List objects in the path
             objects: list[ObjectInfo] = list_objects(bucket_name, path, max_results=max_results * 2)
+            files, directories = self._partition_gcs_objects(objects, path)
 
-            for obj in objects:
-                obj_path: str = obj.name
-                # Skip the path itself if it matches exactly
-                if obj_path == path:
-                    continue
-
-                # Extract relative path from the prefix
-                if path and not obj_path.startswith(path):
-                    continue
-
-                relative_path = obj_path[len(path) :] if path else obj_path
-                relative_path = relative_path.lstrip("/")
-
-                # Check if this looks like a directory
-                if "/" in relative_path:
-                    # Extract directory name
-                    dir_name = relative_path.split("/")[0]
-                    full_dir_path = f"{path}/{dir_name}".strip("/") if path else dir_name
-                    directories.add(full_dir_path)
-                else:
-                    # It's a file
-                    files.append(
-                        {
-                            "name": relative_path,
-                            "full_path": obj_path,
-                            "size": None,  # Would need GCS metadata call to get size
-                            "type": "file",
-                        }
-                    )
-
-            # Limit results
-            if len(files) > max_results:
+            truncated = len(files) > max_results
+            if truncated:
                 files = files[:max_results]
-                truncated = True
 
-            result: dict[str, object] = {
+            return {
                 "bucket": bucket_name,
                 "path": path,
                 "files": files,
@@ -116,11 +81,38 @@ class DataQueryService:
                 "truncated": truncated,
             }
 
-            return result
-
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Error listing files in %s/%s: %s", bucket_name, path, e)
             return {"error": str(e)}
+
+    @staticmethod
+    def _partition_gcs_objects(objects: list[ObjectInfo], path: str) -> tuple[list[dict[str, object]], set[str]]:
+        """Split a flat GCS object listing into (files, directory-name-set) relative to ``path``."""
+        files: list[dict[str, object]] = []
+        directories: set[str] = set()
+        for obj in objects:
+            obj_path: str = obj.name
+            # Skip the path itself if it matches exactly
+            if obj_path == path:
+                continue
+            # Extract relative path from the prefix
+            if path and not obj_path.startswith(path):
+                continue
+            relative_path = (obj_path[len(path) :] if path else obj_path).lstrip("/")
+            if "/" in relative_path:
+                dir_name = relative_path.split("/")[0]
+                full_dir_path = f"{path}/{dir_name}".strip("/") if path else dir_name
+                directories.add(full_dir_path)
+            else:
+                files.append(
+                    {
+                        "name": relative_path,
+                        "full_path": obj_path,
+                        "size": None,  # Would need GCS metadata call to get size
+                        "type": "file",
+                    }
+                )
+        return files, directories
 
     async def get_venue_filters(self, service: str) -> dict[str, object]:
         """
@@ -154,41 +146,29 @@ class DataQueryService:
         }
 
         for ag in ag_list:
-            try:
-                bucket_name = _drilldown_build_bucket_name(service, ag)
-                venues: list[str] = []
-
-                # List prefixes to find venue directories
-                # Assuming structure: bucket/venue/date/... or bucket/date/venue/...
-                prefixes = list_prefixes(bucket_name, "")
-
-                # Extract venue names from prefixes
-                for prefix in prefixes[:50]:  # Limit to avoid huge responses
-                    # Remove trailing slash
-                    clean_prefix = prefix.rstrip("/")
-
-                    # Extract potential venue name
-                    # This is heuristic - actual structure may vary
-                    parts = clean_prefix.split("/")
-                    if parts:
-                        venue_name = parts[0]
-                        if venue_name and venue_name not in venues:
-                            venues.append(venue_name)
-
-                by_asset_group[ag] = {
-                    "venues": sorted(venues),
-                    "count": len(venues),
-                }
-
-            except (OSError, ValueError, RuntimeError) as e:
-                logger.debug("Error getting venues for %s: %s", ag, e)
-                by_asset_group[ag] = {
-                    "error": str(e),
-                    "venues": [],
-                    "count": 0,
-                }
+            by_asset_group[ag] = self._venue_filters_for_asset_group(service, ag)
 
         return venue_filters
+
+    @staticmethod
+    def _venue_filters_for_asset_group(service: str, ag: str) -> dict[str, object]:
+        """Venue-name list for one (service, asset_group) pair, derived heuristically from bucket
+        top-level prefixes (structure is ``bucket/venue/date/...`` or ``bucket/date/venue/...``)."""
+        try:
+            bucket_name = _drilldown_build_bucket_name(service, ag)
+            venues: list[str] = []
+            prefixes = list_prefixes(bucket_name, "")
+            for prefix in prefixes[:50]:  # Limit to avoid huge responses
+                clean_prefix = prefix.rstrip("/")
+                parts = clean_prefix.split("/")
+                if parts:
+                    venue_name = parts[0]
+                    if venue_name and venue_name not in venues:
+                        venues.append(venue_name)
+            return {"venues": sorted(venues), "count": len(venues)}
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug("Error getting venues for %s: %s", ag, e)
+            return {"error": str(e), "venues": [], "count": 0}
 
     async def get_instruments_list(
         self,
@@ -198,32 +178,14 @@ class DataQueryService:
         search: str | None = None,
         limit: int = 100,
     ) -> dict[str, object]:
-        """
-        List canonical instruments for an asset group, with optional filters.
-
-        Reuses the same canonical-ID corpus as :meth:`search_instruments`
-        (:meth:`_load_search_corpus` — per-venue ``instruments.parquet``
-        files under ``instrument_availability/by_date/``, 5-minute
-        in-process cache) instead of parsing bare filenames off a raw GCS
-        object listing: that legacy approach never carried venue/
-        instrument_type per result and had no way to apply ``search`` at
-        all (the frontend has sent ``search`` since it was written; the
-        backend silently ignored it).
-
-        Args:
-            asset_group: Asset group (cefi, tradfi, defi, prediction, sports).
-            venue: Optional exact venue filter (case-insensitive).
-            instrument_type: Optional exact instrument_type filter (case-insensitive).
-            search: Optional case-insensitive substring/token search over
-                canonical instrument IDs — whitespace tokenises into an
-                AND-match, mirroring :meth:`search_instruments`'s convention.
-            limit: Maximum number of instruments to return.
-
-        Returns:
-            ``{asset_group, instruments: [{instrument_key, venue,
-            instrument_type}], total_in_file, returned_count, search}`` —
-            ``instruments`` matches the frontend's ``InstrumentSearchResult[]``
-            contract (``deployment-ui/src/api/client.ts``).
+        """List canonical instruments for an asset group, with optional venue/instrument_type/search
+        filters (``search`` whitespace-tokenises into an AND-match, mirroring
+        :meth:`search_instruments`). Reuses that method's canonical-ID corpus
+        (:meth:`_load_search_corpus`) instead of parsing bare filenames off a raw GCS listing —
+        the legacy approach never carried venue/instrument_type per result and ignored ``search``
+        entirely. Returns ``{asset_group, instruments: [{instrument_key, venue, instrument_type}],
+        total_in_file, returned_count, search}`` matching the frontend's ``InstrumentSearchResult[]``
+        contract (``deployment-ui/src/api/client.ts``).
         """
         try:
             corpus = self._load_search_corpus(asset_group.lower())
@@ -231,22 +193,12 @@ class DataQueryService:
             logger.error("Error getting instruments list: %s", e)
             return {"error": str(e)}
 
-        venue_lower = venue.strip().lower() if venue else None
-        itype_lower = instrument_type.strip().lower() if instrument_type else None
-        search_tokens = [t.lower() for t in (search or "").split() if t.strip()]
-
-        filtered: list[dict[str, str]] = []
-        for row in corpus:
-            if venue_lower and row["venue"].lower() != venue_lower:
-                continue
-            if itype_lower and row["instrument_type"].lower() != itype_lower:
-                continue
-            if search_tokens:
-                cid_lower = row["canonical_id"].lower()
-                if not all(t in cid_lower for t in search_tokens):
-                    continue
-            filtered.append(row)
-
+        filtered = self._filter_instrument_corpus(
+            corpus,
+            venue.strip().lower() if venue else None,
+            instrument_type.strip().lower() if instrument_type else None,
+            [t.lower() for t in (search or "").split() if t.strip()],
+        )
         filtered.sort(key=lambda r: (r["canonical_id"], r["venue"]))
         limited = filtered[:limit]
 
@@ -264,6 +216,27 @@ class DataQueryService:
             "returned_count": len(limited),
             "search": search,
         }
+
+    @staticmethod
+    def _filter_instrument_corpus(
+        corpus: list[dict[str, str]],
+        venue_lower: str | None,
+        itype_lower: str | None,
+        search_tokens: list[str],
+    ) -> list[dict[str, str]]:
+        """Apply the venue/instrument_type/search-token filters used by :meth:`get_instruments_list`."""
+        filtered: list[dict[str, str]] = []
+        for row in corpus:
+            if venue_lower and row["venue"].lower() != venue_lower:
+                continue
+            if itype_lower and row["instrument_type"].lower() != itype_lower:
+                continue
+            if search_tokens:
+                cid_lower = row["canonical_id"].lower()
+                if not all(t in cid_lower for t in search_tokens):
+                    continue
+            filtered.append(row)
+        return filtered
 
     # Categories the search walks when no specific category is requested. Order
     # matters for deterministic test output — keep alphabetical except SPORTS
@@ -284,35 +257,14 @@ class DataQueryService:
     ) -> dict[str, object]:
         """Case-insensitive substring search for canonical instrument IDs.
 
-        Walks one or all category-specific instruments buckets and returns
-        every (canonical_id, category, venue, instrument_type) tuple whose
-        canonical_id contains ``query`` (case-insensitive). The ``query`` is
-        also tokenised on whitespace — every token must be present in the
-        canonical_id (AND-match) so users can type ``usdc weth 500`` to find
-        a UNISWAP_V3 USDC-WETH-500 pool without knowing the canonical ordering.
-
-        Args:
-            query: Search query (case-insensitive substring; whitespace =
-                AND-match across tokens). Empty query returns ``[]`` — we
-                don't dump the entire registry by default to avoid surprising
-                users with thousands of rows.
-            asset_group: Single asset group to search. ``None`` (the institutional
-                cross-asset-group default) walks all five canonical groups.
-            limit: Max matches returned. Truncation flag in response.
-
-        Returns:
-            ``{
-                query: str,
-                asset_group: str | None,
-                matches: [
-                    {canonical_id, asset_group, venue, instrument_type}
-                ],
-                total_matches: int,
-                truncated: bool,
-                # Debug — counts per asset group that the search actually walked,
-                # useful for diagnosing "why am I not getting matches"
-                asset_groups_searched: list[str],
-            }``
+        Walks one or all category-specific instruments buckets and returns every
+        (canonical_id, category, venue, instrument_type) tuple whose canonical_id contains
+        ``query`` (case-insensitive). ``query`` also tokenises on whitespace — every token must be
+        present (AND-match) so ``usdc weth 500`` finds a UNISWAP_V3 USDC-WETH-500 pool without
+        knowing the canonical ordering. Empty query returns ``[]`` (no full-registry dump). ``None``
+        ``asset_group`` walks all five canonical groups. Returns ``{query, asset_group, matches:
+        [{canonical_id, asset_group, venue, instrument_type}], total_matches, truncated,
+        asset_groups_searched}`` — the last is a debug aid for "why am I not getting matches".
         """
         query_normalised = (query or "").strip()
         if not query_normalised:
@@ -326,10 +278,7 @@ class DataQueryService:
             }
 
         query_tokens: list[str] = [t.lower() for t in query_normalised.split() if t.strip()]
-
-        # Resolve category list to walk.
         cats_to_walk: list[str] = [asset_group.lower()] if asset_group else list(self._SEARCH_CATEGORIES)
-
         all_matches: list[dict[str, str]] = []
         truncated = False
         for cat in cats_to_walk:
@@ -340,20 +289,7 @@ class DataQueryService:
                 all_matches = all_matches[:limit]
                 break
 
-        # Deduplicate on (canonical_id, category, venue, instrument_type) tuple.
-        seen: set[tuple[str, str, str, str]] = set()
-        deduped: list[dict[str, str]] = []
-        for m in all_matches:
-            key = (m["canonical_id"], m["asset_group"], m["venue"], m["instrument_type"])
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(m)
-
-        # Sort by canonical_id for deterministic ordering — the UI dropdown
-        # benefits from stable ordering across keystrokes (no result-shuffle).
-        deduped.sort(key=lambda m: (m["canonical_id"], m["venue"]))
-
+        deduped = self._dedupe_and_sort_matches(all_matches)
         return {
             "query": query_normalised,
             "asset_group": asset_group,
@@ -362,6 +298,20 @@ class DataQueryService:
             "truncated": truncated,
             "asset_groups_searched": cats_to_walk,
         }
+
+    @staticmethod
+    def _dedupe_and_sort_matches(all_matches: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Dedupe on (canonical_id, category, venue, instrument_type), sorted for stable UI ordering."""
+        seen: set[tuple[str, str, str, str]] = set()
+        deduped: list[dict[str, str]] = []
+        for m in all_matches:
+            key = (m["canonical_id"], m["asset_group"], m["venue"], m["instrument_type"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(m)
+        deduped.sort(key=lambda m: (m["canonical_id"], m["venue"]))
+        return deduped
 
     async def _search_in_category(
         self,
@@ -727,40 +677,13 @@ class DataQueryService:
         effective_start: datetime,
         effective_end: datetime,
     ) -> dict[str, dict[str, bool]]:
-        """Check data existence for each day in the effective range.
-
-        Reads the manifest-backed availability index — the same
-        ``read_availability_index`` path ``GET /drilldown/{service}/{asset_group}``
-        already uses correctly — instead of probing a flat
-        ``{venue}/{instrument_type}/{instrument}/{date}/{data_type}`` path shape that
-        never matched the real hive-partition layout (``raw_tick_data/by_date/
-        day=.../pipeline_mode=.../asset_group=.../venue=.../instrument_type=.../
-        data_type=...``) and so never found real data for any instrument.
-        """
-        date_strs: list[str] = []
-        current_dt = effective_start
-        while current_dt <= effective_end:
-            date_strs.append(current_dt.strftime("%Y-%m-%d"))
-            current_dt += timedelta(days=1)
+        """Check data existence for each day in the effective range, via the manifest-backed
+        availability index (the same path ``GET /drilldown/{service}/{asset_group}`` uses)."""
+        date_strs = self._date_range_strs(effective_start, effective_end)
         daily: dict[str, dict[str, bool]] = {date_str: dict.fromkeys(data_types, False) for date_str in date_strs}
 
-        df = read_availability_index(bucket_name)
-        if df is None or df.empty:
-            return daily
-        required_columns = {"venue", "instrument_id", "date", "data_type"}
-        if not required_columns.issubset(df.columns):
-            return daily
-
-        mask = (
-            (df["venue"].astype(str).str.upper() == venue.upper())
-            & (df["instrument_id"].astype(str) == instrument)
-            & (df["date"].astype(str).isin(date_strs))
-            & (df["data_type"].astype(str).isin(data_types))
-        )
-        if instrument_type and "instrument_type" in df.columns:
-            mask &= df["instrument_type"].astype(str).str.lower() == instrument_type.lower()
-        rows = df[mask]
-        if rows.empty:
+        rows = self._availability_rows(bucket_name, venue, instrument_type, instrument, date_strs, data_types)
+        if rows is None or rows.empty:
             return daily
 
         if "capture_status" in rows.columns:
@@ -778,6 +701,43 @@ class DataQueryService:
 
         return daily
 
+    @staticmethod
+    def _date_range_strs(start: datetime, end: datetime) -> list[str]:
+        """Inclusive ``%Y-%m-%d`` strings for every day in ``[start, end]``."""
+        date_strs: list[str] = []
+        current_dt = start
+        while current_dt <= end:
+            date_strs.append(current_dt.strftime("%Y-%m-%d"))
+            current_dt += timedelta(days=1)
+        return date_strs
+
+    @staticmethod
+    def _availability_rows(
+        bucket_name: str,
+        venue: str,
+        instrument_type: str,
+        instrument: str,
+        date_strs: list[str],
+        data_types: list[str],
+    ) -> pd.DataFrame | None:
+        """Availability-index rows matching (venue, instrument, dates, data_types), or ``None`` if
+        the index is missing/malformed (never matched the real hive-partition layout otherwise)."""
+        df = read_availability_index(bucket_name)
+        if df is None or df.empty:
+            return None
+        required_columns = {"venue", "instrument_id", "date", "data_type"}
+        if not required_columns.issubset(df.columns):
+            return None
+        mask = (
+            (df["venue"].astype(str).str.upper() == venue.upper())
+            & (df["instrument_id"].astype(str) == instrument)
+            & (df["date"].astype(str).isin(date_strs))
+            & (df["data_type"].astype(str).isin(data_types))
+        )
+        if instrument_type and "instrument_type" in df.columns:
+            mask &= df["instrument_type"].astype(str).str.lower() == instrument_type.lower()
+        return df[mask]
+
     async def get_instrument_availability(
         self,
         venue: str,
@@ -789,11 +749,7 @@ class DataQueryService:
         available_from: str | None = None,
         available_to: str | None = None,
     ) -> dict[str, object]:
-        """
-        Check instrument availability over a date range.
-
-        Returns dictionary containing availability analysis.
-        """
+        """Check instrument availability over a date range."""
         try:
             asset_group = self._venue_to_category(venue)
             if not asset_group:
@@ -809,46 +765,75 @@ class DataQueryService:
             except ValueError as e:
                 return {"error": f"Invalid date format: {e}"}
 
-            avail_from = self._parse_avail_date(available_from, "available_from") if available_from else None
-            avail_to = self._parse_avail_date(available_to, "available_to") if available_to else None
-
-            effective_start = max(start_dt, avail_from) if avail_from else start_dt
-            effective_end = min(end_dt, avail_to) if avail_to else end_dt
-
-            data_types = [data_type] if data_type else self._default_data_types(asset_group)
-
+            effective_start, effective_end, data_types = self._resolve_effective_window(
+                start_dt, end_dt, available_from, available_to, asset_group, data_type
+            )
             daily_availability = self._check_daily_availability(
-                bucket_name,
+                bucket_name, venue, instrument_type, instrument, data_types, effective_start, effective_end
+            )
+            return self._build_availability_response(
                 venue,
                 instrument_type,
                 instrument,
-                data_types,
+                start_date,
+                end_date,
                 effective_start,
                 effective_end,
+                data_types,
+                daily_availability,
             )
-
-            total_days = len(daily_availability)
-            available_days = sum(1 for d in daily_availability.values() if any(d.values()))
-
-            return {
-                "venue": venue,
-                "instrument_type": instrument_type,
-                "instrument": instrument,
-                "date_range": {"start": start_date, "end": end_date},
-                "effective_range": {
-                    "start": effective_start.strftime("%Y-%m-%d"),
-                    "end": effective_end.strftime("%Y-%m-%d"),
-                },
-                "data_types": data_types,
-                "daily_availability": daily_availability,
-                "summary": {
-                    "total_days": total_days,
-                    "available_days": available_days,
-                    "missing_days": total_days - available_days,
-                    "availability_rate": (available_days / total_days * 100 if total_days > 0 else 0.0),
-                },
-            }
 
         except (OSError, ValueError, RuntimeError) as e:
             logger.error("Error checking instrument availability: %s", e)
             return {"error": str(e)}
+
+    def _resolve_effective_window(
+        self,
+        start_dt: datetime,
+        end_dt: datetime,
+        available_from: str | None,
+        available_to: str | None,
+        asset_group: str,
+        data_type: str | None,
+    ) -> tuple[datetime, datetime, list[str]]:
+        """Clip ``[start_dt, end_dt]`` to any ``available_from``/``available_to`` bounds; resolve
+        default data_types when ``data_type`` isn't specified."""
+        avail_from = self._parse_avail_date(available_from, "available_from") if available_from else None
+        avail_to = self._parse_avail_date(available_to, "available_to") if available_to else None
+        effective_start = max(start_dt, avail_from) if avail_from else start_dt
+        effective_end = min(end_dt, avail_to) if avail_to else end_dt
+        data_types = [data_type] if data_type else self._default_data_types(asset_group)
+        return effective_start, effective_end, data_types
+
+    @staticmethod
+    def _build_availability_response(
+        venue: str,
+        instrument_type: str,
+        instrument: str,
+        start_date: str,
+        end_date: str,
+        effective_start: datetime,
+        effective_end: datetime,
+        data_types: list[str],
+        daily_availability: dict[str, dict[str, bool]],
+    ) -> dict[str, object]:
+        total_days = len(daily_availability)
+        available_days = sum(1 for d in daily_availability.values() if any(d.values()))
+        return {
+            "venue": venue,
+            "instrument_type": instrument_type,
+            "instrument": instrument,
+            "date_range": {"start": start_date, "end": end_date},
+            "effective_range": {
+                "start": effective_start.strftime("%Y-%m-%d"),
+                "end": effective_end.strftime("%Y-%m-%d"),
+            },
+            "data_types": data_types,
+            "daily_availability": daily_availability,
+            "summary": {
+                "total_days": total_days,
+                "available_days": available_days,
+                "missing_days": total_days - available_days,
+                "availability_rate": (available_days / total_days * 100 if total_days > 0 else 0.0),
+            },
+        }
