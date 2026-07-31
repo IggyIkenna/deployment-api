@@ -96,6 +96,8 @@ from deployment_api.routes.data_status import _deploy_turbo
 from deployment_api.routes.data_status import _query_meta
 from deployment_api.routes.data_status import _downloads
 from deployment_api.routes.data_status import _live_coverage
+from deployment_api.routes.data_status import _live_coverage_honest
+from deployment_api.routes.data_status import _live_coverage_venue_year
 from deployment_api.routes.data_status import _rollup
 from deployment_api.routes.data_status import _catalogue
 from deployment_api.routes.data_status import _axis_census
@@ -155,15 +157,19 @@ from deployment_api.routes.data_status._downloads import (
     get_shard_info_endpoint,
 )
 from deployment_api.routes.data_status._live_coverage import (
-    ConfigVersionTriple,
-    CoverageScope,
     LiveCaptureStatus,
     LiveStatusResponse,
     LiveStatusRow,
+    get_live_data_status,
+)
+from deployment_api.routes.data_status._live_coverage_honest import (
+    get_honest_coverage,
+)
+from deployment_api.routes.data_status._live_coverage_venue_year import (
+    ConfigVersionTriple,
+    CoverageScope,
     VenueYearCoverageResponse,
     VenueYearRow,
-    get_honest_coverage,
-    get_live_data_status,
     get_venue_year_coverage,
 )
 from deployment_api.routes.data_status._query_meta import (
