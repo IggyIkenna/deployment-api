@@ -201,6 +201,154 @@ def _check_shard_logs_for_errors(shard: dict[str, object], deployment_id: str) -
         return False
 
 
+def _refresh_cloud_run_batch_shards(shards: list[dict[str, object]], config: dict[str, object]) -> int:
+    """Batch-refresh running Cloud Run shards, grouped by (region, job_name) to avoid N per-shard calls."""
+    running_shards = [s for s in shards if cast(str, s.get("status") or "") == "running" and s.get("job_id")]
+
+    groups: dict[tuple[str, str], list[str]] = {}
+    for shard in running_shards:
+        r, j = _parse_execution_name(cast(str, shard.get("job_id") or ""))
+        r = r or cast(str, config.get("region") or DEFAULT_REGION)
+        j = j or "unknown"
+        groups.setdefault((r, j), []).append(cast(str, shard["job_id"]))
+
+    exec_to_shard = {cast(str, s.get("job_id")): s for s in running_shards}
+    updated_count = 0
+
+    for (region, job_name), exec_names in groups.items():
+        try:
+            project_id = cast(str, config.get("project_id") or DEFAULT_PROJECT_ID)
+            service_account_email = cast(str, config.get("service_account_email") or "")
+            raw_statuses = _asyncio.run(
+                _ds_client.get_cloud_run_status_batch(
+                    project_id=project_id,
+                    region=region,
+                    service_account_email=service_account_email,
+                    job_name=job_name,
+                    job_ids=exec_names,
+                )
+            )
+            for execution_name, status in raw_statuses.items():
+                shard = exec_to_shard.get(execution_name)
+                if not shard:
+                    continue
+                if status == "SUCCEEDED":
+                    shard["status"] = "succeeded"
+                    shard["end_time"] = datetime.now(UTC).isoformat()
+                    updated_count += 1
+                elif status == "FAILED":
+                    shard["status"] = "failed"
+                    shard["end_time"] = datetime.now(UTC).isoformat()
+                    shard["error_message"] = "Job failed"
+                    updated_count += 1
+                elif status == "CANCELLED":
+                    shard["status"] = "cancelled"
+                    shard["end_time"] = datetime.now(UTC).isoformat()
+                    updated_count += 1
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.warning("Failed to refresh deployment shards: %s", e)
+
+    return updated_count
+
+
+def _vm_zones_for_shards(running_shards: list[dict[str, object]]) -> list[str]:
+    """Distinct zones from a sample of running VM shards' compute_info, defaulting to the region's zone-a."""
+    zones: list[str] = []
+    for shard in running_shards[:10]:  # Sample to avoid too many API calls
+        shard_compute_info = cast("dict[str, object] | None", shard.get("compute_info"))
+        if shard_compute_info:
+            zone_val = cast(str, shard_compute_info.get("zone") or "")
+            if zone_val and zone_val not in zones:
+                zones.append(zone_val)
+    return zones or [f"{DEFAULT_REGION}-a"]
+
+
+def _refresh_vm_shards_in_zone(zone: str, running_shards: list[dict[str, object]], project_id: str) -> int:
+    """Batch-refresh one zone's running VM shards via deployment-service HTTP API."""
+    updated_count = 0
+    try:
+        zone_shards = [
+            s
+            for s in running_shards
+            if isinstance(s.get("compute_info"), dict)
+            and cast("dict[str, object]", s["compute_info"]).get("zone") == zone
+        ]
+        if not zone_shards:
+            return 0
+
+        vm_names = [
+            cast(str, cast("dict[str, object]", s["compute_info"]).get("vm_name") or "")
+            for s in zone_shards
+            if isinstance(s.get("compute_info"), dict) and cast("dict[str, object]", s["compute_info"]).get("vm_name")
+        ]
+        if not vm_names:
+            return 0
+
+        vm_statuses = _asyncio.run(_ds_client.get_vm_status_batch(project_id=project_id, zone=zone, vm_names=vm_names))
+        for shard in zone_shards:
+            shard_ci = cast("dict[str, object] | None", shard.get("compute_info"))
+            vm_name = cast(str, shard_ci.get("vm_name") or "") if shard_ci else ""
+            if vm_name and vm_name in vm_statuses:
+                vm_status = vm_statuses[vm_name]
+                if vm_status == "TERMINATED":
+                    shard["status"] = "succeeded"
+                    shard["end_time"] = datetime.now(UTC).isoformat()
+                    updated_count += 1
+                elif vm_status in ["STOPPED", "STOPPING"]:
+                    shard["status"] = "failed"
+                    shard["end_time"] = datetime.now(UTC).isoformat()
+                    shard["error_message"] = f"VM {vm_status}"
+                    updated_count += 1
+    except (OSError, ValueError, RuntimeError) as e:
+        logger.warning("[BATCH_REFRESH] Failed to refresh VMs for zone %s: %s", zone, e)
+    return updated_count
+
+
+def _refresh_vm_shards(shards: list[dict[str, object]], config: dict[str, object]) -> int:
+    """VM refresh: check if compute instances are still running via deployment-service HTTP API."""
+    running_shards = [s for s in shards if cast(str, s.get("status") or "") == "running"]
+    if not running_shards:
+        return 0
+    project_id = cast(str, config.get("project_id") or DEFAULT_PROJECT_ID)
+    return sum(
+        _refresh_vm_shards_in_zone(zone, running_shards, project_id) for zone in _vm_zones_for_shards(running_shards)
+    )
+
+
+def _flag_succeeded_shards_with_log_errors(
+    shards: list[dict[str, object]], compute_type: str, deployment_id: str
+) -> int:
+    """CRITICAL FIX: VMs may write SUCCESS to GCS even when logs carry ERROR severity — flag those as FAILED."""
+    _done_statuses = {"succeeded", "failed", "cancelled"}
+    shards_all_done = all(cast(str, s.get("status") or "") in _done_statuses for s in shards)
+    if not (compute_type == "vm" and shards_all_done):
+        return 0
+
+    logger.info("[BATCH_REFRESH] Checking logs for ERROR severity in succeeded shards...")
+    succeeded_shards = [s for s in shards if cast(str, s.get("status") or "") == "succeeded"]
+
+    shards_with_errors: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures: dict[Future[bool], dict[str, object]] = {
+            executor.submit(_check_shard_logs_for_errors, shard, deployment_id): shard
+            for shard in succeeded_shards[:100]  # Limit to first 100 for performance
+        }
+        for future in as_completed(futures, timeout=30):
+            try:
+                shard = futures[future]
+                if future.result(timeout=5):
+                    shards_with_errors.append(shard)
+            except (OSError, ValueError, RuntimeError) as e:
+                logger.warning("Unexpected error during operation: %s", e, exc_info=True)
+
+    if shards_with_errors:
+        logger.warning("[BATCH_REFRESH] Marking %s shards as FAILED due to ERROR logs", len(shards_with_errors))
+        for shard in shards_with_errors:
+            shard["status"] = "failed"
+            shard["error_message"] = "Job reported SUCCESS but logs contain ERROR severity"
+    return len(shards_with_errors)
+
+
 def refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
     """
     Synchronous helper for refresh_deployment_status.
@@ -241,167 +389,11 @@ def refresh_deployment_status_sync(deployment_id: str) -> dict[str, object]:
     config = cast(dict[str, object], state.get("config") or {})
 
     if compute_type == "cloud_run":
-        # Batch refresh for Cloud Run: group executions by region/job and list once per group.
-        # This avoids N get_execution() calls for large deployments.
-        running_shards = [s for s in shards if cast(str, s.get("status") or "") == "running" and s.get("job_id")]
-
-        # Group by (region, job_name)
-        groups: dict[tuple[str, str], list[str]] = {}
-        for shard in running_shards:
-            r, j = _parse_execution_name(cast(str, shard.get("job_id") or ""))
-            r = r or cast(str, config.get("region") or DEFAULT_REGION)
-            j = j or "unknown"
-            key = (r, j)
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(cast(str, shard["job_id"]))
-
-        # Build mapping from execution_name -> our shard
-        exec_to_shard = {cast(str, s.get("job_id")): s for s in running_shards}
-
-        for (region, job_name), exec_names in groups.items():
-            try:
-                project_id = cast(str, config.get("project_id") or DEFAULT_PROJECT_ID)
-                service_account_email = cast(str, config.get("service_account_email") or "")
-
-                # Query Cloud Run execution statuses via deployment-service HTTP API
-                raw_statuses = _asyncio.run(
-                    _ds_client.get_cloud_run_status_batch(
-                        project_id=project_id,
-                        region=region,
-                        service_account_email=service_account_email,
-                        job_name=job_name,
-                        job_ids=exec_names,
-                    )
-                )
-
-                for execution_name, status in raw_statuses.items():
-                    shard = exec_to_shard.get(execution_name)
-                    if not shard:
-                        continue
-
-                    # Update based on execution status
-                    if status == "SUCCEEDED":
-                        shard["status"] = "succeeded"
-                        shard["end_time"] = datetime.now(UTC).isoformat()
-                        updated_count += 1
-                    elif status == "FAILED":
-                        shard["status"] = "failed"
-                        shard["end_time"] = datetime.now(UTC).isoformat()
-                        shard["error_message"] = "Job failed"
-                        updated_count += 1
-                    elif status == "CANCELLED":
-                        shard["status"] = "cancelled"
-                        shard["end_time"] = datetime.now(UTC).isoformat()
-                        updated_count += 1
-
-            except (OSError, ValueError, RuntimeError) as e:
-                logger.warning("Failed to refresh deployment shards: %s", e)
-
+        updated_count += _refresh_cloud_run_batch_shards(shards, config)
     elif compute_type == "vm":
-        # VM refresh: check if compute instances are still running via deployment-service HTTP API
-        running_shards = [s for s in shards if cast(str, s.get("status") or "") == "running"]
-        if running_shards:
-            zones: list[str] = []
-            # Extract zones from VM names or use default
-            for shard in running_shards[:10]:  # Sample to avoid too many API calls
-                shard_compute_info = cast("dict[str, object] | None", shard.get("compute_info"))
-                if shard_compute_info:
-                    zone_val = cast(str, shard_compute_info.get("zone") or "")
-                    if zone_val and zone_val not in zones:
-                        zones.append(zone_val)
+        updated_count += _refresh_vm_shards(shards, config)
 
-            if not zones:
-                zones = [f"{DEFAULT_REGION}-a"]
-
-            project_id = cast(str, config.get("project_id") or DEFAULT_PROJECT_ID)
-
-            # Check VM status in batches
-            for zone in zones:
-                try:
-                    zone_shards = [
-                        s
-                        for s in running_shards
-                        if isinstance(s.get("compute_info"), dict)
-                        and cast("dict[str, object]", s["compute_info"]).get("zone") == zone
-                    ]
-
-                    if not zone_shards:
-                        continue
-
-                    vm_names = [
-                        cast(
-                            str,
-                            cast("dict[str, object]", s["compute_info"]).get("vm_name") or "",
-                        )
-                        for s in zone_shards
-                        if isinstance(s.get("compute_info"), dict)
-                        and cast("dict[str, object]", s["compute_info"]).get("vm_name")
-                    ]
-
-                    if vm_names:
-                        vm_statuses = _asyncio.run(
-                            _ds_client.get_vm_status_batch(
-                                project_id=project_id,
-                                zone=zone,
-                                vm_names=vm_names,
-                            )
-                        )
-
-                        for shard in zone_shards:
-                            shard_ci = cast("dict[str, object] | None", shard.get("compute_info"))
-                            vm_name = cast(str, shard_ci.get("vm_name") or "") if shard_ci else ""
-                            if vm_name and vm_name in vm_statuses:
-                                vm_status = vm_statuses[vm_name]
-                                if vm_status == "TERMINATED":
-                                    shard["status"] = "succeeded"
-                                    shard["end_time"] = datetime.now(UTC).isoformat()
-                                    updated_count += 1
-                                elif vm_status in ["STOPPED", "STOPPING"]:
-                                    shard["status"] = "failed"
-                                    shard["end_time"] = datetime.now(UTC).isoformat()
-                                    shard["error_message"] = f"VM {vm_status}"
-                                    updated_count += 1
-
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.warning("[BATCH_REFRESH] Failed to refresh VMs for zone %s: %s", zone, e)
-
-    # CRITICAL FIX: Check succeeded shards for ERROR logs (VMs for now)
-    # VMs may write SUCCESS to GCS even when there are ERROR severity logs.
-    # We must validate logs before finalizing shard status.
-    _done_statuses = {"succeeded", "failed", "cancelled"}
-    shards_all_done = all(cast(str, s.get("status") or "") in _done_statuses for s in shards)
-    if compute_type == "vm" and shards_all_done:
-        logger.info("[BATCH_REFRESH] Checking logs for ERROR severity in succeeded shards...")
-        succeeded_shards = [s for s in shards if cast(str, s.get("status") or "") == "succeeded"]
-
-        # Check succeeded shards in parallel for errors
-        shards_with_errors: list[dict[str, object]] = []
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures: dict[Future[bool], dict[str, object]] = {
-                executor.submit(_check_shard_logs_for_errors, shard, deployment_id): shard
-                for shard in succeeded_shards[:100]  # Limit to first 100 for performance
-            }
-            for future in as_completed(futures, timeout=30):
-                try:
-                    shard = futures[future]
-                    has_errors = future.result(timeout=5)
-                    if has_errors:
-                        shards_with_errors.append(shard)
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.warning("Unexpected error during operation: %s", e, exc_info=True)
-                    pass
-
-        # Mark shards with errors as FAILED
-        if shards_with_errors:
-            logger.warning(
-                "[BATCH_REFRESH] Marking %s shards as FAILED due to ERROR logs",
-                len(shards_with_errors),
-            )
-            for shard in shards_with_errors:
-                shard["status"] = "failed"
-                shard["error_message"] = "Job reported SUCCESS but logs contain ERROR severity"
-                updated_count += 1
+    updated_count += _flag_succeeded_shards_with_log_errors(shards, compute_type, deployment_id)
 
     # Update overall deployment status
     old_status = current_status
