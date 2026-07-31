@@ -34,19 +34,7 @@ class DeploymentStateManager:
         service_filter: str | None = None,
         asset_group: str | None = None,
     ) -> dict[str, object]:
-        """
-        List deployments with optional filtering.
-
-        Args:
-            limit: Maximum number of deployments to return
-            offset: Offset for pagination
-            status_filter: Filter by deployment status
-            service_filter: Filter by service name
-            asset_group: Filter by trading-axis value (CEFI, DEFI, …)
-
-        Returns:
-            Dict containing deployment list and metadata
-        """
+        """List deployments with optional status/service/asset_group filtering + pagination."""
         deployments: list[dict[str, object]] = _gcs_list_deployments(
             bucket_name=_settings.STATE_BUCKET,
             project_id=_settings.gcp_project_id,
@@ -94,16 +82,8 @@ class DeploymentStateManager:
             return None
 
     def get_deployment_status(self, deployment_id: str, detailed: bool = True) -> dict[str, object]:
-        """
-        Get detailed status for a specific deployment.
-
-        Args:
-            deployment_id: Deployment ID to get status for
-            detailed: Whether to include detailed shard information
-
-        Returns:
-            Dict containing deployment status and details
-        """
+        """Get status for a deployment; ``detailed=True`` (default) adds shard/compute_config/
+        cli_command/error_details."""
         state: dict[str, object] | None = _load_state(
             deployment_id,
             bucket=_settings.STATE_BUCKET,
@@ -111,22 +91,55 @@ class DeploymentStateManager:
         if not state:
             raise ValueError(f"Deployment {deployment_id} not found")
 
-        raw_shards = state.get("shards")
-        shards: list[dict[str, object]] = (
-            cast(list[dict[str, object]], raw_shards) if isinstance(raw_shards, list) else []
+        shards = self._extract_shards(state)
+        total, completed, failed, running = self._shard_status_counts(shards)
+        start_date, end_date = self._extract_date_range(state)
+        response = self._build_status_response(
+            deployment_id, state, total, completed, failed, running, start_date, end_date
         )
+        if detailed:
+            response.update(
+                {
+                    "shards": shards,
+                    "compute_config": state.get("compute_config") or {},
+                    "cli_command": state.get("cli_command") or "",
+                    "error_details": state.get("error_details"),
+                }
+            )
+        return response
+
+    @staticmethod
+    def _extract_shards(state: dict[str, object]) -> list[dict[str, object]]:
+        raw_shards = state.get("shards")
+        return cast(list[dict[str, object]], raw_shards) if isinstance(raw_shards, list) else []
+
+    @staticmethod
+    def _shard_status_counts(shards: list[dict[str, object]]) -> tuple[int, int, int, int]:
+        """(total, completed, failed, running) shard counts."""
         total = len(shards)
         completed = sum(1 for s in shards if s.get("status") in ("succeeded", "completed"))
         failed = sum(1 for s in shards if s.get("status") == "failed")
         running = sum(1 for s in shards if s.get("status") == "running")
+        return total, completed, failed, running
 
-        # Extract date range from config or shard dimensions
+    @staticmethod
+    def _extract_date_range(state: dict[str, object]) -> tuple[str, str]:
         cfg_raw = state.get("config")
         cfg: dict[str, object] = cast(dict[str, object], cfg_raw) if isinstance(cfg_raw, dict) else {}
-        start_date = str(cfg.get("start_date") or "")
-        end_date = str(cfg.get("end_date") or "")
+        return str(cfg.get("start_date") or ""), str(cfg.get("end_date") or "")
 
-        response: dict[str, object] = {
+    @staticmethod
+    def _build_status_response(
+        deployment_id: str,
+        state: dict[str, object],
+        total: int,
+        completed: int,
+        failed: int,
+        running: int,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, object]:
+        return {
             "deployment_id": deployment_id,
             "service": state.get("service"),
             "status": state.get("status"),
@@ -145,18 +158,6 @@ class DeploymentStateManager:
             },
             "date_range": {"start": start_date, "end": end_date},
         }
-
-        if detailed:
-            response.update(
-                {
-                    "shards": shards,
-                    "compute_config": state.get("compute_config") or {},
-                    "cli_command": state.get("cli_command") or "",
-                    "error_details": state.get("error_details"),
-                }
-            )
-
-        return response
 
     def refresh_deployment_status(self, deployment_id: str) -> dict[str, object]:
         """
