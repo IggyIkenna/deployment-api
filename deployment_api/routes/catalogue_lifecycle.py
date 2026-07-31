@@ -16,12 +16,13 @@ page only ever materialises its own slice — see
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.services.catalogue_lifecycle import (
     DEFAULT_LIFECYCLE_LIMIT,
     MAX_LIFECYCLE_LIMIT,
+    CatalogueLifecycleBuildBusyError,
     list_new_listings_page,
     list_upcoming_expiries_page,
 )
@@ -42,9 +43,16 @@ async def get_new_listings(
     """Instruments listed within the last ``max_age_days`` days (newest-first), paginated."""
     if _cfg.is_mock_mode():
         return {"new_listings": [], "total_count": 0, "limit": limit, "offset": offset, "has_more": False, "mock": True}
-    page, total_count = list_new_listings_page(
-        max_age_days=max_age_days, asset_group=asset_group, venue=venue, limit=limit, offset=offset
-    )
+    try:
+        page, total_count = list_new_listings_page(
+            max_age_days=max_age_days, asset_group=asset_group, venue=venue, limit=limit, offset=offset
+        )
+    except CatalogueLifecycleBuildBusyError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="New-listings is at capacity (too many concurrent uncached builds). Retry shortly.",
+            headers={"Retry-After": "5"},
+        ) from e
     return {
         "new_listings": page,
         "total_count": total_count,
@@ -72,9 +80,16 @@ async def get_upcoming_expiries(
             "has_more": False,
             "mock": True,
         }
-    page, total_count = list_upcoming_expiries_page(
-        within_days=within_days, asset_group=asset_group, venue=venue, limit=limit, offset=offset
-    )
+    try:
+        page, total_count = list_upcoming_expiries_page(
+            within_days=within_days, asset_group=asset_group, venue=venue, limit=limit, offset=offset
+        )
+    except CatalogueLifecycleBuildBusyError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Upcoming-expiries is at capacity (too many concurrent uncached builds). Retry shortly.",
+            headers={"Retry-After": "5"},
+        ) from e
     return {
         "upcoming_expiries": page,
         "total_count": total_count,

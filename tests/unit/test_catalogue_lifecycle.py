@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from deployment_api.services import catalogue_lifecycle as cl
 
@@ -271,6 +272,47 @@ def test_shard_isolation_one_failing_asset_group_is_skipped() -> None:
     with patch.object(cl, "_read_catalogue", side_effect=lambda ag: None if ag == "defi" else _read(ag)):
         rows = cl.list_new_listings(max_age_days=7)
     assert any(r["instrument_id"] == "NEW-SPOT" for r in rows)
+
+
+class TestConcurrentBuildGuard:
+    """2026-07-31 (deployment_api_sigabrt_crash_loop_2026_07_24.md OOM-kill
+    investigation) — an uncached build must shed load (raise, not stack) once
+    ``_MAX_CONCURRENT_BUILDS`` builds are already in flight on this worker,
+    mirroring ``routes/data_status/_deploy_turbo.py``'s drilldown guard."""
+
+    def test_build_raises_busy_when_capacity_already_held(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        # Saturate the semaphore ourselves (simulates other in-flight requests)
+        # rather than actually running concurrent threads — deterministic.
+        held = [cl._build_semaphore.acquire(blocking=False) for _ in range(cl._MAX_CONCURRENT_BUILDS)]  # pyright: ignore[reportPrivateUsage]
+        assert all(held), "test setup: expected to acquire every guard slot"
+        try:
+            with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+                with pytest.raises(cl.CatalogueLifecycleBuildBusyError):
+                    cl.list_new_listings_page(max_age_days=7, limit=1, offset=0)
+        finally:
+            for _ in held:
+                cl._build_semaphore.release()  # pyright: ignore[reportPrivateUsage]
+
+    def test_guard_releases_after_a_build_so_the_next_one_succeeds(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+            cl.list_new_listings_page(max_age_days=7, limit=1, offset=0)
+            cl._clear_caches()  # pyright: ignore[reportPrivateUsage]  # force a fresh (uncached) build
+            # A second uncached build must succeed — the guard released after the first.
+            cl.list_new_listings_page(max_age_days=7, limit=1, offset=0)
+
+    def test_expiries_build_also_guarded(self) -> None:
+        cl._clear_caches()  # pyright: ignore[reportPrivateUsage]
+        held = [cl._build_semaphore.acquire(blocking=False) for _ in range(cl._MAX_CONCURRENT_BUILDS)]  # pyright: ignore[reportPrivateUsage]
+        assert all(held), "test setup: expected to acquire every guard slot"
+        try:
+            with patch.object(cl, "_read_catalogue", side_effect=lambda ag: _cefi_df() if ag == "cefi" else None):
+                with pytest.raises(cl.CatalogueLifecycleBuildBusyError):
+                    cl.list_upcoming_expiries_page(within_days=30, limit=1, offset=0)
+        finally:
+            for _ in held:
+                cl._build_semaphore.release()  # pyright: ignore[reportPrivateUsage]
 
 
 class TestPagination:

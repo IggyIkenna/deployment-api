@@ -31,8 +31,11 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
@@ -41,6 +44,53 @@ import pandas as pd
 from deployment_api.utils.storage_client import get_storage_client
 
 logger = logging.getLogger(__name__)
+
+
+class CatalogueLifecycleBuildBusyError(RuntimeError):
+    """Too many uncached new-listings/upcoming-expiries builds already in flight.
+
+    Raised by ``_guarded_build`` (never by a route directly) so the route layer
+    can translate it into a 503 + Retry-After, mirroring
+    ``routes/data_status/_deploy_turbo.py``'s drilldown load-shed.
+    """
+
+
+# ── Concurrent-build guard (2026-07-31, deployment_api_sigabrt_crash_loop_2026_07_24.md
+# OOM-kill investigation) ────────────────────────────────────────────────────
+# An UNCACHED new-listings/upcoming-expiries request fans out up to
+# ``_MAX_AG_WORKERS`` (5) concurrent per-AG GCS parquet reads via ThreadPoolExecutor
+# (``_build_new_listings_frame``/``_build_expiries_frame`` below) — this exact
+# multi-AG "first-mount burst" is what forced the 8Gi->16Gi bump on 2026-07-17
+# (see cloudbuild.yaml's deploy-step comment). That bump assumed at most ONE such
+# burst in flight at a time; it does not bound how many DISTINCT uncached requests
+# (different filter params -> different 5-min TTL cache keys, e.g. several
+# dashboard panels/pages) can each independently fan out 5 reads concurrently on
+# the SAME worker. A freshly AUTOSCALED instance starts with an empty cache, so a
+# burst landing right after cold-start is exactly the scenario most likely to
+# stack multiple 5-way fan-outs and reproduce the original OOM shape — measured
+# 2026-07-29..31: 8 "Container terminated on signal 9" events in 7 days, all with
+# memory usage only marginally (0.06%-4%) over the 16384 MiB limit, most
+# correlated with an "AUTOSCALING"-reason "Starting new instance" log line.
+# PER-WORKER (module-level), matching the drilldown guard's own scoping.
+_MAX_CONCURRENT_BUILDS = 2
+_build_semaphore = threading.Semaphore(_MAX_CONCURRENT_BUILDS)
+
+
+@contextmanager
+def _guarded_build(*, kind: str) -> Iterator[None]:
+    """Shed load (raise, never block) when too many uncached builds are already
+    running on this worker, instead of letting them stack past the container's
+    memory ceiling. Cached hits never reach this guard (checked upstream)."""
+    if not _build_semaphore.acquire(blocking=False):
+        logger.warning("catalogue-lifecycle %s build shed — %d already in flight", kind, _MAX_CONCURRENT_BUILDS)
+        raise CatalogueLifecycleBuildBusyError(
+            f"catalogue-lifecycle {kind} build is at capacity (too many concurrent uncached builds)"
+        )
+    try:
+        yield
+    finally:
+        _build_semaphore.release()
+
 
 # Asset groups whose lifecycle catalogue we scan. instruments-store-{ag} for
 # all; prediction is its own bucket KIND (no asset_group entry) — matches
@@ -285,7 +335,7 @@ def _build_new_listings_frame(*, max_age_days: int, asset_group: str | None, ven
     ags = _scan_asset_groups(asset_group)
     if not ags:
         return pd.DataFrame()
-    with ThreadPoolExecutor(max_workers=min(len(ags), _MAX_AG_WORKERS)) as ex:
+    with _guarded_build(kind="new-listings"), ThreadPoolExecutor(max_workers=min(len(ags), _MAX_AG_WORKERS)) as ex:
         frames = list(
             ex.map(
                 lambda ag: _read_and_filter_new_listings(ag, cutoff=cutoff, today_iso=today_iso, venue_f=venue_f),
@@ -396,7 +446,7 @@ def _build_expiries_frame(*, within_days: int, asset_group: str | None, venue_f:
     ags = _scan_asset_groups(asset_group)
     if not ags:
         return pd.DataFrame()
-    with ThreadPoolExecutor(max_workers=min(len(ags), _MAX_AG_WORKERS)) as ex:
+    with _guarded_build(kind="upcoming-expiries"), ThreadPoolExecutor(max_workers=min(len(ags), _MAX_AG_WORKERS)) as ex:
         frames = list(
             ex.map(
                 lambda ag: _read_and_filter_expiries(ag, today_iso=today_iso, horizon_iso=horizon_iso, venue_f=venue_f),
@@ -472,6 +522,7 @@ def _clear_caches() -> None:  # test hook
 __all__ = [
     "DEFAULT_LIFECYCLE_LIMIT",
     "MAX_LIFECYCLE_LIMIT",
+    "CatalogueLifecycleBuildBusyError",
     "CatalogueLifecycleRow",
     "list_new_listings",
     "list_new_listings_page",
