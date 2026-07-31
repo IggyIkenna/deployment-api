@@ -224,52 +224,60 @@ class DefiStatusMixin(DataStatusCliMixin):
 
         For market-tick-data-service + DEFI category, reads the main DEFI bucket
         AND all sub-dimension buckets (gas-fees, dex-swaps, etc.), concatenating
-        them so venues from sub-dimensions appear under DEFI in the UI.
-
-        Each row is tagged with ``_defi_source`` so the category builder can
-        produce a per-sub-dimension breakdown.
-
-        Phase 3 (data-status multi-axis drilldown) — after concatenation,
-        filters merged rows to only those whose ``(venue, chain)`` pair is
-        a canonical DeFi protocol per the UAC ``ALL_DEFI_VENUES``
-        registry. Without this filter, sub-dimension buckets like
-        ``oracle-prices-{pid}`` and ``perp-funding-{pid}`` (which carry
-        oracle-price and perp-funding rows for CeFi venues that DEFI
-        feeds reference, e.g. COINBASE-SPOT-as-oracle-source) silently
-        leaked into the DEFI cell-grid as if they were DeFi protocols.
+        them so venues from sub-dimensions appear under DEFI in the UI. Each row
+        is tagged with ``_defi_source`` so the category builder can produce a
+        per-sub-dimension breakdown. Phase 3 (data-status multi-axis drilldown) —
+        after concatenation, filters merged rows to only those whose
+        ``(venue, chain)`` pair is a canonical DeFi protocol per the UAC
+        ``ALL_DEFI_VENUES`` registry (else sub-dimension buckets like
+        ``oracle-prices-{pid}`` leak CeFi-venue rows into the DEFI cell-grid).
         """
+        main_bucket = self._resolve_defi_main_bucket(service, cat, cloud)
+        if main_bucket is None:
+            return pd.DataFrame()
+
+        frames = self._collect_defi_index_frames(service, cat, main_bucket)
+        if not frames:
+            return pd.DataFrame()
+        merged = pd.concat(frames, ignore_index=True)
+        return self._postprocess_defi_merged_index(service, cat, merged)
+
+    def _resolve_defi_main_bucket(self, service: str, cat: str, cloud: str) -> str | None:
+        """Resolve the main DeFi bucket name, or ``None`` for the honest-skip cases."""
         override = self._BUCKET_CATEGORY_OVERRIDES.get((service, cat.lower()))
         if override:
-            main_bucket = override.format(pid=self.project_id, env=self.deployment_env_short)
-        elif service == "features-commodity-service":
-            main_bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
-        else:
-            kind = SERVICE_TO_KIND.get(service)
-            if kind is None:
-                return pd.DataFrame()
-            ag = cat.lower() or None
-            if ag == "shared":
-                # SHARED pseudo-key (cross-asset services — features-calendar / ml-service)
-                # has no per-asset-group bucket. Absent a (service, 'shared') override there
-                # is nothing to read via the per-AG path → return empty (honest skip) rather
-                # than calling resolve_bucket_name(asset_group='shared'), which raises
-                # BucketNamingError and previously crashed the ENTIRE rollup sweep (phase-1
-                # aborted before phase-2 → beta rollup blobs silently froze, 2026-06-16→17).
-                return pd.DataFrame()
-            if ag == "prediction" and PREDICTION_KIND_MAP.get(kind):
-                # Prediction-SPECIAL single-bucket kind (its own KIND, resolved kind-only).
-                main_bucket = _dss.resolve_bucket_name(cloud=cast(object, cloud), kind=PREDICTION_KIND_MAP[kind])  # pyright: ignore[reportArgumentType]
-            else:
-                # Normal per-asset_group kind — incl. a per-AG kind that merely serves
-                # prediction as one of its asset_groups (e.g. features-cross-instrument, which
-                # has NO PREDICTION_KIND_MAP entry). Resolve WITH asset_group; resolving such a
-                # per-AG kind kind-only raised "asset_group= is required" (rollup SERVICE_FAILED).
-                main_bucket = _dss.resolve_bucket_name(
-                    cloud=cast(object, cloud),  # pyright: ignore[reportArgumentType]
-                    kind=kind,
-                    asset_group=cast(object, ag),  # pyright: ignore[reportArgumentType]
-                )
+            return override.format(pid=self.project_id, env=self.deployment_env_short)
+        if service == "features-commodity-service":
+            return COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
 
+        kind = SERVICE_TO_KIND.get(service)
+        if kind is None:
+            return None
+        ag = cat.lower() or None
+        if ag == "shared":
+            # SHARED pseudo-key (cross-asset services — features-calendar / ml-service)
+            # has no per-asset-group bucket. Absent a (service, 'shared') override there
+            # is nothing to read via the per-AG path → honest skip rather than calling
+            # resolve_bucket_name(asset_group='shared'), which raises BucketNamingError
+            # and previously crashed the ENTIRE rollup sweep (phase-1 aborted before
+            # phase-2 → beta rollup blobs silently froze, 2026-06-16→17).
+            return None
+        if ag == "prediction" and PREDICTION_KIND_MAP.get(kind):
+            # Prediction-SPECIAL single-bucket kind (its own KIND, resolved kind-only).
+            return _dss.resolve_bucket_name(cloud=cast(object, cloud), kind=PREDICTION_KIND_MAP[kind])  # pyright: ignore[reportArgumentType]
+        # Normal per-asset_group kind — incl. a per-AG kind that merely serves
+        # prediction as one of its asset_groups (e.g. features-cross-instrument, which
+        # has NO PREDICTION_KIND_MAP entry). Resolve WITH asset_group; resolving such a
+        # per-AG kind kind-only raised "asset_group= is required" (rollup SERVICE_FAILED).
+        return _dss.resolve_bucket_name(
+            cloud=cast(object, cloud),  # pyright: ignore[reportArgumentType]
+            kind=kind,
+            asset_group=cast(object, ag),  # pyright: ignore[reportArgumentType]
+        )
+
+    def _collect_defi_index_frames(self, service: str, cat: str, main_bucket: str) -> list[pd.DataFrame]:
+        """Read the main bucket + (for MTDS DEFI) every sub-dimension bucket, each tagged
+        with ``_defi_source``."""
         frames: list[pd.DataFrame] = []
         try:
             idx = _dss._read_index_cached(main_bucket)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
@@ -280,7 +288,6 @@ class DefiStatusMixin(DataStatusCliMixin):
         except Exception:
             logger.debug("No manifest index in %s", main_bucket)
 
-        # Merge sub-dimension buckets for MTDS DEFI
         if service == "market-tick-data-service" and cat.lower() == "defi":
             for sub_dim in self._MTDS_DEFI_SUB_DIMENSIONS:
                 sub_override = self._BUCKET_CATEGORY_OVERRIDES.get((service, sub_dim))
@@ -295,11 +302,10 @@ class DefiStatusMixin(DataStatusCliMixin):
                         frames.append(sub_idx)
                 except Exception:
                     logger.debug("No sub-dimension index in %s", sub_bucket)
+        return frames
 
-        if not frames:
-            return pd.DataFrame()
-        merged = pd.concat(frames, ignore_index=True)
-
+    def _postprocess_defi_merged_index(self, service: str, cat: str, merged: pd.DataFrame) -> pd.DataFrame:
+        """Apply the DeFi-venue whitelist + canonical-venue-id + prediction-CQG passes."""
         # DeFi-venue whitelist filter — only applies to the MTDS-DEFI merge
         # path. Drops rows whose ``(venue, chain)`` pair is NOT in the UAC
         # canonical DeFi venue registry. Catches the COINBASE-SPOT-under-
