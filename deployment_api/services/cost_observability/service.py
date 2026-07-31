@@ -4,6 +4,17 @@ One cached primitive (`_window_table`) returns a compact Arrow window (from the 
 snapshot, or the live providers on fallback); every API view (summary / breakdown / timeseries)
 is a DuckDB GROUP BY over that table (`aggregate_arrow`), so the raw fact rows never materialize
 in Python. Per-cloud failure is isolated — if Athena is down, GCP + GitHub still render.
+
+Split across sibling modules 2026-07-31 (``plans/active/issues/deployment_api_qg_size_gate_debt_2026_07_30.md``)
+to bring this file under the 900-line file-size gate and its 6 oversized methods under the
+50-line method-size gate: ``row_builders.py`` (DuckDB-cell coercion + generic BreakdownRow
+builders), ``resource_rows.py`` (the "resource"/"bucket"/"waste" dimension's SQL + row assembly),
+``stopped_vm_disk.py`` (the `stopped_vm_disk` waste kind), ``summary_rows.py`` (per-cloud
+``summarize()`` aggregation), ``breakdown_dimensions.py`` (``breakdown()``'s per-dimension
+dispatch). This module keeps every public + previously-private method name unchanged (thin
+wrappers delegate to the sibling modules) so callers, ``unittest.mock.patch`` targets, and
+``waste.py``'s cross-reference to ``cost_observability.service._stopped_vm_disk_waste_rows`` all
+keep working unchanged.
 """
 
 from __future__ import annotations
@@ -16,9 +27,14 @@ from datetime import UTC, date, datetime, timedelta
 import pyarrow as pa
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.services.cost_observability.breakdown_dimensions import (
+    _apply_share_pct,  # pyright: ignore[reportPrivateUsage]
+    _breakdown_scope_totals,  # pyright: ignore[reportPrivateUsage]
+    _build_breakdown_response,  # pyright: ignore[reportPrivateUsage]
+    _dispatch_dimension_rows,  # pyright: ignore[reportPrivateUsage]
+)
 from deployment_api.services.cost_observability.cache import CostWindowCache
 from deployment_api.services.cost_observability.models import (
-    BUSINESS_LABEL_KEYS,
     CLOUD_AWS,
     CLOUD_GCP,
     CLOUD_GITHUB,
@@ -26,7 +42,6 @@ from deployment_api.services.cost_observability.models import (
     KIND_VM,
     BreakdownResponse,
     BreakdownRow,
-    CloudSummary,
     CostRecord,
     ResourceDailyCost,
     SummaryResponse,
@@ -39,20 +54,36 @@ from deployment_api.services.cost_observability.providers import (
     github_dummy_facts,
     github_facts,
 )
+from deployment_api.services.cost_observability.resource_rows import (
+    _AVG_DAYS_PER_MONTH,  # pyright: ignore[reportPrivateUsage]
+    _build_resource_rows,  # pyright: ignore[reportPrivateUsage]
+    _cost_component,  # pyright: ignore[reportPrivateUsage]
+    _resource_base_rows,  # pyright: ignore[reportPrivateUsage]
+    _resource_component_class_maps,  # pyright: ignore[reportPrivateUsage]
+    _resource_daily_from_grouped_rows,  # pyright: ignore[reportPrivateUsage]
+)
+from deployment_api.services.cost_observability.row_builders import (
+    _BREAKDOWN_LIMIT,  # pyright: ignore[reportPrivateUsage]
+    _by_day,  # pyright: ignore[reportPrivateUsage]
+    _f,  # pyright: ignore[reportPrivateUsage]
+    _finalize_rows,  # pyright: ignore[reportPrivateUsage]
+    _i,  # pyright: ignore[reportPrivateUsage]
+    _s,  # pyright: ignore[reportPrivateUsage]
+)
 from deployment_api.services.cost_observability.snapshot import (
     aggregate_arrow,
     get_cost_snapshot_store,
     records_to_table,
 )
+from deployment_api.services.cost_observability.stopped_vm_disk import (
+    _stopped_vm_disk_rows,  # pyright: ignore[reportPrivateUsage]
+)
+from deployment_api.services.cost_observability.summary_rows import (
+    _build_cloud_summaries,  # pyright: ignore[reportPrivateUsage]
+    _cloud_current_aggregates,  # pyright: ignore[reportPrivateUsage]
+)
 from deployment_api.services.cost_observability.waste import (
     DEFAULT_STALE_BACKUP_DAYS,
-    WASTE_IDLE_ELASTIC_IP,
-    WASTE_IDLE_STATIC_IP,
-    WASTE_ORPHANED_DISK,
-    WASTE_ORPHANED_IMAGE,
-    WASTE_ORPHANED_MACHINE_IMAGE,
-    WASTE_ORPHANED_SNAPSHOT,
-    WASTE_STOPPED_VM_DISK,
 )
 from deployment_api.vm_utils import (
     list_orphaned_image_names,
@@ -63,122 +94,23 @@ from deployment_api.vm_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Re-export marker for lint tools that flag "imported but unused" — every name below is
+# unreachable from this module's own code paths post-split, but IS the public/test surface
+# (`deployment_api.services.cost_observability.service.<name>`, e.g. `svc._cost_component` /
+# `svc._AVG_DAYS_PER_MONTH` in tests/unit/api/test_cost_observability.py) — see the module
+# docstring, same convention as `services/data_status/mtds.py`'s facade re-export.
+__all__ = [
+    "_AVG_DAYS_PER_MONTH",
+    "_BREAKDOWN_LIMIT",
+    "_MAX_DAYS",
+    "CostObservabilityService",
+    "_cost_component",
+]
+
 CLOUD_ORDER = [CLOUD_GCP, CLOUD_AWS, CLOUD_GITHUB]
 _PROVISIONAL_TRAILING_DAYS = 2
 _MAX_DAYS = 366
 _DEFAULT_DAYS = 30
-# Return up to this many real groups so the UI can PAGINATE through all of them (e.g. ~565 buckets);
-# anything beyond still folds into the honest "Other" roll-up so the header total stays exact.
-_BREAKDOWN_LIMIT = 1000
-
-# GCP bills storage as GiB-months; a day's usage_amount is that day's fraction of a
-# calendar month, so summing across the window and rescaling by the average days/month
-# recovers the average GB actually stored (365.25 / 12, not a fixed 30 — months vary 28-31).
-_AVG_DAYS_PER_MONTH = 30.44
-_GCP_STORAGE_CLASSES = ("Archive", "Coldline", "Nearline", "Standard")
-
-
-def _gcp_storage_class(sku: str) -> str | None:
-    """Storage-class label from a GCP storage SKU description, or None if not a volume SKU.
-
-    Only meaningful once the caller has already confirmed `usage_unit == "gibibyte month"` —
-    Operations/retrieval SKUs (billed in count/bytes-retrieved) can share these same class
-    words (e.g. "Regional Standard Class A Operations") without being a storage-volume charge.
-    """
-    low = sku.lower()
-    for cls in _GCP_STORAGE_CLASSES:
-        if cls.lower() in low:
-            return cls
-    return None
-
-
-def _aws_storage_class(usage_type: str) -> str | None:
-    """Storage-class label from an AWS S3 usage_type, or None if not a `TimedStorage-*` volume type.
-
-    Mapped onto the same 4 labels the UI already uses for GCP so bucket rows render one
-    consistent class axis cross-cloud: Glacier Deep Archive -> Archive, Glacier (flexible
-    retrieval) -> Coldline, *-IA (Standard/One Zone infrequent access) -> Nearline, else -> Standard.
-    """
-    if "TimedStorage" not in usage_type:
-        return None
-    if "GDA" in usage_type:
-        return "Archive"
-    if "Glacier" in usage_type:
-        return "Coldline"
-    if "IA" in usage_type:
-        return "Nearline"
-    return "Standard"
-
-
-# Cost-composition of a storage resource's SKUs — what a bucket's spend is actually made of.
-# A bucket's total is often operations-dominated (an event-log bucket bills millions of Class-A
-# writes on a few GB stored, verified live 2026-07-09: the events bucket = 99.8% ops,
-# $0.58 of storage), so splitting the net cost into storage / operations / egress makes the total
-# legible. Text-pattern over the SKU (GCP `sku.description`) / usage_type (AWS `line_item_usage_type`),
-# same approach as `_storage_class`; every storage SKU falls into exactly one bucket so the parts
-# sum to the row's net cost. "egress" folds retrieval/download/transfer-out (all data-access charges).
-_COMPONENT_STORAGE = "storage"
-_COMPONENT_OPERATIONS = "operations"
-_COMPONENT_EGRESS = "egress"
-_COMPONENT_OTHER = "other"
-
-
-def _cost_component(cloud: str, sku: str) -> str:
-    low = sku.lower()
-    if cloud == CLOUD_GCP:
-        # Order matters: "Regional Coldline Class A Operations" contains a class word but is an
-        # OPERATIONS charge, so match operations before storage.
-        if "operations" in low:
-            return _COMPONENT_OPERATIONS
-        if "storage" in low:
-            return _COMPONENT_STORAGE
-        if "download" in low or "data transfer" in low or "network" in low or "retrieval" in low:
-            return _COMPONENT_EGRESS
-        return _COMPONENT_OTHER
-    if cloud == CLOUD_AWS:
-        # AWS usage_type: "APN1-Requests-Tier1/2" (ops), "APN1-TimedStorage-ByteHrs" (storage),
-        # "*-DataTransfer-Out-Bytes" (egress). Verified live 2026-07-09.
-        if "requests" in low:
-            return _COMPONENT_OPERATIONS
-        if "timedstorage" in low:
-            return _COMPONENT_STORAGE
-        if "datatransfer" in low or "-out-" in low or "retrieval" in low:
-            return _COMPONENT_EGRESS
-        return _COMPONENT_OTHER
-    return _COMPONENT_OTHER
-
-
-# --- typed coercion of DuckDB result cells (fetchall returns untyped tuples) --
-def _s(v: object) -> str:
-    return v if isinstance(v, str) else ("" if v is None else str(v))
-
-
-def _f(v: object) -> float:
-    return float(v) if isinstance(v, (int, float)) else 0.0
-
-
-def _fn(v: object) -> float | None:
-    return float(v) if isinstance(v, (int, float)) else None
-
-
-def _i(v: object) -> int | None:
-    return int(v) if isinstance(v, int) else None
-
-
-def _agg_cols(cutoff_iso: str) -> str:
-    """Shared SELECT fragment: net/gross/credit (+ native), single-or-USD currency, provisional
-    OR-fold, and the spot>on-demand>other purchase fold — the in-SQL equivalents of the old
-    per-group Python accumulators. Rounded to 6dp (like the source query); the response builder
-    rounds to 2dp, mirroring the pre-Increment-2 math. Grouped rows only, never raw rows."""
-    return (
-        "SUM(cost + credit) AS net, SUM(cost) AS gross, SUM(credit) AS credit, "
-        "SUM(cost_native + credit_native) AS net_n, SUM(cost_native) AS gross_n, "
-        "SUM(credit_native) AS credit_n, "
-        "CASE WHEN COUNT(DISTINCT currency) = 1 THEN ANY_VALUE(currency) ELSE 'USD' END AS ccy, "
-        f"BOOL_OR(day >= '{cutoff_iso}') AS provisional, "
-        "CASE WHEN BOOL_OR(purchase_option = 'spot') THEN 'spot' "
-        "WHEN BOOL_OR(purchase_option = 'on-demand') THEN 'on-demand' ELSE 'other' END AS purchase"
-    )  # nosec B608 — cutoff_iso is a server-derived ISO date (see _provisional_cutoff_iso), no user input
 
 
 class CostObservabilityService:
@@ -322,34 +254,20 @@ class CostObservabilityService:
           flag (no text label — operator decision 4, 2026-07-20).
 
         Rows with no ``resource_id`` (no billing granularity) are skipped — the caller shows None.
+        The per-row fold itself lives in :func:`resource_rows._resource_daily_from_grouped_rows`
+        (moved out to keep this method under the 50-line size gate).
         """
         start, end, _ = self._window(days)
         table = self._window_table(start, end, force=force)
         now = datetime.now(UTC)
         today = now.date().isoformat()
         hours_billed = max((now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 3600, 1.0)
-
-        by_res_day: dict[str, dict[str, float]] = {}
-        for rid, day, net in self._agg(
+        rows = self._agg(
             table,
             "SELECT resource_id, day, SUM(cost + credit) FROM cost_records "
             "WHERE resource_id != '' GROUP BY resource_id, day",
-        ):
-            by_res_day.setdefault(_s(rid), {})[_s(day)] = _f(net)
-
-        out: dict[str, ResourceDailyCost] = {}
-        for resource_id, day_net in by_res_day.items():
-            daily = list(day_net.values())
-            complete_days = [d for d in day_net if d < today]
-            latest = max(complete_days) if complete_days else max(day_net)
-            projected_24h = day_net[max(complete_days)] if complete_days else day_net[latest] / hours_billed * 24
-            out[resource_id] = ResourceDailyCost(
-                actual_usd=round(day_net[latest], 2),
-                avg_7d_usd=round(sum(daily) / len(daily), 2),
-                projected_24h_usd=round(projected_24h, 2),
-                cost_basis="complete" if complete_days else "partial",
-            )
-        return out
+        )
+        return _resource_daily_from_grouped_rows(rows, today, hours_billed)
 
     # -- summary --------------------------------------------------------------
     def summarize(
@@ -368,60 +286,14 @@ class CostObservabilityService:
         prior = self._window_table(start - (end - start), start, force=force)
         cutoff = self._provisional_cutoff_iso()
 
-        # Per-cloud current aggregates + per-(cloud,day) net for the sparkline + prior net for delta.
-        cur_by_cloud = {
-            _s(r[0]): r
-            for r in self._agg(
-                cur,
-                "SELECT cloud, SUM(cost) gross, SUM(credit) credit, SUM(cost_native) gross_n, "
-                "SUM(credit_native) credit_n, ANY_VALUE(currency) ccy, BOOL_OR(is_placeholder) ph "
-                "FROM cost_records GROUP BY cloud",
-            )
-        }
-        day_index = {d: i for i, d in enumerate(dates)}
-        daily_by_cloud: dict[str, list[float]] = {c: [0.0] * len(dates) for c in CLOUD_ORDER}
-        for c, day, net in self._agg(
-            cur, "SELECT cloud, day, SUM(cost + credit) FROM cost_records GROUP BY cloud, day"
-        ):
-            idx = day_index.get(_s(day))
-            if idx is not None and _s(c) in daily_by_cloud:
-                daily_by_cloud[_s(c)][idx] = _f(net)
+        cur_by_cloud, daily_by_cloud = _cloud_current_aggregates(cur, dates)
         prior_net = {
             _s(r[0]): _f(r[1])
             for r in self._agg(prior, "SELECT cloud, SUM(cost + credit) FROM cost_records GROUP BY cloud")
         }
         prior_grand = sum(prior_net.values())
 
-        clouds: list[CloudSummary] = []
-        grand = grand_gross = grand_credit = 0.0
-        for cloud in CLOUD_ORDER:
-            row = cur_by_cloud.get(cloud)
-            gross = round(_f(row[1]) if row else 0.0, 2)
-            credit = round(_f(row[2]) if row else 0.0, 2)
-            total = round(gross + credit, 2)  # net — what actually gets invoiced
-            gross_native = round(_f(row[3]) if row else 0.0, 2)
-            credit_native = round(_f(row[4]) if row else 0.0, 2)
-            native_currency = (_s(row[5]) if row else "") or "USD"
-            grand += total
-            grand_gross += gross
-            grand_credit += credit
-            prior_total = prior_net.get(cloud, 0.0)
-            delta = round(((total - prior_total) / prior_total) * 100, 1) if prior_total else None
-            clouds.append(
-                CloudSummary(
-                    cloud=cloud,
-                    total=total,
-                    gross=gross,
-                    credit=credit,
-                    delta_pct=delta,
-                    daily=[round(v, 4) for v in daily_by_cloud[cloud]],
-                    is_placeholder=bool(row[6]) if row else False,
-                    currency=native_currency,
-                    total_native=round(gross_native + credit_native, 2),
-                    gross_native=gross_native,
-                    credit_native=credit_native,
-                )
-            )
+        clouds, grand, grand_gross, grand_credit = _build_cloud_summaries(cur_by_cloud, daily_by_cloud, prior_net)
         grand = round(grand, 2)
         grand_delta = round(((grand - prior_grand) / prior_grand) * 100, 1) if prior_grand else None
         prov_rows = self._agg(cur, "SELECT COUNT(DISTINCT day) FROM cost_records WHERE day >= ?", [cutoff])
@@ -457,251 +329,39 @@ class CostObservabilityService:
         table = self._window_table(start, end, force=force)
         cutoff = self._provisional_cutoff_iso()
         cwhere, cparams = ("cloud = ?", [cloud]) if cloud != "all" else ("TRUE", [])
-
-        # True totals for this dimension's SCOPE, summed from RAW rows in DuckDB (not from rounded
-        # per-group rows) so every tab's header total equals the KPI/summary to the cent — the cap +
-        # per-group rounding residual are absorbed by the "Other" row. Bucket scope is buckets only;
-        # every other dimension covers all rows (resource incl. the unattributed tail, surfaced below).
-        scope_where = cwhere + (" AND resource_kind = 'bucket'" if dimension == "bucket" else "")
-        tr = self._agg(
-            table,
-            "SELECT SUM(cost + credit), SUM(cost), SUM(credit), SUM(cost_native + credit_native), "
-            "SUM(cost_native), SUM(credit_native), "
-            f"CASE WHEN COUNT(DISTINCT currency) = 1 THEN ANY_VALUE(currency) ELSE 'USD' END "  # nosec B608
-            f"FROM cost_records WHERE {scope_where}",
-            list(cparams),
-        )[0]
-        totals = (round(_f(tr[0]), 2), round(_f(tr[1]), 2), round(_f(tr[2]), 2))
-        native_totals = (round(_f(tr[3]), 2), round(_f(tr[4]), 2), round(_f(tr[5]), 2))
-        # One currency only when the scope is a single cloud (the tally case: cloud=gcp → GBP); mixed → USD.
-        scope_currency = _s(tr[6]) or "USD"
-        total = totals[0]
+        totals, native_totals, scope_currency, total = _breakdown_scope_totals(table, cwhere, cparams, dimension)
 
         # "By day" stays chronological + uncapped (days are inherently bounded and the operator wants
         # every one) — every other dimension caps to the top-N with an honest "Other" roll-up.
         if dimension == "day":
-            rows = self._by_day(table, cwhere, cparams, cutoff, dates)
-            for r in rows:
-                r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
-            return BreakdownResponse(
-                dimension=dimension,
-                cloud=cloud,
-                days=len(dates),
-                start_date=dates[0] if dates else "",
-                end_date=dates[-1] if dates else "",
-                total=total,
-                total_groups=len(rows),
-                rows=rows,
-            )
+            rows = _by_day(table, cwhere, cparams, cutoff, dates)
+            _apply_share_pct(rows, total)
+            return _build_breakdown_response(dimension, cloud, dates, total, len(rows), rows)
 
-        extra_aggregates: tuple[BreakdownRow, ...] = ()
-        if dimension == "bucket":
-            rows_all = self._by_resource(table, cwhere, cparams, cutoff, KIND_BUCKET, window_days=len(dates))
-        elif dimension == "resource":
-            # window_days so bucket-kind rows in the resource view also get storage detail —
-            # the "Top storage buckets" leaf table is fed by this dimension.
-            rows_all = self._by_resource(table, cwhere, cparams, cutoff, None, window_days=len(dates))
-            # Cost the provider tags to NO resource (Cloud Run, networking, …) is dropped by the
-            # per-resource grouping; surface it as one row so the resource total reconciles to the
-            # cloud total instead of silently sitting ~$365 low.
-            ur = self._agg(
-                table,
-                "SELECT SUM(cost + credit), SUM(cost_native + credit_native) FROM cost_records "
-                f"WHERE resource_id = '' AND {cwhere}",  # nosec B608 — cwhere is 'cloud = ?' or 'TRUE'
-                list(cparams),
-            )[0]
-            unattributed = round(_f(ur[0]), 2)
-            unattributed_native = round(_f(ur[1]), 2)
-            if abs(unattributed) >= 0.01:
-                extra_aggregates = (
-                    BreakdownRow(
-                        label="Unattributed (no resource id)",
-                        cloud=None,
-                        cost=unattributed,
-                        currency=scope_currency,
-                        cost_native=unattributed_native,
-                        detail="cost the provider doesn't tag to a resource (Cloud Run, networking, …)",
-                        is_aggregate=True,
-                    ),
-                )
-        elif dimension == "region":
-            rows_all = self._grouped(table, cwhere, cparams, cutoff, "COALESCE(NULLIF(region, ''), 'global')")
-        elif dimension == "zone":
-            rows_all = self._grouped(table, cwhere, cparams, cutoff, "COALESCE(NULLIF(zone, ''), 'unknown')")
-        elif dimension == "sku":
-            rows_all = self._by_sku(table, cwhere, cparams, cutoff)
-        elif dimension == "label":
-            # Spend by a resource-level GCP business label (purpose/category/venue/asset_group). GCP-only —
-            # AWS/GitHub carry no labels, so their spend groups under "(unlabeled)".
-            key = label_key if label_key in BUSINESS_LABEL_KEYS else "purpose"
-            # NULLIF(labels,'') so an empty-labels row (stored as "") isn't fed to json_extract_string
-            # as malformed JSON; a null/absent key then falls back to "(unlabeled)".
-            expr = f"COALESCE(NULLIF(json_extract_string(NULLIF(labels, ''), '$.{key}'), ''), '(unlabeled)')"
-            rows_all = self._grouped(table, cwhere, cparams, cutoff, expr)
-        elif dimension == "waste":
-            # Idle static IPs / orphaned disks / orphaned images+machine-images+snapshots / idle
-            # elastic IPs — the SAME per-resource waste classification the "resource" dimension
-            # already flags (services.cost_observability.waste), filtered to just the flagged rows.
-            # The filter isn't SQL-expressible (each needs a live GCP cross-ref, not just a SKU
-            # substring match), so it runs in Python over the already-built resource rows rather
-            # than as a WHERE clause. `stopped_vm_disk` rows are a DIFFERENT shape (a disk's
-            # post-compute-stop cost sub-window, not a resource's whole-window cost) computed
-            # separately, then merged in and re-sorted.
-            rows_all = [
-                r for r in self._by_resource(table, cwhere, cparams, cutoff, None, window_days=len(dates)) if r.is_idle
-            ]
-            rows_all.extend(self._stopped_vm_disk_waste_rows(table, cwhere, cparams))
-            rows_all.sort(key=lambda r: r.cost, reverse=True)
-            # The pre-computed `totals` above cover ALL resource spend in this scope (waste + non-waste
-            # alike) — re-derive the true totals for the waste-only scope from the filtered rows
-            # themselves so the header total, "Other" residual, and share_pct all stay internally
-            # consistent (mirrors why the "bucket" dimension narrows `scope_where` instead — that
-            # narrowing isn't available here since the predicate can't run in SQL).
-            totals = (
-                round(sum(r.cost for r in rows_all), 2),
-                round(sum(r.gross for r in rows_all), 2),
-                round(sum(r.credit for r in rows_all), 2),
-            )
-            native_totals = (
-                round(sum(r.cost_native for r in rows_all), 2),
-                round(sum(r.gross_native for r in rows_all), 2),
-                round(sum(r.credit_native for r in rows_all), 2),
-            )
-            total = totals[0]
-        else:  # service (default)
-            rows_all = self._grouped(table, cwhere, cparams, cutoff, "service")
-
-        rows, total_groups = self._finalize_rows(
+        rows_all, extra_aggregates, totals, native_totals, total = _dispatch_dimension_rows(
+            dimension,
+            table,
+            cwhere,
+            cparams,
+            cutoff,
+            dates,
+            label_key,
+            scope_currency,
+            totals,
+            native_totals,
+            total,
+            by_resource=self._by_resource,
+            stopped_vm_disk_rows=self._stopped_vm_disk_waste_rows,
+        )
+        rows, total_groups = _finalize_rows(
             rows_all,
             totals=totals,
             native_totals=native_totals,
             scope_currency=scope_currency,
             extra_aggregates=extra_aggregates,
         )
-        for r in rows:
-            r.share_pct = round((r.cost / total) * 100, 1) if total else 0.0
-        return BreakdownResponse(
-            dimension=dimension,
-            cloud=cloud,
-            days=len(dates),
-            start_date=dates[0] if dates else "",
-            end_date=dates[-1] if dates else "",
-            total=total,
-            total_groups=total_groups,
-            rows=rows,
-        )
-
-    def _finalize_rows(
-        self,
-        rows_all: list[BreakdownRow],
-        *,
-        totals: tuple[float, float, float],
-        native_totals: tuple[float, float, float],
-        scope_currency: str,
-        extra_aggregates: tuple[BreakdownRow, ...] = (),
-    ) -> tuple[list[BreakdownRow], int]:
-        """Cap a cost-sorted (descending) row list to the top `_BREAKDOWN_LIMIT`, folding the rest into
-        ONE ``Other (N more)`` row whose cost/gross/credit are the RESIDUAL vs the true `totals` — so the
-        shown rows sum to the header total EXACTLY (to the cent), absorbing per-group rounding. Idle/
-        orphaned rows below the cap stay visible (never folded, so the waste-surfacing survives).
-        `extra_aggregates` (e.g. an ``Unattributed`` row) are appended after Other and counted against
-        the residual. Returns (rows_to_show, total_group_count).
-        """
-        total_net, total_gross, total_credit = totals
-        total_net_n, total_gross_n, total_credit_n = native_totals
-        total_groups = len(rows_all)
-        if total_groups <= _BREAKDOWN_LIMIT:
-            return list(rows_all) + list(extra_aggregates), total_groups
-        shown = rows_all[:_BREAKDOWN_LIMIT]
-        tail = rows_all[_BREAKDOWN_LIMIT:]
-        waste_extras = [r for r in tail if r.is_idle]
-        kept = shown + waste_extras
-        remaining_count = len(tail) - len(waste_extras)
-        aggregates: list[BreakdownRow] = []
-        if remaining_count > 0:
-            shown_net = sum(r.cost for r in kept) + sum(a.cost for a in extra_aggregates)
-            shown_gross = sum(r.gross for r in kept) + sum(a.gross for a in extra_aggregates)
-            shown_credit = sum(r.credit for r in kept) + sum(a.credit for a in extra_aggregates)
-            shown_net_n = sum(r.cost_native for r in kept) + sum(a.cost_native for a in extra_aggregates)
-            shown_gross_n = sum(r.gross_native for r in kept) + sum(a.gross_native for a in extra_aggregates)
-            shown_credit_n = sum(r.credit_native for r in kept) + sum(a.credit_native for a in extra_aggregates)
-            aggregates.append(
-                BreakdownRow(
-                    label=f"Other ({remaining_count:,} more)",
-                    cloud=None,
-                    cost=round(total_net - shown_net, 2),
-                    gross=round(total_gross - shown_gross, 2),
-                    credit=round(total_credit - shown_credit, 2),
-                    currency=scope_currency,
-                    cost_native=round(total_net_n - shown_net_n, 2),
-                    gross_native=round(total_gross_n - shown_gross_n, 2),
-                    credit_native=round(total_credit_n - shown_credit_n, 2),
-                    detail=f"rows beyond the top {_BREAKDOWN_LIMIT}",
-                    is_aggregate=True,
-                )
-            )
-        aggregates.extend(extra_aggregates)
-        return kept + aggregates, total_groups
-
-    def _agg_row(
-        self,
-        t: tuple[object, ...],
-        off: int,
-        *,
-        label: str,
-        cloud: str | None,
-        detail: str,
-        purchase: bool = False,
-        provisional: bool = True,
-        **extra: object,
-    ) -> BreakdownRow:
-        """Build a BreakdownRow from an ``_agg_cols`` tuple slice ``t[off:off+9]``:
-        net, gross, credit, net_n, gross_n, credit_n, ccy, provisional, purchase. Rounds to 2dp
-        (mirroring the pre-Increment-2 per-group Python rounding). ``purchase=True`` uses the SQL
-        purchase fold; ``provisional=False`` forces is_provisional off (the resource/bucket view
-        deliberately never marked it) — both preserve the exact pre-Increment-2 per-view shape."""
-        return BreakdownRow(
-            label=label,
-            cloud=cloud,
-            cost=round(_f(t[off]), 2),
-            gross=round(_f(t[off + 1]), 2),
-            credit=round(_f(t[off + 2]), 2),
-            cost_native=round(_f(t[off + 3]), 2),
-            gross_native=round(_f(t[off + 4]), 2),
-            credit_native=round(_f(t[off + 5]), 2),
-            currency=_s(t[off + 6]) or "USD",
-            is_provisional=(bool(t[off + 7]) if provisional else False),
-            purchase_option=(_s(t[off + 8]) if purchase else ""),
-            detail=detail,
-            **extra,  # pyright: ignore[reportArgumentType]
-        )
-
-    def _grouped(
-        self, table: pa.Table, cwhere: str, cparams: Sequence[object], cutoff: str, key_expr: str
-    ) -> list[BreakdownRow]:
-        rows = self._agg(
-            table,
-            f"SELECT cloud, {key_expr} AS label, {_agg_cols(cutoff)} FROM cost_records "  # nosec B608 — key_expr/cwhere are code-internal SQL fragments; user params are bound
-            f"WHERE {cwhere} GROUP BY cloud, label ORDER BY net DESC, label",
-            list(cparams),
-        )
-        return [
-            self._agg_row(
-                r, 2, label=_s(r[1]), cloud=_s(r[0]), detail=_CLOUD_LABEL.get(_s(r[0]), _s(r[0])), purchase=True
-            )
-            for r in rows
-        ]
-
-    def _by_sku(self, table: pa.Table, cwhere: str, cparams: Sequence[object], cutoff: str) -> list[BreakdownRow]:
-        """SKU (GCP) / usage_type (AWS) breakdown — the "why is this service expensive" axis,
-        e.g. Regional Coldline Class A Operations hidden inside "Cloud Storage"."""
-        rows = self._agg(
-            table,
-            f"SELECT cloud, service, COALESCE(NULLIF(sku, ''), 'Unknown') AS sku, {_agg_cols(cutoff)} "  # nosec B608 — cwhere is code-internal; user params bound
-            f"FROM cost_records WHERE {cwhere} GROUP BY cloud, service, sku ORDER BY net DESC, sku",
-            list(cparams),
-        )
-        return [self._agg_row(r, 3, label=_s(r[2]), cloud=_s(r[0]), detail=_s(r[1])) for r in rows]
+        _apply_share_pct(rows, total)
+        return _build_breakdown_response(dimension, cloud, dates, total, total_groups, rows)
 
     def _by_resource(
         self,
@@ -713,106 +373,15 @@ class CostObservabilityService:
         *,
         window_days: int | None = None,
     ) -> list[BreakdownRow]:
-        # Heavy money grouping in DuckDB (168K rows → ~13K groups). agg_cols occupy t[2:11]; then
-        # service(11), kind(12), machine(13-15), waste flags(16-21).
+        """Per-resource breakdown rows (also the "bucket"/"waste" dimension's row source once the
+        caller filters/narrows). The SQL fetch, storage-class aggregation, and row assembly live in
+        ``resource_rows`` (moved out to keep this method under the 50-line size gate); only the
+        live-GCP waste cross-refs stay here (need ``self._cfg`` + a thread-pool fan-out)."""
         kind_filter = " AND resource_kind = 'bucket'" if kind == KIND_BUCKET else ""
-        base = self._agg(
-            table,
-            f"SELECT cloud, resource_id, {_agg_cols(cutoff)}, "  # nosec B608 — cwhere/kind_filter are code-internal; user params bound
-            "ANY_VALUE(service) AS service, "
-            "COALESCE(ANY_VALUE(resource_kind) FILTER (WHERE resource_kind <> 'other'), 'other') AS kind, "
-            "arg_max(machine_type, day) FILTER (WHERE machine_type <> '') AS mtype, "
-            "arg_max(vcpu, day) FILTER (WHERE machine_type <> '') AS mvcpu, "
-            "arg_max(memory_gb, day) FILTER (WHERE machine_type <> '') AS mmem, "
-            "BOOL_OR(sku LIKE '%Static Ip Charge%') AS w_ip, "
-            "BOOL_OR(sku LIKE '%PD Capacity%') AS w_pd, "
-            "BOOL_OR(sku LIKE '%ElasticIP:IdleAddress%') AS w_eip, "
-            "BOOL_OR(sku LIKE '%Storage Machine Image%') AS w_mimg, "
-            "BOOL_OR(sku LIKE '%Storage Image%' AND sku NOT LIKE '%Storage Machine Image%') AS w_img, "
-            "BOOL_OR(sku LIKE '%Storage PD Snapshot%') AS w_snap "
-            f"FROM cost_records WHERE {cwhere} AND resource_id <> ''{kind_filter} "
-            "GROUP BY cloud, resource_id ORDER BY net DESC, resource_id",
-            list(cparams),
-        )
-        # Storage detail (bucket-kind rows only) — a small subset (~350 buckets x their SKUs), so
-        # reuse the tested Python component/class classifiers rather than re-deriving them in SQL.
-        unattached, orphaned_images, stale_machine_images, stale_snapshots = (
-            self._waste_cross_refs() if kind is None else (frozenset(), frozenset(), frozenset(), frozenset())
-        )
-        comp_by_res: dict[tuple[str, str], dict[str, float]] = {}
-        class_by_res: dict[tuple[str, str], dict[str, float]] = {}
-        for c, rid, sku, uunit, uamt, net in self._agg(
-            table,
-            "SELECT cloud, resource_id, sku, usage_unit, SUM(usage_amount), SUM(cost + credit) "  # nosec B608 — cwhere code-internal; params bound
-            f"FROM cost_records WHERE {cwhere} AND resource_id <> '' AND resource_kind = 'bucket' "
-            "GROUP BY cloud, resource_id, sku, usage_unit",
-            list(cparams),
-        ):
-            c_s, rid_s, sku_s, uunit_s = _s(c), _s(rid), _s(sku), _s(uunit)
-            k = (c_s, rid_s)
-            comp = _cost_component(c_s, sku_s)
-            comp_by_res.setdefault(k, {})[comp] = comp_by_res.setdefault(k, {}).get(comp, 0.0) + _f(net)
-            cls = (
-                _gcp_storage_class(sku_s)
-                if (c_s == CLOUD_GCP and uunit_s == "gibibyte month")
-                else (_aws_storage_class(sku_s) if c_s == CLOUD_AWS else None)
-            )
-            if cls is not None:
-                class_by_res.setdefault(k, {})[cls] = class_by_res.setdefault(k, {}).get(cls, 0.0) + _f(uamt)
-
-        rows: list[BreakdownRow] = []
-        for t in base:
-            c, rid = _s(t[0]), _s(t[1])
-            waste = ""
-            if kind is None:  # bucket dimension never contains idle-IP/orphaned-disk rows
-                if c == CLOUD_GCP and bool(t[16]):
-                    waste = WASTE_IDLE_STATIC_IP
-                elif c == CLOUD_GCP and bool(t[17]) and rid in unattached:
-                    waste = WASTE_ORPHANED_DISK
-                elif c == CLOUD_GCP and bool(t[19]) and rid in stale_machine_images:
-                    waste = WASTE_ORPHANED_MACHINE_IMAGE
-                elif c == CLOUD_GCP and bool(t[20]) and rid in orphaned_images:
-                    waste = WASTE_ORPHANED_IMAGE
-                elif c == CLOUD_GCP and bool(t[21]) and rid in stale_snapshots:
-                    waste = WASTE_ORPHANED_SNAPSHOT
-                elif c == CLOUD_AWS and bool(t[18]):
-                    waste = WASTE_IDLE_ELASTIC_IP
-            row = self._agg_row(
-                t,
-                2,
-                label=rid,
-                cloud=c,
-                detail=_s(t[11]),
-                purchase=True,
-                provisional=False,  # the resource/bucket view never set is_provisional (pre-Inc2 parity)
-                resource_kind=_s(t[12]),
-                is_idle=bool(waste),
-                waste_kind=waste,
-                machine_type=_s(t[13]),
-                vcpu=_i(t[14]),
-                memory_gb=_fn(t[15]),
-            )
-            components = comp_by_res.get((c, rid), {})
-            if window_days:
-                classes = class_by_res.get((c, rid))
-                if classes:
-                    gb_by_class = {
-                        cls: round(amt * _AVG_DAYS_PER_MONTH / window_days, 2) for cls, amt in classes.items()
-                    }
-                    total_gb = round(sum(gb_by_class.values()), 2)
-                    row.storage_gb = total_gb
-                    row.storage_class_gb = gb_by_class
-                    if total_gb > 0:
-                        # $/GB is the effective STORAGE rate — the storage COMPONENT cost over stored
-                        # GB, NOT the row's total (operations-dominated) cost.
-                        row.cost_per_gb = round(components.get("storage", 0.0) / total_gb, 4)
-            kept = {comp: round(x, 2) for comp, x in components.items() if round(x, 2) != 0.0}
-            if kept:
-                row.cost_by_component = kept
-            rows.append(row)
-        # SQL already sorted by net DESC; _finalize_rows applies the top-N cap and keeps idle/
-        # orphaned rows visible below it (so the waste-surfacing survives the cap).
-        return rows
+        base = _resource_base_rows(table, cwhere, cparams, cutoff, kind_filter)
+        xrefs = self._waste_cross_refs() if kind is None else (frozenset(), frozenset(), frozenset(), frozenset())
+        comp_by_res, class_by_res = _resource_component_class_maps(table, cwhere, cparams)
+        return _build_resource_rows(base, kind, xrefs, comp_by_res, class_by_res, window_days)
 
     def _unattached_disk_names(self) -> frozenset[str]:
         """Live UNATTACHED persistent-disk names for GCP orphaned-disk detection.
@@ -865,102 +434,12 @@ class CostObservabilityService:
     def _stopped_vm_disk_waste_rows(
         self, table: pa.Table, cwhere: str, cparams: Sequence[object]
     ) -> list[BreakdownRow]:
-        """Disk (`PD Capacity`) spend billed AFTER a VM's own compute usage stopped appearing.
-
-        Compute-usage rows key off `projects/<num>/instances/<name>`; the SAME VM's disk rows key
-        off the bare disk name (`<name>` for the boot disk) — two different `resource_id`s for one
-        logical VM (verified live: `E2 Instance Core running in Japan` vs `Storage PD Capacity in
-        Japan` for `cefi-binance-futures-2020-heavy-...`). Stripping the `projects/.../instances/`
-        prefix joins them under one `vm_key`.
-
-        For each `vm_key` with BOTH a compute day and a LATER disk day inside the query window: the
-        row's `cost` is the disk cost strictly after the last compute day — i.e. only the idle
-        portion, not the resource's whole-window cost (unlike the SKU-classified waste kinds in
-        `_by_resource`, where the whole flagged row IS the waste). This is real billed $, not a
-        list-rate estimate, and needs no live GCP call — a VM already reaped shows up exactly the
-        same way a still-stopped one does, since both are pure billing history.
-
-        A VM whose compute usage started before the query window (so `MIN(day)` of the window
-        already finds it mid-run, with no compute row at all if it fully finished earlier) can't be
-        distinguished here from a disk with no VM component — both show zero compute days — so this
-        under-counts left-truncated cases rather than risk a false positive. Widen `days` to recover
-        them.
-
-        ONE query, not one-per-`vm_key`: `aggregate_arrow` opens a fresh in-memory DuckDB connection
-        and re-registers the whole (~168K-row) window table on EVERY call (thread-safety, see
-        `snapshot.aggregate_arrow`) — a per-`vm_key` follow-up loop paid that setup cost dozens of
-        times, measured live at ~12s for a 30-day window (vs. ~1s for this single-query form). The
-        `vm_keys` CTE finds the compute/disk day pair; `disk_rows` re-derives the same `vm_key` per
-        disk row (SQL has no CTE-result reuse across the join otherwise) and joins on
-        `day > last_compute_day` to sum only the post-compute-stop portion.
-        """
-        rows = self._agg(
-            table,
-            f"WITH vm_keys AS ("  # nosec B608 — cwhere is code-internal ('cloud = ?' or 'TRUE'); user params bound
-            "  SELECT COALESCE(NULLIF(regexp_extract(resource_id, 'instances/(.*)$', 1), ''), resource_id) AS vm_key, "
-            "    MAX(day) FILTER (WHERE sku LIKE '%Instance Core%' OR sku LIKE '%Instance Ram%') AS last_compute_day, "
-            "    MAX(day) FILTER (WHERE sku LIKE '%PD Capacity%') AS last_disk_day "
-            f"  FROM cost_records WHERE {cwhere} AND cloud = 'gcp' AND resource_id <> '' "
-            "  GROUP BY vm_key "
-            "  HAVING last_compute_day IS NOT NULL AND last_disk_day IS NOT NULL AND last_disk_day > last_compute_day"
-            "), disk_rows AS ("
-            "  SELECT COALESCE(NULLIF(regexp_extract(resource_id, 'instances/(.*)$', 1), ''), resource_id) AS vm_key, "
-            "    day, cost, credit, cost_native, credit_native, currency "
-            f"  FROM cost_records WHERE {cwhere} AND cloud = 'gcp' AND sku LIKE '%PD Capacity%'"
-            ") "
-            "SELECT vk.vm_key, vk.last_compute_day, vk.last_disk_day, "
-            "  SUM(dr.cost + dr.credit), SUM(dr.cost), SUM(dr.credit), "
-            "  SUM(dr.cost_native + dr.credit_native), SUM(dr.cost_native), SUM(dr.credit_native), "
-            "  ANY_VALUE(dr.currency) "
-            "FROM vm_keys vk JOIN disk_rows dr ON dr.vm_key = vk.vm_key AND dr.day > vk.last_compute_day "
-            "GROUP BY vk.vm_key, vk.last_compute_day, vk.last_disk_day",
-            [*cparams, *cparams],
-        )
-        out: list[BreakdownRow] = []
-        for vm_key, last_compute_day, last_disk_day, net, gross, credit, net_n, gross_n, credit_n, currency in rows:
-            cost = round(_f(net), 2)
-            if abs(cost) < 0.01:
-                continue
-            vm_key_s, compute_day_s = _s(vm_key), _s(last_compute_day)
-            out.append(
-                BreakdownRow(
-                    label=f"{vm_key_s} (idle since {compute_day_s})",
-                    cloud=CLOUD_GCP,
-                    cost=cost,
-                    gross=round(_f(gross), 2),
-                    credit=round(_f(credit), 2),
-                    currency=_s(currency) or "USD",
-                    cost_native=round(_f(net_n), 2),
-                    gross_native=round(_f(gross_n), 2),
-                    credit_native=round(_f(credit_n), 2),
-                    detail=f"disk billed {compute_day_s} → {_s(last_disk_day)} after compute usage stopped",
-                    resource_kind=KIND_VM,
-                    is_idle=True,
-                    waste_kind=WASTE_STOPPED_VM_DISK,
-                )
-            )
-        out.sort(key=lambda r: r.cost, reverse=True)
-        return out
-
-    def _by_day(
-        self, table: pa.Table, cwhere: str, cparams: Sequence[object], cutoff: str, dates: list[str]
-    ) -> list[BreakdownRow]:
-        by_day = {
-            _s(r[0]): r
-            for r in self._agg(
-                table,
-                f"SELECT day, {_agg_cols(cutoff)} FROM cost_records WHERE {cwhere} GROUP BY day",  # nosec B608 — cwhere code-internal; params bound
-                list(cparams),
-            )
-        }
-        rows: list[BreakdownRow] = []
-        for d in reversed(dates):
-            r = by_day.get(d)
-            if r is None:  # a window day with zero spend (dict.fromkeys behaviour) — honest 0 row
-                rows.append(BreakdownRow(label=d, cloud=None, cost=0.0, detail=""))
-            else:
-                rows.append(self._agg_row(r, 1, label=d, cloud=None, detail=""))
-        return rows
+        """Disk (`PD Capacity`) spend billed after a VM's own compute usage stopped appearing —
+        see :func:`stopped_vm_disk._stopped_vm_disk_rows` for the full docstring (moved there to
+        keep this wrapper under the method-size gate). Kept as a bound method — not inlined at the
+        call site — so ``waste.py``'s ``cost_observability.service._stopped_vm_disk_waste_rows``
+        cross-reference stays accurate and ``breakdown()`` can pass it as a callable."""
+        return _stopped_vm_disk_rows(table, cwhere, cparams)
 
     # -- timeseries -----------------------------------------------------------
     def timeseries(
@@ -995,9 +474,6 @@ class CostObservabilityService:
             clouds=clouds,
             points=points,
         )
-
-
-_CLOUD_LABEL = {CLOUD_GCP: "GCP", CLOUD_AWS: "AWS", CLOUD_GITHUB: "GitHub"}
 
 
 def _safe(loader: Callable[[], list[CostRecord]], cloud: str) -> list[CostRecord]:
