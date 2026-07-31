@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any, Literal, cast
 
 import pandas as pd
+from unified_api_contracts import LeagueDefinition
 from unified_api_contracts.sports import (
     FEATURE_UPSTREAM_REQUIREMENTS,
     LEAGUE_REGISTRY,
@@ -462,45 +463,14 @@ def sports_trigger_dates_for_league(
     return sorted(triggers)
 
 
-def sports_honest_coverage(
-    filtered: pd.DataFrame,
-    entity_name: str,
-    start_date: str,
-    end_date: str,
-) -> dict[str, object] | None:
-    """Return honest-coverage stats for a SPORTS data_type using the SSOT meta.
+def _sports_entity_rows(filtered: pd.DataFrame, entity_name: str, axis: str) -> pd.DataFrame:
+    """Manifest rows for ``entity_name`` at this axis, gated on capture-status "ok-ness".
 
-    Uses ``SPORTS_DATA_TYPE_META`` + UAC ``get_expected_leagues_for_source``
-    + ``get_league_fixture_calendar`` to compute:
-
-      - ``expected_shards`` = len(expected_leagues) * len(expected_dates_per_league)
-        (or len(expected_dates) for global axes).
-      - ``found_shards`` — distinct (league_id, date) pairs with
-        ``capture_status in {captured, empty_confirmed}``. v4 rows without a
-        ``capture_status`` column are treated as ``captured``.
-      - ``missing_shards`` — per-league date-sets missing from the manifest
-        (for UI drill-down).
-
-    Returns ``None`` if the entity isn't in the SSOT map (caller falls back
-    to the legacy date-count model).
+    skip-worthy = captured | empty_confirmed | expected_unattempted(EXPECTED_* reason). v4 rows
+    without ``capture_status`` are implicit ``captured``. ``per_feature_per_league_per_fixture_date``
+    matches on ``feature_group`` (features-sports-service writes keyed by feature_group=<calc_name>,
+    NOT by data_type); every other axis matches on ``data_type``.
     """
-    meta = (
-        SPORTS_DATA_TYPE_META.get(entity_name)
-        or FEATURES_SPORTS_DATA_TYPE_META.get(entity_name)
-        or FEATURES_SPORTS_PER_CALC_META.get(entity_name)
-    )
-    if meta is None:
-        return None
-
-    axis = str(cast(dict[str, Any], meta)["axis"])  # pyright: ignore[reportAny]
-    cadence_days = int(cast(dict[str, Any], meta).get("cadence_days") or 1)
-    source_key = str(cast(dict[str, Any], meta)["source"])  # pyright: ignore[reportAny]
-    classifications = tuple(cast(tuple[str, ...], cast(dict[str, Any], meta)["classifications"]))
-
-    expected_leagues = _dss.get_expected_leagues_for_source(source_key, classifications=list(classifications))
-
-    # skip-worthy = captured | empty_confirmed | expected_unattempted(EXPECTED_* reason).
-    # v4 rows without capture_status are implicit ``captured``.
     if "capture_status" in filtered.columns:
         _status_s = filtered["capture_status"].fillna("captured").astype(str)  # pyright: ignore[reportUnknownMemberType]
         _reason_s = (
@@ -513,194 +483,247 @@ def sports_honest_coverage(
         )
     else:
         ok_mask = pd.Series([True] * len(filtered), index=filtered.index)
+
     if axis == "per_feature_per_league_per_fixture_date":
-        # features-sports-service writes manifest rows keyed by
-        # feature_group=<calc_name> (NOT by data_type). Match accordingly.
-        if "feature_group" in filtered.columns:
-            ent_mask = filtered["feature_group"] == entity_name
-        else:
-            ent_mask = pd.Series([False] * len(filtered), index=filtered.index)
+        ent_mask = (
+            filtered["feature_group"] == entity_name
+            if "feature_group" in filtered.columns
+            else pd.Series([False] * len(filtered), index=filtered.index)
+        )
     else:
         ent_mask = filtered["data_type"] == entity_name
-    ent_rows = filtered[ent_mask & ok_mask]
+    return filtered[ent_mask & ok_mask]
 
-    if axis == "per_feature_per_league_per_fixture_date":
-        # Phase 3 honest-coverage per-calculator axis. For each league in the
-        # expected set, expected dates = intersection of every required
-        # upstream's per-league fixture calendar (clipped + known-gap-filtered).
-        # ``_features_sports_expected_dates_for_calculator`` walks
-        # FEATURE_UPSTREAM_REQUIREMENTS and recurses through derived deps.
-        per_league_pf: dict[str, dict[str, object]] = {}
-        total_expected_pf = 0
-        total_found_pf = 0
-        if "league_id" in ent_rows.columns:
-            ent_rows_by_league_pf = ent_rows.groupby(ent_rows["league_id"].fillna(""))
-        else:
-            ent_rows_by_league_pf = None
-        for league in expected_leagues:
-            lid = league.league_id
-            expected_dates_pf = _dss._features_sports_expected_dates_for_calculator(  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
-                calc_name=entity_name,
-                league_id=lid,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            if not expected_dates_pf:
-                continue
-            expected_set_pf = set(expected_dates_pf)
-            found_set_pf: set[str] = set()
-            if ent_rows_by_league_pf is not None and lid in ent_rows_by_league_pf.groups:
-                found_set_pf = {str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
-            covered_pf = expected_set_pf & found_set_pf
-            missing_pf = sorted(expected_set_pf - found_set_pf)
-            per_league_pf[lid] = {
-                "expected_dates": len(expected_set_pf),
-                "found_dates": len(covered_pf),
-                "missing_dates": missing_pf[:50],
-                "missing_count": len(missing_pf),
-            }
-            total_expected_pf += len(expected_set_pf)
-            total_found_pf += len(covered_pf)
-        return {
-            "axis": axis,
-            "unit": str(meta["unit"]),
-            "source": source_key,
-            "expected_leagues": [lg.league_id for lg in expected_leagues],
-            "found_shards": total_found_pf,
-            "expected_shards": total_expected_pf,
-            "per_league": per_league_pf,
-        }
 
-    if axis == "global_trigger_date":
-        # No league axis — expected = number of trigger dates in window derived
-        # from ``get_reference_refresh_dates`` across all LEAGUE_REGISTRY entries.
-        # Trigger dates = season-start + transfer-window-open + transfer-window-close.
-        # Soft-gated on sports_master item A2.4 (instruments-service write-path);
-        # degrades gracefully if the trigger set is empty (expected_shards = 0).
-        trigger_dates = sports_trigger_dates_for_window(start_date, end_date)
-        expected_shards_t = len(trigger_dates)
-        found_dates_t: set[str] = {str(d) for d in ent_rows["date"].unique()} if not ent_rows.empty else set()  # pyright: ignore[reportAny]
-        found_shards_t = len(found_dates_t & set(trigger_dates)) if trigger_dates else len(found_dates_t)
-        return {
-            "axis": axis,
-            "unit": str(meta["unit"]),
-            "source": source_key,
-            "expected_leagues": [],
-            "found_shards": found_shards_t,
-            "expected_shards": expected_shards_t,
-            "per_league": None,
-            "trigger_dates": sorted(trigger_dates)[:100],
-        }
-
-    if axis == "per_league_trigger_date":
-        # Per-league axis — expected = count of trigger dates for each league
-        # in the expected set, derived from ``get_reference_refresh_dates``.
-        # Trigger dates = season-start + transfer-window-open + transfer-window-close.
-        # Soft-gated on sports_master item A2.4 (instruments-service write-path);
-        # degrades gracefully per league if trigger dates can't be computed.
-        per_league_td: dict[str, dict[str, object]] = {}
-        total_expected_td = 0
-        total_found_td = 0
-        ent_rows_by_league_td = (
-            ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
+def _honest_coverage_per_feature(
+    entity_name: str,
+    start_date: str,
+    end_date: str,
+    axis: str,
+    source_key: str,
+    expected_leagues: list[LeagueDefinition],
+    ent_rows: pd.DataFrame,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """Phase 3 honest-coverage per-calculator axis. For each league in the expected set, expected
+    dates = intersection of every required upstream's per-league fixture calendar (clipped +
+    known-gap-filtered) — ``_features_sports_expected_dates_for_calculator`` walks
+    ``FEATURE_UPSTREAM_REQUIREMENTS`` and recurses through derived deps."""
+    per_league_pf: dict[str, dict[str, object]] = {}
+    total_expected_pf = 0
+    total_found_pf = 0
+    ent_rows_by_league_pf = (
+        ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
+    )
+    for league in expected_leagues:
+        lid = league.league_id
+        expected_dates_pf = _dss._features_sports_expected_dates_for_calculator(  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            calc_name=entity_name,
+            league_id=lid,
+            start_date=start_date,
+            end_date=end_date,
         )
-        for league in expected_leagues:
-            lid = league.league_id
-            trigger_dates_l = sports_trigger_dates_for_league(lid, start_date, end_date)
-            if not trigger_dates_l:
-                continue
-            expected_set_td = set(trigger_dates_l)
-            found_set_td: set[str] = set()
-            if ent_rows_by_league_td is not None and lid in ent_rows_by_league_td.groups:
-                found_set_td = {str(d) for d in ent_rows_by_league_td.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
-            covered_td = expected_set_td & found_set_td
-            missing_td = sorted(expected_set_td - found_set_td)
-            per_league_td[lid] = {
-                "found_shards": len(covered_td),
-                "expected_shards": len(expected_set_td),
-                "missing_shards": len(missing_td),
-                "completion_pct": round(len(covered_td) / max(1, len(expected_set_td)) * 100, 2),
-                "unit": str(meta["unit"]),
-                "missing_dates": missing_td[:500],
-                "found_dates_list": sorted(covered_td)[:500],
-                "trigger_dates": trigger_dates_l[:100],
-            }
-            total_expected_td += len(expected_set_td)
-            total_found_td += len(covered_td)
-        return {
-            "axis": axis,
-            "unit": str(meta["unit"]),
-            "source": source_key,
-            "expected_leagues": [lg.league_id for lg in expected_leagues],
-            "found_shards": total_found_td,
-            "expected_shards": total_expected_td,
-            "per_league": per_league_td,
+        if not expected_dates_pf:
+            continue
+        expected_set_pf = set(expected_dates_pf)
+        found_set_pf: set[str] = set()
+        if ent_rows_by_league_pf is not None and lid in ent_rows_by_league_pf.groups:
+            found_set_pf = {str(d) for d in ent_rows_by_league_pf.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
+        covered_pf = expected_set_pf & found_set_pf
+        missing_pf = sorted(expected_set_pf - found_set_pf)
+        per_league_pf[lid] = {
+            "expected_dates": len(expected_set_pf),
+            "found_dates": len(covered_pf),
+            "missing_dates": missing_pf[:50],
+            "missing_count": len(missing_pf),
         }
+        total_expected_pf += len(expected_set_pf)
+        total_found_pf += len(covered_pf)
+    return {
+        "axis": axis,
+        "unit": str(meta["unit"]),
+        "source": source_key,
+        "expected_leagues": [lg.league_id for lg in expected_leagues],
+        "found_shards": total_found_pf,
+        "expected_shards": total_expected_pf,
+        "per_league": per_league_pf,
+    }
 
-    if axis in ("global_periodic", "global_season"):
-        # No league axis — expected = number of cadence-dates in window,
-        # clipped to the source's UAC-declared coverage start so pre-launch
-        # dates don't show as missing.
-        clipped_start, clipped_end = _clip_dates_to_source_coverage(
-            source_key, start_date, end_date, data_type=entity_name
-        )
-        if not clipped_end or clipped_end < clipped_start:
+
+def _honest_coverage_global_trigger(
+    axis: str,
+    source_key: str,
+    start_date: str,
+    end_date: str,
+    ent_rows: pd.DataFrame,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """No league axis — expected = number of trigger dates in window derived from
+    ``get_reference_refresh_dates`` across all LEAGUE_REGISTRY entries (season-start +
+    transfer-window-open/close). Soft-gated on sports_master item A2.4
+    (instruments-service write-path); degrades gracefully if the trigger set is empty."""
+    trigger_dates = sports_trigger_dates_for_window(start_date, end_date)
+    expected_shards_t = len(trigger_dates)
+    found_dates_t: set[str] = {str(d) for d in ent_rows["date"].unique()} if not ent_rows.empty else set()  # pyright: ignore[reportAny]
+    found_shards_t = len(found_dates_t & set(trigger_dates)) if trigger_dates else len(found_dates_t)
+    return {
+        "axis": axis,
+        "unit": str(meta["unit"]),
+        "source": source_key,
+        "expected_leagues": [],
+        "found_shards": found_shards_t,
+        "expected_shards": expected_shards_t,
+        "per_league": None,
+        "trigger_dates": sorted(trigger_dates)[:100],
+    }
+
+
+def _honest_coverage_per_league_trigger(
+    axis: str,
+    source_key: str,
+    start_date: str,
+    end_date: str,
+    expected_leagues: list[LeagueDefinition],
+    ent_rows: pd.DataFrame,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """Per-league axis — expected = count of trigger dates for each league in the expected set
+    (season-start + transfer-window-open/close). Soft-gated on sports_master item A2.4
+    (instruments-service write-path); degrades gracefully per league if trigger dates can't be
+    computed."""
+    per_league_td: dict[str, dict[str, object]] = {}
+    total_expected_td = 0
+    total_found_td = 0
+    ent_rows_by_league_td = (
+        ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
+    )
+    for league in expected_leagues:
+        lid = league.league_id
+        trigger_dates_l = sports_trigger_dates_for_league(lid, start_date, end_date)
+        if not trigger_dates_l:
+            continue
+        expected_set_td = set(trigger_dates_l)
+        found_set_td: set[str] = set()
+        if ent_rows_by_league_td is not None and lid in ent_rows_by_league_td.groups:
+            found_set_td = {str(d) for d in ent_rows_by_league_td.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
+        covered_td = expected_set_td & found_set_td
+        missing_td = sorted(expected_set_td - found_set_td)
+        per_league_td[lid] = {
+            "found_shards": len(covered_td),
+            "expected_shards": len(expected_set_td),
+            "missing_shards": len(missing_td),
+            "completion_pct": round(len(covered_td) / max(1, len(expected_set_td)) * 100, 2),
+            "unit": str(meta["unit"]),
+            "missing_dates": missing_td[:500],
+            "found_dates_list": sorted(covered_td)[:500],
+            "trigger_dates": trigger_dates_l[:100],
+        }
+        total_expected_td += len(expected_set_td)
+        total_found_td += len(covered_td)
+    return {
+        "axis": axis,
+        "unit": str(meta["unit"]),
+        "source": source_key,
+        "expected_leagues": [lg.league_id for lg in expected_leagues],
+        "found_shards": total_found_td,
+        "expected_shards": total_expected_td,
+        "per_league": per_league_td,
+    }
+
+
+def _honest_coverage_global(
+    axis: str,
+    source_key: str,
+    entity_name: str,
+    start_date: str,
+    end_date: str,
+    cadence_days: int,
+    ent_rows: pd.DataFrame,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """No league axis — expected = number of cadence-dates in window, clipped to the source's
+    UAC-declared coverage start so pre-launch dates don't show as missing."""
+    clipped_start, clipped_end = _clip_dates_to_source_coverage(source_key, start_date, end_date, data_type=entity_name)
+    if not clipped_end or clipped_end < clipped_start:
+        date_range = pd.DatetimeIndex([])
+    else:
+        try:
+            date_range = pd.date_range(clipped_start, clipped_end, freq="D")
+        except ValueError:
             date_range = pd.DatetimeIndex([])
-        else:
-            try:
-                date_range = pd.date_range(clipped_start, clipped_end, freq="D")
-            except ValueError:
-                date_range = pd.DatetimeIndex([])
-        expected_dates = 1 if axis == "global_season" else max(1, len(date_range) // max(1, cadence_days))
-        found_dates = len({str(d) for d in ent_rows["date"].unique()}) if not ent_rows.empty else 0  # pyright: ignore[reportAny]
-        return {
-            "axis": axis,
-            "unit": str(meta["unit"]),
-            "source": source_key,
-            "expected_leagues": [],
-            "found_shards": min(found_dates, expected_dates),
-            "expected_shards": expected_dates,
-            "per_league": None,
-        }
+    expected_dates = 1 if axis == "global_season" else max(1, len(date_range) // max(1, cadence_days))
+    found_dates = len({str(d) for d in ent_rows["date"].unique()}) if not ent_rows.empty else 0  # pyright: ignore[reportAny]
+    return {
+        "axis": axis,
+        "unit": str(meta["unit"]),
+        "source": source_key,
+        "expected_leagues": [],
+        "found_shards": min(found_dates, expected_dates),
+        "expected_shards": expected_dates,
+        "per_league": None,
+    }
 
-    # per_league_per_fixture_date / per_league_periodic
-    # Single SSOT: per-league subpartition only. Legacy bare-path date-aggregate
-    # captures were migrated to per-league via
-    # ``instruments-service/scripts/migrate_bare_to_per_league.py`` +
-    # ``reconcile_manifest_from_per_league_parquets.py`` (2026-05-01) and the
-    # orchestrator now writes per-league exclusively for league-axis data
-    # types. No bare-path fallback in coverage accounting.
+
+def _bucket_match_league_coverage(
+    expected_set: set[str], found_set: set[str], cadence_days: int
+) -> tuple[set[str], set[str]]:
+    """Bucket-based week match for periodic cadences (2026-05-05 fix).
+
+    The orchestrator writes manifest rows for every active-season fixture date (e.g. ~190 days/
+    year for EPL), but ``sports_expected_dates_for_league`` subsamples to ``[::cadence_days]``
+    (every 7th element = ~27/year for cadence=7). A direct ``expected_set & found_set``
+    intersection then only counted manifest rows that happened to land on those exact 27
+    subsampled positions — capping TM_LEAGUES at ~50%, SFI_LEAGUES at ~14%, PLAYER_VALUES at ~5%
+    no matter how complete the manifest was. Fix: each expected date anchors a bucket of
+    ``[d, d+cadence_days)``; a bucket is "covered" if any manifest date falls inside it. Returns
+    ``(covered_buckets, missing_buckets)``.
+    """
+    sorted_expected = sorted(expected_set)
+    sorted_found = sorted(found_set)
+    covered_buckets: set[str] = set()
+    missing_buckets: set[str] = set()
+    f_idx = 0
+    for anchor in sorted_expected:
+        bucket_end = pd.Timestamp(anchor) + pd.Timedelta(days=cadence_days)
+        hit = False
+        while f_idx < len(sorted_found) and sorted_found[f_idx] < anchor:
+            f_idx += 1
+        probe = f_idx
+        while probe < len(sorted_found) and pd.Timestamp(sorted_found[probe]) < bucket_end:
+            hit = True
+            probe += 1
+        (covered_buckets if hit else missing_buckets).add(anchor)
+    return covered_buckets, missing_buckets
+
+
+def _honest_coverage_per_league(
+    axis: str,
+    source_key: str,
+    entity_name: str,
+    start_date: str,
+    end_date: str,
+    cadence_days: int,
+    expected_leagues: list[LeagueDefinition],
+    ent_rows: pd.DataFrame,
+    meta: dict[str, object],
+) -> dict[str, object]:
+    """``per_league_per_fixture_date`` / ``per_league_periodic``. Single SSOT: per-league
+    subpartition only — legacy bare-path date-aggregate captures were migrated to per-league via
+    ``instruments-service/scripts/migrate_bare_to_per_league.py`` +
+    ``reconcile_manifest_from_per_league_parquets.py`` (2026-05-01); the orchestrator now writes
+    per-league exclusively for league-axis data types, so there is no bare-path fallback here."""
     per_league: dict[str, dict[str, object]] = {}
     total_expected = 0
     total_found = 0
     ent_rows_by_league = ent_rows.groupby(ent_rows["league_id"].fillna("")) if "league_id" in ent_rows.columns else None
-
-    # Bucket-based week match for periodic cadences (2026-05-05 fix):
-    # The orchestrator writes manifest rows for every active-season fixture
-    # date (e.g. ~190 days/year for EPL), but ``sports_expected_dates_for_league``
-    # subsamples to ``[::cadence_days]`` (every 7th element = ~27/year for
-    # cadence=7). A direct ``expected_set & found_set`` intersection then
-    # only counted manifest rows that happened to land on those exact 27
-    # subsampled positions — capping TM_LEAGUES at ~50%, SFI_LEAGUES at ~14%,
-    # PLAYER_VALUES at ~5% no matter how complete the manifest was.
-    #
-    # Fix: for periodic cadences (cadence_days > 1), bucket each expected
-    # date into a window of ``cadence_days`` and credit a bucket as covered
-    # if the manifest has ANY row for that league within the window. For
-    # per_league_per_fixture_date (cadence_days <= 1) the original exact-
-    # match semantics still apply.
+    # For per_league_per_fixture_date (cadence_days <= 1) exact-match semantics apply; for
+    # periodic cadences (cadence_days > 1) use the bucket match (see its own docstring).
     use_bucket_match = axis == "per_league_periodic" and cadence_days > 1
 
     for league in expected_leagues:
         lid = league.league_id
         expected_dates_for_l = sports_expected_dates_for_league(
-            lid,
-            axis,
-            cadence_days,
-            start_date,
-            end_date,
-            source_key=source_key,
-            data_type=entity_name,
+            lid, axis, cadence_days, start_date, end_date, source_key=source_key, data_type=entity_name
         )
         if not expected_dates_for_l:
             continue
@@ -710,24 +733,7 @@ def sports_honest_coverage(
             found_set = {str(d) for d in ent_rows_by_league.get_group(lid)["date"].unique()}  # pyright: ignore[reportAny]
 
         if use_bucket_match:
-            # Each expected date anchors a bucket of [d, d+cadence_days). A
-            # bucket is "covered" if any manifest date falls inside it.
-            sorted_expected = sorted(expected_set)
-            sorted_found = sorted(found_set)
-            covered_buckets: set[str] = set()
-            missing_buckets: set[str] = set()
-            f_idx = 0
-            for anchor in sorted_expected:
-                # Bucket window: [anchor, next_anchor) — last bucket gets cadence_days width.
-                bucket_end = pd.Timestamp(anchor) + pd.Timedelta(days=cadence_days)
-                hit = False
-                while f_idx < len(sorted_found) and sorted_found[f_idx] < anchor:
-                    f_idx += 1
-                probe = f_idx
-                while probe < len(sorted_found) and pd.Timestamp(sorted_found[probe]) < bucket_end:
-                    hit = True
-                    probe += 1
-                (covered_buckets if hit else missing_buckets).add(anchor)
+            covered_buckets, missing_buckets = _bucket_match_league_coverage(expected_set, found_set, cadence_days)
             per_league[lid] = {
                 "found_shards": len(covered_buckets),
                 "expected_shards": len(expected_set),
@@ -762,6 +768,58 @@ def sports_honest_coverage(
         "expected_shards": total_expected,
         "per_league": per_league,
     }
+
+
+def sports_honest_coverage(
+    filtered: pd.DataFrame,
+    entity_name: str,
+    start_date: str,
+    end_date: str,
+) -> dict[str, object] | None:
+    """Return honest-coverage stats for a SPORTS data_type using the SSOT meta.
+
+    Uses ``SPORTS_DATA_TYPE_META`` + UAC ``get_expected_leagues_for_source`` +
+    ``get_league_fixture_calendar`` to compute ``expected_shards`` = len(expected_leagues) *
+    len(expected_dates_per_league) (or len(expected_dates) for global axes), ``found_shards`` —
+    distinct (league_id, date) pairs with ``capture_status in {captured, empty_confirmed}`` — and
+    ``missing_shards`` — per-league date-sets missing from the manifest (for UI drill-down). Each
+    ``SportsAxis`` dispatches to its own helper (see ``_honest_coverage_*``). Returns ``None`` if
+    the entity isn't in the SSOT map (caller falls back to the legacy date-count model).
+    """
+    meta = (
+        SPORTS_DATA_TYPE_META.get(entity_name)
+        or FEATURES_SPORTS_DATA_TYPE_META.get(entity_name)
+        or FEATURES_SPORTS_PER_CALC_META.get(entity_name)
+    )
+    if meta is None:
+        return None
+
+    meta = cast(dict[str, Any], meta)
+    axis = str(meta["axis"])  # pyright: ignore[reportAny]
+    cadence_days = int(meta.get("cadence_days") or 1)
+    source_key = str(meta["source"])  # pyright: ignore[reportAny]
+    classifications = tuple(cast(tuple[str, ...], meta["classifications"]))
+
+    expected_leagues = _dss.get_expected_leagues_for_source(source_key, classifications=list(classifications))
+    ent_rows = _sports_entity_rows(filtered, entity_name, axis)
+
+    if axis == "per_feature_per_league_per_fixture_date":
+        return _honest_coverage_per_feature(
+            entity_name, start_date, end_date, axis, source_key, expected_leagues, ent_rows, meta
+        )
+    if axis == "global_trigger_date":
+        return _honest_coverage_global_trigger(axis, source_key, start_date, end_date, ent_rows, meta)
+    if axis == "per_league_trigger_date":
+        return _honest_coverage_per_league_trigger(
+            axis, source_key, start_date, end_date, expected_leagues, ent_rows, meta
+        )
+    if axis in ("global_periodic", "global_season"):
+        return _honest_coverage_global(
+            axis, source_key, entity_name, start_date, end_date, cadence_days, ent_rows, meta
+        )
+    return _honest_coverage_per_league(
+        axis, source_key, entity_name, start_date, end_date, cadence_days, expected_leagues, ent_rows, meta
+    )
 
 
 # ── MTDS honest-coverage meta (Phase 6c) ─────────────────────────────────────
