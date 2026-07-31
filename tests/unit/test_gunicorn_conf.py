@@ -44,6 +44,24 @@ def _reset_worker_age(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_identity, "_worker_age", None)
 
 
+class TestOnStarting:
+    def test_logs_master_pid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """deployment_api_sigabrt_crash_loop_2026_07_24 low-pid-vs-high-pid follow-up:
+        the arbiter's own pid must be logged once at master startup so a future
+        `Uncaught signal: 6` occurrence's pid can be matched against this line to confirm
+        MASTER vs WORKER without guessing from pid magnitude alone."""
+        conf = _load_gunicorn_conf()
+        monkeypatch.setattr(conf.os, "getpid", lambda: 7)
+        server = MagicMock()
+
+        conf.on_starting(server)
+
+        server.log.info.assert_called_once()
+        args = server.log.info.call_args.args
+        assert args[0] == "gunicorn MASTER (arbiter) started, pid=%s"
+        assert args[1] == 7
+
+
 class TestPostFork:
     def test_records_worker_age_via_worker_identity(self) -> None:
         conf = _load_gunicorn_conf()
@@ -65,6 +83,23 @@ class TestPostFork:
         conf.post_fork(server, worker)
 
         assert worker_identity.is_leader_worker() is True
+
+    def test_logs_worker_pid_and_age(self) -> None:
+        """Pairs with TestOnStarting.test_logs_master_pid — the per-worker line that lets
+        a future SIGABRT pid be matched to a WORKER (vs the master) + its spawn age."""
+        conf = _load_gunicorn_conf()
+        server = MagicMock()
+        worker = MagicMock()
+        worker.pid = 42
+        worker.age = 2
+
+        conf.post_fork(server, worker)
+
+        server.log.info.assert_called_once()
+        args = server.log.info.call_args.args
+        assert args[0] == "gunicorn WORKER forked, pid=%s age=%s"
+        assert args[1] == 42
+        assert args[2] == 2
 
 
 class TestPostWorkerInit:
