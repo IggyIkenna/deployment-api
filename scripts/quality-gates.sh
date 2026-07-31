@@ -91,9 +91,7 @@ EMPTY_DICT_LIST_EXCLUDE_GLOBS=()
 # regressions from this escalation's promotion PR. Listed explicitly (not directory-globbed) so
 # any NEW oversized file/function outside this exact list still fails the gate. Follow-up to
 # actually decompose these: plans/active/issues/deployment_api_qg_size_gate_debt_2026_07_30.md
-FUNCTION_SIZE_EXTRA_EXCLUDES=(
-    "!" "-path" "./deployment_api/utils/path_combinatorics.py"
-)
+FUNCTION_SIZE_EXTRA_EXCLUDES=()
 
 # STEP 5.11/5.12 protocol-symbol excludes: monitor_live.py + monitor_scheduled.py match ONLY on
 # `CloudTarget` — the UAC canonical StrEnum (unified_api_contracts.canonical.crosscutting.cloud_target)

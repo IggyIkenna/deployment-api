@@ -302,39 +302,11 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
                 venue = venue_raw
                 venue_config = cast(dict[str, object], venue_config_raw)
 
-                folders_val = venue_config.get("folders")
-                folders: list[object] = cast(list[object], folders_val) if isinstance(folders_val, list) else []
-                data_types_val = venue_config.get("data_types")
-                data_types: list[object] | dict[str, object] = (
-                    cast(list[object], data_types_val)
-                    if isinstance(data_types_val, list)
-                    else (cast(dict[str, object], data_types_val) if isinstance(data_types_val, dict) else [])
-                )
-                start_date_val = venue_config.get("start_date")
-                start_date: str | None = start_date_val if isinstance(start_date_val, str) else None
-
-                folders, should_skip = self._filter_folders_by_access(venue, folders, venue_config)
-                if should_skip:
+                entries = self._build_combinatorics_for_venue(asset_group, venue, venue_config)
+                if entries is None:
                     skipped_venues.append(venue)
                     continue
-
-                final_data_types, tick_window_only_types = self._resolve_data_types(data_types)
-
-                for folder_raw in folders:
-                    folder = folder_raw if isinstance(folder_raw, str) else ""
-                    if not folder:
-                        continue
-                    for data_type in final_data_types:
-                        self.combinatorics.append(
-                            CombinatoricEntry(
-                                asset_group=asset_group,
-                                venue=venue,
-                                folder=folder,
-                                data_type=data_type,
-                                start_date=start_date,
-                                tick_window_only=data_type in tick_window_only_types,
-                            )
-                        )
+                self.combinatorics.extend(entries)
 
         if skipped_venues:
             logger.info(
@@ -343,6 +315,45 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
                 ", ".join(skipped_venues),
             )
         logger.info("Built %s valid path combinatorics", len(self.combinatorics))
+
+    def _build_combinatorics_for_venue(
+        self, asset_group: str, venue: str, venue_config: "dict[str, object]"
+    ) -> list[CombinatoricEntry] | None:
+        """Build combinatoric entries for one venue. Returns None if the venue should be skipped entirely."""
+        folders_val = venue_config.get("folders")
+        folders: list[object] = cast(list[object], folders_val) if isinstance(folders_val, list) else []
+        data_types_val = venue_config.get("data_types")
+        data_types: list[object] | dict[str, object] = (
+            cast(list[object], data_types_val)
+            if isinstance(data_types_val, list)
+            else (cast(dict[str, object], data_types_val) if isinstance(data_types_val, dict) else [])
+        )
+        start_date_val = venue_config.get("start_date")
+        start_date: str | None = start_date_val if isinstance(start_date_val, str) else None
+
+        folders, should_skip = self._filter_folders_by_access(venue, folders, venue_config)
+        if should_skip:
+            return None
+
+        final_data_types, tick_window_only_types = self._resolve_data_types(data_types)
+
+        entries: list[CombinatoricEntry] = []
+        for folder_raw in folders:
+            folder = folder_raw if isinstance(folder_raw, str) else ""
+            if not folder:
+                continue
+            for data_type in final_data_types:
+                entries.append(
+                    CombinatoricEntry(
+                        asset_group=asset_group,
+                        venue=venue,
+                        folder=folder,
+                        data_type=data_type,
+                        start_date=start_date,
+                        tick_window_only=data_type in tick_window_only_types,
+                    )
+                )
+        return entries
 
     def _load_service_dimensions(self) -> None:
         """Load sharding dimensions from sharding.{service}.yaml for all services.
@@ -393,22 +404,9 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
         date_str: str,
         venue_filter: list[str] | None = None,
     ) -> list[tuple[str, str | None]]:
-        """
-        Get (prefix, sub_dimension_value) tuples for any service's combinatorics.
-
-        This is the generic alternative to get_prefixes_for_date() for services
-        that don't use the CombinatoricEntry model (venue x folder x data_type).
-
-        Args:
-            service: Service name
-            asset_group: Asset group (CEFI, TRADFI, DEFI)
-            date_str: Date in YYYY-MM-DD format
-            venue_filter: Optional venue filter (for instruments-service)
-
-        Returns:
-            List of (gcs_prefix, sub_dimension_value) tuples.
-            sub_dimension_value is the value of the service's sub_dimension
-            (e.g., venue name for instruments-service, feature_group for features-*).
+        """Get (prefix, sub_dimension_value) tuples for `service`'s combinatorics — the generic alternative to
+        get_prefixes_for_date() for services that don't use the CombinatoricEntry model (venue x folder x data_type).
+        sub_dimension_value is e.g. venue for instruments-service, feature_group for features-*.
         """
         template = SERVICE_PATH_TEMPLATES.get(service)
         if not template:
@@ -423,49 +421,62 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
             return []
 
         if service == "instruments-service":
-            # Use venues from venue_data_types.yaml (same config used for tick data)
-            venues = self.get_all_venues_for_asset_group(asset_group)
-            if venue_filter:
-                venue_set = {v.upper() for v in venue_filter}
-                venues = venues & venue_set
-            return [
-                (
-                    template.replace("{date}", date_str).replace("{venue}", v),
-                    v,
-                )
-                for v in sorted(venues)
-            ]
+            return self._instruments_service_prefixes(template, date_str, asset_group, venue_filter)
 
-        elif service in (
+        if service in (
             "features-delta-one-service",
             "features-onchain-service",
             "features-volatility-service",
         ):
-            # Use feature_group values from sharding config
-            groups = dims.get("feature_group") or []
-            return [
-                (
-                    template.replace("{date}", date_str).replace("{feature_group}", g),
-                    g,
-                )
-                for g in groups
-            ]
+            return self._feature_group_service_prefixes(template, date_str, dims)
 
-        elif service == "features-calendar-service":
-            # Calendar uses hardcoded feature types (not in sharding dimensions)
-            return [
-                (
-                    template.replace("{date}", date_str).replace("{feature_type}", ft),
-                    ft,
-                )
-                for ft in CALENDAR_FEATURE_TYPES
-            ]
+        if service == "features-calendar-service":
+            return self._calendar_service_prefixes(template, date_str)
 
-        elif service == "corporate-actions":
+        if service == "corporate-actions":
             # No sub-dimension, just check date existence
             return [(template.replace("{date}", date_str), None)]
 
         return []
+
+    def _instruments_service_prefixes(
+        self, template: str, date_str: str, asset_group: str, venue_filter: list[str] | None
+    ) -> list[tuple[str, str | None]]:
+        """Prefixes keyed by venue, from venue_data_types.yaml (same config used for tick data)."""
+        venues = self.get_all_venues_for_asset_group(asset_group)
+        if venue_filter:
+            venue_set = {v.upper() for v in venue_filter}
+            venues = venues & venue_set
+        return [
+            (
+                template.replace("{date}", date_str).replace("{venue}", v),
+                v,
+            )
+            for v in sorted(venues)
+        ]
+
+    def _feature_group_service_prefixes(
+        self, template: str, date_str: str, dims: "dict[str, list[str]]"
+    ) -> list[tuple[str, str | None]]:
+        """Prefixes keyed by feature_group, from sharding config."""
+        groups = dims.get("feature_group") or []
+        return [
+            (
+                template.replace("{date}", date_str).replace("{feature_group}", g),
+                g,
+            )
+            for g in groups
+        ]
+
+    def _calendar_service_prefixes(self, template: str, date_str: str) -> list[tuple[str, str | None]]:
+        """Prefixes keyed by hardcoded calendar feature type (not in sharding dimensions)."""
+        return [
+            (
+                template.replace("{date}", date_str).replace("{feature_type}", ft),
+                ft,
+            )
+            for ft in CALENDAR_FEATURE_TYPES
+        ]
 
     def has_service_combinatorics(self, service: str, asset_group: str) -> bool:
         """Check if a service has combinatorics available for a given asset group.
@@ -488,48 +499,50 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
         timeframes: list[str] | None = None,
         service: str | None = None,
     ) -> list[CombinatoricEntry]:
+        """Get filtered combinatorics based on criteria. `timeframes` only applies when
+        `service == "market-data-processing-service"` (timeframe-expanded combos); otherwise
+        base (non-timeframe) combinatorics are filtered by asset_group/venues/folders/data_types.
         """
-        Get filtered combinatorics based on criteria.
-
-        Args:
-            asset_group: Filter by asset group (CEFI, TRADFI, DEFI)
-            venues: Filter by venue names
-            folders: Filter by folder names
-            data_types: Filter by data type names
-            timeframes: Filter by timeframes (only for market-data-processing-service)
-            service: Service name - if "market-data-processing-service", generates timeframe combos
-
-        Returns:
-            List of matching CombinatoricEntry objects
-        """
-        # For market-data-processing-service, generate timeframe-expanded combinatorics on-the-fly
         if service == "market-data-processing-service":
-            results = self._get_processing_combinatorics(
+            return self._get_processing_combinatorics(
                 asset_group=asset_group,
                 venues=venues,
                 folders=folders,
                 data_types=data_types,
                 timeframes=timeframes,
             )
-        else:
-            # For other services, use base combinatorics (no timeframe)
-            results = self.combinatorics
+        return self._filter_base_combinatorics(asset_group, venues, folders, data_types)
 
-            if asset_group:
-                results = [c for c in results if c.asset_group == asset_group.upper()]
+    def _filter_by_asset_group_venues_folders(
+        self,
+        combos: list[CombinatoricEntry],
+        asset_group: str | None,
+        venues: list[str] | None,
+        folders: list[str] | None,
+    ) -> list[CombinatoricEntry]:
+        """Apply the asset_group/venues/folders filters shared by both combinatorics paths."""
+        if asset_group:
+            combos = [c for c in combos if c.asset_group == asset_group.upper()]
+        if venues:
+            venue_set = {v.upper() for v in venues}
+            combos = [c for c in combos if c.venue in venue_set]
+        if folders:
+            folder_set = {f.lower() for f in folders}
+            combos = [c for c in combos if c.folder.lower() in folder_set]
+        return combos
 
-            if venues:
-                venue_set = {v.upper() for v in venues}
-                results = [c for c in results if c.venue in venue_set]
-
-            if folders:
-                folder_set = {f.lower() for f in folders}
-                results = [c for c in results if c.folder.lower() in folder_set]
-
-            if data_types:
-                dt_set = {dt.lower() for dt in data_types}
-                results = [c for c in results if c.data_type.lower() in dt_set]
-
+    def _filter_base_combinatorics(
+        self,
+        asset_group: str | None,
+        venues: list[str] | None,
+        folders: list[str] | None,
+        data_types: list[str] | None,
+    ) -> list[CombinatoricEntry]:
+        """Filter base (non-timeframe-expanded) combinatorics by the given criteria."""
+        results = self._filter_by_asset_group_venues_folders(self.combinatorics, asset_group, venues, folders)
+        if data_types:
+            dt_set = {dt.lower() for dt in data_types}
+            results = [c for c in results if c.data_type.lower() in dt_set]
         return results
 
     def _get_processing_combinatorics(
@@ -540,37 +553,27 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
         data_types: list[str] | None = None,
         timeframes: list[str] | None = None,
     ) -> list[CombinatoricEntry]:
-        """
-        Generate combinatorics for market-data-processing-service.
+        """Generate combinatorics for market-data-processing-service.
 
         This expands the base combinatorics with timeframes and filters to
         only data_types MDPS actually candle-derives from (single-sourced
         from UAC ``MDPS_DERIVABLE_DATA_TYPES`` via ``PROCESSING_DATA_TYPES``
         above — see that constant's docstring for the full list).
         """
-        # Start with base combinatorics
-        base = self.combinatorics
-
-        if asset_group:
-            base = [c for c in base if c.asset_group == asset_group.upper()]
-
-        if venues:
-            venue_set = {v.upper() for v in venues}
-            base = [c for c in base if c.venue in venue_set]
-
-        if folders:
-            folder_set = {f.lower() for f in folders}
-            base = [c for c in base if c.folder.lower() in folder_set]
+        base = self._filter_by_asset_group_venues_folders(self.combinatorics, asset_group, venues, folders)
 
         # Filter to only data_types MDPS actually derives candles from.
         valid_dt = {dt.lower() for dt in PROCESSING_DATA_TYPES}
         dt_set = {dt.lower() for dt in data_types} & valid_dt if data_types else valid_dt
         base = [c for c in base if c.data_type.lower() in dt_set]
 
-        # Determine timeframes to use
         target_timeframes = timeframes if timeframes else PROCESSING_TIMEFRAMES
+        return self._expand_with_timeframes(base, target_timeframes)
 
-        # Expand each base combinatoric with all timeframes
+    def _expand_with_timeframes(
+        self, base: list[CombinatoricEntry], target_timeframes: list[str]
+    ) -> list[CombinatoricEntry]:
+        """Expand each base combinatoric with all target timeframes."""
         results: list[CombinatoricEntry] = []
         for combo in base:
             for tf in target_timeframes:
@@ -585,7 +588,6 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
                         tick_window_only=combo.tick_window_only,
                     )
                 )
-
         return results
 
     def get_prefixes_for_date(
@@ -598,22 +600,9 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
         data_types: list[str] | None = None,
         timeframes: list[str] | None = None,
     ) -> list[str]:
+        """Get all valid GCS prefixes for `service` on `date_str`, after filtering combinatorics by
+        asset_group/venues/folders/data_types/timeframes and by start_date/tick-window eligibility.
         """
-        Get all valid GCS prefixes for a specific date.
-
-        Args:
-            service: Service name (for determining base prefix)
-            date_str: Date in YYYY-MM-DD format
-            asset_group: Optional asset group filter
-            venues: Optional venue filters
-            folders: Optional folder filters
-            data_types: Optional data type filters
-            timeframes: Optional timeframe filters (for market-data-processing-service)
-
-        Returns:
-            List of GCS prefix strings to query
-        """
-        # Get base prefix based on service
         base_prefix = self._get_base_prefix(service)
 
         # Get filtered combinatorics (pass service for timeframe expansion)
@@ -626,8 +615,24 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
             service=service,
         )
 
-        # Filter out combinatorics that started after this date
-        # Also filter out tick_window_only combos when date is outside tick windows
+        valid_combos = self._filter_combos_for_date(combos, date_str)
+
+        # Generate prefixes (a single combo fans out across its batch pipeline_modes)
+        prefixes: list[str] = [p for c in valid_combos for p in c.to_gcs_prefixes(date_str, base_prefix)]
+
+        logger.debug(
+            "Generated %s prefixes for date=%s, asset_group=%s, venues=%s, service=%s",
+            len(prefixes),
+            date_str,
+            asset_group,
+            venues,
+            service,
+        )
+
+        return prefixes
+
+    def _filter_combos_for_date(self, combos: list[CombinatoricEntry], date_str: str) -> list[CombinatoricEntry]:
+        """Drop combos that started after `date_str`, and tick_window_only combos outside tick windows."""
         date_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
         in_tick_window = self.is_in_tick_window(date_str)
         valid_combos: list[CombinatoricEntry] = []
@@ -643,20 +648,7 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
             if c.tick_window_only and not in_tick_window:
                 continue
             valid_combos.append(c)
-
-        # Generate prefixes (a single combo fans out across its batch pipeline_modes)
-        prefixes: list[str] = [p for c in valid_combos for p in c.to_gcs_prefixes(date_str, base_prefix)]
-
-        logger.debug(
-            "Generated %s prefixes for date=%s, asset_group=%s, venues=%s, service=%s",
-            len(prefixes),
-            date_str,
-            asset_group,
-            venues,
-            service,
-        )
-
-        return prefixes
+        return valid_combos
 
     def _get_base_prefix(self, service: str) -> str:
         """Get the base GCS prefix for a service."""
@@ -703,18 +695,8 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
         query_fn: Callable[[str], list[str]] | None = None,
         max_workers: int = 50,
     ) -> dict[str, list[str]]:
-        """
-        Execute parallel GCS queries for all prefixes.
-        Uses storage facade (FUSE when production) when bucket_or_name is str.
-
-        Args:
-            bucket_or_name: GCS bucket name (str) or legacy bucket object
-            prefixes: List of GCS prefixes to query
-            query_fn: Optional custom query function. If None, uses list_objects.
-            max_workers: Maximum parallel threads
-
-        Returns:
-            Dict mapping prefix -> list of blob names
+        """Execute parallel GCS queries for all prefixes. Uses storage facade (FUSE when production)
+        when bucket_or_name is str. Returns a dict mapping prefix -> list of blob names.
         """
         if not prefixes:
             return {}
@@ -726,10 +708,23 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
             else cast(str | None, getattr(bucket_or_name, "name", None))
         )
 
-        loop = asyncio.get_event_loop()
+        query_func: Callable[[str], list[str]] = (
+            query_fn if query_fn is not None else self._default_prefix_query(bucket_name)
+        )
+        results = await self._gather_parallel_query_results(query_func, prefixes, max_workers)
+
+        logger.info(
+            "Completed %s parallel queries, %s total blobs found",
+            len(prefixes),
+            sum(len(r) for r in results.values()),
+        )
+
+        return results
+
+    def _default_prefix_query(self, bucket_name: str | None) -> Callable[[str], list[str]]:
+        """Build the default per-prefix query fn: list all blobs under prefix via storage facade."""
 
         def default_query(prefix: str) -> list[str]:
-            """Default query: list all blobs under prefix via storage facade."""
             try:
                 if bucket_name:
                     from deployment_api.utils.storage_facade import list_objects
@@ -741,16 +736,21 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
                 logger.warning("Query failed for %s: %s", prefix, e)
                 return []
 
-        query_func: Callable[[str], list[str]] = query_fn if query_fn is not None else default_query
+        return default_query
 
-        # Execute all queries in parallel using ThreadPoolExecutor
+    async def _gather_parallel_query_results(
+        self,
+        query_func: Callable[[str], list[str]],
+        prefixes: list[str],
+        max_workers: int,
+    ) -> dict[str, list[str]]:
+        """Run `query_func` for each prefix concurrently via a thread pool and gather results."""
+        loop = asyncio.get_event_loop()
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Create futures for all prefixes
             futures: dict[str, asyncio.Future[list[str]]] = {
                 prefix: loop.run_in_executor(executor, query_func, prefix) for prefix in prefixes
             }
 
-            # Gather all results
             results: dict[str, list[str]] = {}
             for prefix, future in futures.items():
                 try:
@@ -758,13 +758,6 @@ class PathCombinatorics:  # CORRECT-LOCAL: in-process GCS prefix enumeration hel
                 except (OSError, ValueError, RuntimeError) as e:
                     logger.warning("Query failed for %s: %s", prefix, e)
                     results[prefix] = []
-
-        logger.info(
-            "Completed %s parallel queries, %s total blobs found",
-            len(prefixes),
-            sum(len(r) for r in results.values()),
-        )
-
         return results
 
     def get_instruments_service_prefixes(
