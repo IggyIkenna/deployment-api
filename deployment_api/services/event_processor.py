@@ -157,50 +157,85 @@ class EventProcessor:
 
         # Process shard status updates
         for shard in shards:
-            shard_id_r: object = shard.get("shard_id")
-            if not shard_id_r:
-                continue
-            shard_id = cast(str, shard_id_r)
-
-            job_id_r: object = shard.get("job_id")
-            if not job_id_r:
-                continue
-            job_id = cast(str, job_id_r)
-
-            # Update shard status from events
-            if shard_id in shard_statuses:
-                _status, event_data = shard_statuses[shard_id]
-                old_status = shard.get("status")
-                new_shard_data = update_shard_state_from_event(shard, event_data)
-
-                if new_shard_data != shard:
-                    # Update shard in place
-                    for key, value in new_shard_data.items():
-                        shard[key] = value
-                    updated = True
-
-                    if old_status != shard.get("status"):
-                        logger.info(
-                            "[EVENT_PROCESSOR] %s: Shard %s %s → %s",
-                            deployment_id,
-                            shard_id,
-                            old_status,
-                            shard.get("status"),
-                        )
-
-            # Check for VM status changes
-            current_vm_status = self.get_vm_status(vm_map, job_id)
-            if current_vm_status and shard.get("vm_status") != current_vm_status:
-                shard["vm_status"] = current_vm_status
+            if self._update_one_shard_vm_status(deployment_id, shard, vm_map, shard_statuses):
                 updated = True
-                logger.debug(
-                    "[EVENT_PROCESSOR] %s: Shard %s VM status → %s",
-                    deployment_id,
-                    shard_id,
-                    current_vm_status,
-                )
 
         return updated, launched_this_tick
+
+    def _update_one_shard_vm_status(
+        self,
+        deployment_id: str,
+        shard: dict[str, object],
+        vm_map: dict[str, object],
+        shard_statuses: dict[str, tuple[str, dict[str, object]]],
+    ) -> bool:
+        """Update one shard's event status + VM status in place. Returns True if changed."""
+        shard_id_r: object = shard.get("shard_id")
+        if not shard_id_r:
+            return False
+        shard_id = cast(str, shard_id_r)
+
+        job_id_r: object = shard.get("job_id")
+        if not job_id_r:
+            return False
+        job_id = cast(str, job_id_r)
+
+        event_updated = self._apply_shard_event_status(deployment_id, shard, shard_id, shard_statuses)
+        vm_updated = self._apply_shard_vm_status(deployment_id, shard, shard_id, job_id, vm_map)
+        return event_updated or vm_updated
+
+    def _apply_shard_event_status(
+        self,
+        deployment_id: str,
+        shard: dict[str, object],
+        shard_id: str,
+        shard_statuses: dict[str, tuple[str, dict[str, object]]],
+    ) -> bool:
+        """Apply the latest parsed event data onto a shard in place. Returns True if changed."""
+        if shard_id not in shard_statuses:
+            return False
+
+        _status, event_data = shard_statuses[shard_id]
+        old_status = shard.get("status")
+        new_shard_data = update_shard_state_from_event(shard, event_data)
+
+        if new_shard_data == shard:
+            return False
+
+        for key, value in new_shard_data.items():
+            shard[key] = value
+
+        if old_status != shard.get("status"):
+            logger.info(
+                "[EVENT_PROCESSOR] %s: Shard %s %s → %s",
+                deployment_id,
+                shard_id,
+                old_status,
+                shard.get("status"),
+            )
+        return True
+
+    def _apply_shard_vm_status(
+        self,
+        deployment_id: str,
+        shard: dict[str, object],
+        shard_id: str,
+        job_id: str,
+        vm_map: dict[str, object],
+    ) -> bool:
+        """Sync a shard's `vm_status` field from the VM map. Returns True if changed."""
+        current_vm_status = self.get_vm_status(vm_map, job_id)
+        if not current_vm_status or shard.get("vm_status") == current_vm_status:
+            return False
+
+        shard["vm_status"] = current_vm_status
+        logger.debug(
+            "[EVENT_PROCESSOR] %s: Shard %s VM status → %s",
+            deployment_id,
+            shard_id,
+            current_vm_status,
+        )
+        return True
 
     def _parse_exec_name(self, name: str) -> tuple[str | None, str | None]:
         """Parse Cloud Run execution name to extract region and job_name."""
@@ -388,21 +423,7 @@ class EventProcessor:
             return 0
 
         try:
-            orphan_tuples: list[tuple[str, str | None, str, tuple[str, dict[str, object]]]] = []
-            for shard in shards:
-                shard_id_raw2: object = shard.get("shard_id")
-                job_id_raw2: object = shard.get("job_id")
-                if not job_id_raw2 or not shard_id_raw2:
-                    continue
-                shard_id = cast(str, shard_id_raw2)
-                job_id = cast(str, job_id_raw2)
-                st = shard_statuses.get(shard_id)
-                if not st or st[0] not in ("succeeded", "failed"):
-                    continue
-                if self.get_vm_status(vm_map, job_id) == "RUNNING":
-                    zone = self.get_vm_zone(vm_map, job_id)
-                    orphan_tuples.append((job_id, zone, shard_id, st))
-
+            orphan_tuples = self._collect_orphan_tuples(shards, vm_map, shard_statuses)
             if not orphan_tuples:
                 return 0
 
@@ -413,6 +434,29 @@ class EventProcessor:
 
         return 0
 
+    def _collect_orphan_tuples(
+        self,
+        shards: list[dict[str, object]],
+        vm_map: dict[str, object],
+        shard_statuses: dict[str, tuple[str, dict[str, object]]],
+    ) -> list[tuple[str, str | None, str, tuple[str, dict[str, object]]]]:
+        """Find shards that finished (succeeded/failed) whose VM is still RUNNING."""
+        orphan_tuples: list[tuple[str, str | None, str, tuple[str, dict[str, object]]]] = []
+        for shard in shards:
+            shard_id_raw2: object = shard.get("shard_id")
+            job_id_raw2: object = shard.get("job_id")
+            if not job_id_raw2 or not shard_id_raw2:
+                continue
+            shard_id = cast(str, shard_id_raw2)
+            job_id = cast(str, job_id_raw2)
+            st = shard_statuses.get(shard_id)
+            if not st or st[0] not in ("succeeded", "failed"):
+                continue
+            if self.get_vm_status(vm_map, job_id) == "RUNNING":
+                zone = self.get_vm_zone(vm_map, job_id)
+                orphan_tuples.append((job_id, zone, shard_id, st))
+        return orphan_tuples
+
     def _fire_orphan_cleanup(
         self,
         deployment_id: str,
@@ -421,6 +465,22 @@ class EventProcessor:
         pending_vm_deletes: dict[str, object],
     ) -> int:
         """Create orchestrator backend and fire cancel for each orphan VM."""
+        backend = self._resolve_orphan_cancel_backend(config)
+        if backend is None:
+            return 0
+
+        _cancel_fn = backend.cancel_job_fire_and_forget  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
+        max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
+        with _Tpe(max_workers=max_parallel) as pool:
+            for job_id, zone, _shard_id, _st in orphan_tuples:
+                pool.submit(_cancel_fn, job_id, zone)  # pyright: ignore[reportUnknownArgumentType]
+                pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
+
+        logger.info("[EVENT_PROCESSOR] Fired %s orphan VM deletes", len(orphan_tuples))
+        return len(orphan_tuples)
+
+    def _resolve_orphan_cancel_backend(self, config: dict[str, object]) -> object | None:
+        """Build the VM orchestrator backend used to cancel orphaned jobs, or None if unavailable."""
         _orchestrator_cls = cast(
             type[object],
             _importlib.import_module("deployment_service.deployment.orchestrator").DeploymentOrchestrator,
@@ -433,7 +493,7 @@ class EventProcessor:
             job_name = str(ValidationUtils.get_required(config, "job_name", "VM backend"))
         except ConfigurationError as e:
             logger.error("[EVENT_PROCESSOR] Orphan cleanup failed: %s", e)
-            return 0
+            return None
 
         _orch_factory = cast(Callable[..., object], _orchestrator_cls)
         orch = _orch_factory(
@@ -455,17 +515,8 @@ class EventProcessor:
         )
 
         if not backend or not hasattr(backend, "cancel_job_fire_and_forget"):
-            return 0
-
-        _cancel_fn = backend.cancel_job_fire_and_forget  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportAttributeAccessIssue]
-        max_parallel = min(len(orphan_tuples), settings.ORPHAN_DELETE_MAX_PARALLEL)
-        with _Tpe(max_workers=max_parallel) as pool:
-            for job_id, zone, _shard_id, _st in orphan_tuples:
-                pool.submit(_cancel_fn, job_id, zone)  # pyright: ignore[reportUnknownArgumentType]
-                pending_vm_deletes[job_id] = (datetime.now(UTC).timestamp(), zone)
-
-        logger.info("[EVENT_PROCESSOR] Fired %s orphan VM deletes", len(orphan_tuples))
-        return len(orphan_tuples)
+            return None
+        return backend
 
     def notify_deployment_updated(self, deployment_id: str) -> None:
         """
