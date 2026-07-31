@@ -2034,8 +2034,19 @@ class TestBuildFanOutMemoryCap:
         import inspect
 
         from deployment_api.services.data_status.manifest import ManifestStatusMixin
+        from deployment_api.services.data_status.manifest_status_helpers import (
+            ManifestStatusHelpersMixin,
+        )
 
-        src = inspect.getsource(ManifestStatusMixin._dispatch_category_builds)
+        # 2026-07-31 (deployment_api_qg_size_gate_debt_2026_07_30.md): the pool
+        # instantiations moved into their own dispatch-leg methods so
+        # _dispatch_category_builds itself stays under the 50-line method-size
+        # gate — ThreadPoolExecutor stays in manifest.py (ThreadPoolExecutor is
+        # patched by that literal module path elsewhere in this file), while
+        # ProcessPoolExecutor moved to the manifest_status_helpers sibling.
+        src = inspect.getsource(ManifestStatusMixin._dispatch_via_thread_pool) + inspect.getsource(
+            ManifestStatusHelpersMixin._dispatch_via_process_pool
+        )
         # Both the ProcessPool and the ThreadPool must derive max_workers from the cap…
         assert src.count("_MAX_BUILD_WORKERS") >= 2
         # …and must NOT re-introduce the old unbounded hardcoded fan-out.
