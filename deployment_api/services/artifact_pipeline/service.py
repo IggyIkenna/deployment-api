@@ -355,6 +355,159 @@ def _health_stats(conditions: list[HealthCondition]) -> HealthStats:
     return HealthStats(high=high, med=med, low=low, deferred=deferred, real_defects=high + med + low)
 
 
+def _aws_not_read_condition() -> HealthCondition:
+    return HealthCondition(
+        condition="AWS builds/deploys/registry are not read yet",
+        severity=SEV_DEFERRED,
+        count="all AWS",
+        area="cross-cutting · AWS",
+        tab="pipe",
+        meaning="The AWS estate is deliberately stopped while credits are unavailable — parked, not broken.",
+        evidence="AWS CodeBuild/App Runner/ECS/ECR providers are not yet wired into this page.",
+    )
+
+
+def _live_failed_condition(deploys: list[DeployFact]) -> HealthCondition | None:
+    live_failed = [d for d in deploys if d.live and d.change_type == CHANGE_FAILED]
+    if not live_failed:
+        return None
+    return HealthCondition(
+        condition="A workload is serving its newest revision even though that revision never went ready",
+        severity=SEV_HIGH,
+        count=str(len(live_failed)),
+        area="deploy · GCP",
+        tab="deploy",
+        meaning="Cloud Run has nothing newer to fall back to, so a broken deploy is still what's live.",
+        evidence=", ".join(sorted({d.workload for d in live_failed})),
+    )
+
+
+def _recent_failed_builds_condition(builds: list[BuildFact], lo7: date, hi7: date) -> HealthCondition | None:
+    recent_failed = [b for b in builds if b.status == "FAILURE" and _in_window(b.started_at, lo7, hi7)]
+    if not recent_failed:
+        return None
+    return HealthCondition(
+        condition="Builds failed in the last 7 days",
+        severity=SEV_MED,
+        count=str(len(recent_failed)),
+        area="pipeline · CI",
+        tab="pipe",
+        meaning="Each failure blocked that commit from reaching a registry image.",
+        evidence=", ".join(sorted({b.repo for b in recent_failed})),
+    )
+
+
+def _duplicate_builds_condition(builds: list[BuildFact], lo7: date, hi7: date) -> HealthCondition | None:
+    recent_counts = _sha_build_counts([b for b in builds if _in_window(b.started_at, lo7, hi7)])
+    wasted = sum(c - 1 for c in recent_counts.values() if c > 1)
+    if not wasted:
+        return None
+    return HealthCondition(
+        condition="A commit was built more than once in the last 7 days",
+        severity=SEV_LOW,
+        count=str(wasted),
+        area="pipeline · CI",
+        tab="pipe",
+        meaning="Wasted compute — the second build produces an identical artifact to the first.",
+        evidence="see the Pipeline tab's 'dup' badge",
+    )
+
+
+def _floating_tag_condition(all_versions: list[tuple[str, RunningVersion]]) -> HealthCondition | None:
+    floating = [svc for svc, v in all_versions if DRIFT_FLOATING in v.drift]
+    if not floating:
+        return None
+    return HealthCondition(
+        condition="A live workload resolves to an image tagged only :latest",
+        severity=SEV_MED,
+        count=str(len(floating)),
+        area="running · GCP",
+        tab="running",
+        meaning=(
+            "No SHA-traceable tag — a future push could silently change what this digest means without a new deploy."
+        ),
+        evidence=", ".join(sorted(floating)),
+    )
+
+
+def _hand_deployed_condition(all_versions: list[tuple[str, RunningVersion]]) -> HealthCondition | None:
+    hand = [svc for svc, v in all_versions if DRIFT_HAND in v.drift]
+    if not hand:
+        return None
+    return HealthCondition(
+        condition="A live workload was deployed by something other than the CI pipeline",
+        severity=SEV_MED,
+        count=str(len(hand)),
+        area="running · GCP",
+        tab="running",
+        meaning="Bypasses the build record this page's provenance chain relies on.",
+        evidence=", ".join(sorted(hand)),
+    )
+
+
+def _tarball_lane_condition(images_resp: ImagesResponse) -> HealthCondition | None:
+    """Phase 3d (2026-07-27): builds()/images() now carry real tarball-lane data (the GCS bucket
+    provider landed), but `running()` still can't join any of it — there is no VM-launch deploy
+    provider yet (Phase 3d confirmed the plan's own earlier "Deploy timeline already treats a
+    VM launch as the tarball deploy" claim was STALE; `deployment-api@72a0108`'s own commit
+    message says GCE VM launches were explicitly deferred) and no VM stamps `git_commit` at
+    boot yet (Phase 3c, not yet shipped). So this condition is DATA-DRIVEN off the tarball repos
+    images() actually found, not a fixed "fleet" placeholder — it fires only when tarball data
+    exists to have this gap in the first place. When no tarball rows exist but Artifact Registry
+    ones do in the SAME response, that's the silent-empty-provider symptom instead (Phase 7's AR
+    incident before its IAM fix), not "nothing to report".
+    """
+    tarball_repos = sorted({r.repo for r in images_resp.rows if r.registry == REGISTRY_TARBALL_BUCKET})
+    if tarball_repos:
+        return HealthCondition(
+            condition="VM tarball-lane workloads carry no measured git commit yet",
+            severity=SEV_MED,
+            count=f"{len(tarball_repos)} repos",
+            area="running · GCP tarball lane",
+            tab="running",
+            meaning=(
+                'The GCE VM registry entry\'s git_commit/image_digest fields are stamped "" at launch today, '
+                "so What's running can only cover the Cloud Run (image) lane until the launch-time stamp "
+                "change lands (Phase 3c)."
+            ),
+            evidence="plans/active/artifact_pipeline_observability_2026_07_17.md § Honest gaps",
+        )
+
+    ar_rows = [r for r in images_resp.rows if r.registry != REGISTRY_TARBALL_BUCKET]
+    if not ar_rows:
+        return None
+    return HealthCondition(
+        condition="The tarball-bucket provider returned zero rows",
+        severity=SEV_MED,
+        count="0",
+        area="artifacts · GCP tarball lane",
+        tab="art",
+        meaning=(
+            "Artifact Registry rows loaded fine in this same response, so images() itself works — "
+            "a live bucket with no rows here likely means gcp_tarball_manifest_images() raised and "
+            "providers.safe() swallowed it (the same silent-empty failure mode Phase 7 found for AR "
+            "before its IAM fix), not that the bucket is genuinely empty."
+        ),
+        evidence="the tarball-manifest bucket's code/ prefix (~5000 objects measured 2026-07-27)",
+    )
+
+
+def _registry_sprawl_condition(images_resp: ImagesResponse) -> HealthCondition | None:
+    sprawl = [r for r in images_resp.rows if r.image_count >= _SPRAWL_IMAGE_COUNT]
+    if not sprawl:
+        return None
+    top = max(sprawl, key=lambda r: r.image_count)
+    return HealthCondition(
+        condition="A registry repo has accumulated hundreds of images with no lifecycle/GC policy",
+        severity=SEV_LOW,
+        count=str(top.image_count),
+        area="artifacts · GCP AR",
+        tab="art",
+        meaning=f"{top.repo} alone carries {top.image_count} images — storage cost keeps climbing with no expiry.",
+        evidence=f"repo={top.repo}",
+    )
+
+
 class ArtifactPipelineService:
     """Serves the /ops/artifacts views from the (cheaply cached) normalized provider facts."""
 
@@ -563,161 +716,21 @@ class ArtifactPipelineService:
         deploys = self._all_deploy_facts(force=force)
         images_resp = self.images(force=force)
         running_resp = self.running(force=force)
-
-        conditions: list[HealthCondition] = [
-            HealthCondition(
-                condition="AWS builds/deploys/registry are not read yet",
-                severity=SEV_DEFERRED,
-                count="all AWS",
-                area="cross-cutting · AWS",
-                tab="pipe",
-                meaning="The AWS estate is deliberately stopped while credits are unavailable — parked, not broken.",
-                evidence="AWS CodeBuild/App Runner/ECS/ECR providers are not yet wired into this page.",
-            )
-        ]
-
-        live_failed = [d for d in deploys if d.live and d.change_type == CHANGE_FAILED]
-        if live_failed:
-            conditions.append(
-                HealthCondition(
-                    condition="A workload is serving its newest revision even though that revision never went ready",
-                    severity=SEV_HIGH,
-                    count=str(len(live_failed)),
-                    area="deploy · GCP",
-                    tab="deploy",
-                    meaning="Cloud Run has nothing newer to fall back to, so a broken deploy is still what's live.",
-                    evidence=", ".join(sorted({d.workload for d in live_failed})),
-                )
-            )
-
-        lo7, hi7 = _resolve_window(7, None, None)
-        recent_failed = [b for b in builds if b.status == "FAILURE" and _in_window(b.started_at, lo7, hi7)]
-        if recent_failed:
-            conditions.append(
-                HealthCondition(
-                    condition="Builds failed in the last 7 days",
-                    severity=SEV_MED,
-                    count=str(len(recent_failed)),
-                    area="pipeline · CI",
-                    tab="pipe",
-                    meaning="Each failure blocked that commit from reaching a registry image.",
-                    evidence=", ".join(sorted({b.repo for b in recent_failed})),
-                )
-            )
-
-        recent_counts = _sha_build_counts([b for b in builds if _in_window(b.started_at, lo7, hi7)])
-        wasted = sum(c - 1 for c in recent_counts.values() if c > 1)
-        if wasted:
-            conditions.append(
-                HealthCondition(
-                    condition="A commit was built more than once in the last 7 days",
-                    severity=SEV_LOW,
-                    count=str(wasted),
-                    area="pipeline · CI",
-                    tab="pipe",
-                    meaning="Wasted compute — the second build produces an identical artifact to the first.",
-                    evidence="see the Pipeline tab's 'dup' badge",
-                )
-            )
-
         all_versions = [(g.service, v) for g in running_resp.groups for v in g.versions]
-        floating = [svc for svc, v in all_versions if DRIFT_FLOATING in v.drift]
-        if floating:
-            conditions.append(
-                HealthCondition(
-                    condition="A live workload resolves to an image tagged only :latest",
-                    severity=SEV_MED,
-                    count=str(len(floating)),
-                    area="running · GCP",
-                    tab="running",
-                    meaning=(
-                        "No SHA-traceable tag — a future push could silently change what this digest means "
-                        "without a new deploy."
-                    ),
-                    evidence=", ".join(sorted(floating)),
-                )
-            )
+        lo7, hi7 = _resolve_window(7, None, None)
 
-        hand = [svc for svc, v in all_versions if DRIFT_HAND in v.drift]
-        if hand:
-            conditions.append(
-                HealthCondition(
-                    condition="A live workload was deployed by something other than the CI pipeline",
-                    severity=SEV_MED,
-                    count=str(len(hand)),
-                    area="running · GCP",
-                    tab="running",
-                    meaning="Bypasses the build record this page's provenance chain relies on.",
-                    evidence=", ".join(sorted(hand)),
-                )
+        conditions: list[HealthCondition] = [_aws_not_read_condition()]
+        conditions.extend(
+            c
+            for c in (
+                _live_failed_condition(deploys),
+                _recent_failed_builds_condition(builds, lo7, hi7),
+                _duplicate_builds_condition(builds, lo7, hi7),
+                _floating_tag_condition(all_versions),
+                _hand_deployed_condition(all_versions),
+                _tarball_lane_condition(images_resp),
+                _registry_sprawl_condition(images_resp),
             )
-
-        # Phase 3d (2026-07-27): builds()/images() now carry real tarball-lane data (the GCS bucket
-        # provider landed), but `running()` still can't join any of it — there is no VM-launch deploy
-        # provider yet (Phase 3d confirmed the plan's own earlier "Deploy timeline already treats a
-        # VM launch as the tarball deploy" claim was STALE; `deployment-api@72a0108`'s own commit
-        # message says GCE VM launches were explicitly deferred) and no VM stamps `git_commit` at
-        # boot yet (Phase 3c, not yet shipped). So this condition is now DATA-DRIVEN off the tarball
-        # repos images() actually found, not a fixed "fleet" placeholder — it fires only when tarball
-        # data exists to have this gap in the first place.
-        tarball_repos = sorted({r.repo for r in images_resp.rows if r.registry == REGISTRY_TARBALL_BUCKET})
-        if tarball_repos:
-            conditions.append(
-                HealthCondition(
-                    condition="VM tarball-lane workloads carry no measured git commit yet",
-                    severity=SEV_MED,
-                    count=f"{len(tarball_repos)} repos",
-                    area="running · GCP tarball lane",
-                    tab="running",
-                    meaning=(
-                        'The GCE VM registry entry\'s git_commit/image_digest fields are stamped "" at launch today, '
-                        "so What's running can only cover the Cloud Run (image) lane until the launch-time stamp "
-                        "change lands (Phase 3c)."
-                    ),
-                    evidence="plans/active/artifact_pipeline_observability_2026_07_17.md § Honest gaps",
-                )
-            )
-        else:
-            # The bucket has ~5000 objects live (measured 2026-07-27) — zero tarball rows here is the
-            # SAME silent-empty symptom Phase 7 diagnosed for Artifact Registry before its IAM fix
-            # (a caught exception degrading to `[]`), not a "nothing to report" state. AR having real
-            # rows in the SAME response proves images() itself is working, isolating the suspect to
-            # the tarball provider specifically.
-            ar_rows = [r for r in images_resp.rows if r.registry != REGISTRY_TARBALL_BUCKET]
-            if ar_rows:
-                conditions.append(
-                    HealthCondition(
-                        condition="The tarball-bucket provider returned zero rows",
-                        severity=SEV_MED,
-                        count="0",
-                        area="artifacts · GCP tarball lane",
-                        tab="art",
-                        meaning=(
-                            "Artifact Registry rows loaded fine in this same response, so images() itself works — "
-                            "a live bucket with no rows here likely means gcp_tarball_manifest_images() raised and "
-                            "providers.safe() swallowed it (the same silent-empty failure mode Phase 7 found for AR "
-                            "before its IAM fix), not that the bucket is genuinely empty."
-                        ),
-                        evidence="the tarball-manifest bucket's code/ prefix (~5000 objects measured 2026-07-27)",
-                    )
-                )
-
-        sprawl = [r for r in images_resp.rows if r.image_count >= _SPRAWL_IMAGE_COUNT]
-        if sprawl:
-            top = max(sprawl, key=lambda r: r.image_count)
-            conditions.append(
-                HealthCondition(
-                    condition="A registry repo has accumulated hundreds of images with no lifecycle/GC policy",
-                    severity=SEV_LOW,
-                    count=str(top.image_count),
-                    area="artifacts · GCP AR",
-                    tab="art",
-                    meaning=(
-                        f"{top.repo} alone carries {top.image_count} images — "
-                        "storage cost keeps climbing with no expiry."
-                    ),
-                    evidence=f"repo={top.repo}",
-                )
-            )
-
+            if c is not None
+        )
         return HealthResponse(generated_at=_now_iso(), conditions=conditions, stats=_health_stats(conditions))
