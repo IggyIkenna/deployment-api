@@ -60,6 +60,8 @@ async def verify_reap_scheduler_oidc(
         raise HTTPException(status_code=401, detail="Bearer token is empty")
 
     # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
+    import asyncio
+
     from google.auth.exceptions import GoogleAuthError  # noqa: imports-inside-functions
     from google.auth.transport.requests import (  # noqa: imports-inside-functions
         Request as AuthRequest,  # pyright: ignore[reportMissingTypeStubs]
@@ -68,13 +70,29 @@ async def verify_reap_scheduler_oidc(
         id_token as google_id_token,  # noqa: imports-inside-functions # pyright: ignore[reportMissingTypeStubs]
     )
 
-    try:
-        claims: dict[str, object] = google_id_token.verify_oauth2_token(  # pyright: ignore[reportUnknownMemberType]
+    def _verify() -> dict[str, object]:
+        return google_id_token.verify_oauth2_token(  # pyright: ignore[reportUnknownMemberType]
             token, AuthRequest(), audience=None
         )
+
+    try:
+        # Run in a thread: this makes a real outbound HTTPS call (fetching Google's OAuth2
+        # certs) — synchronous, so calling it directly here would block the event loop for the
+        # life of the request, same class of bug as the GCS I/O below (already thread-wrapped).
+        claims: dict[str, object] = await asyncio.to_thread(_verify)
     except (GoogleAuthError, ValueError) as exc:
         logger.warning("reap-scheduler OIDC verification failed: %s", exc)
         raise HTTPException(status_code=401, detail="Invalid OIDC token") from None
+    except Exception as exc:
+        # A raw transport-level failure (e.g. an SSL/socket error while fetching Google's certs)
+        # is NOT a requests.exceptions.RequestException subtype in every case and can therefore
+        # escape google-auth's own GoogleAuthError wrapping — confirmed live 2026-07-31: this
+        # exact call produced an unhandled 500 with a raw uvicorn/urllib3 traceback instead of a
+        # clean 401 (deployment_api_sigabrt_crash_loop_2026_07_24.md). Treat it as transient
+        # (503, Cloud Scheduler retries) rather than "bad token" (401) and log it as ONE
+        # structured record instead of letting it propagate to the ASGI layer's raw dump.
+        logger.exception("reap-scheduler OIDC verification transport failure: %s", exc)
+        raise HTTPException(status_code=503, detail="OIDC verification transiently unavailable") from None
 
     email = str(claims.get("email") or "")
     if email != settings.REAP_SCHEDULER_INVOKER_SA:
