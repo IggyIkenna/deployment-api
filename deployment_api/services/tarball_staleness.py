@@ -563,6 +563,35 @@ class TarballStalenessChecker:
             raise TarballStalenessError(
                 f"latest_commit_timestamp must be tz-aware (UTC); got naive datetime {latest_commit_timestamp!r}"
             )
+
+        precheck = self._ensure_fresh_precheck(asset_group, oldest, latest_commit_timestamp, allow_trigger)
+        if precheck is not None:
+            return precheck
+
+        build_id, log_url = self.trigger_refresh(asset_group, trigger_name=trigger_name, branch=branch)
+        terminal_status = self.poll_build(
+            build_id,
+            timeout_seconds=poll_timeout_seconds,
+            interval_seconds=poll_interval_seconds,
+        )
+        return self._build_refresh_result(
+            asset_group,
+            oldest,
+            latest_commit_timestamp,
+            build_id,
+            log_url,
+            terminal_status,
+            poll_timeout_seconds,
+        )
+
+    def _ensure_fresh_precheck(
+        self,
+        asset_group: str,
+        oldest: datetime | None,
+        latest_commit_timestamp: datetime,
+        allow_trigger: bool,
+    ) -> RefreshResult | None:
+        """Short-circuit result if the bundle is already fresh or a trigger isn't allowed. None means proceed."""
         if oldest is not None and oldest >= latest_commit_timestamp:
             return RefreshResult(
                 asset_group=asset_group.upper(),
@@ -581,12 +610,16 @@ class TarballStalenessChecker:
                 bundle_oldest_mtime=oldest,
                 latest_commit_timestamp=latest_commit_timestamp,
             )
-        build_id, log_url = self.trigger_refresh(asset_group, trigger_name=trigger_name, branch=branch)
-        terminal_status = self.poll_build(
-            build_id,
-            timeout_seconds=poll_timeout_seconds,
-            interval_seconds=poll_interval_seconds,
-        )
+        return None
+
+    def _log_refresh_outcome(
+        self,
+        asset_group: str,
+        build_id: str,
+        terminal_status: str,
+        poll_timeout_seconds: float,
+    ) -> str:
+        """Emit the matching TARBALLS_REFRESH_* event for a trigger+poll outcome. Returns the result status."""
         if terminal_status == "SUCCESS":
             log_event(
                 "TARBALLS_REFRESH_OBSERVED_SUCCESS",
@@ -596,15 +629,7 @@ class TarballStalenessChecker:
                     "build_id": build_id,
                 },
             )
-            return RefreshResult(
-                asset_group=asset_group.upper(),
-                status="REFRESHED",
-                triggered=True,
-                bundle_oldest_mtime=oldest,
-                latest_commit_timestamp=latest_commit_timestamp,
-                build_id=build_id,
-                log_url=log_url,
-            )
+            return "REFRESHED"
         if terminal_status == "POLL_TIMEOUT":
             log_event(
                 "TARBALLS_REFRESH_POLL_TIMEOUT",
@@ -615,15 +640,7 @@ class TarballStalenessChecker:
                     "timeout_seconds": str(poll_timeout_seconds),
                 },
             )
-            return RefreshResult(
-                asset_group=asset_group.upper(),
-                status="POLL_TIMEOUT",
-                triggered=True,
-                bundle_oldest_mtime=oldest,
-                latest_commit_timestamp=latest_commit_timestamp,
-                build_id=build_id,
-                log_url=log_url,
-            )
+            return "POLL_TIMEOUT"
         # Any other terminal status = failure (FAILURE / INTERNAL_ERROR
         # / TIMEOUT / CANCELLED / EXPIRED).
         log_event(
@@ -635,9 +652,23 @@ class TarballStalenessChecker:
                 "terminal_status": terminal_status,
             },
         )
+        return "REFRESH_FAILED"
+
+    def _build_refresh_result(
+        self,
+        asset_group: str,
+        oldest: datetime | None,
+        latest_commit_timestamp: datetime,
+        build_id: str,
+        log_url: str | None,
+        terminal_status: str,
+        poll_timeout_seconds: float,
+    ) -> RefreshResult:
+        """Log the trigger+poll outcome and build the matching RefreshResult."""
+        status = self._log_refresh_outcome(asset_group, build_id, terminal_status, poll_timeout_seconds)
         return RefreshResult(
             asset_group=asset_group.upper(),
-            status="REFRESH_FAILED",
+            status=status,
             triggered=True,
             bundle_oldest_mtime=oldest,
             latest_commit_timestamp=latest_commit_timestamp,
