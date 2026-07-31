@@ -284,155 +284,112 @@ class DeployMissingLaunchResult:  # CORRECT-LOCAL: in-process launch result
 # ── Main launch function ───────────────────────────────────────────────────────
 
 
-def launch_deploy_missing_vm(
-    *,
-    service: str,
-    asset_group: str,
-    row_key: dict[str, str],
-    operator_id: str,
-    dry_run: bool = False,
-    skip_tarball_check: bool = False,
-) -> DeployMissingLaunchResult:
-    """Launch a deploy-missing backfill VM for ONE leaf shard.
-
-    Phase 2 sequence:
-      1. Input validation + launcher script lookup.
-      2. Rate limit check (raises DeployMissingRateLimitError on ceiling exceeded).
-      3. Build shard_key + shard_key_hash.
-      4. In-flight VM check — return existing VM name if shard already running.
-      5. Tarball freshness gate (best-effort; non-blocking if git unavailable).
-      6. subprocess.run bash launcher with ``--shard-key=<key>`` arg.
-      7. Emit DEPLOY_MISSING_VM_LAUNCHED event keyed on shard_key/correlation_id.
-      8. Poll 90s for STARTED lifecycle event from the VM startup script.
-
-    Args:
-        service: Service slug from ``_SERVICE_LAUNCHER_SCRIPTS`` registry.
-        asset_group: Lowercase asset_group (cefi/defi/tradfi/sports/prediction).
-        row_key: Leaf shard row_key dict; must include 'venue', 'data_type', 'day'.
-        operator_id: Caller identity for per-operator rate-limit buckets.
-        dry_run: If True (or mock mode), returns stub result without subprocess.
-        skip_tarball_check: If True, bypass Phase 1 tarball freshness gate.
-
-    Raises:
-        DeployMissingError: Invalid service/row_key or launcher not found.
-        DeployMissingRateLimitError: Phase 0 Decision 3 ceiling exceeded.
-    """
+def _validate_deploy_missing_row_key(row_key: dict[str, str]) -> str:
+    """Validate ``row_key`` carries venue/data_type/day(or date); returns the day string."""
     if not row_key.get("venue") or not row_key.get("data_type"):
         raise DeployMissingError(f"row_key must include at least 'venue' and 'data_type'; got {row_key!r}")
     day = row_key.get("day") or row_key.get("date")
     if not day:
         raise DeployMissingError("row_key must include 'day' (or 'date') for surgical recovery")
+    return day
 
-    launcher_script = get_launcher_script(service)
-    if launcher_script is None:
-        raise DeployMissingError(
-            f"No launcher script registered for service {service!r}. "
-            "Add to _SERVICE_LAUNCHER_SCRIPTS in deployment_api/services/deploy_missing.py."
-        )
 
-    _rate_limiter.check_and_record(operator_id)
-
-    shard_key = build_shard_key(asset_group, row_key)
-    shard_key_hash = _build_shard_key_hash(shard_key)
-    project_id = _cfg.gcp_project_id or "unknown"
-    run_ts = _build_run_ts()
-    correlation_id = str(uuid.uuid4())
-    vm_name = f"{_DM_VM_PREFIX}-{shard_key_hash}-{run_ts}"
-
-    inflight = check_inflight_vm(shard_key_hash, project_id)
-    if inflight:
-        logger.info(
-            "deploy-missing: in-flight VM %s already running for shard_key_hash=%s",
-            inflight,
-            shard_key_hash,
-        )
-        events_uri = _build_events_uri(project_id, service, run_ts, inflight)
-        log_event(
-            "DEPLOY_MISSING_INFLIGHT",
-            details={
-                "vm_name": inflight,
-                "shard_key_hash": shard_key_hash,
-                "correlation_id": correlation_id,
-            },
-        )
-        return DeployMissingLaunchResult(
-            service=service,
-            asset_group=asset_group,
-            shard_key=shard_key,
-            shard_key_hash=shard_key_hash,
-            vm_name=inflight,
-            correlation_id=correlation_id,
-            events_uri=events_uri,
-            dry_run=dry_run,
-            started_confirmed=True,
-            inflight_vm_name=inflight,
-        )
-
-    events_uri = _build_events_uri(project_id, service, run_ts, vm_name)
-
-    # Tarball freshness gate (Phase 1 integration). Non-blocking on failure.
-    if not skip_tarball_check and not (_cfg.is_mock_mode() or dry_run):
-        workspace_root = _cfg.workspace_root or str(Path(__file__).resolve().parents[3])
-        latest_ts = _get_latest_commit_timestamp(workspace_root)
-        if latest_ts is not None:
-            try:
-                checker = TarballStalenessChecker(project_id=project_id)
-                refresh = checker.ensure_fresh(asset_group, latest_ts)
-                logger.info(
-                    "deploy-missing tarball check: asset_group=%s status=%s triggered=%s",
-                    asset_group,
-                    refresh.status,
-                    refresh.triggered,
-                )
-            except Exception as exc:
-                logger.warning("Tarball freshness check failed (non-blocking): %s", exc)
-        else:
-            logger.warning(
-                "deploy-missing: git timestamp unavailable at %s — skipping tarball check",
-                workspace_root,
-            )
-
+def _inflight_launch_result(
+    service: str,
+    asset_group: str,
+    shard_key: str,
+    shard_key_hash: str,
+    inflight: str,
+    correlation_id: str,
+    project_id: str,
+    run_ts: str,
+    dry_run: bool,
+) -> DeployMissingLaunchResult:
+    """Result for a shard whose VM is already running — see ``check_inflight_vm``."""
+    logger.info("deploy-missing: in-flight VM %s already running for shard_key_hash=%s", inflight, shard_key_hash)
+    events_uri = _build_events_uri(project_id, service, run_ts, inflight)
     log_event(
-        "DEPLOY_MISSING_VM_LAUNCH_REQUESTED",
-        details={
-            "vm_name": vm_name,
-            "service": service,
-            "asset_group": asset_group,
-            "shard_key_hash": shard_key_hash,
-            "correlation_id": correlation_id,
-            "dry_run": str(dry_run),
-        },
+        "DEPLOY_MISSING_INFLIGHT",
+        details={"vm_name": inflight, "shard_key_hash": shard_key_hash, "correlation_id": correlation_id},
+    )
+    return DeployMissingLaunchResult(
+        service=service,
+        asset_group=asset_group,
+        shard_key=shard_key,
+        shard_key_hash=shard_key_hash,
+        vm_name=inflight,
+        correlation_id=correlation_id,
+        events_uri=events_uri,
+        dry_run=dry_run,
+        started_confirmed=True,
+        inflight_vm_name=inflight,
     )
 
-    if _cfg.is_mock_mode() or dry_run:
-        log_event(
-            "DEPLOY_MISSING_VM_LAUNCHED",
-            details={
-                "vm_name": vm_name,
-                "shard_key": shard_key,
-                "correlation_id": correlation_id,
-                "dry_run": "true",
-                "events_uri": events_uri,
-            },
-        )
-        return DeployMissingLaunchResult(
-            service=service,
-            asset_group=asset_group,
-            shard_key=shard_key,
-            shard_key_hash=shard_key_hash,
-            vm_name=vm_name,
-            correlation_id=correlation_id,
-            events_uri=events_uri,
-            dry_run=True,
-            started_confirmed=True,
-        )
 
-    launcher_path = _launcher_dir() / Path(launcher_script).name
-    if not launcher_path.is_file():
-        raise DeployMissingError(
-            f"Launcher '{launcher_path}' not found. Verify deployment-service is checked out at the workspace root."
+def _run_tarball_freshness_gate(project_id: str, asset_group: str) -> None:
+    """Phase 1 tarball freshness gate — best-effort, non-blocking on any failure (incl. an
+    unavailable git timestamp in the Cloud Run container)."""
+    workspace_root = _cfg.workspace_root or str(Path(__file__).resolve().parents[3])
+    latest_ts = _get_latest_commit_timestamp(workspace_root)
+    if latest_ts is None:
+        logger.warning("deploy-missing: git timestamp unavailable at %s — skipping tarball check", workspace_root)
+        return
+    try:
+        checker = TarballStalenessChecker(project_id=project_id)
+        refresh = checker.ensure_fresh(asset_group, latest_ts)
+        logger.info(
+            "deploy-missing tarball check: asset_group=%s status=%s triggered=%s",
+            asset_group,
+            refresh.status,
+            refresh.triggered,
         )
+    except Exception as exc:
+        logger.warning("Tarball freshness check failed (non-blocking): %s", exc)
 
+
+def _dry_run_launch_result(
+    service: str,
+    asset_group: str,
+    shard_key: str,
+    shard_key_hash: str,
+    vm_name: str,
+    correlation_id: str,
+    events_uri: str,
+) -> DeployMissingLaunchResult:
+    """Stub result for mock-mode / ``dry_run=True`` — no subprocess launched."""
+    log_event(
+        "DEPLOY_MISSING_VM_LAUNCHED",
+        details={
+            "vm_name": vm_name,
+            "shard_key": shard_key,
+            "correlation_id": correlation_id,
+            "dry_run": "true",
+            "events_uri": events_uri,
+        },
+    )
+    return DeployMissingLaunchResult(
+        service=service,
+        asset_group=asset_group,
+        shard_key=shard_key,
+        shard_key_hash=shard_key_hash,
+        vm_name=vm_name,
+        correlation_id=correlation_id,
+        events_uri=events_uri,
+        dry_run=True,
+        started_confirmed=True,
+    )
+
+
+def _build_launcher_env(
+    vm_name: str,
+    run_ts: str,
+    asset_group: str,
+    shard_key_hash: str,
+    shard_key: str,
+    row_key: dict[str, str],
+    day: str,
+) -> dict[str, str]:
+    """Env-var diff passed to the bash launcher subprocess."""
     env_diff: dict[str, str] = {
         "VM_NAME": vm_name,
         "RUN_TS": run_ts,
@@ -451,10 +408,18 @@ def launch_deploy_missing_vm(
     if day:
         env_diff["VM_START_DATE"] = day
         env_diff["VM_END_DATE"] = day
+    return env_diff
 
+
+def _run_launcher_subprocess(
+    launcher_path: Path,
+    shard_key: str,
+    full_env: dict[str, str],
+    vm_name: str,
+    correlation_id: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the bash launcher; raises ``DeployMissingError`` on timeout or a nonzero exit."""
     argv = ["bash", str(launcher_path), f"--shard-key={shard_key}"]
-    full_env = {**_process_env, **env_diff}
-
     try:
         completed = subprocess.run(
             argv,
@@ -489,6 +454,91 @@ def launch_deploy_missing_vm(
         raise DeployMissingError(
             f"Launcher exited {completed.returncode} for VM {vm_name}. stderr: {(completed.stderr or '')[-500:]}"
         )
+    return completed
+
+
+def launch_deploy_missing_vm(
+    *,
+    service: str,
+    asset_group: str,
+    row_key: dict[str, str],
+    operator_id: str,
+    dry_run: bool = False,
+    skip_tarball_check: bool = False,
+) -> DeployMissingLaunchResult:
+    """Launch a deploy-missing backfill VM for ONE leaf shard.
+
+    Phase 2 sequence: (1) input validation + launcher lookup, (2) rate-limit check (raises
+    ``DeployMissingRateLimitError`` on ceiling exceeded), (3) build shard_key/shard_key_hash,
+    (4) in-flight VM check — return the existing VM name if the shard is already running,
+    (5) tarball freshness gate (best-effort, non-blocking), (6) subprocess.run the bash launcher
+    with ``--shard-key=<key>``, (7) emit ``DEPLOY_MISSING_VM_LAUNCHED``, (8) poll 90s for the
+    ``STARTED`` lifecycle event.
+
+    Args:
+        service: Service slug from ``_SERVICE_LAUNCHER_SCRIPTS`` registry.
+        asset_group: Lowercase asset_group (cefi/defi/tradfi/sports/prediction).
+        row_key: Leaf shard row_key dict; must include 'venue', 'data_type', 'day'.
+        operator_id: Caller identity for per-operator rate-limit buckets.
+        dry_run: If True (or mock mode), returns stub result without subprocess.
+        skip_tarball_check: If True, bypass Phase 1 tarball freshness gate.
+
+    Raises:
+        DeployMissingError: Invalid service/row_key or launcher not found.
+        DeployMissingRateLimitError: Phase 0 Decision 3 ceiling exceeded.
+    """
+    day = _validate_deploy_missing_row_key(row_key)
+    launcher_script = get_launcher_script(service)
+    if launcher_script is None:
+        raise DeployMissingError(
+            f"No launcher script registered for service {service!r}. "
+            "Add to _SERVICE_LAUNCHER_SCRIPTS in deployment_api/services/deploy_missing.py."
+        )
+    _rate_limiter.check_and_record(operator_id)
+
+    shard_key = build_shard_key(asset_group, row_key)
+    shard_key_hash = _build_shard_key_hash(shard_key)
+    project_id = _cfg.gcp_project_id or "unknown"
+    run_ts = _build_run_ts()
+    correlation_id = str(uuid.uuid4())
+    vm_name = f"{_DM_VM_PREFIX}-{shard_key_hash}-{run_ts}"
+
+    inflight = check_inflight_vm(shard_key_hash, project_id)
+    if inflight:
+        return _inflight_launch_result(
+            service, asset_group, shard_key, shard_key_hash, inflight, correlation_id, project_id, run_ts, dry_run
+        )
+
+    events_uri = _build_events_uri(project_id, service, run_ts, vm_name)
+    if not skip_tarball_check and not (_cfg.is_mock_mode() or dry_run):
+        _run_tarball_freshness_gate(project_id, asset_group)
+
+    log_event(
+        "DEPLOY_MISSING_VM_LAUNCH_REQUESTED",
+        details={
+            "vm_name": vm_name,
+            "service": service,
+            "asset_group": asset_group,
+            "shard_key_hash": shard_key_hash,
+            "correlation_id": correlation_id,
+            "dry_run": str(dry_run),
+        },
+    )
+
+    if _cfg.is_mock_mode() or dry_run:
+        return _dry_run_launch_result(
+            service, asset_group, shard_key, shard_key_hash, vm_name, correlation_id, events_uri
+        )
+
+    launcher_path = _launcher_dir() / Path(launcher_script).name
+    if not launcher_path.is_file():
+        raise DeployMissingError(
+            f"Launcher '{launcher_path}' not found. Verify deployment-service is checked out at the workspace root."
+        )
+
+    env_diff = _build_launcher_env(vm_name, run_ts, asset_group, shard_key_hash, shard_key, row_key, day)
+    full_env = {**_process_env, **env_diff}
+    _run_launcher_subprocess(launcher_path, shard_key, full_env, vm_name, correlation_id)
 
     log_event(
         "DEPLOY_MISSING_VM_LAUNCHED",
