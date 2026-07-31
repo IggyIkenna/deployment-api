@@ -69,7 +69,18 @@ export PYRIGHT_TIMEOUT="${PYRIGHT_TIMEOUT:-600}"
 # measured V=6. Ratcheted 16 -> 6.
 # 2026-06-19: cleared the deep-UAC-import in utils/pipeline_mode_paths.py (now the facade
 # `from unified_api_contracts import Mode`) -> honest measured V=5. Ratcheted 6 -> 5.
-CODEX_MAX_VIOLATIONS=5
+# 2026-07-31 (deployment_api_qg_size_gate_debt_2026_07_30.md closing P3 todo): STEP 5.5z
+# (2026-07-30) moved file/function/class/method size OUT of this V aggregate into its own
+# zero-tolerance hard gate — decomposing the 27 FUNCTION_SIZE_EXTRA_EXCLUDES files (this same
+# doc's P2 todos, now all done, array empty) never touched V at all. Re-measured honestly via
+# QG_SLICE=lint-codex: V=3, all three PRE-EXISTING and unrelated to size —
+# imports-inside-functions (103 hits, mostly google.cloud/google.auth lazy imports),
+# direct cloud SDK imports (2 files: health_routes.py, artifact_pipeline/providers.py — the
+# latter carries a `# noqa: TID251` sanctioned-boundary comment but the pre-STEP-5.10 codex
+# check doesn't honor that suppression, unlike STEP 5.10 itself which passes clean), and
+# broad `except Exception` (4 files). Ratcheted 5 -> 3 to match the honest count; next
+# decomposition pass should target these 3 classes, not size (already at 0/hard-gated).
+CODEX_MAX_VIOLATIONS=3
 
 # ── Per-repo QG exclusions ──────────────────────────────────────────────────
 
@@ -91,9 +102,7 @@ EMPTY_DICT_LIST_EXCLUDE_GLOBS=()
 # regressions from this escalation's promotion PR. Listed explicitly (not directory-globbed) so
 # any NEW oversized file/function outside this exact list still fails the gate. Follow-up to
 # actually decompose these: plans/active/issues/deployment_api_qg_size_gate_debt_2026_07_30.md
-FUNCTION_SIZE_EXTRA_EXCLUDES=(
-    "!" "-path" "./deployment_api/utils/path_combinatorics.py"
-)
+FUNCTION_SIZE_EXTRA_EXCLUDES=()
 
 # STEP 5.11/5.12 protocol-symbol excludes: monitor_live.py + monitor_scheduled.py match ONLY on
 # `CloudTarget` — the UAC canonical StrEnum (unified_api_contracts.canonical.crosscutting.cloud_target)
