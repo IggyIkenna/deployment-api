@@ -20,6 +20,7 @@ from unified_trading_library import (
     RequestAuditMiddleware,
     UnifiedCloudConfig,
     make_events_relay_router,
+    setup_cloud_logging,
 )
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -125,9 +126,25 @@ from .routes import (
 # isolation — was silently discarded. Cloud Run only ships whatever the container actually writes
 # to stdout/stderr; with zero handlers there was nothing to ship, so prod ran with ZERO
 # application-level log lines in Cloud Logging (confirmed via `gcloud logging read`, only the
-# auto-generated HTTP access logs existed). Mirrors the level-from-LOG_LEVEL pattern in
-# unified_trading_library.service_framework.bootstrap.ServiceBootstrap._setup_logging().
-logging.basicConfig(level=logging.INFO)
+# auto-generated HTTP access logs existed).
+#
+# MEASURED 2026-07-31 (plans/active/issues/deployment_api_sigabrt_crash_loop_2026_07_24.md, the
+# "stdout/stderr blackout" todo): a bare `logging.basicConfig(level=logging.INFO)` was still not
+# enough — its default formatter emits plain, unstructured text with no recognizable severity, and
+# this project's `_Default` Cloud Logging sink has a cost-control exclusion
+# (`severity <= "DEBUG" AND NOT resource.type="cloud_run_job"`, see
+# gcs_data_access_audit_log_cost_2026_07_24.md's sibling sink-exclusion work). Cloud Run's log
+# ingestion stamps any non-JSON-structured stdout/stderr line with `severity=DEFAULT` (0), which is
+# `<= DEBUG` (100) — so EVERY plain-text log line (including gunicorn's own hook lines and
+# faulthandler dumps) was silently excluded, sink-side, regardless of what the app itself logged.
+# Confirmed empirically on this exact service via 4 live zero-traffic canary deploys: a bare
+# unstructured stdout write (with or without `--no-cpu-throttling`, ruling that out too) never
+# appeared in Cloud Logging, while a structured `{"severity": "INFO", ...}` JSON line on stdout
+# did. Switching to
+# `setup_cloud_logging()` (this repo's own `CloudRunJSONFormatter`, already built for exactly this
+# — GCP-recognized structured JSON with an explicit `severity` field) is the fix: it survives the
+# exclusion at INFO and above, matching this app's own `logging.INFO` level.
+setup_cloud_logging(log_level="INFO", json_format=True)
 
 logger = logging.getLogger(__name__)
 
