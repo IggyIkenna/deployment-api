@@ -126,19 +126,31 @@ class SportsStatusMixin(DefiStatusMixin):
         if cached and (now - cached[0]) < self._REF_DATA_CACHE_TTL:
             return cached[1]
 
-        if upstream == "features-commodity-service":
-            bucket = COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
-        else:
-            upstream_kind = SERVICE_TO_KIND.get(upstream, "")
-            if not upstream_kind:
-                return {}
-            ag = category.lower() or None
-            if ag == "prediction":
-                pred_kind = PREDICTION_KIND_MAP.get(upstream_kind)
-                bucket = _dss.resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else upstream_kind)  # pyright: ignore[reportArgumentType]
-            else:
-                bucket = _dss.resolve_bucket_name(cloud=cloud, kind=upstream_kind, asset_group=ag)  # pyright: ignore[reportArgumentType]
+        bucket = self._resolve_upstream_bucket(upstream, category, cloud)
+        if bucket is None:
+            return {}
+        result = self._read_upstream_venue_dates(bucket, upstream, start_date, end_date)
+        self._REF_DATA_CACHE[cache_key] = (now, result)
+        return result
 
+    def _resolve_upstream_bucket(self, upstream: str, category: str, cloud: str) -> str | None:
+        """Resolve the upstream service's availability-index bucket, or ``None`` when the
+        upstream service kind is unknown."""
+        if upstream == "features-commodity-service":
+            return COMMODITY_BUCKET_TEMPLATE.format(pid=self.project_id)
+
+        upstream_kind = SERVICE_TO_KIND.get(upstream, "")
+        if not upstream_kind:
+            return None
+        ag = category.lower() or None
+        if ag == "prediction":
+            pred_kind = PREDICTION_KIND_MAP.get(upstream_kind)
+            return _dss.resolve_bucket_name(cloud=cloud, kind=pred_kind if pred_kind else upstream_kind)  # pyright: ignore[reportArgumentType]
+        return _dss.resolve_bucket_name(cloud=cloud, kind=upstream_kind, asset_group=ag)  # pyright: ignore[reportArgumentType]
+
+    @staticmethod
+    def _read_upstream_venue_dates(bucket: str, upstream: str, start_date: str, end_date: str) -> dict[str, set[str]]:
+        """Per-venue expected-date sets from the upstream service's availability index."""
         result: dict[str, set[str]] = {}
         try:
             idx = _dss._read_index_cached(bucket)  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
@@ -156,8 +168,6 @@ class SportsStatusMixin(DefiStatusMixin):
                     result[v_str] = v_dates
         except Exception:
             logger.debug("No upstream index for %s in %s", upstream, bucket)
-
-        self._REF_DATA_CACHE[cache_key] = (now, result)
         return result
 
     # Denominator chain: each downstream service uses its direct upstream's
