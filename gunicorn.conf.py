@@ -55,6 +55,18 @@ tmp_upload_dir = None
 preload_app = True
 
 
+def on_starting(server: object) -> None:  # pyright: ignore[reportAny]
+    """Called ONCE, in the MASTER/arbiter process, before any worker is forked.
+
+    Logs the arbiter's own pid so a future ``Uncaught signal: 6`` occurrence's pid can be
+    looked up against this log line (and ``post_fork``'s per-worker line below) to confirm
+    whether it belongs to the MASTER or a forked WORKER — without guessing from pid
+    magnitude alone, per the low-pid (28/29) vs high-pid (280/900/5096) split found in
+    plans/active/issues/deployment_api_sigabrt_crash_loop_2026_07_24.md.
+    """
+    server.log.info("gunicorn MASTER (arbiter) started, pid=%s", os.getpid())  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
+
+
 def pre_fork(server: object, worker: object) -> None:  # pyright: ignore[reportAny]
     """Called just before a worker is forked."""
     pass
@@ -63,15 +75,21 @@ def pre_fork(server: object, worker: object) -> None:  # pyright: ignore[reportA
 def post_fork(server: object, worker: object) -> None:  # pyright: ignore[reportAny]
     """Called just after a worker has been forked.
 
-    Records this worker's gunicorn-assigned age (spawn-order counter) in-process via
-    ``worker_identity.set_worker_age`` so the ASGI app — once it starts inside this SAME
-    forked process — can elect a single leader worker for singleton background tasks
-    (see ``deployment_api.utils.worker_identity`` + ``deployment_api.lifespan``).
-    Imported HERE (deferred, function-local) rather than at module level: by the time
-    ``post_fork`` runs, ``preload_app``'s own import of the ASGI app has already
-    succeeded once in the master and is cached in ``sys.modules``, so importing
-    ``deployment_api.settings`` here is safe/cheap — a module-level import in THIS
-    config file would instead run during gunicorn's config-file load, before the app
+    Logs this worker's pid + gunicorn-assigned age (spawn-order counter) — paired with
+    ``on_starting``'s master-pid line above, this gives a durable stdout/stderr record
+    mapping every pid this container ever forks to a role (MASTER vs WORKER) and spawn
+    generation, so the pid on the NEXT ``Uncaught signal: 6`` occurrence can be matched
+    against these lines instead of inferred from pid magnitude alone (see this hook's
+    ``on_starting`` sibling above for the full rationale).
+
+    Also records the age in-process via ``worker_identity.set_worker_age`` so the ASGI
+    app — once it starts inside this SAME forked process — can elect a single leader
+    worker for singleton background tasks (see ``deployment_api.utils.worker_identity`` +
+    ``deployment_api.lifespan``). Imported HERE (deferred, function-local) rather than at
+    module level: by the time ``post_fork`` runs, ``preload_app``'s own import of the ASGI
+    app has already succeeded once in the master and is cached in ``sys.modules``, so
+    importing ``deployment_api.settings`` here is safe/cheap — a module-level import in
+    THIS config file would instead run during gunicorn's config-file load, before the app
     is preloaded, and can hard-crash gunicorn startup on a missing env var (confirmed
     empirically — see the sibling ``deployment_api/gunicorn.conf.py`` dead-file finding
     in deployment_registry_reaper_not_draining_stale_entries_2026_07_24.md).
@@ -79,6 +97,8 @@ def post_fork(server: object, worker: object) -> None:  # pyright: ignore[report
     ``faulthandler.enable()`` is deliberately NOT called here (see ``post_worker_init``
     below for why a call at this point is silently neutered).
     """
+    server.log.info("gunicorn WORKER forked, pid=%s age=%s", worker.pid, worker.age)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
+
     from deployment_api.utils.worker_identity import set_worker_age
 
     set_worker_age(worker.age)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownArgumentType]
