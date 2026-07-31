@@ -95,7 +95,6 @@ FUNCTION_SIZE_EXTRA_EXCLUDES=(
     "!" "-path" "./deployment_api/routes/data_status/_live_coverage.py"
     "!" "-path" "./deployment_api/routes/deployment_state.py"
     "!" "-path" "./deployment_api/services/artifact_pipeline/service.py"
-    "!" "-path" "./deployment_api/services/cost_observability/service.py"
     "!" "-path" "./deployment_api/services/data_analytics_service.py"
     "!" "-path" "./deployment_api/services/data_query_service.py"
     "!" "-path" "./deployment_api/services/data_status/breakdowns_core.py"
