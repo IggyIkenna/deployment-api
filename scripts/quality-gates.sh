@@ -106,7 +106,6 @@ FUNCTION_SIZE_EXTRA_EXCLUDES=(
     "!" "-path" "./deployment_api/services/data_status/defi.py"
     "!" "-path" "./deployment_api/services/data_status/instrument_coverage.py"
     "!" "-path" "./deployment_api/services/data_status/manifest.py"
-    "!" "-path" "./deployment_api/services/data_status/mtds.py"
     "!" "-path" "./deployment_api/services/data_status/sports.py"
     "!" "-path" "./deployment_api/services/data_status/sports_helpers.py"
     "!" "-path" "./deployment_api/services/data_status/venue_resolution.py"
