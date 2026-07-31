@@ -48,7 +48,8 @@ class CoreBreakdownsMixin(DomainBreakdownsMixin):
 
     The data_status mixins form a single linear inheritance chain
     (cli -> defi -> sports -> breakdowns_domain -> breakdowns_core ->
-    venue_resolution -> coverage -> missing_shards -> manifest) so that
+    venue_resolution -> coverage -> missing_shards -> manifest_category_builder ->
+    manifest) so that
     every cross-group ``self._method`` reference resolves statically
     under basedpyright strict. ``DataStatusService`` composes the top of
     the chain and is the ONLY public entry point — import it from
