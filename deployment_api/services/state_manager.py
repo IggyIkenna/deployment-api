@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor as _Tpe
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
-from unified_trading_library import StorageClient
+from unified_trading_library import BlobMetadata, StorageClient
 from unified_trading_library import get_storage_client as _get_storage_client
 
 from deployment_api import settings
@@ -219,62 +219,64 @@ class StateManager:
         now = datetime.now(UTC)
         client = self._client()
 
-        payload = {
+        try:
+            # Fast path: try to upload (will overwrite if exists — GCS conditional
+            # upload via native API not available via UCI, so we use existence check)
+            if not client.blob_exists(self.state_bucket, lock_blob_name):
+                self._upload_lock_payload(client, lock_blob_name, self._new_lock_payload(deployment_id, now))
+                self._held_deployment_locks.add(deployment_id)
+                return True
+
+            if not self._renew_existing_lock(client, lock_blob_name, deployment_id, now):
+                return False
+            self._held_deployment_locks.add(deployment_id)
+            return True
+
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    def _new_lock_payload(self, deployment_id: str, now: datetime) -> dict[str, object]:
+        """Build the base lock payload for this instance."""
+        return {
             "owner": self.owner_id,
             "deployment_id": deployment_id,
             "acquired_at": now.isoformat(),
             "expires_at": now.timestamp() + self.lock_ttl_seconds,
         }
 
+    def _upload_lock_payload(self, client: StorageClient, lock_blob_name: str, payload: dict[str, object]) -> None:
+        """Upload a lock payload to the state bucket."""
+        client.upload_bytes(
+            self.state_bucket,
+            lock_blob_name,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    def _renew_existing_lock(
+        self, client: StorageClient, lock_blob_name: str, deployment_id: str, now: datetime
+    ) -> bool:
+        """Renew an already-existing lock blob if expired or owned by this instance."""
         try:
-            # Fast path: try to upload (will overwrite if exists — GCS conditional
-            # upload via native API not available via UCI, so we use existence check)
-            if not client.blob_exists(self.state_bucket, lock_blob_name):
-                client.upload_bytes(
-                    self.state_bucket,
-                    lock_blob_name,
-                    json.dumps(payload).encode("utf-8"),
-                    content_type="application/json",
-                )
-                self._held_deployment_locks.add(deployment_id)
-                return True
-
-            # Lock exists: read it and check expiry/ownership
-            try:
-                raw_bytes = client.download_bytes(self.state_bucket, lock_blob_name)
-                existing_payload: dict[str, object] = cast(dict[str, object], json.loads(raw_bytes.decode("utf-8")))
-            except (OSError, ValueError, RuntimeError):
-                existing_payload = {}
-
-            expires_at_raw: object = existing_payload.get("expires_at", 0)
-            expires_at = float(cast(float, expires_at_raw)) if isinstance(expires_at_raw, (int, float)) else 0.0
-            owner_raw: object = existing_payload.get("owner")
-            owner: str | None = owner_raw if isinstance(owner_raw, str) else None
-
-            # Allow renewal if we already own the lock or it's expired
-            is_expired = expires_at <= now.timestamp()
-            if not is_expired and owner != self.owner_id:
-                return False
-
-            new_payload = {
-                "owner": self.owner_id,
-                "deployment_id": deployment_id,
-                "acquired_at": now.isoformat(),
-                "expires_at": now.timestamp() + self.lock_ttl_seconds,
-                "prev_owner": owner,
-            }
-
-            client.upload_bytes(
-                self.state_bucket,
-                lock_blob_name,
-                json.dumps(new_payload).encode("utf-8"),
-                content_type="application/json",
-            )
-            self._held_deployment_locks.add(deployment_id)
-            return True
-
+            raw_bytes = client.download_bytes(self.state_bucket, lock_blob_name)
+            existing_payload: dict[str, object] = cast(dict[str, object], json.loads(raw_bytes.decode("utf-8")))
         except (OSError, ValueError, RuntimeError):
+            existing_payload = {}
+
+        expires_at_raw: object = existing_payload.get("expires_at", 0)
+        expires_at = float(cast(float, expires_at_raw)) if isinstance(expires_at_raw, (int, float)) else 0.0
+        owner_raw: object = existing_payload.get("owner")
+        owner: str | None = owner_raw if isinstance(owner_raw, str) else None
+
+        # Allow renewal if we already own the lock or it's expired
+        is_expired = expires_at <= now.timestamp()
+        if not is_expired and owner != self.owner_id:
             return False
+
+        new_payload = self._new_lock_payload(deployment_id, now)
+        new_payload["prev_owner"] = owner
+        self._upload_lock_payload(client, lock_blob_name, new_payload)
+        return True
 
     def release_deployment_lock(self, deployment_id: str) -> bool:
         """
@@ -401,38 +403,8 @@ class StateManager:
             for blob_meta in client.list_blobs(self.state_bucket, prefix=deployments_prefix):
                 if not blob_meta.name.endswith("/state.json"):
                     continue
-
-                try:
-                    # Parse last_modified from metadata string
-                    last_modified_str: str = blob_meta.last_modified or ""
-                    if not last_modified_str:
-                        continue
-
-                    # Parse ISO format last_modified
-                    try:
-                        blob_dt = datetime.fromisoformat(last_modified_str.replace("Z", "+00:00"))
-                    except ValueError:
-                        continue
-
-                    if blob_dt < cutoff:
-                        # Extract deployment ID from path
-                        parts = blob_meta.name.split("/")
-                        if len(parts) >= 3:
-                            deployment_id = parts[-2]
-
-                            # Delete entire deployment directory
-                            dep_prefix = "/".join(parts[:-1]) + "/"
-                            blobs_to_delete = list(client.list_blobs(self.state_bucket, prefix=dep_prefix))
-
-                            deleted_paths = [b.name for b in blobs_to_delete[:1000]]
-                            client.delete_blobs(self.state_bucket, deleted_paths)
-
-                            deleted_count += 1
-                            age_days = (datetime.now(UTC) - blob_dt).days
-                            logger.info("[STATE_TTL] Deleted %s (age: %sd)", deployment_id, age_days)
-
-                except (OSError, ValueError, RuntimeError) as e:
-                    logger.debug("[STATE_TTL] Error processing blob %s: %s", blob_meta.name, e)
+                if self._maybe_delete_expired_state(client, blob_meta, cutoff):
+                    deleted_count += 1
 
             if deleted_count > 0:
                 logger.info("[STATE_TTL] Deleted %s old deployment(s)", deleted_count)
@@ -442,6 +414,43 @@ class StateManager:
         except (OSError, ValueError, RuntimeError) as e:
             logger.debug("[STATE_TTL] Cleanup error: %s", e)
             return 0
+
+    def _maybe_delete_expired_state(self, client: StorageClient, blob_meta: BlobMetadata, cutoff: datetime) -> bool:
+        """Delete one deployment's whole state directory if its state.json is older than cutoff."""
+        try:
+            # Parse last_modified from metadata string
+            last_modified_str: str = blob_meta.last_modified or ""
+            if not last_modified_str:
+                return False
+
+            # Parse ISO format last_modified
+            try:
+                blob_dt = datetime.fromisoformat(last_modified_str.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+
+            if blob_dt >= cutoff:
+                return False
+
+            # Extract deployment ID from path
+            parts = blob_meta.name.split("/")
+            if len(parts) < 3:
+                return False
+            deployment_id = parts[-2]
+
+            # Delete entire deployment directory
+            dep_prefix = "/".join(parts[:-1]) + "/"
+            blobs_to_delete = list(client.list_blobs(self.state_bucket, prefix=dep_prefix))
+            deleted_paths = [b.name for b in blobs_to_delete[:1000]]
+            client.delete_blobs(self.state_bucket, deleted_paths)
+
+            age_days = (datetime.now(UTC) - blob_dt).days
+            logger.info("[STATE_TTL] Deleted %s (age: %sd)", deployment_id, age_days)
+            return True
+
+        except (OSError, ValueError, RuntimeError) as e:
+            logger.debug("[STATE_TTL] Error processing blob %s: %s", blob_meta.name, e)
+            return False
 
     def release_all_locks(self) -> int:
         """
