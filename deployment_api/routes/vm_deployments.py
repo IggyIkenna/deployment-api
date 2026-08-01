@@ -35,6 +35,7 @@ from unified_trading_library import (
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.registry_reader import resolve_active_registry, resolve_deployment_by_id
+from deployment_api.utils.request_memory_profiling import log_rss_delta
 from deployment_api.vm_utils import get_vm_instance_details
 
 router = APIRouter()
@@ -214,32 +215,38 @@ def _compute_vm_deployments(days: int, filter_stale: bool) -> VmDeploymentsListM
     registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)
     project_id = _cfg.require_gcp_project_id()
 
-    try:
-        # Get actual VM details from GCP
-        vm_details = get_vm_instance_details(project_id) if filter_stale else {}
-        running_vm_names = set(vm_details.keys()) if filter_stale else None
+    # Instrumented (not the cache-hit path in `_load_vm_deployments`) — this is the
+    # actual heavy synchronous walk (measured avg 93.75s/max 99.27s in prod) that only
+    # runs cold (empty cache) or on the ~45s background refresh, which is exactly the
+    # "freshly autoscaled instance" window the parent SIGABRT/OOM issue's burst
+    # correlates with. See deployment_api/utils/request_memory_profiling.py.
+    with log_rss_delta("vm_deployments._compute_vm_deployments"):
+        try:
+            # Get actual VM details from GCP
+            vm_details = get_vm_instance_details(project_id) if filter_stale else {}
+            running_vm_names = set(vm_details.keys()) if filter_stale else None
 
-        # Get all registry entries (Firestore-first via resolve_active_registry, GCS fallback)
-        all_active = resolve_active_registry(gcs=registry)
+            # Get all registry entries (Firestore-first via resolve_active_registry, GCS fallback)
+            all_active = resolve_active_registry(gcs=registry)
 
-        # Filter active entries to only actually running VMs if requested
-        if filter_stale and running_vm_names is not None:
-            filtered_active = [e for e in all_active if e.vm_name in running_vm_names]
-            logger.info(
-                "Filtered active deployments: %d registry entries -> %d actually running",
-                len(all_active),
-                len(filtered_active),
-            )
-            active = [_to_model(e, vm_details) for e in filtered_active]
-        else:
-            active = [_to_model(e, vm_details) for e in all_active]
+            # Filter active entries to only actually running VMs if requested
+            if filter_stale and running_vm_names is not None:
+                filtered_active = [e for e in all_active if e.vm_name in running_vm_names]
+                logger.info(
+                    "Filtered active deployments: %d registry entries -> %d actually running",
+                    len(all_active),
+                    len(filtered_active),
+                )
+                active = [_to_model(e, vm_details) for e in filtered_active]
+            else:
+                active = [_to_model(e, vm_details) for e in all_active]
 
-        # Recent archive entries (completed/failed) don't need filtering
-        recent = [_to_model(e, vm_details) for e in registry.list_recent_archive(days=days)]
+            # Recent archive entries (completed/failed) don't need filtering
+            recent = [_to_model(e, vm_details) for e in registry.list_recent_archive(days=days)]
 
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.exception("Failed to read VM deployments registry: %s", exc)
-        raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("Failed to read VM deployments registry: %s", exc)
+            raise HTTPException(status_code=502, detail="VM deployments registry unavailable") from exc
 
     return VmDeploymentsListModel(active=active, recent=recent, archive_days=days)
 
