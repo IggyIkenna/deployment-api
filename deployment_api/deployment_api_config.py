@@ -703,6 +703,15 @@ class DeploymentApiConfig(UnifiedCloudConfig):
         description="Max tokens for pipeline UAT Anthropic API response",
     )
 
+    pipeline_uat_llm_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PIPELINE_UAT_LLM_BASE_URL"),
+        description=(
+            "Optional Anthropic-compatible base URL override for pipeline UAT commentary "
+            "(e.g. a local OmniRoute gateway). None = call Anthropic directly (default, unchanged behavior)."
+        ),
+    )
+
     # =========================================================================
     # RUN.LOG TAIL ENDPOINT (WS-4)
     # =========================================================================
