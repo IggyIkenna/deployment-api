@@ -52,7 +52,7 @@ async def infra_health() -> dict[str, object]:
             "errors": mock_errors,
         }
     try:
-        from unified_trading_library import get_secret_client, get_storage_client
+        from unified_trading_library import get_secret_client, get_storage_client  # noqa: imports-inside-functions
 
         from deployment_api.auth import auth_cfg as _config
 

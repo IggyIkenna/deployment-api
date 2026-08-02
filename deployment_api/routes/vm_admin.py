@@ -259,7 +259,9 @@ def restart_vm(
     # Lazy import — the deployment_service.data_pipeline_monitors sub-package is imported at
     # CALL time (same deferred pattern as routes/_aws_deployments.py), so a top-level import
     # doesn't break app import in environments that resolve only the base package.
-    from deployment_service.data_pipeline_monitors.launcher_registry import resolve_launcher_for_vm
+    from deployment_service.data_pipeline_monitors.launcher_registry import (  # noqa: imports-inside-functions
+        resolve_launcher_for_vm,
+    )
 
     launcher = resolve_launcher_for_vm(vm_name)
     relaunchable = launcher is not None

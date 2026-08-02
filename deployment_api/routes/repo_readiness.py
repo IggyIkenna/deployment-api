@@ -107,7 +107,10 @@ def _load_snapshots_from_gcs(
     project_id: str,
 ) -> dict[str, list[dict[str, object]]]:
     """Load last-5 QG snapshot blobs per repo from GCS. Raises on GCS failure."""
-    from unified_trading_library import download_from_storage, get_storage_client
+    from unified_trading_library import (  # noqa: imports-inside-functions
+        download_from_storage,
+        get_storage_client,
+    )
 
     bucket_name = f"{project_id}-deployment-events"
     prefix = "quality_gates_snapshot/"
@@ -125,7 +128,7 @@ def _load_snapshots_from_gcs(
         if repo_name not in snapshots_by_repo:
             snapshots_by_repo[repo_name] = []
         try:
-            import pyarrow.parquet as pq
+            import pyarrow.parquet as pq  # noqa: imports-inside-functions
 
             raw = download_from_storage(bucket_name, blob.name)
             table = pq.read_table(io.BytesIO(raw))  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]

@@ -11,6 +11,7 @@ keeps intercepting.
 
 from __future__ import annotations
 
+import json
 import logging
 import re as _re
 from typing import cast
@@ -161,7 +162,7 @@ def _load_fixture_meta(
     split ``fixtures_schedule`` shards exist for the day; ``ValueError`` when
     the canonical league_id can't be mapped to an API-Football numeric id.
     """
-    from unified_api_contracts.sports import get_league
+    from unified_api_contracts.sports import get_league  # noqa: imports-inside-functions
 
     league = get_league(league_id)
     if league is None:
@@ -714,8 +715,6 @@ def build_fixture_download(
         return (csv_text, len(merged), filename_out, "text/csv; charset=utf-8")
 
     # JSON
-    import json
-
     entities_payload: dict[str, object] = {}
     for data_type, (status, rows) in per_entity.items():
         if status == "captured" and rows is not None and not rows.empty:

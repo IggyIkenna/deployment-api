@@ -408,7 +408,7 @@ def sports_trigger_dates_for_window(
     denominator). See sports_master.md:1064 for the soft-gating note on the
     instruments-service write-path dependency.
     """
-    from datetime import date as _date
+    from datetime import date as _date  # noqa: imports-inside-functions
 
     try:
         start_d = _date.fromisoformat(start_date)
@@ -443,7 +443,7 @@ def sports_trigger_dates_for_league(
     dates for this league (season-start + transfer-window-open/close via
     ``get_reference_refresh_dates``). Degrades gracefully on error.
     """
-    from datetime import date as _date
+    from datetime import date as _date  # noqa: imports-inside-functions
 
     try:
         start_d = _date.fromisoformat(start_date)

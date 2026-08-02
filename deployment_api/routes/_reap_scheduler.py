@@ -21,6 +21,7 @@ exact-URL-match, since the email check alone already scopes the caller to one sp
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -60,14 +61,12 @@ async def verify_reap_scheduler_oidc(
         raise HTTPException(status_code=401, detail="Bearer token is empty")
 
     # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
-    import asyncio
-
     from google.auth.exceptions import GoogleAuthError  # noqa: imports-inside-functions
     from google.auth.transport.requests import (  # noqa: imports-inside-functions
         Request as AuthRequest,  # pyright: ignore[reportMissingTypeStubs]
     )
-    from google.oauth2 import (
-        id_token as google_id_token,  # noqa: imports-inside-functions # pyright: ignore[reportMissingTypeStubs]
+    from google.oauth2 import (  # noqa: imports-inside-functions
+        id_token as google_id_token,  # pyright: ignore[reportMissingTypeStubs]
     )
 
     def _verify() -> dict[str, object]:
@@ -111,8 +110,6 @@ async def run_reap_tick(_invoker: str = Depends(verify_reap_scheduler_oidc)) -> 
     the caller is Cloud Scheduler with a long attempt-deadline, not a UI request. Runs the
     blocking GCS I/O in a thread so it doesn't block the event loop.
     """
-    import asyncio
-
     from deployment_api.services.sync_service import SyncService
 
     reaped = await asyncio.to_thread(SyncService().reap_stale_deployments)

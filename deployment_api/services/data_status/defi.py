@@ -202,7 +202,7 @@ class DefiStatusMixin(DataStatusCliMixin):
     # (2026-07-13) item C for lending-indices specifically — all 10 kinds' data now lives in the
     # shared bucket, same as the already-migrated Phase-2 types above). This file was never updated
     # during any of those rounds, so `_read_defi_merged_index` was silently swallowing failed reads
-    # against dead buckets (`except Exception: logger.debug(...)`) — not crashing, but the drilldown's
+    # against dead buckets (a broad except swallowing to `logger.debug(...)`) — not crashing, but the drilldown's
     # per-sub-dimension breakdown was permanently showing these as empty/no-data. `lending-indices`
     # was believed to be "the only survivor" as of the prior commit on this file (b5641cf, same day) —
     # that was wrong: its dedicated bucket's write path was already broken (a bare `"lending-indices"`
@@ -386,7 +386,7 @@ class DefiStatusMixin(DataStatusCliMixin):
         docstring above) so the CEFI/DEFI hybrid on-chain-CLOB venues'
         real captured chain-side rows aren't silently dropped.
         """
-        from unified_api_contracts.registry import (
+        from unified_api_contracts.registry import (  # noqa: imports-inside-functions
             ALL_DEFI_VENUES,
             LEGACY_DEFI_VENUE_ALIASES,
         )

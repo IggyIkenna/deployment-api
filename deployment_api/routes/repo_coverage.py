@@ -66,7 +66,10 @@ def _load_coverage_from_gcs(
     project_id: str,
 ) -> dict[str, list[dict[str, object]]]:
     """Load latest coverage snapshot rows per repo from GCS."""
-    from unified_trading_library import download_from_storage, get_storage_client
+    from unified_trading_library import (  # noqa: imports-inside-functions
+        download_from_storage,
+        get_storage_client,
+    )
 
     bucket_name = f"{project_id}-deployment-events"
     rows_by_repo: dict[str, list[dict[str, object]]] = {}
@@ -86,7 +89,7 @@ def _load_coverage_from_gcs(
         ):
             continue
         try:
-            import pyarrow.parquet as pq
+            import pyarrow.parquet as pq  # noqa: imports-inside-functions
 
             raw = download_from_storage(bucket_name, blob.name)
             table = pq.read_table(io.BytesIO(raw))  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]

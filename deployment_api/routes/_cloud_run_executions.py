@@ -127,7 +127,7 @@ def latest_execution_by_job(
     """
     try:
         # GCP SDK reached ONLY via the deployment-service _gcp_sdk boundary.
-        from deployment_service.backends import _gcp_sdk
+        from deployment_service.backends import _gcp_sdk  # noqa: imports-inside-functions
 
         run_v2 = _gcp_sdk.run_v2
         jobs_client = run_v2.JobsClient()
@@ -200,8 +200,8 @@ def list_job_executions(
     GCP error yields an empty list (the popover simply shows no history), never a crash.
     """
     try:
-        from deployment_service.backends import (
-            _gcp_sdk,  # noqa: imports-inside-functions  # deferred SDK boundary (matches latest_execution_by_job)
+        from deployment_service.backends import (  # noqa: imports-inside-functions
+            _gcp_sdk,  # deferred SDK boundary (matches latest_execution_by_job)
         )
 
         run_v2 = _gcp_sdk.run_v2

@@ -38,6 +38,7 @@ from ._deployment_processor_cloud_run import (  # pyright: ignore[reportPrivateU
 from ._deployment_processor_helpers import (  # pyright: ignore[reportPrivateUsage]
     STATE_BUCKET,
     _apply_shard_status_updates,  # pyright: ignore[reportPrivateUsage]
+    _parse_shard_elapsed_seconds,  # pyright: ignore[reportPrivateUsage]
     _QuotaBrokerProtocol,  # pyright: ignore[reportPrivateUsage]
     _resolve_gcs_shard_statuses,  # pyright: ignore[reportPrivateUsage]
 )
@@ -80,8 +81,6 @@ def _process_stuck_shards(
     updated: bool,
 ) -> bool:
     """Process detection and handling of stuck shards."""
-    from ._deployment_processor_helpers import _parse_shard_elapsed_seconds  # pyright: ignore[reportPrivateUsage]
-
     try:
         if compute_type != "vm":
             return updated

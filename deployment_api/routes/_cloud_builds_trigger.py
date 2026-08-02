@@ -198,7 +198,9 @@ def _find_recent_build_sync(trigger_id: str, started_after: datetime) -> RecentB
 
 def _extract_build_id_from_op(op_name: str | None, operation: object) -> tuple[str | None, str | None]:
     """Extract build_id and log_url from a Cloud Build operation object."""
-    from ._cloud_builds_types import _build_op_meta_cls  # type: ignore[reportPrivateUsage]
+    from ._cloud_builds_types import (  # noqa: imports-inside-functions
+        _build_op_meta_cls,  # type: ignore[reportPrivateUsage]
+    )
 
     build_id = None
     log_url = None

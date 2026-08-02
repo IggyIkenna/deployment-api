@@ -104,8 +104,10 @@ def _fanout_runtime_profile_env(runtime_profile: object) -> dict[str, str]:
     Returns an empty dict and logs a warning if the profile is unknown — callers
     should never receive a partial env set.
     """
-    from unified_api_contracts.internal.domain.deployment_service import RuntimeProfile
-    from unified_trading_library import get_runtime_profile_spec
+    from unified_api_contracts.internal.domain.deployment_service import (  # noqa: imports-inside-functions
+        RuntimeProfile,
+    )
+    from unified_trading_library import get_runtime_profile_spec  # noqa: imports-inside-functions
 
     profile_key = runtime_profile.value if isinstance(runtime_profile, RuntimeProfile) else str(runtime_profile)
     try:
@@ -299,7 +301,7 @@ def _extract_severity_and_logger(line: str) -> tuple[str, str]:
         (severity, logger_name) tuple where severity is one of
         DEBUG, INFO, WARNING, ERROR, CRITICAL.
     """
-    import json as _json
+    import json as _json  # noqa: imports-inside-functions
 
     # Try JSON first
     stripped = line.strip()

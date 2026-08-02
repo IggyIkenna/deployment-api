@@ -57,9 +57,9 @@ def _assume_athena_reader_role(role_arn: str, region: str) -> dict[str, str]:
     if _wif_creds_cache is not None and now < _wif_creds_cache[0]:
         return _wif_creds_cache[1]
 
-    import boto3  # Deferred — AWS SDK boundary
-    import google.auth.transport.requests  # Deferred — Google auth boundary
-    import google.oauth2.id_token  # Deferred — Google auth boundary
+    import boto3  # noqa: imports-inside-functions — Deferred, AWS SDK boundary
+    import google.auth.transport.requests  # noqa: imports-inside-functions — Deferred, Google auth boundary
+    import google.oauth2.id_token  # noqa: imports-inside-functions — Deferred, Google auth boundary
 
     # The role trust conditions only on the SA's OIDC subject, so any stable audience works; the
     # role ARN is a convenient, self-documenting choice (matches the CodeBuild reader's approach).
@@ -106,7 +106,7 @@ class _WIFAWSAnalyticsClient(AWSAnalyticsClient):
         self._role_arn = role_arn
 
     def _boto3_client(self, service: str) -> object:
-        import boto3  # Deferred — AWS SDK boundary
+        import boto3  # noqa: imports-inside-functions — Deferred, AWS SDK boundary
 
         creds = _assume_athena_reader_role(self._role_arn, self._region)
         session = boto3.Session(region_name=self._region, **creds)  # type: ignore[reportUnknownMemberType, reportAny]

@@ -26,8 +26,10 @@ def canonical_pipeline_mode_segments(asset_group: str) -> list[str]:
     batch GCS object and is skipped). Each returned value is a ready-to-concatenate
     path segment, e.g. ``"pipeline_mode=batch_chainlink/"``.
     """
-    from unified_api_contracts import Mode, pipeline_mode_for_source
-    from unified_api_contracts.registry import external_batch_sources_for_asset_group
+    from unified_api_contracts import Mode, pipeline_mode_for_source  # noqa: imports-inside-functions
+    from unified_api_contracts.registry import (  # noqa: imports-inside-functions
+        external_batch_sources_for_asset_group,
+    )
 
     pmodes: set[str] = set()
     for source in external_batch_sources_for_asset_group(asset_group.lower()):

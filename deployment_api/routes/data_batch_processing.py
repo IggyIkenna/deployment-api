@@ -7,7 +7,7 @@ and result aggregation.
 
 import logging
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import cast
 
@@ -95,8 +95,6 @@ async def get_last_updated_batch(
                 tasks.append((str(svc), str(ag), str(bucket)))
 
     # Parallel check (max 15 concurrent to avoid overwhelming GCS)
-    from concurrent.futures import Future
-
     with ThreadPoolExecutor(max_workers=min(15, len(tasks))) as executor:
         futures: dict[Future[dict[str, object]], tuple[str, str]] = {
             executor.submit(check_bucket_latest, svc, ag, bucket): (svc, ag) for svc, ag, bucket in tasks

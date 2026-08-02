@@ -44,8 +44,8 @@ def _read_parquet_footer_row_count(gs_uri: str) -> int | None:
     Does not read any row groups — pyarrow's ``ParquetFile.metadata`` walk
     only fetches the footer (one GCS range request) and is cheap.
     """
-    import gcsfs
-    import pyarrow.parquet as pq
+    import gcsfs  # noqa: imports-inside-functions
+    import pyarrow.parquet as pq  # noqa: imports-inside-functions
 
     if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         return None
@@ -142,7 +142,7 @@ def _parquet_signed_url(bucket: str | None, object_path: str | None) -> str | No
     """
     if not bucket or not object_path:
         return None
-    from unified_trading_library import generate_download_url
+    from unified_trading_library import generate_download_url  # noqa: imports-inside-functions
 
     try:
         return generate_download_url(bucket, object_path, expiry_minutes=_SIGNED_URL_TTL_SECONDS // 60)

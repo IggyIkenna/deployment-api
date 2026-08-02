@@ -12,6 +12,7 @@ Covers:
 import json
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import cast
 
@@ -22,6 +23,7 @@ from ._deployment_processor_helpers import (
     PROJECT_ID,
     STATE_BUCKET,
     _cancel_vm_jobs_sync,  # pyright: ignore[reportPrivateUsage]
+    _is_deployment_completed_pending_delete,  # pyright: ignore[reportPrivateUsage]
     _vm_status_from_map,  # pyright: ignore[reportPrivateUsage]
     _vm_zone_from_map,  # pyright: ignore[reportPrivateUsage]
 )
@@ -307,13 +309,7 @@ def _handle_completed_pending_delete(
     deployment is NOT in ``completed_pending_delete`` and normal processing
     should continue.
     """
-    from collections.abc import Callable
-
     from deployment_api.utils.storage_facade import write_object_text
-
-    from ._deployment_processor_helpers import (
-        _is_deployment_completed_pending_delete,  # pyright: ignore[reportPrivateUsage]
-    )
 
     _release_lock = cast(Callable[[str], bool], release_deployment_lock)
 
@@ -334,7 +330,7 @@ def _handle_completed_pending_delete(
 
     vm_map_cpd: dict[str, object] = {}
     try:
-        from unified_trading_library import get_compute_engine_client
+        from unified_trading_library import get_compute_engine_client  # noqa: imports-inside-functions
 
         ce = get_compute_engine_client(project_id=PROJECT_ID)
         instances = ce.aggregated_list_instances(PROJECT_ID, f"name:{service_name}-*")

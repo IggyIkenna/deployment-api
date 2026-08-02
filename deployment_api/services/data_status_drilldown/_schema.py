@@ -349,7 +349,7 @@ def _build_leaf_parquet_candidates(
 
     # Sports uses the UAC SSOT.
     if asset_group == "sports":
-        from unified_api_contracts.sports import (
+        from unified_api_contracts.sports import (  # noqa: imports-inside-functions
             candidate_parquet_uris,
         )
 

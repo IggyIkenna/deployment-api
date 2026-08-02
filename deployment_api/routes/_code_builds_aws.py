@@ -53,7 +53,7 @@ _wif_creds_cache: tuple[float, dict[str, str]] | None = None
 
 def _import_boto3():  # type: ignore[reportAny]
     """Deferred boto3 import — the single AWS-SDK-boundary site shared by WIF + client construction."""
-    import boto3  # Deferred — AWS SDK boundary
+    import boto3  # noqa: imports-inside-functions — Deferred, AWS SDK boundary
 
     return boto3  # type: ignore[reportUnknownVariableType, reportAny]
 
@@ -73,8 +73,8 @@ def _assume_codebuild_reader_role() -> dict[str, str]:
         return _wif_creds_cache[1]
 
     boto3 = _import_boto3()
-    import google.auth.transport.requests  # Deferred — Google auth boundary
-    import google.oauth2.id_token  # Deferred — Google auth boundary
+    import google.auth.transport.requests  # noqa: imports-inside-functions — Deferred, Google auth boundary
+    import google.oauth2.id_token  # noqa: imports-inside-functions — Deferred, Google auth boundary
 
     # The role trust conditions only on the SA's OIDC subject, so any stable audience works; the role
     # ARN is a convenient, self-documenting choice.
@@ -128,7 +128,7 @@ def _get_codebuild_client() -> CodeBuildClient:  # type: ignore[reportAny]
 
 def _get_aws_account_id() -> str:
     """Get AWS account ID from STS."""
-    import boto3  # Deferred — AWS SDK boundary
+    import boto3  # noqa: imports-inside-functions — Deferred, AWS SDK boundary
 
     sts: STSClient = boto3.client("sts", region_name=_AWS_REGION)  # type: ignore[reportUnknownMemberType, reportAny]
     identity: dict[str, object] = cast(dict[str, object], sts.get_caller_identity())  # type: ignore[reportUnknownMemberType]

@@ -123,7 +123,7 @@ def _validate_domain(domain: str) -> None:
 
 def _make_config_store(domain: str, schema_version: str = "1.0") -> _ConfigStoreProto:
     """Create a ConfigStore for the given domain."""
-    from unified_trading_library import (
+    from unified_trading_library import (  # noqa: imports-inside-functions
         get_config_store,  # pyright: ignore[reportMissingTypeStubs]
     )
 
@@ -132,7 +132,7 @@ def _make_config_store(domain: str, schema_version: str = "1.0") -> _ConfigStore
 
 def _publish_domain_event(domain: str, config_path: str, updated_by: str) -> None:
     """Publish config-domain-{domain} event to notify subscribing services."""
-    from unified_trading_library import (
+    from unified_trading_library import (  # noqa: imports-inside-functions
         get_event_bus,  # pyright: ignore[reportMissingTypeStubs]
         log_event,
     )
@@ -175,7 +175,7 @@ async def write_domain_config(
     _validate_domain(domain)
 
     def _write_sync() -> tuple[str, str]:
-        from unified_trading_library import (
+        from unified_trading_library import (  # noqa: imports-inside-functions
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -220,7 +220,7 @@ async def read_domain_config(
     _validate_domain(domain)
 
     def _read_sync() -> tuple[dict[str, object], str | None]:
-        from unified_trading_library import (
+        from unified_trading_library import (  # noqa: imports-inside-functions
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -284,7 +284,7 @@ async def diff_domain_config_versions(
     _validate_domain(domain)
 
     def _diff_sync() -> list[str]:
-        from unified_trading_library import (
+        from unified_trading_library import (  # noqa: imports-inside-functions
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 
@@ -342,7 +342,7 @@ async def rollback_domain_config(
     _validate_domain(domain)
 
     def _rollback_sync() -> tuple[str, str]:
-        from unified_trading_library import (
+        from unified_trading_library import (  # noqa: imports-inside-functions
             schema_for_domain,  # pyright: ignore[reportMissingTypeStubs]
         )
 

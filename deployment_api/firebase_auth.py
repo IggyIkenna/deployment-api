@@ -36,8 +36,8 @@ def _verify_firebase_id_token(token: str) -> str:
     )
 
     # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
-    from google.oauth2 import (
-        id_token as google_id_token,  # noqa: imports-inside-functions # pyright: ignore[reportMissingTypeStubs]
+    from google.oauth2 import (  # noqa: imports-inside-functions
+        id_token as google_id_token,  # pyright: ignore[reportMissingTypeStubs]
     )
 
     raw = google_id_token.verify_firebase_token(  # pyright: ignore[reportUnknownMemberType]
@@ -110,8 +110,8 @@ async def verify_firebase_token(
 
     try:
         # google auth SDK boundary — lazy so mock-mode/DISABLE_AUTH startup never loads it
-        from google.auth.exceptions import (
-            TransportError,  # noqa: imports-inside-functions # pyright: ignore[reportMissingTypeStubs]
+        from google.auth.exceptions import (  # noqa: imports-inside-functions
+            TransportError,  # pyright: ignore[reportMissingTypeStubs]
         )
 
         try:

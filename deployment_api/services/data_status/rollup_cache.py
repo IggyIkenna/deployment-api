@@ -309,7 +309,7 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
         return cached[1]
 
     try:
-        from unified_trading_library import get_storage_client
+        from unified_trading_library import get_storage_client  # noqa: imports-inside-functions
 
         client = get_storage_client(project_id=_pid)
         bucket_name = rollup_bucket()
@@ -332,7 +332,7 @@ def read_coverage_rollup_if_fresh(service: str) -> dict[str, object] | None:
                 )
                 return None
         raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
-        import gzip
+        import gzip  # noqa: imports-inside-functions
 
         payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
         payload = json.loads(payload_bytes.decode("utf-8"))  # pyright: ignore[reportAny]
@@ -369,7 +369,7 @@ def read_coverage_rollup_allow_stale(service: str) -> tuple[dict[str, object], s
     rare fallback always reports the real current blob age.
     """
     try:
-        from unified_trading_library import get_storage_client
+        from unified_trading_library import get_storage_client  # noqa: imports-inside-functions
 
         client = get_storage_client(project_id=_pid)
         bucket_name = rollup_bucket()
@@ -381,7 +381,7 @@ def read_coverage_rollup_allow_stale(service: str) -> tuple[dict[str, object], s
         if meta is not None and getattr(meta, "last_modified", None) is not None:
             last_modified_iso = str(meta.last_modified)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType,reportAttributeAccessIssue]
         raw = client.download_bytes(bucket_name, blob_path)  # pyright: ignore[reportAttributeAccessIssue]
-        import gzip
+        import gzip  # noqa: imports-inside-functions
 
         payload_bytes = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
         payload = json.loads(payload_bytes.decode("utf-8"))  # pyright: ignore[reportAny]

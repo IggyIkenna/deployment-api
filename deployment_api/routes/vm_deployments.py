@@ -104,7 +104,7 @@ def _calculate_health_status(entry: DeploymentRegistryEntry, is_running: bool) -
             return "starting"
         else:
             return "idle"
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return "unknown"
 
 
@@ -125,7 +125,7 @@ def _to_model(
             try:
                 created = datetime.fromisoformat(str(creation_ts).replace("Z", "+00:00"))
                 data["uptime_hours"] = round((datetime.now(UTC) - created).total_seconds() / 3600, 2)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
         # Determine health status

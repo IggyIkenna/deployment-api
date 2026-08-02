@@ -58,7 +58,7 @@ FirestoreModuleFactory = Callable[[], _FirestoreModuleProto]
 
 def _default_firestore_module() -> _FirestoreModuleProto:
     """Lazily import ``google.cloud.firestore`` — lazy so unit tests never need the SDK."""
-    from google.cloud import (
+    from google.cloud import (  # noqa: TID251  # noqa: cloud-sdk-direct, imports-inside-functions — lazy Firestore SDK import, mirrors _ci_status_firestore_store.py
         firestore,  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue, reportUnknownVariableType]
     )
 

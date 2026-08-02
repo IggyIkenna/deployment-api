@@ -45,6 +45,8 @@ Phase 5 + ``codex/05-infrastructure/deployment-observability.md``.
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -159,7 +161,9 @@ def _ec2_status_and_exit(
         exit_code: int | None = None
         if storage_client is not None:
             try:
-                from deployment_service.data_pipeline_monitors._gcs import read_terminal_exit_code
+                from deployment_service.data_pipeline_monitors._gcs import (  # noqa: imports-inside-functions
+                    read_terminal_exit_code,
+                )
 
                 exit_code = read_terminal_exit_code(storage_client, log_bucket, inst.name)
             except Exception as exc:
@@ -417,9 +421,6 @@ def load_aws_inventory(
     boto3 / sub-package machinery only needed at call time. ``find_spec`` gates the
     import (no try/except-ImportError shim) — an absent seam degrades to no AWS items.
     """
-    import importlib
-    import importlib.util
-
     # find_spec RAISES ModuleNotFoundError (not returns None) when an intermediate parent
     # package is itself absent (e.g. deployment_service stubbed without a real backends
     # sub-package) — that is exactly "seam unavailable", so degrade rather than 500.
@@ -430,7 +431,7 @@ def load_aws_inventory(
     if census_spec is None:
         logger.warning("AWS census seam unavailable (degrading to no AWS items)")
         return []
-    from deployment_service.backends.aws_census import (
+    from deployment_service.backends.aws_census import (  # noqa: imports-inside-functions
         list_batch_census,
         list_ec2_census,
         list_ecs_census,
