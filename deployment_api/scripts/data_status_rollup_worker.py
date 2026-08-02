@@ -99,6 +99,21 @@ _ROLLUP_START_DATE = "2018-01-01"
 # instruments-service (first in _DEFAULT_SERVICES) had ever produced a
 # rollup blob; nothing past it (including small, cheap services) ever got a
 # chance to run.
+#
+# STRUCTURAL, ACCEPTED per-service gaps as of 2026-08-02 (data volume growth
+# outpacing these ceilings — see
+# plans/active/issues/data_status_rollup_ml_service_full_blob_missing_2026_07_26.md
+# todo 2 for the full evidence): in addition to the original MTDS gap above,
+# instruments-service's manifest step now regularly raises MemoryError
+# ("Unable to allocate 2.55 GiB for an array with shape (29, ~11.8M) and data
+# type object") while its coverage step still succeeds, and
+# market-data-processing-service now regularly hits _CHILD_JOIN_TIMEOUT_S on
+# BOTH its manifest and coverage steps. Both are handled the SAME
+# honest-failure way as MTDS — caught per-service, logged loudly via
+# logger.error + a SERVICE_FAILED log_event, never a silent placeholder — so
+# no code change is required for correctness; raising the ceilings or
+# optimizing the underlying compute (out of scope here) is what would
+# actually close the gap, not just document it.
 _CHILD_RLIMIT_AS_BYTES = 24 * 1024**3  # 24Gi, for a 32Gi container ceiling
 _CHILD_JOIN_TIMEOUT_S = 420  # wall-clock backstop; the rlimit above is the primary guard
 
