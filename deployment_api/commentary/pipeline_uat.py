@@ -234,7 +234,7 @@ async def _call_anthropic(
     config: DeploymentApiConfig,
 ) -> str:
     """Call Anthropic API and return the commentary text."""
-    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key, base_url=config.pipeline_uat_llm_base_url)
     user_message = f"Pipeline run output:\n{json.dumps(context, indent=2)}"
 
     message = await client.messages.create(

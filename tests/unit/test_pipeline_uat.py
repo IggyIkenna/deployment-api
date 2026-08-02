@@ -15,12 +15,17 @@ from deployment_api.commentary.pipeline_uat import (
 )
 
 
-def _make_config(enabled: bool = True, api_key: str | None = "sk-test") -> MagicMock:
+def _make_config(
+    enabled: bool = True,
+    api_key: str | None = "sk-test",
+    llm_base_url: str | None = None,
+) -> MagicMock:
     config = MagicMock()
     config.pipeline_uat_commentary_enabled = enabled
     config.anthropic_api_key = api_key
     config.pipeline_uat_model = "claude-haiku-4-5-20251001"
     config.pipeline_uat_max_tokens = 800
+    config.pipeline_uat_llm_base_url = llm_base_url
     config.gcp_project_id = "test-project"
     return config
 
@@ -86,6 +91,70 @@ async def test_run_pipeline_uat_enabled_calls_anthropic() -> None:
 
         mock_client_instance.messages.create.assert_called_once()
         assert "Instruments" in result.commentary or "coverage" in result.commentary.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_uat_default_base_url_is_none() -> None:
+    """Unset `pipeline_uat_llm_base_url` must reach the SDK client as base_url=None (unchanged default path)."""
+    config = _make_config(enabled=True, api_key="sk-test")
+    request = _make_request()
+
+    mock_text_block = MagicMock(spec=TextBlock)
+    mock_text_block.text = "Instruments coverage is at 95%."
+
+    mock_message = MagicMock()
+    mock_message.content = [mock_text_block]
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.messages.create = AsyncMock(return_value=mock_message)
+
+    with (
+        patch("deployment_api.commentary.pipeline_uat.get_storage_client") as mock_storage,
+        patch("deployment_api.commentary.pipeline_uat.get_data_sink") as mock_sink,
+        patch(
+            "deployment_api.commentary.pipeline_uat.anthropic.AsyncAnthropic",
+            return_value=mock_client_instance,
+        ) as mock_client,
+        patch("deployment_api.commentary.pipeline_uat.log_event"),
+    ):
+        mock_storage.return_value.download_bytes = MagicMock(side_effect=Exception("not available"))
+        mock_sink.return_value.write = MagicMock()
+
+        await run_pipeline_uat(request, config)
+
+        assert mock_client.call_args.kwargs["base_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_uat_configured_base_url_reaches_client() -> None:
+    """A configured `pipeline_uat_llm_base_url` (e.g. a local OmniRoute gateway) must reach the SDK client verbatim."""
+    config = _make_config(enabled=True, api_key="sk-test", llm_base_url="http://localhost:20128/v1")
+    request = _make_request()
+
+    mock_text_block = MagicMock(spec=TextBlock)
+    mock_text_block.text = "Instruments coverage is at 95%."
+
+    mock_message = MagicMock()
+    mock_message.content = [mock_text_block]
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.messages.create = AsyncMock(return_value=mock_message)
+
+    with (
+        patch("deployment_api.commentary.pipeline_uat.get_storage_client") as mock_storage,
+        patch("deployment_api.commentary.pipeline_uat.get_data_sink") as mock_sink,
+        patch(
+            "deployment_api.commentary.pipeline_uat.anthropic.AsyncAnthropic",
+            return_value=mock_client_instance,
+        ) as mock_client,
+        patch("deployment_api.commentary.pipeline_uat.log_event"),
+    ):
+        mock_storage.return_value.download_bytes = MagicMock(side_effect=Exception("not available"))
+        mock_sink.return_value.write = MagicMock()
+
+        await run_pipeline_uat(request, config)
+
+        assert mock_client.call_args.kwargs["base_url"] == "http://localhost:20128/v1"
 
 
 @pytest.mark.asyncio
