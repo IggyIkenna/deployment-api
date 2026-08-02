@@ -93,6 +93,7 @@ RUN uv pip install --system --no-cache-dir \
       'google-cloud-run<1.0.0,>=0.15.0' \
       'google-cloud-compute>=1.45.0,<2.0.0' \
       'google-cloud-artifact-registry>=1.13.0,<2.0.0' \
+      'google-cloud-functions>=1.16.0,<2.0.0' \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
 
