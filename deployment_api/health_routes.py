@@ -43,10 +43,12 @@ def _check_gcs() -> dict[str, object]:
 def _check_pubsub() -> dict[str, object]:
     """Probe Pub/Sub reachability via the project subscription list."""
     try:
-        # lazy cloud-SDK boundary — module-level google.cloud import trips the direct-cloud-SDK QG + loads the SDK
-        # at startup
-        from google.cloud import (
-            pubsub_v1,  # noqa: imports-inside-functions # pyright: ignore[reportMissingModuleSource]
+        # lazy, sanctioned cloud-SDK boundary (mirrors routes/builds.py / _verdict_store_reader.py):
+        # module-level google.cloud import would trip the direct-cloud-SDK QG + load the SDK at
+        # startup; raw SDK used because the UTL PubSubClient abstraction is publish/create_topic-only
+        # and has no list_subscriptions/get_topic reachability primitive this health probe needs.
+        from google.cloud import (  # noqa: cloud-sdk-direct, imports-inside-functions
+            pubsub_v1,  # pyright: ignore[reportMissingModuleSource]
         )
 
         project_id = _cloud_cfg.gcp_project_id
@@ -61,10 +63,12 @@ def _check_pubsub() -> dict[str, object]:
 def _check_secret_manager() -> dict[str, object]:
     """Probe Secret Manager by listing secrets (first page only)."""
     try:
-        # lazy cloud-SDK boundary — module-level google.cloud import trips the direct-cloud-SDK QG + loads the SDK
-        # at startup
-        from google.cloud import (
-            secretmanager,  # noqa: imports-inside-functions # pyright: ignore[reportMissingModuleSource]
+        # lazy, sanctioned cloud-SDK boundary (mirrors routes/builds.py / _verdict_store_reader.py):
+        # module-level google.cloud import would trip the direct-cloud-SDK QG + load the SDK at
+        # startup; raw SDK used because this probe needs list_secrets (a reachability check), which
+        # the UTL SecretClient abstraction (get/set/delete by key) has no equivalent for.
+        from google.cloud import (  # noqa: cloud-sdk-direct, imports-inside-functions
+            secretmanager,  # pyright: ignore[reportMissingModuleSource]
         )
 
         project_id = _cloud_cfg.gcp_project_id
@@ -79,10 +83,12 @@ def _check_secret_manager() -> dict[str, object]:
 def _check_deployment_events() -> dict[str, object]:
     """Probe the deployment-api-events Pub/Sub topic existence."""
     try:
-        # lazy cloud-SDK boundary — module-level google.cloud import trips the direct-cloud-SDK QG + loads the SDK
-        # at startup
-        from google.cloud import (
-            pubsub_v1,  # noqa: imports-inside-functions # pyright: ignore[reportMissingModuleSource]
+        # lazy, sanctioned cloud-SDK boundary (mirrors routes/builds.py / _verdict_store_reader.py):
+        # module-level google.cloud import would trip the direct-cloud-SDK QG + load the SDK at
+        # startup; raw SDK used because the UTL PubSubClient abstraction is publish/create_topic-only
+        # and has no list_subscriptions/get_topic reachability primitive this health probe needs.
+        from google.cloud import (  # noqa: cloud-sdk-direct, imports-inside-functions
+            pubsub_v1,  # pyright: ignore[reportMissingModuleSource]
         )
 
         project_id = _cloud_cfg.gcp_project_id

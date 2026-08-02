@@ -40,8 +40,8 @@ def _read_parquet_columns(gs_uri: str, columns: list[str] | None = None) -> pd.D
     """
 
     # Local imports to keep module import-time cheap (gcsfs pulls aiohttp).
-    import gcsfs
-    import pyarrow.parquet as pq
+    import gcsfs  # noqa: imports-inside-functions
+    import pyarrow.parquet as pq  # noqa: imports-inside-functions
 
     if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
@@ -78,8 +78,8 @@ def _parquet_schema_names(gs_uri: str) -> set[str]:
     (e.g. FIXTURES moved from ``fixture_id`` → ``af_fixture_id``; see
     ``instruments-service`` orchestrator ~L3220 for the prefer-af pattern).
     """
-    import gcsfs
-    import pyarrow.parquet as pq
+    import gcsfs  # noqa: imports-inside-functions
+    import pyarrow.parquet as pq  # noqa: imports-inside-functions
 
     if not gs_uri.startswith("gs://"):  # noqa: gs-uri (parsing a caller-supplied URI, not constructing one)
         raise ValueError(f"Not a gs:// URI: {gs_uri}")  # noqa: gs-uri  — error message string, not a URI constructor
@@ -307,7 +307,7 @@ def build_fixtures_csv_export(
         FileNotFoundError: the day's fixtures parquet doesn't exist on GCS
             (adapter didn't run that day).
     """
-    from unified_api_contracts.sports import get_league
+    from unified_api_contracts.sports import get_league  # noqa: imports-inside-functions
 
     league = get_league(league_id)
     if league is None:

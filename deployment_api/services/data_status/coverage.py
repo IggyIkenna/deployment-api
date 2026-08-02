@@ -435,7 +435,7 @@ class CoverageStatusMixin(VenueResolutionMixin):
         leak into ``max(date)`` and surface as bogus ``latest_day`` values.
         Restrict to ISO ``YYYY-MM-DD`` strings <= today.
         """
-        from datetime import date as _today_date
+        from datetime import date as _today_date  # noqa: imports-inside-functions
 
         if "date" not in index.columns:
             return index

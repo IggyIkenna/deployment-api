@@ -11,7 +11,7 @@ WS-B task), not duplicated here.
 Cloud-agnostic boundary: the GCP SDK is reached ONLY through deployment-service's
 ``backends._gcp_sdk`` lazy-import boundary (``functions_v2.FunctionServiceClient``),
 the same pattern ``_cloud_run_executions.py`` uses for ``run_v2`` — never an inline
-``from google.cloud import functions_v2`` here (CLAUDE.md cloud-SDK-direct ban).
+``google.cloud``-direct import of ``functions_v2`` here (CLAUDE.md cloud-SDK-direct ban).
 
 Honest degradation: a Cloud Functions list failure (creds / API down / region) is
 logged and yields an empty map so the inventory degrades to the other kinds — never
@@ -92,7 +92,7 @@ def list_cloud_functions(
     """
     try:
         # GCP SDK reached ONLY via the deployment-service _gcp_sdk boundary.
-        from deployment_service.backends import _gcp_sdk
+        from deployment_service.backends import _gcp_sdk  # noqa: imports-inside-functions
 
         functions_v2 = _gcp_sdk.functions_v2
         client = functions_v2.FunctionServiceClient()

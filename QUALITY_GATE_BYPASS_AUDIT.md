@@ -329,9 +329,9 @@ The single largest migration item is adding generic type arguments to the `route
 `HARDCODED_PROTO_EXCLUDE_GLOBS` in `scripts/quality-gates.sh` excludes two files
 (codex_violations_ratchet_to_five_2026_06_10):
 
-| File                                          | Matched symbol | Justification                                                                                                                                       |
-| --------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deployment_api/routes/monitor_live.py`      | `CloudTarget`  | UAC canonical StrEnum (`unified_api_contracts` `CloudTarget`) — the LIVE_CLUSTER_REGISTRY cloud axis. Contract usage, not a raw GCS/BigQuery call.   |
+| File                                         | Matched symbol | Justification                                                                                                                                       |
+| -------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment_api/routes/monitor_live.py`      | `CloudTarget`  | UAC canonical StrEnum (`unified_api_contracts` `CloudTarget`) — the LIVE_CLUSTER_REGISTRY cloud axis. Contract usage, not a raw GCS/BigQuery call.  |
 | `deployment_api/routes/monitor_scheduled.py` | `CloudTarget`  | Same — resolves the registry's cloud axis; no protocol-specific storage symbols (`gcs_bucket=` / `upload_to_gcs` / `bigquery_dataset`) in the file. |
 
 Verified 2026-06-12: `rg "CloudTarget|upload_to_gcs|gcs_bucket|bigquery_dataset|StandardizedDomainCloudService"`
@@ -344,6 +344,37 @@ Counted in `CODEX_MAX_VIOLATIONS` (not glob-hidden) until the UCI facade closes 
 - `deployment_api/vm_utils.py` (`compute_v1`, module-level): `get_vm_instance_details` needs
   `machine_type` + `creation_timestamp`, which UTL `ComputeEngineClient.aggregated_list_instances`
   does not return (name/status/zone only). Successor: extend the UTL facade, then migrate.
-- `deployment_api/health_routes.py` (`pubsub_v1` / `secretmanager`, in-function): infra health
-  probes ping the SDK clients directly; UCI exposes no health-probe surface. Successor: UCI
-  health-probe API.
+
+**UPDATE 2026-08-02** (`codex_violations_ratchet_to_five_2026_06_10`, driving V 3->0):
+`deployment_api/health_routes.py` (`pubsub_v1` / `secretmanager`, in-function) — RESOLVED via the
+sanctioned per-line `# noqa: cloud-sdk-direct, imports-inside-functions` marker (mirrors
+`routes/builds.py` / `routes/_verdict_store_reader.py` / `routes/_ci_status_firestore_store.py` /
+`services/artifact_pipeline/providers.py`), not glob-hidden. UCI still exposes no health-probe
+surface (`list_subscriptions` / `list_secrets` / `get_topic` reachability checks have no
+`PubSubClient`/`SecretClient` equivalent), so the raw SDK stays the correct boundary; the marker
+documents the exception at the call site instead of a whole-file exclusion. Successor unchanged:
+UCI health-probe API.
+
+## Broad except Exception exceptions — Added: 2026-08-02
+
+`BE_EXCLUDE_GLOBS` in `scripts/quality-gates.sh` excludes 7 files
+(`codex_violations_ratchet_to_five_2026_06_10`, driving V 3->0). Each site wraps a call whose
+exception surface is genuinely unbounded (opaque vendor SDK, pandas manifest-index read, or a
+cross-service reference-registry lookup) and already degrades honestly (empty/None/"unknown"),
+matching the shard-level-failure-isolation pattern (CLAUDE.md § "Working on a SERVICE?").
+Narrowing these to a specific exception tuple risks turning an honest-absence degrade into an
+unhandled crash on a vendor exception type this repo doesn't import/know about — a worse
+regression than the lint. The 4 sites with a genuinely bounded exception surface (stdlib
+`datetime.fromisoformat` / `Decimal()` / `subprocess.run` + `json.loads`) were narrowed in place
+instead of excluded (`routes/deployment_diff.py`, `routes/vm_deployments.py` x2,
+`routes/treasury.py`).
+
+| File                                     | Call wrapped                                             | Why unbounded                                                                     |
+| ---------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `scripts/deployment_digest_worker.py`    | cron `main()` entrypoint                                 | exit-0-always by design — must catch anything, or the daily cron job itself fails |
+| `services/data_status/sports.py`         | `_dss._read_index_cached()` (pandas manifest)            | manifest-index read; honest-absence degrade to empty                              |
+| `services/data_status/sports_helpers.py` | `get_reference_refresh_dates()` (external registry loop) | "never hard-fail the denominator" — explicit in-code comment                      |
+| `services/data_status/defi.py`           | `_dss._read_index_cached()` + venue-normalize            | manifest-index read + best-effort venue mapping, honest-absence degrade           |
+| `routes/_code_builds_aws.py`             | `client.list_builds_for_project()` (AWS SDK)             | AWS CodeBuild SDK boundary                                                        |
+| `routes/builds_history.py`               | GCS `get_blob_metadata()` / AR `list_tags()`             | GCS + Artifact Registry SDK boundaries                                            |
+| `routes/_repo_ci_github.py`              | Secret Manager `get_secret()`                            | explicit "SM transient/permission error must not break the PAT path" comment      |

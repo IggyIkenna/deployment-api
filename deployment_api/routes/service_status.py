@@ -10,11 +10,13 @@ Provides temporal audit trail for services:
 """
 
 import asyncio
+import http.client
 import logging
 import os
 import re
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import cast
 
@@ -45,7 +47,7 @@ from .service_status_execution import (
     get_execution_service_data_status,
 )
 from .service_status_fast_data import get_latest_data_timestamp_fast
-from .service_status_health import detect_anomalies, determine_overview_health
+from .service_status_health import detect_anomalies, determine_overview_health, determine_service_health
 
 # Add parent directory to path
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
@@ -159,12 +161,9 @@ async def _get_quota_manager_status(service: str) -> dict[str, object]:
         }
 
     def _check_broker_health() -> bool:
-        import http.client
-        import urllib.request
-
         try:
-            from google.auth.transport.requests import Request as AuthRequest
-            from google.oauth2 import id_token
+            from google.auth.transport.requests import Request as AuthRequest  # noqa: imports-inside-functions
+            from google.oauth2 import id_token  # noqa: imports-inside-functions
 
             token: str = id_token.fetch_id_token(AuthRequest(), broker_url)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]  # google-auth stubs
             req = urllib.request.Request(
@@ -393,8 +392,6 @@ async def get_service_status(service: str, request: Request):
     deploy_status = None
     if isinstance(deployment_info, dict):
         deploy_status = deployment_info.get("status")
-
-    from .service_status_health import determine_service_health
 
     health = determine_service_health(
         data_ts=data_ts,

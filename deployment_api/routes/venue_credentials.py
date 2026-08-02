@@ -79,7 +79,7 @@ async def _collect() -> list[VenueCredentialStatus]:
 
     # ── Tardis ──────────────────────────────────────────────────────────────
     try:
-        from unified_trading_library import get_secret_client
+        from unified_trading_library import get_secret_client  # noqa: imports-inside-functions
 
         from deployment_api.auth import auth_cfg as _auth_cfg
 

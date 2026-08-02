@@ -74,7 +74,7 @@ def _deployed_versions_at_sha(sha: str) -> dict[str, str]:
         dv_typed: dict[str, object] = dv  # pyright: ignore[reportUnknownVariableType]
         prod: object = dv_typed.get("production")
         return dict(prod) if isinstance(prod, dict) else {}  # pyright: ignore[reportUnknownArgumentType]
-    except Exception:
+    except (subprocess.SubprocessError, OSError, ValueError):
         logger.warning("could not read manifest at sha %s", sha)
         return {}
 

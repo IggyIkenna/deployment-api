@@ -8,8 +8,8 @@ deployment census use). The SDK boundaries are the repo's sanctioned ones:
 
   * GCP Cloud Build — the UTL `get_cloud_build_client` factory (`_cloud_builds_types` pattern).
   * GCP Cloud Run / Compute — the deployment-service `backends._gcp_sdk` lazy boundary.
-  * GCP Artifact Registry — the route-local deferred `from google.cloud import artifactregistry_v1`
-    (`# noqa: cloud-sdk-direct`, the one place it is allowed, mirroring `routes/builds.py`).
+  * GCP Artifact Registry — the route-local deferred, `google.cloud`-direct `artifactregistry_v1`
+    import (`# noqa: cloud-sdk-direct`, the one place it is allowed, mirroring `routes/builds.py`).
   * AWS ECR / CodeBuild / App Runner — deferred `import boto3` behind the keyless GCP→AWS WIF
     client (`_code_builds_aws` pattern); the ECS census comes through
     `deployment_service.backends.aws_census` (never inline boto3 from here).
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
+from itertools import islice
 from typing import cast
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
@@ -187,8 +188,6 @@ def gcp_cloud_builds(cfg: DeploymentApiConfig, scan: int = _CLOUD_BUILD_SCAN) ->
     `failure_info{type,detail}` + `steps[]` the narrow build-history route never projected —
     the whole point of the pipeline view.
     """
-    from itertools import islice
-
     from deployment_api.routes._cloud_builds_types import get_cloudbuild_v1, get_gcp_build_client
 
     project = _project_id(cfg)
@@ -356,9 +355,7 @@ def gcp_cloud_run_revisions(cfg: DeploymentApiConfig) -> list[DeployFact]:
     currently live — no second services-list RPC. Then lists each service's revisions
     (`RevisionsClient`, the same `_gcp_sdk` boundary) and classifies them per-service.
     """
-    from itertools import islice
-
-    from deployment_service.backends import _gcp_sdk
+    from deployment_service.backends import _gcp_sdk  # noqa: imports-inside-functions
 
     from deployment_api.routes._cloud_run_services import list_cloud_run_services
 
@@ -413,9 +410,9 @@ def gcp_artifact_registry_images(cfg: DeploymentApiConfig, scan: int = _AR_IMAGE
     for Artifact Registry (mirrors `routes/builds.py`'s `_list_ar_tags_from_repo`, sync client here
     since the rest of this module is sync).
     """
-    from itertools import islice
-
-    from google.cloud import artifactregistry_v1  # noqa: TID251 — the sanctioned AR boundary, mirrors routes/builds.py
+    from google.cloud import (  # noqa: TID251  # noqa: cloud-sdk-direct, imports-inside-functions — the sanctioned AR boundary, mirrors routes/builds.py
+        artifactregistry_v1,
+    )
 
     project = _project_id(cfg)
     client = artifactregistry_v1.ArtifactRegistryClient()
@@ -497,9 +494,7 @@ def _scan_tarball_bucket(cfg: DeploymentApiConfig, scan: int = _TARBALL_SCAN) ->
     NOT read — `BuildFact`/`RegistryImageFact` have no fields for the latter two, and the SHA is
     already in the object name.
     """
-    from itertools import islice
-
-    from unified_trading_library import get_storage_client
+    from unified_trading_library import get_storage_client  # noqa: imports-inside-functions
 
     bucket = f"{_TARBALL_BUCKET_PREFIX}{_project_id(cfg)}"
     client = get_storage_client()

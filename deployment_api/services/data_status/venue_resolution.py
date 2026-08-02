@@ -472,8 +472,8 @@ class VenueResolutionMixin(CoreBreakdownsMixin):
         This prevents the denominator from including mid-season dates
         where no transfer activity occurs.
         """
-        from datetime import date as dt_date
-        from datetime import timedelta
+        from datetime import date as dt_date  # noqa: imports-inside-functions
+        from datetime import timedelta  # noqa: imports-inside-functions
 
         start_d = dt_date.fromisoformat(start)
         end_d = dt_date.fromisoformat(end)

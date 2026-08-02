@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -285,7 +285,7 @@ def _get_rollup_nav_usd(rollup_nav_override: str | None) -> Decimal:
     if rollup_nav_override is not None:
         try:
             return Decimal(rollup_nav_override)
-        except Exception:
+        except (InvalidOperation, TypeError):
             pass
     return _DEMO_ROLLUP_NAV_USD
 

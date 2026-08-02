@@ -43,10 +43,10 @@ async def _compute_and_cache_verification(
     Runs log analysis and data status checks concurrently to verify deployment completion.
     """
     # Import here to avoid circular imports
-    from .data_batch_processing import get_data_status_turbo_impl
-    from .deployment_caching import set_verification_cache
-    from .log_analysis import analyze_deployment_logs
-    from .shard_management import (
+    from .data_batch_processing import get_data_status_turbo_impl  # noqa: imports-inside-functions
+    from .deployment_caching import set_verification_cache  # noqa: imports-inside-functions
+    from .log_analysis import analyze_deployment_logs  # noqa: imports-inside-functions
+    from .shard_management import (  # noqa: imports-inside-functions
         asset_groups_from_state,
         build_blob_timestamp_map,
         build_existing_dates_sets,
@@ -126,13 +126,13 @@ async def _compute_and_cache_verification(
 
 async def run_verification_and_cache_background(deployment_id: str) -> None:
     """Run verification in background and cache results."""
-    from .deployment_caching import remove_verification_pending
+    from .deployment_caching import remove_verification_pending  # noqa: imports-inside-functions
 
     try:
         from deployment_api import settings as _settings
         from deployment_api.utils.local_state_manager import load_state as _load_state
 
-        from .deployment_caching import get_cached_deployment_state
+        from .deployment_caching import get_cached_deployment_state  # noqa: imports-inside-functions
 
         # Thin adapter: get_cached_deployment_state calls .load_state(deployment_id)
         class _LocalStateAdapter:
@@ -396,7 +396,7 @@ def generate_deployment_report(
 
     Combines state information, log analysis, and verification data into a structured report.
     """
-    from .shard_management import status_str
+    from .shard_management import status_str  # noqa: imports-inside-functions
 
     report: dict[str, object] = {
         "deployment_id": getattr(state, "deployment_id", "unknown"),

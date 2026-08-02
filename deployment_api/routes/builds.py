@@ -152,7 +152,7 @@ def _get_ar_repo_name(service: str) -> str:
 
 async def _list_ar_tags_from_repo(service: str, project: str, ar_repo: str) -> list[str]:
     """List image tags from a single Artifact Registry repo."""
-    from google.cloud import (  # noqa: cloud-sdk-direct
+    from google.cloud import (  # noqa: cloud-sdk-direct, imports-inside-functions
         artifactregistry_v1,  # type: ignore[reportAttributeAccessIssue, reportUnknownVariableType]  # no stubs for artifactregistry
     )
 
@@ -197,7 +197,7 @@ async def _list_ar_tags(service: str, project: str) -> list[str]:
 
 async def _list_ecr_tags(service: str) -> list[str]:
     """List image tags from AWS ECR for a service."""
-    import boto3  # Deferred — AWS SDK boundary
+    import boto3  # noqa: imports-inside-functions — Deferred, AWS SDK boundary
 
     ecr = boto3.client("ecr", region_name=_ECR_REGION)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
     tags: list[str] = []
@@ -345,7 +345,7 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
 
     # AWS ECS/App Runner deploy path
     if CLOUD_PROVIDER == "aws":
-        import boto3  # Deferred — AWS SDK boundary
+        import boto3  # noqa: imports-inside-functions — Deferred, AWS SDK boundary
 
         try:
             sts = boto3.client("sts", region_name=_ECR_REGION)  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]

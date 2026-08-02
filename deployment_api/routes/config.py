@@ -116,8 +116,6 @@ async def get_venues_by_asset_group(asset_group: str, request: Request):
     """
 
     def _load_asset_group_sync() -> dict[str, object] | None:
-        from typing import cast
-
         loader = get_config_loader(request)
         venues_config = loader.load_venues_config()
         groups_raw: object = venues_config.get("asset_groups") or venues_config.get("categories") or {}
@@ -344,7 +342,7 @@ async def get_shard_axis_matrix(
     """
     # Lazy import keeps the route importable in mock mode where UAC
     # may not be installed (Tier 0 emulator-only setup).
-    from unified_api_contracts.registry import (
+    from unified_api_contracts.registry import (  # noqa: imports-inside-functions
         BREAKDOWN_AXES,
         DISPLAY_AXES,
         PRIMARY_AXIS,

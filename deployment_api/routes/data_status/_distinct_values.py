@@ -246,7 +246,7 @@ def _read_honest_coverage_rollup() -> tuple[dict[str, object], str] | None:
     if cached is not None and (now - cached[0]) < _COVERAGE_CACHE_TTL_SEC:
         return cached[1], cached[2]
 
-    from unified_trading_library import get_storage_client
+    from unified_trading_library import get_storage_client  # noqa: imports-inside-functions
 
     client = get_storage_client(project_id=gcp_project_id)
     today = datetime.now(UTC).date()

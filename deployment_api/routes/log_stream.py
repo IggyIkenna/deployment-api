@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -65,8 +66,6 @@ def _is_live_cluster_ref(target_ref: str) -> bool:
 
 async def _vm_sse_generator(target_ref: str):
     """Poll GCS events bucket and yield SSE dicts for each new VMLifecycleEvent."""
-    from datetime import UTC, datetime
-
     try:
         service = _infer_service_from_vm_name(target_ref)
     except HTTPException:
@@ -115,8 +114,6 @@ async def _live_cluster_sse_generator(target_ref: str):
     ``google.cloud.logging``). Shard-level isolation: a per-blob fetch/parse failure is
     skipped inside ``_fetch_and_parse_event`` (logged), never crashing the stream.
     """
-    from datetime import UTC, datetime
-
     bucket = _resolve_events_bucket()
     storage = get_storage_client(project_id=_cfg.gcp_project_id)
     last_seen_blob: str | None = None
@@ -150,8 +147,6 @@ async def _live_cluster_sse_generator(target_ref: str):
 
 async def _mock_sse_generator(target_ref: str):
     """Yield 3 synthetic events then a done signal (mock mode only)."""
-    from datetime import UTC, datetime
-
     now = datetime.now(UTC).isoformat()
     for evt_type in ("STARTED", "DATA_BROADCAST", "STOPPED"):
         yield {

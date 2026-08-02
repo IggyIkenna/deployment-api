@@ -123,7 +123,7 @@ def mtds_expected_dates_cached(
     chain_genesis = ""
     if category.upper() == "DEFI" and "-" in venue:
         _protocol, chain_suffix = venue.rsplit("-", 1)
-        from unified_api_contracts.registry import (
+        from unified_api_contracts.registry import (  # noqa: imports-inside-functions
             get_chain_genesis_date,
             get_protocol_launch_date,
         )

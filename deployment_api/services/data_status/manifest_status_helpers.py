@@ -203,7 +203,7 @@ class ManifestStatusHelpersMixin(ManifestCategoryBuilderMixin):
         unhandled 500.
         """
         try:
-            from unified_trading_library import get_compute_engine_client
+            from unified_trading_library import get_compute_engine_client  # noqa: imports-inside-functions
 
             svc_key = service.replace("-service", "").replace("market-data-processing", "mdps")
             svc_key = svc_key.replace("market-tick-data", "mtds").lower()

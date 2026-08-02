@@ -35,14 +35,16 @@ logger = logging.getLogger(__name__)
 
 def _cloudbuild_v1():
     """Deferred cloudbuild_v1 import — used for request/response type construction only."""
-    from google.cloud.devtools import cloudbuild_v1  # Deferred — deployment Cloud Build boundary
+    from google.cloud.devtools import (  # noqa: imports-inside-functions — Deferred, deployment Cloud Build boundary
+        cloudbuild_v1,
+    )
 
     return cloudbuild_v1
 
 
 def _build_op_meta_cls():
     """Deferred BuildOperationMetadata import — deployment Cloud Build boundary."""
-    from google.cloud.devtools.cloudbuild_v1 import BuildOperationMetadata  # Deferred
+    from google.cloud.devtools.cloudbuild_v1 import BuildOperationMetadata  # noqa: imports-inside-functions — Deferred
 
     return BuildOperationMetadata
 

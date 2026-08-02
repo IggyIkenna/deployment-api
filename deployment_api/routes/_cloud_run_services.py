@@ -12,7 +12,7 @@ GCP Cloud Run Admin API and maps it to the inventory wire shape.
 Cloud-agnostic boundary: the GCP SDK is reached ONLY through deployment-service's
 ``backends._gcp_sdk`` lazy-import boundary (``run_v2.ServicesClient``), the same
 client ``backends/gcp.py`` + ``_cloud_run_executions.py`` already use — never an
-inline ``from google.cloud import run_v2`` here (CLAUDE.md cloud-SDK-direct ban).
+inline ``google.cloud``-direct import of ``run_v2`` here (CLAUDE.md cloud-SDK-direct ban).
 
 Honest degradation: a Cloud Run services-list failure (creds / API down / region)
 is logged and yields an empty list, so the inventory simply shows zero
@@ -121,7 +121,7 @@ def list_cloud_run_services(
     """
     try:
         # GCP SDK reached ONLY via the deployment-service _gcp_sdk boundary.
-        from deployment_service.backends import _gcp_sdk
+        from deployment_service.backends import _gcp_sdk  # noqa: imports-inside-functions
 
         run_v2 = _gcp_sdk.run_v2
         services_client = run_v2.ServicesClient()
