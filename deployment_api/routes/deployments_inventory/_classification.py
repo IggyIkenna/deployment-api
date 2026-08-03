@@ -308,6 +308,7 @@ def _vm_item(
     run_log = vm_log_stream_uri(entry.vm_name)
     details = vm_details or {}
     labels = details.get("labels")
+    labels_dict = cast(dict[str, str], labels) if labels else None
     has_unreleased, unreleased = detect_unreleased_resources(
         entry.vm_name, vm_details, disk_details or {}, addresses or {}, is_running=bool(control_plane_running)
     )
@@ -335,7 +336,8 @@ def _vm_item(
         zone=str(details.get("zone") or "") or None,
         health_status=str(details.get("status") or "") or None,
         boot_disk_name=str(details.get("boot_disk_name") or "") or None,
-        labels=cast(dict[str, str], labels) if labels else None,
+        labels=labels_dict,
+        managed_by=labels_dict.get("managed-by") if labels_dict else None,
         composite_health_status=_composite_health_status(
             entry,
             hb_age,
@@ -633,6 +635,7 @@ def _unmanaged_vm_item(
     created = _parse_iso(str(details.get("creation_timestamp") or "") or None)
     uptime = (now - created).total_seconds() / 3600.0 if created is not None and raw_status == "RUNNING" else None
     labels = details.get("labels")
+    labels_dict = cast(dict[str, str], labels) if labels else None
     has_unreleased, unreleased = detect_unreleased_resources(
         name, details, disk_details or {}, addresses or {}, is_running=raw_status == "RUNNING"
     )
@@ -654,7 +657,8 @@ def _unmanaged_vm_item(
         zone=str(details.get("zone") or "") or None,
         health_status=raw_status or None,
         boot_disk_name=str(details.get("boot_disk_name") or "") or None,
-        labels=cast(dict[str, str], labels) if labels else None,
+        labels=labels_dict,
+        managed_by=labels_dict.get("managed-by") if labels_dict else None,
         reap_verdict=orphan.verdict if orphan is not None else None,
         grace_hours=DEFAULT_GRACE_HOURS if orphan is not None else None,
         stopped_age_hours=orphan.stopped_age_hours if orphan is not None else None,

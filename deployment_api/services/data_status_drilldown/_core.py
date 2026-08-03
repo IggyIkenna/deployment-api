@@ -53,13 +53,17 @@ SERVICE_TO_KIND: dict[str, str] = {
     "features-multi-timeframe-service": "features-multi-timeframe",
     "features-cross-instrument-service": "features-cross-instrument",
     # ml-training-service + ml-inference-service consolidated into ml-service (2026-05-21).
-    # ml FOLD B (bucket_fold_ml_2026_07_17.md): kind="ml-models-store" folds through UTL
-    # `resolve_bucket_name` `_KIND_ALIASES` to the SINGLE `ml-store-{env}-{pid}` bucket.
-    # Per-kind separation is a top-level object-key PREFIX (models/); the manifest read here
-    # (`read_availability_index`) is a per-bucket ROOT index (no per-prefix index), so the
-    # models/ fold's rows are discriminated by the `service_name == "ml-service"` filter —
-    # predictions/ + configs/ folds are empty (no manifest rows) so there is no conflation.
-    "ml-service": "ml-models-store",
+    # ml FOLD B (bucket_fold_ml_2026_07_17.md): resolves directly to the SINGLE
+    # `ml-store-{env}-{pid}` bucket. The legacy `ml-models-store` alias was REMOVED from UTL's
+    # `_KIND_ALIASES` in the 2026-07-19 alias sunset (this caller was missed at the time —
+    # see data_status_rollup_ml_service_full_blob_missing_2026_07_26.md — resolving with the
+    # now-dead alias raised `BucketNamingError: Unknown kind 'ml-models-store'`, which is why
+    # ml-service's manifest rollup never wrote `full.json.gz`). Per-kind separation is a
+    # top-level object-key PREFIX (models/); the manifest read here (`read_availability_index`)
+    # is a per-bucket ROOT index (no per-prefix index), so the models/ fold's rows are
+    # discriminated by the `service_name == "ml-service"` filter — predictions/ + configs/
+    # folds are empty (no manifest rows) so there is no conflation.
+    "ml-service": "ml-store",
     "strategy-service": "strategy-store",
     "execution-service": "execution-store",
 }

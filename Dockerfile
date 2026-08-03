@@ -20,7 +20,7 @@ ARG PROJECT_ID
 # cloudbuild) does NOT pass --build-arg BASE_IMAGE_DIGEST. An ARG declared after a FROM is
 # stage-scoped and invisible to a later FROM → empty digest → "invalid reference format".
 # Refreshed by update-dependency-version.yml on base-image republish.
-ARG BASE_IMAGE_DIGEST=sha256:e6abfb38618713072e3a0745db3edb9553dd93055615a1bab81ca6a4586c3555
+ARG BASE_IMAGE_DIGEST=sha256:07715736f6bd6fd6e6b6b3f012d5da52d607939e55efe4b7d9c21d8bec359903
 # ── Stage 0: build deployment-ui static bundle ─────────────────────────
 FROM public.ecr.aws/docker/library/node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS ui-builder
 WORKDIR /app/ui
@@ -93,6 +93,7 @@ RUN uv pip install --system --no-cache-dir \
       'google-cloud-run<1.0.0,>=0.15.0' \
       'google-cloud-compute>=1.45.0,<2.0.0' \
       'google-cloud-artifact-registry>=1.13.0,<2.0.0' \
+      'google-cloud-functions>=1.16.0,<2.0.0' \
       'flask>=3.0.0,<4.0.0' \
       'functions-framework>=3.8.0,<4.0.0'
 

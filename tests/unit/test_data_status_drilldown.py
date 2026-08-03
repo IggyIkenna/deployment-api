@@ -1017,6 +1017,22 @@ class TestBuildBucketName:
         with pytest.raises(ValueError, match="Unknown service"):
             drilldown.build_bucket_name("foobar", "CEFI")
 
+    @pytest.mark.parametrize("service", sorted(drilldown.SERVICE_TO_KIND))
+    def test_every_service_to_kind_entry_resolves_a_real_bucket(self, service: str):
+        """Every ``SERVICE_TO_KIND`` value must be a LIVE kind/alias — regression for
+        data_status_rollup_ml_service_full_blob_missing_2026_07_26.md: ``"ml-service"``
+        pointed at the legacy ``"ml-models-store"`` alias, removed from UTL's
+        ``_KIND_ALIASES`` in the 2026-07-19 sunset, so the real (unmocked) resolver
+        raised ``BucketNamingError`` on every manifest-rollup call for ml-service while
+        the mocked ``TestBuildBucketName`` tests above stayed green. "CEFI" is a member
+        of every currently-defined per-asset_group kind's dict (instruments-store,
+        market-data, features) and is ignored by flat-template kinds (ml-store,
+        strategy-store, execution-store, features-sports, features-calendar), so it is a
+        safe universal probe asset_group across every entry.
+        """
+        bucket = drilldown.build_bucket_name(service, "CEFI")
+        assert bucket, f"{service!r} resolved to an empty bucket name"
+
 
 class TestBaseAssetContractAddress:
     """P4-B: surface the on-chain contract address for SPOT_ASSET/DeFi rows.

@@ -249,6 +249,31 @@ class TestChildBuildAndWriteService:
         assert result["manifest_ok"] is True
         assert result["coverage_ok"] is True
 
+    def test_memory_error_on_manifest_is_caught_not_silent(self) -> None:
+        # Structural gap (2026-08-02, data_status_rollup_ml_service_full_blob_missing_2026_07_26.md
+        # todo 2): instruments-service's manifest step now regularly raises this exact
+        # MemoryError shape. Must land as a loud manifest_error, never a silent
+        # placeholder / false manifest_ok=True.
+        from deployment_api.scripts.data_status_rollup_worker import _child_build_and_write_service
+
+        mock_storage, mock_dss_instance = self._make_mocks()
+        mock_dss_instance._get_manifest_status_sync.side_effect = MemoryError(
+            "Unable to allocate 2.55 GiB for an array with shape (29, ~11.8M) and data type object"
+        )
+        result_queue: MagicMock = MagicMock()
+        with (
+            patch(_PATCH_SET_RLIMIT),
+            patch(_PATCH_GET_STORAGE, return_value=mock_storage),
+            patch(_PATCH_DSS, return_value=mock_dss_instance),
+        ):
+            _child_build_and_write_service("proj", "bucket", "instruments-service", "2024-01-31", 999, result_queue)
+
+        result = result_queue.put.call_args.args[0]
+        assert result["manifest_ok"] is False
+        assert "Unable to allocate" in result["manifest_error"]
+        # Coverage is a separate step and must still be attempted independently.
+        assert result["coverage_ok"] is True
+
     def test_init_failure_reports_error_and_returns_early(self) -> None:
         from deployment_api.scripts.data_status_rollup_worker import _child_build_and_write_service
 
@@ -433,6 +458,42 @@ class TestRunRollup:
 
         assert calls == ["instruments-service", "market-tick-data-service", "market-data-processing-service"]
         assert result == 0
+
+    def test_mdps_style_full_timeout_is_loud_and_does_not_block_next_service(self) -> None:
+        # Structural gap (2026-08-02, data_status_rollup_ml_service_full_blob_missing_2026_07_26.md
+        # todo 2): market-data-processing-service now regularly times out on BOTH its
+        # manifest AND coverage steps in the same cycle. Must surface as a loud
+        # SERVICE_FAILED event (never a silent drop) and must not prevent the next
+        # queued service from being attempted — same isolation contract as MTDS.
+        from deployment_api.scripts.data_status_rollup_worker import run_rollup
+
+        calls: list[str] = []
+        log_calls: list[str] = []
+
+        def fake_isolated(project_id: str, bucket: str, service: str, end_date: str) -> dict[str, object]:
+            calls.append(service)
+            if service == "market-data-processing-service":
+                timed_out = _isolated_result(service, manifest_ok=False, coverage_ok=False)
+                timed_out["manifest_error"] = "timed out after 420s"
+                timed_out["coverage_error"] = "timed out after 420s"
+                return timed_out
+            return _isolated_result(service)
+
+        def capture_log(event_type: str, **kwargs: object) -> None:
+            log_calls.append(event_type)
+
+        with (
+            patch(_PATCH_LOG_EVENT, side_effect=capture_log),
+            patch(_PATCH_RUN_ISOLATED, side_effect=fake_isolated),
+        ):
+            run_rollup(
+                "test-project",
+                "test-bucket",
+                ["market-tick-data-service", "market-data-processing-service", "ml-service"],
+            )
+
+        assert calls == ["market-tick-data-service", "market-data-processing-service", "ml-service"]
+        assert "SERVICE_FAILED" in log_calls
 
     def test_service_processed_event_emitted(self) -> None:
         from deployment_api.scripts.data_status_rollup_worker import run_rollup

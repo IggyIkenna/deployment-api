@@ -72,7 +72,14 @@ async def list_deployments(
 
             items = [d for d in items if _matches(d)]
         page = items[offset : offset + limit]
-        return {"deployments": page, "total": len(items), "limit": limit, "offset": offset}
+        total_count = len(items)
+        return {
+            "deployments": page,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + limit < total_count,
+        }
     try:
         result = _dp.state_manager.list_deployments(
             limit=limit,
