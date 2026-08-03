@@ -157,11 +157,19 @@ class TestClearCache:
         mock_cache_obj = MagicMock()
         mock_cache_obj.clear_pattern = AsyncMock(side_effect=RuntimeError("cache error"))
         mock_cache_mod.cache = mock_cache_obj
-        sys.modules["deployment_api.utils.cache"] = mock_cache_mod
 
-        from deployment_api.health_routes import clear_cache
+        # Must be patch.dict (context-managed), not a raw sys.modules[...] = assignment: an
+        # unscoped assignment here permanently replaces the REAL deployment_api.utils.cache
+        # module for the rest of this pytest worker process (no teardown ever restores it),
+        # which made any later full-lifespan test in the same worker (e.g.
+        # test_mock_endpoint_smoke.py, the first tests/unit file to actually drive
+        # `deployment_api.lifespan`'s real `await cache.initialize()`) crash with
+        # "TypeError: object MagicMock can't be used in 'await' expression" — this mock's
+        # `cache` never sets `.initialize`, so it resolves to a plain (non-async) MagicMock.
+        with patch.dict(sys.modules, {"deployment_api.utils.cache": mock_cache_mod}):
+            from deployment_api.health_routes import clear_cache
 
-        result = await clear_cache()
+            result = await clear_cache()
         assert result["status"] == "error"
         assert "cache error" in result["error"]
 
