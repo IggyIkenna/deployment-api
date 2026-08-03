@@ -215,6 +215,48 @@ def test_build_inventory_surfaces_tier0_free_wins() -> None:
     assert job.machine_type is None
 
 
+def test_build_inventory_surfaces_managed_by_label_echo() -> None:
+    """managed_by_label_launcher_standardization_2026_07_13's [BACKEND] follow-up: once the
+    launchers stamp a standardized ``managed-by`` label, deployment-api echoes its value
+    verbatim onto the wire item's ``managed_by`` field (read off the already-scaffolded
+    ``labels`` join) for both a registry-backed VM (``_vm_item``) and an unmanaged/adhoc VM
+    (``_unmanaged_vm_item``) — the round-trip this todo exists to prove.
+    """
+    from deployment_api.routes.deployments_inventory import build_inventory
+
+    entry = _FakeEntry(vm_name="cefi-binance-spot-20260622-014158", asset_group="cefi")
+    vm_details_by_name = {
+        # Registry-backed VM carrying the standardized label -> echoed onto managed_by.
+        "cefi-binance-spot-20260622-014158": {
+            "status": "RUNNING",
+            "labels": {"managed-by": "deployment-service", "env": "prod"},
+        },
+        # Unmanaged/adhoc VM (no registry entry) also carrying the label -> echoed too.
+        "onchain-perp-symbol-canon-20260709-123056": {
+            "status": "RUNNING",
+            "labels": {"managed-by": "terraform"},
+        },
+        # Unmanaged VM with labels present but no ``managed-by`` key -> honest None, not KeyError.
+        "no-managed-by-key-vm": {
+            "status": "RUNNING",
+            "labels": {"purpose": "canon"},
+        },
+    }
+    items = build_inventory([entry], {}, _FIXED_NOW, vm_details_by_name)  # type: ignore[arg-type]
+    by_name = {i.name: i for i in items}
+
+    assert by_name["cefi-binance-spot-20260622-014158"].managed_by == "deployment-service"
+    assert by_name["onchain-perp-symbol-canon-20260709-123056"].managed_by == "terraform"
+    assert by_name["no-managed-by-key-vm"].managed_by is None
+
+    # A VM absent from the GCE join entirely (no labels at all) degrades to honest None.
+    unjoined = _FakeEntry(vm_name="defi-paper-trading-20260622", asset_group="defi")
+    items_unjoined = build_inventory([unjoined], {}, _FIXED_NOW, {})  # type: ignore[arg-type]
+    vm_unjoined = next(i for i in items_unjoined if i.name == "defi-paper-trading-20260622")
+    assert vm_unjoined.labels is None
+    assert vm_unjoined.managed_by is None
+
+
 def test_build_inventory_surfaces_inline_resources_column() -> None:
     """deployment_registry_firestore_p0_unblock_2026_07_14.md's inline-Resources-column
     todo: cpu_pct/mem_pct/mem_slope/disk_pct must reach the thin-list DeploymentItem

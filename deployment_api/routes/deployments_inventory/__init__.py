@@ -374,6 +374,11 @@ class DeploymentItem(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
     health_status: str | None = None  # raw GCE instance status (RUNNING/TERMINATED/...)
     boot_disk_name: str | None = None
     labels: dict[str, str] | None = None
+    # DEVOPS launcher-label echo (managed_by_label_launcher_standardization_2026_07_13) — the
+    # ``managed-by`` label's value verbatim (e.g. "deployment-service", "terraform"), read off
+    # ``labels`` above. None when the resource carries no ``managed-by`` label (labels absent
+    # entirely, or present but without that key) — honest absence, never a fabricated value.
+    managed_by: str | None = None
     # D.3 composite health. VMs: dead|hung|disk-full|oom-risk|working|stalled|workload-dead|unknown.
     # Services (ECS/Cloud Run): serving|scaled-to-zero|dead|degraded. None = kind carries no composite.
     composite_health_status: str | None = None
