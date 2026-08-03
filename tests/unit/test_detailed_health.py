@@ -8,6 +8,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+# Warm the real google.cloud.pubsub_v1 import at collection time, outside any single
+# test's pytest-timeout budget. TestCheckPubsub/TestCheckDeploymentEvents below patch
+# "google.cloud.pubsub_v1.{Subscriber,Publisher}Client" by dotted string, so
+# unittest.mock resolves + imports the real (heavy, grpc/protobuf-backed) module inline
+# on whichever test runs first in its xdist worker if it isn't already cached — under
+# CI resource contention that first-import cost intermittently exceeded the 150s
+# per-test timeout (observed 2026-08-03, live-defi-rollout quality-gates-v2 red) even
+# though the import itself is ~0.2s uncontended. Importing it here during collection
+# (not subject to per-test timeout) makes every test below immune regardless of order.
+import google.cloud.pubsub_v1
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
