@@ -7,6 +7,8 @@ cover every stuck class + stuck-in-SIT state so the regression spec can assert a
 
 from __future__ import annotations
 
+import datetime as dt
+
 from deployment_api.settings import GITHUB_ORG
 
 from ._repo_ci_alerts import AlertEntryDict, AlertsPayloadDict, derive_streams
@@ -372,11 +374,22 @@ def _mock_detail(repo: str) -> RepoDetailResponseDict:
 
 def _mock_alerts() -> AlertsPayloadDict:
     """Mock alert ledger — CI/CD lifecycle pair + non-CI watcher alerts (worker_liveness,
-    git_health) so the UI/playwright can assert all alert classes render in the unified pane."""
+    git_health) so the UI/playwright can assert all alert classes render in the unified pane.
+
+    Timestamps are relative-to-now (not a hardcoded date) so this fixture never goes stale
+    again — a frozen absolute date silently trains the UI on an old shape (see
+    unified-trading-pm/plans/active/issues/deployment_api_live_mock_parity_2026_07_17.md).
+    Spacing between entries is preserved from the original fixture, just re-anchored to now.
+    """
+    now = dt.datetime.now(dt.UTC)
+
+    def _ago(minutes: int) -> str:
+        return (now - dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     entries: list[AlertEntryDict] = [
         AlertEntryDict(
             kind="alert",
-            timestamp="2026-06-10T12:10:00Z",
+            timestamp=_ago(65),
             repo="unified-trading-pm",
             workflow_name="ci-status-update",
             severity="CRITICAL",
@@ -387,7 +400,7 @@ def _mock_alerts() -> AlertsPayloadDict:
         ),
         AlertEntryDict(
             kind="alert",
-            timestamp="2026-06-10T12:50:00Z",
+            timestamp=_ago(25),
             repo="unified-trading-pm",
             workflow_name="ci-status-update",
             severity="INFO",
@@ -398,7 +411,7 @@ def _mock_alerts() -> AlertsPayloadDict:
         ),
         AlertEntryDict(
             kind="alert",
-            timestamp="2026-06-10T13:00:00Z",
+            timestamp=_ago(15),
             repo="unified-trading-pm",
             workflow_name="sit-unlock",
             severity="INFO",
@@ -409,7 +422,7 @@ def _mock_alerts() -> AlertsPayloadDict:
         ),
         AlertEntryDict(
             kind="alert",
-            timestamp="2026-06-10T13:05:00Z",
+            timestamp=_ago(10),
             repo="execution-service",
             workflow_name="quality-gates-v2",
             severity="CRITICAL",
@@ -422,7 +435,7 @@ def _mock_alerts() -> AlertsPayloadDict:
         # via _persist_to_gcs() with alert_class set. These exercise the unified ledger path.
         AlertEntryDict(
             kind="worker_liveness",
-            timestamp="2026-06-10T13:10:00Z",
+            timestamp=_ago(5),
             repo="agent-orchestrator",
             workflow_name="worker-liveness-watchdog",
             severity="WARNING",
@@ -433,7 +446,7 @@ def _mock_alerts() -> AlertsPayloadDict:
         ),
         AlertEntryDict(
             kind="git_health",
-            timestamp="2026-06-10T13:15:00Z",
+            timestamp=_ago(0),
             repo="agent-orchestrator",
             workflow_name="git-health-guard",
             severity="CRITICAL",
@@ -461,7 +474,17 @@ def _mock_alerts() -> AlertsPayloadDict:
 
 def _mock_escalations() -> EscalationsProxyDict:
     """Gap-4 mock: one dispatched (working) + one queued (pending) escalation so both
-    states render in the Repos-CI playwright smoke suite."""
+    states render in the Repos-CI playwright smoke suite.
+
+    Timestamps are relative-to-now (not a hardcoded date) so this fixture never goes stale
+    again — a frozen absolute date silently trains the UI on an old shape (see
+    unified-trading-pm/plans/active/issues/deployment_api_live_mock_parity_2026_07_17.md).
+    """
+    now = dt.datetime.now(dt.UTC)
+
+    def _ago(minutes: int) -> str:
+        return (now - dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     return {
         "available": True,
         "reason": "",
@@ -473,8 +496,8 @@ def _mock_escalations() -> EscalationsProxyDict:
                 "pr_number": 547,
                 "wall_type": "conflicting",
                 "slot_id": 3,
-                "created_at": "2026-06-27T10:00:00Z",
-                "dispatched_at": "2026-06-27T10:01:00Z",
+                "created_at": _ago(5),
+                "dispatched_at": _ago(4),
                 "attempts": 1,
             },
             {
@@ -484,7 +507,7 @@ def _mock_escalations() -> EscalationsProxyDict:
                 "pr_number": 312,
                 "wall_type": "conflicting",
                 "slot_id": None,
-                "created_at": "2026-06-27T10:05:00Z",
+                "created_at": _ago(0),
                 "dispatched_at": None,
                 "attempts": 0,
             },

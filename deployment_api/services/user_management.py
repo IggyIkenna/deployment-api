@@ -21,11 +21,11 @@ from unified_api_contracts.internal.schemas.rbac import (  # noqa: deep-import â
     UserProfile,
     UserRole,
 )
-from unified_trading_library import UnifiedCloudConfig, log_event
+from unified_trading_library import log_event
+
+from deployment_api import settings
 
 logger = logging.getLogger(__name__)
-
-_cfg = UnifiedCloudConfig()
 
 
 class UserProfileResponse(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
@@ -69,9 +69,9 @@ class AssignRoleRequest(BaseModel):  # CORRECT-LOCAL: FastAPI API contract model
 
 def _user_store_path() -> Path:
     """Return local path for user store (dev/local mode)."""
-    workspace = _cfg.workspace_root
+    workspace = settings.WORKSPACE_ROOT
     if workspace:
-        return Path(str(workspace)) / ".user-management" / "users.json"  # pyright: ignore[reportArgumentType]
+        return Path(str(workspace)) / ".user-management" / "users.json"
     return Path.home() / ".unified-trading" / "users.json"
 
 

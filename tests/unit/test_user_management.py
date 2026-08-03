@@ -16,7 +16,7 @@ setup_events("deployment-api", "test")
 _PATCH_LOAD = "deployment_api.services.user_management._load_users"
 _PATCH_SAVE = "deployment_api.services.user_management._save_users"
 _PATCH_LOG = "deployment_api.services.user_management.log_event"
-_PATCH_CFG = "deployment_api.services.user_management._cfg"
+_PATCH_WORKSPACE_ROOT = "deployment_api.services.user_management.settings.WORKSPACE_ROOT"
 
 _VIEWER_DATA: dict[str, object] = {
     "user_id": "viewer_at_example_com",
@@ -50,9 +50,7 @@ class TestUserStorePath:
     def test_with_workspace_root(self) -> None:
         from deployment_api.services.user_management import _user_store_path
 
-        mock_cfg = MagicMock()
-        mock_cfg.workspace_root = "/workspace"
-        with patch(_PATCH_CFG, mock_cfg):
+        with patch(_PATCH_WORKSPACE_ROOT, "/workspace"):
             path = _user_store_path()
 
         assert str(path) == "/workspace/.user-management/users.json"
@@ -60,9 +58,7 @@ class TestUserStorePath:
     def test_without_workspace_root(self) -> None:
         from deployment_api.services.user_management import _user_store_path
 
-        mock_cfg = MagicMock()
-        mock_cfg.workspace_root = None
-        with patch(_PATCH_CFG, mock_cfg):
+        with patch(_PATCH_WORKSPACE_ROOT, None):
             path = _user_store_path()
 
         assert str(path).endswith("users.json")
