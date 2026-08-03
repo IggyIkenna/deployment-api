@@ -69,7 +69,8 @@ class TestListDeploymentsMock:
         assert r.status_code == 200
         data = r.json()
         assert "deployments" in data
-        assert data["total"] == 2
+        assert data["total_count"] == 2
+        assert data["has_more"] is False
 
     def test_filter_by_status(self, mock_store: MagicMock) -> None:
         from deployment_api.routes.deployments import router
@@ -127,7 +128,8 @@ class TestListDeploymentsMock:
         assert r.status_code == 200
         data = r.json()
         assert len(data["deployments"]) <= 1
-        assert data["total"] == 2  # total is unfiltered count
+        assert data["total_count"] == 2  # total_count is unfiltered count
+        assert data["has_more"] is True  # offset(0) + limit(1) < total_count(2)
 
 
 # ── get_deployment_status mock mode ────────────────────────────────────────────
