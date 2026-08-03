@@ -51,8 +51,28 @@ class TestOverviewMock:
             "tier",
             "blocked_by",
             "blocking",
+            # WS-L staging-dormant contract (2026-07-16): live always sets these on every row —
+            # deployment_api_live_mock_parity_2026_07_17.md pinned the mock's prior drift here.
+            "image_gcp",
+            "image_aws",
+            "promotion_model",
+            "staging_dormant_mode",
         } <= set(row)
         assert [b["branch"] for b in row["branches"]] == ["live-defi-rollout", "staging", "main"]
+
+    def test_overview_staging_dormant_contract_fields(self, client_repo_ci: TestClient) -> None:
+        # Live's _overview_row()/_image_signal() unconditionally set promotion_model,
+        # staging_dormant_mode, image_gcp/image_aws, and image.deploy_model/deploy_host on every
+        # row — the mock must carry the same keys (parity is shape, not value) on every row, not
+        # just the first.
+        with patch(_PATCH_MOCK_MODE, return_value=True):
+            body = client_repo_ci.get("/api/repo-ci/overview").json()
+        for row in body["repos"]:
+            assert row["promotion_model"] == "ldr_main"
+            assert row["staging_dormant_mode"] is True
+            assert row["image_gcp"] is not None and {"deploy_model", "deploy_host"} <= set(row["image_gcp"])
+            assert row["image_aws"] is not None and {"deploy_model", "deploy_host"} <= set(row["image_aws"])
+            assert {"deploy_model", "deploy_host"} <= set(row["image"])
 
     def test_drain_stalled(self, client_repo_ci: TestClient) -> None:
         # promotion-drain follow-up: a repo with real content ahead + a stale/failing drain leg is

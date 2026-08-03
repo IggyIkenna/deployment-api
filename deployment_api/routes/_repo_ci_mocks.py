@@ -63,6 +63,11 @@ def _mock_image(version: str | None, stale: bool | None) -> ImageSignalDict:
         last_success_log_url="https://console.cloud.google.com/cloud-build/builds/mock-success",
         deployed_version=version,
         image_stale=stale,
+        # WS-L "track the deployed artifact" — live's _image_signal() always sets these two
+        # (None/None = standalone deploy); every repo in this fixture set is standalone (none
+        # are in _SOURCE_DEPLOYED/_BUNDLED_IN).
+        deploy_model=None,
+        deploy_host=None,
     )
 
 
@@ -135,6 +140,10 @@ def _mock_row(
         last_green_main = LastGreenDict(sha="ab09999", at="2026-06-09T20:00:00Z")
     else:
         last_green_main = LastGreenDict(sha="abc1100", at="2026-06-10T06:00:00Z")
+    # Dual-cloud image (live always sets image_gcp/image_aws unconditionally, see
+    # _overview_row): every fixture repo here is a standalone deploy, so GCP and AWS mirror the
+    # same build signal; `image` stays the active-provider alias, same as live.
+    image = _mock_image("1.2.0", stale=ci_status == "FAILING")
     return RepoOverviewDict(
         repo=repo,
         repo_type=repo_type,
@@ -144,7 +153,9 @@ def _mock_row(
         deltas=deltas,
         open_prs=prs,
         sit=sit,
-        image=_mock_image("1.2.0", stale=ci_status == "FAILING"),
+        image=image,
+        image_gcp=image,
+        image_aws=image,
         last_green_main=last_green_main,
         # G6: every mock row is LDR-ahead-of-main (delta ahead_by=3) so it has a lag; FAILING
         # repos sit longer (the drain is stuck). >60min so the lag-chip renders prominently.
@@ -171,6 +182,11 @@ def _mock_row(
         blocking=blocking if blocking is not None else [],
         # QG health snapshot — mock rows have no live QG data; frontend renders "—" for None.
         codebase_health=None,
+        # WS-L promotion path + fleet staging-dormant toggle — live always sets both (see
+        # _overview_row). Every repo in the current fleet manifest is "ldr_main" with the fleet
+        # toggle on (2026-07-16 staging-dormant work), so the fixture mirrors that reality.
+        promotion_model="ldr_main",
+        staging_dormant_mode=True,
     )
 
 
