@@ -211,6 +211,11 @@ _authenticated_router.include_router(deployment_digest.router, prefix="/api/depl
 # Freshness BEFORE the parametric deployments.router (same shadowing reason): its
 # ``/deployments/{deployment_id}/freshness`` must register ahead of the parametric CRUD.
 _authenticated_router.include_router(deployment_freshness.router, prefix="/api", tags=["Deployment Freshness"])
+# deployment_diff BEFORE the parametric deployments.router (same shadowing reason): its
+# literal ``/deployments/diff`` was being swallowed by ``/deployments/{deployment_id}``
+# (GET /api/deployments/diff -> get_deployment_status("diff") -> 404 "not found (mock)"),
+# making the endpoint permanently unreachable — found via the mock-endpoint smoke gate.
+_authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(deployments.router, prefix="/api", tags=["Deployments"])
 _authenticated_router.include_router(config.router, prefix="/api/config", tags=["Configuration"])
 _authenticated_router.include_router(checklist.router, prefix="/api/checklists", tags=["Checklists"])
@@ -259,7 +264,6 @@ _authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM 
 _authenticated_router.include_router(vm_resource_history.router)  # Has its own prefix /api/vm-resources
 _authenticated_router.include_router(costs.router, prefix="/api", tags=["Costs"])
 _authenticated_router.include_router(artifacts.router, prefix="/api", tags=["Artifacts"])
-_authenticated_router.include_router(deployment_diff.router, tags=["Deployments"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
 _authenticated_router.include_router(repo_readiness.router, prefix="/api/repos", tags=["Repos"])
 _authenticated_router.include_router(repo_ci.router)  # Has its own prefix /api/repo-ci

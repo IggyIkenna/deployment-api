@@ -1,6 +1,9 @@
 # Epic: observability_master
 # Lifecycle: permanent
-# Delete-when: mock mode is retired, or the parity contract is enforced by a QG/contract test instead
+# Delete-when: mock mode is retired. The cross-server SHAPE diff below cannot become a
+# QG/contract test (needs live GCP creds unavailable in quality-gates.sh) — see the
+# 2026-08-03 DECISION note below; the mock-crash + route-shadowing rot classes it CAN
+# catch without live infra are gated separately (tests/unit/test_route_ordering_inventory.py).
 """Diff deployment-api's LIVE responses against its MOCK responses — shape + currency.
 
 WHY THIS EXISTS
@@ -15,6 +18,24 @@ Nothing detects that class of rot except comparing the two modes endpoint-by-end
 RE-RUN THIS; THE ANSWER HAS A DATE ON IT. Parity is not a property you fix once — it decays
 every time an endpoint is added to one side only. A finding from a previous run is evidence
 about that day, not today.
+
+DECISION (2026-08-03, deployment_api_live_mock_parity_2026_07_17.md): the cross-server SHAPE
+diff this script does stays a SCRIPT, not a QG gate — it needs two live processes on two ports
+(one of them real `CLOUD_MOCK_MODE=false` live, hitting real GCP), and `quality-gates.sh` has
+no live credentials (every existing integration test in this repo only ever exercises
+`CLOUD_MOCK_MODE=true`, confirmed by `tests/integration/test_api_workflow.py`). What DID get
+gated permanently, mock-mode-only, zero live infra: route-shadowing (a literal path silently
+swallowed by an earlier-registered parametric route, e.g. `/api/deployments/diff` routed to
+`get_deployment_status("diff")` instead of its own handler — see
+`tests/unit/test_route_ordering_inventory.py`, which follows the existing `find_matching_route`
+pattern rather than a new mechanism). An exhaustive "every mock endpoint must not 500" sweep was
+also prototyped but shelved: run through `tests/unit`'s existing global service-mocking
+(`conftest.py` stubs `DataAnalyticsService`/`DataQueryService`/`DataStatusService` etc. as bare
+`MagicMock()` to dodge circular imports), a route that calls `await <mocked service>.method()`
+false-positives 500 (`MagicMock` isn't awaitable) regardless of real mock-server correctness —
+and `tests/unit` is the only test tier `quality-gates.sh` actually runs (`RUN_INTEGRATION=false`
+here). Making that safe needs AsyncMock-compatible doubles for those services first; tracked as
+a follow-up, not bundled into this decision.
 
 USAGE
 -----
