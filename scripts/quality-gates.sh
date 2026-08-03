@@ -16,7 +16,7 @@ MIN_COVERAGE=70
 RUN_INTEGRATION=false
 PYTEST_WORKERS=${PYTEST_WORKERS:-4}
 LOCAL_DEPS=()
-MAX_DURATION=700
+MAX_DURATION=1500
 # basedpyright's inner run_timeout (base-service.sh [4/6] TYPE CHECK) defaults to 120s — well under
 # the ~480s basedpyright runtime already documented by the MAX_DURATION 300->700 bump above. That
 # bump covered the OUTER script-wide budget but never raised the INNER per-subprocess kill timeout,
@@ -26,8 +26,16 @@ MAX_DURATION=700
 # on deployment-api#421 (promotion PR) red on the QG-slice-checks/typecheck selector at exactly 121s.
 # Sanctioned PYRIGHT_TIMEOUT override per codex/06-coding-standards/quality-gates.md (META-gate /
 # per-step timeout, not a substantive gate) — same pattern as execution-service (300s) /
-# greeks-service + e2e-testing (240s). 600s gives ~120s headroom over the documented 480s baseline.
-export PYRIGHT_TIMEOUT="${PYRIGHT_TIMEOUT:-600}"
+# greeks-service + e2e-testing (240s). 600s gave ~120s headroom over the documented 480s baseline.
+# Re-bumped 600->1200 (MAX_DURATION 700->1500) 2026-08-03 (main_ci_red escalation agt-7def14): two
+# independent FRESH quality-gates-v2 runs (main workflow_dispatch 2026-08-02T21:22-21:32Z, LDR
+# workflow_dispatch 2026-08-03T04:53-05:04Z) both hit "Type check FAILED/timeout (exit=124)" at
+# ~600-605s wall-clock — not code-side: an isolated `basedpyright deployment_api` run on this same
+# host completed in 17.7s real-time. Root cause is shared self-hosted-runner CPU oversubscription
+# (`uptime` load average 36-40 on a 16-core host at diagnosis time — 2.5x cores — from concurrent QG
+# runs across other repos' promotion PRs + interactive agent sessions sharing the box), not a genuine
+# basedpyright regression. 1200s/1500s gives real headroom against the same contention recurring.
+export PYRIGHT_TIMEOUT="${PYRIGHT_TIMEOUT:-1200}"
 # Pre-existing violations uncovered after fixing step 3.5 (import patterns). Ratchet to 0 via
 # deployment_and_qg_strategy_implementation_2026_05_13.md Phase 3 (schema provenance, os.getenv, etc.).
 # Bumped 20→22: test-isolation fixes unmasked 2 additional pre-existing violations that were hidden
