@@ -7,7 +7,7 @@ static fixture.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from unified_api_contracts import DeploymentUmbrella
 
@@ -17,7 +17,19 @@ __all__ = ["_mock_inventory"]
 
 
 def _mock_inventory(now: datetime) -> list[DeploymentItem]:
-    """A representative mock inventory (mock mode — no GCP / GCS access)."""
+    """A representative mock inventory (mock mode — no GCP / GCS access).
+
+    ``last_run_at`` is derived from the caller's ``now`` (not a hardcoded date) so this
+    fixture never goes stale again — a frozen absolute date silently trains the UI on an
+    old shape (see
+    unified-trading-pm/plans/active/issues/deployment_api_live_mock_parity_2026_07_17.md).
+    Spacing between items is preserved from the original fixture, just re-anchored to now
+    (the newest original timestamp, the AWS backfill VM, maps to ``now`` itself).
+    """
+
+    def _run_at(delta: timedelta) -> str:
+        return (now - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     return [
         DeploymentItem(
             name="cefi-binance-spot-20260622-014158",
@@ -27,7 +39,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="cefi-binance-spot-20260622-014158",
             asset_group="cefi",
             status="running",
-            last_run_at="2026-06-22T01:41:58Z",
+            last_run_at=_run_at(timedelta(hours=9, minutes=48, seconds=2)),
             exit_code=None,
             heartbeat_age_seconds=42,
             captured_progress=11_987,
@@ -41,7 +53,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="defi-backfill",
             asset_group="defi",
             status="failed",
-            last_run_at="2026-06-22T03:00:00Z",
+            last_run_at=_run_at(timedelta(hours=8, minutes=30)),
             exit_code=137,
             heartbeat_age_seconds=3_600,
             captured_progress=0,
@@ -55,7 +67,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="strategy-live",
             asset_group="cefi",
             status="running",
-            last_run_at="2026-06-20T00:00:00Z",
+            last_run_at=_run_at(timedelta(days=2, hours=11, minutes=30)),
             exit_code=None,
             heartbeat_age_seconds=30,
             captured_progress=0,
@@ -69,7 +81,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="defi-paper-trading",
             asset_group="defi",
             status="running",
-            last_run_at="2026-06-22T00:00:00Z",
+            last_run_at=_run_at(timedelta(hours=11, minutes=30)),
             exit_code=None,
             heartbeat_age_seconds=15,
             captured_progress=0,
@@ -83,7 +95,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="manifest-consolidator",
             asset_group="cefi",
             status="succeeded",
-            last_run_at="2026-06-22T06:00:00Z",
+            last_run_at=_run_at(timedelta(hours=5, minutes=30)),
             exit_code=0,
             heartbeat_age_seconds=None,
             captured_progress=None,
@@ -99,7 +111,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="mtds-backfill",
             asset_group="cefi",
             status="running",
-            last_run_at="2026-06-22T11:30:00Z",
+            last_run_at=_run_at(timedelta(0)),
             exit_code=None,
             heartbeat_age_seconds=None,
             captured_progress=None,
@@ -113,7 +125,7 @@ def _mock_inventory(now: datetime) -> list[DeploymentItem]:
             service="manifest-consolidator",
             asset_group="cefi",
             status="succeeded",
-            last_run_at="2026-06-22T06:05:00Z",
+            last_run_at=_run_at(timedelta(hours=5, minutes=25)),
             exit_code=0,
             heartbeat_age_seconds=None,
             captured_progress=None,

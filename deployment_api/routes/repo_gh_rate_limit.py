@@ -15,6 +15,7 @@ Plan: ci_dashboard_deployment_ui_2026_06_10.md Phase 1.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 from fastapi import APIRouter
@@ -29,19 +30,25 @@ router = APIRouter()
 
 
 def _mock_rate_limit() -> dict[str, object]:
+    # Relative-to-now (not a hardcoded date) so this fixture never goes stale again — a
+    # frozen absolute date/reset silently trains the UI on an old shape (see
+    # unified-trading-pm/plans/active/issues/deployment_api_live_mock_parity_2026_07_17.md).
+    now = datetime.now(UTC)
+    core_reset = int((now + timedelta(hours=1)).timestamp())
+    search_reset = int((now + timedelta(minutes=1)).timestamp())
     return {
-        "fetched_at": "2026-06-10T12:00Z",
+        "fetched_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "resources": {
-            "core": {"limit": 5000, "remaining": 4821, "used": 179, "reset": 1749560400},
-            "graphql": {"limit": 5000, "remaining": 5000, "used": 0, "reset": 1749560400},
-            "search": {"limit": 30, "remaining": 30, "used": 0, "reset": 1749556860},
+            "core": {"limit": 5000, "remaining": 4821, "used": 179, "reset": core_reset},
+            "graphql": {"limit": 5000, "remaining": 5000, "used": 0, "reset": core_reset},
+            "search": {"limit": 30, "remaining": 30, "used": 0, "reset": search_reset},
         },
         # The GitHub App ("uts-ci-poller") pool is a SEPARATE 5000/hr budget the fleet's
         # CI pollers now draw from — surfaced alongside the PAT so the operator sees both.
         "app": {
             "resources": {
-                "core": {"limit": 5000, "remaining": 4990, "used": 10, "reset": 1749560400},
-                "graphql": {"limit": 5000, "remaining": 5000, "used": 0, "reset": 1749560400},
+                "core": {"limit": 5000, "remaining": 4990, "used": 10, "reset": core_reset},
+                "graphql": {"limit": 5000, "remaining": 5000, "used": 0, "reset": core_reset},
             },
         },
     }

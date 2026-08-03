@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query
@@ -102,6 +103,12 @@ async def list_triggers(
     Use force_refresh=true to bypass cache.
     """
     if CLOUD_MOCK_MODE or CLOUD_PROVIDER == "local":
+        # Relative-to-now (not a hardcoded date) so this fixture never goes stale again —
+        # a frozen absolute date silently trains the UI on an old shape (see
+        # unified-trading-pm/plans/active/issues/deployment_api_live_mock_parity_2026_07_17.md).
+        duration_seconds = 510
+        finish_time = datetime.now(UTC) - timedelta(minutes=15)
+        create_time = finish_time - timedelta(seconds=duration_seconds)
         mock_triggers = [
             {
                 "trigger_id": f"mock-trigger-{svc}",
@@ -113,9 +120,9 @@ async def list_triggers(
                 "last_build": {
                     "build_id": f"mock-build-{svc}-001",
                     "status": "SUCCESS",
-                    "create_time": "2026-03-29T06:00:00Z",
-                    "finish_time": "2026-03-29T06:08:30Z",
-                    "duration_seconds": 510,
+                    "create_time": create_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "finish_time": finish_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "duration_seconds": duration_seconds,
                     "commit_sha": "abc1234",
                     "branch": "live-defi-rollout",
                     "log_url": f"https://console.cloud.google.com/cloud-build/builds/mock-{svc}",
