@@ -17,14 +17,27 @@ module (``_ds``) at call time.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from fastapi import Query
+from unified_trading_library import GcsEventSink, run_lifecycle, setup_events
 
 from deployment_api.routes.data_status import router
 from deployment_api.settings import gcp_project_id
 
 logger = logging.getLogger(__name__)
+
+# The in-service endpoint calls ``run_rollup()`` directly (NOT via ``main()``),
+# so it must set up the event sink itself — otherwise ``log_event()`` calls
+# inside ``run_rollup()`` either crash (if no prior init) or route to whatever
+# sink a different code path last configured (silently writing to the wrong
+# bucket/prefix).  Mirror the ``main()`` init exactly: a dedicated
+# ``GcsEventSink`` scoped to ``data-status-rollup-worker`` so every
+# SERVICE_PROCESSED / SERVICE_FAILED event lands under the correct GCS prefix.
+# ``RuntimeError`` is suppressed for the "already initialized by an outer
+# bootstrap" case (same guard ``main()`` carries).
+_ROLLUP_SERVICE_NAME = "data-status-rollup-worker"
 
 
 @router.post("/rollup-run")
@@ -52,8 +65,32 @@ async def run_data_status_rollup(services: list[str] | None = Query(None)) -> di
     svc_list: list[str] = list(services) if services else list(DEFAULT_SERVICES)
     bucket = f"{gcp_project_id}-data-status-rollups"
 
+    # ------------------------------------------------------------------
+    # Ensure events are initialized for THIS worker before calling
+    # ``run_rollup()``.  The ``main()`` entrypoint (CLI / gen2 Job path)
+    # does this itself, but the in-service endpoint calls ``run_rollup()``
+    # directly — without this init the ``log_event()`` calls inside the
+    # sweep are either a crash (RuntimeError: not initialized) or silently
+    # routed to whatever sink another code path last configured.
+    # Fixed 2026-08-04 — the events bucket had been dead for this worker
+    # since 2026-06-17 because this init was missing in the only
+    # production code path.
+    # ------------------------------------------------------------------
+    with contextlib.suppress(RuntimeError):
+        _sink = GcsEventSink(
+            project_id=gcp_project_id,
+            bucket=f"{gcp_project_id}-events",
+            service_name=_ROLLUP_SERVICE_NAME,
+        )
+        setup_events(service_name=_ROLLUP_SERVICE_NAME, mode="batch", sink=_sink)
+
     logger.info("data-status rollup (LIVE): %d service(s) -> gs://%s", len(svc_list), bucket)
-    rc_live = await asyncio.to_thread(run_rollup, gcp_project_id, bucket, svc_list)
+
+    with run_lifecycle(
+        service_name=_ROLLUP_SERVICE_NAME,
+        details={"project_id": gcp_project_id, "bucket": bucket},
+    ):
+        rc_live = await asyncio.to_thread(run_rollup, gcp_project_id, bucket, svc_list)
 
     return {
         "status": "ok" if rc_live == 0 else "partial",

@@ -60,7 +60,7 @@ from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivate
 from ._deployment_processor_vm_cleanup import (  # pyright: ignore[reportPrivateUsage]
     _terminate_stuck_vm as _terminate_stuck_vm,  # pyright: ignore[reportPrivateUsage]
 )
-from .auto_sync import pending_vm_deletes
+from ._deployment_processor_vm_cleanup import pending_vm_deletes  # pyright: ignore[reportPrivateUsage]
 
 _pending_vm_deletes = pending_vm_deletes
 
