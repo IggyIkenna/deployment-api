@@ -25,7 +25,11 @@ def test_venue_to_category_cefi_match() -> None:
     svc = _svc()
     assert svc._venue_to_category("BYBIT") == "CEFI"
     assert svc._venue_to_category("binance-spot") == "CEFI"  # lowercase match
-    assert svc._venue_to_category("OKX") == "CEFI"
+    # Bare "OKX" was REMOVED from the venue registry 2026-08-04 (unified-api-
+    # contracts@d67a226f — never MVP, 2,475+ permanently-failing capture
+    # attempts); OKX-SPOT/OKX-SWAP/OKX-FUTURES are the real canonical venues.
+    assert svc._venue_to_category("OKX-SPOT") == "CEFI"
+    assert svc._venue_to_category("OKX") is None
     assert svc._venue_to_category("DERIBIT") == "CEFI"
     # Onboarded after the old hardcoded 12-venue allowlist was written —
     # must now resolve via the canonical VENUE_TO_ASSET_GROUP registry.
