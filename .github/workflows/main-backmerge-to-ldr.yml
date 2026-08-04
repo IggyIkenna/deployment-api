@@ -58,6 +58,12 @@ jobs:
   backmerge:
     runs-on: [self-hosted, glue]
     timeout-minutes: 6
+    outputs:
+      # Exposed so the notify-failure job below can alert even when the "bm" step itself
+      # dies before its own explicit `decision=`/`reason=` write is reached (the silent-
+      # failure class this closes — main_backmerge_to_ldr_silent_failure_2026_08_02.md).
+      decision: ${{ steps.bm.outputs.decision }}
+      reason: ${{ steps.bm.outputs.reason }}
     steps:
       # GitHub App installation token — separate 5000/hr pool from the shared user PAT.
       # Used for `gh pr create` (conflict PR) + the repository_dispatch; an App token CAN
@@ -89,6 +95,31 @@ jobs:
           GH_PAT: ${{ steps.app-token.outputs.token }}
         run: |
           set -uo pipefail
+
+          # ── Silent-early-death backstop (main_backmerge_to_ldr_silent_failure_2026_08_02.md
+          # todo 3) ────────────────────────────────────────────────────────────────────────
+          # The confirmed 2026-08-02 incident (missing `|| true` on the grep further below) showed
+          # that ANY unguarded command failing before DECISION is ever set aborts this WHOLE script
+          # silently under GitHub Actions' implicit `bash -e {0}` run-shell — zero stdout, no
+          # decision/reason recorded, and the conflict-PR/escalation path below (which only fires on
+          # DECISION=conflict) is never reached because the script died before it could get there.
+          # This trap is the generic backstop, not a fix for one specific command: whatever fails
+          # next — this step's own `git fetch`/`git ls-remote` calls, or the retry loop's own
+          # unguarded `git fetch`/`git checkout -B` further down, or anything a future edit adds —
+          # gets DECISION recorded as "error" with the exact failing line/command before the script
+          # exits. That lets (a) the "Notify orchestrator" step below (if: always()) report a real
+          # decision instead of a blank one, and (b) the dedicated notify-failure job (this file,
+          # bottom) actually alert on it via Slack instead of the failure staying invisible beyond a
+          # bare workflow red X. Safe to leave unconditional: every command AFTER the real
+          # `decision=`/`reason=` write near the end of this script is already inside an `if` test or
+          # an `&&`/`||`-guarded chain (verified — none can return non-zero to the trap), so this
+          # never double-fires and clobbers a genuinely-determined decision.
+          trap '
+            _ec=$?
+            echo "[backmerge] ERR trap: line=${LINENO} cmd=${BASH_COMMAND} exit=${_ec}"
+            { echo "decision=error"; echo "reason=script aborted at line ${LINENO} running: ${BASH_COMMAND} (exit ${_ec})"; } >> "$GITHUB_OUTPUT"
+            exit "$_ec"
+          ' ERR
 
           # LDR must exist (some repos use main-only; nothing to back-merge then).
           if ! git ls-remote --exit-code --heads origin live-defi-rollout >/dev/null 2>&1; then
@@ -388,3 +419,34 @@ jobs:
           echo "[plan-health] POST /api/plan-health/dispatch -> ${HTTP}"
           [ "${HTTP}" = "200" ] || [ "${HTTP}" = "201" ] || { echo "  body:"; head -c 200 /tmp/ph.body 2>/dev/null; }
           exit 0
+
+  # ── Dedicated failure notifier (main_backmerge_to_ldr_silent_failure_2026_08_02.md todo 3) ──
+  # The "Notify orchestrator" step above already posts every decision to /api/mirror-events, but
+  # that endpoint's alerting is keyed to tab-mirror-to-ldr.yml's OWN decision vocabulary
+  # (`_ALERTED_DECISIONS = {"skip", "race-lost"}` in agent-orchestrator/server/routes/ops.py) — this
+  # workflow's decisions (`noop`/`merged`/`conflict`/`race`/`error`) never match, so a real failure
+  # here was recorded but never surfaced as an alert even before this incident. Rather than couple
+  # this repo's fix to an agent-orchestrator change, post a genuine, independent Slack alert via the
+  # fleet's standard reusable carrier (`notify-slack.yml`, the same one branch-health.yml /
+  # ci-health.yml use) whenever the backmerge job fails outright OR completes with `decision=error`
+  # — the ERR trap in the "bm" step above guarantees the latter is set even for a failure this job
+  # never anticipated.
+  notify-failure:
+    needs: backmerge
+    if: always() && (needs.backmerge.result == 'failure' || needs.backmerge.outputs.decision == 'error')
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      message: |
+        :rotating_light: `main-backmerge-to-ldr` failed on `${{ github.repository }}` (run ${{ github.run_id }}).
+        Reason: ${{ needs.backmerge.outputs.reason || 'job failed before any decision/reason could be recorded (see run log)' }}
+        This is the main→live-defi-rollout sync bridge — left broken, `live-defi-rollout` (every AO slot worker's clone) silently drifts stale behind `main`. Needs human/orchestrator attention, not a routine retry.
+      severity: CRITICAL
+      conclusion: failure
+      workflow_name: main-backmerge-to-ldr
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      dedup_key: main-backmerge-to-ldr:failure
+      cooldown_min: 60
+      concurrency_suffix: bm-fail
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
