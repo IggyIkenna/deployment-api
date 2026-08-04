@@ -28,8 +28,14 @@ from ._deployment_processor_helpers import (
     _vm_zone_from_map,  # pyright: ignore[reportPrivateUsage]
 )
 
-# Import shared pending VM deletes dict from auto_sync.
-from .auto_sync import pending_vm_deletes
+# Shared pending-VM-deletes registry (was previously imported from .auto_sync,
+# which is now deleted dead code — the dict lives here as the single source).
+pending_vm_deletes: dict[str, tuple[float, str | None]] = {}
+
+# Underscore-prefixed alias so tests can access via
+# _deployment_processor_vm_cleanup._pending_vm_deletes or import
+# _pending_vm_deletes directly.
+_pending_vm_deletes = pending_vm_deletes
 
 logger = logging.getLogger(__name__)
 
