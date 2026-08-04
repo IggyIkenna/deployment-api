@@ -104,6 +104,7 @@ from deployment_api.routes.data_status import _axis_census
 from deployment_api.routes.data_status import _distinct_values
 from deployment_api.routes.data_status import _coverage_grid
 from deployment_api.routes.data_status import _coverage_drift_run
+from deployment_api.routes.data_status import _pipeline_trace
 
 # isort: on
 
@@ -172,6 +173,7 @@ from deployment_api.routes.data_status._live_coverage_venue_year import (
     VenueYearRow,
     get_venue_year_coverage,
 )
+from deployment_api.routes.data_status._pipeline_trace import get_pipeline_trace
 from deployment_api.routes.data_status._query_meta import (
     analyze_data_patterns,
     get_bucket_counts,
