@@ -412,38 +412,42 @@ class TestGrainAwareCanonicalCompare:
         assert non_canonical["data_types"] == 1
 
     def test_sports_market_token_instrument_types_are_accepted_exceptions_not_findings(self) -> None:
-        """sports_instrument_type_market_token_ssot_gap_2026_07_28.md todo 2: the 30
+        """sports_instrument_type_market_token_ssot_gap_2026_07_28.md todo 2: the 39
         sports MDPS market-token ``instrument_type`` values (ASIAN_HANDICAP_*/
-        MATCH_ODDS*/OVER_UNDER_*/SPORT) are real, deliberately-produced MDPS output
+        MATCH_ODDS*/OVER_UNDER_*/SPORT — 30 in the original 2026-07-28/07-30 draft, +4
+        unified-api-contracts@161b0c0c (2026-08-04 sports census), +5 more
+        unified-api-contracts@cb545bef (2026-08-04, folds the previously-separately-
+        tracked lowercase ``odds``/``exchange_odds``/``fixed_odds`` + bare
+        ``ASIAN_HANDICAP``/``OVER_UNDER`` residue into the accepted-exception set
+        itself) are real, deliberately-produced MDPS output
         (``canonical_writer_shaping.py::_type_token_from_canonical_id``), never
         members of the per-CONTRACT-grain ``InstrumentType`` enum. Operator decision
         2026-07-30 (accepted-exception over global enum growth): they must be ABSENT
-        from the sports ``instrument_types`` axis entirely, while the 4 already-
-        tracked values (``odds``/``exchange_odds``/``fixed_odds``/``ODDS``) still
-        badge non-canonical — proving the panel's non_canonical_count drops from the
-        live-observed 34 to the expected 4, not to 0 (the exclusion is scoped, not a
-        blanket sports pass).
+        from the sports ``instrument_types`` axis entirely, while the distinct-cased
+        literal ``ODDS`` (case-sensitive set membership — the registry only carries
+        lowercase ``odds``) still badges non-canonical — proving the exclusion is
+        scoped, not a blanket sports pass.
         """
         from unified_api_contracts.registry import SPORTS_MARKET_TOKEN_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES
 
         from deployment_api.routes.data_status import enumerate_distinct_values
 
-        already_tracked = ["odds", "exchange_odds", "fixed_odds", "ODDS"]
+        still_flagged = ["ODDS"]
         market_tokens = sorted(SPORTS_MARKET_TOKEN_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES)
-        assert len(market_tokens) == 30
+        assert len(market_tokens) == 39
 
-        payload = _payload("sports", ["X"], already_tracked + market_tokens)
+        payload = _payload("sports", ["X"], still_flagged + market_tokens)
         axes, non_canonical = enumerate_distinct_values(payload, "sports")
 
         values = {e["value"] for e in axes["instrument_types"]}
-        # The 30 accepted-exception market tokens never appear at all.
+        # The 39 accepted-exception market tokens never appear at all.
         assert values.isdisjoint(SPORTS_MARKET_TOKEN_ACCEPTED_NONCANONICAL_INSTRUMENT_TYPES)
-        # The 4 already-tracked values still show up, still flagged.
-        assert values == {"odds", "exchange_odds", "fixed_odds", "ODDS"}
+        # Only the distinct-cased "ODDS" literal still shows up, still flagged.
+        assert values == {"ODDS"}
         badge = {e["value"]: e["is_canonical"] for e in axes["instrument_types"]}
         assert all(is_canonical is False for is_canonical in badge.values())
-        # 34 (live-observed) -> 4 (the already-tracked residue), not 0.
-        assert non_canonical["instrument_types"] == 4
+        # 39 (live-observed) -> 1 (the still-flagged "ODDS" residue), not 0.
+        assert non_canonical["instrument_types"] == 1
 
     def test_cefi_venue_axis_keeps_exact_compare(self) -> None:
         """Only defi venues are bare-based; cefi's suffix IS part of the canonical
