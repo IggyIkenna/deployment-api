@@ -133,6 +133,27 @@ class ReapResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     results: list[ReapResultEntry] = Field(default_factory=list)
 
 
+class WatchdogKillEventRequest(BaseModel):  # CORRECT-LOCAL: deployment-ui request DTO
+    """POST /api/fleet/watchdog/kill-events body — one resource-watchdog kill or violation event."""
+
+    vm_name: str
+    pid: int
+    slot_id: str
+    command: str
+    reason: str
+    rss_mb: int
+    limit_mb: int
+    pressure_level: str
+    killed: bool
+
+
+class WatchdogKillEventResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
+    """POST /api/fleet/watchdog/kill-events response."""
+
+    status: str
+    rows_written: int
+
+
 class DeleteInstanceResponse(BaseModel):  # CORRECT-LOCAL: deployment-ui response DTO
     """DELETE /api/fleet/instances/{name} response."""
 
@@ -222,4 +243,6 @@ __all__ = [
     "VmLifecycleClass",
     "VmRole",
     "VmRunStatus",
+    "WatchdogKillEventRequest",
+    "WatchdogKillEventResponse",
 ]

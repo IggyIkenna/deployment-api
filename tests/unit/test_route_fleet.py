@@ -568,3 +568,77 @@ def test_delete_instance_deletes_stopped(client_fleet: TestClient) -> None:
     assert resp.status_code == 200
     assert resp.json()["deleted"] is True
     mock_del.assert_called_once_with("test-project", "cefi-binance-spot-20260601", "asia-northeast1-c")
+
+
+# ---------------------------------------------------------------------------
+# Watchdog kill-events ingest route
+# ---------------------------------------------------------------------------
+
+
+def _kill_event_payload() -> dict[str, object]:
+    return {
+        "vm_name": "ao-host",
+        "pid": 12345,
+        "slot_id": "6",
+        "command": "python3 /usr/bin/agent-orchestrator",
+        "reason": "rss 8192 MB > limit 4096 MB",
+        "rss_mb": 8192,
+        "limit_mb": 4096,
+        "pressure_level": "critical",
+        "killed": True,
+    }
+
+
+def test_watchdog_kill_events_mock_mode(client_fleet: TestClient) -> None:
+    with patch(_PATCH_MOCK_MODE, return_value=True):
+        resp = client_fleet.post("/api/fleet/watchdog/kill-events", json=_kill_event_payload())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["rows_written"] == 0
+
+
+def test_watchdog_kill_events_ingest_calls_writer(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.routes.fleet.write_watchdog_kill_event") as mock_write,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        payload = _kill_event_payload()
+        resp = client_fleet.post("/api/fleet/watchdog/kill-events", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["rows_written"] == 1
+    mock_write.assert_called_once_with(
+        "test-project",
+        vm_name="ao-host",
+        pid=12345,
+        slot_id="6",
+        command="python3 /usr/bin/agent-orchestrator",
+        reason="rss 8192 MB > limit 4096 MB",
+        rss_mb=8192,
+        limit_mb=4096,
+        pressure_level="critical",
+        killed=True,
+    )
+
+
+def test_watchdog_kill_events_no_project_id_returns_503(client_fleet: TestClient) -> None:
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+    ):
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = None
+        resp = client_fleet.post("/api/fleet/watchdog/kill-events", json=_kill_event_payload())
+    assert resp.status_code == 503
+
+
+def test_watchdog_kill_events_rejects_unauthenticated(client_fleet: TestClient) -> None:
+    """Without rbac auth disabled, the route requires DEPLOY_TRIGGER permission."""
+    resp = client_fleet.post("/api/fleet/watchdog/kill-events", json=_kill_event_payload())
+    # 403 or 401 depending on auth middleware — either means "not authorized".
+    assert resp.status_code in (401, 403)

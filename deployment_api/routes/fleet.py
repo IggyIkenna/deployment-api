@@ -38,8 +38,13 @@ from deployment_api.routes._fleet_types import (
     ReapResponse,
     ReapResultEntry,
     VmCensusResponse,
+    WatchdogKillEventRequest,
+    WatchdogKillEventResponse,
 )
-from deployment_api.services.operational_data_writer import write_reap_event
+from deployment_api.services.operational_data_writer import (
+    write_reap_event,
+    write_watchdog_kill_event,
+)
 from deployment_api.vm_utils import delete_vm_instance, get_disk_details, get_vm_instance_details
 
 logger = logging.getLogger(__name__)
@@ -236,6 +241,40 @@ def delete_instance(
             dry_run=False,
         )
     return DeleteInstanceResponse(name=name, zone=zone, deleted=deleted)
+
+
+@router.post("/watchdog/kill-events", response_model=WatchdogKillEventResponse)
+def ingest_watchdog_kill_event(
+    request: WatchdogKillEventRequest,
+    _check: None = Depends(require_permission(Permission.DEPLOY_TRIGGER)),
+) -> WatchdogKillEventResponse:
+    """Ingest a resource-watchdog kill or violation event from the orchestrator host.
+
+    Additive to the existing AO-internal ``POST /api/resource-watchdog/kill`` — this is the
+    deployment-api side of the dual-write so kill events are durable in BigQuery and visible
+    in deployment-ui's fleet monitoring surfaces alongside every other host's resource data.
+
+    Best-effort: the writer swallows insert failures so a BigQuery blip never 5xx's the
+    watchdog's fire-and-forget POST.
+    """
+    if _cfg.is_mock_mode():
+        return WatchdogKillEventResponse(status="ok", rows_written=0)
+    project_id = _cfg.gcp_project_id
+    if not project_id:
+        raise HTTPException(status_code=503, detail="No GCP project configured")
+    write_watchdog_kill_event(
+        project_id,
+        vm_name=request.vm_name,
+        pid=request.pid,
+        slot_id=request.slot_id,
+        command=request.command,
+        reason=request.reason,
+        rss_mb=request.rss_mb,
+        limit_mb=request.limit_mb,
+        pressure_level=request.pressure_level,
+        killed=request.killed,
+    )
+    return WatchdogKillEventResponse(status="ok", rows_written=1)
 
 
 __all__ = ["router"]
