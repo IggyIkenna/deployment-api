@@ -70,7 +70,7 @@ permissions:
 
 jobs:
   backmerge:
-    runs-on: [self-hosted, glue]
+    runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
       - name: Checkout (full history needed for merge + relationship check)

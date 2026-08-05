@@ -76,7 +76,7 @@ permissions:
 jobs:
   semver:
     name: Semver Agent — deployment-api
-    runs-on: [self-hosted, glue]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     # push:[main] is implicitly gated: `main` is only updated by a green, v2-required
     # LDR→main promote PR (or an admin reconcile), so the tree is already validated.

@@ -68,7 +68,7 @@ jobs:
       # Non-empty only for repos in scripts/workflow-templates/self-hosted-qg-repos.txt — see
       # unified-trading-pm/.github/workflows/python-quality-gates-v2.yml's own input doc for why this
       # can't be a blanket default (github_actions_operator_gated_followups_2026_07_17.md).
-      self_hosted_runner_labels: '["self-hosted","glue"]'
+      self_hosted_runner_labels: ""
     secrets: inherit
     # Note: reusable workflow inputs are intentionally minimal — service_name + source_dir
     # are derived inside the reusable workflow from github.repository (caller's repo name)
@@ -96,7 +96,7 @@ jobs:
       always() && needs.quality-gates-v2.result == 'failure'
       && github.event_name == 'pull_request'
       && (github.base_ref == 'staging' || github.base_ref == 'main')
-    runs-on: [self-hosted, glue]
+    runs-on: ubuntu-latest
     steps:
       - name: Dispatch escalate-to-orchestrator (ldr_qg_failure → orchestrator worker)
         env:
@@ -151,7 +151,7 @@ jobs:
     # both fast-pathed by the reusable workflow: no code changed, so no image to rebuild.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.quality-gates-v2.outputs.metadata_only != 'true' && needs.quality-gates-v2.outputs.docs_only != 'true'
-    runs-on: [self-hosted, glue]
+    runs-on: ubuntu-latest
     steps:
       - name: Dispatch qg-passed → cloud-build-router
         env:
@@ -181,7 +181,7 @@ jobs:
     name: Notify ci-health (event-driven, plan L1555)
     needs: quality-gates-v2
     if: always() && needs.quality-gates-v2.result == 'failure'
-    runs-on: [self-hosted, glue]
+    runs-on: ubuntu-latest
     steps:
       - name: Dispatch ci-failure-alert → PM ci-health
         env:
