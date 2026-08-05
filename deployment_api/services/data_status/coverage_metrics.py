@@ -244,6 +244,7 @@ EMPTY_REASON_KEYS: tuple[str, ...] = (
     "EXPECTED_NOT_ENOUGH_TVL",  # DeFi sub-TVL pool — outside MVP capture universe (UAC parity)
     "EXPECTED_ACQUISITION_PENDING",  # governance-token registry acquisition not yet completed (UAC parity, IS R2c)
     "EXPECTED_SUBGRAPH_DEINDEXED",  # DeFi subgraph, zero indexer allocations (UAC parity, 2026-07-24)
+    "EXPECTED_SUBGRAPH_STALLED_HEAD",  # DeFi subgraph, indexer head stalled with no allocatable blocks (UAC parity)
     "EXPECTED_WRITE_GATE_NAN_THRESHOLD_EXCEEDED",  # write-gate NaN cap — feature-service parity (UAC)
     "SOURCE_RETURNED_ZERO",
     "STRATEGY_ENGINE_RETURNED_ZERO",  # strategy-service internally-computed hold-day (UAC parity)

@@ -192,6 +192,8 @@ class ManifestStatusMixin(ManifestStatusHelpersMixin):
         canonical_question_group: str | None = None,
         job_id: str | None = None,
         chain: str | None = None,
+        quote_asset: str | None = None,
+        margin_type: str | None = None,
         pipeline_modes: list[str] | None = None,
         venue: list[str] | None = None,
         scope: str = "could_exist",
@@ -211,12 +213,11 @@ class ManifestStatusMixin(ManifestStatusHelpersMixin):
             canonical_question_group,
             job_id,
             chain,
+            quote_asset=quote_asset,
+            margin_type=margin_type,
         )
-        any_row_filter = (
-            any(f is not None and f != "" for f in (league_id, fixture_id, canonical_question_group, job_id, chain))
-            or bool(pipeline_modes)
-            or bool(venue)
-        )
+        _row_filters = (league_id, fixture_id, canonical_question_group, job_id, chain, quote_asset, margin_type)
+        any_row_filter = any(f is not None and f != "" for f in _row_filters) or bool(pipeline_modes) or bool(venue)
         if not any_row_filter and (rollup := await self._manifest_status_rollup_fast_path(req)) is not None:
             return rollup
 

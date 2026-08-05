@@ -3,8 +3,14 @@
 ``GET /axis-value-census`` — per ``(service, asset_group)``, the RAW
 (uncanonicalised) distinct values + row counts of every enumerable manifest
 axis (``venue`` / ``chain`` / ``instrument_type`` / ``data_type`` / ``source``
-/ ``pipeline_mode`` / ``timeframe``) present in the consolidated availability
-index.
+/ ``pipeline_mode`` / ``timeframe`` / ``quote_asset`` / ``margin_type``)
+present in the consolidated availability index.
+
+``quote_asset`` / ``margin_type`` (v6 manifest columns, 2026-04-23) are
+non-empty for CeFi options_chain / futures_chain shards (e.g. ``"USDC"`` /
+``"linear"`` for DERIBIT linear options) and backfilled to ``""`` for every
+other asset_group — the axis census surfaces the CeFi-specific vocabulary
+without fabricating values where they don't apply.
 
 **MDPS candle-layer extension (candle_feature issue todo 42, 2026-07-21):**
 MTDS (raw ticks) and MDPS (derived candles) share the same per-asset_group
@@ -108,6 +114,8 @@ AXIS_CENSUS_COLUMNS: tuple[str, ...] = (
     "source",
     "pipeline_mode",
     "timeframe",
+    "quote_asset",
+    "margin_type",
 )
 
 # MTDS (raw ticks) and MDPS (derived candles) share the SAME per-asset_group

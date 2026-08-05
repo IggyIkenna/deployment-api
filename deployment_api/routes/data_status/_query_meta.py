@@ -260,6 +260,8 @@ async def get_schema(
     instruction_type: str | None = Query(None, description="execution-service instruction_type"),
     feature_group: str | None = Query(None, description="features-* feature_group"),
     timeframe: str | None = Query(None, description="features-* / multi-timeframe timeframe"),
+    quote_asset: str | None = Query(None, description="CeFi chain settlement asset (e.g. USD, USDC, USDT, BTC)"),
+    margin_type: str | None = Query(None, description="CeFi chain margin flavour (e.g. linear, inverse)"),
 ):
     """Return the leaf-shard SchemaContract columns for the requested axis tuple.
 
@@ -300,6 +302,8 @@ async def get_schema(
             instruction_type=instruction_type,
             feature_group=feature_group,
             timeframe=timeframe,
+            quote_asset=quote_asset,
+            margin_type=margin_type,
         )
     except (ValueError, RuntimeError) as e:
         logger.exception("Error in get_schema")

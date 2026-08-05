@@ -147,6 +147,8 @@ def get_schema_for_shard(
     instruction_type: str | None = None,
     feature_group: str | None = None,
     timeframe: str | None = None,
+    quote_asset: str | None = None,
+    margin_type: str | None = None,
 ) -> dict[str, object]:
     """Return the SchemaContract columns for a shard tuple.
 

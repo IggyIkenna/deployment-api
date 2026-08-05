@@ -174,6 +174,14 @@ async def get_data_status_manifest(
         None,
         description="Filter DeFi manifest rows to one chain (e.g. 'ETHEREUM', 'ARBITRUM').",
     ),
+    quote_asset: str | None = Query(
+        None,
+        description="Filter CeFi manifest rows to one quote_asset (e.g. 'USD', 'USDC', 'USDT').",
+    ),
+    margin_type: str | None = Query(
+        None,
+        description="Filter CeFi manifest rows to one margin_type (e.g. 'linear', 'inverse').",
+    ),
     venue: list[str] | None = Query(
         None,
         description=(
@@ -227,6 +235,8 @@ async def get_data_status_manifest(
             canonical_question_group=canonical_question_group,
             job_id=job_id,
             chain=chain,
+            quote_asset=quote_asset,
+            margin_type=margin_type,
             venue=venue,
             scope=scope,
         )
