@@ -498,6 +498,28 @@ class TestClearTurboCacheLive:
             r = client_ds_live.post("/data-status/turbo/clear")
         assert r.status_code == 500
 
+    def test_clears_the_honest_coverage_rollup_cache(self, client_ds_live: TestClient) -> None:
+        """Regression for the 2026-08-05 'missed cache layer' incident: the Distinct
+        Values panel kept serving a stale honest-coverage rollup for up to 30 minutes
+        after fresh data landed in GCS, because /turbo/clear never touched
+        _distinct_values._COVERAGE_CACHE — the same bug class as the 2026-05-05
+        incident cited in the endpoint's own docstring, just a layer nobody had
+        added to the clear list yet."""
+        from deployment_api.routes.data_status._distinct_values import _COVERAGE_CACHE
+
+        _COVERAGE_CACHE["some-bucket"] = (0.0, {"stale": True}, "2026-08-01")
+        mock_das = MagicMock()
+        mock_das.clear_cache = AsyncMock(return_value={"cleared": True})
+        with (
+            patch(_PATCH_DAS, mock_das),
+            patch("deployment_api.routes.data_status.clear_drilldown_cache"),
+            patch("deployment_api.services.data_status_service.clear_index_cache"),
+            patch("deployment_api.services.data_status_service.clear_rollup_cache"),
+        ):
+            r = client_ds_live.post("/data-status/turbo/clear")
+        assert r.status_code == 200
+        assert _COVERAGE_CACHE == {}
+
 
 # ── GET /venue-filters ────────────────────────────────────────────────────────
 
