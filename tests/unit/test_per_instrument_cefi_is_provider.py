@@ -439,124 +439,122 @@ class TestNormalizeInstrumentIdForMatchOptionFutureCollision:
 
 
 class TestBuildCefiIsInstrumentsProvider:
-    """Dim-7: _build_cefi_is_instruments_provider reads IS catalog correctly."""
+    """Dim-7: _build_cefi_is_instruments_provider reads IS catalog correctly.
+
+    As of 2026-08-05 the provider builds its venue→instruments map from the
+    per-date catalog (``prod/catalog.parquet``, via ``_read_cefi_catalogue_metadata``)
+    rather than from the availability index snapshot — venue is parsed from the
+    canonical ``instrument_id`` (``VENUE:TYPE:SYMBOL``). Tests mock the catalog
+    read rather than the (no longer called) ``read_availability_index``.
+    """
+
+    @staticmethod
+    def _mock_catalogue_metadata(
+        instrument_ids: list[str],
+        instrument_types: dict[str, str] | None = None,
+    ) -> tuple[dict[str, tuple[str | None, str | None]], dict[str, str]]:
+        """Build a mock return value for ``_read_cefi_catalogue_metadata``.
+
+        Each instrument_id is given an open-ended existence window
+        ``(None, None)`` (always existed). The caller supplies the instrument
+        set; venue is parsed from the canonical ``VENUE:TYPE:SYMBOL`` id form.
+        """
+        windows = dict.fromkeys(instrument_ids, (None, None))
+        itypes = instrument_types or {}
+        return windows, itypes
 
     def test_provider_returns_instruments_per_venue(self) -> None:
-        """Provider built from a mocked IS catalog returns the right instruments."""
-        # Mock the IS catalog DataFrame returned by read_availability_index.
-        mock_catalog_df = pd.DataFrame(
-            {
-                "venue": [_VENUE, _VENUE, "BYBIT-FUTURES", "BYBIT-FUTURES"],
-                "instrument_id": [
-                    "BINANCE-FUTURES::BTCUSDT",
-                    "BINANCE-FUTURES::ETHUSDT",
-                    "BYBIT-FUTURES::BTCUSDT",
-                    "BYBIT-FUTURES::ETHUSDT",
-                ],
-            }
-        )
+        """Provider built from mocked catalog parses venue from instrument_id."""
+        instrument_ids = [
+            "BINANCE-FUTURES:PERPETUAL:BTC-USDT",
+            "BINANCE-FUTURES:PERPETUAL:ETH-USDT",
+            "BYBIT-FUTURES:PERPETUAL:BTC-USDT",
+            "BYBIT-FUTURES:PERPETUAL:ETH-USDT",
+        ]
 
-        with (
-            patch(
-                "deployment_api.services.data_status_service.resolve_bucket_name",
-                return_value="instruments-store-cefi-test",
-            ),
-            patch(
-                "deployment_api.services.data_status_service.read_availability_index",
-                return_value=mock_catalog_df,
-            ),
-            patch(
-                "deployment_api.services.data_status.instrument_coverage.get_storage_client",
-                side_effect=RuntimeError("no live catalogue in this test"),
-            ),
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage._read_cefi_catalogue_metadata",
+            return_value=self._mock_catalogue_metadata(instrument_ids),
         ):
             provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         # Provider must return the right instruments for each venue.
-        binance_result = provider(_VENUE, _DT)
+        binance_result = provider("BINANCE-FUTURES", _DT)
         assert binance_result is not None
-        assert sorted(binance_result) == sorted(["BINANCE-FUTURES::BTCUSDT", "BINANCE-FUTURES::ETHUSDT"])
+        assert sorted(binance_result) == sorted(instrument_ids[:2])
 
         bybit_result = provider("BYBIT-FUTURES", _DT)
         assert bybit_result is not None
-        assert sorted(bybit_result) == sorted(["BYBIT-FUTURES::BTCUSDT", "BYBIT-FUTURES::ETHUSDT"])
+        assert sorted(bybit_result) == sorted(instrument_ids[2:])
 
         # Unknown venue returns None -> UAC MVP seed fallback.
         unknown_result = provider("UNKNOWN-VENUE", _DT)
         assert unknown_result is None
 
-    def test_builder_returns_none_on_gcs_error(self) -> None:
-        """Fail-open: a GCS error returns None (NOT a provider) so the caller
-        injects no provider and the denominator path uses UAC's MVP seed.
+    def test_builder_returns_none_on_empty_catalog(self) -> None:
+        """Fail-open: an empty IS catalog returns None (caller → MVP seed)."""
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage._read_cefi_catalogue_metadata",
+            return_value=({}, {}),
+        ):
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
+
+        assert provider is None
+
+    def test_builder_returns_none_on_catalogue_read_error(self) -> None:
+        """Fail-open: a catalog read error returns None (NOT a provider) so the
+        caller injects no provider and the denominator path uses UAC's MVP seed.
 
         Returning a ``lambda: None`` provider here would be WRONG — UAC only
         falls back to its MVP seed when the provider OBJECT is None; a non-None
         provider that returns None yields an EMPTY universe (denominator 0).
         """
-        with (
-            patch(
-                "deployment_api.services.data_status_service.resolve_bucket_name",
-                side_effect=RuntimeError("bucket not found"),
-            ),
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage._read_cefi_catalogue_metadata",
+            side_effect=RuntimeError("GCS error"),
         ):
             provider, windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
         assert provider is None
         assert windows == {}
 
-    def test_builder_returns_none_on_empty_catalog(self) -> None:
-        """Fail-open: an empty IS catalog returns None (caller → MVP seed)."""
-        with (
-            patch(
-                "deployment_api.services.data_status_service.resolve_bucket_name",
-                return_value="instruments-store-cefi-test",
-            ),
-            patch(
-                "deployment_api.services.data_status_service.read_availability_index",
-                return_value=pd.DataFrame(),
-            ),
-            patch(
-                "deployment_api.services.data_status.instrument_coverage.get_storage_client",
-                side_effect=RuntimeError("no live catalogue in this test"),
-            ),
-        ):
-            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
-
-        assert provider is None
-
     def test_provider_deduplicates_instruments(self) -> None:
-        """Duplicate instrument_ids in IS catalog are deduplicated."""
-        mock_catalog_df = pd.DataFrame(
-            {
-                "venue": [_VENUE, _VENUE, _VENUE],
-                "instrument_id": [
-                    "BINANCE-FUTURES::BTCUSDT",
-                    "BINANCE-FUTURES::BTCUSDT",  # duplicate
-                    "BINANCE-FUTURES::ETHUSDT",
-                ],
-            }
-        )
+        """Duplicate instrument_ids in catalog are deduplicated."""
+        instrument_ids = [
+            "BINANCE-FUTURES:PERPETUAL:BTC-USDT",
+            "BINANCE-FUTURES:PERPETUAL:BTC-USDT",  # duplicate
+            "BINANCE-FUTURES:PERPETUAL:ETH-USDT",
+        ]
 
-        with (
-            patch(
-                "deployment_api.services.data_status_service.resolve_bucket_name",
-                return_value="instruments-store-cefi-test",
-            ),
-            patch(
-                "deployment_api.services.data_status_service.read_availability_index",
-                return_value=mock_catalog_df,
-            ),
-            patch(
-                "deployment_api.services.data_status.instrument_coverage.get_storage_client",
-                side_effect=RuntimeError("no live catalogue in this test"),
-            ),
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage._read_cefi_catalogue_metadata",
+            return_value=self._mock_catalogue_metadata(instrument_ids),
         ):
             provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
 
-        result = provider(_VENUE, _DT)
+        result = provider("BINANCE-FUTURES", _DT)
         assert result is not None
         assert len(result) == 2  # duplicates removed
-        assert sorted(result) == sorted(["BINANCE-FUTURES::BTCUSDT", "BINANCE-FUTURES::ETHUSDT"])
+        assert sorted(result) == sorted(["BINANCE-FUTURES:PERPETUAL:BTC-USDT", "BINANCE-FUTURES:PERPETUAL:ETH-USDT"])
+
+    def test_instrument_id_without_venue_segment_is_skipped(self) -> None:
+        """Malformed instrument_ids (no colon segment) are silently skipped."""
+        instrument_ids = [
+            "BINANCE-FUTURES:PERPETUAL:BTC-USDT",  # well-formed
+            "MALFORMED_NO_COLON",  # skipped — no venue segment
+            "BINANCE-FUTURES:PERPETUAL:ETH-USDT",
+        ]
+
+        with patch(
+            "deployment_api.services.data_status.instrument_coverage._read_cefi_catalogue_metadata",
+            return_value=self._mock_catalogue_metadata(instrument_ids),
+        ):
+            provider, _windows, _itypes = _build_cefi_is_instruments_provider(cloud="gcp")
+
+        result = provider("BINANCE-FUTURES", _DT)
+        assert result is not None
+        assert len(result) == 2
+        assert "MALFORMED_NO_COLON" not in result
 
 
 # ---------------------------------------------------------------------------

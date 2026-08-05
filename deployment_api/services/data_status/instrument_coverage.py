@@ -160,14 +160,24 @@ def build_cefi_is_instruments_provider(
 ]:
     """Build an instruments_provider backed by the live IS cefi catalog.
 
-    Reads the instruments-store-cefi-* availability index ONCE, builds a
-    ``{venue: list[instrument_id]}`` map, and returns a closure that answers
+    Reads the instruments-store-cefi-* per-date catalog (``prod/catalog.parquet``)
+    ONCE, builds a ``{venue: list[instrument_id]}`` map from the per-instrument
+    lifecycle data, and returns a closure that answers
     ``(venue, data_type) -> list[str]``, alongside a per-instrument
     existence-window dict AND a per-instrument ``instrument_type`` dict (see
     :func:`_read_cefi_catalogue_metadata`) so :func:`per_instrument_coverage`
     can (a) clip its denominator to days each instrument actually existed
     instead of a blanket ``|instruments| x |dates|`` cross-product, and (b)
     evaluate UAC ``is_mvp(...)`` per instrument for the ``scope=mvp`` filter.
+
+    **Per-date source (2026-08-05):** venue is parsed from the canonical
+    ``instrument_id`` (``VENUE:TYPE:SYMBOL``) in the catalog — the cumulative
+    roll-up of ``instrument_availability/by_date/`` definitions built by
+    ``build_instrument_catalogue.py``. This replaces the prior
+    ``read_availability_index`` path which read ONE current IS availability
+    snapshot and was therefore the latest-known universe, NOT per-date
+    point-in-time-correct. The catalog carries ``available_from``/``available_to``
+    per instrument, making it the per-date SSOT.
 
     Fail-open: any GCS / parse error returns ``(None, {}, {})`` (NOT a
     provider) so the CALLER injects no provider at all and the per-instrument
@@ -181,49 +191,46 @@ def build_cefi_is_instruments_provider(
     The catalog read is performed eagerly at call-time (not lazily per
     (venue, dt) invocation) so the returned callable is cheap to call many
     times within one request: one GCS read → O(N) Python loop → per-venue
-    dicts. The existence-window + instrument_type read is a SEPARATE, small
-    object (``prod/catalog.parquet`` in the SAME bucket) — not a second
-    whole-corpus walk.
+    dicts.
     """
-    windows, instrument_types = _read_cefi_catalogue_metadata(cloud)
     try:
-        bucket = _dss.resolve_bucket_name(cloud=cloud, kind="instruments-store", asset_group="cefi")  # pyright: ignore[reportArgumentType]
-        df: pd.DataFrame = _dss.read_availability_index(bucket)
-        if df.empty or "venue" not in df.columns:
-            logger.warning("cefi IS catalog empty or missing 'venue' column — falling back to MVP seed")
-            return None, windows, instrument_types
-
-        # Support both column name conventions used by IS catalog parquets.
-        id_col = "instrument_id" if "instrument_id" in df.columns else "instrument_key"
-        if id_col not in df.columns:
-            logger.warning("cefi IS catalog has neither 'instrument_id' nor 'instrument_key' — falling back")
-            return None, windows, instrument_types
-
-        # Build {venue: sorted list of instrument_ids}. Existence-window
-        # clipping (available_from/to) is applied downstream in
-        # per_instrument_coverage via `windows` above, not here.
-        venue_map: dict[str, list[str]] = {}
-        for row_venue, row_id in zip(df["venue"].astype(str), df[id_col].astype(str), strict=True):
-            row_venue_s = row_venue.strip()
-            row_id_s = row_id.strip()
-            if not row_venue_s or not row_id_s or row_id_s.lower() in ("nan", "none", ""):
-                continue
-            venue_map.setdefault(row_venue_s, []).append(row_id_s)
-
-        # Deduplicate + sort each list so the provider output is deterministic.
-        deduped: dict[str, list[str]] = {v: sorted(set(ids)) for v, ids in venue_map.items()}
-        instrument_count = sum(len(v) for v in deduped.values())
-        logger.debug(
-            "cefi IS catalog loaded: %d venues, %d instruments total",
-            len(deduped),
-            instrument_count,
-        )
+        windows, instrument_types = _read_cefi_catalogue_metadata(cloud)
     except Exception as exc:
         logger.warning(
             "cefi IS catalog read failed (%s) — falling back to MVP seed",
             exc,
         )
+        return None, {}, {}
+    if not windows:
+        logger.warning("cefi IS catalog empty or unreadable — falling back to MVP seed")
         return None, windows, instrument_types
+
+    # Build {venue: sorted list of instrument_ids} from the per-date catalog.
+    # instrument_id format is canonical VENUE:INSTRUMENT_TYPE:SYMBOL; venue is
+    # the first colon-segment. This replaces the prior read_availability_index
+    # path (a single current snapshot) with the catalog (per-date lifecycle
+    # data from instrument_availability/by_date/ definitions).
+    venue_map: dict[str, list[str]] = {}
+    for instrument_id in windows:
+        iid_s = instrument_id.strip()
+        if not iid_s or iid_s.lower() in ("nan", "none", ""):
+            continue
+        parts = iid_s.split(":", 2)
+        if len(parts) < 2:
+            continue
+        venue = parts[0].strip()
+        if not venue:
+            continue
+        venue_map.setdefault(venue, []).append(iid_s)
+
+    # Deduplicate + sort each list so the provider output is deterministic.
+    deduped: dict[str, list[str]] = {v: sorted(set(ids)) for v, ids in venue_map.items()}
+    instrument_count = sum(len(v) for v in deduped.values())
+    logger.debug(
+        "cefi IS catalog loaded (per-date catalog source): %d venues, %d instruments total",
+        len(deduped),
+        instrument_count,
+    )
 
     def _provider(venue: str, _data_type: str) -> list[str] | None:
         """Return IS instrument_ids for venue, or None to fall back to MVP seed."""
