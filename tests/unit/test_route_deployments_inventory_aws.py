@@ -164,6 +164,33 @@ def test_build_aws_inventory_classifies_ec2_and_batch() -> None:
     assert job["exit_code"] == 0
 
 
+def test_build_aws_inventory_classifies_ci_escalation_runner_as_live() -> None:
+    """ci_runner_fleet_split_and_vm_rightsizing_2026_08_03: the escalation VM's `Name`
+    tag prefix (`ci-escalation-runner`) must resolve to LIVE, not be silently dropped —
+    an unregistered AWS EC2 name is skipped per-row (see `_ec2_item`'s docstring), which
+    is exactly what happened before this prefix was registered."""
+    from deployment_service.backends.aws_census import AwsInstanceCensus
+
+    from deployment_api.routes._aws_deployments import build_aws_inventory
+
+    instances = [
+        AwsInstanceCensus(
+            name="ci-escalation-runner-vm-1",
+            instance_id="i-042a6332509482556",
+            state="running",
+            asset_group="",
+            launch_time=datetime(2026, 8, 3, 15, 50, tzinfo=UTC),
+        ),
+    ]
+    items = build_aws_inventory(instances, [], [], _lifecycle_for_name, None, _LOG_BUCKET)
+    assert len(items) == 1, "the instance must NOT be silently skipped as unclassifiable"
+    item = items[0]
+    assert item["cloud"] == "AWS"
+    assert item["kind"] == "VM"
+    assert item["umbrella"] == "LIVE"
+    assert item["status"] == "running"
+
+
 def test_build_aws_inventory_terminated_exit_137_is_failed() -> None:
     """A terminated EC2 backfill with a durable EXIT_STATUS=137 blob → failed/137."""
     from deployment_service.backends.aws_census import AwsInstanceCensus

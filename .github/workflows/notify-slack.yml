@@ -1,0 +1,464 @@
+name: Notify Slack
+
+# Reusable workflow — canonical notification channel (Slack #ci-failures).
+# Callers pass inputs; this posts to the Slack incoming webhook.
+# Preferred secret: SLACK_CI_WEBHOOK_URL (the valid #ci-failures webhook).
+# SLACK_WEBHOOK_URL is accepted as a fallback.
+
+on:
+  workflow_call:
+    inputs:
+      message:
+        description: The message body to send (mrkdwn)
+        required: true
+        type: string
+      severity:
+        description: "INFO | WARNING | CRITICAL"
+        required: false
+        type: string
+        default: "INFO"
+      workflow_name:
+        description: Calling workflow name (appended to header)
+        required: false
+        type: string
+        default: ""
+      subject_repo:
+        description: >-
+          The repo the alert is ABOUT (not the repo running this workflow). Leave blank for the common case where a repo
+          reports on its own CI/build/deploy — the ledger then defaults it to the caller repo. Set explicitly when a
+          fleet-wide watcher (running in unified-trading-pm) reports on a DIFFERENT repo via a repository_dispatch
+          payload (e.g. ci-status-update.yml, cascade-qg-ordering.yml) — otherwise the ledger's `subject_repo` wrongly
+          records the watcher itself (deployment_alerts_ingestion_completeness_2026_07_20.md todo 4).
+        required: false
+        type: string
+        default: ""
+      run_url:
+        description: URL to the GHA run (shown as context link)
+        required: false
+        type: string
+        default: ""
+      conclusion:
+        description: "success | failure | cancelled | skipped"
+        required: false
+        type: string
+        default: ""
+      dedup_key:
+        description: >-
+          Stable identity of the STANDING CONDITION this alert reports (e.g. "promotion-lag:mtds:LDR-main",
+          "cloud-build-fail:execution-service"). When set, the carrier reads the alert ledger and SKIPS this post if the
+          same key was seen within `cooldown_min` — converting "re-page while true" into "page on transition". Leave
+          blank for a genuinely per-event alert (every CI failure transition) that should never be suppressed.
+        required: false
+        type: string
+        default: ""
+      cooldown_min:
+        description: >-
+          Suppress a repeat of the same `dedup_key` posted within this many minutes (no effect unless dedup_key is set).
+          Default 240 (4h). A RESOLVED bookend should pass a SHORTER cooldown (or a distinct key) so closure is never
+          swallowed by an open-condition cooldown.
+        required: false
+        type: number
+        default: 240
+      recovery:
+        description: >-
+          Mark this post a genuine RECOVERY / all-clear (a previously-not-OK condition is now OK). A green INFO post
+          (conclusion `success`/`neutral`) is SUPPRESSED unless `recovery: true` OR the message carries a recovery
+          marker (RECOVERED / RESOLVED / :large_green_circle: / :ballot_box_with_check:). Failures/warnings/cautions and
+          no-conclusion advisories are NEVER affected — they always post. This turns the channel from "everything is OK
+          on every run" into "OK only when it follows a problem" (operator requirement 2026-06-22). Leave false for a
+          routine success notification — it will be silently dropped.
+        required: false
+        type: boolean
+        default: false
+      concurrency_suffix:
+        description: >-
+          Distinct-lane token. The run-scoped concurrency group is notify-slack-<ref>-<run_id>-<suffix>; callers that
+          fire MORE THAN ONE notify-slack in the same run MUST pass a distinct suffix per call, else they land in one
+          group and GitHub cancels the previously-PENDING member when a newer one queues (cancel-in-progress:false only
+          protects the RUNNING one) — silently dropping an all-clear. Empty (default) keeps the pre-existing single-lane
+          behaviour for single-call callers.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: false
+      # Dedicated #ci-failures webhook. Preferred over SLACK_WEBHOOK_URL so callers that use
+      # `secrets: inherit` deliver via the valid webhook (the bare SLACK_WEBHOOK_URL repo secret
+      # is stale/non-https). Available to inherit-callers automatically; declared here so explicit
+      # callers can pass it too.
+      SLACK_CI_WEBHOOK_URL:
+        required: false
+      # Service-account key for the alert-ledger read/write (dedup). Reaches this reusable
+      # workflow via `secrets: inherit` at every caller level; declared here so it is documented
+      # and actionlint can resolve it. Without it the dedup gate fail-opens (posts every time).
+      GCP_SA_KEY:
+        required: false
+
+permissions: {}
+
+concurrency:
+  # Per-caller lane (…-<suffix>) so multiple notify-slack calls in ONE run never cancel each other's
+  # PENDING member — GitHub cancels a previously-pending group member when a newer one queues, even
+  # with cancel-in-progress:false. Empty suffix = the prior single-lane behaviour.
+  group: notify-slack-${{ github.ref }}-${{ github.run_id }}-${{ inputs.concurrency_suffix }}
+  cancel-in-progress: false
+
+jobs:
+  send-notification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # ── READ-BACK DEDUP (operator requirement 2026-06-18) ────────────────────────
+      # Authenticate up-front so the dedup gate below can READ the same alert ledger the
+      # persist step (further down) writes. Best-effort: a missing/failed auth degrades to
+      # FAIL-OPEN (the gate posts anyway) — dedup must NEVER swallow a real alert on infra
+      # error. Only runs on GCP (the ledger lives in GCS); the AWS/other path skips dedup
+      # and always posts (the prior behaviour).
+      - name: Authenticate to GCP (alert ledger — read+write)
+        id: gcp_auth
+        if: ${{ vars.CLOUD_PROVIDER == 'gcp' }}
+        continue-on-error: true
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # CRITICAL (incident 2026-07-14): the ledger read/write below use `gsutil`, but
+      # `auth@v3` only exports ADC (GOOGLE_APPLICATION_CREDENTIALS) — gsutil IGNORES that and
+      # runs ANONYMOUS, so the read 401'd ("Anonymous caller does not have storage.objects.list
+      # access to unified-trading-cicd-events"), the dedup gate saw an empty ledger → decided
+      # "key not seen → post", and EVERY push to a still-red PR re-paged (PR#1008 fired 67× in
+      # ~3h despite the stable `qg-fail:<repo>:<branch>` key). setup-gcloud activates the SA for
+      # gsutil so the read (dedup) AND write (persist) actually authenticate → dedup works.
+      # Best-effort: a failure here degrades to fail-open (post), never swallows a real alert.
+      - name: Set up gcloud (authenticate gsutil — auth@v3 alone leaves it anonymous)
+        if: ${{ vars.CLOUD_PROVIDER == 'gcp' && steps.gcp_auth.outcome == 'success' }}
+        continue-on-error: true
+        uses: google-github-actions/setup-gcloud@v2
+
+      # The structural root-cause fix (alert_quality_audit_2026_06_18): the carrier used to
+      # post UNCONDITIONALLY and the ledger was WRITE-ONLY. Here we READ it back: if `dedup_key`
+      # is set and that key was last posted within `cooldown_min`, SKIP this post — turning the
+      # whole GHA fleet from "re-page while true" → "page on transition" in ONE place. A blank
+      # dedup_key (the default) means "never dedup" (per-event alerts like a CI-failure transition
+      # post every time). Output `should_post` gates the post + persist steps below.
+      - name: Dedup gate (read alert ledger)
+        id: dedup
+        continue-on-error: true
+        env:
+          CICD_EVENTS_BUCKET: ${{ vars.CICD_EVENTS_BUCKET || 'unified-trading-cicd-events' }}
+          CLOUD_PROVIDER: ${{ vars.CLOUD_PROVIDER }}
+          GCP_AUTH_OUTCOME: ${{ steps.gcp_auth.outcome }}
+          INPUT_DEDUP_KEY: ${{ inputs.dedup_key }}
+          INPUT_COOLDOWN_MIN: ${{ inputs.cooldown_min }}
+          INPUT_SEVERITY: ${{ inputs.severity }}
+          INPUT_CONCLUSION: ${{ inputs.conclusion }}
+          INPUT_RECOVERY: ${{ inputs.recovery }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+        run: |
+          set -euo pipefail
+
+          # FAIL-OPEN default: post unless we can PROVE this key is within its cooldown window.
+          decide_post() { echo "should_post=$1" >> "$GITHUB_OUTPUT"; echo "Dedup decision: should_post=$1 ($2)"; }
+
+          # ── ROUTINE-GREEN SUPPRESSION (operator requirement 2026-06-22) ──────────────
+          # "Only tell me OK when it follows a problem." A green INFO post (conclusion
+          # success/neutral) is SUPPRESSED unless it is a genuine recovery — flagged
+          # explicitly (recovery:true) OR carrying a recovery marker in the message
+          # (RECOVERED / RESOLVED / :large_green_circle: / :ballot_box_with_check:). This
+          # runs BEFORE the dedup_key gate so it suppresses even blank-dedup_key per-event
+          # greens. FAILURE / WARNING / CAUTION posts and no-conclusion INFO advisories are
+          # NEVER suppressed here (their conclusion is not success/neutral, or their severity
+          # is not INFO) — they fall through to the normal dedup gate and always post.
+          _SEV=$(printf '%s' "${INPUT_SEVERITY:-INFO}" | tr '[:lower:]' '[:upper:]')
+          _CONCL=$(printf '%s' "${INPUT_CONCLUSION:-}" | tr '[:upper:]' '[:lower:]')
+          if [ "$_SEV" = "INFO" ] && { [ "$_CONCL" = "success" ] || [ "$_CONCL" = "neutral" ]; } \
+             && [ "${INPUT_RECOVERY:-false}" != "true" ]; then
+            case "${INPUT_MESSAGE:-}" in
+              *RECOVERED*|*RESOLVED*|*:large_green_circle:*|*:ballot_box_with_check:*)
+                : ;;  # genuine recovery marker present → fall through to post
+              *)
+                decide_post "false" "routine green/INFO success — not a recovery; suppressed (operator: OK only after a problem)"
+                exit 0 ;;
+            esac
+          fi
+
+          DEDUP_KEY="${INPUT_DEDUP_KEY:-}"
+          if [ -z "$DEDUP_KEY" ]; then
+            decide_post "true" "no dedup_key — per-event alert, always posts"
+            exit 0
+          fi
+          if [ "${CLOUD_PROVIDER:-}" != "gcp" ] || [ "${GCP_AUTH_OUTCOME:-}" != "success" ]; then
+            decide_post "true" "ledger unreadable (not GCP, or GCP auth failed) — fail-open"
+            exit 0
+          fi
+
+          COOLDOWN_MIN="${INPUT_COOLDOWN_MIN:-240}"
+          # ── PER-KEY MARKER OBJECT (root-cause fix, 2026-07-17) ─────────────────────
+          # The old implementation scanned the shared date-partitioned alerts.jsonl — which is
+          # written with an unlocked read-modify-write (cp down → append → cp up), so concurrent
+          # posts CLOBBER each other's rows (the D2 ledger-race class). MEASURED 2026-07-17: the
+          # day's ledger held 21 rows with ZERO `promotion-lag` rows despite ~11 branch-health
+          # posts — every persist was lost to the top-of-hour burst, every read-back fail-opened,
+          # and the "dedup'd" alert re-paged EVERY tick. The dedup state now lives in ONE OBJECT
+          # PER KEY (`cicd/alerts/dedup/<key>.json`, atomic overwrite, no shared object, no
+          # read-modify-write) — a key's last-post time can no longer be lost to a concurrent
+          # writer of a DIFFERENT key. The append-only alerts.jsonl stays as best-effort history
+          # (its lossiness is the open D2 decision); dedup no longer depends on it.
+          SAFE_KEY="$(printf '%s' "$DEDUP_KEY" | tr -c 'A-Za-z0-9._-' '_')"
+          MARKER_URI="gs://${CICD_EVENTS_BUCKET}/cicd/alerts/dedup/${SAFE_KEY}.json"
+          MARKER_FILE="$(mktemp)"
+          gsutil cp "$MARKER_URI" "$MARKER_FILE" 2>/dev/null || : > "$MARKER_FILE"
+
+          # Pure decision in python: read the key's marker timestamp and compare its age to the
+          # cooldown. Any parse/IO hiccup → fail-open (post).
+          DEDUP_KEY="$DEDUP_KEY" COOLDOWN_MIN="$COOLDOWN_MIN" MARKER_FILE="$MARKER_FILE" python3 - <<'PYEOF'
+          import json, os
+          from datetime import datetime, timedelta, timezone
+
+          key = os.environ["DEDUP_KEY"]
+          try:
+              cooldown = timedelta(minutes=float(os.environ.get("COOLDOWN_MIN", "240")))
+          except ValueError:
+              cooldown = timedelta(minutes=240)
+          path = os.environ["MARKER_FILE"]
+
+          latest = None
+          try:
+              raw = open(path, encoding="utf-8").read().strip()
+              if raw:
+                  row = json.loads(raw)
+                  if isinstance(row, dict) and row.get("dedup_key") == key:
+                      ts = str(row.get("timestamp") or "")
+                      latest = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+          except (OSError, ValueError, json.JSONDecodeError):
+              latest = None  # unreadable/corrupt marker → fail-open
+
+          out = os.environ["GITHUB_OUTPUT"]
+          if latest is None:
+              with open(out, "a", encoding="utf-8") as fh:
+                  fh.write("should_post=true\n")
+              print(f"Dedup decision: should_post=true (key {key!r} not seen in window — first transition)")
+          else:
+              age = datetime.now(timezone.utc) - latest
+              if age < cooldown:
+                  with open(out, "a", encoding="utf-8") as fh:
+                      fh.write("should_post=false\n")
+                  print(
+                      f"Dedup decision: should_post=false (key {key!r} last posted "
+                      f"{int(age.total_seconds() // 60)}m ago < {int(cooldown.total_seconds() // 60)}m cooldown — suppressed)"
+                  )
+              else:
+                  with open(out, "a", encoding="utf-8") as fh:
+                      fh.write("should_post=true\n")
+                  print(
+                      f"Dedup decision: should_post=true (key {key!r} last posted "
+                      f"{int(age.total_seconds() // 60)}m ago ≥ {int(cooldown.total_seconds() // 60)}m cooldown — re-arming)"
+                  )
+          PYEOF
+
+      - name: Post to Slack
+        # Gated by the dedup decision: a suppressed repeat (should_post=false) is skipped. A
+        # blank step output (gate errored before writing) is treated as POST (fail-open) via the
+        # `!= 'false'` test — an infra hiccup must never swallow a real alert.
+        if: ${{ steps.dedup.outputs.should_post != 'false' }}
+        # Notifications are BEST-EFFORT: a webhook timeout / HTTP error / network blip
+        # from the runner (e.g. `urlopen error timed out`) must NEVER fail the calling
+        # workflow or flip its conclusion to failure. continue-on-error keeps the step's
+        # own status green regardless of the post outcome (the inner python still logs
+        # success/failure for visibility). Incident 2026-06-06: a Slack webhook timeout in
+        # staging-to-main's notify-promotion-complete job marked an otherwise-successful
+        # promotion run as `failure`.
+        continue-on-error: true
+        env:
+          # Prefer the dedicated valid #ci-failures webhook; fall back to the generic one.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+          INPUT_SEVERITY: ${{ inputs.severity }}
+          INPUT_WORKFLOW_NAME: ${{ inputs.workflow_name }}
+          INPUT_RUN_URL: ${{ inputs.run_url }}
+          INPUT_CONCLUSION: ${{ inputs.conclusion }}
+        run: |
+          set -euo pipefail
+
+          # Notifications are BEST-EFFORT — a missing OR misconfigured webhook must NEVER
+          # fail the calling workflow. Skip (exit 0) when the secret is unset, or is not an
+          # https URL (e.g. an empty/masked/placeholder value inherited via `secrets: inherit`).
+          # Without the https check, urllib.request.Request() raises an UNCAUGHT
+          # `ValueError: unknown url type: '***'` and fails the caller — this is exactly what
+          # killed sit-debounce-trigger.yml's entry run (cicd_contract_hardening P1 #5).
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping (notify is best-effort)"
+            exit 0
+          fi
+          case "${SLACK_WEBHOOK_URL}" in
+            https://*) : ;;
+            *) echo "SLACK_WEBHOOK_URL is not an https URL (unset/masked/misconfigured) — skipping (notify is best-effort)"; exit 0 ;;
+          esac
+
+          # Quoted heredoc delimiter (<<'PYEOF'): the body is opaque to the shell — no
+          # parameter expansion happens (all inputs arrive via os.environ), and shellcheck
+          # does not try to parse the Python dict/f-string braces as shell (SC1054/SC1073).
+          python3 - <<'PYEOF'
+          import json, os, sys, urllib.request
+
+          severity   = (os.environ.get("INPUT_SEVERITY", "INFO") or "INFO").strip().upper()
+          conclusion = (os.environ.get("INPUT_CONCLUSION", "") or "").strip().lower()
+          wf_name    = os.environ.get("INPUT_WORKFLOW_NAME", "")
+          run_url    = os.environ.get("INPUT_RUN_URL", "")
+          message    = os.environ.get("INPUT_MESSAGE", "")
+          webhook    = os.environ["SLACK_WEBHOOK_URL"]
+
+          # ── TRUTHFUL SEVERITY CLASSIFICATION (operator requirement 2026-06-07) ──────
+          # The rendered icon + severity word + status banner MUST match the REAL outcome
+          # — NEVER show ✅ / "success" / a green-tick header when the actual conclusion is
+          # a failure / cancellation. Many callers hardcode `severity: INFO` + an optimistic
+          # body ("… complete" / "… handled") while passing `conclusion: <job>.result`; when
+          # that job FAILED the old code rendered ":x:" but kept the *INFO* word + the
+          # "complete" body, so a failed promotion read as a low-severity success.
+          #
+          # Design = TRUTHFUL CLASSIFICATION, not suppression (we still POST every alert so
+          # "it ran" stays visible while debugging — verbose-while-debugging):
+          #   • A failure/cancelled conclusion OVERRIDES a caller's INFO/WARNING down-rank:
+          #       failure   -> at least CRITICAL  (🔴)
+          #       cancelled/timed_out/startup_failure -> at least WARNING (⚠️)
+          #   • A genuine green conclusion ("success"/"skipped"/"neutral") renders ✅ and
+          #     keeps the caller's severity (INFO/WARNING) — we don't UP-rank a green post.
+          #   • With no conclusion at all, severity alone drives the icon (unchanged).
+          _FAILURE_CONCLUSIONS = {"failure", "startup_failure"}
+          _CAUTION_CONCLUSIONS = {"cancelled", "timed_out", "action_required", "stale"}
+          _GREEN_CONCLUSIONS   = {"success", "skipped", "neutral", ""}
+          _SEV_RANK = {"INFO": 0, "WARNING": 1, "CRITICAL": 2}
+
+          def _truthful_severity(sev, concl):
+              """Never let a green/INFO label mask a non-green conclusion."""
+              if concl in _FAILURE_CONCLUSIONS:
+                  return "CRITICAL"
+              if concl in _CAUTION_CONCLUSIONS:
+                  # at least WARNING; respect a caller that already said CRITICAL
+                  return sev if _SEV_RANK.get(sev, 0) >= _SEV_RANK["WARNING"] else "WARNING"
+              return sev if sev in _SEV_RANK else "INFO"
+
+          severity = _truthful_severity(severity, conclusion)
+
+          # Icon derives from the ACTUAL conclusion first (the ground truth), then severity.
+          # A non-green conclusion can NEVER render the green-tick.
+          if conclusion in _FAILURE_CONCLUSIONS:
+              emoji = ":x:"
+          elif conclusion in _CAUTION_CONCLUSIONS:
+              emoji = ":no_entry_sign:"
+          elif conclusion in ("success", "neutral"):
+              emoji = ":white_check_mark:"
+          elif conclusion == "skipped":
+              emoji = ":fast_forward:"
+          else:
+              # No conclusion supplied → severity alone drives the icon.
+              emoji = {"CRITICAL": ":rotating_light:", "WARNING": ":warning:"}.get(severity, ":information_source:")
+
+          # Truthful status word shown alongside the conclusion so an optimistic body
+          # ("… complete") can NEVER read as success when the run actually failed.
+          if conclusion in _FAILURE_CONCLUSIONS:
+              status_word = "FAILED"
+          elif conclusion in _CAUTION_CONCLUSIONS:
+              status_word = conclusion.upper().replace("_", " ")
+          elif conclusion in ("success", "neutral"):
+              status_word = "OK"
+          elif conclusion == "skipped":
+              status_word = "SKIPPED"
+          else:
+              status_word = ""
+
+          header = f"{emoji} *{severity}*" + (f" — {wf_name}" if wf_name else "")
+          if conclusion:
+              header += f"  |  result: *{status_word or conclusion}* (`{conclusion}`)"
+
+          blocks = [
+              {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": message}},
+          ]
+          if run_url:
+              blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{run_url}|View run>"}]})
+
+          payload = json.dumps({"text": f"{emoji} {severity}" + (f" — {wf_name}" if wf_name else ""), "blocks": blocks}).encode()
+          req = urllib.request.Request(webhook, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+          try:
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  print(f"Slack OK (HTTP {resp.status})")
+          except Exception as e:
+              print(f"Slack failed: {e}", file=sys.stderr)
+              sys.exit(1)
+          PYEOF
+
+      # ── ALERT LEDGER (operator traceability requirement 2026-06-10) ──────────────
+      # Every POSTED Slack alert is ALSO persisted as JSONL so the deployment-ui Alerts page can
+      # show the full lifecycle: what alerted, when, at what severity, with the run link —
+      # current + previous state per (repo, workflow) stream. Best-effort like the post
+      # itself: any auth/bucket/network failure degrades to a no-op, never a red caller.
+      # (Auth is the single up-front `gcp_auth` step above — reused here, no second auth.)
+      #
+      # Gated on `should_post != 'false'`: a row is written ONLY when we actually posted, so the
+      # ledger is the timeline of POSTS, and the dedup gate's "last posted within cooldown" read
+      # stays truthful (a suppressed tick must NOT refresh the cooldown timestamp, else a standing
+      # condition would never re-arm). `dedup_key` is recorded so the read-back gate can find it.
+      - name: Persist alert to ledger (best-effort)
+        if: ${{ vars.CLOUD_PROVIDER == 'gcp' && steps.dedup.outputs.should_post != 'false' }}
+        continue-on-error: true
+        env:
+          CICD_EVENTS_BUCKET: ${{ vars.CICD_EVENTS_BUCKET || 'unified-trading-cicd-events' }}
+          CALLER_REPO: ${{ github.repository }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+          INPUT_SEVERITY: ${{ inputs.severity }}
+          INPUT_WORKFLOW_NAME: ${{ inputs.workflow_name }}
+          INPUT_SUBJECT_REPO: ${{ inputs.subject_repo }}
+          INPUT_RUN_URL: ${{ inputs.run_url }}
+          INPUT_CONCLUSION: ${{ inputs.conclusion }}
+          INPUT_DEDUP_KEY: ${{ inputs.dedup_key }}
+        run: |
+          set -euo pipefail
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          DATE_PARTITION=$(date -u +"%Y-%m-%d")
+          # subject_repo: the repo the alert is ABOUT. Defaults to the caller (repo=emitter=self,
+          # the common case) when the caller didn't pass one explicitly — see the `repo` field's
+          # docstring above and deployment_alerts_ingestion_completeness_2026_07_20.md todo 4.
+          EMITTING_REPO="${CALLER_REPO#*/}"
+          SUBJECT_REPO="${INPUT_SUBJECT_REPO:-$EMITTING_REPO}"
+          ALERT_JSON=$(jq -n -c \
+            --arg event_type "slack_alert" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg repo "$EMITTING_REPO" \
+            --arg subject_repo "$SUBJECT_REPO" \
+            --arg workflow_name "$INPUT_WORKFLOW_NAME" \
+            --arg severity "$INPUT_SEVERITY" \
+            --arg conclusion "$INPUT_CONCLUSION" \
+            --arg run_url "$INPUT_RUN_URL" \
+            --arg message "$INPUT_MESSAGE" \
+            --arg dedup_key "${INPUT_DEDUP_KEY:-}" \
+            '{event_type:$event_type, timestamp:$timestamp, repo:$repo, subject_repo:$subject_repo,
+              workflow_name:$workflow_name, severity:$severity, conclusion:$conclusion, run_url:$run_url,
+              message:$message, dedup_key:$dedup_key}')
+          # DEDUP MARKER first (root-cause fix 2026-07-17): the per-key object the dedup gate
+          # reads. Atomic single-object overwrite — immune to the read-modify-write clobbering
+          # that silently erased keys from the shared ledger and made every "dedup'd" alert
+          # re-page each tick.
+          SAFE_KEY=""
+          if [ -n "${INPUT_DEDUP_KEY:-}" ]; then
+            SAFE_KEY="$(printf '%s' "$INPUT_DEDUP_KEY" | tr -c 'A-Za-z0-9._-' '_')"
+            printf '%s' "$ALERT_JSON" | gsutil cp - "gs://${CICD_EVENTS_BUCKET}/cicd/alerts/dedup/${SAFE_KEY}.json" \
+              && echo "Dedup marker written: dedup/${SAFE_KEY}.json" || true
+          fi
+          # History append — ONE OBJECT PER ALERT (root-cause fix, matching persist-event/action.yml's
+          # events-ledger fix and deployment-api's _persist_alert() fix, 2026-07-21): the OLD path did
+          # an unlocked cp-down -> append -> cp-up onto one shared alerts.jsonl per day, so two
+          # overlapping writers silently clobbered each other
+          # (persist_cicd_event_ledger_read_modify_write_race_2026_07_17.md; this step's own prior
+          # comment flagged it as "KNOWN-LOSSY under concurrency" but left it deferred). The reader
+          # (deployment-api's _repo_ci_alerts.py::_read_ledgers_sync) already globs the whole
+          # cicd/alerts/{date}/ prefix and parses every blob it finds, so writing each alert straight
+          # to its OWN never-overwritten object eliminates the race with zero reader changes: no read,
+          # no local merge, no lock.
+          UNIQUE_KEY="${SAFE_KEY:-$RANDOM}-${GITHUB_RUN_ID}-$(date -u +%s%N)"
+          OBJECT_PATH="cicd/alerts/${DATE_PARTITION}/${UNIQUE_KEY}.jsonl"
+          GCS_URI="gs://${CICD_EVENTS_BUCKET}/${OBJECT_PATH}"
+          printf '%s\n' "$ALERT_JSON" | gsutil cp - "$GCS_URI" \
+            || echo "::warning::GCS write failed — alert not persisted"
+          echo "Alert persisted to $GCS_URI"

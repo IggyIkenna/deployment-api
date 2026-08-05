@@ -172,6 +172,8 @@ class TestGetAxisValueCensus:
             "source",
             "pipeline_mode",
             "timeframe",
+            "quote_asset",
+            "margin_type",
         }
         assert body["axes"]["chain"] == []
         assert body["axes"]["data_type"] == []
@@ -214,6 +216,8 @@ class TestGetAxisValueCensus:
             "source",
             "pipeline_mode",
             "timeframe",
+            "quote_asset",
+            "margin_type",
         }
 
     def test_empty_manifest_returns_zero_row_count_and_empty_axes(self, client_ds_axis_census: TestClient) -> None:

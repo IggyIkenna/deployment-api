@@ -55,6 +55,8 @@ class _ManifestBuildRequest:
     canonical_question_group: str | None
     job_id: str | None
     chain: str | None
+    quote_asset: str | None = None
+    margin_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
