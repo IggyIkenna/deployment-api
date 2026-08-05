@@ -103,6 +103,10 @@ _VM_PREFIX_REGISTRY: dict[str, VmPrefixSpec] = {
     "agent-orchestrator": VmPrefixSpec(bucket=None, lifecycle_class=LifecycleClass.LONG_LIVED_LIVE),
     "strategy-live-": VmPrefixSpec(bucket=None, lifecycle_class=LifecycleClass.LONG_LIVED_LIVE),
     "defi-recursive-": VmPrefixSpec(bucket=None, lifecycle_class=LifecycleClass.LONG_LIVED_LIVE),
+    # ci_runner_fleet_split_and_vm_rightsizing_2026_08_03: the escalation VM hosting migrated
+    # self-hosted GitHub Actions runners (AWS, ap-northeast-1) — same class as agent-orchestrator/
+    # planning above (long-lived control-plane infra, no deployment-registry entry).
+    "ci-escalation-runner": VmPrefixSpec(bucket=None, lifecycle_class=LifecycleClass.LONG_LIVED_LIVE),
     # Paper launchers — the umbrella override is applied in classify_deployment_target
     # via the PAPER_PREFIXES match; the lifecycle here only seeds the resolver.
     "strategy-paper-": VmPrefixSpec(bucket=None, lifecycle_class=LifecycleClass.LONG_LIVED_LIVE),
@@ -148,6 +152,7 @@ _CONTROL_PLANE_PREFIXES = (
     "agent-orchestrator",
     "strategy-live-",
     "defi-recursive-",
+    "ci-escalation-runner",
 )
 
 
