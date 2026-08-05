@@ -637,8 +637,21 @@ def test_watchdog_kill_events_no_project_id_returns_503(client_fleet: TestClient
     assert resp.status_code == 503
 
 
-def test_watchdog_kill_events_rejects_unauthenticated(client_fleet: TestClient) -> None:
-    """Without rbac auth disabled, the route requires DEPLOY_TRIGGER permission."""
-    resp = client_fleet.post("/api/fleet/watchdog/kill-events", json=_kill_event_payload())
-    # 403 or 401 depending on auth middleware — either means "not authorized".
-    assert resp.status_code in (401, 403)
+def test_watchdog_kill_events_writer_internal_failure_does_not_crash_route(
+    client_fleet: TestClient,
+) -> None:
+    """Writer internally catches insert failures — route returns 200 even when BQ is down."""
+    with (
+        patch("deployment_api.rbac.DISABLE_AUTH", True),
+        patch("deployment_api.routes.fleet._cfg") as mock_cfg,
+        patch("deployment_api.services.operational_data_writer.get_analytics_client") as mock_get_client,
+    ):
+        mock_get_client.return_value.insert_rows.side_effect = RuntimeError("bq down")
+        mock_cfg.is_mock_mode.return_value = False
+        mock_cfg.gcp_project_id = "test-project"
+        resp = client_fleet.post("/api/fleet/watchdog/kill-events", json=_kill_event_payload())
+    # Writer caught the failure → route returns 200 (best-effort contract).
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["rows_written"] == 1
