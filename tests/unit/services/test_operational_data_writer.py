@@ -1,4 +1,4 @@
-"""Unit tests for operational_data_writer.py — best-effort BQ writes for idle_spend/reap_events."""
+"""Unit tests for operational_data_writer.py — best-effort BQ writes for idle_spend/reap_events/watchdog_kill_events."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from deployment_api.services.operational_data_writer import (
     write_idle_spend_snapshot,
     write_reap_event,
+    write_watchdog_kill_event,
 )
 
 _PATCH_CLIENT = "deployment_api.services.operational_data_writer.get_analytics_client"
@@ -92,3 +93,67 @@ class TestWriteIdleSpendSnapshot:
                 per_resource=[],
             )
         assert count == 0
+
+
+class TestWriteWatchdogKillEvent:
+    def test_inserts_one_row_on_kill_event(self):
+        fake_client = MagicMock()
+        with patch(_PATCH_CLIENT, return_value=fake_client):
+            write_watchdog_kill_event(
+                "proj",
+                vm_name="ao-host",
+                pid=12345,
+                slot_id="6",
+                command="python3 /usr/bin/agent-orchestrator",
+                reason="rss 8192 MB > limit 4096 MB",
+                rss_mb=8192,
+                limit_mb=4096,
+                pressure_level="critical",
+                killed=True,
+            )
+        fake_client.insert_rows.assert_called_once()
+        args, kwargs = fake_client.insert_rows.call_args
+        assert args[0] == "watchdog_kill_events"
+        row = args[1][0]
+        assert row["vm_name"] == "ao-host"
+        assert row["pid"] == 12345
+        assert row["slot_id"] == "6"
+        assert row["rss_mb"] == 8192
+        assert row["limit_mb"] == 4096
+        assert row["killed"] is True
+        assert kwargs["dataset"] == "deployment_operational_data"
+
+    def test_swallows_insert_failure(self):
+        fake_client = MagicMock()
+        fake_client.insert_rows.side_effect = RuntimeError("bq down")
+        with patch(_PATCH_CLIENT, return_value=fake_client):
+            write_watchdog_kill_event(  # must not raise
+                "proj",
+                vm_name="ao-host",
+                pid=0,
+                slot_id="",
+                command="",
+                reason="test failure",
+                rss_mb=0,
+                limit_mb=0,
+                pressure_level="normal",
+                killed=False,
+            )
+
+    def test_handles_malformed_payload_gracefully(self):
+        """A malformed payload (e.g. None for a required field) must not raise."""
+        fake_client = MagicMock()
+        fake_client.insert_rows.side_effect = TypeError("bad types")
+        with patch(_PATCH_CLIENT, return_value=fake_client):
+            write_watchdog_kill_event(  # must not raise — best-effort
+                "proj",
+                vm_name="ao-host",
+                pid=-1,
+                slot_id="",
+                command="bad-cmd",
+                reason="",
+                rss_mb=-1,
+                limit_mb=-1,
+                pressure_level="unknown",
+                killed=False,
+            )

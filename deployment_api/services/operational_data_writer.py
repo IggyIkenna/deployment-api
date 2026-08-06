@@ -1,4 +1,5 @@
-"""Writers for the durable operational-data BigQuery tables (idle_spend, reap_events).
+"""Writers for the durable operational-data BigQuery tables (idle_spend, reap_events,
+watchdog_kill_events).
 
 deployment_durable_operational_data_bigquery_2026_07_21.md — the central-side counterpart
 to the VM-side flat-event publishers in deployment-service. Uses the UTL
@@ -105,3 +106,46 @@ def write_idle_spend_snapshot(
     except Exception as exc:
         logger.warning("idle_spend snapshot insert failed: %s", exc)
         return 0
+
+
+def write_watchdog_kill_event(
+    project_id: str,
+    *,
+    vm_name: str,
+    pid: int,
+    slot_id: str,
+    command: str,
+    reason: str,
+    rss_mb: int,
+    limit_mb: int,
+    pressure_level: str,
+    killed: bool,
+) -> None:
+    """One row per resource-watchdog kill or violation event.
+
+    Follows ``write_reap_event``'s exact shape: UTL ``insert_rows`` streaming write,
+    try/except-log, never raises.  Callers fire-and-forget — a write failure must never
+    block the watchdog's enforcement loop.
+    """
+    try:
+        client = get_analytics_client(provider="gcp", project_id=project_id)
+        client.insert_rows(
+            "watchdog_kill_events",
+            [
+                {
+                    "ts": _utcnow_iso(),
+                    "vm_name": vm_name,
+                    "pid": pid,
+                    "slot_id": slot_id,
+                    "command": command,
+                    "reason": reason,
+                    "rss_mb": rss_mb,
+                    "limit_mb": limit_mb,
+                    "pressure_level": pressure_level,
+                    "killed": killed,
+                }
+            ],
+            dataset=DATASET,
+        )
+    except Exception as exc:
+        logger.warning("watchdog_kill_events insert failed for %s pid=%d: %s", vm_name, pid, exc)

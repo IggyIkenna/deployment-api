@@ -118,6 +118,7 @@ from .routes import (
     vm_events_ws,
     vm_health,
     vm_resource_history,
+    watchdog_events,
 )
 
 # MEASURED 2026-07-24: no handler was ever attached to the root logger in this process (no
@@ -262,6 +263,7 @@ _authenticated_router.include_router(vm_cost_estimate.router, tags=["VM Cost"])
 _authenticated_router.include_router(vm_events.router, prefix="/api/vm", tags=["VM Events"])
 _authenticated_router.include_router(vm_health.router, prefix="/api", tags=["VM Health"])
 _authenticated_router.include_router(vm_resource_history.router)  # Has its own prefix /api/vm-resources
+_authenticated_router.include_router(watchdog_events.router)  # Has its own prefix /api/watchdog
 _authenticated_router.include_router(costs.router, prefix="/api", tags=["Costs"])
 _authenticated_router.include_router(artifacts.router, prefix="/api", tags=["Artifacts"])
 _authenticated_router.include_router(risk_routes.router, prefix="/api/risk", tags=["Risk"])
