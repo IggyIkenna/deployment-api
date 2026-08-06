@@ -73,6 +73,19 @@ class DeployRequest(BaseModel):  # CORRECT-LOCAL — API request schema local to
 
     image_tag: str = Field(..., description="Artifact Registry image tag to deploy")
     environment: Environment = Field(..., description="Target environment: dev, staging, or prod")
+    cloud_run_service_name: str | None = Field(
+        None,
+        description=(
+            "Override the live Cloud Run SERVICE name to deploy to. Defaults to the "
+            "`service` path parameter when omitted (the common case — image name == "
+            "Cloud Run service name). Needed when the built image's package/repo name "
+            "diverges from the actual deployed Cloud Run resource name, e.g. "
+            "alerting-service's image is `alerting-service:<tag>` but the live Cloud "
+            "Run service is `dp-alerting-subscriber` "
+            "(terraform/gcp/critical_service_uptime.tf). The `service` path param "
+            "still drives Artifact Registry image resolution either way."
+        ),
+    )
 
 
 _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -377,6 +390,9 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
     ar_repo = _get_ar_repo_name(service)
     ar_image = f"{_AR_HOST}/{project}/{ar_repo}/{service}:{image_tag}"
     region = "asia-northeast1"
+    # The Cloud Run SERVICE we actually deploy to defaults to `service` (image name ==
+    # Cloud Run name, the common case) but can diverge — see DeployRequest.cloud_run_service_name.
+    target_service = deploy_request.cloud_run_service_name or service
 
     try:
         result = subprocess.run(
@@ -384,7 +400,7 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
                 "gcloud",
                 "run",
                 "deploy",
-                service,
+                target_service,
                 f"--image={ar_image}",
                 f"--region={region}",
                 f"--project={project}",
@@ -401,10 +417,11 @@ async def deploy_build(service: str, deploy_request: DeployRequest) -> dict[str,
                 status_code=502,
                 detail=f"Cloud Run deploy failed: {result.stderr[:500]}",
             )
-        logger.info("Deployed %s:%s to %s/%s", service, image_tag, env, project)
+        logger.info("Deployed %s:%s to %s/%s (cloud_run_service=%s)", service, image_tag, env, project, target_service)
         return {
             "status": "deploying",
             "service": service,
+            "cloud_run_service_name": target_service,
             "image_tag": image_tag,
             "environment": env,
             "image": ar_image,
