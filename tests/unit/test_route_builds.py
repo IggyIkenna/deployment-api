@@ -437,6 +437,74 @@ def test_deploy_build_gcp_cloud_run_success(client_builds: TestClient) -> None:
     assert data["service"] == "my-service"
 
 
+def test_deploy_build_gcp_cloud_run_service_name_override(client_builds: TestClient) -> None:
+    """cloud_run_service_name overrides the gcloud deploy target while `service` still
+    drives the AR image path — the alerting-service (image) → dp-alerting-subscriber
+    (live Cloud Run service) case."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stderr = ""
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds.subprocess") as mock_sub,
+    ):
+        mock_sub.run.return_value = mock_proc
+        mock_sub.TimeoutExpired = subprocess.TimeoutExpired
+        r = client_builds.post(
+            "/api/deployments/alerting-service/deploy",
+            json={
+                "image_tag": "1.2.3",
+                "environment": "prod",
+                "cloud_run_service_name": "dp-alerting-subscriber",
+            },
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "deploying"
+    assert data["service"] == "alerting-service"
+    assert data["cloud_run_service_name"] == "dp-alerting-subscriber"
+    # The gcloud deploy target is the override, not the AR image/service name.
+    deploy_args = mock_sub.run.call_args[0][0]
+    assert deploy_args[0:3] == ["gcloud", "run", "deploy"]
+    assert deploy_args[3] == "dp-alerting-subscriber"
+    assert any("alerting-service:1.2.3" in a for a in deploy_args if a.startswith("--image="))
+
+
+def test_deploy_build_gcp_cloud_run_no_override_defaults_to_service(client_builds: TestClient) -> None:
+    """Omitting cloud_run_service_name preserves the existing behavior (image name ==
+    Cloud Run deploy target) — no regression for every other service."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stderr = ""
+
+    with (
+        patch(_PATCH_CLOUD_MOCK_MODE, False),
+        patch(_PATCH_CLOUD_PROVIDER, "gcp"),
+        patch(_PATCH_PROJECT_ID, "my-project"),
+        patch("deployment_api.routes.builds.subprocess") as mock_sub,
+    ):
+        mock_sub.run.return_value = mock_proc
+        mock_sub.TimeoutExpired = subprocess.TimeoutExpired
+        r = client_builds.post(
+            "/api/deployments/my-service/deploy",
+            json={"image_tag": "1.2.3", "environment": "prod"},
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["cloud_run_service_name"] == "my-service"
+    deploy_args = mock_sub.run.call_args[0][0]
+    assert deploy_args[3] == "my-service"
+
+
 def test_deploy_build_gcp_cloud_run_failure_returns_502(client_builds: TestClient) -> None:
     """Lines 335-340: gcloud run deploy failure → 502."""
     import subprocess
