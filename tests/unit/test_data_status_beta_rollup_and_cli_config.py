@@ -224,6 +224,17 @@ def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
     # setup_events below still runs (the idempotent call is harmless), but without a
     # real GcsEventSink triggering the metadata probe.
     monkeypatch.setattr(_rollup, "GcsEventSink", MagicMock())
+    # Mocking GcsEventSink alone is NOT sufficient (2026-08-06, escalation agt-33a744 /
+    # deployment_api_events_global_state_leak_flaky_metadata_probe_2026_08_06.md): the
+    # metadata probe still reaches through `run_lifecycle` -> `log_event` -> the
+    # module-level `_writer` in `unified_trading_library.events`, whose value at call
+    # time depends on cross-test state this test does not fully control (order/xdist-
+    # worker dependent -- reproduced on CI, not reproducible locally even with the full
+    # suite + `-n 4 --block-network`). This test only asserts `run_data_status_rollup`
+    # dispatches to `run_rollup` with the right args, not `run_lifecycle`'s own
+    # behavior, so mock it out entirely rather than depend on shared library
+    # event-writer global state.
+    monkeypatch.setattr(_rollup, "run_lifecycle", MagicMock())
 
     captured: dict[str, object] = {}
 
