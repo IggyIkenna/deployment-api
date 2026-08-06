@@ -81,6 +81,8 @@ jobs:
     # push:[main] is implicitly gated: `main` is only updated by a green, v2-required
     # LDR→main promote PR (or an admin reconcile), so the tree is already validated.
     if: github.event_name == 'push'
+    outputs:
+      recovered: ${{ steps.record_decide.outputs.recovered }}
 
     steps:
       - name: Checkout repo at main commit
@@ -941,3 +943,92 @@ jobs:
           GCS_URI="gs://${CICD_EVENTS_BUCKET}/${OBJECT_PATH}"
           gsutil cp "$LEDGER_FILE" "$GCS_URI"
           echo "$(wc -l < "$LEDGER_FILE" | tr -d ' ') CRITICAL page(s) persisted to $GCS_URI"
+
+      # ── SEMVER RESULT MEMORY — independent fail/recovery bookend ────────────
+      # "Notify Slack (failure-only)" above pages on every RED run but has no green
+      # counterpart, so a repo that goes red then gets fixed pages CRITICAL on the way
+      # down and stays silent on recovery. This tracks its own state ("did semver's
+      # verdict on this repo just flip failure->success?") via a dedicated Firestore
+      # doc, mirroring python-quality-gates-v2.yml's `qg_last_conclusion` bookend
+      # (operator ruling 2026-07-27) exactly. Best-effort/fail-open: an auth/network
+      # hiccup skips silently -- costs a missed recovery post, never a false one.
+      - name: Authenticate to GCP (semver-result state doc read+write)
+        id: record_gcp_auth
+        if: always()
+        continue-on-error: true
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          token_format: access_token
+
+      - name: Read prior semver verdict, decide recovery, persist current verdict
+        id: record_decide
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TOKEN: ${{ steps.record_gcp_auth.outputs.access_token }}
+          PROJECT: ${{ steps.record_gcp_auth.outputs.project_id }}
+          RESULT: ${{ job.status }}
+          REPO: deployment-api
+        run: |
+          set -uo pipefail
+          # Only a conclusive verdict updates the memory.
+          CURRENT=""
+          case "${RESULT}" in
+            success) CURRENT=success ;;
+            failure) CURRENT=failure ;;
+            *)
+              echo "job.status=${RESULT} -- not conclusive, leaving semver-result memory untouched"
+              echo "recovered=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          RECOVERED=false
+          if [ -n "${TOKEN:-}" ] && [ -n "${PROJECT:-}" ]; then
+            SAFE_KEY="$(printf 'semver-fail:%s' "${REPO}" | tr -c 'A-Za-z0-9._-' '_')"
+            DOC_URL="https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/semver_last_conclusion/${SAFE_KEY}"
+            PREV="$(curl -s --max-time 15 -H "Authorization: Bearer ${TOKEN}" "${DOC_URL}" \
+              | jq -r '.fields.conclusion.stringValue // empty' 2>/dev/null || echo "")"
+            if [ "${PREV}" = "failure" ] && [ "${CURRENT}" = "success" ]; then
+              RECOVERED=true
+            fi
+            NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            CODE="$(curl -s -o /tmp/semver-result-save.json -w '%{http_code}' --max-time 15 -X PATCH \
+              -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+              "${DOC_URL}" \
+              -d "{\"fields\": {
+                    \"conclusion\": {\"stringValue\": \"${CURRENT}\"},
+                    \"repo\": {\"stringValue\": \"${REPO}\"},
+                    \"commit_sha\": {\"stringValue\": \"${GITHUB_SHA}\"},
+                    \"updated_at\": {\"timestampValue\": \"${NOW}\"}
+                  }}" || echo 000)"
+            [ "${CODE}" = "200" ] || echo "::warning::semver_last_conclusion save failed (HTTP ${CODE}) for ${SAFE_KEY} -- best-effort, next run retries."
+            echo "semver-result-memory: ${SAFE_KEY} prev=${PREV:-<none>} current=${CURRENT} recovered=${RECOVERED}"
+          else
+            echo "GCP auth unavailable -- skipping semver-result memory this run (fail-open: no recovery post, no state corruption)."
+          fi
+          echo "recovered=${RECOVERED}" >> "$GITHUB_OUTPUT"
+
+  # ── SLACK NOTIFY — semver-agent recovered ──────────────────────────────────
+  # Routed through notify-slack.yml (same carrier as every other CI recovery bookend,
+  # e.g. python-quality-gates-v2.yml's notify-qg-recovered) so this gains content
+  # dedup + alert-ledger lifecycle instead of a one-off inline curl.
+  notify-semver-recovered:
+    name: Slack INFO — Semver Recovered
+    needs: [semver]
+    if: always() && needs.semver.outputs.recovered == 'true'
+    uses: ./.github/workflows/notify-slack.yml
+    with:
+      message:
+        "🟢 *semver-agent RECOVERED* | deployment-api | push to `main` | <${{ github.server_url }}/${{
+        github.repository }}/actions/runs/${{ github.run_id }}|sha `${{ github.sha }}`> — green again after a prior
+        failure"
+      severity: INFO
+      conclusion: success
+      recovery: true
+      workflow_name: semver-agent
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      dedup_key: "semver-recovered:deployment-api"
+      cooldown_min: 15
+    secrets: inherit
