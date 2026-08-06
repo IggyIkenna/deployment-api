@@ -192,34 +192,42 @@ steps:
     id: "build"
     # BuildKit + inline cache: BUILDKIT_INLINE_CACHE=1 bakes the layer-cache
     # metadata INTO the pushed image so the NEXT build's --cache-from can read it.
-    env: ["DOCKER_BUILDKIT=1"]
+    entrypoint: "bash"
     args:
-      - "build"
-      - "-f"
-      - "Dockerfile"
-      # PROJECT_ID is required by the digest-pinned base FROM in api Dockerfiles
-      # (.../unified-trading-library@$${BASE_IMAGE_DIGEST}); Cloud Build does NOT
-      # auto-pass substitutions as docker build-args, so it must be explicit or
-      # the base FROM expands to an invalid reference.
-      - "--build-arg"
-      - "PROJECT_ID=$PROJECT_ID"
-      - "--build-arg"
-      - "BUILDKIT_INLINE_CACHE=1"
-      # Vendored sibling repos (_unified-api-contracts/ _deployment-service/
-      # _strategy-service/) are hatch-vcs projects; the vendor-deps step strips
-      # their .git so setuptools-scm can't detect a version → install fails.
-      # Pin a PEP440-safe version for all in-image setuptools-scm builds (these
-      # are installed --no-deps, so the value is metadata-only). See Dockerfile.
-      - "--build-arg"
-      - "SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0"
-      # Reuse unchanged layers from the previous :latest (pulled above).
-      - "--cache-from"
-      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
-      - "-t"
-      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
-      - "-t"
-      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest"
-      - "."
+      - "-c"
+      - |
+        set -e
+        # SAFE_SHA guard (2026-08-06): SHORT_SHA is populated only for repoSource
+        # (trigger) builds; a manual gcloud builds submit leaves it EMPTY, so the
+        # tag becomes `<svc>:` and docker dies with invalid reference format. The
+        # extract-version step writes /workspace/VERSION; fall back to it, and fail
+        # with a diagnostic only when both are genuinely unresolvable.
+        VERSION=$(cat /workspace/VERSION 2>/dev/null || echo "$SHORT_SHA")
+        SAFE_SHA="$SHORT_SHA"
+        if [ -z "$$SAFE_SHA" ]; then SAFE_SHA="$$VERSION"; fi
+        if [ -z "$$VERSION" ]; then VERSION="$$SAFE_SHA"; fi
+        if [ -z "$$SAFE_SHA" ] || [ -z "$$VERSION" ]; then
+          echo "FATAL: cannot build an image tag — SHORT_SHA and VERSION are both empty." >&2
+          echo "  SHORT_SHA is set only for trigger (repoSource) builds; a manual" >&2
+          echo "  'gcloud builds submit' must pass --substitutions SHORT_SHA=<sha>," >&2
+          echo "  or the extract-version step must write /workspace/VERSION." >&2
+          exit 1
+        fi
+        # PROJECT_ID is required by the digest-pinned base FROM in api Dockerfiles
+        # (.../unified-trading-library@$${BASE_IMAGE_DIGEST}); Cloud Build does NOT
+        # auto-pass substitutions as docker build-args, so it must be explicit or
+        # the base FROM expands to an invalid reference.
+        # Vendored sibling repos are hatch-vcs projects; the vendor-deps step strips
+        # their .git so setuptools-scm cannot detect a version. Pin a PEP440-safe
+        # version for all in-image setuptools-scm builds (installed --no-deps).
+        DOCKER_BUILDKIT=1 docker build -f Dockerfile \
+          --build-arg PROJECT_ID=$PROJECT_ID \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --build-arg SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 \
+          --cache-from asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest \
+          -t asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$$SAFE_SHA \
+          -t asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:latest \
+          .
     waitFor: ["pull-base-image", "ensure-repo", "fetch-ui", "vendor-deps"]
 
   - name: "gcr.io/cloud-builders/docker"
@@ -229,25 +237,24 @@ steps:
       - "-c"
       - |
         set -e
-        # The in-image QG re-runs the repo's quality-gates.sh inside the built
-        # image. It needs the PM harness (base-service.sh / log_section) + a .git
-        # in the image; the auto-deploy path (main-deploy trigger) builds from
-        # already-promoted main code whose QG was ALREADY enforced locally at
-        # quickmerge + by quality-gates-v2 at the LDR→staging→main PR — so re-running
-        # it here is redundant AND impossible (no harness in the image → exit 127).
-        # The deploy trigger sets _RUN_INIMAGE_QG=false to skip; feature-build/LDR
-        # leave it true (unchanged). Mirrors why cloudbuild-tier3.yaml drops this step.
+        # _RUN_INIMAGE_QG default false (declared in substitutions): QG is already
+        # enforced at quickmerge + the quality-gates-v2 promotion gate, and the
+        # in-image harness (unified-trading-pm/base-service.sh) is absent from the
+        # image, so re-running it here is redundant+impossible (exit 127). Deploy
+        # triggers set _RUN_INIMAGE_QG=true to keep the gate on feature/LDR builds.
         if [ "${_RUN_INIMAGE_QG}" != "true" ]; then
-          echo "quality-gates: skipped (_RUN_INIMAGE_QG=${_RUN_INIMAGE_QG}) — QG already enforced at promotion"
+          echo "quality-gates: skipped (_RUN_INIMAGE_QG=${_RUN_INIMAGE_QG}) — QG already enforced at quickmerge + promotion v2"
           exit 0
         fi
+        VERSION=$(cat /workspace/VERSION 2>/dev/null || echo "$SHORT_SHA")
+        echo "Running quality gates inside ${_SERVICE_NAME} image..."
         docker run --rm \
           --entrypoint "" \
           -e CLOUD_BUILD=true \
           -e CLOUD_MOCK_MODE=true \
           -e GCP_PROJECT_ID=$PROJECT_ID \
-          asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$SHORT_SHA \
-          /bin/bash -c "bash scripts/quality-gates.sh --no-fix --quick"
+          asia-northeast1-docker.pkg.dev/$PROJECT_ID/${_REGISTRY_REPO}/${_SERVICE_NAME}:$$VERSION \
+          /bin/bash -c "scripts/quality-gates.sh --no-fix --quick"
     waitFor: ["build"]
 
   # ── STEP 5.5: REQUIRED — Operability smoke (import probe) ───────────────
