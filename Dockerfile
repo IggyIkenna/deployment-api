@@ -135,7 +135,23 @@ RUN uv pip install --system --no-cache-dir --no-deps /tmp/deployment-service \
 # `scripts`/`scripts.vm` need no `__init__.py` (PEP 420 namespace packages) — the
 # directory landing under /app (already on sys.path via gunicorn's app-loader cwd-insert,
 # the same mechanism that resolves `deployment_api.main:app`) is sufficient.
-COPY _deployment-service/scripts/vm/vm_zombie_watchdog.py ./scripts/vm/vm_zombie_watchdog.py
+#
+# RESIDUAL GAP (closed — data_pipeline_self_healing_completion_residual_2026_07_24.md P1):
+# this originally COPY'd only vm_zombie_watchdog.py — one file. That left
+# `RelaunchBackfillVm`/`RelaunchStalledVm` (deployment-service
+# scripts/recovery/relaunch_{backfill,stalled}_vm.py) still dead at ACTUATION time even
+# after the `scripts.recovery` import-probe below went green: both build
+# `_LAUNCHER_DIR = Path(__file__).resolve().parent.parent / "vm"` (correctly resolving to
+# this image's ./scripts/vm, since scripts/recovery/ and scripts/vm/ land as siblings under
+# /app) and then subprocess-exec `scripts/vm/launch-*.sh` — a FILE dependency at call time,
+# not a Python import, so `_ACTUATORS_AVAILABLE` going True never caught its absence; every
+# `auto_recover` relaunch attempt instead hit `FileNotFoundError` inside the launcher
+# subprocess call (caught internally, degrading to `status=FAILED` -> file_issue, so it never
+# crashed — it just silently never actually relaunched anything). COPY the WHOLE directory
+# (mirrors the scripts/recovery/ convention immediately below), not one file, so a
+# newly-added `launch-*.sh` (or its `lib/`-sourced helpers / `templates/`) is picked up
+# automatically — no future Dockerfile edit needed per launcher.
+COPY _deployment-service/scripts/vm/ ./scripts/vm/
 
 # The entire Layer-0 recovery-actuator family (relaunch_consolidator, relaunch_stalled_vm,
 # enter_safe_mode, restart_service, etc.) has the SAME structural gap: escalation.py's
@@ -143,9 +159,11 @@ COPY _deployment-service/scripts/vm/vm_zombie_watchdog.py ./scripts/vm/vm_zombie
 # never satisfiable in this image either, so every DP_VM_STALL/CONSOLIDATOR_DOWN recovery
 # attempt short-circuited to "actuators_not_in_runtime" before instantiating any actuator —
 # fixing vm_zombie_watchdog alone restores the kill path but leaves auto-relaunch dead. This
-# package is self-contained (only unified_trading_library/unified_api_contracts + stdlib,
-# no cross-import on scripts.vm) and already carries its own __init__.py, so the whole
-# directory lands as a regular sub-package nested under the scripts/ namespace package.
+# package only IMPORTS unified_trading_library/unified_api_contracts + stdlib (no
+# `import scripts.vm...`) and already carries its own __init__.py, so the whole directory
+# lands as a regular sub-package nested under the scripts/ namespace package — it DOES,
+# however, subprocess-exec into scripts/vm/launch-*.sh at actuation time (see the COPY
+# above), which is a file dependency the import probe alone can't see.
 COPY _deployment-service/scripts/recovery/ ./scripts/recovery/
 
 # Install strategy-service — treasury_routes.py imports strategy_service.position.
