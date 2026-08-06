@@ -212,10 +212,18 @@ def test_rollup_endpoint_runs_worker_in_service(monkeypatch) -> None:
     (the gen2 Cloud Run Job crashes natively — R7 follow-up #4). Asserts the handler
     dispatches to run_rollup with the default services + restores _PROCESS_POOL_DISABLED."""
     import asyncio
+    from unittest.mock import MagicMock
 
     import deployment_api.scripts.data_status_rollup_worker as worker
     import deployment_api.services.data_status_service as dss_mod
     from deployment_api.routes.data_status import _rollup
+
+    # On cloud-hosted CI runners the GCP metadata endpoint (169.254.169.254) is live;
+    # GcsEventSink init probes it during cloud-SDK boot and pytest-socket blocks the call.
+    # Mock GcsEventSink so the test never reaches the real cloud-SDK init path.
+    # setup_events below still runs (the idempotent call is harmless), but without a
+    # real GcsEventSink triggering the metadata probe.
+    monkeypatch.setattr(_rollup, "GcsEventSink", MagicMock())
 
     captured: dict[str, object] = {}
 
