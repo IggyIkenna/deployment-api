@@ -29,7 +29,7 @@ dependencies = [
     # GitHub API (service status checkers)
     "PyGithub>=2.0.0,<3.0.0",
     # Async HTTP (service status checks)
-    "aiohttp>=3.14.1,<4.0.0",
+    "aiohttp>=3.14.3,<4.0.0",
     # Cache
     "jsonpickle>=3.0.0,<4.0.0",
     "cachetools>=5.0.0,<6.0.0",
