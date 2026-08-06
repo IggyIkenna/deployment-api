@@ -567,6 +567,12 @@ class SyncService:
         Bounded to ``max_reap`` per call so a large backlog (VMs long gone,
         never reaped) drains over several background-sync ticks instead of
         one burst of GCS writes. Returns the number of entries archived.
+
+        When the running-VM census is unavailable (``list_running_vm_names``
+        returns ``None``), passes ``running_vm_names=None`` to
+        ``DeploymentsRegistry.reap_stale`` so ``_reap_reason`` falls back to
+        heartbeat-age-only classification instead of treating every stale-heartbeat
+        entry as ``vm_not_running`` (the empty-set-over-reap bug).
         """
         running_vm_names = list_running_vm_names(self.project_id)
         registry = DeploymentsRegistry(bucket=DEFAULT_BUCKET)

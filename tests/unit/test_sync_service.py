@@ -1005,3 +1005,74 @@ class TestGetHeldDeploymentLocksAndReleaseAll:
         svc.state_manager.release_all_locks.return_value = 0
         result = svc.release_all_locks()
         assert result == 0
+
+
+class TestReapStaleDeployments:
+    """Tests for reap_stale_deployments — census-available vs census-unavailable."""
+
+    def test_census_available_passes_running_vm_names(self):
+        """When list_running_vm_names succeeds, the result set is passed through."""
+        svc = _make_service()
+        with patch(
+            "deployment_api.services.sync_service.list_running_vm_names",
+            return_value={"vm-a", "vm-b"},
+        ):
+            with patch("deployment_api.services.sync_service.DeploymentsRegistry") as mock_registry_cls:
+                mock_registry = MagicMock()
+                mock_registry.reap_stale.return_value = []
+                mock_registry_cls.return_value = mock_registry
+
+                svc.reap_stale_deployments(max_reap=100)
+
+                mock_registry.reap_stale.assert_called_once()
+                call_kwargs = mock_registry.reap_stale.call_args.kwargs
+                assert call_kwargs["running_vm_names"] == {"vm-a", "vm-b"}
+                assert call_kwargs["max_reap"] == 100
+
+    def test_census_unavailable_passes_none(self):
+        """When list_running_vm_names returns None, reap_stale gets running_vm_names=None.
+
+        Regression test for the empty-set-over-reap bug: a transient GCE API failure
+        returning None must reach reap_stale as None (heartbeat-age-only fallback),
+        never as an empty set (which _reap_reason reads as "no VMs running").
+        """
+        svc = _make_service()
+        with patch(
+            "deployment_api.services.sync_service.list_running_vm_names",
+            return_value=None,
+        ):
+            with patch("deployment_api.services.sync_service.DeploymentsRegistry") as mock_registry_cls:
+                mock_registry = MagicMock()
+                mock_registry.reap_stale.return_value = []
+                mock_registry_cls.return_value = mock_registry
+
+                svc.reap_stale_deployments(max_reap=200)
+
+                mock_registry.reap_stale.assert_called_once()
+                call_kwargs = mock_registry.reap_stale.call_args.kwargs
+                assert call_kwargs["running_vm_names"] is None, (
+                    f"Expected running_vm_names=None (census unavailable), got {call_kwargs['running_vm_names']!r}"
+                )
+                assert call_kwargs["max_reap"] == 200
+
+    def test_census_empty_set_is_preserved(self):
+        """When list_running_vm_names returns an empty set, it IS passed through.
+
+        An empty set is honest absence (zero RUNNING VMs found), distinct from
+        None (census unavailable). The reaper correctly treats them differently.
+        """
+        svc = _make_service()
+        with patch(
+            "deployment_api.services.sync_service.list_running_vm_names",
+            return_value=set(),
+        ):
+            with patch("deployment_api.services.sync_service.DeploymentsRegistry") as mock_registry_cls:
+                mock_registry = MagicMock()
+                mock_registry.reap_stale.return_value = []
+                mock_registry_cls.return_value = mock_registry
+
+                svc.reap_stale_deployments()
+
+                mock_registry.reap_stale.assert_called_once()
+                call_kwargs = mock_registry.reap_stale.call_args.kwargs
+                assert call_kwargs["running_vm_names"] == set()

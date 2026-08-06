@@ -29,11 +29,14 @@ logger = logging.getLogger(__name__)
 _RPC_TIMEOUT_SEC = 30.0
 
 
-def list_running_vm_names(project_id: str) -> set[str]:
+def list_running_vm_names(project_id: str) -> set[str] | None:
     """Return the set of VM names currently in ``RUNNING`` state in ``project_id``.
 
-    Uses ``aggregated_list`` so one API call covers every zone. On failure
-    returns an empty set + logs a warning.
+    Uses ``aggregated_list`` so one API call covers every zone. Returns ``None`` on
+    failure so callers can distinguish "census unavailable" from "census healthy and
+    empty" — an empty-set result means zero RUNNING VMs were found (honest absence);
+    ``None`` means the list API itself failed and the caller should fall back to
+    heartbeat-age-only reaping rather than assuming no VMs are running.
     """
     try:
         client = compute_v1.InstancesClient()
@@ -53,16 +56,19 @@ def list_running_vm_names(project_id: str) -> set[str]:
         return running
     except Exception as exc:
         logger.warning("list_running_vm_names(%s) failed: %s", project_id, exc)
-        return set()
+        return None
 
 
-def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
+def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]] | None:
     """Fetch actual VM instance details from GCP.
 
     Returns a dict mapping vm_name -> {machine_type, zone, creation_timestamp, status,
     last_stop_timestamp, boot_disk_name, attached_disk_names, labels}. ``attached_disk_names``
     is every attached disk (tails of the disk self-links) — surfaces DATA disks for
     leaked-resource detection on non-running VMs, not just the boot disk.
+
+    Returns ``None`` on failure so callers can distinguish "census unavailable" from "census
+    healthy and empty" (empty dict = zero VMs found; ``None`` = the list API itself failed).
     """
     try:
         client = compute_v1.InstancesClient()
@@ -117,7 +123,7 @@ def get_vm_instance_details(project_id: str) -> dict[str, dict[str, object]]:
         return vm_details
     except Exception as exc:
         logger.warning("get_vm_instance_details(%s) failed: %s", project_id, exc)
-        return {}
+        return None
 
 
 def get_disk_details(project_id: str) -> dict[str, dict[str, object]]:
