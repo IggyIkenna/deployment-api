@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query
 from deployment_api.deployment_api_config import DeploymentApiConfig
 from deployment_api.settings import GITHUB_ORG
 from deployment_api.settings import gcp_project_id as default_project_id
+from deployment_api.utils.cockpit_build_guard import cockpit_build_slot
 from deployment_api.utils.request_memory_profiling import log_rss_delta
 
 from ._cloud_builds_history import (
@@ -676,65 +677,70 @@ async def get_overview() -> OverviewResponseDict:
     if cfg.is_mock_mode():
         return _mock_overview()
 
-    with log_rss_delta("repo_ci.get_overview"):
-        project_id = default_project_id or ""
-        token = await resolve_gh_token(project_id)
-        async with aiohttp.ClientSession() as session:
-            view = await load_manifest_view(session, token)
-            sit_last_run = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SIT_WORKFLOW_FILE)
-            sit_run = _sit_run_tuple(sit_last_run)
-            # Routine promote-drain (PM-central, every 15 min) — distinct from the breaking cascade
-            # above. Two GLOBAL queries (not per-repo), so the GitHub-API budget is unchanged.
-            staging_drain_raw = await latest_workflow_run_with_jobs(
-                session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_STAGING_WORKFLOW
+    async with cockpit_build_slot("repo_ci.get_overview"):
+        with log_rss_delta("repo_ci.get_overview"):
+            project_id = default_project_id or ""
+            token = await resolve_gh_token(project_id)
+            async with aiohttp.ClientSession() as session:
+                view = await load_manifest_view(session, token)
+                sit_last_run = await latest_workflow_run_with_jobs(
+                    session, token, GITHUB_ORG, _PM_REPO, _SIT_WORKFLOW_FILE
+                )
+                sit_run = _sit_run_tuple(sit_last_run)
+                # Routine promote-drain (PM-central, every 15 min) — distinct from the breaking cascade
+                # above. Two GLOBAL queries (not per-repo), so the GitHub-API budget is unchanged.
+                staging_drain_raw = await latest_workflow_run_with_jobs(
+                    session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_STAGING_WORKFLOW
+                )
+                main_drain_raw = await latest_workflow_run_with_jobs(
+                    session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_MAIN_WORKFLOW
+                )
+                # Semver-agent standing health (G2) — one more global query (not per-repo).
+                semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
+                # Dual-cloud image: fetch GCP + AWS in parallel (each already degrades to {} if its build
+                # API is unreachable) so every row shows both side-by-side — no provider toggle.
+                builds_gcp, builds_aws = await asyncio.gather(
+                    _latest_builds_by_repo("gcp"), _latest_builds_by_repo("aws")
+                )
+                semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
+                rows_raw = await asyncio.gather(
+                    *[
+                        _overview_row(session, token, view, meta, sit_run, builds_gcp, builds_aws, semaphore)
+                        for meta in view.repos
+                    ]
+                )
+            rows: list[RepoOverviewDict] = []
+            errors: list[RepoErrorDict] = []
+            for result in rows_raw:
+                if "error" in result:  # RepoErrorDict carries an "error" key; RepoOverviewDict does not
+                    errors.append(result)
+                else:
+                    rows.append(result)
+            stuck_prs = [pr for row in rows for pr in row["open_prs"] if pr.get("stuck_class")]
+            stuck_in_sit = [row["repo"] for row in rows if row["sit"]["stuck_in_sit"]]
+            promotion_drain = PromotionDrainDict(
+                ldr_to_staging=_to_promote_run(staging_drain_raw),
+                ldr_to_main=_to_promote_run(main_drain_raw),
             )
-            main_drain_raw = await latest_workflow_run_with_jobs(
-                session, token, GITHUB_ORG, _PM_REPO, _LDR_TO_MAIN_WORKFLOW
+            # Dep-order HOLD (STAGE 1.8 mirror) — computed AFTER all rows exist (it needs the whole fleet's
+            # ci_status). Patches each row's blocked_by/blocking in place, then yields the top-level aggregate.
+            blocked_by_map, blocking_map, promotion_held = _compute_dep_order(rows, view)
+            for row in rows:
+                row["blocked_by"] = blocked_by_map.get(row["repo"], [])
+                row["blocking"] = blocking_map.get(row["repo"], [])
+            return OverviewResponseDict(
+                generated_at=_now_iso(),
+                source="live",
+                repos=rows,
+                stuck_prs=stuck_prs,
+                stuck_in_sit=stuck_in_sit,
+                sit_last_run=_to_sit_last_run(sit_last_run),
+                errors=errors,
+                promotion_blocked=_build_promotion_blocked(view),
+                promotion_drain=promotion_drain,
+                semver_health=_to_semver_health(semver_raw, view),
+                promotion_held=promotion_held,
             )
-            # Semver-agent standing health (G2) — one more global query (not per-repo).
-            semver_raw = await latest_workflow_run_with_jobs(session, token, GITHUB_ORG, _PM_REPO, _SEMVER_WORKFLOW)
-            # Dual-cloud image: fetch GCP + AWS in parallel (each already degrades to {} if its build
-            # API is unreachable) so every row shows both side-by-side — no provider toggle.
-            builds_gcp, builds_aws = await asyncio.gather(_latest_builds_by_repo("gcp"), _latest_builds_by_repo("aws"))
-            semaphore = asyncio.Semaphore(_REPO_CONCURRENCY)
-            rows_raw = await asyncio.gather(
-                *[
-                    _overview_row(session, token, view, meta, sit_run, builds_gcp, builds_aws, semaphore)
-                    for meta in view.repos
-                ]
-            )
-        rows: list[RepoOverviewDict] = []
-        errors: list[RepoErrorDict] = []
-        for result in rows_raw:
-            if "error" in result:  # RepoErrorDict carries an "error" key; RepoOverviewDict does not
-                errors.append(result)
-            else:
-                rows.append(result)
-        stuck_prs = [pr for row in rows for pr in row["open_prs"] if pr.get("stuck_class")]
-        stuck_in_sit = [row["repo"] for row in rows if row["sit"]["stuck_in_sit"]]
-        promotion_drain = PromotionDrainDict(
-            ldr_to_staging=_to_promote_run(staging_drain_raw),
-            ldr_to_main=_to_promote_run(main_drain_raw),
-        )
-        # Dep-order HOLD (STAGE 1.8 mirror) — computed AFTER all rows exist (it needs the whole fleet's
-        # ci_status). Patches each row's blocked_by/blocking in place, then yields the top-level aggregate.
-        blocked_by_map, blocking_map, promotion_held = _compute_dep_order(rows, view)
-        for row in rows:
-            row["blocked_by"] = blocked_by_map.get(row["repo"], [])
-            row["blocking"] = blocking_map.get(row["repo"], [])
-        return OverviewResponseDict(
-            generated_at=_now_iso(),
-            source="live",
-            repos=rows,
-            stuck_prs=stuck_prs,
-            stuck_in_sit=stuck_in_sit,
-            sit_last_run=_to_sit_last_run(sit_last_run),
-            errors=errors,
-            promotion_blocked=_build_promotion_blocked(view),
-            promotion_drain=promotion_drain,
-            semver_health=_to_semver_health(semver_raw, view),
-            promotion_held=promotion_held,
-        )
 
 
 @router.get("/{repo}/detail")

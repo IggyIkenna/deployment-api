@@ -40,6 +40,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from deployment_api.deployment_api_config import DeploymentApiConfig
+from deployment_api.utils.cockpit_build_guard import cockpit_build_slot
 from deployment_api.utils.request_memory_profiling import log_rss_delta
 
 router = APIRouter()
@@ -360,17 +361,18 @@ async def get_health_overview() -> HealthOverviewResponse:
     # so a slow source can never freeze the event loop. Inline they measured ~21s serial
     # on a dev box, during which even /api/health stalled and the UI latched its red
     # "Backend unreachable" banner.
-    with log_rss_delta("health_overview.get_health_overview"):
-        tiles: list[HealthTile] = list(
-            await asyncio.gather(
-                asyncio.to_thread(_fleet_tile, now),
-                asyncio.to_thread(_consolidator_tile),
-                asyncio.to_thread(_coverage_tile),
-                _alerts_tile(),
-                _gh_budget_tile(),
-                asyncio.to_thread(_cost_tile, now),
+    async with cockpit_build_slot("health_overview.get_health_overview"):
+        with log_rss_delta("health_overview.get_health_overview"):
+            tiles: list[HealthTile] = list(
+                await asyncio.gather(
+                    asyncio.to_thread(_fleet_tile, now),
+                    asyncio.to_thread(_consolidator_tile),
+                    asyncio.to_thread(_coverage_tile),
+                    _alerts_tile(),
+                    _gh_budget_tile(),
+                    asyncio.to_thread(_cost_tile, now),
+                )
             )
-        )
     return HealthOverviewResponse(
         generated_at=now.isoformat(),
         overall=_rollup_overall(tiles),
