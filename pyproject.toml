@@ -132,6 +132,13 @@ extraPaths = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+# GCP/AWS metadata server (169.254.169.254) — reachable on cloud-hosted CI runners.
+# GcsEventSink init in data_status rollup tests probes the metadata endpoint during
+# cloud-SDK boot, which is a local cloud service, not an external network call.
+# In CLOUD_MOCK_MODE this path should be dormant, but the SDK probes regardless when
+# the endpoint is live (CI runners are on cloud VMs); allow it so the one affected
+# test (test_rollup_endpoint_runs_worker_in_service) can pass in CI.
+addopts = "--allow-hosts=169.254.169.254"
 markers = [
     "unit: mark test as unit test",
     "integration: integration tests requiring real GCP credentials and API keys",
