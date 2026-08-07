@@ -57,6 +57,29 @@ logger = logging.getLogger(__name__)
 # available history plus any prior-period rows for the summary delta. Bounded → cheap BQ scan.
 DEFAULT_LOOKBACK_DAYS = 400
 
+# IAM/STS error indicators — strings whose presence in an exception message signals a
+# cross-cloud authentication failure (AWS AssumeRole / GCP impersonation denied).
+# When detected, the emitted event is CLOUD_AUTH_FAILED (registered AlertCode, HIGH severity,
+# pages PagerDuty) instead of the generic SERVICE_ERROR. Per-cloud isolation keeps the Cloud
+# Run Job exit code green when other clouds succeed, so these would otherwise go undetected.
+_AUTH_ERROR_INDICATORS: tuple[str, ...] = (
+    "AccessDenied",
+    "UnauthorizedOperation",
+    "AssumeRole",
+    "PERMISSION_DENIED",
+    "403 Forbidden",
+    "not authorized to perform",
+    "credentials could not",
+    "insufficient authentication",
+)
+
+
+def _is_auth_error(error: str) -> bool:
+    """Return True when ``error`` indicates an IAM/STS authentication failure."""
+    err_lower = error.lower()
+    return any(ind.lower() in err_lower for ind in _AUTH_ERROR_INDICATORS)
+
+
 # GCP billing lags ~2 days; the exact cutoff only mattered for the is_provisional flag, which the
 # snapshot does NOT store (recomputed at read time). Kept for the adapter signature.
 _PROVISIONAL_TRAILING_DAYS = 2
@@ -153,12 +176,19 @@ def run_snapshot(project_id: str, bucket: str, clouds: list[str], days: int) -> 
                 result.get("elapsed_s"),
             )
         else:
+            error_str = str(result.get("error", ""))  # noqa: qg-empty-fallback — _snapshot_one_cloud always sets error=str(exc); "" only if somehow missing
+            event_code = "CLOUD_AUTH_FAILED" if _is_auth_error(error_str) else "SERVICE_ERROR"
             log_event(
-                "SERVICE_FAILED",
+                event_code,
                 severity="ERROR",
-                details={"cloud": cloud, "error": str(result.get("error")), "elapsed_s": result.get("elapsed_s")},
+                details={
+                    "cloud": cloud,
+                    "error": error_str,
+                    "elapsed_s": result.get("elapsed_s"),
+                    "operation": "cost_snapshot",
+                },
             )
-            logger.error("cost snapshot %s failed: %s", cloud, result.get("error"))
+            logger.error("cost snapshot %s failed [%s]: %s", cloud, event_code, error_str)
     return 0 if successes > 0 else 1
 
 
