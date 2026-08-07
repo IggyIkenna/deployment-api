@@ -49,6 +49,7 @@ _AR_REPO_OVERRIDES: dict[str, str] = {
     "instruments-service": "instruments",
     "execution-service": "execution",
     "market-data-processing-service": "market-data-processing",
+    "alerting-service": "unified-trading-system",
 }
 # Cloud Build canonical repo — all services push here via cloudbuild.yaml _REGISTRY_REPO
 _CB_REGISTRY_REPO = "unified-trading-system"
