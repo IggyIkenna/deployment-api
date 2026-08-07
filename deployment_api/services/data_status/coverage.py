@@ -95,6 +95,18 @@ def _build_coverage_summary_in_subprocess(
     return dss._get_coverage_summary_sync(service, asset_groups, cloud)  # pyright: ignore[reportPrivateUsage]
 
 
+def _build_coverage_cat_in_subprocess(service: str, cat: str, cloud: str) -> dict[str, object] | None:
+    """Per-category spawned-child entrypoint — see ``_SERIAL_DISPATCH_ISOLATED`` in
+    ``data_status_service.py`` (root-cause fix for the uts-prod-data-status-rollup-svc
+    container OOM, 2026-08-07). Mirrors ``manifest.py``'s
+    ``build_category_in_subprocess``: constructs a fresh ``DataStatusService`` inside the
+    child (cheap — no GCS/network at construction time) rather than pickling a live
+    instance across the process boundary.
+    """
+    dss = _dss.DataStatusService()
+    return dss._build_coverage_for_cat(service, cat, cloud=cloud)  # pyright: ignore[reportPrivateUsage]
+
+
 class CoverageStatusMixin(VenueResolutionMixin):
     """get_coverage_summary + row-filter / breakdown helpers.
 
@@ -632,6 +644,28 @@ class CoverageStatusMixin(VenueResolutionMixin):
             "_unique_dates_set": [str(d) for d in unique_dates],  # pyright: ignore[reportAny]
         }
 
+    def _build_coverage_for_cat_dispatch(self, service: str, cat: str, cloud: str) -> dict[str, object] | None:
+        """One category's coverage entry — in-process, or SUBPROCESS-isolated under
+        ``_SERIAL_DISPATCH_ISOLATED`` (see that flag's docstring in
+        data_status_service.py). Only ``data_status_rollup_worker.py``'s per-service
+        isolated child sets the flag True; the on-demand API path (``get_coverage_summary``
+        -> ``_coverage_summary_guarded_build``) already has its own OUTER
+        ``bounded_subprocess`` layer per request, so it stays on the plain in-process call
+        here — nesting a second isolation layer there would only add spawn overhead with
+        no memory benefit.
+        """
+        if _dss._SERIAL_DISPATCH_ISOLATED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            return run_bounded(
+                _build_coverage_cat_in_subprocess,
+                service,
+                cat,
+                cloud,
+                rlimit_bytes=_dss._SERIAL_ISOLATED_CATEGORY_RLIMIT_BYTES,  # pyright: ignore[reportPrivateUsage]
+                timeout_s=_dss._SERIAL_ISOLATED_CATEGORY_TIMEOUT_S,  # pyright: ignore[reportPrivateUsage]
+                name=f"coverage-cat-{service[:12]}-{cat[:12]}",
+            )
+        return self._build_coverage_for_cat(service, cat, cloud=cloud)
+
     def _get_coverage_summary_sync(
         self,
         service: str,
@@ -650,7 +684,7 @@ class CoverageStatusMixin(VenueResolutionMixin):
         running_totals = {"shards": 0, "instrument_rows": 0, "latest_day_instruments": 0, "unique_instruments": 0}
 
         for cat in cat_list:
-            entry = self._build_coverage_for_cat(service, cat, cloud=cloud)
+            entry = self._build_coverage_for_cat_dispatch(service, cat, cloud)
             if entry is None:
                 continue
             self._fold_cat_entry_into_totals(

@@ -3811,3 +3811,148 @@ class TestManifestStatusVenueFilter:
         mock_run_bounded.assert_called_once()
         assert ["BINANCE-FUTURES"] in mock_run_bounded.call_args.args
         assert result is sentinel
+
+
+class TestSerialDispatchIsolated:
+    """Per-category SUBPROCESS isolation — root-cause fix for the
+    uts-prod-data-status-rollup-svc container OOM ("Memory limit of 32768 MiB
+    exceeded with 32860 MiB used", 2026-08-07). See ``_SERIAL_DISPATCH_ISOLATED``'s
+    docstring in ``data_status_service.py`` for the full rationale: pandas/pyarrow/
+    numpy's C allocators don't reliably return freed arena memory to the OS between
+    loop iterations, so a plain in-process serial loop over MarketCategory categories
+    ratchets RSS up across the sweep even though only one category is logically alive
+    at a time. This flag runs each category in its own throwaway child instead.
+    """
+
+    def test_manifest_isolated_dispatch_calls_run_bounded_per_category(self, monkeypatch) -> None:
+        from deployment_api.services.data_status import manifest as manifest_mod
+
+        svc = _make_svc()
+        monkeypatch.setattr(_dss_mod, "_PROCESS_POOL_DISABLED", True)
+        monkeypatch.setattr(_dss_mod, "_THREAD_POOL_DISABLED", True)
+        monkeypatch.setattr(_dss_mod, "_SERIAL_DISPATCH_ISOLATED", True)
+        calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        def fake_run_bounded(fn, *args, **kwargs):
+            calls.append((fn, args, kwargs))
+            return {"cat": args[1]}
+
+        with patch.object(manifest_mod, "run_bounded", side_effect=fake_run_bounded):
+            out = svc._dispatch_category_builds(  # pyright: ignore[reportPrivateUsage]
+                ["CEFI", "DEFI"],
+                "instruments-service",
+                "2025-01-01",
+                "2025-01-02",
+                ["2025-01-01", "2025-01-02"],
+                2,
+                _dss_mod.VenueMapping(),
+                row_filters=None,
+                cloud="gcp",
+                pipeline_modes=None,
+            )
+
+        assert set(out.keys()) == {"CEFI", "DEFI"}
+        assert len(calls) == 2
+        for fn, _args, kwargs in calls:
+            assert fn is manifest_mod.build_category_in_subprocess
+            assert kwargs["rlimit_bytes"] == _dss_mod._SERIAL_ISOLATED_CATEGORY_RLIMIT_BYTES  # pyright: ignore[reportPrivateUsage]
+            assert kwargs["timeout_s"] == _dss_mod._SERIAL_ISOLATED_CATEGORY_TIMEOUT_S  # pyright: ignore[reportPrivateUsage]
+
+    def test_manifest_row_filters_bypass_isolated_dispatch(self, monkeypatch) -> None:
+        """build_category_in_subprocess's fixed positional signature can't carry row
+        filters -- with any filter set the plain in-process serial loop must still run
+        even when the isolation flag is on (same gate as the ProcessPool leg)."""
+        from deployment_api.services.data_status import manifest as manifest_mod
+
+        svc = _make_svc()
+        monkeypatch.setattr(_dss_mod, "_PROCESS_POOL_DISABLED", True)
+        monkeypatch.setattr(_dss_mod, "_THREAD_POOL_DISABLED", True)
+        monkeypatch.setattr(_dss_mod, "_SERIAL_DISPATCH_ISOLATED", True)
+        rb = MagicMock(side_effect=AssertionError("run_bounded used despite row_filters"))
+
+        with (
+            patch.object(manifest_mod, "run_bounded", rb),
+            patch.object(type(svc), "_build_manifest_category", return_value={"ok": True}),
+        ):
+            out = svc._dispatch_category_builds(  # pyright: ignore[reportPrivateUsage]
+                ["CEFI", "DEFI"],
+                "instruments-service",
+                "2025-01-01",
+                "2025-01-02",
+                ["2025-01-01", "2025-01-02"],
+                2,
+                _dss_mod.VenueMapping(),
+                row_filters={"league_id": "1"},
+                cloud="gcp",
+                pipeline_modes=None,
+            )
+
+        assert set(out.keys()) == {"CEFI", "DEFI"}
+        rb.assert_not_called()
+
+    def test_manifest_isolated_dispatch_propagates_child_failure(self, monkeypatch) -> None:
+        # Same all-or-nothing contract as the in-process path: a doomed category must
+        # surface as an uncaught exception (caught one level up, by
+        # data_status_rollup_worker.py's per-service try/except), never silently
+        # dropped -- an errored rollup is worse than no rollup.
+        from deployment_api.services.data_status import manifest as manifest_mod
+        from deployment_api.utils.bounded_subprocess import BoundedSubprocessError
+
+        svc = _make_svc()
+        monkeypatch.setattr(_dss_mod, "_PROCESS_POOL_DISABLED", True)
+        monkeypatch.setattr(_dss_mod, "_THREAD_POOL_DISABLED", True)
+        monkeypatch.setattr(_dss_mod, "_SERIAL_DISPATCH_ISOLATED", True)
+
+        with (
+            patch.object(manifest_mod, "run_bounded", side_effect=BoundedSubprocessError("child OOM-killed")),
+            pytest.raises(BoundedSubprocessError),
+        ):
+            svc._dispatch_category_builds(  # pyright: ignore[reportPrivateUsage]
+                ["CEFI", "DEFI"],
+                "market-tick-data-service",
+                "2025-01-01",
+                "2025-01-02",
+                ["2025-01-01", "2025-01-02"],
+                2,
+                _dss_mod.VenueMapping(),
+                row_filters=None,
+                cloud="gcp",
+                pipeline_modes=None,
+            )
+
+    def test_coverage_isolated_dispatch_calls_run_bounded(self, monkeypatch) -> None:
+        monkeypatch.setattr(_dss_mod, "_SERIAL_DISPATCH_ISOLATED", True)
+        svc = _make_svc()
+        calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+        def fake_run_bounded(fn, *args, **kwargs):
+            calls.append((fn, args, kwargs))
+            return {"cat": args[1]}
+
+        with patch.object(_coverage_mod, "run_bounded", side_effect=fake_run_bounded):
+            out = svc._build_coverage_for_cat_dispatch(  # pyright: ignore[reportPrivateUsage]
+                "instruments-service", "CEFI", "gcp"
+            )
+
+        assert out == {"cat": "CEFI"}
+        assert len(calls) == 1
+        fn, args, kwargs = calls[0]
+        assert fn is _coverage_mod._build_coverage_cat_in_subprocess  # pyright: ignore[reportPrivateUsage]
+        assert args == ("instruments-service", "CEFI", "gcp")
+        assert kwargs["rlimit_bytes"] == _dss_mod._SERIAL_ISOLATED_CATEGORY_RLIMIT_BYTES  # pyright: ignore[reportPrivateUsage]
+        assert kwargs["timeout_s"] == _dss_mod._SERIAL_ISOLATED_CATEGORY_TIMEOUT_S  # pyright: ignore[reportPrivateUsage]
+
+    def test_coverage_non_isolated_dispatch_calls_in_process(self, monkeypatch) -> None:
+        monkeypatch.setattr(_dss_mod, "_SERIAL_DISPATCH_ISOLATED", False)
+        svc = _make_svc()
+        rb = MagicMock(side_effect=AssertionError("run_bounded used despite flag off"))
+        with (
+            patch.object(_coverage_mod, "run_bounded", rb),
+            patch.object(type(svc), "_build_coverage_for_cat", return_value={"direct": True}),
+        ):
+            out = svc._build_coverage_for_cat_dispatch(  # pyright: ignore[reportPrivateUsage]
+                "instruments-service", "CEFI", "gcp"
+            )
+
+        assert out == {"direct": True}
+        rb.assert_not_called()

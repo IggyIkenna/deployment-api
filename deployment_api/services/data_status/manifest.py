@@ -513,10 +513,8 @@ class ManifestStatusMixin(ManifestStatusHelpersMixin):
     ) -> dict[str, dict[str, object]]:
         """Build every category's manifest entry, returning ``{cat: result}``.
 
-        Three paths — :meth:`_dispatch_via_process_pool` (Linux fork),
-        :meth:`_dispatch_via_thread_pool` (process pool disabled), or
-        :meth:`_dispatch_serial` (a single category). Both pools cap at
-        ``_dss._MAX_BUILD_WORKERS`` (the OOM fix).
+        Four paths, picked by :meth:`_pick_dispatch_mode` — see that method's
+        docstring.
         """
         ctx = _CategoryBuildContext(
             service,
@@ -531,19 +529,75 @@ class ManifestStatusMixin(ManifestStatusHelpersMixin):
             venue,
             scope,
         )
-        use_process_pool = (
-            len(cat_list) > 1
-            and not _dss._PROCESS_POOL_DISABLED  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
-            and not row_filters
-            and not pipeline_modes
-            and not venue
-            and scope == "could_exist"
-        )
-        if use_process_pool:
+        mode = self._pick_dispatch_mode(cat_list, row_filters, pipeline_modes, venue, scope)
+        if mode == "process_pool":
             return self._dispatch_via_process_pool(cat_list, ctx)
-        if len(cat_list) > 1 and not _dss._THREAD_POOL_DISABLED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+        if mode == "thread_pool":
             return self._dispatch_via_thread_pool(cat_list, ctx)
+        if mode == "isolated_serial":
+            return self._dispatch_serial_isolated(cat_list, ctx)
         return self._dispatch_serial(cat_list, ctx)
+
+    def _pick_dispatch_mode(
+        self,
+        cat_list: list[str],
+        row_filters: dict[str, str] | None,
+        pipeline_modes: list[str] | None,
+        venue: list[str] | None,
+        scope: str,
+    ) -> str:
+        """Which :meth:`_dispatch_category_builds` leg to use for this request.
+
+        ``build_category_in_subprocess``'s fixed positional signature (no
+        row_filters/pipeline_modes/venue/non-default scope) gates both the
+        ProcessPool leg (Linux fork) and the ``_SERIAL_DISPATCH_ISOLATED`` leg
+        (per-category subprocess isolation -- root-cause fix for the
+        uts-prod-data-status-rollup-svc container OOM, 2026-08-07; see that
+        flag's docstring in data_status_service.py) alike.
+        """
+        multi_cat_no_filters = (
+            len(cat_list) > 1 and not row_filters and not pipeline_modes and not venue and scope == "could_exist"
+        )
+        if multi_cat_no_filters and not _dss._PROCESS_POOL_DISABLED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            return "process_pool"
+        if len(cat_list) > 1 and not _dss._THREAD_POOL_DISABLED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            return "thread_pool"
+        if multi_cat_no_filters and _dss._SERIAL_DISPATCH_ISOLATED:  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+            return "isolated_serial"
+        return "serial"
+
+    def _dispatch_serial_isolated(
+        self, cat_list: list[str], ctx: _CategoryBuildContext
+    ) -> dict[str, dict[str, object]]:
+        """Per-category SUBPROCESS-isolated serial build — see ``_SERIAL_DISPATCH_ISOLATED``.
+
+        Reuses ``build_category_in_subprocess`` — the SAME entrypoint
+        :meth:`_dispatch_via_process_pool` already uses (its fixed positional signature,
+        no row_filters/pipeline_modes/venue/non-default scope, is why the caller only
+        selects this path under that same gate). One category at a time, NOT concurrent —
+        unlike the process pool, the goal here is reclaiming each category's memory via a
+        full child-process exit before starting the next, not parallel speed-up.
+        ``run_bounded`` stays physically in THIS module (not manifest_status_helpers.py)
+        because tests patch it by the literal path
+        ``deployment_api.services.data_status.manifest.run_bounded`` — see this module's
+        docstring.
+        """
+        return {
+            cat: run_bounded(
+                build_category_in_subprocess,
+                ctx.service,
+                cat,
+                ctx.start_date,
+                ctx.end_date,
+                ctx.all_date_strs,
+                ctx.total_days,
+                ctx.cloud,
+                rlimit_bytes=_dss._SERIAL_ISOLATED_CATEGORY_RLIMIT_BYTES,  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+                timeout_s=_dss._SERIAL_ISOLATED_CATEGORY_TIMEOUT_S,  # pyright: ignore[reportPrivateUsage]  # facade patch-point (late-bound)
+                name=f"manifest-cat-{ctx.service[:12]}-{cat[:12]}",
+            )
+            for cat in cat_list
+        }
 
     def _dispatch_via_thread_pool(
         self, cat_list: list[str], ctx: _CategoryBuildContext
