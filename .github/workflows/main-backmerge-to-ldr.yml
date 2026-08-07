@@ -56,7 +56,7 @@ permissions:
 
 jobs:
   backmerge:
-    runs-on: ubuntu-latest
+    runs-on: { { RUNS_ON } }
     timeout-minutes: 6
     outputs:
       # Exposed so the notify-failure job below can alert even when the "bm" step itself

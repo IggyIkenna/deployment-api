@@ -70,7 +70,7 @@ permissions:
 
 jobs:
   backmerge:
-    runs-on: ubuntu-latest
+    runs-on: { { RUNS_ON } }
     timeout-minutes: 6
     steps:
       - name: Checkout (full history needed for merge + relationship check)

@@ -48,7 +48,7 @@ jobs:
     # repository_dispatch run executes on the DEFAULT-branch ref and can never
     # re-report on a PR head — that path is handled by refresh-open-prs below.
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: { { RUNS_ON } }
     steps:
       - name: Check PM staging lock status
         env:
@@ -89,7 +89,7 @@ jobs:
   refresh-open-prs:
     name: refresh-open-prs
     if: github.event_name == 'repository_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: { { RUNS_ON } }
     steps:
       - name: Re-run stale Staging Lock Check runs on open staging PRs
         env:

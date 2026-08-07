@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   update-dep:
-    runs-on: ubuntu-latest
+    runs-on: { { RUNS_ON } }
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -333,7 +333,7 @@ jobs:
     name: Slack — Dep Update Failure
     needs: [update-dep]
     if: always() && needs.update-dep.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: { { RUNS_ON } }
     steps:
       - name: Send Slack failure alert
         env:
