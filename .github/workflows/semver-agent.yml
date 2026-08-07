@@ -73,6 +73,19 @@ permissions:
   contents: write
   issues: write
 
+# Serialize per-repo (the LDR→main fleet promote cadence, `*/15`, can fire several
+# pushes to main in quick succession). Restored 2026-08-07
+# (semver_agent_squash_promote_blind_to_patch_fixes_2026_08_07) — dropped when this
+# workflow was retargeted staging→main (2026-07-25) even though the pre-retarget
+# staging-triggered version HAD this group; without it, overlapping runs can each read
+# a stale `git describe --tags` baseline before the other's tag push lands, racing the
+# tag mint. `cancel-in-progress: true` is safe here: every run scans the FULL
+# BASELINE..HEAD range cumulatively (not per-commit), so only the latest push's run
+# needs to actually complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   semver:
     name: Semver Agent — deployment-api
@@ -499,6 +512,37 @@ jobs:
               if echo "$SURFACE" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get('new_export_count',0) > d.get('old_export_count',0) else 1)" 2>/dev/null; then
                 BUMP="minor"
               fi
+            fi
+          fi
+
+          # ── Patch-level fallback for squash-only promote commits (root-cause fix,
+          # semver_agent_squash_promote_blind_to_patch_fixes_2026_08_07) ──
+          # Every commit reaching main under the LDR→main-direct model is a single
+          # `chore(promote): LDR → main (Option-B direct)` SQUASH commit ("LDR is the
+          # backmerge sink; not rebaseable") — the original feat:/fix:/breaking-prefixed
+          # commit messages from LDR are UNRECOVERABLE from `git log` on main (every
+          # commit subject in the scanned range is identical generic promote text), so
+          # the message-based BUMP scan above can never resolve anything. The AST differ
+          # right above only catches BREAKING public-surface changes and NET-NEW public
+          # exports — a `fix:`-shaped internal change (bug fix, refactor, non-exported
+          # logic) that nets zero new exports is invisible to BOTH signals, so BUMP stays
+          # permanently unset and the repo silently never releases again. Observed:
+          # batch-live-reconciliation-service accumulated 97 promote commits / 41 days
+          # with zero mints while the differ correctly read
+          # old_export_count==new_export_count==13 — yet resolution_api.py, config.py,
+          # stage0_manifest_reason_check.py, and stage5_results_writer.py (+ new tests)
+          # all had real content changes in that window. This implements the ALREADY-
+          # DOCUMENTED "fix: / internal change → PATCH bump" rule (see file header) via
+          # a content-based signal, since message-based classification is structurally
+          # dead under the squash-promote model. Scoped to SOURCE_DIR changes only, so a
+          # squash commit touching ONLY CI/workflow/docs/lockfile files (no package code)
+          # correctly stays un-bumped — matching the "chore:/docs: → no bump" rule.
+          if [ -z "$BUMP" ]; then
+            SOURCE_TOUCHED=$(echo "$CHANGED_FILES" | grep -c "^${SOURCE_DIR}/" || true)
+            SOURCE_TOUCHED="${SOURCE_TOUCHED:-0}"
+            if [ "$SOURCE_TOUCHED" -gt 0 ]; then
+              BUMP="patch"
+              echo "No feat:/fix:/breaking commit labels visible (squash-promote) and no net-new export, but ${SOURCE_TOUCHED} file(s) under ${SOURCE_DIR}/ changed since baseline → defaulting to PATCH (internal change)."
             fi
           fi
 
